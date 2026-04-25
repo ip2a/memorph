@@ -12,6 +12,7 @@ def main() -> None:
         ("Darwin", "arm64"): "memorph_bin_darwin_arm64",
         ("Darwin", "x86_64"): "memorph_bin_darwin_x64",
         ("Linux", "x86_64"): "memorph_bin_linux_x64_gnu",
+        ("Linux", "aarch64"): "memorph_bin_linux_arm64_gnu",
         ("Windows", "AMD64"): "memorph_bin_win32_x64_msvc",
     }
 

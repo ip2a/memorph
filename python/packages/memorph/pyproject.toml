@@ -12,6 +12,7 @@ dependencies = [
   "memorph-bin-darwin-arm64==0.1.0; platform_system == 'Darwin' and platform_machine == 'arm64'",
   "memorph-bin-darwin-x64==0.1.0; platform_system == 'Darwin' and platform_machine == 'x86_64'",
   "memorph-bin-linux-x64-gnu==0.1.0; platform_system == 'Linux' and platform_machine == 'x86_64'",
+  "memorph-bin-linux-arm64-gnu==0.1.0; platform_system == 'Linux' and platform_machine == 'aarch64'",
   "memorph-bin-win32-x64-msvc==0.1.0; platform_system == 'Windows' and platform_machine == 'AMD64'",
 ]
 

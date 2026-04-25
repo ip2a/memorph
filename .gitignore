@@ -1,0 +1,43 @@
+# 1. 忽略所有文件和目录
+*
+
+# 2. 但必须保留目录结构，否则 git 不会递归进去
+!*/
+
+# 3. 白名单：根目录配置文件
+!Cargo.toml
+!Cargo.lock
+!platforms.toml
+!README.md
+!.gitignore
+
+# 4. 白名单：GitHub Actions 工作流
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+
+# 5. 白名单：Rust 源码
+!src/
+!src/**/*.rs
+
+# 6. 白名单：构建/发布脚本
+!scripts/
+!scripts/*.sh
+!scripts/*.py
+
+# 7. 白名单：npm 发布包配置
+!npm/
+!npm/**/
+!npm/**/package.json
+!npm/**/README.md
+!npm/packages/memorph/bin/
+!npm/packages/memorph/bin/*.js
+
+# 8. 白名单：Python 发布包配置
+!python/
+!python/**/
+!python/**/pyproject.toml
+!python/**/README.md
+!python/packages/memorph/src/
+!python/packages/memorph/src/memorph/
+!python/packages/memorph/src/memorph/*.py

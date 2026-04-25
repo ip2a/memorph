@@ -97,7 +97,7 @@ jobs:
       - name: Download release-build artifacts
         run: |
           mkdir -p dist
-          for platform in darwin-arm64 darwin-x64 linux-x64-gnu win32-x64-msvc; do
+          for platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu win32-x64-msvc; do
             gh run download "${{ inputs.build_run_id }}" --name "memorph-${platform}" --dir "dist/${platform}"
           done
 
@@ -112,6 +112,7 @@ jobs:
             npm/packages/memorph-darwin-arm64 \
             npm/packages/memorph-darwin-x64 \
             npm/packages/memorph-linux-x64-gnu \
+            npm/packages/memorph-linux-arm64-gnu \
             npm/packages/memorph-win32-x64-msvc; do
             (cd "$pkg" && npm publish --access public --provenance)
           done

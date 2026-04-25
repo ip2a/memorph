@@ -39,6 +39,18 @@ python_module = "memorph_bin_linux_x64_gnu"
 python_marker = "platform_system == 'Linux' and platform_machine == 'x86_64'"
 
 [[platforms]]
+id = "linux-arm64-gnu"
+target = "aarch64-unknown-linux-gnu"
+os = "linux"
+cpu = "arm64"
+artifact_binary = "memorph"
+npm_package = "memorph-linux-arm64-gnu"
+npm_dir = "memorph-linux-arm64-gnu"
+python_package = "memorph-bin-linux-arm64-gnu"
+python_module = "memorph_bin_linux_arm64_gnu"
+python_marker = "platform_system == 'Linux' and platform_machine == 'aarch64'"
+
+[[platforms]]
 id = "win32-x64-msvc"
 target = "x86_64-pc-windows-msvc"
 os = "win32"
