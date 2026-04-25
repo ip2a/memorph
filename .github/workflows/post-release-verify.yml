@@ -17,8 +17,6 @@ jobs:
         include:
           - os: macos-latest
             platform_id: darwin-arm64
-          - os: macos-13
-            platform_id: darwin-x64
           - os: ubuntu-latest
             platform_id: linux-x64-gnu
           - os: windows-latest
@@ -50,8 +48,6 @@ jobs:
         include:
           - os: macos-latest
             platform_id: darwin-arm64
-          - os: macos-13
-            platform_id: darwin-x64
           - os: ubuntu-latest
             platform_id: linux-x64-gnu
           - os: windows-latest

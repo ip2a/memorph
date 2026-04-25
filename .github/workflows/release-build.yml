@@ -14,13 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform_id: darwin-arm64
+          - platform_id: darwin
             runner: macos-latest
-            target: aarch64-apple-darwin
-            artifact_binary: memorph
-          - platform_id: darwin-x64
-            runner: macos-13
-            target: x86_64-apple-darwin
             artifact_binary: memorph
           - platform_id: linux-x64-gnu
             runner: ubuntu-latest
@@ -41,22 +36,64 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build target artifact
+        if: matrix.platform_id != 'darwin'
         shell: bash
         run: ./scripts/build_target.sh "${{ matrix.target }}" "${{ matrix.platform_id }}" "${{ matrix.artifact_binary }}"
 
+      - name: Build macOS artifacts
+        if: matrix.platform_id == 'darwin'
+        shell: bash
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          ./scripts/build_target.sh aarch64-apple-darwin darwin-arm64 memorph
+          ./scripts/build_target.sh x86_64-apple-darwin darwin-x64 memorph
+
       - name: Run smoke test
+        if: matrix.platform_id != 'darwin'
         shell: bash
         run: ./scripts/smoke_test.sh "dist/${{ matrix.platform_id }}/${{ matrix.artifact_binary }}"
 
+      - name: Run smoke tests (macOS)
+        if: matrix.platform_id == 'darwin'
+        shell: bash
+        run: |
+          ./scripts/smoke_test.sh "dist/darwin-arm64/memorph"
+          ./scripts/smoke_test.sh "dist/darwin-x64/memorph"
+
       - name: Generate checksums
+        if: matrix.platform_id != 'darwin'
         shell: bash
         run: |
           cd "dist/${{ matrix.platform_id }}"
           sha256sum "${{ matrix.artifact_binary }}" > SHA256SUMS
 
+      - name: Generate checksums (macOS)
+        if: matrix.platform_id == 'darwin'
+        shell: bash
+        run: |
+          (cd dist/darwin-arm64 && sha256sum memorph > SHA256SUMS)
+          (cd dist/darwin-x64 && sha256sum memorph > SHA256SUMS)
+
       - name: Upload build artifacts
+        if: matrix.platform_id != 'darwin'
         uses: actions/upload-artifact@v4
         with:
           name: memorph-${{ matrix.platform_id }}
           path: dist/${{ matrix.platform_id }}/*
+          if-no-files-found: error
+
+      - name: Upload build artifacts (macOS arm64)
+        if: matrix.platform_id == 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: memorph-darwin-arm64
+          path: dist/darwin-arm64/*
+          if-no-files-found: error
+
+      - name: Upload build artifacts (macOS x64)
+        if: matrix.platform_id == 'darwin'
+        uses: actions/upload-artifact@v4
+        with:
+          name: memorph-darwin-x64
+          path: dist/darwin-x64/*
           if-no-files-found: error
