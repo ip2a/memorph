@@ -1,0 +1,20 @@
+{
+  "name": "memorph-win32-x64-msvc",
+  "version": "0.1.0",
+  "description": "memorph platform package (win32 x64 msvc)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/whillhill/memorph"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin",
+    "README.md"
+  ]
+}

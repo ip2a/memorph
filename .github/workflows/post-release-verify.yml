@@ -1,0 +1,74 @@
+name: post-release-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to verify (e.g., 0.1.0)"
+        required: true
+        type: string
+
+jobs:
+  verify-npm:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform_id: darwin-arm64
+          - os: macos-13
+            platform_id: darwin-x64
+          - os: ubuntu-latest
+            platform_id: linux-x64-gnu
+          - os: windows-latest
+            platform_id: win32-x64-msvc
+
+    steps:
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Verify npm install
+        shell: bash
+        run: |
+          npm install -g memorph@${{ inputs.version }}
+          INSTALLED_VERSION=$(memorph --version)
+          echo "Installed version: ${INSTALLED_VERSION}"
+          if [[ "${INSTALLED_VERSION}" != *"${{ inputs.version }}"* ]]; then
+            echo "[error] Version mismatch: expected ${{ inputs.version }}, got ${INSTALLED_VERSION}"
+            exit 1
+          fi
+          echo "[ok] npm install verification passed for ${{ matrix.platform_id }}"
+
+  verify-pypi:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            platform_id: darwin-arm64
+          - os: macos-13
+            platform_id: darwin-x64
+          - os: ubuntu-latest
+            platform_id: linux-x64-gnu
+          - os: windows-latest
+            platform_id: win32-x64-msvc
+
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+
+      - name: Verify PyPI install
+        shell: bash
+        run: |
+          uv tool install memorph==${{ inputs.version }}
+          INSTALLED_VERSION=$(memorph --version)
+          echo "Installed version: ${INSTALLED_VERSION}"
+          if [[ "${INSTALLED_VERSION}" != *"${{ inputs.version }}"* ]]; then
+            echo "[error] Version mismatch: expected ${{ inputs.version }}, got ${INSTALLED_VERSION}"
+            exit 1
+          fi
+          echo "[ok] PyPI install verification passed for ${{ matrix.platform_id }}"

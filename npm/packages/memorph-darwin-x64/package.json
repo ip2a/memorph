@@ -1,0 +1,20 @@
+{
+  "name": "memorph-darwin-x64",
+  "version": "0.1.0",
+  "description": "memorph platform package (darwin x64)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/whillhill/memorph"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin",
+    "README.md"
+  ]
+}

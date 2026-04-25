@@ -1,0 +1,121 @@
+name: release-publish-pypi
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "Run ID of the release-build workflow"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Debug OIDC claims
+        run: |
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.request
+
+          audience = "pypi"
+          request_url = f"{os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']}&audience={audience}"
+          request = urllib.request.Request(
+              request_url,
+              headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+          )
+          with urllib.request.urlopen(request) as response:
+              oidc_token = json.loads(response.read().decode("utf-8"))["value"]
+
+          payload = oidc_token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+          fields = [
+              "aud",
+              "sub",
+              "repository",
+              "ref",
+              "job_workflow_ref",
+              "environment",
+          ]
+          print("[info] OIDC claims used for PyPI trusted publishing:")
+          for field in fields:
+              print(f"  {field}: {claims.get(field)}")
+          PY
+
+      - name: Validate release source
+        shell: bash
+        run: |
+          echo "[info] Git ref: ${GITHUB_REF}"
+          echo "[info] Git sha: ${GITHUB_SHA}"
+          test -f python/packages/memorph/pyproject.toml || { echo "[error] Missing python/packages/memorph/pyproject.toml; this ref is not using the new release layout"; exit 1; }
+          grep -q 'npm_packages_dir = ROOT / "npm" / "packages"' scripts/sync_version.py || { echo "[error] scripts/sync_version.py is outdated (likely still references old paths)"; exit 1; }
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+
+      - name: Sync versions
+        run: uv run python scripts/sync_version.py
+
+      - name: Validate Python dependency versions
+        run: |
+          uv run python - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          root = Path(".")
+          cargo_text = (root / "Cargo.toml").read_text(encoding="utf-8")
+          match = re.search(r'^version\s*=\s*"([^"]+)"', cargo_text, flags=re.MULTILINE)
+          if not match:
+              raise SystemExit("Cargo.toml version is missing")
+          expected = match.group(1)
+
+          pyproject = tomllib.loads((root / "python/packages/memorph/pyproject.toml").read_text(encoding="utf-8"))
+          deps = pyproject["project"]["dependencies"]
+          for dep in deps:
+              if "memorph-bin-" not in dep:
+                  continue
+              if f"=={expected};" not in dep:
+                  raise SystemExit(f"Dependency version mismatch: {dep}, expected {expected}")
+          print(f"[ok] PyPI main package dependency versions are aligned: {expected}")
+          PY
+
+      - name: Download release-build artifacts
+        run: |
+          mkdir -p dist
+          for platform in darwin-arm64 darwin-x64 linux-x64-gnu win32-x64-msvc; do
+            gh run download "${{ inputs.build_run_id }}" --name "memorph-${platform}" --dir "dist/${platform}"
+          done
+
+      - name: Assemble PyPI platform packages
+        run: uv run python scripts/assemble_pypi_packages.py --dist-root dist
+
+      - name: Build all PyPI packages
+        run: |
+          mkdir -p wheelhouse
+          for pkg in python/packages/*; do
+            uv run --with build python -m build "$pkg" --sdist --wheel --outdir wheelhouse
+          done
+
+      - name: Validate package metadata
+        run: uv run --with twine python -m twine check wheelhouse/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheelhouse/

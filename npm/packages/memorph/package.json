@@ -1,0 +1,31 @@
+{
+  "name": "memorph",
+  "version": "0.1.0",
+  "description": "memorph CLI entry package; loads a prebuilt binary per platform",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/whillhill/memorph"
+  },
+  "bin": {
+    "memorph": "bin/memorph.js"
+  },
+  "files": [
+    "bin",
+    "README.md"
+  ],
+  "optionalDependencies": {
+    "memorph-darwin-arm64": "0.1.0",
+    "memorph-darwin-x64": "0.1.0",
+    "memorph-linux-x64-gnu": "0.1.0",
+    "memorph-win32-x64-msvc": "0.1.0"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "claude",
+    "codex",
+    "opencode",
+    "memorph"
+  ]
+}

@@ -1,0 +1,121 @@
+name: release-publish-npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: "Run ID of the release-build workflow"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release source
+        shell: bash
+        run: |
+          echo "[info] Git ref: ${GITHUB_REF}"
+          echo "[info] Git sha: ${GITHUB_SHA}"
+          test -f npm/packages/memorph/package.json || { echo "[error] Missing npm/packages/memorph/package.json; this ref is not using the new release layout"; exit 1; }
+          grep -q 'npm_packages_dir = ROOT / "npm" / "packages"' scripts/sync_version.py || { echo "[error] scripts/sync_version.py is outdated (likely still references old paths)"; exit 1; }
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Debug OIDC claims
+        run: |
+          uv run python - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.request
+
+          audience = "npm:registry.npmjs.org"
+          request_url = f"{os.environ['ACTIONS_ID_TOKEN_REQUEST_URL']}&audience={audience}"
+          request = urllib.request.Request(
+              request_url,
+              headers={"Authorization": f"Bearer {os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']}"},
+          )
+          with urllib.request.urlopen(request) as response:
+              oidc_token = json.loads(response.read().decode("utf-8"))["value"]
+
+          payload = oidc_token.split(".")[1]
+          payload += "=" * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload).decode("utf-8"))
+          fields = [
+              "aud",
+              "sub",
+              "repository",
+              "ref",
+              "job_workflow_ref",
+              "environment",
+          ]
+          print("[info] OIDC claims used for npm trusted publishing:")
+          for field in fields:
+              print(f"  {field}: {claims.get(field)}")
+          PY
+
+      - name: Validate npm package metadata
+        run: |
+          uv run python - <<'PY'
+          import json
+          from pathlib import Path
+
+          expected = "https://github.com/whillhill/memorph"
+          root = Path("npm/packages")
+          for pkg in sorted(root.glob("*/package.json")):
+              data = json.loads(pkg.read_text(encoding="utf-8"))
+              repository = data.get("repository") or {}
+              url = repository.get("url")
+              if url != expected:
+                  raise SystemExit(f"Invalid repository.url in {pkg}: {url!r}, expected {expected!r}")
+          print("[ok] All npm package repository URLs are aligned")
+          PY
+
+      - name: Sync versions
+        run: uv run python scripts/sync_version.py
+
+      - name: Download release-build artifacts
+        run: |
+          mkdir -p dist
+          for platform in darwin-arm64 darwin-x64 linux-x64-gnu win32-x64-msvc; do
+            gh run download "${{ inputs.build_run_id }}" --name "memorph-${platform}" --dir "dist/${platform}"
+          done
+
+      - name: Assemble npm platform packages
+        run: uv run python scripts/assemble_npm_packages.py --dist-root dist
+
+      - name: Publish npm platform packages
+        run: |
+          echo "npm whoami => $(npm whoami || echo '<not logged in>')"
+          echo "npm registry => $(npm config get registry)"
+          for pkg in \
+            npm/packages/memorph-darwin-arm64 \
+            npm/packages/memorph-darwin-x64 \
+            npm/packages/memorph-linux-x64-gnu \
+            npm/packages/memorph-win32-x64-msvc; do
+            (cd "$pkg" && npm publish --access public --provenance)
+          done
+
+      - name: Publish npm main package
+        run: |
+          (cd npm/packages/memorph && npm publish --access public --provenance)
