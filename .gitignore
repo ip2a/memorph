@@ -41,3 +41,4 @@
 !python/packages/memorph/src/
 !python/packages/memorph/src/memorph/
 !python/packages/memorph/src/memorph/*.py
+.idea/
