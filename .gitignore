@@ -9,6 +9,9 @@
 !Cargo.lock
 !platforms.toml
 !README.md
+!README_zh.md
+!README_en.md
+!assets/**
 !.gitignore
 
 # 4. 白名单：GitHub Actions 工作流

@@ -18,9 +18,8 @@
 
 ![GitHub stars](https://img.shields.io/github/stars/whillhill/memorph) ![GitHub forks](https://img.shields.io/github/forks/whillhill/memorph) ![GitHub license](https://img.shields.io/github/license/whillhill/memorph) ![npm version](https://img.shields.io/npm/v/memorph)
 
-[English](README.md) | [简体中文](README_ZH.md)
+[English](README_en.md) | [简体中文](README_zh.md)
 
-[快速开始](#快速开始) | [CLI 命令参考](#cli-命令参考)
 
 </div>
 
