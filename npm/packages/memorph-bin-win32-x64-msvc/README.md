@@ -1,3 +1,3 @@
-# memorph-win32-x64-msvc
+# memorph-bin-win32-x64-msvc
 
 Prebuilt memorph binary for Windows x64 (MSVC).

@@ -1,4 +1,4 @@
-use crate::model::{MemorphMeta, MemorphSession, MemorphMessage, SessionInfo};
+use crate::model::{MemorphMessage, MemorphMeta, MemorphSession, SessionInfo};
 use anyhow::{Context, Result};
 // use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,30 +17,39 @@ pub fn read_session(path: &Path) -> Result<MemorphSession> {
     let mut messages: Vec<MemorphMessage> = Vec::new();
 
     for (idx, line) in reader.lines().enumerate() {
-        let line = line.with_context(|| format!("Failed to read line {} from {}", idx + 1, path.display()))?;
+        let line = line
+            .with_context(|| format!("Failed to read line {} from {}", idx + 1, path.display()))?;
         if line.trim().is_empty() {
             continue;
         }
 
-        let value: Value = serde_json::from_str(&line)
-            .with_context(|| format!("Failed to parse JSON at line {} in {}", idx + 1, path.display()))?;
+        let value: Value = serde_json::from_str(&line).with_context(|| {
+            format!(
+                "Failed to parse JSON at line {} in {}",
+                idx + 1,
+                path.display()
+            )
+        })?;
 
         let line_type = value.get("type").and_then(|v| v.as_str());
 
         match line_type {
             Some("meta") => {
-                let m: MemorphMeta = serde_json::from_value(
-                    value.get("_memorph").cloned().unwrap_or(Value::Null)
-                )?;
-                let s: SessionInfo = serde_json::from_value(
-                    value.get("session").cloned().unwrap_or(Value::Null)
-                )?;
+                let m: MemorphMeta =
+                    serde_json::from_value(value.get("_memorph").cloned().unwrap_or(Value::Null))?;
+                let s: SessionInfo =
+                    serde_json::from_value(value.get("session").cloned().unwrap_or(Value::Null))?;
                 meta = Some(m);
                 session_info = Some(s);
             }
             Some("message") => {
-                let msg = parse_message_line(value)
-                    .with_context(|| format!("Failed to parse message at line {} in {}", idx + 1, path.display()))?;
+                let msg = parse_message_line(value).with_context(|| {
+                    format!(
+                        "Failed to parse message at line {} in {}",
+                        idx + 1,
+                        path.display()
+                    )
+                })?;
                 messages.push(msg);
             }
             _ => {}
@@ -92,7 +101,11 @@ pub fn write_session(path: &Path, session: &MemorphSession) -> Result<()> {
 
 /// Manually parse a message line, handling the content.blocks wrapper structure
 fn parse_message_line(value: Value) -> anyhow::Result<MemorphMessage> {
-    let id = value.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let role_str = value.get("role").and_then(|v| v.as_str()).unwrap_or("user");
     let role = match role_str {
         "user" => crate::model::MemorphRole::User,
@@ -130,8 +143,14 @@ fn parse_message_line(value: Value) -> anyhow::Result<MemorphMessage> {
         })
     });
 
-    let parent_id = value.get("parent_id").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let turn_index = value.get("turn_index").and_then(|v| v.as_u64()).map(|v| v as u32);
+    let parent_id = value
+        .get("parent_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let turn_index = value
+        .get("turn_index")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
 
     Ok(MemorphMessage {
         id,
@@ -143,4 +162,3 @@ fn parse_message_line(value: Value) -> anyhow::Result<MemorphMessage> {
         turn_index,
     })
 }
-

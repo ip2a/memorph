@@ -1,7 +1,7 @@
 {
-  "name": "memorph-linux-arm64-gnu",
-  "version": "0.1.0",
-  "description": "memorph platform package (linux arm64 gnu)",
+  "name": "memorph-bin-linux-x64-gnu",
+  "version": "0.1.4",
+  "description": "memorph platform package (linux x64 gnu)",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -11,7 +11,7 @@
     "linux"
   ],
   "cpu": [
-    "arm64"
+    "x64"
   ],
   "files": [
     "bin",

@@ -7,11 +7,11 @@ function getBinaryPath() {
   const arch = process.arch;
 
   const mapping = {
-    "darwin arm64": "memorph-darwin-arm64",
-    "darwin x64": "memorph-darwin-x64",
-    "linux x64": "memorph-linux-x64-gnu",
-    "linux arm64": "memorph-linux-arm64-gnu",
-    "win32 x64": "memorph-win32-x64-msvc",
+    "darwin arm64": "memorph-bin-darwin-arm64",
+    "darwin x64": "memorph-bin-darwin-x64",
+    "linux x64": "memorph-bin-linux-x64-gnu",
+    "linux arm64": "memorph-bin-linux-arm64-gnu",
+    "win32 x64": "memorph-bin-win32-x64-msvc",
   };
 
   const key = `${platform} ${arch}`;

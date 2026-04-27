@@ -1,3 +1,3 @@
-# memorph-darwin-arm64
+# memorph-bin-darwin-arm64
 
 Prebuilt memorph binary for macOS ARM64.

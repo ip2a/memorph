@@ -1,14 +1,14 @@
 {
-  "name": "memorph-linux-x64-gnu",
-  "version": "0.1.0",
-  "description": "memorph platform package (linux x64 gnu)",
+  "name": "memorph-bin-darwin-x64",
+  "version": "0.1.4",
+  "description": "memorph platform package (darwin x64)",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/whillhill/memorph"
   },
   "os": [
-    "linux"
+    "darwin"
   ],
   "cpu": [
     "x64"

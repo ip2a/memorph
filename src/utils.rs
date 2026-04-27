@@ -19,7 +19,10 @@ pub fn extract_text(content: &serde_json::Value) -> String {
                 if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
                     Some(text.to_string())
                 } else if let Some(thinking) = item.get("thinking").and_then(|v| v.as_str()) {
-                    Some(format!("[Thinking: {}]", thinking.chars().take(100).collect::<String>()))
+                    Some(format!(
+                        "[Thinking: {}]",
+                        thinking.chars().take(100).collect::<String>()
+                    ))
                 } else if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
                     Some(format!("[Tool: {}]", name))
                 } else {

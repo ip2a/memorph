@@ -1,17 +1,17 @@
 {
-  "name": "memorph-darwin-arm64",
-  "version": "0.1.0",
-  "description": "memorph platform package (darwin arm64)",
+  "name": "memorph-bin-win32-x64-msvc",
+  "version": "0.1.4",
+  "description": "memorph platform package (win32 x64 msvc)",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/whillhill/memorph"
   },
   "os": [
-    "darwin"
+    "win32"
   ],
   "cpu": [
-    "arm64"
+    "x64"
   ],
   "files": [
     "bin",

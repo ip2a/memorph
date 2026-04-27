@@ -110,11 +110,11 @@ jobs:
           echo "npm whoami => $(npm whoami || echo '<not logged in>')"
           echo "npm registry => $(npm config get registry)"
           for pkg in \
-            npm/packages/memorph-darwin-arm64 \
-            npm/packages/memorph-darwin-x64 \
-            npm/packages/memorph-linux-x64-gnu \
-            npm/packages/memorph-linux-arm64-gnu \
-            npm/packages/memorph-win32-x64-msvc; do
+            npm/packages/memorph-bin-darwin-arm64 \
+            npm/packages/memorph-bin-darwin-x64 \
+            npm/packages/memorph-bin-linux-x64-gnu \
+            npm/packages/memorph-bin-linux-arm64-gnu \
+            npm/packages/memorph-bin-win32-x64-msvc; do
             (cd "$pkg" && npm publish --access public --provenance)
           done
 

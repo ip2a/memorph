@@ -1,5 +1,6 @@
 use crate::model::{
-    ContentBlock, MemorphMeta, MemorphMessage, MemorphRole, MemorphSession, SessionInfo, SessionMeta,
+    ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, SessionInfo,
+    SessionMeta,
 };
 use crate::provider::Provider;
 use anyhow::{Context, Result};
@@ -65,12 +66,11 @@ impl Provider for OpenCodeProvider {
         let session_id = source_path;
 
         // Try DB first, fallback to filesystem
-        let (session_json, messages, parts) =
-            if let Ok(data) = load_session_from_db(session_id) {
-                data
-            } else {
-                load_session_from_filesystem(session_id)?
-            };
+        let (session_json, messages, parts) = if let Ok(data) = load_session_from_db(session_id) {
+            data
+        } else {
+            load_session_from_filesystem(session_id)?
+        };
 
         // Build messages linearly: for each user message, then its assistant children
         let mut memorph_messages = Vec::new();
@@ -84,10 +84,7 @@ impl Provider for OpenCodeProvider {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let msg_parts: Vec<Value> = parts
-                    .get(&msg_id)
-                    .cloned()
-                    .unwrap_or_default();
+                let msg_parts: Vec<Value> = parts.get(&msg_id).cloned().unwrap_or_default();
                 (created, msg_json, msg_parts)
             })
             .collect();
@@ -118,8 +115,7 @@ impl Provider for OpenCodeProvider {
                 .and_then(|v| v.get("created"))
                 .and_then(|v| v.as_i64())
                 .unwrap_or_else(|| Utc::now().timestamp_millis());
-            let ts = chrono::DateTime::from_timestamp_millis(created)
-                .unwrap_or_else(Utc::now);
+            let ts = chrono::DateTime::from_timestamp_millis(created).unwrap_or_else(Utc::now);
 
             let mut content_blocks = Vec::new();
 
@@ -150,10 +146,7 @@ impl Provider for OpenCodeProvider {
                             .get("status")
                             .and_then(|v| v.as_str())
                             .unwrap_or("completed");
-                        let output = state
-                            .get("output")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let output = state.get("output").and_then(|v| v.as_str()).unwrap_or("");
                         let is_error = status == "error";
                         content_blocks.push(ContentBlock::ToolResult {
                             tool_use_id: call_id,
@@ -170,10 +163,7 @@ impl Provider for OpenCodeProvider {
                             .get("filename")
                             .and_then(|v| v.as_str())
                             .unwrap_or("file");
-                        let url = part
-                            .get("url")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let url = part.get("url").and_then(|v| v.as_str()).unwrap_or("");
                         if mime.starts_with("image/") && url.starts_with("data:") {
                             // Parse data URI
                             if let Some((mime_type, data)) = parse_data_uri(url) {
@@ -200,10 +190,7 @@ impl Provider for OpenCodeProvider {
                                     .join(", ")
                             })
                             .unwrap_or_default();
-                        let hash = part
-                            .get("hash")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
+                        let hash = part.get("hash").and_then(|v| v.as_str()).unwrap_or("");
                         content_blocks.push(ContentBlock::text(format!(
                             "[Patch: {} (files: {})]",
                             hash, files
@@ -388,32 +375,15 @@ impl Provider for OpenCodeProvider {
                 }
             };
 
-            let mut msg_json = serde_json::Map::new();
-            msg_json.insert("id".to_string(), Value::String(msg_id.clone()));
-            msg_json.insert("sessionID".to_string(), Value::String(session_id.clone()));
-            msg_json.insert("role".to_string(), Value::String(role.to_string()));
-            msg_json.insert(
-                "time".to_string(),
-                serde_json::json!({"created": msg_created}),
+            let msg_json = build_opencode_message_data(
+                &session_id,
+                msg,
+                &msg_id,
+                role,
+                parent_id.as_deref(),
+                &target_dir_str,
             );
-            if let Some(pid) = parent_id {
-                msg_json.insert("parentID".to_string(), Value::String(pid));
-            }
-
-            // Extract model/provider from metadata
-            if let Some(meta) = &msg.metadata {
-                if let Some(m) = &meta.model {
-                    msg_json.insert("modelID".to_string(), Value::String(m.clone()));
-                }
-                if let Some(source) = &meta.source {
-                    msg_json.insert(
-                        "providerID".to_string(),
-                        Value::String(source.provider.clone()),
-                    );
-                }
-            }
-
-            oc_messages.push((msg_id.clone(), msg_created, Value::Object(msg_json)));
+            oc_messages.push((msg_id.clone(), msg_created, msg_json));
 
             // Convert content blocks to parts
             for block in &msg.content {
@@ -508,8 +478,10 @@ impl Provider for OpenCodeProvider {
             }
         }
 
-        // Write to SQLite DB
-        if let Err(e) = write_to_db(
+        // The current OpenCode version uses SQLite as its primary storage.
+        // DB write failures must not be silently downgraded, otherwise memorph
+        // would report success while OpenCode cannot restore the session.
+        write_to_db(
             &session_id,
             &project_id,
             &slug,
@@ -518,11 +490,12 @@ impl Provider for OpenCodeProvider {
             now,
             &oc_messages,
             &oc_parts,
-        ) {
-            eprintln!("Warning: failed to write to OpenCode DB: {}. Falling back to filesystem only.", e);
-        }
+        )
+        .context("Failed to write to OpenCode SQLite database")?;
+        load_session_from_db(&session_id).context("Failed to verify OpenCode SQLite write result")?;
 
-        // Write to filesystem
+        // Also write to the filesystem to remain compatible with older OpenCode
+        // storage and this tool's fallback scan.
         write_to_filesystem(
             &session_id,
             &project_id,
@@ -678,6 +651,139 @@ fn parse_data_uri(uri: &str) -> Option<(&str, &str)> {
     let rest = uri.strip_prefix("data:")?;
     let (mime, data) = rest.split_once(";base64,")?;
     Some((mime, data))
+}
+
+fn build_opencode_message_data(
+    session_id: &str,
+    msg: &MemorphMessage,
+    msg_id: &str,
+    role: &str,
+    parent_id: Option<&str>,
+    target_dir: &str,
+) -> Value {
+    let mut msg_json = serde_json::Map::new();
+    msg_json.insert("id".to_string(), Value::String(msg_id.to_string()));
+    msg_json.insert(
+        "sessionID".to_string(),
+        Value::String(session_id.to_string()),
+    );
+    msg_json.insert("role".to_string(), Value::String(role.to_string()));
+    msg_json.insert(
+        "time".to_string(),
+        serde_json::json!({"created": msg.timestamp.timestamp_millis()}),
+    );
+    if let Some(pid) = parent_id {
+        msg_json.insert("parentID".to_string(), Value::String(pid.to_string()));
+    }
+
+    let provider_id = msg
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.source.as_ref())
+        .map(|source| normalize_provider_id(&source.provider))
+        .unwrap_or_else(|| {
+            infer_provider_id(msg.metadata.as_ref().and_then(|m| m.model.as_deref()))
+        });
+    let model_id = msg
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.model.as_deref())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default_model_id(&provider_id));
+
+    msg_json.insert("providerID".to_string(), Value::String(provider_id.clone()));
+    msg_json.insert("modelID".to_string(), Value::String(model_id.to_string()));
+    msg_json.insert(
+        "model".to_string(),
+        serde_json::json!({
+            "providerID": provider_id,
+            "modelID": model_id,
+        }),
+    );
+
+    let agent = metadata_string(msg, "agent").unwrap_or_else(|| "build".to_string());
+    let mode = metadata_string(msg, "mode").unwrap_or_else(|| agent.clone());
+    msg_json.insert("agent".to_string(), Value::String(agent));
+    msg_json.insert("mode".to_string(), Value::String(mode));
+
+    if role == "assistant" {
+        msg_json.insert(
+            "path".to_string(),
+            serde_json::json!({
+                "cwd": target_dir,
+                "root": target_dir,
+            }),
+        );
+        msg_json.insert(
+            "cost".to_string(),
+            metadata_value(msg, "cost").unwrap_or(Value::from(0)),
+        );
+        msg_json.insert(
+            "finish".to_string(),
+            metadata_value(msg, "finish").unwrap_or(Value::String("stop".to_string())),
+        );
+    }
+
+    msg_json.insert("tokens".to_string(), message_tokens(msg));
+
+    for key in ["error", "summary", "system", "tools", "variant"] {
+        if let Some(value) = metadata_value(msg, key) {
+            msg_json.insert(key.to_string(), value);
+        }
+    }
+
+    Value::Object(msg_json)
+}
+
+fn metadata_value(msg: &MemorphMessage, key: &str) -> Option<Value> {
+    msg.metadata
+        .as_ref()
+        .and_then(|metadata| metadata.extra.get(key))
+        .cloned()
+}
+
+fn metadata_string(msg: &MemorphMessage, key: &str) -> Option<String> {
+    metadata_value(msg, key).and_then(|value| value.as_str().map(str::to_string))
+}
+
+fn normalize_provider_id(provider: &str) -> String {
+    match provider {
+        "claude" | "anthropic" => "anthropic".to_string(),
+        "codex" | "openai" => "openai".to_string(),
+        "opencode" => "opencode".to_string(),
+        other if !other.is_empty() => other.to_string(),
+        _ => "openai".to_string(),
+    }
+}
+
+fn infer_provider_id(model: Option<&str>) -> String {
+    match model.unwrap_or_default() {
+        value if value.starts_with("claude") => "anthropic".to_string(),
+        _ => "openai".to_string(),
+    }
+}
+
+fn default_model_id(provider: &str) -> &'static str {
+    match provider {
+        "anthropic" => "claude-sonnet-4-5",
+        _ => "gpt-5.3-codex",
+    }
+}
+
+fn message_tokens(msg: &MemorphMessage) -> Value {
+    let usage = msg
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.usage.as_ref());
+    serde_json::json!({
+        "input": usage.and_then(|value| value.input_tokens).unwrap_or(0),
+        "output": usage.and_then(|value| value.output_tokens).unwrap_or(0),
+        "reasoning": 0,
+        "cache": {
+            "read": 0,
+            "write": 0,
+        },
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -949,7 +1055,7 @@ fn find_or_create_project(target_dir: &Path) -> Result<String> {
 
     // Try to find existing project
     let existing: Result<String, _> = conn.query_row(
-        "SELECT id FROM project WHERE worktree = ?1 LIMIT 1",
+        "SELECT id FROM project WHERE worktree = ?1 ORDER BY time_updated DESC LIMIT 1",
         [&target_dir_str],
         |row| row.get(0),
     );
@@ -1011,6 +1117,12 @@ fn write_to_db(
     parts: &[(String, String, i64, Value)],
 ) -> Result<()> {
     let db_path = get_db_path();
+    if !db_path.exists() {
+        anyhow::bail!(
+            "OpenCode database does not exist: {}. Please launch OpenCode once to initialize storage before importing.",
+            db_path.display()
+        );
+    }
     let mut conn = Connection::open(&db_path)?;
 
     let tx = conn.transaction()?;
@@ -1088,4 +1200,66 @@ fn write_to_filesystem(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MessageMetadata, SourceMetadata};
+    use chrono::TimeZone;
+
+    #[test]
+    fn opencode_message_data_preserves_model_provider_metadata() {
+        let msg = MemorphMessage {
+            id: "source-message".to_string(),
+            role: MemorphRole::Assistant,
+            content: vec![ContentBlock::text("hello")],
+            timestamp: Utc
+                .timestamp_millis_opt(1_700_000_000_000)
+                .single()
+                .unwrap(),
+            metadata: Some(MessageMetadata {
+                source: Some(SourceMetadata {
+                    provider: "codex".to_string(),
+                    original_id: None,
+                    original_role: None,
+                }),
+                model: Some("gpt-5.4".to_string()),
+                usage: None,
+                extra: Value::Null,
+            }),
+            parent_id: None,
+            turn_index: None,
+        };
+
+        let data = build_opencode_message_data(
+            "ses_test",
+            &msg,
+            "msg_test",
+            "assistant",
+            Some("msg_parent"),
+            "/tmp/project",
+        );
+        let obj = data.as_object().expect("message data should be an object");
+
+        assert_eq!(obj.get("role").and_then(Value::as_str), Some("assistant"));
+        assert_eq!(
+            obj.get("parentID").and_then(Value::as_str),
+            Some("msg_parent")
+        );
+        assert_eq!(
+            obj.get("providerID").and_then(Value::as_str),
+            Some("openai")
+        );
+        assert_eq!(obj.get("modelID").and_then(Value::as_str), Some("gpt-5.4"));
+        assert_eq!(
+            obj.get("model")
+                .and_then(|value| value.get("providerID"))
+                .and_then(Value::as_str),
+            Some("openai")
+        );
+        assert_eq!(obj.get("agent").and_then(Value::as_str), Some("build"));
+        assert!(obj.get("path").is_some());
+        assert!(obj.get("tokens").is_some());
+    }
 }

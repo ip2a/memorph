@@ -1,17 +1,17 @@
 {
-  "name": "memorph-win32-x64-msvc",
-  "version": "0.1.0",
-  "description": "memorph platform package (win32 x64 msvc)",
+  "name": "memorph-bin-linux-arm64-gnu",
+  "version": "0.1.4",
+  "description": "memorph platform package (linux arm64 gnu)",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/whillhill/memorph"
   },
   "os": [
-    "win32"
+    "linux"
   ],
   "cpu": [
-    "x64"
+    "arm64"
   ],
   "files": [
     "bin",

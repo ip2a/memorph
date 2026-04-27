@@ -113,4 +113,13 @@ pub enum Commands {
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Vec<String>,
     },
+    /// Start the web UI server
+    Serve {
+        /// Port to listen on
+        #[arg(short, long, default_value = "3737")]
+        port: u16,
+        /// Don't auto-open browser
+        #[arg(long)]
+        no_open: bool,
+    },
 }

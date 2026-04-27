@@ -1,5 +1,6 @@
 use crate::model::{
-    ContentBlock, MemorphMeta, MemorphMessage, MemorphRole, MemorphSession, SessionInfo, SessionMeta,
+    ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, SessionInfo,
+    SessionMeta,
 };
 use crate::provider::Provider;
 use anyhow::{Context, Result};
@@ -34,8 +35,12 @@ impl Provider for CodexProvider {
         // Build a lookup from id -> cwd from SQLite for fast access
         let cwd_lookup = build_cwd_lookup().unwrap_or_default();
 
-        let file = File::open(&index_path)
-            .with_context(|| format!("Failed to open Codex session index: {}", index_path.display()))?;
+        let file = File::open(&index_path).with_context(|| {
+            format!(
+                "Failed to open Codex session index: {}",
+                index_path.display()
+            )
+        })?;
         let reader = BufReader::new(file);
         let mut sessions = Vec::new();
 
@@ -49,7 +54,10 @@ impl Provider for CodexProvider {
                 Err(_) => continue,
             };
 
-            let id = value.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let id = value
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             let thread_name = value
                 .get("thread_name")
                 .and_then(|v| v.as_str())
@@ -64,7 +72,9 @@ impl Provider for CodexProvider {
                 // Find the actual file path for this session
                 let source_path = find_session_file(&id);
                 // Get cwd from SQLite lookup, or fall back to scanning file
-                let project_dir = cwd_lookup.get(&id).cloned()
+                let project_dir = cwd_lookup
+                    .get(&id)
+                    .cloned()
                     .or_else(|| extract_cwd_from_session_file(&id));
 
                 sessions.push(SessionMeta {
@@ -108,8 +118,14 @@ impl Provider for CodexProvider {
             match line_type {
                 Some("session_meta") => {
                     if let Some(payload) = value.get("payload") {
-                        session_id = payload.get("id").and_then(|v| v.as_str()).map(|s| s.to_string());
-                        project_dir = payload.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        session_id = payload
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        project_dir = payload
+                            .get("cwd")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
                         created_at = payload
                             .get("timestamp")
                             .and_then(|v| v.as_str())
@@ -151,14 +167,17 @@ impl Provider for CodexProvider {
                             _ => continue,
                         };
 
-                        let content = if let Some(content_arr) = payload.get("content").and_then(|v| v.as_array()) {
+                        let content = if let Some(content_arr) =
+                            payload.get("content").and_then(|v| v.as_array())
+                        {
                             content_arr
                                 .iter()
                                 .filter_map(|block| {
                                     let block_type = block.get("type").and_then(|v| v.as_str())?;
                                     match block_type {
                                         "input_text" | "output_text" => {
-                                            let text = block.get("text").and_then(|v| v.as_str())?;
+                                            let text =
+                                                block.get("text").and_then(|v| v.as_str())?;
                                             Some(ContentBlock::text(text))
                                         }
                                         "input_image" => {
@@ -166,7 +185,10 @@ impl Provider for CodexProvider {
                                             None
                                         }
                                         "refusal" => {
-                                            let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("[refused]");
+                                            let text = block
+                                                .get("text")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("[refused]");
                                             Some(ContentBlock::text(text))
                                         }
                                         _ => None,
@@ -186,9 +208,12 @@ impl Provider for CodexProvider {
                         // Skip Codex runtime-injected context messages that are
                         // wrapped as user role (AGENTS.md, environment_context, etc.)
                         if memorph_role == MemorphRole::User {
-                            let full_text: String = content.iter()
+                            let full_text: String = content
+                                .iter()
                                 .filter_map(|b| match b {
-                                    crate::model::ContentBlock::Text { text } => Some(text.as_str()),
+                                    crate::model::ContentBlock::Text { text } => {
+                                        Some(text.as_str())
+                                    }
                                     _ => None,
                                 })
                                 .collect();
@@ -246,7 +271,10 @@ impl Provider for CodexProvider {
                                 extra: {
                                     let mut extra = serde_json::Map::new();
                                     if let Some(phase) = phase {
-                                        extra.insert("phase".to_string(), serde_json::Value::String(phase.to_string()));
+                                        extra.insert(
+                                            "phase".to_string(),
+                                            serde_json::Value::String(phase.to_string()),
+                                        );
                                     }
                                     serde_json::Value::Object(extra)
                                 },
@@ -269,7 +297,9 @@ impl Provider for CodexProvider {
                     role: MemorphRole::System,
                     content: vec![ContentBlock::text(instr)],
                     timestamp: created_at
-                        .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now))
+                        .map(|ms| {
+                            chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)
+                        })
                         .unwrap_or_else(Utc::now),
                     metadata: Some(crate::model::MessageMetadata {
                         source: Some(crate::model::SourceMetadata {
@@ -301,8 +331,10 @@ impl Provider for CodexProvider {
             id: session_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
             title: None,
             project_dir,
-            created_at: created_at.map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
-            last_active_at: created_at.map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
+            created_at: created_at
+                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
+            last_active_at: created_at
+                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
             tags: None,
         };
 
@@ -323,7 +355,11 @@ impl Provider for CodexProvider {
         let year = now.format("%Y").to_string();
         let month = now.format("%m").to_string();
         let day = now.format("%d").to_string();
-        let sessions_dir = get_codex_dir().join("sessions").join(&year).join(&month).join(&day);
+        let sessions_dir = get_codex_dir()
+            .join("sessions")
+            .join(&year)
+            .join(&month)
+            .join(&day);
         std::fs::create_dir_all(&sessions_dir)?;
 
         let file_path = sessions_dir.join(&filename);
@@ -332,11 +368,16 @@ impl Provider for CodexProvider {
         let mut file = File::create(&file_path)?;
 
         // Build base instructions from first system message
-        let base_instructions = session.messages.iter().find(|m| m.role == MemorphRole::System)
-            .and_then(|m| m.content.iter().find_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.clone()),
-                _ => None,
-            }));
+        let base_instructions = session
+            .messages
+            .iter()
+            .find(|m| m.role == MemorphRole::System)
+            .and_then(|m| {
+                m.content.iter().find_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+            });
 
         // Write session_meta line
         let git_info = get_git_info(target_dir);
@@ -500,7 +541,9 @@ impl Provider for CodexProvider {
                 }
                 // agent_message event before the last assistant response_item
                 if Some(idx) == last_assistant_idx {
-                    let agent_text = msg.content.iter()
+                    let agent_text = msg
+                        .content
+                        .iter()
                         .filter_map(|b| match b {
                             ContentBlock::Text { text } => Some(text.as_str()),
                             _ => None,
@@ -529,7 +572,9 @@ impl Provider for CodexProvider {
 
                 // user_message event after the first original user message
                 if msg.role == MemorphRole::User && !user_message_written {
-                    let user_text = msg.content.iter()
+                    let user_text = msg
+                        .content
+                        .iter()
                         .filter_map(|b| match b {
                             ContentBlock::Text { text } => Some(text.as_str()),
                             _ => None,
@@ -555,13 +600,16 @@ impl Provider for CodexProvider {
             // task_complete
             let last_agent_message = last_assistant_idx
                 .and_then(|idx| turn.get(idx))
-                .map(|msg| msg.content.iter()
-                    .filter_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join(""))
+                .map(|msg| {
+                    msg.content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("")
+                })
                 .unwrap_or_default();
 
             let task_complete = serde_json::json!({
@@ -580,14 +628,21 @@ impl Provider for CodexProvider {
 
         // Update session_index.jsonl
         let index_path = get_codex_dir().join("session_index.jsonl");
-        let title = session.session.title.clone()
+        let title = session
+            .session
+            .title
+            .clone()
             .or_else(|| {
-                session.messages.iter()
+                session
+                    .messages
+                    .iter()
                     .find(|m| m.role == MemorphRole::User)
-                    .and_then(|m| m.content.iter().find_map(|b| match b {
-                        ContentBlock::Text { text } => Some(text.clone()),
-                        _ => None,
-                    }))
+                    .and_then(|m| {
+                        m.content.iter().find_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                    })
             })
             .unwrap_or_else(|| "Imported session".to_string());
 
@@ -615,8 +670,9 @@ impl Provider for CodexProvider {
             .with_context(|| format!("Codex session not found: {}", session_id))?;
 
         // Remove the JSONL file
-        std::fs::remove_file(&session_path)
-            .with_context(|| format!("Failed to remove session file: {}", session_path.display()))?;
+        std::fs::remove_file(&session_path).with_context(|| {
+            format!("Failed to remove session file: {}", session_path.display())
+        })?;
 
         // Update session_index.jsonl to remove the entry
         let index_path = get_codex_dir().join("session_index.jsonl");
@@ -665,7 +721,10 @@ impl Provider for CodexProvider {
             let mut v: Value = serde_json::from_str(line)?;
             if v.get("id").and_then(|v| v.as_str()) == Some(session_id) {
                 if let Value::Object(ref mut map) = v {
-                    map.insert("thread_name".to_string(), Value::String(new_title.to_string()));
+                    map.insert(
+                        "thread_name".to_string(),
+                        Value::String(new_title.to_string()),
+                    );
                     found = true;
                 }
                 new_lines.push(serde_json::to_string(&v)?);
@@ -712,7 +771,8 @@ fn extract_cwd_from_session_file(id: &str) -> Option<String> {
         let line = line.ok()?;
         let value: Value = serde_json::from_str(&line).ok()?;
         if value.get("type").and_then(|v| v.as_str()) == Some("session_meta") {
-            return value.get("payload")
+            return value
+                .get("payload")
                 .and_then(|p| p.get("cwd"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
@@ -747,7 +807,8 @@ fn find_session_file(id: &str) -> Option<PathBuf> {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            if path.file_name()
+            if path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .map(|n| n.contains(id))
                 .unwrap_or(false)
@@ -770,11 +831,21 @@ fn get_git_info(dir: &Path) -> Option<GitInfo> {
     let mut info = GitInfo::default();
 
     let branch_output = std::process::Command::new("git")
-        .args(["-C", &dir.to_string_lossy(), "rev-parse", "--abbrev-ref", "HEAD"])
+        .args([
+            "-C",
+            &dir.to_string_lossy(),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
         .output()
         .ok()?;
     if branch_output.status.success() {
-        info.branch = Some(String::from_utf8_lossy(&branch_output.stdout).trim().to_string());
+        info.branch = Some(
+            String::from_utf8_lossy(&branch_output.stdout)
+                .trim()
+                .to_string(),
+        );
     }
 
     let hash_output = std::process::Command::new("git")
@@ -782,7 +853,11 @@ fn get_git_info(dir: &Path) -> Option<GitInfo> {
         .output()
         .ok()?;
     if hash_output.status.success() {
-        info.commit_hash = Some(String::from_utf8_lossy(&hash_output.stdout).trim().to_string());
+        info.commit_hash = Some(
+            String::from_utf8_lossy(&hash_output.stdout)
+                .trim()
+                .to_string(),
+        );
     }
 
     Some(info)
@@ -911,7 +986,13 @@ fn get_codex_model_config() -> (String, String) {
 
 fn get_git_branch(dir: &Path) -> Option<String> {
     let output = std::process::Command::new("git")
-        .args(["-C", &dir.to_string_lossy(), "rev-parse", "--abbrev-ref", "HEAD"])
+        .args([
+            "-C",
+            &dir.to_string_lossy(),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
         .output()
         .ok()?;
     if output.status.success() {

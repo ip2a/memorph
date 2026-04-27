@@ -1,8 +1,11 @@
 use crate::model::{
-    ContentBlock, MemorphMeta, MemorphMessage, MemorphRole, MemorphSession, SessionInfo, SessionMeta,
+    ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, SessionInfo,
+    SessionMeta,
 };
 use crate::provider::Provider;
-use crate::utils::{encode_project_dir, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary};
+use crate::utils::{
+    encode_project_dir, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::Value;
@@ -43,7 +46,8 @@ impl Provider for ClaudeProvider {
                 continue;
             }
             // Skip agent sub-sessions
-            if path.file_name()
+            if path
+                .file_name()
                 .and_then(|n| n.to_str())
                 .map(|n| n.starts_with("agent-"))
                 .unwrap_or(false)
@@ -83,10 +87,16 @@ impl Provider for ClaudeProvider {
 
             // Extract session-level metadata from early lines
             if session_id.is_none() {
-                session_id = value.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string());
+                session_id = value
+                    .get("sessionId")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
             if project_dir.is_none() {
-                project_dir = value.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string());
+                project_dir = value
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
             }
             if created_at.is_none() {
                 created_at = value.get("timestamp").and_then(parse_timestamp_to_ms);
@@ -151,9 +161,7 @@ impl Provider for ClaudeProvider {
 
             // Extract content blocks
             let content = match message.get("content") {
-                Some(Value::Array(arr)) => {
-                    arr.iter().filter_map(parse_content_block).collect()
-                }
+                Some(Value::Array(arr)) => arr.iter().filter_map(parse_content_block).collect(),
                 Some(Value::String(s)) => {
                     vec![ContentBlock::text(s)]
                 }
@@ -206,8 +214,10 @@ impl Provider for ClaudeProvider {
             id: session_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
             title: session_title,
             project_dir,
-            created_at: created_at.map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
-            last_active_at: last_active_at.map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
+            created_at: created_at
+                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
+            last_active_at: last_active_at
+                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
             tags: None,
         };
 
@@ -241,14 +251,23 @@ impl Provider for ClaudeProvider {
         writeln!(file, "{}", serde_json::to_string(&perm_line)?)?;
 
         // Write custom-title line so Claude Code shows the correct title
-        let title = session.session.title.clone().or_else(|| {
-            session.messages.iter()
-                .find(|m| m.role == MemorphRole::User)
-                .and_then(|m| m.content.iter().find_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.clone()),
-                    _ => None,
-                }))
-        }).unwrap_or_else(|| "Imported session".to_string());
+        let title = session
+            .session
+            .title
+            .clone()
+            .or_else(|| {
+                session
+                    .messages
+                    .iter()
+                    .find(|m| m.role == MemorphRole::User)
+                    .and_then(|m| {
+                        m.content.iter().find_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                    })
+            })
+            .unwrap_or_else(|| "Imported session".to_string());
         let title_line = serde_json::json!({
             "type": "custom-title",
             "customTitle": title,
@@ -267,7 +286,10 @@ impl Provider for ClaudeProvider {
             let timestamp = msg.timestamp.to_rfc3339();
 
             match msg.role {
-                MemorphRole::User | MemorphRole::Tool | MemorphRole::System | MemorphRole::Developer => {
+                MemorphRole::User
+                | MemorphRole::Tool
+                | MemorphRole::System
+                | MemorphRole::Developer => {
                     // Build content: if tool role, wrap as tool_result block; otherwise extract text
                     let content = if msg.role == MemorphRole::Tool {
                         // Try to find matching tool_use_id from metadata or use generic
@@ -277,8 +299,20 @@ impl Provider for ClaudeProvider {
                             .and_then(|m| m.extra.get("tool_use_id"))
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string())
-                            .unwrap_or_else(|| format!("toolu_{}", Uuid::new_v4().to_string().replace("-", "").chars().take(20).collect::<String>()));
-                        let text = msg.content.iter()
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "toolu_{}",
+                                    Uuid::new_v4()
+                                        .to_string()
+                                        .replace("-", "")
+                                        .chars()
+                                        .take(20)
+                                        .collect::<String>()
+                                )
+                            });
+                        let text = msg
+                            .content
+                            .iter()
                             .filter_map(|b| match b {
                                 ContentBlock::Text { text } => Some(text.as_str()),
                                 _ => None,
@@ -291,7 +325,9 @@ impl Provider for ClaudeProvider {
                             "content": text,
                         }])
                     } else {
-                        let text = msg.content.iter()
+                        let text = msg
+                            .content
+                            .iter()
                             .filter_map(|b| match b {
                                 ContentBlock::Text { text } => Some(text.as_str()),
                                 _ => None,
@@ -334,7 +370,10 @@ impl Provider for ClaudeProvider {
                                     "text": text,
                                 }));
                             }
-                            ContentBlock::Thinking { thinking, signature } => {
+                            ContentBlock::Thinking {
+                                thinking,
+                                signature,
+                            } => {
                                 let mut t = serde_json::json!({
                                     "type": "thinking",
                                     "thinking": thinking,
@@ -356,7 +395,11 @@ impl Provider for ClaudeProvider {
                                 }
                                 content_blocks.push(t);
                             }
-                            ContentBlock::ToolResult { tool_use_id, content, .. } => {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                ..
+                            } => {
                                 // tool_result in assistant? skip, should be in user message
                                 let _ = (tool_use_id, content);
                             }
@@ -430,14 +473,16 @@ impl Provider for ClaudeProvider {
             }
             if path.file_stem().and_then(|s| s.to_str()) == Some(session_id) {
                 // Remove the JSONL file
-                std::fs::remove_file(path)
-                    .with_context(|| format!("Failed to remove session file: {}", path.display()))?;
+                std::fs::remove_file(path).with_context(|| {
+                    format!("Failed to remove session file: {}", path.display())
+                })?;
                 // Remove sidecar directory if exists
                 if let Some(parent) = path.parent() {
                     let sidecar = parent.join(session_id);
                     if sidecar.exists() {
-                        std::fs::remove_dir_all(&sidecar)
-                            .with_context(|| format!("Failed to remove sidecar directory: {}", sidecar.display()))?;
+                        std::fs::remove_dir_all(&sidecar).with_context(|| {
+                            format!("Failed to remove sidecar directory: {}", sidecar.display())
+                        })?;
                     }
                 }
                 found = true;
@@ -475,7 +520,8 @@ impl Provider for ClaudeProvider {
             }
         }
 
-        let path = found_path.with_context(|| format!("Claude session not found: {}", session_id))?;
+        let path =
+            found_path.with_context(|| format!("Claude session not found: {}", session_id))?;
 
         // Rewrite the JSONL with updated custom-title line
         let content = std::fs::read_to_string(&path)?;
@@ -489,7 +535,10 @@ impl Provider for ClaudeProvider {
             let mut value: Value = serde_json::from_str(line)?;
             if value.get("type").and_then(|v| v.as_str()) == Some("custom-title") {
                 if let Value::Object(ref mut map) = value {
-                    map.insert("customTitle".to_string(), Value::String(new_title.to_string()));
+                    map.insert(
+                        "customTitle".to_string(),
+                        Value::String(new_title.to_string()),
+                    );
                     title_updated = true;
                 }
                 new_lines.push(serde_json::to_string(&value)?);
@@ -533,7 +582,13 @@ fn get_claude_config_dir() -> PathBuf {
 
 fn get_git_branch(dir: &Path) -> Option<String> {
     let output = std::process::Command::new("git")
-        .args(["-C", &dir.to_string_lossy(), "rev-parse", "--abbrev-ref", "HEAD"])
+        .args([
+            "-C",
+            &dir.to_string_lossy(),
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+        ])
         .output()
         .ok()?;
     if output.status.success() {
@@ -552,7 +607,10 @@ fn parse_content_block(value: &Value) -> Option<ContentBlock> {
         }
         "thinking" => {
             let thinking = value.get("thinking").and_then(|v| v.as_str())?;
-            let signature = value.get("signature").and_then(|v| v.as_str()).map(|s| s.to_string());
+            let signature = value
+                .get("signature")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             Some(ContentBlock::Thinking {
                 thinking: thinking.to_string(),
                 signature,
@@ -569,10 +627,14 @@ fn parse_content_block(value: &Value) -> Option<ContentBlock> {
             })
         }
         "tool_result" => {
-            let tool_use_id = value.get("tool_use_id")
-                .and_then(|v| v.as_str())?;
-            let content = value.get("content")
-                .map(|v| v.as_str().map(|s| s.to_string()).unwrap_or_else(|| v.to_string()))
+            let tool_use_id = value.get("tool_use_id").and_then(|v| v.as_str())?;
+            let content = value
+                .get("content")
+                .map(|v| {
+                    v.as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v.to_string())
+                })
                 .unwrap_or_default();
             let is_error = value.get("is_error").and_then(|v| v.as_bool());
             Some(ContentBlock::ToolResult {
@@ -602,10 +664,16 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
     for line in &head {
         let value: Value = serde_json::from_str(line).ok()?;
         if session_id.is_none() {
-            session_id = value.get("sessionId").and_then(|v| v.as_str()).map(|s| s.to_string());
+            session_id = value
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
         }
         if project_dir.is_none() {
-            project_dir = value.get("cwd").and_then(|v| v.as_str()).map(|s| s.to_string());
+            project_dir = value
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
         }
         if created_at.is_none() {
             created_at = value.get("timestamp").and_then(parse_timestamp_to_ms);
