@@ -43,6 +43,19 @@ pub fn router() -> Router {
             get(crate::web_modals::modal_rename_exec),
         )
         .route(
+            "/modal/export/{provider}/{session_id}",
+            get(crate::web_modals::modal_export_form),
+        )
+        .route(
+            "/modal/export/exec/{provider}/{session_id}",
+            get(crate::web_modals::modal_export_exec),
+        )
+        .route("/modal/import", get(crate::web_modals::modal_import_form))
+        .route(
+            "/modal/import/exec",
+            get(crate::web_modals::modal_import_exec),
+        )
+        .route(
             "/modal/workspaces",
             get(crate::web_modals::modal_workspace_history),
         )
@@ -58,7 +71,18 @@ pub fn router() -> Router {
         .route("/favicon.ico", get(crate::web_assets::serve_favicon))
 }
 
-fn layout(title: &str, content: Markup, lang: UiLanguage) -> Markup {
+fn layout(title: &str, content: Markup, lang: UiLanguage, workspace: Option<&str>) -> Markup {
+    let settings_href = workspace
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            format!(
+                "/modal/settings?workspace={}&lang={}",
+                query_escape(value),
+                lang_code(lang)
+            )
+        })
+        .unwrap_or_else(|| format!("/modal/settings?lang={}", lang_code(lang)));
+
     html! {
         (DOCTYPE)
         html lang=(html_lang(lang)) {
@@ -71,14 +95,13 @@ fn layout(title: &str, content: Markup, lang: UiLanguage) -> Markup {
             body {
                 div.atomic-shell {
                     nav.topbar {
-                        a.brand href=(format!("/?lang={}", lang_code(lang))) aria-label="memorph home" {
-                            span.brand-mark { "m" }
-                            span { "memorph" }
+                        div.brand-cluster {
+                            a.brand href=(format!("/?lang={}", lang_code(lang))) aria-label="memorph home" {
+                                span { "memorph" }
+                            }
                         }
                         div.top-actions {
-                            button.github-link type="button" data-modal=(format!("/modal/settings?lang={}", lang_code(lang))) aria-label=(tr(lang, "设置", "Settings")) title=(tr(lang, "设置", "Settings")) {
-                                (PreEscaped(settings_icon_svg()))
-                            }
+                            button.settings-entry type="button" data-modal=(settings_href) { (tr(lang, "设置", "Settings")) }
                             a.github-link href="https://github.com/whillhill/memorph" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub" {
                                 (PreEscaped(github_icon_svg()))
                             }
@@ -113,14 +136,10 @@ fn github_icon_svg() -> &'static str {
     r#"<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.6 7.6 0 0 1 8 3.86c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>"#
 }
 
-fn settings_icon_svg() -> &'static str {
-    r#"<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 1.5c.43 0 .8.3.89.72l.16.76c.3.09.59.21.86.36l.65-.42a.92.92 0 0 1 1.14.12l.76.76c.3.3.35.77.12 1.14l-.42.65c.15.27.27.56.36.86l.76.16c.42.09.72.46.72.89v1.08c0 .43-.3.8-.72.89l-.76.16c-.09.3-.21.59-.36.86l.42.65c.23.37.18.84-.12 1.14l-.76.76a.92.92 0 0 1-1.14.12l-.65-.42c-.27.15-.56.27-.86.36l-.16.76c-.09.42-.46.72-.89.72H6.92c-.43 0-.8-.3-.89-.72l-.16-.76a4.9 4.9 0 0 1-.86-.36l-.65.42a.92.92 0 0 1-1.14-.12l-.76-.76a.92.92 0 0 1-.12-1.14l.42-.65a4.9 4.9 0 0 1-.36-.86l-.76-.16a.92.92 0 0 1-.72-.89V7.46c0-.43.3-.8.72-.89l.76-.16c.09-.3.21-.59.36-.86l-.42-.65a.92.92 0 0 1 .12-1.14l.76-.76c.3-.3.77-.35 1.14-.12l.65.42c.27-.15.56-.27.86-.36l.16-.76c.09-.42.46-.72.89-.72H8Zm-.5 1.2-.18.86-.42.12a3.5 3.5 0 0 0-1.05.44l-.37.22-.74-.48-.62.62.48.74-.22.37c-.2.32-.34.67-.44 1.05l-.12.42-.86.18v.88l.86.18.12.42c.1.38.24.73.44 1.05l.22.37-.48.74.62.62.74-.48.37.22c.32.2.67.34 1.05.44l.42.12.18.86h.88l.18-.86.42-.12c.38-.1.73-.24 1.05-.44l.37-.22.74.48.62-.62-.48-.74.22-.37c.2-.32.34-.67.44-1.05l.12-.42.86-.18v-.88l-.86-.18-.12-.42a3.5 3.5 0 0 0-.44-1.05l-.22-.37.48-.74-.62-.62-.74.48-.37-.22a3.5 3.5 0 0 0-1.05-.44l-.42-.12-.18-.86H7.5ZM8 5.3a2.7 2.7 0 1 1 0 5.4 2.7 2.7 0 0 1 0-5.4Zm0 1.2a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/></svg>"#
-}
-
 fn apply_web_preferences(query: &HomeQuery) -> anyhow::Result<WebPreferences> {
     let language = query.lang.as_deref().and_then(parse_language);
-    if query.per_page.is_some() || language.is_some() {
-        config::update_web_preferences(query.per_page, language, None)?;
+    if language.is_some() {
+        config::update_web_preferences(None, language, None)?;
     }
     config::web_preferences()
 }
@@ -131,7 +150,6 @@ struct HomeQuery {
     provider: Vec<String>,
     q: Option<String>,
     sort: Option<String>,
-    per_page: Option<usize>,
     visible: Option<usize>,
     lang: Option<String>,
 }
@@ -141,21 +159,27 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
     let prefs = match apply_web_preferences(&q) {
         Ok(prefs) => prefs,
         Err(e) => {
-            return Html(layout("memorph - 错误", error_markup(e), UiLanguage::Zh).into_string())
+            return Html(
+                layout("memorph - 错误", error_markup(e), UiLanguage::Zh, None).into_string(),
+            )
         }
     };
 
     let known_workspaces = match config::known_workspaces() {
         Ok(items) => items,
         Err(e) => {
-            return Html(layout("memorph - 错误", error_markup(e), prefs.language).into_string())
+            return Html(
+                layout("memorph - 错误", error_markup(e), prefs.language, None).into_string(),
+            )
         }
     };
 
     let saved_workspace = match config::selected_workspace() {
         Ok(value) => value,
         Err(e) => {
-            return Html(layout("memorph - 错误", error_markup(e), prefs.language).into_string())
+            return Html(
+                layout("memorph - 错误", error_markup(e), prefs.language, None).into_string(),
+            )
         }
     };
 
@@ -169,14 +193,17 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
     let workspace = match config::resolve_workspace(selected) {
         Ok(path) => path,
         Err(e) => {
-            return Html(layout("memorph - 错误", error_markup(e), prefs.language).into_string())
+            return Html(
+                layout("memorph - 错误", error_markup(e), prefs.language, None).into_string(),
+            )
         }
     };
 
     if let Err(e) = config::remember_workspace(&workspace) {
-        return Html(layout("memorph - 错误", error_markup(e), prefs.language).into_string());
+        return Html(layout("memorph - 错误", error_markup(e), prefs.language, None).into_string());
     };
 
+    let workspace_str = workspace.to_string_lossy().to_string();
     let content = render_session_list(
         &workspace,
         &known_workspaces,
@@ -186,7 +213,7 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
         q.visible,
         &prefs,
     );
-    Html(layout("memorph", content, prefs.language).into_string())
+    Html(layout("memorph", content, prefs.language, Some(&workspace_str)).into_string())
 }
 
 fn render_session_list(
@@ -264,10 +291,6 @@ fn render_session_list(
                         label for="q" { (tr(lang, "搜索", "Search")) }
                         input id="q" name="q" type="search" placeholder=(tr(lang, "标题或 ID", "Title or ID")) value=(search.unwrap_or(""));
                     }
-                    div.field.field-number {
-                        label for="per_page" { (tr(lang, "每智能体显示", "Per Agent")) }
-                        input id="per_page" name="per_page" type="number" min="1" max="200" value=(per_page);
-                    }
                     div.field {
                         label for="sort" { (tr(lang, "排序", "Sort")) }
                         select id="sort" name="sort" onchange="submitWithLoading(this.form)" {
@@ -278,6 +301,7 @@ fn render_session_list(
                             option value="size_desc" selected[sort == Some("size_desc")] { (tr(lang, "内容大小", "Largest")) }
                         }
                     }
+                    button type="button" data-modal=(format!("/modal/import?workspace={}&lang={}", query_escape(&workspace_str), lang_code(lang))) { (tr(lang, "导入", "Import")) }
                     button.invert type="submit" { (tr(lang, "应用", "Apply")) }
                 }
                 input type="hidden" name="lang" value=(lang_code(lang));
@@ -352,7 +376,6 @@ impl HomeQuery {
                 "provider" | "provider[]" => query.provider.push(value),
                 "q" => query.q = Some(value),
                 "sort" => query.sort = Some(value),
-                "per_page" => query.per_page = value.parse().ok(),
                 "visible" => query.visible = value.parse().ok(),
                 "lang" => query.lang = Some(value),
                 _ => {}
@@ -472,7 +495,7 @@ fn render_session_groups(
         div.stats {
             span { (tr(lang, "会话", "Sessions")) "=" (total) }
             span { (tr(lang, "终端智能体", "Terminal Agents")) "=" (groups.len()) }
-            span { (tr(lang, "每智能体显示", "Per Agent")) "=" (visible_limit) }
+            span { (tr(lang, "当前显示", "Shown")) "=" (visible_limit) }
         }
         @for group in groups {
             @let shown_count = group.sessions.len().min(visible_limit);
@@ -488,7 +511,7 @@ fn render_session_groups(
                 }
                 @if group.sessions.len() > visible_limit {
                     div.load-more {
-                        a.button data-preserve-scroll="true" href=(home_url(workspace, provider_filter, search, sort, per_page, visible_limit + per_page, lang)) {
+                        a.button data-preserve-scroll="true" href=(home_url(workspace, provider_filter, search, sort, visible_limit + per_page, lang)) {
                             (tr(lang, "加载更多", "Load More"))
                         }
                     }
@@ -522,6 +545,13 @@ fn render_session_row(session: &core::SessionItem, lang: UiLanguage) -> Markup {
         query_escape(&session.session_id),
         lang_code(lang)
     );
+    let export_href = format!(
+        "/modal/export/{}/{}?workspace={}&lang={}",
+        session.provider_id,
+        query_escape(&session.session_id),
+        query_escape(workspace),
+        lang_code(lang)
+    );
 
     html! {
         div.session-row {
@@ -536,6 +566,7 @@ fn render_session_row(session: &core::SessionItem, lang: UiLanguage) -> Markup {
             div.row-actions {
                 button type="button" data-modal=(switch_href) { (tr(lang, "切换", "Switch")) }
                 a.button href=(session_href) { (tr(lang, "查看", "View")) }
+                button type="button" data-modal=(export_href) { (tr(lang, "导出", "Export")) }
                 button type="button" data-modal=(delete_href) { (tr(lang, "删除", "Delete")) }
             }
         }
@@ -605,18 +636,20 @@ async fn page_session(
     let prefs = match apply_web_preferences(&q) {
         Ok(prefs) => prefs,
         Err(e) => {
-            return Html(layout("memorph - 错误", error_markup(e), UiLanguage::Zh).into_string())
+            return Html(
+                layout("memorph - 错误", error_markup(e), UiLanguage::Zh, None).into_string(),
+            )
         }
     };
     let lang = prefs.language;
     let session = match core::get_session(&provider, &session_id) {
         Ok(session) => session,
-        Err(e) => return Html(layout("memorph - 错误", error_markup(e), lang).into_string()),
+        Err(e) => return Html(layout("memorph - 错误", error_markup(e), lang, None).into_string()),
     };
 
     if let Some(project_dir) = session.session.project_dir.as_deref() {
         if let Err(e) = config::remember_workspace(&PathBuf::from(project_dir)) {
-            return Html(layout("memorph - 错误", error_markup(e), lang).into_string());
+            return Html(layout("memorph - 错误", error_markup(e), lang, None).into_string());
         }
     }
 
@@ -642,7 +675,6 @@ async fn page_session(
             None,
             None,
             prefs.sessions_per_provider,
-            prefs.sessions_per_provider,
             lang,
         )
     };
@@ -663,6 +695,7 @@ async fn page_session(
             div.session-actions {
                 a.button href=(back_href) { (tr(lang, "返回", "Back")) }
                 button type="button" data-modal=(format!("/modal/rename/{}/{}?lang={}", provider, session_id, lang_code(lang))) { (tr(lang, "重命名", "Rename")) }
+                button type="button" data-modal=(format!("/modal/export/{}/{}?workspace={}&lang={}", provider, session_id, query_escape(workspace), lang_code(lang))) { (tr(lang, "导出", "Export")) }
                 button type="button" data-modal=(format!("/modal/delete/{}/{}?lang={}", provider, session_id, lang_code(lang))) { (tr(lang, "删除", "Delete")) }
             }
         }
@@ -673,7 +706,20 @@ async fn page_session(
         }
     };
 
-    Html(layout(&format!("memorph - {}", title_text), content, lang).into_string())
+    let layout_workspace = if workspace.is_empty() {
+        None
+    } else {
+        Some(workspace)
+    };
+    Html(
+        layout(
+            &format!("memorph - {}", title_text),
+            content,
+            lang,
+            layout_workspace,
+        )
+        .into_string(),
+    )
 }
 
 fn render_message(message: &crate::model::MemorphMessage) -> Markup {

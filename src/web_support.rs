@@ -143,13 +143,11 @@ pub(crate) fn home_url(
     providers: &[String],
     search: Option<&str>,
     sort: Option<&str>,
-    per_page: usize,
     visible: usize,
     lang: UiLanguage,
 ) -> String {
     let mut params = vec![
         format!("workspace={}", query_escape(workspace)),
-        format!("per_page={per_page}"),
         format!("visible={visible}"),
         format!("lang={}", lang_code(lang)),
     ];

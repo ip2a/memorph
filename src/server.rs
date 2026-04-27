@@ -20,6 +20,15 @@ pub fn build_router() -> Router {
         .layer(cors)
 }
 
+pub fn build_api_router() -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
+    api::router().layer(cors)
+}
+
 pub async fn run(port: u16, no_open: bool) -> Result<()> {
     let app = build_router();
     let addr = format!("127.0.0.1:{}", port);
@@ -33,6 +42,18 @@ pub async fn run(port: u16, no_open: bool) -> Result<()> {
             eprintln!("Failed to open browser: {err}");
         }
     }
+
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+pub async fn run_api(port: u16) -> Result<()> {
+    let app = build_api_router();
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    println!("memorph API server started: http://{}", addr);
+    println!("API base path: /api/v1");
 
     axum::serve(listener, app).await?;
     Ok(())

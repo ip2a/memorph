@@ -492,7 +492,8 @@ impl Provider for OpenCodeProvider {
             &oc_parts,
         )
         .context("Failed to write to OpenCode SQLite database")?;
-        load_session_from_db(&session_id).context("Failed to verify OpenCode SQLite write result")?;
+        load_session_from_db(&session_id)
+            .context("Failed to verify OpenCode SQLite write result")?;
 
         // Also write to the filesystem to remain compatible with older OpenCode
         // storage and this tool's fallback scan.

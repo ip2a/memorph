@@ -135,10 +135,12 @@ pub fn export_session(params: &ExportParams) -> Result<ExportResult> {
 
     let write_morph = params.format == "morph" || params.format == "both";
     let write_json = params.format == "json" || params.format == "both";
+    let write_markdown = params.format == "md" || params.format == "markdown";
+    let write_html = params.format == "html";
 
-    if !write_morph && !write_json {
+    if !write_morph && !write_json && !write_markdown && !write_html {
         anyhow::bail!(
-            "Unsupported format: {}. Use 'json', 'morph', or 'both'",
+            "Unsupported format: {}. Use 'json', 'md', 'html', 'morph', or 'both'",
             params.format
         );
     }
@@ -152,6 +154,16 @@ pub fn export_session(params: &ExportParams) -> Result<ExportResult> {
         let path = PathBuf::from(format!("{}.json", prefix));
         let json = serde_json::to_string_pretty(&session)?;
         std::fs::write(&path, json)?;
+        files.push(path.display().to_string());
+    }
+    if write_markdown {
+        let path = PathBuf::from(format!("{}.md", prefix));
+        format::write_markdown(&path, &session)?;
+        files.push(path.display().to_string());
+    }
+    if write_html {
+        let path = PathBuf::from(format!("{}.html", prefix));
+        format::write_html(&path, &session)?;
         files.push(path.display().to_string());
     }
 
@@ -184,13 +196,21 @@ pub fn import_session(params: &ImportParams) -> Result<ImportResult> {
         cwd
     };
 
-    let session = if params.file_or_id.ends_with(".morph") || params.file_or_id.ends_with(".json") {
+    let session = if params.file_or_id.ends_with(".morph")
+        || params.file_or_id.ends_with(".json")
+        || params.file_or_id.ends_with(".md")
+        || params.file_or_id.ends_with(".html")
+    {
         let path = Path::new(&params.file_or_id);
         if params.file_or_id.ends_with(".morph") {
             format::read_session(path)?
-        } else {
+        } else if params.file_or_id.ends_with(".json") {
             let json = std::fs::read_to_string(path)?;
             serde_json::from_str(&json)?
+        } else if params.file_or_id.ends_with(".md") {
+            format::read_markdown(path)?
+        } else {
+            format::read_html(path)?
         }
     } else {
         get_session(&params.provider, &params.file_or_id)?

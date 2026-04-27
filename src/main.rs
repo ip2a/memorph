@@ -16,6 +16,7 @@ mod web_support;
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{Cli, Commands};
+use std::io::{self, Write};
 
 fn main() {
     if let Err(e) = run() {
@@ -28,50 +29,22 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        None => run_interactive_menu()?,
+        Some(command) => run_command(command)?,
+    }
+
+    Ok(())
+}
+
+fn run_command(command: Commands) -> Result<()> {
+    match command {
         Commands::List {
             all,
             claude,
             codex,
             opencode,
         } => {
-            let cwd = std::env::current_dir()?;
-            let cwd_str = cwd.to_string_lossy().to_string();
-            let groups = core::list_sessions(&core::SessionListParams {
-                all,
-                providers: selected_providers(claude, codex, opencode),
-                cwd: Some(cwd_str.clone()),
-            })?;
-            let total_shown: usize = groups.iter().map(|group| group.sessions.len()).sum();
-
-            for group in &groups {
-                println!(
-                    "\n{} ({} sessions):",
-                    group.provider_name,
-                    group.sessions.len()
-                );
-                for s in group.sessions.iter().take(20) {
-                    let id = &s.session_id;
-                    let title = truncate(s.title.as_deref().unwrap_or("(untitled)"), 40);
-                    let dir = truncate(s.project_dir.as_deref().unwrap_or("(no dir)"), 40);
-                    println!("  {} | {} | {}", id, title, dir);
-                }
-                if group.sessions.len() > 20 {
-                    println!("  ... and {} more", group.sessions.len() - 20);
-                }
-            }
-
-            if groups.is_empty() {
-                if all {
-                    println!("No sessions found.");
-                } else {
-                    println!(
-                        "No sessions found in current workspace: {}\nUse --all to show all sessions.",
-                        cwd_str
-                    );
-                }
-            } else {
-                println!("\nTotal: {} sessions shown", total_shown);
-            }
+            print_session_list(all, selected_providers(claude, codex, opencode))?;
         }
 
         Commands::Export {
@@ -80,19 +53,15 @@ fn run() -> Result<()> {
             format,
             output,
         } => {
-            let prefix = output.clone().unwrap_or_else(|| session_id.clone());
-            core::export_session(&core::ExportParams {
+            let result = core::export_session(&core::ExportParams {
                 provider,
                 session_id,
                 output_prefix: output,
                 format: format.clone(),
             })?;
 
-            match format.as_str() {
-                "both" => println!("Exported to {}.morph and {}.json", prefix, prefix),
-                "morph" => println!("Exported to {}.morph", prefix),
-                "json" => println!("Exported to {}.json", prefix),
-                _ => unreachable!("core validates export format"),
+            for file in result.files {
+                println!("Exported: {}", file);
             }
         }
 
@@ -218,10 +187,125 @@ fn run() -> Result<()> {
             }
         }
 
-        Commands::Serve { port, no_open } => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(server::run(port, no_open))?;
+        Commands::Web { port, no_open } => {
+            run_web_server(port, no_open, WebCommandKind::Recommended)?
         }
+
+        Commands::Serve { port, no_open } => run_web_server(port, no_open, WebCommandKind::Legacy)?,
+
+        Commands::Api { port } => run_api_server(port)?,
+    }
+
+    Ok(())
+}
+
+fn run_interactive_menu() -> Result<()> {
+    loop {
+        println!("\nmemorph");
+        println!("1) Start web UI");
+        println!("2) List sessions in current workspace");
+        println!("0) View configuration");
+        println!("q) Quit");
+        print!("Select an option: ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        match input.trim() {
+            "1" => {
+                run_web_server(3737, false, WebCommandKind::Recommended)?;
+                break;
+            }
+            "2" => print_session_list(false, Vec::new())?,
+            "0" => print_config()?,
+            "q" | "Q" => break,
+            _ => println!("Unknown option. Choose 1, 2, 0, or q."),
+        }
+    }
+
+    Ok(())
+}
+
+enum WebCommandKind {
+    Recommended,
+    Legacy,
+}
+
+fn run_web_server(port: u16, no_open: bool, kind: WebCommandKind) -> Result<()> {
+    print_web_banner(kind);
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(server::run(port, no_open))
+}
+
+fn run_api_server(port: u16) -> Result<()> {
+    println!("Starting memorph API server.");
+    println!("Use `memorph web` for the Web UI.");
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(server::run_api(port))
+}
+
+fn print_web_banner(kind: WebCommandKind) {
+    println!("{}", web_assets::MEMORPH_ASCII);
+    println!();
+    println!("Starting memorph Web UI.");
+    match kind {
+        WebCommandKind::Recommended => {
+            println!("Recommended command: memorph web");
+        }
+        WebCommandKind::Legacy => {
+            println!("`memorph serve` is still supported, but `memorph web` is recommended.");
+        }
+    }
+    println!("Need API only? Use `memorph api`.");
+    println!();
+}
+
+fn print_config() -> Result<()> {
+    let path = config::config_path()?;
+    let config = config::load_config()?;
+    println!("Config path: {}", path.display());
+    println!("{}", serde_json::to_string_pretty(&config)?);
+    Ok(())
+}
+
+fn print_session_list(all: bool, providers: Vec<String>) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let cwd_str = cwd.to_string_lossy().to_string();
+    let groups = core::list_sessions(&core::SessionListParams {
+        all,
+        providers,
+        cwd: Some(cwd_str.clone()),
+    })?;
+    let total_shown: usize = groups.iter().map(|group| group.sessions.len()).sum();
+
+    for group in &groups {
+        println!(
+            "\n{} ({} sessions):",
+            group.provider_name,
+            group.sessions.len()
+        );
+        for s in group.sessions.iter().take(20) {
+            let id = &s.session_id;
+            let title = truncate(s.title.as_deref().unwrap_or("(untitled)"), 40);
+            let dir = truncate(s.project_dir.as_deref().unwrap_or("(no dir)"), 40);
+            println!("  {} | {} | {}", id, title, dir);
+        }
+        if group.sessions.len() > 20 {
+            println!("  ... and {} more", group.sessions.len() - 20);
+        }
+    }
+
+    if groups.is_empty() {
+        if all {
+            println!("No sessions found.");
+        } else {
+            println!(
+                "No sessions found in current workspace: {}\nUse --all to show all sessions.",
+                cwd_str
+            );
+        }
+    } else {
+        println!("\nTotal: {} sessions shown", total_shown);
     }
 
     Ok(())

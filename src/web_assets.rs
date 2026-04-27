@@ -18,7 +18,7 @@ pub(crate) const CUSTOM_CSS: &str = r#"
 html, body { margin: 0; min-height: 100%; background: var(--paper); color: var(--ink); }
 body { line-height: 1.5; }
 a { color: inherit; text-decoration: none; }
-button, input, select {
+button, input, select, .button {
     font: inherit;
     color: var(--ink);
     background: var(--paper);
@@ -79,16 +79,9 @@ button:focus-visible, .button:focus-visible, input:focus-visible, select:focus-v
     border-bottom: 1px solid var(--line);
     margin-bottom: 24px;
 }
-.brand, .top-actions { display: flex; align-items: center; gap: 10px; }
+.brand-cluster, .brand, .top-actions { display: flex; align-items: center; gap: 10px; }
 .brand { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; }
-.brand-mark {
-    width: 28px;
-    height: 28px;
-    display: inline-grid;
-    place-items: center;
-    border: 1px solid var(--line);
-    border-radius: 999px;
-}
+.settings-entry { min-width: 72px; }
 .version { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
 .github-link, .icon-button {
     width: 34px;
@@ -184,9 +177,7 @@ h1 {
     gap: 10px;
     align-items: end;
 }
-.filter-row-compact {
-    grid-template-columns: minmax(190px, 1.4fr) minmax(120px, 0.58fr) minmax(130px, 0.72fr) auto;
-}
+.filter-row-compact { grid-template-columns: minmax(260px, 1fr) minmax(130px, 0.32fr) auto auto; }
 .filter-row-main {
     grid-template-columns: minmax(360px, 1fr) minmax(260px, auto);
 }
@@ -460,13 +451,38 @@ dialog footer { display: flex; justify-content: end; gap: 8px; margin-top: 16px;
 .result-grid code, .verify-block code { overflow-wrap: anywhere; }
 .verify-block { margin-top: 14px; }
 .verify-block pre { margin-bottom: 0; }
-.settings-toggle-row {
+.settings-list { display: grid; border-top: 1px solid var(--line); }
+.settings-row {
     display: grid;
-    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 14px;
+    align-items: center;
+    min-height: 54px;
     padding: 10px 0;
-    border-top: 1px solid var(--line);
     border-bottom: 1px solid var(--line);
 }
+.settings-copy { display: grid; gap: 2px; min-width: 0; }
+.settings-copy strong { font-size: 14px; }
+.settings-copy span {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.settings-row select { min-width: 136px; height: 34px; padding: 0 8px; }
+.settings-row input[type="number"] { width: 110px; height: 34px; padding: 0 8px; }
+.settings-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.settings-check:hover { background: var(--ink); color: var(--paper); }
+.settings-check input { width: 16px; height: 16px; margin: 0; }
 .modal-subtitle {
     margin-top: 4px;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -505,12 +521,13 @@ dialog footer { display: flex; justify-content: end; gap: 8px; margin-top: 16px;
     .atomic-shell { width: min(100vw - 20px, 1180px); }
     .workspace-panel { grid-template-columns: 1fr; gap: 14px; }
     .workspace-hero { min-height: auto; padding-right: 0; padding-bottom: 14px; border-right: 0; border-bottom: 1px solid var(--line); }
-    .filter-panel, .filter-row-main, .filter-row-compact, .workspace-combo, .session-header { grid-template-columns: 1fr; }
+    .filter-panel, .filter-row-main, .filter-row-compact, .workspace-combo, .session-header, .settings-row { grid-template-columns: 1fr; }
     .agent-picker { flex-wrap: wrap; }
     .session-row { grid-template-columns: 1fr; gap: 4px; padding: 12px 0; }
     .row-actions { justify-content: start; margin-top: 8px; }
     .session-title, .session-workspace { white-space: normal; }
     .topbar { height: auto; padding: 14px 0; gap: 12px; align-items: flex-start; }
+    .brand-cluster { flex-wrap: wrap; }
     .top-actions { flex-wrap: wrap; justify-content: end; }
 }
 "#;

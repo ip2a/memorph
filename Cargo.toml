@@ -1,6 +1,6 @@
 [package]
 name = "memorph"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 authors = ["memorph contributors"]
 description = "Convert, import, and export AI coding sessions between Claude Code, Codex, and OpenCode"

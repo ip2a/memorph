@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 #[command(version = env!("CARGO_PKG_VERSION"))]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Commands,
+    pub command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -37,8 +37,8 @@ pub enum Commands {
         /// Output filename prefix (default: SESSION_ID)
         #[arg(short, long, value_name = "PREFIX")]
         output: Option<String>,
-        /// Output format: json, morph, both (default: both)
-        #[arg(short, long, value_name = "FORMAT", default_value = "both")]
+        /// Output format: json, md, html, morph, both (default: json)
+        #[arg(short, long, value_name = "FORMAT", default_value = "json")]
         format: String,
     },
     /// Import a session into a target tool directory
@@ -46,7 +46,7 @@ pub enum Commands {
         /// Target provider ID
         #[arg(value_name = "PROVIDER")]
         provider: String,
-        /// Path to .morph/.json file, or session ID for re-export
+        /// Path to .json/.md/.html/.morph file, or session ID for re-export
         #[arg(value_name = "FILE_OR_ID")]
         file_or_id: String,
         /// Target project directory (default: current directory)
@@ -113,7 +113,16 @@ pub enum Commands {
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Vec<String>,
     },
-    /// Start the web UI server
+    /// Start the web UI server (recommended)
+    Web {
+        /// Port to listen on
+        #[arg(short, long, default_value = "3737")]
+        port: u16,
+        /// Don't auto-open browser
+        #[arg(long)]
+        no_open: bool,
+    },
+    /// Start the web UI server (legacy alias for `memorph web`)
     Serve {
         /// Port to listen on
         #[arg(short, long, default_value = "3737")]
@@ -121,5 +130,11 @@ pub enum Commands {
         /// Don't auto-open browser
         #[arg(long)]
         no_open: bool,
+    },
+    /// Start the API server only
+    Api {
+        /// Port to listen on
+        #[arg(short, long, default_value = "3737")]
+        port: u16,
     },
 }
