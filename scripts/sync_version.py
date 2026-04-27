@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -93,6 +94,11 @@ def update_memorph_python_dependencies(version: str) -> None:
     print(f"[ok] Synced main package dependency versions: {path.relative_to(ROOT)}")
 
 
+def sync_cargo_lockfile() -> None:
+    subprocess.run(["cargo", "generate-lockfile"], cwd=ROOT, check=True)
+    print("[ok] Synced Cargo.lock")
+
+
 def main() -> None:
     version = read_cargo_version()
     print(f"[info] Unified version: {version}")
@@ -113,6 +119,7 @@ def main() -> None:
         print(f"[ok] Synced version: {pyproject_file.relative_to(ROOT)}")
 
     update_memorph_python_dependencies(version)
+    sync_cargo_lockfile()
 
 
 if __name__ == "__main__":
