@@ -510,9 +510,10 @@ fn render_session_row(session: &core::SessionItem, lang: UiLanguage) -> Markup {
         lang_code(lang)
     );
     let switch_href = format!(
-        "/modal/switch?from={}&session_id={}&lang={}",
+        "/modal/switch?from={}&session_id={}&workspace={}&lang={}",
         session.provider_id,
         query_escape(&session.session_id),
+        query_escape(workspace),
         lang_code(lang)
     );
     let delete_href = format!(

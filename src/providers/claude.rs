@@ -663,6 +663,15 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
 
     for line in &head {
         let value: Value = serde_json::from_str(line).ok()?;
+        if custom_title.is_none()
+            && value.get("type").and_then(|v| v.as_str()) == Some("custom-title")
+        {
+            custom_title = value
+                .get("customTitle")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
         if session_id.is_none() {
             session_id = value
                 .get("sessionId")

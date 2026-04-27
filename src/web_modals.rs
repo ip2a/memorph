@@ -16,6 +16,7 @@ pub(crate) struct SwitchFormQuery {
     lang: Option<String>,
     from: Option<String>,
     session_id: Option<String>,
+    workspace: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -43,6 +44,9 @@ pub(crate) async fn modal_switch_form(Query(q): Query<SwitchFormQuery>) -> impl 
                     }
                     form method="get" action="/modal/switch/exec" data-modal-form {
                         input type="hidden" name="lang" value=(lang_code(lang));
+                        @if let Some(workspace) = q.workspace.as_deref().filter(|value| !value.trim().is_empty()) {
+                            input type="hidden" name="workspace" value=(workspace);
+                        }
                         div.field {
                             label for="from" { (tr(lang, "来源", "From")) }
                             select id="from" name="from" required {
@@ -80,6 +84,7 @@ pub(crate) struct SwitchExecQuery {
     from: String,
     to: String,
     session_id: Option<String>,
+    workspace: Option<String>,
     lang: Option<String>,
 }
 
@@ -103,7 +108,7 @@ pub(crate) async fn modal_switch_exec(Query(q): Query<SwitchExecQuery>) -> impl 
         from: q.from,
         to: q.to,
         session_id: q.session_id.filter(|value| !value.trim().is_empty()),
-        to_dir: None,
+        to_dir: q.workspace.filter(|value| !value.trim().is_empty()),
     };
 
     match core::switch_session(&params) {
