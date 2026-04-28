@@ -2,7 +2,7 @@ use crate::model::{
     ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, SessionInfo,
     SessionMeta,
 };
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderCapabilities};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::Connection;
@@ -24,6 +24,10 @@ impl Provider for CodexProvider {
 
     fn name(&self) -> &'static str {
         "Codex (OpenAI)"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::full_session_management()
     }
 
     fn scan_sessions(&self) -> Result<Vec<SessionMeta>> {
@@ -739,6 +743,10 @@ impl Provider for CodexProvider {
 
         std::fs::write(&index_path, new_lines.join("\n") + "\n")?;
         Ok(())
+    }
+
+    fn resume_command(&self, session_id: &str) -> Option<String> {
+        Some(format!("codex resume {}", session_id))
     }
 }
 

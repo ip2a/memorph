@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::storage::atomic_write;
+
 pub const DEFAULT_SESSIONS_PER_PROVIDER: usize = 12;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,7 +88,7 @@ pub fn save_config(config: &MemorphConfig) -> Result<()> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("Failed to create config directory: {}", dir.display()))?;
     let raw = serde_json::to_string_pretty(config)?;
-    std::fs::write(&path, raw)
+    atomic_write::write_string_atomic(&path, &raw)
         .with_context(|| format!("Failed to write config file: {}", path.display()))?;
     Ok(())
 }

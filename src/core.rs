@@ -43,11 +43,12 @@ impl From<(&SessionMeta, &str)> for SessionItem {
     }
 }
 
-const ALL_PROVIDERS: &[&str] = &["claude", "codex", "opencode"];
-
 pub fn resolve_providers(filter: &[String]) -> Vec<String> {
     if filter.is_empty() {
-        ALL_PROVIDERS.iter().map(|s| s.to_string()).collect()
+        providers::all_provider_ids()
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     } else {
         filter.to_vec()
     }
@@ -62,6 +63,10 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
             Some(p) => p,
             None => continue,
         };
+        let capabilities = prov.capabilities();
+        if !capabilities.scan {
+            continue;
+        }
         let sessions = prov.scan_sessions()?;
         let mut filtered: Vec<SessionItem> = if params.all {
             sessions
@@ -93,6 +98,13 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
 pub fn get_session(provider_id: &str, session_id: &str) -> Result<MemorphSession> {
     let prov = providers::find_provider(provider_id)
         .with_context(|| format!("Unknown provider: {}", provider_id))?;
+    let capabilities = prov.capabilities();
+    if !capabilities.scan || !capabilities.load {
+        anyhow::bail!(
+            "Provider does not support loading sessions: {}",
+            provider_id
+        );
+    }
     let sessions = prov.scan_sessions()?;
     let meta = sessions
         .into_iter()
@@ -218,8 +230,19 @@ pub fn import_session(params: &ImportParams) -> Result<ImportResult> {
 
     let target_prov = providers::find_provider(&params.provider)
         .with_context(|| format!("Target provider not available: {}", params.provider))?;
+    let target_capabilities = target_prov.capabilities();
+    if !target_capabilities.write {
+        anyhow::bail!(
+            "Provider does not support writing sessions: {}",
+            params.provider
+        );
+    }
     let new_id = target_prov.write_session(&session, &target_dir)?;
-    let resume = providers::resume_command(&params.provider, &new_id);
+    let resume = if target_capabilities.resume {
+        target_prov.resume_command(&new_id)
+    } else {
+        None
+    };
 
     Ok(ImportResult {
         provider_name: target_prov.name().to_string(),
@@ -231,6 +254,12 @@ pub fn import_session(params: &ImportParams) -> Result<ImportResult> {
 pub fn delete_session(provider_id: &str, session_id: &str) -> Result<()> {
     let prov = providers::find_provider(provider_id)
         .with_context(|| format!("Unknown provider: {}", provider_id))?;
+    if !prov.capabilities().delete {
+        anyhow::bail!(
+            "Provider does not support deleting sessions: {}",
+            provider_id
+        );
+    }
     prov.delete_session(session_id)?;
     Ok(())
 }
@@ -238,6 +267,12 @@ pub fn delete_session(provider_id: &str, session_id: &str) -> Result<()> {
 pub fn rename_session(provider_id: &str, session_id: &str, new_title: &str) -> Result<()> {
     let prov = providers::find_provider(provider_id)
         .with_context(|| format!("Unknown provider: {}", provider_id))?;
+    if !prov.capabilities().rename {
+        anyhow::bail!(
+            "Provider does not support renaming sessions: {}",
+            provider_id
+        );
+    }
     prov.rename_session(session_id, new_title)?;
     Ok(())
 }
@@ -273,6 +308,13 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
 
     let source_prov = providers::find_provider(&params.from)
         .with_context(|| format!("Unknown source provider: {}", params.from))?;
+    let source_capabilities = source_prov.capabilities();
+    if !source_capabilities.scan || !source_capabilities.load {
+        anyhow::bail!(
+            "Source provider does not support reading sessions: {}",
+            params.from
+        );
+    }
     let sessions = source_prov.scan_sessions()?;
     let cwd_str = cwd.to_string_lossy().to_string();
 
@@ -314,8 +356,19 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
 
     let target_prov = providers::find_provider(&params.to)
         .with_context(|| format!("Unknown target provider: {}", params.to))?;
+    let target_capabilities = target_prov.capabilities();
+    if !target_capabilities.write {
+        anyhow::bail!(
+            "Target provider does not support writing sessions: {}",
+            params.to
+        );
+    }
     let new_id = target_prov.write_session(&session, &target_dir)?;
-    let resume = providers::resume_command(&params.to, &new_id);
+    let resume = if target_capabilities.resume {
+        target_prov.resume_command(&new_id)
+    } else {
+        None
+    };
 
     Ok(SwitchResult {
         from_name: source_prov.name().to_string(),
@@ -342,6 +395,10 @@ pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
             Some(p) => p,
             None => continue,
         };
+        let capabilities = prov.capabilities();
+        if !capabilities.scan {
+            continue;
+        }
         let sessions = prov.scan_sessions()?;
         let filtered: Vec<SessionItem> = sessions
             .iter()

@@ -7,6 +7,7 @@ mod model;
 mod provider;
 mod providers;
 mod server;
+mod storage;
 mod utils;
 mod web;
 mod web_assets;

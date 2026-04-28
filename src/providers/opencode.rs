@@ -2,7 +2,7 @@ use crate::model::{
     ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, SessionInfo,
     SessionMeta,
 };
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderCapabilities};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::Connection;
@@ -25,6 +25,10 @@ impl Provider for OpenCodeProvider {
 
     fn name(&self) -> &'static str {
         "OpenCode"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::full_session_management()
     }
 
     fn scan_sessions(&self) -> Result<Vec<SessionMeta>> {
@@ -616,6 +620,10 @@ impl Provider for OpenCodeProvider {
         }
 
         Ok(())
+    }
+
+    fn resume_command(&self, session_id: &str) -> Option<String> {
+        Some(format!("opencode --session {}", session_id))
     }
 }
 

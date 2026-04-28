@@ -8,6 +8,7 @@ version = "0.1.6"
 description = "memorph main package; dispatches to a prebuilt platform binary"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
 dependencies = [
   "memorph-bin-darwin-arm64==0.1.6; platform_system == 'Darwin' and platform_machine == 'arm64'",
   "memorph-bin-darwin-x64==0.1.6; platform_system == 'Darwin' and platform_machine == 'x86_64'",

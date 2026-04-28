@@ -2,10 +2,49 @@ use crate::model::{MemorphSession, SessionMeta};
 use anyhow::Result;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    pub scan: bool,
+    pub load: bool,
+    pub write: bool,
+    pub delete: bool,
+    pub rename: bool,
+    pub resume: bool,
+}
+
+impl ProviderCapabilities {
+    pub const fn full_session_management() -> Self {
+        Self {
+            scan: true,
+            load: true,
+            write: true,
+            delete: true,
+            rename: true,
+            resume: true,
+        }
+    }
+}
+
+impl Default for ProviderCapabilities {
+    fn default() -> Self {
+        Self {
+            scan: true,
+            load: true,
+            write: false,
+            delete: false,
+            rename: false,
+            resume: false,
+        }
+    }
+}
+
 /// Provider trait: each AI coding tool implements this interface
 pub trait Provider: Send + Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::default()
+    }
 
     /// Scan all session metadata
     fn scan_sessions(&self) -> Result<Vec<SessionMeta>>;
@@ -31,5 +70,11 @@ pub trait Provider: Send + Sync {
         let _ = session_id;
         let _ = new_title;
         anyhow::bail!("Rename not supported for provider: {}", self.id())
+    }
+
+    /// Build the provider-specific command used to resume a session.
+    fn resume_command(&self, session_id: &str) -> Option<String> {
+        let _ = session_id;
+        None
     }
 }

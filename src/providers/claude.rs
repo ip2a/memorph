@@ -2,7 +2,7 @@ use crate::model::{
     ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, SessionInfo,
     SessionMeta,
 };
-use crate::provider::Provider;
+use crate::provider::{Provider, ProviderCapabilities};
 use crate::utils::{
     encode_project_dir, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,
 };
@@ -27,6 +27,10 @@ impl Provider for ClaudeProvider {
 
     fn name(&self) -> &'static str {
         "Claude Code"
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities::full_session_management()
     }
 
     fn scan_sessions(&self) -> Result<Vec<SessionMeta>> {
@@ -571,6 +575,10 @@ impl Provider for ClaudeProvider {
 
         std::fs::write(&path, new_lines.join("\n") + "\n")?;
         Ok(())
+    }
+
+    fn resume_command(&self, session_id: &str) -> Option<String> {
+        Some(format!("claude --resume {}", session_id))
     }
 }
 
