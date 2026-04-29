@@ -22,6 +22,9 @@ pub enum Commands {
         /// Filter to Codex sessions
         #[arg(long)]
         codex: bool,
+        /// Filter to Cursor sessions
+        #[arg(long)]
+        cursor: bool,
         /// Filter to OpenCode sessions
         #[arg(long)]
         opencode: bool,
@@ -94,6 +97,12 @@ pub enum Commands {
         /// Migrate from OpenCode to Codex
         #[arg(long, group = "direction")]
         opencode2codex: bool,
+        /// Migrate from Cursor to OpenCode
+        #[arg(long, group = "direction")]
+        cursor2opencode: bool,
+        /// Migrate from OpenCode to Cursor
+        #[arg(long, group = "direction")]
+        opencode2cursor: bool,
         /// Source session ID (if omitted, uses the most recent session in current workspace)
         #[arg(short, long, value_name = "ID")]
         session_id: Option<String>,

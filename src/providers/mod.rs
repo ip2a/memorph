@@ -1,10 +1,11 @@
 pub mod claude;
 pub mod codex;
+pub mod cursor;
 pub mod opencode;
 
 use crate::provider::Provider;
 
-const PROVIDER_IDS: &[&str] = &["claude", "codex", "opencode"];
+const PROVIDER_IDS: &[&str] = &["claude", "codex", "cursor", "opencode"];
 
 pub struct ProviderRegistry;
 
@@ -17,6 +18,7 @@ impl ProviderRegistry {
         match id {
             "claude" => Some(Box::new(claude::ClaudeProvider)),
             "codex" => Some(Box::new(codex::CodexProvider)),
+            "cursor" => Some(Box::new(cursor::CursorProvider)),
             "opencode" => Some(Box::new(opencode::OpenCodeProvider)),
             _ => None,
         }

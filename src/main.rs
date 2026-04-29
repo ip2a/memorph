@@ -43,9 +43,10 @@ fn run_command(command: Commands) -> Result<()> {
             all,
             claude,
             codex,
+            cursor,
             opencode,
         } => {
-            print_session_list(all, selected_providers(claude, codex, opencode))?;
+            print_session_list(all, selected_providers(claude, codex, cursor, opencode))?;
         }
 
         Commands::Export {
@@ -114,6 +115,8 @@ fn run_command(command: Commands) -> Result<()> {
             codex2opencode,
             opencode2claude,
             opencode2codex,
+            cursor2opencode,
+            opencode2cursor,
             session_id,
             to_dir,
         } => {
@@ -129,8 +132,12 @@ fn run_command(command: Commands) -> Result<()> {
                 ("opencode", "claude")
             } else if opencode2codex {
                 ("opencode", "codex")
+            } else if cursor2opencode {
+                ("cursor", "opencode")
+            } else if opencode2cursor {
+                ("opencode", "cursor")
             } else {
-                anyhow::bail!("Specify one direction: --claude2codex, --codex2claude, --claude2opencode, --codex2opencode, --opencode2claude, or --opencode2codex");
+                anyhow::bail!("Specify one direction: --claude2codex, --codex2claude, --claude2opencode, --codex2opencode, --opencode2claude, --opencode2codex, --cursor2opencode, or --opencode2cursor");
             };
 
             let result = core::switch_session(&core::SwitchParams {
@@ -323,13 +330,16 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-fn selected_providers(claude: bool, codex: bool, opencode: bool) -> Vec<String> {
+fn selected_providers(claude: bool, codex: bool, cursor: bool, opencode: bool) -> Vec<String> {
     let mut providers = Vec::new();
     if claude {
         providers.push("claude".to_string());
     }
     if codex {
         providers.push("codex".to_string());
+    }
+    if cursor {
+        providers.push("cursor".to_string());
     }
     if opencode {
         providers.push("opencode".to_string());

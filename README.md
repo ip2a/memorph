@@ -20,7 +20,6 @@
 
 [English](README_en.md) | [简体中文](README_zh.md)
 
-[快速开始](#快速开始) | [CLI 命令参考](#cli-命令参考)
 
 </div>
 

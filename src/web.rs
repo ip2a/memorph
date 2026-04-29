@@ -283,6 +283,10 @@ fn render_session_list(
                                 input type="checkbox" name="provider" value="opencode" checked[providers.iter().any(|provider| provider == "opencode")];
                                 span { "OpenCode" }
                             }
+                            label.agent-pill {
+                                input type="checkbox" name="provider" value="cursor" checked[providers.iter().any(|provider| provider == "cursor")];
+                                span { "Cursor" }
+                            }
                         }
                     }
                 }
