@@ -9,18 +9,76 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 use std::path::{Path as FsPath, PathBuf};
 
 use crate::config::{self, UiLanguage, WebPreferences};
-use crate::core;
 use crate::model::{ContentBlock, MemorphRole};
 use crate::web_assets::{modal_script, MEMORPH_ASCII};
 use crate::web_support::{
     home_url, html_lang, lang_code, parse_language, query_escape, simple_markdown, tr,
     truncate_chars, truncate_json, workspace_name,
 };
+use crate::{core, providers, shared};
 
 pub fn router() -> Router {
     Router::new()
         .route("/", get(page_home))
+        .route("/shared", get(page_shared))
+        .route("/shared/{group_id}", get(page_shared_detail))
         .route("/sessions/{provider}/{session_id}", get(page_session))
+        .route(
+            "/modal/share/{provider}/{session_id}",
+            get(crate::web_modals::modal_share_form),
+        )
+        .route(
+            "/modal/share/exec/{provider}/{session_id}",
+            get(crate::web_modals::modal_share_exec),
+        )
+        .route(
+            "/modal/share/bind/{group_id}",
+            get(crate::web_modals::modal_share_bind_form),
+        )
+        .route(
+            "/modal/share/bind/exec/{group_id}",
+            get(crate::web_modals::modal_share_bind_exec),
+        )
+        .route(
+            "/modal/share/sync",
+            get(crate::web_modals::modal_share_sync_all),
+        )
+        .route(
+            "/modal/share/sync/{group_id}",
+            get(crate::web_modals::modal_share_sync),
+        )
+        .route(
+            "/modal/share/push/{group_id}/{holding_id}",
+            get(crate::web_modals::modal_share_push),
+        )
+        .route(
+            "/modal/share/push/exec/{group_id}/{holding_id}",
+            get(crate::web_modals::modal_share_push_exec),
+        )
+        .route(
+            "/modal/share/unbind/{group_id}/{holding_id}",
+            get(crate::web_modals::modal_share_unbind),
+        )
+        .route(
+            "/modal/share/unbind/exec/{group_id}/{holding_id}",
+            get(crate::web_modals::modal_share_unbind_exec),
+        )
+        .route(
+            "/modal/share/remove/{group_id}",
+            get(crate::web_modals::modal_share_remove),
+        )
+        .route(
+            "/modal/share/remove/exec/{group_id}",
+            get(crate::web_modals::modal_share_remove_exec),
+        )
+        .route(
+            "/modal/share/rename/{group_id}",
+            get(crate::web_modals::modal_share_rename_form),
+        )
+        .route(
+            "/modal/share/rename/exec/{group_id}",
+            get(crate::web_modals::modal_share_rename_exec),
+        )
         .route("/modal/switch", get(crate::web_modals::modal_switch_form))
         .route(
             "/modal/switch/exec",
@@ -101,6 +159,7 @@ fn layout(title: &str, content: Markup, lang: UiLanguage, workspace: Option<&str
                             }
                         }
                         div.top-actions {
+                            a.button href=(format!("/shared?lang={}", lang_code(lang))) { (tr(lang, "共享", "Shared")) }
                             button.settings-entry type="button" data-modal=(settings_href) { (tr(lang, "设置", "Settings")) }
                             a.github-link href="https://github.com/whillhill/memorph" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub" {
                                 (PreEscaped(github_icon_svg()))
@@ -139,7 +198,7 @@ fn github_icon_svg() -> &'static str {
 fn apply_web_preferences(query: &HomeQuery) -> anyhow::Result<WebPreferences> {
     let language = query.lang.as_deref().and_then(parse_language);
     if language.is_some() {
-        config::update_web_preferences(None, language, None)?;
+        config::update_web_preferences(None, language, None, None)?;
     }
     config::web_preferences()
 }
@@ -204,16 +263,285 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
     };
 
     let workspace_str = workspace.to_string_lossy().to_string();
+
+    // 解析并去重 URL 中的 provider 参数
+    let url_providers: Vec<String> = q
+        .provider
+        .iter()
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    let providers = if !url_providers.is_empty() {
+        // 用户主动选择了 provider，保存到配置
+        let _ = config::set_workspace_providers(&workspace_str, url_providers.clone());
+        url_providers
+    } else {
+        // 从配置读取该工作区的默认 provider
+        config::workspace_providers(&workspace_str).unwrap_or_else(|_| {
+            vec![
+                "claude".to_string(),
+                "codex".to_string(),
+                "opencode".to_string(),
+            ]
+        })
+    };
+
     let content = render_session_list(
         &workspace,
         &known_workspaces,
-        &q.provider,
+        &providers,
         q.q.as_deref(),
         q.sort.as_deref(),
         q.visible,
         &prefs,
     );
     Html(layout("memorph", content, prefs.language, Some(&workspace_str)).into_string())
+}
+
+async fn page_shared(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
+    let q = HomeQuery::from_raw(raw_query.as_deref());
+    let prefs = match apply_web_preferences(&q) {
+        Ok(prefs) => prefs,
+        Err(e) => {
+            return Html(
+                layout("memorph - 错误", error_markup(e), UiLanguage::Zh, None).into_string(),
+            )
+        }
+    };
+    let lang = prefs.language;
+    let items = match shared::list_groups() {
+        Ok(items) => items,
+        Err(e) => return Html(layout("memorph - 错误", error_markup(e), lang, None).into_string()),
+    };
+
+    Html(
+        layout(
+            "memorph - 共享",
+            render_shared_list(&items, lang),
+            lang,
+            None,
+        )
+        .into_string(),
+    )
+}
+
+async fn page_shared_detail(
+    Path(group_id): Path<String>,
+    RawQuery(raw_query): RawQuery,
+) -> impl IntoResponse {
+    let q = HomeQuery::from_raw(raw_query.as_deref());
+    let prefs = match apply_web_preferences(&q) {
+        Ok(prefs) => prefs,
+        Err(e) => {
+            return Html(
+                layout("memorph - 错误", error_markup(e), UiLanguage::Zh, None).into_string(),
+            )
+        }
+    };
+    let lang = prefs.language;
+    let mut group = match shared::load_group(&group_id) {
+        Ok(group) => group,
+        Err(e) => return Html(layout("memorph - 错误", error_markup(e), lang, None).into_string()),
+    };
+    let _ = shared::refresh_active_times(&mut group);
+
+    let title = format!("memorph - {}", group.title);
+    Html(layout(&title, render_shared_detail(&group, lang), lang, None).into_string())
+}
+
+fn render_shared_list(items: &[shared::SharedGroup], lang: UiLanguage) -> Markup {
+    let total_holdings: usize = items.iter().map(|item| item.holdings.len()).sum();
+
+    html! {
+        section.session-header {
+            div {
+                p.eyebrow { (tr(lang, "共享会话", "Shared Sessions")) }
+                h1 { (tr(lang, "共享会话", "Shared Sessions")) }
+                div.meta-line {
+                    span { (tr(lang, "会话", "Sessions")) "=" (items.len()) }
+                    span { (tr(lang, "订阅", "Holdings")) "=" (total_holdings) }
+                }
+            }
+            div.session-actions {
+                a.button href=(format!("/?lang={}", lang_code(lang))) { (tr(lang, "返回", "Back")) }
+            }
+        }
+
+        @if items.is_empty() {
+            div.empty-state {
+                h2 { (tr(lang, "还没有共享会话", "No shared sessions yet")) }
+                p { (tr(lang, "从普通会话列表点击“共享”，选择目标 AI 和目录后创建。", "Click Share on a normal session, then choose target AIs and a directory.")) }
+            }
+        } @else {
+            div.shared-list {
+                @for item in items {
+                    (render_shared_row(item, lang))
+                }
+            }
+        }
+    }
+}
+
+fn render_shared_row(item: &shared::SharedGroup, lang: UiLanguage) -> Markup {
+    let detail_href = format!(
+        "/shared/{}?lang={}",
+        query_escape(&item.id),
+        lang_code(lang)
+    );
+    let sync_href = format!(
+        "/modal/share/sync/{}?lang={}",
+        query_escape(&item.id),
+        lang_code(lang)
+    );
+    let rename_href = format!(
+        "/modal/share/rename/{}?lang={}",
+        query_escape(&item.id),
+        lang_code(lang)
+    );
+    let remove_href = format!(
+        "/modal/share/remove/{}?lang={}",
+        query_escape(&item.id),
+        lang_code(lang)
+    );
+
+    html! {
+        div.shared-row {
+            span.session-id { (item.id) }
+            span.session-title { (item.title) }
+            div.session-meta {
+                span { (tr(lang, "订阅", "Holdings")) "=" (item.holdings.len()) }
+                span { (tr(lang, "更新", "Updated")) "=" (format_modified_at(Some(item.updated_at))) }
+            }
+            div.binding-strip {
+                @for holding in &item.holdings {
+                    span.status-pill {
+                        (provider_label(&holding.provider)) ":" (short_id(&holding.session_id))
+                    }
+                }
+            }
+            div.row-actions {
+                a.button href=(detail_href) { (tr(lang, "详情", "Details")) }
+                button type="button" data-modal=(sync_href) { (tr(lang, "同步最新版", "Sync to Latest")) }
+                button type="button" data-modal=(rename_href) { (tr(lang, "重命名", "Rename")) }
+                button type="button" data-modal=(remove_href) { (tr(lang, "移除", "Remove")) }
+            }
+        }
+    }
+}
+
+fn render_shared_detail(group: &shared::SharedGroup, lang: UiLanguage) -> Markup {
+    let group_id = &group.id;
+    let sync_href = format!(
+        "/modal/share/sync/{}?lang={}",
+        query_escape(group_id),
+        lang_code(lang)
+    );
+    let bind_href = format!(
+        "/modal/share/bind/{}?lang={}",
+        query_escape(group_id),
+        lang_code(lang)
+    );
+    let rename_href = format!(
+        "/modal/share/rename/{}?lang={}",
+        query_escape(group_id),
+        lang_code(lang)
+    );
+    let remove_href = format!(
+        "/modal/share/remove/{}?lang={}",
+        query_escape(group_id),
+        lang_code(lang)
+    );
+
+    html! {
+        section.session-header {
+            div {
+                p.eyebrow { (tr(lang, "共享详情", "Shared Detail")) }
+                h1 { (group.title) }
+                div.meta-line {
+                    span { "id=" code { (group_id) } }
+                    span { (tr(lang, "订阅", "Holdings")) "=" (group.holdings.len()) }
+                    span { (tr(lang, "创建", "Created")) "=" (format_modified_at(Some(group.created_at))) }
+                    span { (tr(lang, "更新", "Updated")) "=" (format_modified_at(Some(group.updated_at))) }
+                }
+            }
+            div.session-actions {
+                a.button href=(format!("/shared?lang={}", lang_code(lang))) { (tr(lang, "返回", "Back")) }
+                button type="button" data-modal=(sync_href) { (tr(lang, "同步最新版", "Sync to Latest")) }
+                button type="button" data-modal=(bind_href) { (tr(lang, "新增订阅", "Add Holding")) }
+                button type="button" data-modal=(rename_href) { (tr(lang, "重命名", "Rename")) }
+                button type="button" data-modal=(remove_href) { (tr(lang, "移除", "Remove")) }
+            }
+        }
+
+        div.binding-list {
+            @for holding in &group.holdings {
+                (render_holding_card(group_id, holding, lang))
+            }
+        }
+    }
+}
+
+fn render_holding_card(
+    group_id: &str,
+    holding: &shared::Holding,
+    lang: UiLanguage,
+) -> Markup {
+    let provider = provider_label(&holding.provider);
+    let workspace = holding.target_dir.as_deref().unwrap_or("");
+    let session_href = format!(
+        "/sessions/{}/{}?workspace={}&lang={}",
+        query_escape(&holding.provider),
+        query_escape(&holding.session_id),
+        query_escape(workspace),
+        lang_code(lang)
+    );
+    let push_href = format!(
+        "/modal/share/push/{}/{}?lang={}",
+        query_escape(group_id),
+        query_escape(&holding.id),
+        lang_code(lang)
+    );
+    let unbind_href = format!(
+        "/modal/share/unbind/{}/{}?lang={}",
+        query_escape(group_id),
+        query_escape(&holding.id),
+        lang_code(lang)
+    );
+
+    let sync_source = holding.last_sync_from.as_deref().unwrap_or("-");
+
+    html! {
+        article.binding-card {
+            header {
+                div {
+                    strong { (provider) }
+                    p.modal-subtitle { (holding.session_id) }
+                }
+            }
+            div.result-grid {
+                span { (tr(lang, "工作区", "Workspace")) }
+                code { (workspace_or_dash(workspace)) }
+                span { (tr(lang, "最后活跃", "Last Active")) }
+                code { (format_modified_at(holding.last_active_at)) }
+                span { (tr(lang, "上次同步", "Last Sync")) }
+                code { (format_modified_at(holding.last_sync_at)) }
+                span { (tr(lang, "同步来源", "Sync From")) }
+                code { (sync_source) }
+                @if let Some(error) = &holding.last_error {
+                    span { (tr(lang, "错误", "Error")) }
+                    code { (error) }
+                }
+            }
+            footer.row-actions {
+                a.button href=(session_href) { (tr(lang, "查看会话", "View Session")) }
+                button type="button" data-modal=(push_href) { (tr(lang, "推送同步", "Push Sync")) }
+                button type="button" data-modal=(unbind_href) { (tr(lang, "移除订阅", "Remove")) }
+            }
+        }
+    }
 }
 
 fn render_session_list(
@@ -229,7 +557,7 @@ fn render_session_list(
     let lang = prefs.language;
     let per_page = prefs.sessions_per_provider.clamp(1, 200);
     let visible_limit = visible.unwrap_or(per_page).clamp(1, 1000);
-    let providers = normalize_provider_filter(provider_filter);
+    let providers = provider_filter.to_vec();
 
     let groups_result = core::list_sessions(&core::SessionListParams {
         all: false,
@@ -245,6 +573,9 @@ fn render_session_list(
         Err(e) => return error_markup(e),
     };
     let total: usize = groups.iter().map(|group| group.sessions.len()).sum();
+
+    // Build lookup for shared sessions
+    let shared_lookup = build_shared_session_lookup();
 
     html! {
         section.ascii-banner aria-label="memorph" {
@@ -271,21 +602,12 @@ fn render_session_list(
                     div.field.agent-field {
                         label for="provider" { (tr(lang, "终端智能体", "Terminal Agent")) }
                         div.agent-picker id="provider" role="group" aria-label=(tr(lang, "终端智能体", "Terminal Agent")) {
-                            label.agent-pill {
-                                input type="checkbox" name="provider" value="claude" checked[providers.iter().any(|provider| provider == "claude")];
-                                span { "Claude" }
-                            }
-                            label.agent-pill {
-                                input type="checkbox" name="provider" value="codex" checked[providers.iter().any(|provider| provider == "codex")];
-                                span { "Codex" }
-                            }
-                            label.agent-pill {
-                                input type="checkbox" name="provider" value="opencode" checked[providers.iter().any(|provider| provider == "opencode")];
-                                span { "OpenCode" }
-                            }
-                            label.agent-pill {
-                                input type="checkbox" name="provider" value="cursor" checked[providers.iter().any(|provider| provider == "cursor")];
-                                span { "Cursor" }
+                            @for id in providers::all_provider_ids() {
+                                @let name = providers::find_provider(id).map(|p| p.name()).unwrap_or(id);
+                                label.agent-pill {
+                                    input type="checkbox" name="provider" value=(id) checked[providers.iter().any(|provider| provider == *id)];
+                                    span { (name) }
+                                }
                             }
                         }
                     }
@@ -312,10 +634,26 @@ fn render_session_list(
             }
         }
 
-        (render_session_groups(&groups, total, visible_limit, per_page, &workspace_str, &providers, search, sort, lang))
+        (render_session_groups(&groups, total, visible_limit, per_page, &workspace_str, &providers, search, sort, lang, &shared_lookup, &prefs.home_buttons))
     }
 }
 
+fn build_shared_session_lookup() -> std::collections::HashMap<(String, String), String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(groups) = shared::list_groups() {
+        for group in groups {
+            for holding in &group.holdings {
+                map.insert(
+                    (holding.provider.clone(), holding.session_id.clone()),
+                    group.id.clone(),
+                );
+            }
+        }
+    }
+    map
+}
+
+#[allow(dead_code)]
 fn normalize_provider_filter(provider_filter: &[String]) -> Vec<String> {
     let providers: Vec<String> = provider_filter
         .iter()
@@ -485,6 +823,8 @@ fn render_session_groups(
     search: Option<&str>,
     sort: Option<&str>,
     lang: UiLanguage,
+    shared_lookup: &std::collections::HashMap<(String, String), String>,
+    home_buttons: &config::HomeButtonConfig,
 ) -> Markup {
     if groups.is_empty() {
         return html! {
@@ -510,7 +850,8 @@ fn render_session_groups(
                 }
                 div.session-list {
                     @for session in group.sessions.iter().take(visible_limit) {
-                        (render_session_row(session, lang))
+                        @let shared_group_id = shared_lookup.get(&(session.provider_id.clone(), session.session_id.clone()));
+                        (render_session_row(session, lang, shared_group_id, home_buttons))
                     }
                 }
                 @if group.sessions.len() > visible_limit {
@@ -525,7 +866,12 @@ fn render_session_groups(
     }
 }
 
-fn render_session_row(session: &core::SessionItem, lang: UiLanguage) -> Markup {
+fn render_session_row(
+    session: &core::SessionItem,
+    lang: UiLanguage,
+    shared_group_id: Option<&String>,
+    home_buttons: &config::HomeButtonConfig,
+) -> Markup {
     let title = session.title.as_deref().unwrap_or("(untitled)");
     let workspace = session.project_dir.as_deref().unwrap_or("(no directory)");
     let stats = session_row_stats(session);
@@ -556,22 +902,60 @@ fn render_session_row(session: &core::SessionItem, lang: UiLanguage) -> Markup {
         query_escape(workspace),
         lang_code(lang)
     );
+    let share_href = format!(
+        "/modal/share/{}/{}?workspace={}&lang={}",
+        session.provider_id,
+        query_escape(&session.session_id),
+        query_escape(workspace),
+        lang_code(lang)
+    );
 
     html! {
         div.session-row {
-            span.session-id { (session.session_id) }
-            span.session-title { (title) }
-            span.session-workspace { (workspace) }
-            div.session-meta {
-                span { (tr(lang, "修改", "Modified")) "=" (stats.modified_at) }
-                span { (tr(lang, "轮次", "Turns")) "=" (stats.turns) }
-                span { (tr(lang, "大小", "Size")) "=" (stats.size) }
-            }
-            div.row-actions {
-                button type="button" data-modal=(switch_href) { (tr(lang, "切换", "Switch")) }
-                a.button href=(session_href) { (tr(lang, "查看", "View")) }
-                button type="button" data-modal=(export_href) { (tr(lang, "导出", "Export")) }
-                button type="button" data-modal=(delete_href) { (tr(lang, "删除", "Delete")) }
+            div.session-row-main {
+                div.session-info {
+                    div.session-title-line {
+                        span.session-title { (title) }
+                        span.session-workspace { (workspace) }
+                    }
+                    div.session-meta-bar {
+                        span.session-id-pill { (&session.session_id) }
+                        @if let Some(group_id) = shared_group_id {
+                            a.shared-badge href=(format!("/shared/{}?lang={}", query_escape(group_id), lang_code(lang))) {
+                                (tr(lang, "共享中", "Shared"))
+                            }
+                        }
+                        span.meta-dot { "·" }
+                        span.meta-item title=(tr(lang, "修改时间", "Modified")) { (stats.modified_at) }
+                        span.meta-dot { "·" }
+                        span.meta-item title=(tr(lang, "轮次", "Turns")) { (stats.turns) }
+                        span.meta-dot { "·" }
+                        span.meta-item title=(tr(lang, "大小", "Size")) { (stats.size) }
+                    }
+                }
+                div.row-actions {
+                    @if home_buttons.switch {
+                        button type="button" data-modal=(switch_href) { (tr(lang, "切换", "Switch")) }
+                    }
+                    @if home_buttons.view {
+                        a.button href=(session_href) { (tr(lang, "查看", "View")) }
+                    }
+                    @if home_buttons.export {
+                        button type="button" data-modal=(export_href) { (tr(lang, "导出", "Export")) }
+                    }
+                    @if home_buttons.share {
+                        @if let Some(group_id) = shared_group_id {
+                            a.button href=(format!("/shared/{}?lang={}", query_escape(group_id), lang_code(lang))) {
+                                (tr(lang, "查看共享", "View Share"))
+                            }
+                        } @else {
+                            button type="button" data-modal=(share_href) { (tr(lang, "共享", "Share")) }
+                        }
+                    }
+                    @if home_buttons.delete {
+                        button type="button" data-modal=(delete_href) { (tr(lang, "删除", "Delete")) }
+                    }
+                }
             }
         }
     }
@@ -632,6 +1016,30 @@ fn format_size(size: Option<u64>) -> String {
     }
 }
 
+fn provider_label(provider_id: &str) -> String {
+    providers::find_provider(provider_id)
+        .map(|provider| provider.name().to_string())
+        .unwrap_or_else(|| provider_id.to_string())
+}
+
+fn short_id(value: &str) -> String {
+    let count = value.chars().count();
+    if count <= 12 {
+        value.to_string()
+    } else {
+        let prefix: String = value.chars().take(8).collect();
+        format!("{prefix}...")
+    }
+}
+
+fn workspace_or_dash(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "-"
+    } else {
+        value
+    }
+}
+
 async fn page_session(
     Path((provider, session_id)): Path<(String, String)>,
     RawQuery(raw_query): RawQuery,
@@ -682,6 +1090,31 @@ async fn page_session(
             lang,
         )
     };
+    let share_href = format!(
+        "/modal/share/{}/{}?workspace={}&lang={}",
+        provider,
+        query_escape(&session_id),
+        query_escape(workspace),
+        lang_code(lang)
+    );
+    let switch_href = format!(
+        "/modal/switch?from={}&session_id={}&workspace={}&lang={}",
+        provider,
+        query_escape(&session_id),
+        query_escape(workspace),
+        lang_code(lang)
+    );
+
+    // Check if this session is already shared
+    let shared_group_id = shared::list_groups()
+        .ok()
+        .and_then(|groups| {
+            groups.into_iter().find(|g| {
+                g.holdings.iter().any(|h| {
+                    h.provider == provider && h.session_id == session_id
+                })
+            }).map(|g| g.id)
+        });
 
     let content = html! {
         section.session-header {
@@ -694,10 +1127,23 @@ async fn page_session(
                     @if !workspace.is_empty() {
                         span { "workspace=" code { (workspace) } }
                     }
+                    @if let Some(ref group_id) = shared_group_id {
+                        a.shared-badge href=(format!("/shared/{}?lang={}", query_escape(group_id), lang_code(lang))) {
+                            (tr(lang, "共享中", "Shared"))
+                        }
+                    }
                 }
             }
             div.session-actions {
                 a.button href=(back_href) { (tr(lang, "返回", "Back")) }
+                button type="button" data-modal=(switch_href) { (tr(lang, "切换", "Switch")) }
+                @if let Some(ref group_id) = shared_group_id {
+                    a.button href=(format!("/shared/{}?lang={}", query_escape(group_id), lang_code(lang))) {
+                        (tr(lang, "查看共享", "View Share"))
+                    }
+                } @else {
+                    button type="button" data-modal=(share_href) { (tr(lang, "共享", "Share")) }
+                }
                 button type="button" data-modal=(format!("/modal/rename/{}/{}?lang={}", provider, session_id, lang_code(lang))) { (tr(lang, "重命名", "Rename")) }
                 button type="button" data-modal=(format!("/modal/export/{}/{}?workspace={}&lang={}", provider, session_id, query_escape(workspace), lang_code(lang))) { (tr(lang, "导出", "Export")) }
                 button type="button" data-modal=(format!("/modal/delete/{}/{}?lang={}", provider, session_id, lang_code(lang))) { (tr(lang, "删除", "Delete")) }

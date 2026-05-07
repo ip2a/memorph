@@ -23,6 +23,10 @@ serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors"] }
+ratatui = "0.29"
+crossterm = "0.28"
 tempfile = "3.19"
 uuid = { version = "1.16", features = ["v4", "serde"] }
 walkdir = "2.5"
+rand = "0.8"
+base64 = "0.22"

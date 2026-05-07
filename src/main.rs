@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 mod api;
 mod cli;
 mod config;
@@ -7,7 +9,9 @@ mod model;
 mod provider;
 mod providers;
 mod server;
+mod shared;
 mod storage;
+mod tui;
 mod utils;
 mod web;
 mod web_assets;
@@ -16,8 +20,7 @@ mod web_support;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use cli::{Cli, Commands};
-use std::io::{self, Write};
+use cli::{Cli, Commands, ShareCommands};
 
 fn main() {
     if let Err(e) = run() {
@@ -195,6 +198,8 @@ fn run_command(command: Commands) -> Result<()> {
             }
         }
 
+        Commands::Share { command } => run_share_command(command)?,
+
         Commands::Web { port, no_open } => {
             run_web_server(port, no_open, WebCommandKind::Recommended)?
         }
@@ -202,36 +207,158 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::Serve { port, no_open } => run_web_server(port, no_open, WebCommandKind::Legacy)?,
 
         Commands::Api { port } => run_api_server(port)?,
+
+        Commands::Tui => {
+            tui::run_tui()?;
+        }
+    }
+
+    Ok(())
+}
+
+fn run_share_command(command: ShareCommands) -> Result<()> {
+    match command {
+        ShareCommands::Create {
+            provider,
+            session_id,
+            targets,
+            to_dir,
+            title,
+        } => {
+            let result = shared::create_group(&shared::ShareCreateParams {
+                provider,
+                session_id,
+                targets,
+                to_dir,
+                title,
+            })?;
+            println!("Shared group created: {}", result.id);
+            println!("Title: {}", result.title);
+            for holding in result.holdings {
+                println!(
+                    "  {} | {} | {}",
+                    holding.id, holding.provider, holding.session_id
+                );
+            }
+        }
+        ShareCommands::Bind {
+            group_id,
+            provider,
+            session_id,
+            to_dir,
+        } => {
+            let holding = shared::add_holding(
+                &shared::AddHoldingParams {
+                    group_id: group_id.clone(),
+                    provider,
+                    session_id,
+                    to_dir,
+                },
+            )?;
+            println!(
+                "Holding added: {} | {} | {}",
+                holding.id, holding.provider, holding.session_id
+            );
+        }
+        ShareCommands::Unbind { group_id, holding_id } => {
+            shared::remove_holding(&group_id, &holding_id)?;
+            println!("Holding removed: {}", holding_id);
+        }
+        ShareCommands::Remove {
+            group_id,
+            delete_provider_sessions,
+        } => {
+            shared::delete_group(&group_id, delete_provider_sessions)?;
+            println!("Shared group removed: {}", group_id);
+        }
+        ShareCommands::Rename { group_id, title } => {
+            shared::rename_group(&group_id, &title)?;
+            println!("Shared group renamed: {} -> {}", group_id, title);
+        }
+        ShareCommands::List => {
+            let groups = shared::list_groups()?;
+            if groups.is_empty() {
+                println!("No shared groups.");
+            }
+            for group in groups {
+                println!("\n{} | {} | holdings={} | updated={}",
+                    group.id, group.title, group.holdings.len(), group.updated_at
+                );
+                for holding in group.holdings {
+                    let dir = holding.target_dir.as_deref().unwrap_or("-");
+                    let sync_from = holding.last_sync_from.as_deref().unwrap_or("-");
+                    let error = holding.last_error.as_deref().unwrap_or("-");
+                    println!(
+                        "  {} | {} | {} | dir={} | sync_from={} | error={}",
+                        holding.id, holding.provider, holding.session_id, dir, sync_from, error
+                    );
+                }
+            }
+        }
+        ShareCommands::Status { group_id } => {
+            let groups = if let Some(id) = group_id {
+                vec![shared::load_group(&id)?]
+            } else {
+                shared::list_groups()?
+            };
+            if groups.is_empty() {
+                println!("No shared groups.");
+            }
+            for mut group in groups {
+                let _ = shared::refresh_active_times(&mut group);
+                println!(
+                    "\n{} | {} | created={} | updated={}",
+                    group.id, group.title, group.created_at, group.updated_at
+                );
+                for holding in group.holdings {
+                    let active = holding.last_active_at.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string());
+                    let sync_at = holding.last_sync_at.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string());
+                    let sync_from = holding.last_sync_from.as_deref().unwrap_or("-");
+                    println!(
+                        "  {} | {} | {} | active_at={} | sync_at={} | sync_from={}",
+                        holding.id, holding.provider, holding.session_id, active, sync_at, sync_from
+                    );
+                    if let Some(error) = holding.last_error {
+                        println!("    error={}", error);
+                    }
+                }
+            }
+        }
+        ShareCommands::Sync { group_id, from_holding } => {
+            let report = if let Some(holding_id) = from_holding {
+                shared::push_sync(&group_id, &holding_id)?
+            } else {
+                shared::sync_to_latest(&group_id)?
+            };
+            println!(
+                "Sync complete: source={} | success={:?} | errors={}",
+                report.source_provider,
+                report.success,
+                report.errors.len()
+            );
+            for error in report.errors {
+                eprintln!("  {}", error);
+            }
+        }
+        ShareCommands::Push { group_id, holding_id } => {
+            let report = shared::push_sync(&group_id, &holding_id)?;
+            println!(
+                "Push sync complete: source={} | success={:?} | errors={}",
+                report.source_provider,
+                report.success,
+                report.errors.len()
+            );
+            for error in report.errors {
+                eprintln!("  {}", error);
+            }
+        }
     }
 
     Ok(())
 }
 
 fn run_interactive_menu() -> Result<()> {
-    loop {
-        println!("\nmemorph");
-        println!("1) Start web UI");
-        println!("2) List sessions in current workspace");
-        println!("0) View configuration");
-        println!("q) Quit");
-        print!("Select an option: ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        match input.trim() {
-            "1" => {
-                run_web_server(3737, false, WebCommandKind::Recommended)?;
-                break;
-            }
-            "2" => print_session_list(false, Vec::new())?,
-            "0" => print_config()?,
-            "q" | "Q" => break,
-            _ => println!("Unknown option. Choose 1, 2, 0, or q."),
-        }
-    }
-
-    Ok(())
+    tui::run_tui()
 }
 
 enum WebCommandKind {
@@ -266,14 +393,6 @@ fn print_web_banner(kind: WebCommandKind) {
     }
     println!("Need API only? Use `memorph api`.");
     println!();
-}
-
-fn print_config() -> Result<()> {
-    let path = config::config_path()?;
-    let config = config::load_config()?;
-    println!("Config path: {}", path.display());
-    println!("{}", serde_json::to_string_pretty(&config)?);
-    Ok(())
 }
 
 fn print_session_list(all: bool, providers: Vec<String>) -> Result<()> {

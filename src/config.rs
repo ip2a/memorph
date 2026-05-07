@@ -27,6 +27,10 @@ pub struct WebPreferences {
     pub language: UiLanguage,
     #[serde(default = "default_show_opencode_subagents")]
     pub show_opencode_subagents: bool,
+    #[serde(default = "default_auto_refresh_after_delete")]
+    pub auto_refresh_after_delete: bool,
+    #[serde(default)]
+    pub home_buttons: HomeButtonConfig,
 }
 
 impl Default for WebPreferences {
@@ -35,6 +39,8 @@ impl Default for WebPreferences {
             sessions_per_provider: DEFAULT_SESSIONS_PER_PROVIDER,
             language: UiLanguage::default(),
             show_opencode_subagents: default_show_opencode_subagents(),
+            auto_refresh_after_delete: default_auto_refresh_after_delete(),
+            home_buttons: HomeButtonConfig::default(),
         }
     }
 }
@@ -44,7 +50,45 @@ fn default_sessions_per_provider() -> usize {
 }
 
 fn default_show_opencode_subagents() -> bool {
+    false
+}
+
+fn default_auto_refresh_after_delete() -> bool {
+    false
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HomeButtonConfig {
+    #[serde(default = "default_true")]
+    pub switch: bool,
+    #[serde(default = "default_true")]
+    pub view: bool,
+    #[serde(default = "default_true")]
+    pub export: bool,
+    #[serde(default = "default_false")]
+    pub share: bool,
+    #[serde(default = "default_false")]
+    pub delete: bool,
+}
+
+impl Default for HomeButtonConfig {
+    fn default() -> Self {
+        Self {
+            switch: true,
+            view: true,
+            export: true,
+            share: false,
+            delete: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
     true
+}
+
+fn default_false() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -61,6 +105,8 @@ pub struct MemorphConfig {
 pub struct WorkspaceEntry {
     pub path: String,
     pub last_viewed_at: i64,
+    #[serde(default)]
+    pub providers: Vec<String>,
 }
 
 pub fn config_path() -> Result<PathBuf> {
@@ -129,6 +175,7 @@ pub fn remember_workspace(path: &Path) -> Result<()> {
         config.workspaces.push(WorkspaceEntry {
             path: workspace,
             last_viewed_at: now,
+            providers: Vec::new(),
         });
     }
 
@@ -150,6 +197,7 @@ pub fn update_web_preferences(
     sessions_per_provider: Option<usize>,
     language: Option<UiLanguage>,
     show_opencode_subagents: Option<bool>,
+    auto_refresh_after_delete: Option<bool>,
 ) -> Result<()> {
     let mut config = load_config()?;
 
@@ -162,6 +210,9 @@ pub fn update_web_preferences(
     if let Some(value) = show_opencode_subagents {
         config.web.show_opencode_subagents = value;
     }
+    if let Some(value) = auto_refresh_after_delete {
+        config.web.auto_refresh_after_delete = value;
+    }
 
     save_config(&config)
 }
@@ -170,4 +221,41 @@ pub fn known_workspaces() -> Result<Vec<WorkspaceEntry>> {
     let mut workspaces = load_config()?.workspaces;
     workspaces.sort_by_key(|entry| std::cmp::Reverse(entry.last_viewed_at));
     Ok(workspaces)
+}
+
+/// 获取指定工作区保存的 provider 列表；未设置时返回默认显示列表。
+pub fn workspace_providers(workspace: &str) -> Result<Vec<String>> {
+    let config = load_config()?;
+    let entry = config.workspaces.iter().find(|e| e.path == workspace);
+    let providers = entry
+        .and_then(|e| {
+            let p = &e.providers;
+            if p.is_empty() { None } else { Some(p.clone()) }
+        })
+        .unwrap_or_else(|| {
+            vec![
+                "claude".to_string(),
+                "codex".to_string(),
+                "opencode".to_string(),
+            ]
+        });
+    Ok(providers)
+}
+
+/// 保存指定工作区的 provider 列表到配置。
+pub fn set_workspace_providers(workspace: &str, providers: Vec<String>) -> Result<()> {
+    let mut config = load_config()?;
+    let workspace = workspace.to_string();
+
+    if let Some(existing) = config.workspaces.iter_mut().find(|e| e.path == workspace) {
+        existing.providers = providers;
+    } else {
+        config.workspaces.push(WorkspaceEntry {
+            path: workspace,
+            last_viewed_at: chrono::Utc::now().timestamp_millis(),
+            providers,
+        });
+    }
+
+    save_config(&config)
 }

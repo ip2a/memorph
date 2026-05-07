@@ -122,6 +122,11 @@ pub enum Commands {
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Vec<String>,
     },
+    /// Manage shared multi-provider sessions
+    Share {
+        #[command(subcommand)]
+        command: ShareCommands,
+    },
     /// Start the web UI server (recommended)
     Web {
         /// Port to listen on
@@ -145,5 +150,97 @@ pub enum Commands {
         /// Port to listen on
         #[arg(short, long, default_value = "3737")]
         port: u16,
+    },
+    /// Start the interactive TUI
+    Tui,
+}
+
+#[derive(Subcommand)]
+pub enum ShareCommands {
+    /// Create a shared session from an existing provider session
+    Create {
+        /// Source provider ID
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+        /// Source session ID
+        #[arg(value_name = "SESSION_ID")]
+        session_id: String,
+        /// Target provider to bind; repeat for multiple targets
+        #[arg(long = "to", short = 't', value_name = "PROVIDER")]
+        targets: Vec<String>,
+        /// Target project directory for newly created provider sessions
+        #[arg(short, long, value_name = "DIR")]
+        to_dir: Option<String>,
+        /// Shared session title
+        #[arg(long, value_name = "TITLE")]
+        title: Option<String>,
+    },
+    /// Add a provider holding to an existing shared group
+    Bind {
+        /// Shared group ID
+        #[arg(value_name = "GROUP_ID")]
+        group_id: String,
+        /// Provider ID to bind
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+        /// Existing provider session ID to bind; omitted creates a new provider session
+        #[arg(long, short = 's', value_name = "SESSION_ID")]
+        session_id: Option<String>,
+        /// Target project directory for newly created provider sessions
+        #[arg(short, long, value_name = "DIR")]
+        to_dir: Option<String>,
+    },
+    /// Remove a holding from a shared group
+    Unbind {
+        /// Shared group ID
+        #[arg(value_name = "GROUP_ID")]
+        group_id: String,
+        /// Holding ID from `share list` or `share status`
+        #[arg(value_name = "HOLDING_ID")]
+        holding_id: String,
+    },
+    /// Remove a shared session record
+    Remove {
+        /// Shared group ID
+        #[arg(value_name = "GROUP_ID")]
+        group_id: String,
+        /// Also delete provider sessions when the provider supports deletion
+        #[arg(long)]
+        delete_provider_sessions: bool,
+    },
+    /// Rename a shared session title
+    Rename {
+        /// Shared group ID
+        #[arg(value_name = "GROUP_ID")]
+        group_id: String,
+        /// New title
+        #[arg(value_name = "TITLE")]
+        title: String,
+    },
+    /// List shared sessions and their holdings
+    List,
+    /// Show detailed shared-session status
+    Status {
+        /// Optional shared group ID
+        #[arg(value_name = "GROUP_ID")]
+        group_id: Option<String>,
+    },
+    /// Push sync from a specific holding to all others, or auto-sync from latest
+    Sync {
+        /// Shared group ID
+        #[arg(value_name = "GROUP_ID")]
+        group_id: String,
+        /// Holding ID to push from; omitted triggers auto-sync from latest
+        #[arg(long, value_name = "HOLDING_ID")]
+        from_holding: Option<String>,
+    },
+    /// Push sync from a specific holding to all others
+    Push {
+        /// Shared group ID
+        #[arg(value_name = "GROUP_ID")]
+        group_id: String,
+        /// Holding ID to push from
+        #[arg(value_name = "HOLDING_ID")]
+        holding_id: String,
     },
 }

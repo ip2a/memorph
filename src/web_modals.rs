@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query},
+    extract::{Path, Query, RawQuery},
     response::{Html, IntoResponse},
 };
 use maud::{html, Markup};
@@ -8,8 +8,8 @@ use serde::Deserialize;
 use chrono::{DateTime, Utc};
 
 use crate::config::{self, UiLanguage};
-use crate::core;
-use crate::web_support::{default_switch_target, lang_code, parse_language, tr};
+use crate::web_support::{lang_code, parse_language, query_escape, tr};
+use crate::{core, providers, shared};
 
 #[derive(Deserialize)]
 pub(crate) struct SwitchFormQuery {
@@ -35,6 +35,7 @@ pub(crate) struct SettingsExecQuery {
     lang: Option<String>,
     per_page: Option<usize>,
     show_opencode_subagents: Option<String>,
+    auto_refresh_after_delete: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -52,10 +53,545 @@ pub(crate) struct ImportExecQuery {
     workspace: String,
 }
 
+#[derive(Default)]
+struct ShareCreateExecQuery {
+    lang: Option<String>,
+    workspace: Option<String>,
+    title: Option<String>,
+    targets: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ShareBindExecQuery {
+    lang: Option<String>,
+    provider: String,
+    session_id: Option<String>,
+    workspace: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ShareRemoveExecQuery {
+    lang: Option<String>,
+    delete_provider_sessions: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ShareRenameExecQuery {
+    lang: Option<String>,
+    title: String,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct SharePushExecQuery {
+    lang: Option<String>,
+}
+
+pub(crate) async fn modal_share_form(
+    Path((provider, session_id)): Path<(String, String)>,
+    Query(q): Query<WorkspaceQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    let source = match core::get_session(&provider, &session_id) {
+        Ok(session) => session,
+        Err(e) => return Html(modal_error(e, lang).into_string()),
+    };
+    let workspaces = config::known_workspaces().unwrap_or_default();
+    let workspace = q
+        .workspace
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or(source.session.project_dir.as_deref())
+        .unwrap_or("");
+    let title = source.session.title.as_deref().unwrap_or("Shared session");
+    let choices = share_target_providers(Some(&provider));
+    let default_target = providers::default_switch_target(&provider);
+
+    Html(
+        html! {
+            dialog.settings-modal {
+                article {
+                    header {
+                        div {
+                            h3 { (tr(lang, "转为共享会话", "Create Shared Session")) }
+                            p.modal-subtitle { (tr(lang, "源会话会成为第一个绑定；勾选的目标 AI 会写入同一份共享会话。", "The source session becomes the first binding; selected target AIs receive the same shared session.")) }
+                        }
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                    form method="get" action=(format!("/modal/share/exec/{}/{}", provider, query_escape(&session_id))) data-modal-form {
+                        input type="hidden" name="lang" value=(lang_code(lang));
+                        div.result-grid {
+                            span { (tr(lang, "来源", "Source")) }
+                            code { (provider_label(&provider)) " / " (session_id) }
+                        }
+                        div.field {
+                            label for="share-title" { (tr(lang, "共享标题", "Shared Title")) }
+                            input id="share-title" type="text" name="title" value=(title) required;
+                        }
+                        div.field {
+                            label for="share-workspace" { (tr(lang, "共享目录", "Shared Directory")) }
+                            input id="share-workspace" type="text" name="workspace" list="known-workspaces" value=(workspace) placeholder="/absolute/path" required;
+                        }
+                        div.field {
+                            label { (tr(lang, "目标 AI", "Target AIs")) }
+                            @if choices.is_empty() {
+                                p.modal-subtitle { (tr(lang, "没有可写入的目标 AI。", "No writable target AI is available.")) }
+                            } @else {
+                                div.agent-picker role="group" aria-label=(tr(lang, "目标 AI", "Target AIs")) {
+                                    @for choice in &choices {
+                                        @let checked = choice.id == default_target;
+                                        label.agent-pill {
+                                            input type="checkbox" name="target" value=(choice.id) checked[checked];
+                                            span { (choice.name) }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        (workspace_datalist(&workspaces))
+                        footer {
+                            button type="button" onclick="closeModal()" { (tr(lang, "取消", "Cancel")) }
+                            button.invert type="submit" { (tr(lang, "创建共享", "Create Shared")) }
+                        }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+pub(crate) async fn modal_share_exec(
+    Path((provider, session_id)): Path<(String, String)>,
+    RawQuery(raw_query): RawQuery,
+) -> impl IntoResponse {
+    let q = ShareCreateExecQuery::from_raw(raw_query.as_deref());
+    let lang = query_language(q.lang.as_deref());
+    let workspace = q.workspace.unwrap_or_default();
+    let workspace = workspace.trim();
+    if workspace.is_empty() {
+        return Html(
+            modal_error(
+                tr(lang, "共享目录不能为空", "Shared directory cannot be empty"),
+                lang,
+            )
+            .into_string(),
+        );
+    }
+    let targets = normalize_targets(&provider, q.targets);
+    if targets.is_empty() {
+        return Html(
+            modal_error(
+                tr(lang, "至少选择一个目标 AI", "Choose at least one target AI"),
+                lang,
+            )
+            .into_string(),
+        );
+    }
+
+    let params = shared::ShareCreateParams {
+        provider,
+        session_id,
+        targets,
+        to_dir: Some(workspace.to_string()),
+        title: q.title.filter(|value| !value.trim().is_empty()),
+    };
+
+    match shared::create_group(&params) {
+        Ok(result) => Html(render_share_created(result, lang).into_string()),
+        Err(e) => Html(modal_error(e, lang).into_string()),
+    }
+}
+
+pub(crate) async fn modal_share_bind_form(
+    Path(group_id): Path<String>,
+    Query(q): Query<WorkspaceQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    let group = match shared::load_group(&group_id) {
+        Ok(group) => group,
+        Err(e) => return Html(modal_error(e, lang).into_string()),
+    };
+    let title = group.title;
+    let workspaces = config::known_workspaces().unwrap_or_default();
+    let workspace = q.workspace.as_deref().unwrap_or("");
+    let choices = share_target_providers(None);
+
+    Html(
+        html! {
+            dialog.settings-modal {
+                article {
+                    header {
+                        div {
+                            h3 { (tr(lang, "新增订阅", "Add Holding")) }
+                            p.modal-subtitle { (title) }
+                        }
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                    form method="get" action=(format!("/modal/share/bind/exec/{}", query_escape(&group_id))) data-modal-form {
+                        input type="hidden" name="lang" value=(lang_code(lang));
+                        div.field {
+                            label for="share-bind-provider" { (tr(lang, "目标 AI", "Target AI")) }
+                            select id="share-bind-provider" name="provider" required {
+                                @for choice in &choices {
+                                    option value=(choice.id) { (choice.name) }
+                                }
+                            }
+                        }
+                        div.field {
+                            label for="share-bind-session" { (tr(lang, "已有 Session ID", "Existing Session ID")) }
+                            input id="share-bind-session" type="text" name="session_id" placeholder=(tr(lang, "留空时创建新投影", "Leave empty to create a new projection"));
+                            p.modal-subtitle { (tr(lang, "填入已有会话会把它纳入共享；留空会把当前共享内容写入目标 AI。", "Provide an existing session to join it, or leave empty to write the current shared content into the target AI.")) }
+                        }
+                        div.field {
+                            label for="share-bind-workspace" { (tr(lang, "目标目录", "Target Directory")) }
+                            input id="share-bind-workspace" type="text" name="workspace" list="known-workspaces" value=(workspace) placeholder="/absolute/path" required;
+                        }
+                        (workspace_datalist(&workspaces))
+                        footer {
+                            button type="button" onclick="closeModal()" { (tr(lang, "取消", "Cancel")) }
+                            button.invert type="submit" { (tr(lang, "新增订阅", "Add Holding")) }
+                        }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+pub(crate) async fn modal_share_bind_exec(
+    Path(group_id): Path<String>,
+    Query(q): Query<ShareBindExecQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    let workspace = q.workspace.trim();
+    if workspace.is_empty() {
+        return Html(
+            modal_error(
+                tr(lang, "目标目录不能为空", "Target directory cannot be empty"),
+                lang,
+            )
+            .into_string(),
+        );
+    }
+
+    let params = shared::AddHoldingParams {
+        group_id,
+        provider: q.provider,
+        session_id: q.session_id.filter(|value| !value.trim().is_empty()),
+        to_dir: Some(workspace.to_string()),
+    };
+
+    match shared::add_holding(&params) {
+        Ok(holding) => Html(
+            html! {
+                dialog.switch-result-modal {
+                    article {
+                        header {
+                            h3 { (tr(lang, "订阅已新增", "Holding Added")) }
+                            button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                        }
+                        div.success-callout {
+                            strong { (tr(lang, "订阅已生效", "Holding is active")) }
+                            p { (tr(lang, "你可以随时从该 holding 推送同步到其他订阅方。", "You can push sync from this holding to other subscribers at any time.")) }
+                        }
+                        div.result-grid {
+                            span { (tr(lang, "目标", "Target")) }
+                            code { (provider_label(&holding.provider)) " / " (holding.session_id) }
+                            span { (tr(lang, "工作区", "Workspace")) }
+                            code { (holding.target_dir.as_deref().unwrap_or("-")) }
+                        }
+                        footer {
+                            button type="button" onclick="closeModal()" { (tr(lang, "稍后刷新", "Later")) }
+                            button.invert type="button" onclick="closeModal(); refreshMain();" { (tr(lang, "刷新状态", "Refresh Status")) }
+                        }
+                    }
+                }
+            }
+            .into_string(),
+        ),
+        Err(e) => Html(modal_error(e, lang).into_string()),
+    }
+}
+
+pub(crate) async fn modal_share_sync_all(Query(q): Query<LangQuery>) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    Html(modal_error(tr(lang, "请从共享详情页触发同步", "Please trigger sync from the shared detail page"), lang).into_string())
+}
+
+pub(crate) async fn modal_share_sync(
+    Path(group_id): Path<String>,
+    Query(q): Query<LangQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    render_share_sync(group_id, lang)
+}
+
+pub(crate) async fn modal_share_push(
+    Path((group_id, holding_id)): Path<(String, String)>,
+    Query(q): Query<LangQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    Html(
+        html! {
+            dialog {
+                article {
+                    header {
+                        h3 { (tr(lang, "推送同步", "Push Sync")) }
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                    p { (tr(lang, "将此 holding 的当前内容覆盖到其他所有订阅方。", "Overwrite all other subscribers with this holding's current content.")) }
+                    footer {
+                        button type="button" onclick="closeModal()" { (tr(lang, "取消", "Cancel")) }
+                        button.invert type="button" data-modal=(format!(
+                            "/modal/share/push/exec/{}/{}?lang={}",
+                            query_escape(&group_id),
+                            query_escape(&holding_id),
+                            lang_code(lang)
+                        )) { (tr(lang, "推送同步", "Push Sync")) }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+pub(crate) async fn modal_share_push_exec(
+    Path((group_id, holding_id)): Path<(String, String)>,
+    Query(q): Query<SharePushExecQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    match shared::push_sync(&group_id, &holding_id) {
+        Ok(report) => Html(
+            html! {
+                dialog.switch-result-modal {
+                    article {
+                        header {
+                            h3 { (tr(lang, "推送同步完成", "Push Sync Complete")) }
+                            button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                        }
+                        div.success-callout {
+                            strong { (tr(lang, "同步已执行", "Sync executed")) }
+                            p { (tr(lang, "内容已覆盖到目标订阅方。", "Content has been overwritten to target subscribers.")) }
+                        }
+                        div.result-grid {
+                            span { (tr(lang, "来源", "Source")) }
+                            code { (report.source_provider) }
+                            span { (tr(lang, "成功", "Success")) }
+                            code { (report.success.len()) }
+                            span { (tr(lang, "错误", "Errors")) }
+                            code { (report.errors.len()) }
+                        }
+                        @if !report.errors.is_empty() {
+                            div.verify-block {
+                                span.block-label { (tr(lang, "错误", "Errors")) }
+                                pre {
+                                    code {
+                                        @for error in &report.errors {
+                                            (error) "\n"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        footer {
+                            button type="button" onclick="closeModal()" { (tr(lang, "稍后刷新", "Later")) }
+                            button.invert type="button" onclick="closeModal(); refreshMain();" { (tr(lang, "刷新状态", "Refresh Status")) }
+                        }
+                    }
+                }
+            }
+            .into_string(),
+        ),
+        Err(e) => Html(modal_error(e, lang).into_string()),
+    }
+}
+
+pub(crate) async fn modal_share_unbind(
+    Path((group_id, holding_id)): Path<(String, String)>,
+    Query(q): Query<LangQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    Html(
+        html! {
+            dialog {
+                article {
+                    header {
+                        h3 { (tr(lang, "移除订阅", "Remove Holding")) }
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                    p { (tr(lang, "移除后这个会话不会再参与共享同步。", "After removing, this session will no longer participate in shared sync.")) }
+                    p { code { (holding_id) } }
+                    footer {
+                        button type="button" onclick="closeModal()" { (tr(lang, "取消", "Cancel")) }
+                        button.invert type="button" data-modal=(format!(
+                            "/modal/share/unbind/exec/{}/{}?lang={}",
+                            query_escape(&group_id),
+                            query_escape(&holding_id),
+                            lang_code(lang)
+                        )) { (tr(lang, "移除", "Remove")) }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+pub(crate) async fn modal_share_unbind_exec(
+    Path((group_id, holding_id)): Path<(String, String)>,
+    Query(q): Query<LangQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    match shared::remove_holding(&group_id, &holding_id) {
+        Ok(()) => Html(
+            html! {
+                dialog {
+                    article {
+                        header {
+                            h3 { (tr(lang, "已移除", "Removed")) }
+                            button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                        }
+                        p { (tr(lang, "订阅已移除。", "Holding has been removed.")) }
+                        footer {
+                            button.invert type="button" onclick="closeModal(); refreshMain();" { (tr(lang, "刷新状态", "Refresh Status")) }
+                        }
+                    }
+                }
+            }
+            .into_string(),
+        ),
+        Err(e) => Html(modal_error(e, lang).into_string()),
+    }
+}
+
+pub(crate) async fn modal_share_remove(
+    Path(group_id): Path<String>,
+    Query(q): Query<LangQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    Html(
+        html! {
+            dialog {
+                article {
+                    header {
+                        h3 { (tr(lang, "移除共享会话", "Remove Shared Session")) }
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                    p { (tr(lang, "这会删除 memorph 的共享组记录。默认不会删除各 AI 中已经存在的会话。", "This removes memorph's shared group record. Existing AI sessions are not deleted by default.")) }
+                    p { code { (group_id) } }
+                    form method="get" action=(format!("/modal/share/remove/exec/{}", query_escape(&group_id))) data-modal-form {
+                        input type="hidden" name="lang" value=(lang_code(lang));
+                        label.settings-check {
+                            input type="checkbox" name="delete_provider_sessions" value="true";
+                            span { (tr(lang, "同时删除提供方会话", "Also delete provider sessions")) }
+                        }
+                        footer {
+                            button type="button" onclick="closeModal()" { (tr(lang, "取消", "Cancel")) }
+                            button.invert type="submit" { (tr(lang, "移除", "Remove")) }
+                        }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+pub(crate) async fn modal_share_remove_exec(
+    Path(group_id): Path<String>,
+    Query(q): Query<ShareRemoveExecQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    match shared::delete_group(&group_id, q.delete_provider_sessions.is_some()) {
+        Ok(()) => Html(
+            html! {
+                dialog {
+                    article {
+                        header {
+                            h3 { (tr(lang, "已移除", "Removed")) }
+                            button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                        }
+                        p { (tr(lang, "共享组记录已移除。", "Shared group record has been removed.")) }
+                        footer {
+                            button.invert type="button" onclick=(format!("closeModal(); goUrl('/shared?lang={}')", lang_code(lang))) { (tr(lang, "返回共享列表", "Back to Shared")) }
+                        }
+                    }
+                }
+            }
+            .into_string(),
+        ),
+        Err(e) => Html(modal_error(e, lang).into_string()),
+    }
+}
+
+pub(crate) async fn modal_share_rename_form(
+    Path(group_id): Path<String>,
+    Query(q): Query<LangQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    let title = shared::load_group(&group_id)
+        .map(|g| g.title)
+        .unwrap_or_default();
+
+    Html(
+        html! {
+            dialog {
+                article {
+                    header {
+                        h3 { (tr(lang, "重命名共享会话", "Rename Shared Session")) }
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                    form method="get" action=(format!("/modal/share/rename/exec/{}", query_escape(&group_id))) data-modal-form {
+                        input type="hidden" name="lang" value=(lang_code(lang));
+                        div.field {
+                            label for="shared-title" { (tr(lang, "新标题", "New Title")) }
+                            input id="shared-title" type="text" name="title" value=(title) required;
+                        }
+                        footer {
+                            button type="button" onclick="closeModal()" { (tr(lang, "取消", "Cancel")) }
+                            button.invert type="submit" { (tr(lang, "保存", "Save")) }
+                        }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+pub(crate) async fn modal_share_rename_exec(
+    Path(group_id): Path<String>,
+    Query(q): Query<ShareRenameExecQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    match shared::rename_group(&group_id, &q.title) {
+        Ok(()) => Html(
+            html! {
+                dialog {
+                    article {
+                        header {
+                            h3 { (tr(lang, "已重命名", "Renamed")) }
+                            button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                        }
+                        p { "title=" code { (q.title) } }
+                        footer {
+                            button.invert type="button" onclick="closeModal(); refreshMain();" { (tr(lang, "刷新状态", "Refresh Status")) }
+                        }
+                    }
+                }
+            }
+            .into_string(),
+        ),
+        Err(e) => Html(modal_error(e, lang).into_string()),
+    }
+}
+
 pub(crate) async fn modal_switch_form(Query(q): Query<SwitchFormQuery>) -> impl IntoResponse {
     let lang = query_language(q.lang.as_deref());
     let from = q.from.as_deref().unwrap_or("claude");
-    let target = default_switch_target(from);
+    let target = providers::default_switch_target(from);
     let workspaces = config::known_workspaces().unwrap_or_default();
     let workspace = q.workspace.as_deref().unwrap_or("");
     Html(
@@ -71,17 +607,19 @@ pub(crate) async fn modal_switch_form(Query(q): Query<SwitchFormQuery>) -> impl 
                         div.field {
                             label for="from" { (tr(lang, "来源", "From")) }
                             select id="from" name="from" required {
-                                option value="claude" selected[from == "claude"] { "Claude" }
-                                option value="codex" selected[from == "codex"] { "Codex" }
-                                option value="opencode" selected[from == "opencode"] { "OpenCode" }
+                                @for id in providers::all_provider_ids() {
+                                    @let name = providers::find_provider(id).map(|p| p.name()).unwrap_or(id);
+                                    option value=(id) selected[from == *id] { (name) }
+                                }
                             }
                         }
                         div.field {
                             label for="to" { (tr(lang, "目标", "To")) }
                             select id="to" name="to" required {
-                                option value="codex" selected[target == "codex"] { "Codex" }
-                                option value="claude" selected[target == "claude"] { "Claude" }
-                                option value="opencode" selected[target == "opencode"] { "OpenCode" }
+                                @for id in providers::all_provider_ids() {
+                                    @let name = providers::find_provider(id).map(|p| p.name()).unwrap_or(id);
+                                    option value=(id) selected[target == *id] { (name) }
+                                }
                             }
                         }
                         div.field {
@@ -249,9 +787,10 @@ pub(crate) async fn modal_import_form(Query(q): Query<WorkspaceQuery>) -> impl I
                         div.field {
                             label for="import-provider" { (tr(lang, "目标终端智能体", "Target Terminal Agent")) }
                             select id="import-provider" name="provider" required {
-                                option value="claude" { "Claude" }
-                                option value="codex" { "Codex" }
-                                option value="opencode" { "OpenCode" }
+                                @for id in providers::all_provider_ids() {
+                                    @let name = providers::find_provider(id).map(|p| p.name()).unwrap_or(id);
+                                    option value=(id) { (name) }
+                                }
                             }
                         }
                         div.field {
@@ -412,7 +951,13 @@ pub(crate) async fn modal_switch_exec(Query(q): Query<SwitchExecQuery>) -> impl 
                         }
                         div.verify-block {
                             span.block-label { (tr(lang, "怎么验证", "How to Verify")) }
-                            p { (tr(lang, "刷新列表后应能看到目标会话；也可以复制恢复命令在终端中打开。", "After refreshing the list, the target session should appear; you can also copy the resume command and open it in your terminal.")) }
+                            p {
+                                @if result.to_name == "Cursor" {
+                                    (tr(lang, "Cursor 需要重启才能看到新会话；memorph 列表刷新后即可看到。", "Cursor must be restarted to see the new session; it will appear immediately in the memorph list after refreshing."))
+                                } @else {
+                                    (tr(lang, "刷新列表后应能看到目标会话；也可以复制恢复命令在终端中打开。", "After refreshing the list, the target session should appear; you can also copy the resume command and open it in your terminal."))
+                                }
+                            }
                         }
                         footer {
                             button type="button" onclick="closeModal()" { (tr(lang, "稍后刷新", "Later")) }
@@ -432,6 +977,10 @@ pub(crate) async fn modal_delete(
     Query(q): Query<LangQuery>,
 ) -> impl IntoResponse {
     let lang = query_language(q.lang.as_deref());
+    let auto_refresh = match config::web_preferences() {
+        Ok(prefs) => prefs.auto_refresh_after_delete,
+        Err(_) => false,
+    };
     Html(
         html! {
             dialog {
@@ -444,7 +993,11 @@ pub(crate) async fn modal_delete(
                     p { code { (session_id) } }
                     footer {
                         button type="button" onclick="closeModal()" { (tr(lang, "取消", "Cancel")) }
-                        button.invert type="button" data-modal=(format!("/modal/delete/exec/{}/{}?lang={}", provider, session_id, lang_code(lang))) { (tr(lang, "删除", "Delete")) }
+                        @if auto_refresh {
+                            button.invert type="button" data-delete-action=(format!("/modal/delete/exec/{}/{}?lang={}", provider, session_id, lang_code(lang))) { (tr(lang, "删除", "Delete")) }
+                        } @else {
+                            button.invert type="button" data-modal=(format!("/modal/delete/exec/{}/{}?lang={}", provider, session_id, lang_code(lang))) { (tr(lang, "删除", "Delete")) }
+                        }
                     }
                 }
             }
@@ -635,6 +1188,16 @@ pub(crate) async fn modal_settings_form(Query(q): Query<WorkspaceQuery>) -> impl
                             }
                             div.settings-row {
                                 div.settings-copy {
+                                    strong { (tr(lang, "删除后自动刷新", "Auto Refresh After Delete")) }
+                                    span { (tr(lang, "删除会话后自动刷新列表，无需手动点击。", "Automatically refresh the session list after deletion.")) }
+                                }
+                                label.settings-check {
+                                    input type="checkbox" name="auto_refresh_after_delete" value="true" checked[prefs.auto_refresh_after_delete];
+                                    span { (tr(lang, "勾选", "Enabled")) }
+                                }
+                            }
+                            div.settings-row {
+                                div.settings-copy {
                                     strong { (tr(lang, "版本", "Version")) }
                                     span { (format!("v{}", env!("CARGO_PKG_VERSION"))) }
                                 }
@@ -657,8 +1220,9 @@ pub(crate) async fn modal_settings_exec(Query(q): Query<SettingsExecQuery>) -> i
     let lang = query_language(q.lang.as_deref());
     let language = q.lang.as_deref().and_then(parse_language);
     let show_opencode_subagents = q.show_opencode_subagents.is_some();
+    let auto_refresh_after_delete = q.auto_refresh_after_delete.is_some();
 
-    match config::update_web_preferences(q.per_page, language, Some(show_opencode_subagents)) {
+    match config::update_web_preferences(q.per_page, language, Some(show_opencode_subagents), Some(auto_refresh_after_delete)) {
         Ok(()) => Html(
             html! {
                 dialog {
@@ -677,6 +1241,208 @@ pub(crate) async fn modal_settings_exec(Query(q): Query<SettingsExecQuery>) -> i
             .into_string(),
         ),
         Err(e) => Html(modal_error(e, lang).into_string()),
+    }
+}
+
+struct ProviderChoice {
+    id: String,
+    name: String,
+}
+
+impl ShareCreateExecQuery {
+    fn from_raw(raw_query: Option<&str>) -> Self {
+        let mut query = Self::default();
+        let Some(raw_query) = raw_query else {
+            return query;
+        };
+
+        for (key, value) in parse_query_pairs(raw_query) {
+            match key.as_str() {
+                "lang" => query.lang = Some(value),
+                "workspace" => query.workspace = Some(value),
+                "title" => query.title = Some(value),
+                "target" | "targets" | "target[]" | "targets[]" => query.targets.push(value),
+                _ => {}
+            }
+        }
+
+        query
+    }
+}
+
+fn render_share_created(result: shared::SharedGroup, lang: UiLanguage) -> Markup {
+    let detail_href = format!(
+        "/shared/{}?lang={}",
+        query_escape(&result.id),
+        lang_code(lang)
+    );
+
+    html! {
+        dialog.switch-result-modal {
+            article {
+                header {
+                    h3 { (tr(lang, "共享会话已创建", "Shared Session Created")) }
+                    button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                }
+                div.success-callout {
+                    strong { (tr(lang, "共享模式已启用", "Shared mode is active")) }
+                    p { (tr(lang, "手动推送同步可将某一端的内容覆盖到其他订阅方。", "Manually push sync to overwrite other subscribers with one side's content.")) }
+                }
+                div.result-grid {
+                    span { (tr(lang, "共享 ID", "Shared ID")) }
+                    code { (result.id) }
+                    span { (tr(lang, "订阅数量", "Holdings")) }
+                    code { (result.holdings.len()) }
+                }
+                div.verify-block {
+                    span.block-label { (tr(lang, "订阅", "Holdings")) }
+                    div.binding-strip {
+                        @for holding in &result.holdings {
+                            span.status-pill {
+                                (provider_label(&holding.provider)) ":" (short_id(&holding.session_id))
+                            }
+                        }
+                    }
+                }
+                footer {
+                    button type="button" onclick="closeModal(); refreshMain();" { (tr(lang, "刷新列表", "Refresh List")) }
+                    a.button.invert href=(detail_href) { (tr(lang, "打开共享详情", "Open Detail")) }
+                }
+            }
+        }
+    }
+}
+
+fn render_share_sync(group_id: String, lang: UiLanguage) -> Html<String> {
+    match shared::sync_to_latest(&group_id) {
+        Ok(report) => Html(
+            html! {
+                dialog.switch-result-modal {
+                    article {
+                        header {
+                            h3 { (tr(lang, "同步完成", "Sync Complete")) }
+                            button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                        }
+                        div.success-callout {
+                            strong { (tr(lang, "共享同步已执行", "Shared sync has run")) }
+                            p { (tr(lang, "最新版本已覆盖到所有订阅方。", "The latest version has been overwritten to all subscribers.")) }
+                        }
+                        div.result-grid {
+                            span { (tr(lang, "来源", "Source")) }
+                            code { (report.source_provider) }
+                            span { (tr(lang, "成功", "Success")) }
+                            code { (report.success.len()) }
+                            span { (tr(lang, "错误", "Errors")) }
+                            code { (report.errors.len()) }
+                        }
+                        @if !report.errors.is_empty() {
+                            div.verify-block {
+                                span.block-label { (tr(lang, "错误", "Errors")) }
+                                pre {
+                                    code {
+                                        @for error in &report.errors {
+                                            (error) "\n"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        footer {
+                            button type="button" onclick="closeModal()" { (tr(lang, "稍后刷新", "Later")) }
+                            button.invert type="button" onclick="closeModal(); refreshMain();" { (tr(lang, "刷新状态", "Refresh Status")) }
+                        }
+                    }
+                }
+            }
+            .into_string(),
+        ),
+        Err(e) => Html(modal_error(e, lang).into_string()),
+    }
+}
+
+fn share_target_providers(exclude: Option<&str>) -> Vec<ProviderChoice> {
+    providers::all_provider_ids()
+        .iter()
+        .filter(|id| exclude != Some(**id))
+        .filter_map(|id| {
+            let provider = providers::find_provider(id)?;
+            provider.capabilities().write.then(|| ProviderChoice {
+                id: (*id).to_string(),
+                name: provider.name().to_string(),
+            })
+        })
+        .collect()
+}
+
+fn normalize_targets(source_provider: &str, targets: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for target in targets {
+        let target = target.trim();
+        if target.is_empty() || target == source_provider || normalized.iter().any(|v| v == target)
+        {
+            continue;
+        }
+        normalized.push(target.to_string());
+    }
+    normalized
+}
+
+fn parse_query_pairs(raw_query: &str) -> Vec<(String, String)> {
+    raw_query
+        .split('&')
+        .filter(|value| !value.is_empty())
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (query_unescape(key), query_unescape(value))
+        })
+        .collect()
+}
+
+fn query_unescape(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                if let Ok(hex) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                    if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                        out.push(byte);
+                        index += 3;
+                        continue;
+                    }
+                }
+                out.push(bytes[index]);
+                index += 1;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn provider_label(provider_id: &str) -> String {
+    providers::find_provider(provider_id)
+        .map(|provider| provider.name().to_string())
+        .unwrap_or_else(|| provider_id.to_string())
+}
+
+fn short_id(value: &str) -> String {
+    let count = value.chars().count();
+    if count <= 12 {
+        value.to_string()
+    } else {
+        let prefix: String = value.chars().take(8).collect();
+        format!("{prefix}...")
     }
 }
 

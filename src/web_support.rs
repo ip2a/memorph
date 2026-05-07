@@ -29,13 +29,6 @@ pub(crate) fn tr(lang: UiLanguage, zh: &'static str, en: &'static str) -> &'stat
     }
 }
 
-pub(crate) fn default_switch_target(from: &str) -> &'static str {
-    match from {
-        "codex" => "claude",
-        _ => "codex",
-    }
-}
-
 pub(crate) fn simple_markdown(text: &str) -> String {
     let mut out = String::new();
     let mut in_code_block = false;

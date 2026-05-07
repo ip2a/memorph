@@ -33,3 +33,12 @@ pub fn all_provider_ids() -> &'static [&'static str] {
 pub fn find_provider(id: &str) -> Option<Box<dyn Provider>> {
     ProviderRegistry::find(id)
 }
+
+/// Default switch target for a given source provider.
+pub fn default_switch_target(from: &str) -> &'static str {
+    let ids = all_provider_ids();
+    match from {
+        "codex" => "claude",
+        _ => ids.iter().find(|&&id| id != from).copied().unwrap_or("codex"),
+    }
+}

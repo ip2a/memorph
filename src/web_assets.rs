@@ -299,20 +299,82 @@ h1 {
 .session-list { display: grid; border-top: 1px solid var(--line); }
 .session-row {
     display: grid;
-    grid-template-columns: minmax(150px, 0.65fr) minmax(210px, 1.15fr) minmax(220px, 1.25fr) minmax(240px, 1.2fr) auto;
-    gap: 14px;
-    align-items: center;
+    gap: 10px;
+    align-items: start;
     min-height: 54px;
     border-bottom: 1px solid var(--line);
-    padding: 8px 0;
+    padding: 10px 0;
 }
-.session-row:hover { background: var(--ink); color: var(--paper); }
-.session-row > * { min-width: 0; }
+.session-row:hover { background: #f7f7f7; }
+.session-row-main {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 14px;
+    align-items: start;
+}
+.session-info { min-width: 0; }
+.session-title-line {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    min-width: 0;
+}
+.session-title {
+    font-weight: 650;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+.session-workspace {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    opacity: 0.72;
+    flex-shrink: 0;
+}
+.session-meta-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    min-width: 0;
+}
+.session-id-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 11px;
+    opacity: 0.82;
+}
+.shared-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 7px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    font-size: 11px;
+    background: var(--ink);
+    color: var(--paper);
+    cursor: pointer;
+    transition: opacity 120ms ease;
+}
+.shared-badge:hover { opacity: 0.82; }
+.meta-dot { opacity: 0.45; font-size: 10px; }
+.meta-item { white-space: nowrap; opacity: 0.82; }
 .row-actions {
     display: flex;
     justify-content: end;
     gap: 6px;
     flex-wrap: wrap;
+    align-items: start;
 }
 .row-actions .button, .row-actions button {
     min-height: 30px;
@@ -328,19 +390,6 @@ h1 {
     word-break: break-word;
     line-height: 1.25;
 }
-.session-title {
-    font-weight: 650;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.session-workspace {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 12px;
-}
 .session-meta {
     display: flex;
     gap: 10px;
@@ -353,6 +402,58 @@ h1 {
     border: 1px solid var(--line);
     padding: 32px;
     text-align: center;
+}
+.shared-list {
+    display: grid;
+    border-top: 1px solid var(--line);
+}
+.shared-row {
+    display: grid;
+    grid-template-columns: minmax(170px, 0.8fr) minmax(220px, 1.1fr) minmax(240px, 1.2fr) minmax(220px, 1fr) auto;
+    gap: 14px;
+    align-items: center;
+    min-height: 58px;
+    border-bottom: 1px solid var(--line);
+    padding: 9px 0;
+}
+.shared-row:hover { background: var(--ink); color: var(--paper); }
+.shared-row > * { min-width: 0; }
+.binding-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+}
+.status-pill {
+    display: inline-flex;
+    align-items: center;
+    min-height: 24px;
+    max-width: 100%;
+    padding: 0 8px;
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    overflow-wrap: anywhere;
+}
+.binding-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px;
+}
+.binding-card {
+    border: 1px solid var(--line);
+    padding: 14px;
+}
+.binding-card header {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.binding-card footer {
+    margin-top: 14px;
 }
 
 .session-header {
@@ -523,7 +624,10 @@ dialog footer { display: flex; justify-content: end; gap: 8px; margin-top: 16px;
     .workspace-hero { min-height: auto; padding-right: 0; padding-bottom: 14px; border-right: 0; border-bottom: 1px solid var(--line); }
     .filter-panel, .filter-row-main, .filter-row-compact, .workspace-combo, .session-header, .settings-row { grid-template-columns: 1fr; }
     .agent-picker { flex-wrap: wrap; }
-    .session-row { grid-template-columns: 1fr; gap: 4px; padding: 12px 0; }
+    .session-row-main { grid-template-columns: 1fr; gap: 10px; }
+    .session-row { padding: 12px 0; }
+    .shared-row { grid-template-columns: 1fr; gap: 6px; padding: 12px 0; }
+    .binding-list { grid-template-columns: 1fr; }
     .row-actions { justify-content: start; margin-top: 8px; }
     .session-title, .session-workspace { white-space: normal; }
     .topbar { height: auto; padding: 14px 0; gap: 12px; align-items: flex-start; }
@@ -576,6 +680,27 @@ function afterDeleteRefresh() {
         return;
     }
     refreshMain();
+}
+
+async function deleteSessionAndRefresh(url) {
+    closeModal();
+    setLoading(true);
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(await response.text());
+        await afterDeleteRefresh();
+        const lang = new URL(url, window.location.href).searchParams.get('lang') || 'zh';
+        const title = lang === 'en' ? 'Deleted' : '已删除';
+        const message = lang === 'en' ? 'Session deleted.' : '会话已删除。';
+        const closeText = lang === 'en' ? 'Close' : '关闭';
+        mountModal('<dialog><article><header><h3>' + title + '</h3><button type="button" onclick="closeModal()">' + closeText + '</button></header><p>' + message + '</p></article></dialog>');
+    } catch (error) {
+        mountModal('<dialog><article><h3>错误</h3><p></p><button onclick="closeModal()">关闭</button></article></dialog>');
+        const message = document.querySelector('#modal-container p');
+        if (message) message.textContent = error.message;
+    } finally {
+        setLoading(false);
+    }
 }
 
 function setLoading(active) {
@@ -637,6 +762,13 @@ document.addEventListener('click', function(event) {
     if (preserveScroll) {
         sessionStorage.setItem('memorph-scroll-y', String(window.scrollY));
         setLoading(true);
+    }
+
+    const deleteAction = event.target.closest('[data-delete-action]');
+    if (deleteAction) {
+        event.preventDefault();
+        deleteSessionAndRefresh(deleteAction.getAttribute('data-delete-action'));
+        return;
     }
 
     const trigger = event.target.closest('[data-modal]');
