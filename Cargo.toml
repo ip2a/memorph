@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["memorph contributors"]
 description = "Convert, import, and export AI coding sessions between Claude Code, Codex, and OpenCode"
 license = "MIT"
-repository = "https://github.com/whillhill/memorph"
+repository = "https://github.com/ip2a/memorph"
 keywords = ["cli", "ai", "claude", "codex", "opencode"]
 categories = ["command-line-utilities"]
 

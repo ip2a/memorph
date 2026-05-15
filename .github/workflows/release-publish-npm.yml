@@ -81,7 +81,7 @@ jobs:
           import json
           from pathlib import Path
 
-          expected = "https://github.com/whillhill/memorph"
+          expected = "https://github.com/ip2a/memorph"
           root = Path("npm/packages")
           for pkg in sorted(root.glob("*/package.json")):
               data = json.loads(pkg.read_text(encoding="utf-8"))

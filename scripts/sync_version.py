@@ -8,7 +8,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-NPM_REPOSITORY_URL = "https://github.com/whillhill/memorph"
+NPM_REPOSITORY_URL = "https://github.com/ip2a/memorph"
 
 
 def read_cargo_version() -> str:

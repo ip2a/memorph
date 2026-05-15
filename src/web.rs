@@ -175,7 +175,7 @@ fn layout(title: &str, content: Markup, lang: UiLanguage, workspace: Option<&str
                             a.button href=(format!("/shared?lang={}", lang_code(lang))) { (tr(lang, "共享", "Shared")) }
                             button.manager-entry type="button" data-modal=(format!("/modal/manager?lang={}", lang_code(lang))) { (tr(lang, "管理", "Manage")) }
                             button.settings-entry type="button" data-modal=(settings_href) { (tr(lang, "设置", "Settings")) }
-                            a.github-link href="https://github.com/whillhill/memorph" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub" {
+                            a.github-link href="https://github.com/ip2a/memorph" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub" {
                                 (PreEscaped(github_icon_svg()))
                             }
                             label.lang-switch {

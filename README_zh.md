@@ -16,7 +16,7 @@
 
 ---
 
-![GitHub stars](https://img.shields.io/github/stars/whillhill/memorph) ![GitHub forks](https://img.shields.io/github/forks/whillhill/memorph) ![GitHub license](https://img.shields.io/github/license/whillhill/memorph) ![npm version](https://img.shields.io/npm/v/memorph)
+![GitHub stars](https://img.shields.io/github/stars/ip2a/memorph) ![GitHub forks](https://img.shields.io/github/forks/ip2a/memorph) ![GitHub license](https://img.shields.io/github/license/ip2a/memorph) ![npm version](https://img.shields.io/npm/v/memorph)
 
 [English](README_en.md) | [简体中文](README_zh.md)
 
@@ -225,7 +225,7 @@ memorph find --session "refactor" -p claude -p codex
 
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=whillhill/memorph&type=Date)](https://star-history.com/#whillhill/memorph&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=ip2a/memorph&type=Date)](https://star-history.com/#ip2a/memorph&Date)
 
 </div>
 
