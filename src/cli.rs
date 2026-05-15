@@ -16,10 +16,10 @@ pub enum Commands {
         /// Show all sessions across all workspaces
         #[arg(long)]
         all: bool,
-        /// Filter to Claude Code sessions
+        /// Filter to claude sessions
         #[arg(long)]
         claude: bool,
-        /// Filter to Codex sessions
+        /// Filter to codex sessions
         #[arg(long)]
         codex: bool,
         /// Filter to Cursor sessions
@@ -28,6 +28,9 @@ pub enum Commands {
         /// Filter to OpenCode sessions
         #[arg(long)]
         opencode: bool,
+        /// Filter to Kiro sessions
+        #[arg(long)]
+        kiro: bool,
     },
     /// Export a session to file(s)
     Export {
@@ -79,22 +82,22 @@ pub enum Commands {
     },
     /// Switch a session from one provider to another (one-shot)
     Switch {
-        /// Migrate from Claude Code to Codex
+        /// Migrate from claude to codex
         #[arg(long, group = "direction")]
         claude2codex: bool,
-        /// Migrate from Codex to Claude Code
+        /// Migrate from codex to claude
         #[arg(long, group = "direction")]
         codex2claude: bool,
-        /// Migrate from Claude Code to OpenCode
+        /// Migrate from claude to OpenCode
         #[arg(long, group = "direction")]
         claude2opencode: bool,
-        /// Migrate from Codex to OpenCode
+        /// Migrate from codex to OpenCode
         #[arg(long, group = "direction")]
         codex2opencode: bool,
-        /// Migrate from OpenCode to Claude Code
+        /// Migrate from OpenCode to claude
         #[arg(long, group = "direction")]
         opencode2claude: bool,
-        /// Migrate from OpenCode to Codex
+        /// Migrate from OpenCode to codex
         #[arg(long, group = "direction")]
         opencode2codex: bool,
         /// Migrate from Cursor to OpenCode
@@ -103,6 +106,30 @@ pub enum Commands {
         /// Migrate from OpenCode to Cursor
         #[arg(long, group = "direction")]
         opencode2cursor: bool,
+        /// Migrate from claude to Kiro
+        #[arg(long, group = "direction")]
+        claude2kiro: bool,
+        /// Migrate from Kiro to claude
+        #[arg(long, group = "direction")]
+        kiro2claude: bool,
+        /// Migrate from codex to Kiro
+        #[arg(long, group = "direction")]
+        codex2kiro: bool,
+        /// Migrate from Kiro to codex
+        #[arg(long, group = "direction")]
+        kiro2codex: bool,
+        /// Migrate from OpenCode to Kiro
+        #[arg(long, group = "direction")]
+        opencode2kiro: bool,
+        /// Migrate from Kiro to OpenCode
+        #[arg(long, group = "direction")]
+        kiro2opencode: bool,
+        /// Migrate from Cursor to Kiro
+        #[arg(long, group = "direction")]
+        cursor2kiro: bool,
+        /// Migrate from Kiro to Cursor
+        #[arg(long, group = "direction")]
+        kiro2cursor: bool,
         /// Source session ID (if omitted, uses the most recent session in current workspace)
         #[arg(short, long, value_name = "ID")]
         session_id: Option<String>,

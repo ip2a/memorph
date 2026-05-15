@@ -107,7 +107,11 @@ pub fn list_groups() -> Result<Vec<SharedGroup>> {
         let group: SharedGroup = match serde_json::from_str(&content) {
             Ok(g) => g,
             Err(e) => {
-                eprintln!("Warning: failed to parse shared group {}: {}", path.display(), e);
+                eprintln!(
+                    "Warning: failed to parse shared group {}: {}",
+                    path.display(),
+                    e
+                );
                 continue;
             }
         };
@@ -165,7 +169,10 @@ pub fn create_group(params: &ShareCreateParams) -> Result<SharedGroup> {
         session_id: params.session_id.clone(),
         target_dir: source_session.session.project_dir.clone(),
         created_at: now,
-        last_active_at: source_session.session.last_active_at.map(|dt| dt.timestamp_millis()),
+        last_active_at: source_session
+            .session
+            .last_active_at
+            .map(|dt| dt.timestamp_millis()),
         last_sync_at: Some(now),
         last_sync_from: Some(params.provider.clone()),
         last_error: None,
@@ -216,14 +223,23 @@ pub fn add_holding(params: &AddHoldingParams) -> Result<Holding> {
     let now = Utc::now().timestamp_millis();
 
     let (session_id, target_dir_str) = if let Some(session_id) = &params.session_id {
-        (session_id.clone(), Some(target_dir.to_string_lossy().to_string()))
+        (
+            session_id.clone(),
+            Some(target_dir.to_string_lossy().to_string()),
+        )
     } else {
         if !provider.capabilities().write {
-            anyhow::bail!("Provider does not support writing sessions: {}", params.provider);
+            anyhow::bail!(
+                "Provider does not support writing sessions: {}",
+                params.provider
+            );
         }
         let session = build_canonical_session(&group)?;
         let new_session_id = provider.write_session(&session, &target_dir)?;
-        (new_session_id, Some(target_dir.to_string_lossy().to_string()))
+        (
+            new_session_id,
+            Some(target_dir.to_string_lossy().to_string()),
+        )
     };
 
     let holding = Holding {
@@ -388,7 +404,10 @@ pub fn refresh_active_times(group: &mut SharedGroup) -> Result<()> {
         if let Some(provider) = providers::find_provider(&holding.provider) {
             if provider.capabilities().scan {
                 if let Ok(sessions) = provider.scan_sessions() {
-                    if let Some(meta) = sessions.into_iter().find(|s| s.session_id == holding.session_id) {
+                    if let Some(meta) = sessions
+                        .into_iter()
+                        .find(|s| s.session_id == holding.session_id)
+                    {
                         holding.last_active_at = meta.last_active_at;
                     }
                 }

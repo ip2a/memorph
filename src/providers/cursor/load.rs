@@ -72,7 +72,10 @@ pub fn load_session(composer_id: &str) -> Result<MemorphSession> {
                 if trimmed.is_empty() {
                     None
                 } else if trimmed.chars().count() > 50 {
-                    Some(format!("{}...", trimmed.chars().take(50).collect::<String>()))
+                    Some(format!(
+                        "{}...",
+                        trimmed.chars().take(50).collect::<String>()
+                    ))
                 } else {
                     Some(trimmed.to_string())
                 }

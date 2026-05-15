@@ -125,6 +125,19 @@ pub fn router() -> Router {
             "/modal/settings/exec",
             get(crate::web_modals::modal_settings_exec),
         )
+        .route("/modal/manager", get(crate::web_modals::modal_manager_form))
+        .route(
+            "/modal/manager/preview",
+            get(crate::web_modals::modal_manager_preview),
+        )
+        .route(
+            "/modal/manager/exec/clean",
+            get(crate::web_modals::modal_manager_clean_exec),
+        )
+        .route(
+            "/modal/manager/exec/backup",
+            get(crate::web_modals::modal_manager_backup_exec),
+        )
         .route("/assets/style.css", get(crate::web_assets::serve_css))
         .route("/favicon.ico", get(crate::web_assets::serve_favicon))
 }
@@ -160,6 +173,7 @@ fn layout(title: &str, content: Markup, lang: UiLanguage, workspace: Option<&str
                         }
                         div.top-actions {
                             a.button href=(format!("/shared?lang={}", lang_code(lang))) { (tr(lang, "共享", "Shared")) }
+                            button.manager-entry type="button" data-modal=(format!("/modal/manager?lang={}", lang_code(lang))) { (tr(lang, "管理", "Manage")) }
                             button.settings-entry type="button" data-modal=(settings_href) { (tr(lang, "设置", "Settings")) }
                             a.github-link href="https://github.com/whillhill/memorph" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub" {
                                 (PreEscaped(github_icon_svg()))
@@ -285,6 +299,7 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
                 "claude".to_string(),
                 "codex".to_string(),
                 "opencode".to_string(),
+                "kiro".to_string(),
             ]
         })
     };
@@ -668,6 +683,7 @@ fn normalize_provider_filter(provider_filter: &[String]) -> Vec<String> {
             "claude".to_string(),
             "codex".to_string(),
             "opencode".to_string(),
+            "kiro".to_string(),
         ]
     } else {
         providers

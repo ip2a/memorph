@@ -26,7 +26,7 @@ impl Provider for ClaudeProvider {
     }
 
     fn name(&self) -> &'static str {
-        "Claude Code"
+        "claude"
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -579,6 +579,15 @@ impl Provider for ClaudeProvider {
 
     fn resume_command(&self, session_id: &str) -> Option<String> {
         Some(format!("claude --resume {}", session_id))
+    }
+
+    fn session_size(&self, session_id: &str) -> Result<u64> {
+        let path = Path::new(session_id);
+        if path.exists() {
+            Ok(std::fs::metadata(path)?.len())
+        } else {
+            Ok(0)
+        }
     }
 }
 

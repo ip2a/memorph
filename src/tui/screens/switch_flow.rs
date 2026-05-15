@@ -10,7 +10,7 @@ use ratatui::{
 use crate::tui::app::{App, AppResult, Screen};
 use crate::tui::theme::Theme;
 
-const PROVIDER_OPTIONS: [&str; 4] = ["claude", "codex", "opencode", "cursor"];
+const PROVIDER_OPTIONS: [&str; 5] = ["claude", "codex", "opencode", "cursor", "kiro"];
 
 /// 绘制迁移向导页面
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {

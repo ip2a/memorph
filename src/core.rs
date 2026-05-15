@@ -6,6 +6,8 @@ use crate::format;
 use crate::model::{MemorphSession, SessionMeta};
 use crate::providers;
 
+pub mod manager;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListParams {
     pub all: bool,

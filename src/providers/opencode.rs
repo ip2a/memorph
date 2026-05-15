@@ -625,6 +625,35 @@ impl Provider for OpenCodeProvider {
     fn resume_command(&self, session_id: &str) -> Option<String> {
         Some(format!("opencode --session {}", session_id))
     }
+
+    fn session_size(&self, session_id: &str) -> Result<u64> {
+        // Try filesystem first
+        let storage_dir = get_opencode_dir().join("storage");
+        let session_path = storage_dir
+            .join("session")
+            .join(format!("{}.json", session_id));
+        if session_path.exists() {
+            let mut total = std::fs::metadata(&session_path)?.len();
+            let msg_dir = storage_dir.join("message").join(session_id);
+            if msg_dir.exists() {
+                for entry in std::fs::read_dir(&msg_dir)? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                        total += std::fs::metadata(&path)?.len();
+                    }
+                }
+            }
+            return Ok(total);
+        }
+
+        // Fallback to DB size estimate
+        if let Ok(size) = opencode_session_db_size(session_id) {
+            return Ok(size);
+        }
+
+        Ok(0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -801,6 +830,45 @@ fn message_tokens(msg: &MemorphMessage) -> Value {
 
 fn get_db_path() -> PathBuf {
     get_opencode_dir().join("opencode.db")
+}
+
+/// Estimate session size from OpenCode SQLite DB.
+fn opencode_session_db_size(session_id: &str) -> Result<u64> {
+    let db_path = get_db_path();
+    if !db_path.exists() {
+        return Ok(0);
+    }
+    let conn = Connection::open(&db_path)?;
+    let mut total: u64 = 0;
+
+    // Session row size (approximate via JSON fields)
+    if let Ok(size) = conn.query_row(
+        "SELECT length(id) + length(project_id) + COALESCE(length(parent_id), 0) + length(slug) + length(directory) + length(title) + length(version) + COALESCE(length(share_url), 0) + COALESCE(length(summary_diffs), 0) + COALESCE(length(revert), 0) + COALESCE(length(permission), 0) FROM session WHERE id = ?1",
+        [session_id],
+        |row| row.get::<_, i64>(0),
+    ) {
+        total += size as u64;
+    }
+
+    // Messages size
+    let mut stmt = conn.prepare("SELECT length(id) + length(session_id) + length(role) + COALESCE(length(content), 0) + COALESCE(length(name), 0) FROM message WHERE session_id = ?1")?;
+    let rows = stmt.query_map([session_id], |row| row.get::<_, i64>(0))?;
+    for row in rows {
+        if let Ok(size) = row {
+            total += size as u64;
+        }
+    }
+
+    // Parts size
+    let mut stmt = conn.prepare("SELECT length(id) + length(message_id) + length(session_id) + length(data) FROM part WHERE session_id = ?1")?;
+    let rows = stmt.query_map([session_id], |row| row.get::<_, i64>(0))?;
+    for row in rows {
+        if let Ok(size) = row {
+            total += size as u64;
+        }
+    }
+
+    Ok(total)
 }
 
 fn scan_sessions_from_db() -> Result<Vec<SessionMeta>> {

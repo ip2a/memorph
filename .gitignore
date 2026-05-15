@@ -13,6 +13,7 @@
 !README_en.md
 !assets/**
 !.gitignore
+!LICENSE
 
 # 4. 白名单：GitHub Actions 工作流
 !.github/

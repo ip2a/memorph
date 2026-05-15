@@ -23,7 +23,7 @@ fn prosemirror_rich_text(text: &str) -> serde_json::Value {
 
 /// Generate a random base64 key matching Cursor's format.
 fn random_base64_key() -> String {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     use rand::Rng;
     let mut rng = rand::thread_rng();
     let bytes: [u8; 32] = rng.gen();
@@ -46,7 +46,10 @@ fn read_composer_index(conn: &rusqlite::Connection) -> Result<serde_json::Value>
 fn write_composer_index(conn: &rusqlite::Connection, index: &serde_json::Value) -> Result<()> {
     conn.execute(
         "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
-        ("composer.composerHeaders", serde_json::to_string(index)?.as_bytes()),
+        (
+            "composer.composerHeaders",
+            serde_json::to_string(index)?.as_bytes(),
+        ),
     )?;
     Ok(())
 }
@@ -239,7 +242,8 @@ pub fn rename_session(session_id: &str, new_title: &str) -> Result<()> {
     if let Some(all_composers) = index.get_mut("allComposers").and_then(|v| v.as_array_mut()) {
         for c in all_composers.iter_mut() {
             if c.get("composerId").and_then(|v| v.as_str()) == Some(session_id) {
-                c.as_object_mut().map(|o| o.insert("name".to_string(), json!(new_title)));
+                c.as_object_mut()
+                    .map(|o| o.insert("name".to_string(), json!(new_title)));
                 break;
             }
         }
@@ -369,8 +373,12 @@ pub fn write_session(session: &MemorphSession, target_dir: &Path) -> Result<Stri
                 .iter()
                 .filter_map(|block| match block {
                     crate::model::ContentBlock::Text { text } => Some(text.as_str()),
-                    crate::model::ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
-                    crate::model::ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
+                    crate::model::ContentBlock::Thinking { thinking, .. } => {
+                        Some(thinking.as_str())
+                    }
+                    crate::model::ContentBlock::ToolResult { content, .. } => {
+                        Some(content.as_str())
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -603,4 +611,3 @@ pub fn write_session(session: &MemorphSession, target_dir: &Path) -> Result<Stri
 
     Ok(composer_id)
 }
-

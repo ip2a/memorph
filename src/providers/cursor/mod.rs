@@ -51,4 +51,8 @@ impl Provider for CursorProvider {
     fn rename_session(&self, session_id: &str, new_title: &str) -> Result<()> {
         write::rename_session(session_id, new_title)
     }
+
+    fn session_size(&self, session_id: &str) -> Result<u64> {
+        db::composer_size(session_id)
+    }
 }

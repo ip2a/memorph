@@ -237,6 +237,7 @@ pub fn workspace_providers(workspace: &str) -> Result<Vec<String>> {
                 "claude".to_string(),
                 "codex".to_string(),
                 "opencode".to_string(),
+                "kiro".to_string(),
             ]
         });
     Ok(providers)

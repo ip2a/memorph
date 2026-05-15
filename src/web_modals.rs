@@ -2,8 +2,8 @@ use axum::{
     extract::{Path, Query, RawQuery},
     response::{Html, IntoResponse},
 };
-use maud::{html, Markup};
-use serde::Deserialize;
+use maud::{html, Markup, PreEscaped};
+use serde::{Deserialize, Deserializer};
 
 use chrono::{DateTime, Utc};
 
@@ -316,7 +316,17 @@ pub(crate) async fn modal_share_bind_exec(
 
 pub(crate) async fn modal_share_sync_all(Query(q): Query<LangQuery>) -> impl IntoResponse {
     let lang = query_language(q.lang.as_deref());
-    Html(modal_error(tr(lang, "请从共享详情页触发同步", "Please trigger sync from the shared detail page"), lang).into_string())
+    Html(
+        modal_error(
+            tr(
+                lang,
+                "请从共享详情页触发同步",
+                "Please trigger sync from the shared detail page",
+            ),
+            lang,
+        )
+        .into_string(),
+    )
 }
 
 pub(crate) async fn modal_share_sync(
@@ -1503,4 +1513,407 @@ fn js_string(value: &str) -> String {
         .replace('\'', "\\'")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
+}
+
+// ---------------------------------------------------------------------------
+// Session Manager
+// ---------------------------------------------------------------------------
+
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct StringOrVec;
+
+    impl<'de> serde::de::Visitor<'de> for StringOrVec {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("string or list of strings")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Vec<String>, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(vec![value.to_owned()])
+        }
+
+        fn visit_seq<S>(self, visitor: S) -> Result<Vec<String>, S::Error>
+        where
+            S: serde::de::SeqAccess<'de>,
+        {
+            Deserialize::deserialize(serde::de::value::SeqAccessDeserializer::new(visitor))
+        }
+    }
+
+    deserializer.deserialize_any(StringOrVec)
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ManagerFormQuery {
+    lang: Option<String>,
+    workspace: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ManagerPreviewQuery {
+    lang: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    provider: Vec<String>,
+    days: Option<u32>,
+    size_mb: Option<u32>,
+    workspace: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct ManagerExecQuery {
+    lang: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    sel: Vec<String>,
+    output_dir: Option<String>,
+}
+
+/// Render the manager form modal.
+pub(crate) async fn modal_manager_form(Query(q): Query<ManagerFormQuery>) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+    let workspace = q.workspace.as_deref().unwrap_or("");
+    let provider_ids = providers::all_provider_ids();
+
+    Html(
+        html! {
+            dialog {
+                article {
+                    header {
+                        h3 { (tr(lang, "会话管理器", "Session Manager")) }
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                    form #manager-filter method="get" action="/modal/manager/preview" data-modal-form {
+                        input type="hidden" name="lang" value=(lang_code(lang));
+                        input type="hidden" name="workspace" value=(workspace);
+                        div.field {
+                            label { (tr(lang, "编辑器", "Editors")) }
+                            div.provider-checkboxes {
+                                @for pid in provider_ids {
+                                    @let name = providers::find_provider(pid).map(|p| p.name()).unwrap_or(pid);
+                                    label.provider-pill {
+                                        input type="checkbox" name="provider" value=(pid) checked;
+                                        span { (name) }
+                                    }
+                                }
+                            }
+                        }
+                        div.field {
+                            label { (tr(lang, "超过 N 天未更新", "Older than N days")) }
+                            input type="number" name="days" value="30" min="0";
+                            p.modal-subtitle { (tr(lang, "0 表示不限", "0 means no limit")) }
+                        }
+                        div.field {
+                            label { (tr(lang, "超过 N MB", "Larger than N MB")) }
+                            input type="number" name="size_mb" value="10" min="0";
+                            p.modal-subtitle { (tr(lang, "0 表示不限", "0 means no limit")) }
+                        }
+                        footer {
+                            button type="button" onclick="closeModal()" { (tr(lang, "取消", "Cancel")) }
+                            button.invert type="submit" { (tr(lang, "预览", "Preview")) }
+                        }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+/// Render the manager preview results inside the modal.
+pub(crate) async fn modal_manager_preview(
+    Query(q): Query<ManagerPreviewQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+
+    let filter = crate::core::manager::ManagerFilter {
+        providers: q.provider.clone(),
+        older_than_days: q.days,
+        larger_than_mb: q.size_mb,
+        workspace: q.workspace.clone(),
+    };
+
+    let result = match crate::core::manager::preview(&filter) {
+        Ok(r) => r,
+        Err(e) => {
+            return Html(
+                html! {
+                    div #manager-results {
+                        p.error { (format!("Preview error: {}", e)) }
+                    }
+                }
+                .into_string(),
+            );
+        }
+    };
+
+    let total_mb = result.total_size_bytes as f64 / (1024.0 * 1024.0);
+
+    Html(
+        html! {
+            div #manager-results {
+                p.manager-stats {
+                    strong { (tr(lang, "符合条件", "Matching")) ": " }
+                    span { (result.total_count) " " (tr(lang, "个会话", "sessions")) ", " }
+                    span { (format!("{:.1} MB", total_mb)) }
+                }
+
+                @if result.items.is_empty() {
+                    p { (tr(lang, "没有符合条件的会话。", "No sessions match the criteria.")) }
+                } @else {
+                    div.manager-table-wrapper {
+                        table.manager-table {
+                            thead {
+                                tr {
+                                    th {
+                                        input type="checkbox" id="manager-select-all" checked onchange="toggleManagerSelectAll(this)";
+                                    }
+                                    th { (tr(lang, "编辑器", "Editor")) }
+                                    th { (tr(lang, "标题", "Title")) }
+                                    th { (tr(lang, "大小", "Size")) }
+                                    th { (tr(lang, "上次更新", "Last Updated")) }
+                                }
+                            }
+                            tbody {
+                                @for item in &result.items {
+                                    @let sel_val = format!("{}::{}", item.provider_id, item.session_id);
+                                    @let size_mb = item.size_bytes as f64 / (1024.0 * 1024.0);
+                                    @let time_str = item.last_active_at.map(format_workspace_time).unwrap_or_else(|| "-".to_string());
+                                    tr {
+                                        td {
+                                            input type="checkbox" name="sel" value=(sel_val) checked class="manager-row-check";
+                                        }
+                                        td { (item.provider_name) }
+                                        td {
+                                            (item.title.as_deref().unwrap_or("(untitled)"))
+                                            @if let Some(dir) = &item.project_dir {
+                                                div.manager-meta-line {
+                                                    span.meta-item { (dir) }
+                                                }
+                                            }
+                                        }
+                                        td { (format!("{:.1} MB", size_mb)) }
+                                        td { (time_str) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    div.manager-actions {
+                        button.invert type="button" data-manager-action="/modal/manager/exec/clean" onclick="runManagerAction(this)" {
+                            (tr(lang, "一键清理", "Clean Selected"))
+                        }
+                        button type="button" data-manager-action="/modal/manager/exec/backup" onclick="runManagerBackup(this)" {
+                            (tr(lang, "一键备份", "Backup Selected"))
+                        }
+                    }
+                }
+            }
+
+            script {
+                (PreEscaped(r##"
+                function toggleManagerSelectAll(cb) {
+                    document.querySelectorAll('.manager-row-check').forEach(function(el) {
+                        el.checked = cb.checked;
+                    });
+                }
+                function runManagerAction(btn) {
+                    var action = btn.dataset.managerAction;
+                    var sels = Array.from(document.querySelectorAll('.manager-row-check:checked')).map(function(el) {
+                        return 'sel=' + encodeURIComponent(el.value);
+                    });
+                    if (sels.length === 0) { alert('No sessions selected'); return; }
+                    var url = action + '?' + sels.join('&');
+                    loadModal(url);
+                }
+                function runManagerBackup(btn) {
+                    var dir = prompt('Backup directory:');
+                    if (!dir) return;
+                    var action = btn.dataset.managerAction;
+                    var sels = Array.from(document.querySelectorAll('.manager-row-check:checked')).map(function(el) {
+                        return 'sel=' + encodeURIComponent(el.value);
+                    });
+                    if (sels.length === 0) { alert('No sessions selected'); return; }
+                    var url = action + '?' + sels.join('&') + '&output_dir=' + encodeURIComponent(dir);
+                    loadModal(url);
+                }
+                "##))
+            }
+        }
+        .into_string(),
+    )
+}
+
+/// Execute clean action.
+pub(crate) async fn modal_manager_clean_exec(
+    Query(q): Query<ManagerExecQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+
+    let items = parse_manager_selections(&q.sel);
+    if items.is_empty() {
+        return Html(
+            html! {
+                dialog {
+                    article {
+                        header {
+                            h3 { (tr(lang, "无选中项", "No Selection")) }
+                            button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                        }
+                        p { (tr(lang, "未选择任何会话。", "No sessions were selected.")) }
+                    }
+                }
+            }
+            .into_string(),
+        );
+    }
+
+    let result = crate::core::manager::clean(&items);
+    let freed_mb = result.freed_bytes as f64 / (1024.0 * 1024.0);
+
+    Html(
+        html! {
+            dialog {
+                article {
+                    header {
+                        h3 { (tr(lang, "清理完成", "Clean Complete")) }
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                    p {
+                        strong { (result.success) } " " (tr(lang, "个已清理", "cleaned")) ", "
+                        strong { (result.failed) } " " (tr(lang, "个失败", "failed"))
+                    }
+                    p { (format!("{:.1} MB {}", freed_mb, tr(lang, "已释放", "freed"))) }
+                    @if !result.errors.is_empty() {
+                        details {
+                            summary { (tr(lang, "查看错误", "View Errors")) }
+                            ul {
+                                @for err in &result.errors {
+                                    li { code { (err) } }
+                                }
+                            }
+                        }
+                    }
+                    footer {
+                        button.invert type="button" onclick="closeModal(); refreshMain();" { (tr(lang, "刷新列表", "Refresh List")) }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+/// Execute backup action.
+pub(crate) async fn modal_manager_backup_exec(
+    Query(q): Query<ManagerExecQuery>,
+) -> impl IntoResponse {
+    let lang = query_language(q.lang.as_deref());
+
+    let items = parse_manager_selections(&q.sel);
+    if items.is_empty() {
+        return Html(
+            html! {
+                dialog {
+                    article {
+                        header {
+                            h3 { (tr(lang, "无选中项", "No Selection")) }
+                            button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                        }
+                        p { (tr(lang, "未选择任何会话。", "No sessions were selected.")) }
+                    }
+                }
+            }
+            .into_string(),
+        );
+    }
+
+    let output_dir = q.output_dir.as_deref().unwrap_or("./backups");
+    let result = crate::core::manager::backup(&items, std::path::Path::new(output_dir));
+
+    Html(
+        html! {
+            dialog {
+                article {
+                    header {
+                        h3 { (tr(lang, "备份完成", "Backup Complete")) }
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                    p {
+                        strong { (result.success) } " " (tr(lang, "个已备份", "backed up")) ", "
+                        strong { (result.failed) } " " (tr(lang, "个失败", "failed"))
+                    }
+                    @if !result.files.is_empty() {
+                        details {
+                            summary { (tr(lang, "查看文件", "View Files")) }
+                            ul {
+                                @for f in &result.files {
+                                    li { code { (f) } }
+                                }
+                            }
+                        }
+                    }
+                    @if !result.errors.is_empty() {
+                        details {
+                            summary { (tr(lang, "查看错误", "View Errors")) }
+                            ul {
+                                @for err in &result.errors {
+                                    li { code { (err) } }
+                                }
+                            }
+                        }
+                    }
+                    footer {
+                        button type="button" onclick="closeModal()" { (tr(lang, "关闭", "Close")) }
+                    }
+                }
+            }
+        }
+        .into_string(),
+    )
+}
+
+/// Parse `provider_id::session_id` selections into ManagerItems by re-scanning.
+fn parse_manager_selections(sels: &[String]) -> Vec<crate::core::manager::ManagerItem> {
+    let mut items = Vec::new();
+    for sel in sels {
+        let parts: Vec<&str> = sel.split("::").collect();
+        if parts.len() != 2 {
+            continue;
+        }
+        let provider_id = parts[0];
+        let session_id = parts[1];
+
+        let provider = match providers::find_provider(provider_id) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        // Re-scan to find metadata and size
+        let sessions = match provider.scan_sessions() {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+
+        if let Some(meta) = sessions.iter().find(|s| s.session_id == session_id) {
+            let size_bytes = provider.session_size(session_id).unwrap_or(0);
+            items.push(crate::core::manager::ManagerItem {
+                provider_id: provider_id.to_string(),
+                provider_name: provider.name().to_string(),
+                session_id: session_id.to_string(),
+                source_path: meta.source_path.clone(),
+                title: meta.title.clone(),
+                project_dir: meta.project_dir.clone(),
+                last_active_at: meta.last_active_at,
+                size_bytes,
+            });
+        }
+    }
+    items
 }

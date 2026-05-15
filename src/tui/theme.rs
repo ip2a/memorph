@@ -17,7 +17,7 @@ pub struct Theme {
     pub border: Color,
     pub border_focused: Color,
     pub highlight: Color,
-    pub provider_colors: [Color; 4],
+    pub provider_colors: [Color; 5],
 }
 
 impl Default for Theme {
@@ -41,6 +41,7 @@ impl Default for Theme {
                 Color::Green,   // Codex
                 Color::Magenta, // OpenCode
                 Color::Blue,    // Cursor
+                Color::Cyan,    // Kiro
             ],
         }
     }
@@ -53,6 +54,7 @@ impl Theme {
             "codex" => self.provider_colors[1],
             "opencode" => self.provider_colors[2],
             "cursor" => self.provider_colors[3],
+            "kiro" => self.provider_colors[4],
             _ => self.text_dim,
         }
     }
@@ -93,4 +95,3 @@ pub fn truncate(s: &str, max_chars: usize) -> String {
         result
     }
 }
-

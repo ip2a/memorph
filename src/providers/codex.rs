@@ -23,7 +23,7 @@ impl Provider for CodexProvider {
     }
 
     fn name(&self) -> &'static str {
-        "Codex (OpenAI)"
+        "codex"
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -747,6 +747,15 @@ impl Provider for CodexProvider {
 
     fn resume_command(&self, session_id: &str) -> Option<String> {
         Some(format!("codex resume {}", session_id))
+    }
+
+    fn session_size(&self, session_id: &str) -> Result<u64> {
+        if let Some(path) = find_session_file(session_id) {
+            if path.exists() {
+                return Ok(std::fs::metadata(path)?.len());
+            }
+        }
+        Ok(0)
     }
 }
 

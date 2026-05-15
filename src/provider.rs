@@ -77,4 +77,11 @@ pub trait Provider: Send + Sync {
         let _ = session_id;
         None
     }
+
+    /// Estimate the storage size (in bytes) of a single session.
+    /// Default returns 0 (unknown).
+    fn session_size(&self, session_id: &str) -> Result<u64> {
+        let _ = session_id;
+        Ok(0)
+    }
 }

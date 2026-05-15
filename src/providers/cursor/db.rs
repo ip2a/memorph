@@ -141,3 +141,30 @@ pub fn list_bubbles(composer_id: &str) -> Result<Vec<BubbleData>> {
     }
     Ok(bubbles)
 }
+
+/// Calculate the total storage size (in bytes) of a composer and all its bubbles.
+pub fn composer_size(composer_id: &str) -> Result<u64> {
+    let conn = open_global_db()?;
+    let mut total: u64 = 0;
+
+    // Composer metadata size
+    if let Ok(size) = conn.query_row(
+        "SELECT length(value) FROM cursorDiskKV WHERE key = ?",
+        [format!("composerData:{}", composer_id)],
+        |row| row.get::<_, i64>(0),
+    ) {
+        total += size as u64;
+    }
+
+    // All bubbles size
+    let pattern = format!("bubbleId:{}:%", composer_id);
+    let mut stmt = conn.prepare("SELECT length(value) FROM cursorDiskKV WHERE key LIKE ?")?;
+    let rows = stmt.query_map([&pattern], |row| row.get::<_, i64>(0))?;
+    for row in rows {
+        if let Ok(size) = row {
+            total += size as u64;
+        }
+    }
+
+    Ok(total)
+}

@@ -102,6 +102,7 @@ impl App {
             2 => vec!["codex".to_string()],
             3 => vec!["opencode".to_string()],
             4 => vec!["cursor".to_string()],
+            5 => vec!["kiro".to_string()],
             _ => Vec::new(),
         }
     }
@@ -114,7 +115,7 @@ impl App {
     }
 
     pub fn next_provider_tab(&mut self) {
-        self.selected_provider_tab = (self.selected_provider_tab + 1) % 5;
+        self.selected_provider_tab = (self.selected_provider_tab + 1) % 6;
         self.save_provider_tab();
         if let Err(e) = self.load_sessions() {
             self.show_error(format!("Failed to load sessions: {}", e));
@@ -122,7 +123,7 @@ impl App {
     }
 
     pub fn select_provider_tab(&mut self, tab: usize) {
-        if tab < 5 {
+        if tab < 6 {
             self.selected_provider_tab = tab;
             self.save_provider_tab();
             if let Err(e) = self.load_sessions() {
@@ -249,6 +250,7 @@ fn providers_to_tab(providers: &[String]) -> usize {
         "codex" => 2,
         "opencode" => 3,
         "cursor" => 4,
+        "kiro" => 5,
         _ => 0,
     }
 }
@@ -260,6 +262,7 @@ fn tab_to_providers(tab: usize) -> Vec<String> {
         2 => vec!["codex".to_string()],
         3 => vec!["opencode".to_string()],
         4 => vec!["cursor".to_string()],
+        5 => vec!["kiro".to_string()],
         _ => Vec::new(),
     }
 }

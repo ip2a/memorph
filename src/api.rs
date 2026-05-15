@@ -65,14 +65,8 @@ pub fn router() -> Router {
             "/api/v1/share/holdings/{group_id}/{holding_id}",
             delete(unbind_shared_session),
         )
-        .route(
-            "/api/v1/share/{group_id}",
-            delete(remove_shared_session),
-        )
-        .route(
-            "/api/v1/share/{group_id}",
-            patch(rename_shared_session),
-        )
+        .route("/api/v1/share/{group_id}", delete(remove_shared_session))
+        .route("/api/v1/share/{group_id}", patch(rename_shared_session))
 }
 
 #[derive(Deserialize)]
@@ -350,10 +344,7 @@ async fn remove_shared_session(
     Path(group_id): Path<String>,
     Query(q): Query<ShareRemoveQuery>,
 ) -> impl IntoResponse {
-    match shared::delete_group(
-        &group_id,
-        q.delete_provider_sessions.unwrap_or(false),
-    ) {
+    match shared::delete_group(&group_id, q.delete_provider_sessions.unwrap_or(false)) {
         Ok(()) => ApiResponse::success("removed").into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

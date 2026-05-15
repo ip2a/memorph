@@ -22,7 +22,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 }
 
 fn draw_provider_tabs(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let providers = vec!["All", "Claude", "Codex", "OpenCode", "Cursor"];
+    let providers = vec!["All", "claude", "codex", "OpenCode", "Cursor", "Kiro"];
     let tabs: Vec<Line> = providers
         .iter()
         .enumerate()
@@ -219,6 +219,10 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> AppResult {
         }
         KeyCode::Char('5') => {
             app.select_provider_tab(4);
+            AppResult::Continue
+        }
+        KeyCode::Char('6') => {
+            app.select_provider_tab(5);
             AppResult::Continue
         }
         KeyCode::Char('q') | KeyCode::Esc => AppResult::Quit,

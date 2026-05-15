@@ -474,6 +474,14 @@ h1 {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12px;
 }
+.manager-meta-line {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 2px;
+    font-size: 12px;
+    opacity: 0.72;
+}
 .msg-list { display: grid; gap: 10px; }
 .msg-item { border: 1px solid var(--line); }
 .msg-header {
