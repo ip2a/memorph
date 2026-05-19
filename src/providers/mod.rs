@@ -3,11 +3,12 @@ pub mod codex;
 pub mod cursor;
 pub mod deepseek;
 pub mod kiro;
+pub mod kimi;
 pub mod opencode;
 
 use crate::provider::Provider;
 
-const PROVIDER_IDS: &[&str] = &["claude", "codex", "cursor", "opencode", "kiro", "deepseek"];
+const PROVIDER_IDS: &[&str] = &["claude", "codex", "cursor", "opencode", "kiro", "deepseek", "kimi"];
 
 pub struct ProviderRegistry;
 
@@ -23,6 +24,7 @@ impl ProviderRegistry {
             "cursor" => Some(Box::new(cursor::CursorProvider)),
             "deepseek" => Some(Box::new(deepseek::DeepseekProvider)),
             "kiro" => Some(Box::new(kiro::KiroProvider)),
+            "kimi" => Some(Box::new(kimi::KimiProvider)),
             "opencode" => Some(Box::new(opencode::OpenCodeProvider)),
             _ => None,
         }

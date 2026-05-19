@@ -20,11 +20,11 @@ jobs:
             runner: macos-latest
             artifact_binary: memorph
           - platform_id: linux-x64-gnu
-            runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
             artifact_binary: memorph
           - platform_id: linux-arm64-gnu
-            runner: ubuntu-24.04-arm
+            runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             artifact_binary: memorph
           - platform_id: win32-x64-msvc
@@ -40,6 +40,13 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - name: Build target artifact
         if: matrix.platform_id != 'darwin'
@@ -58,6 +65,18 @@ jobs:
         if: matrix.platform_id != 'darwin'
         shell: bash
         run: ./scripts/smoke_test.sh "dist/${{ matrix.platform_id }}/${{ matrix.artifact_binary }}"
+
+      - name: Verify Linux x64 binary is not glibc-linked
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        shell: bash
+        run: |
+          BIN="dist/${{ matrix.platform_id }}/${{ matrix.artifact_binary }}"
+          file "${BIN}"
+          if readelf -l "${BIN}" | grep -q 'Requesting program interpreter'; then
+            echo "[error] Linux x64 artifact is dynamically linked; this will reintroduce glibc version failures"
+            exit 1
+          fi
+          echo "[ok] Linux x64 artifact is statically linked"
 
       - name: Run smoke tests (macOS)
         if: matrix.platform_id == 'darwin'

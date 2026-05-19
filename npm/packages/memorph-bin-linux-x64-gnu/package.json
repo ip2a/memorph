@@ -1,7 +1,7 @@
 {
   "name": "memorph-bin-linux-x64-gnu",
-  "version": "0.1.7",
-  "description": "memorph platform package (linux x64 gnu)",
+  "version": "0.1.8",
+  "description": "memorph platform package (linux x64, statically linked)",
   "license": "MIT",
   "repository": {
     "type": "git",

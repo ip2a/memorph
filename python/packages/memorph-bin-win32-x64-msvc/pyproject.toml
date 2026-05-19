@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memorph-bin-win32-x64-msvc"
-version = "0.1.7"
+version = "0.1.8"
 description = "memorph platform package (win32 x64 msvc)"
 readme = "README.md"
 requires-python = ">=3.10"
