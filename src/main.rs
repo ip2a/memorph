@@ -42,18 +42,8 @@ fn run() -> Result<()> {
 
 fn run_command(command: Commands) -> Result<()> {
     match command {
-        Commands::List {
-            all,
-            claude,
-            codex,
-            cursor,
-            opencode,
-            kiro,
-        } => {
-            print_session_list(
-                all,
-                selected_providers(claude, codex, cursor, opencode, kiro),
-            )?;
+        Commands::List { all, provider } => {
+            print_session_list(all, provider)?;
         }
 
         Commands::Export {
@@ -116,64 +106,14 @@ fn run_command(command: Commands) -> Result<()> {
         }
 
         Commands::Switch {
-            claude2codex,
-            codex2claude,
-            claude2opencode,
-            codex2opencode,
-            opencode2claude,
-            opencode2codex,
-            cursor2opencode,
-            opencode2cursor,
-            claude2kiro,
-            kiro2claude,
-            codex2kiro,
-            kiro2codex,
-            opencode2kiro,
-            kiro2opencode,
-            cursor2kiro,
-            kiro2cursor,
+            from,
+            to,
             session_id,
             to_dir,
         } => {
-            let (from, to) = if claude2codex {
-                ("claude", "codex")
-            } else if codex2claude {
-                ("codex", "claude")
-            } else if claude2opencode {
-                ("claude", "opencode")
-            } else if codex2opencode {
-                ("codex", "opencode")
-            } else if opencode2claude {
-                ("opencode", "claude")
-            } else if opencode2codex {
-                ("opencode", "codex")
-            } else if cursor2opencode {
-                ("cursor", "opencode")
-            } else if opencode2cursor {
-                ("opencode", "cursor")
-            } else if claude2kiro {
-                ("claude", "kiro")
-            } else if kiro2claude {
-                ("kiro", "claude")
-            } else if codex2kiro {
-                ("codex", "kiro")
-            } else if kiro2codex {
-                ("kiro", "codex")
-            } else if opencode2kiro {
-                ("opencode", "kiro")
-            } else if kiro2opencode {
-                ("kiro", "opencode")
-            } else if cursor2kiro {
-                ("cursor", "kiro")
-            } else if kiro2cursor {
-                ("kiro", "cursor")
-            } else {
-                anyhow::bail!("Specify one direction, for example --claude2codex, --opencode2cursor, --claude2kiro, or --kiro2opencode");
-            };
-
             let result = core::switch_session(&core::SwitchParams {
-                from: from.to_string(),
-                to: to.to_string(),
+                from,
+                to,
                 session_id,
                 to_dir,
             })?;
@@ -477,31 +417,6 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-fn selected_providers(
-    claude: bool,
-    codex: bool,
-    cursor: bool,
-    opencode: bool,
-    kiro: bool,
-) -> Vec<String> {
-    let mut providers = Vec::new();
-    if claude {
-        providers.push("claude".to_string());
-    }
-    if codex {
-        providers.push("codex".to_string());
-    }
-    if cursor {
-        providers.push("cursor".to_string());
-    }
-    if opencode {
-        providers.push("opencode".to_string());
-    }
-    if kiro {
-        providers.push("kiro".to_string());
-    }
-    providers
-}
 
 fn provider_name(provider: &str) -> Result<String> {
     providers::find_provider(provider)

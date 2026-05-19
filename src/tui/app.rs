@@ -1,20 +1,142 @@
 use anyhow::Result;
 use crossterm::event::KeyEvent;
-use ratatui::widgets::ListState;
+use ratatui::widgets::TableState;
+use std::path::Path;
+use std::path::PathBuf;
 
-use crate::config;
-use crate::core::{self, SessionGroup, SessionItem, SwitchParams, SwitchResult};
+use crate::config::UiLanguage;
+use crate::core::{self, ExportParams, SessionGroup, SessionItem, SwitchParams};
 use crate::model::MemorphSession;
+use crate::{config, providers};
 
-/// 当前显示的页面
+pub fn provider_tabs() -> Vec<&'static str> {
+    let mut tabs = vec!["All"];
+    for id in providers::all_provider_ids() {
+        tabs.push(providers::find_provider(id).map(|p| p.name()).unwrap_or(id));
+    }
+    tabs
+}
+
+pub const ACTION_OPTIONS: [SessionAction; 5] = [
+    SessionAction::Switch,
+    SessionAction::Export,
+    SessionAction::Rename,
+    SessionAction::Delete,
+    SessionAction::Details,
+];
+pub const SEARCH_SCOPE_OPTIONS: [SearchScope; 4] = [
+    SearchScope::All,
+    SearchScope::Title,
+    SearchScope::SessionId,
+    SearchScope::Workspace,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionAction {
+    Switch,
+    Export,
+    Rename,
+    Delete,
+    Details,
+}
+
+impl SessionAction {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Switch => "Switch",
+            Self::Export => "Export",
+            Self::Rename => "Rename",
+            Self::Delete => "Delete",
+            Self::Details => "Details",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionField {
+    Action,
+    TargetAgent,
+    TargetWorkspace,
+    ExportPath,
+    RenameTitle,
+    Execute,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionDialog {
+    TargetAgent,
+    TargetWorkspace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MainFocus {
+    Workspace,
+    Settings,
+    Sessions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsField {
+    Language,
+    SessionsPerProvider,
+    ShowOpenCodeSubagents,
+    AutoRefreshAfterDelete,
+    Save,
+}
+
+impl SettingsField {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Language => "Interface Language",
+            Self::SessionsPerProvider => "Per Agent",
+            Self::ShowOpenCodeSubagents => "OpenCode subagents",
+            Self::AutoRefreshAfterDelete => "Auto Refresh After Delete",
+            Self::Save => "Save",
+        }
+    }
+}
+
+pub const SETTINGS_FIELDS: [SettingsField; 5] = [
+    SettingsField::Language,
+    SettingsField::SessionsPerProvider,
+    SettingsField::ShowOpenCodeSubagents,
+    SettingsField::AutoRefreshAfterDelete,
+    SettingsField::Save,
+];
+
+#[derive(Debug, Clone)]
+pub struct ActionResult {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub is_error: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchScope {
+    All,
+    Title,
+    SessionId,
+    Workspace,
+}
+
+impl SearchScope {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Title => "Title",
+            Self::SessionId => "Session",
+            Self::Workspace => "Workspace",
+        }
+    }
+}
+
+/// Currently displayed screen
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     SessionList,
-    SessionDetail,
-    SwitchFlow,
 }
 
-/// 应用事件处理结果
+/// Application event handling result
 #[derive(Debug)]
 pub enum AppResult {
     Continue,
@@ -23,7 +145,7 @@ pub enum AppResult {
     Error(anyhow::Error),
 }
 
-/// TUI 应用状态机
+/// TUI application state machine
 pub struct App {
     pub current_screen: Screen,
     pub session_groups: Vec<SessionGroup>,
@@ -35,29 +157,50 @@ pub struct App {
     pub error_message: Option<String>,
     pub error_timeout: Option<std::time::Instant>,
 
-    // 列表导航
-    pub list_state: ListState,
+    // List navigation
+    pub table_state: TableState,
     pub selected_provider_tab: usize,
+    pub main_focus: MainFocus,
 
-    // 详情页滚动
+    // Top-level modal state
+    pub workspace_modal_open: bool,
+    pub settings_modal_open: bool,
+    pub workspace_input: String,
+    pub workspace_modal_index: usize,
+    pub settings_selection: usize,
+    pub settings_language: UiLanguage,
+    pub settings_sessions_per_provider: usize,
+    pub settings_show_opencode_subagents: bool,
+    pub settings_auto_refresh_after_delete: bool,
+
+    // Action modal state
+    pub action_modal_open: bool,
+    pub action_selection: usize,
+    pub action_field: ActionField,
+    pub action_dialog: Option<ActionDialog>,
+    pub switch_target_index: usize,
+    pub workspace_options: Vec<String>,
+    pub target_workspace: String,
+    pub workspace_picker_index: usize,
+    pub export_output_prefix: String,
+    pub rename_input: String,
+    pub action_result: Option<ActionResult>,
+
+    // Search modal state
+    pub search_modal_open: bool,
+    pub search_query: String,
+    pub search_scope_index: usize,
+    pub search_match_index: usize,
+
+    // Detail modal state
+    pub detail_modal_open: bool,
     pub detail_scroll: usize,
-
-    // 迁移向导状态
-    pub switch_step: usize,
-    pub switch_selection: Option<usize>,
-    pub switch_target: Option<String>,
-    pub switch_result: Option<SwitchResult>,
-    pub switch_error: Option<String>,
 }
 
 impl App {
     pub fn new() -> Result<Self> {
         let cwd = std::env::current_dir()?;
         let cwd_str = cwd.to_string_lossy().to_string();
-
-        let selected_provider_tab = config::workspace_providers(&cwd_str)
-            .map(|providers| providers_to_tab(&providers))
-            .unwrap_or(0);
 
         let mut app = Self {
             current_screen: Screen::SessionList,
@@ -69,16 +212,38 @@ impl App {
             show_help: false,
             error_message: None,
             error_timeout: None,
-            list_state: ListState::default(),
-            selected_provider_tab,
+            table_state: TableState::default(),
+            selected_provider_tab: 0,
+            main_focus: MainFocus::Sessions,
+            workspace_modal_open: false,
+            settings_modal_open: false,
+            workspace_input: cwd_str.clone(),
+            workspace_modal_index: 0,
+            settings_selection: 0,
+            settings_language: UiLanguage::default(),
+            settings_sessions_per_provider: config::DEFAULT_SESSIONS_PER_PROVIDER,
+            settings_show_opencode_subagents: false,
+            settings_auto_refresh_after_delete: false,
+            action_modal_open: false,
+            action_selection: 0,
+            action_field: ActionField::Action,
+            action_dialog: None,
+            switch_target_index: 0,
+            workspace_options: vec![cwd_str.clone()],
+            target_workspace: cwd_str.clone(),
+            workspace_picker_index: 0,
+            export_output_prefix: cwd_str.clone(),
+            rename_input: String::new(),
+            action_result: None,
+            search_modal_open: false,
+            search_query: String::new(),
+            search_scope_index: 0,
+            search_match_index: 0,
+            detail_modal_open: false,
             detail_scroll: 0,
-            switch_step: 0,
-            switch_selection: Some(0),
-            switch_target: None,
-            switch_result: None,
-            switch_error: None,
         };
 
+        app.refresh_workspace_options(None);
         app.load_sessions()?;
         Ok(app)
     }
@@ -92,21 +257,22 @@ impl App {
         };
 
         self.session_groups = core::list_sessions(&params)?;
-        self.list_state.select(None);
+        self.ensure_selected_row();
         Ok(())
     }
 
     fn get_filtered_providers(&self) -> Vec<String> {
-        match self.selected_provider_tab {
-            1 => vec!["claude".to_string()],
-            2 => vec!["codex".to_string()],
-            3 => vec!["opencode".to_string()],
-            4 => vec!["cursor".to_string()],
-            5 => vec!["kiro".to_string()],
-            _ => Vec::new(),
+        if self.selected_provider_tab == 0 {
+            Vec::new()
+        } else {
+            providers::all_provider_ids()
+                .get(self.selected_provider_tab - 1)
+                .map(|id| vec![id.to_string()])
+                .unwrap_or_default()
         }
     }
 
+    #[allow(dead_code)]
     pub fn toggle_show_all(&mut self) {
         self.show_all = !self.show_all;
         if let Err(e) = self.load_sessions() {
@@ -115,15 +281,26 @@ impl App {
     }
 
     pub fn next_provider_tab(&mut self) {
-        self.selected_provider_tab = (self.selected_provider_tab + 1) % 6;
+        let tab_count = provider_tabs().len();
+        self.selected_provider_tab = (self.selected_provider_tab + 1) % tab_count;
         self.save_provider_tab();
         if let Err(e) = self.load_sessions() {
             self.show_error(format!("Failed to load sessions: {}", e));
         }
     }
 
+    pub fn previous_provider_tab(&mut self) {
+        let tab_count = provider_tabs().len();
+        self.selected_provider_tab = (self.selected_provider_tab + tab_count - 1) % tab_count;
+        self.save_provider_tab();
+        if let Err(e) = self.load_sessions() {
+            self.show_error(format!("Failed to load sessions: {}", e));
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn select_provider_tab(&mut self, tab: usize) {
-        if tab < 6 {
+        if tab < provider_tabs().len() {
             self.selected_provider_tab = tab;
             self.save_provider_tab();
             if let Err(e) = self.load_sessions() {
@@ -133,29 +310,41 @@ impl App {
     }
 
     fn save_provider_tab(&self) {
-        let Some(ref workspace) = self.workspace else { return };
+        let Some(ref workspace) = self.workspace else {
+            return;
+        };
         let providers = tab_to_providers(self.selected_provider_tab);
         let _ = config::set_workspace_providers(workspace, providers);
     }
 
     pub fn select_next(&mut self) {
-        let flat_len: usize = self.session_groups.iter().map(|g| g.sessions.len()).sum();
+        if self.main_focus != MainFocus::Sessions {
+            self.main_focus = MainFocus::Sessions;
+            return;
+        }
 
-        let current = self.list_state.selected().unwrap_or(0);
+        let flat_len = self.session_count();
+
+        let current = self.table_state.selected().unwrap_or(0);
         if current + 1 < flat_len {
-            self.list_state.select(Some(current + 1));
+            self.table_state.select(Some(current + 1));
         }
     }
 
     pub fn select_previous(&mut self) {
-        let current = self.list_state.selected().unwrap_or(0);
+        if self.table_state.selected().unwrap_or(0) == 0 {
+            self.main_focus = MainFocus::Workspace;
+            return;
+        }
+
+        let current = self.table_state.selected().unwrap_or(0);
         if current > 0 {
-            self.list_state.select(Some(current - 1));
+            self.table_state.select(Some(current - 1));
         }
     }
 
     pub fn get_selected_session(&self) -> Option<&SessionItem> {
-        let selected_idx = self.list_state.selected()?;
+        let selected_idx = self.table_state.selected()?;
         let mut current_idx = 0;
 
         for group in &self.session_groups {
@@ -170,6 +359,25 @@ impl App {
         None
     }
 
+    pub fn session_count(&self) -> usize {
+        self.session_groups.iter().map(|g| g.sessions.len()).sum()
+    }
+
+    fn ensure_selected_row(&mut self) {
+        let flat_len = self.session_count();
+        if flat_len == 0 {
+            self.table_state.select(None);
+            return;
+        }
+
+        let selected = self
+            .table_state
+            .selected()
+            .unwrap_or(0)
+            .min(flat_len.saturating_sub(1));
+        self.table_state.select(Some(selected));
+    }
+
     #[allow(dead_code)]
     pub fn load_selected_session(&mut self) -> Result<()> {
         if let Some(selected) = &self.selected_session {
@@ -181,31 +389,844 @@ impl App {
         Ok(())
     }
 
-    pub fn execute_switch(&mut self) {
-        let Some(selected) = &self.selected_session else {
-            self.switch_error = Some("No session selected".to_string());
+    pub fn open_action_modal(&mut self) {
+        if self.main_focus == MainFocus::Workspace {
+            self.open_workspace_modal();
+            return;
+        }
+        if self.main_focus == MainFocus::Settings {
+            self.open_settings_modal();
+            return;
+        }
+
+        let Some(selected) = self.get_selected_session().cloned() else {
             return;
         };
-        let Some(target) = &self.switch_target else {
-            self.switch_error = Some("No target selected".to_string());
+
+        self.selected_session = Some(selected.clone());
+        self.loaded_session = None;
+        self.action_modal_open = true;
+        self.action_selection = 0;
+        self.action_field = ActionField::TargetAgent;
+        self.action_dialog = None;
+        self.switch_target_index = 0;
+        self.rename_input = selected.title.clone().unwrap_or_default();
+        self.action_result = None;
+        self.refresh_workspace_options(Some(&selected));
+        self.target_workspace = self
+            .workspace
+            .clone()
+            .or_else(|| selected.project_dir.clone())
+            .unwrap_or_else(|| ".".to_string());
+        self.export_output_prefix = default_export_prefix(&selected, self.workspace.as_deref());
+        self.sync_workspace_picker();
+    }
+
+    pub fn close_action_modal(&mut self) {
+        self.action_modal_open = false;
+        self.action_dialog = None;
+        self.action_result = None;
+        self.loaded_session = None;
+    }
+
+    pub fn focus_previous_top_control(&mut self) {
+        self.main_focus = match self.main_focus {
+            MainFocus::Workspace => MainFocus::Settings,
+            MainFocus::Settings => MainFocus::Workspace,
+            MainFocus::Sessions => MainFocus::Sessions,
+        };
+    }
+
+    pub fn focus_next_top_control(&mut self) {
+        self.main_focus = match self.main_focus {
+            MainFocus::Workspace => MainFocus::Settings,
+            MainFocus::Settings => MainFocus::Workspace,
+            MainFocus::Sessions => MainFocus::Sessions,
+        };
+    }
+
+    pub fn open_workspace_modal(&mut self) {
+        self.refresh_workspace_options(None);
+        self.workspace_input = self.workspace.clone().unwrap_or_else(|| ".".to_string());
+        self.sync_main_workspace_picker();
+        self.workspace_modal_open = true;
+        self.settings_modal_open = false;
+    }
+
+    pub fn close_workspace_modal(&mut self) {
+        self.workspace_modal_open = false;
+    }
+
+    pub fn open_settings_modal(&mut self) {
+        match config::web_preferences() {
+            Ok(prefs) => {
+                self.settings_language = prefs.language;
+                self.settings_sessions_per_provider = prefs.sessions_per_provider;
+                self.settings_show_opencode_subagents = prefs.show_opencode_subagents;
+                self.settings_auto_refresh_after_delete = prefs.auto_refresh_after_delete;
+            }
+            Err(e) => self.show_error(e.to_string()),
+        }
+        self.settings_selection = 0;
+        self.settings_modal_open = true;
+        self.workspace_modal_open = false;
+    }
+
+    pub fn close_settings_modal(&mut self) {
+        self.settings_modal_open = false;
+    }
+
+    pub fn selected_settings_field(&self) -> SettingsField {
+        SETTINGS_FIELDS
+            .get(self.settings_selection)
+            .copied()
+            .unwrap_or(SettingsField::Language)
+    }
+
+    pub fn move_settings_previous(&mut self) {
+        self.settings_selection =
+            cycle_index(self.settings_selection, SETTINGS_FIELDS.len(), false);
+    }
+
+    pub fn move_settings_next(&mut self) {
+        self.settings_selection = cycle_index(self.settings_selection, SETTINGS_FIELDS.len(), true);
+    }
+
+    pub fn cycle_settings_value(&mut self, forward: bool) {
+        match self.selected_settings_field() {
+            SettingsField::Language => {
+                self.settings_language = match self.settings_language {
+                    UiLanguage::Zh => UiLanguage::En,
+                    UiLanguage::En => UiLanguage::Zh,
+                };
+            }
+            SettingsField::SessionsPerProvider => {
+                if forward {
+                    self.settings_sessions_per_provider =
+                        (self.settings_sessions_per_provider + 1).min(200);
+                } else {
+                    self.settings_sessions_per_provider =
+                        self.settings_sessions_per_provider.saturating_sub(1).max(1);
+                }
+            }
+            SettingsField::ShowOpenCodeSubagents => {
+                self.settings_show_opencode_subagents = !self.settings_show_opencode_subagents;
+            }
+            SettingsField::AutoRefreshAfterDelete => {
+                self.settings_auto_refresh_after_delete = !self.settings_auto_refresh_after_delete;
+            }
+            SettingsField::Save => {}
+        }
+    }
+
+    pub fn edit_settings_number(&mut self, key: crossterm::event::KeyCode) {
+        if self.selected_settings_field() != SettingsField::SessionsPerProvider {
+            return;
+        }
+
+        match key {
+            crossterm::event::KeyCode::Char(ch) if ch.is_ascii_digit() => {
+                let mut raw = self.settings_sessions_per_provider.to_string();
+                if raw == "0" {
+                    raw.clear();
+                }
+                raw.push(ch);
+                if let Ok(value) = raw.parse::<usize>() {
+                    self.settings_sessions_per_provider = value.clamp(1, 200);
+                }
+            }
+            crossterm::event::KeyCode::Backspace => {
+                let mut raw = self.settings_sessions_per_provider.to_string();
+                raw.pop();
+                self.settings_sessions_per_provider =
+                    raw.parse::<usize>().unwrap_or(1).clamp(1, 200);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn activate_settings_field(&mut self) {
+        if self.selected_settings_field() == SettingsField::Save {
+            self.save_settings();
+        } else {
+            self.cycle_settings_value(true);
+        }
+    }
+
+    pub fn save_settings(&mut self) {
+        match config::update_web_preferences(
+            Some(self.settings_sessions_per_provider),
+            Some(self.settings_language),
+            Some(self.settings_show_opencode_subagents),
+            Some(self.settings_auto_refresh_after_delete),
+        ) {
+            Ok(()) => {
+                self.close_settings_modal();
+                self.show_error("Settings saved to ~/.memorph/config.json".to_string());
+            }
+            Err(e) => self.show_error(e.to_string()),
+        }
+    }
+
+    pub fn filtered_main_workspace_options(&self) -> Vec<String> {
+        let query = self.workspace_input.trim().to_lowercase();
+        if query.is_empty()
+            || self
+                .workspace_options
+                .iter()
+                .any(|workspace| workspace.eq_ignore_ascii_case(self.workspace_input.trim()))
+        {
+            return self.workspace_options.clone();
+        }
+
+        self.workspace_options
+            .iter()
+            .filter(|workspace| workspace.to_lowercase().contains(&query))
+            .cloned()
+            .collect()
+    }
+
+    pub fn edit_main_workspace_input(&mut self, key: crossterm::event::KeyCode) {
+        match key {
+            crossterm::event::KeyCode::Char(ch) => {
+                if !ch.is_control() {
+                    self.workspace_input.push(ch);
+                }
+            }
+            crossterm::event::KeyCode::Backspace => {
+                self.workspace_input.pop();
+            }
+            _ => {}
+        }
+        self.sync_main_workspace_picker();
+    }
+
+    pub fn step_main_workspace_picker(&mut self, forward: bool) {
+        let options = self.filtered_main_workspace_options();
+        if options.is_empty() {
+            self.workspace_modal_index = 0;
+            return;
+        }
+
+        self.workspace_modal_index =
+            cycle_index(self.workspace_modal_index, options.len(), forward);
+        if let Some(option) = options.get(self.workspace_modal_index) {
+            self.workspace_input = option.clone();
+        }
+    }
+
+    pub fn confirm_workspace_modal(&mut self) {
+        let workspace = self.workspace_input.trim();
+        if workspace.is_empty() {
+            self.show_error("Workspace cannot be empty".to_string());
+            return;
+        }
+
+        if let Err(e) = config::remember_workspace(Path::new(workspace)) {
+            self.show_error(e.to_string());
+            return;
+        }
+
+        match config::selected_workspace() {
+            Ok(Some(workspace)) => {
+                self.workspace = Some(workspace.clone());
+                self.workspace_input = workspace;
+            }
+            _ => {
+                self.workspace = Some(workspace.to_string());
+            }
+        }
+        self.close_workspace_modal();
+        self.refresh_workspace_options(None);
+        if let Err(e) = self.load_sessions() {
+            self.show_error(format!("Failed to load sessions: {}", e));
+        }
+    }
+
+    pub fn open_detail_modal(&mut self) {
+        let Some(selected) = self.selected_session.clone() else {
+            return;
+        };
+        match core::get_session(&selected.provider_id, &selected.session_id) {
+            Ok(session) => {
+                self.loaded_session = Some(session);
+                self.detail_modal_open = true;
+                self.detail_scroll = 0;
+                self.action_modal_open = false;
+                self.action_dialog = None;
+                self.action_result = None;
+            }
+            Err(e) => self.set_action_error("Details failed", vec![e.to_string()]),
+        }
+    }
+
+    pub fn close_detail_modal(&mut self) {
+        self.detail_modal_open = false;
+        self.loaded_session = None;
+        self.detail_scroll = 0;
+    }
+
+    pub fn detail_scroll_up(&mut self) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(1);
+    }
+
+    pub fn detail_scroll_down(&mut self) {
+        let max_scroll = self
+            .loaded_session
+            .as_ref()
+            .map(|session| session.messages.len().saturating_sub(1))
+            .unwrap_or(0);
+        self.detail_scroll = (self.detail_scroll + 1).min(max_scroll);
+    }
+
+    pub fn open_search_modal(&mut self) {
+        self.search_modal_open = true;
+        self.search_query.clear();
+        self.search_scope_index = 0;
+        self.search_match_index = self.table_state.selected().unwrap_or(0);
+        self.sync_search_selection();
+    }
+
+    pub fn close_search_modal(&mut self) {
+        self.search_modal_open = false;
+        self.search_query.clear();
+        self.search_match_index = 0;
+    }
+
+    pub fn current_search_scope(&self) -> SearchScope {
+        SEARCH_SCOPE_OPTIONS
+            .get(self.search_scope_index)
+            .copied()
+            .unwrap_or(SearchScope::All)
+    }
+
+    pub fn cycle_search_scope(&mut self, forward: bool) {
+        self.search_scope_index =
+            cycle_index(self.search_scope_index, SEARCH_SCOPE_OPTIONS.len(), forward);
+        self.search_match_index = 0;
+        self.sync_search_selection();
+    }
+
+    pub fn edit_search_query(&mut self, key: crossterm::event::KeyCode) {
+        match key {
+            crossterm::event::KeyCode::Char(ch) => {
+                if !ch.is_control() {
+                    self.search_query.push(ch);
+                }
+            }
+            crossterm::event::KeyCode::Backspace => {
+                self.search_query.pop();
+            }
+            _ => {}
+        }
+        self.search_match_index = 0;
+        self.sync_search_selection();
+    }
+
+    pub fn next_search_match(&mut self) {
+        let matches = self.search_matches();
+        if matches.is_empty() {
+            return;
+        }
+        self.search_match_index = (self.search_match_index + 1) % matches.len();
+        self.sync_search_selection();
+    }
+
+    pub fn previous_search_match(&mut self) {
+        let matches = self.search_matches();
+        if matches.is_empty() {
+            return;
+        }
+        self.search_match_index = (self.search_match_index + matches.len() - 1) % matches.len();
+        self.sync_search_selection();
+    }
+
+    pub fn accept_search_selection(&mut self) {
+        self.sync_search_selection();
+        self.close_search_modal();
+    }
+
+    pub fn search_matches(&self) -> Vec<usize> {
+        let query = self.search_query.trim().to_lowercase();
+        let scope = self.current_search_scope();
+
+        self.flattened_sessions()
+            .iter()
+            .enumerate()
+            .filter(|(_, session)| session_matches(session, scope, &query))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    fn sync_search_selection(&mut self) {
+        let matches = self.search_matches();
+        if matches.is_empty() {
+            return;
+        }
+        let selected = matches[self.search_match_index.min(matches.len() - 1)];
+        self.table_state.select(Some(selected));
+    }
+
+    pub fn flattened_sessions(&self) -> Vec<&SessionItem> {
+        self.session_groups
+            .iter()
+            .flat_map(|group| group.sessions.iter())
+            .collect()
+    }
+
+    pub fn current_action(&self) -> SessionAction {
+        ACTION_OPTIONS
+            .get(self.action_selection)
+            .copied()
+            .unwrap_or(SessionAction::Switch)
+    }
+
+    pub fn modal_fields(&self) -> Vec<ActionField> {
+        match self.current_action() {
+            SessionAction::Switch => vec![
+                ActionField::Action,
+                ActionField::TargetAgent,
+                ActionField::TargetWorkspace,
+                ActionField::Execute,
+            ],
+            SessionAction::Rename => vec![
+                ActionField::Action,
+                ActionField::RenameTitle,
+                ActionField::Execute,
+            ],
+            SessionAction::Export => {
+                vec![
+                    ActionField::Action,
+                    ActionField::ExportPath,
+                    ActionField::Execute,
+                ]
+            }
+            SessionAction::Delete | SessionAction::Details => {
+                vec![ActionField::Action, ActionField::Execute]
+            }
+        }
+    }
+
+    pub fn move_modal_field_next(&mut self) {
+        let fields = self.modal_fields();
+        let pos = fields
+            .iter()
+            .position(|field| *field == self.action_field)
+            .unwrap_or(0);
+        self.action_field = fields[(pos + 1) % fields.len()];
+    }
+
+    pub fn move_modal_field_previous(&mut self) {
+        let fields = self.modal_fields();
+        let pos = fields
+            .iter()
+            .position(|field| *field == self.action_field)
+            .unwrap_or(0);
+        self.action_field = fields[(pos + fields.len() - 1) % fields.len()];
+    }
+
+    pub fn cycle_modal_value(&mut self, forward: bool) {
+        match self.action_field {
+            ActionField::Action => {
+                self.action_selection =
+                    cycle_index(self.action_selection, ACTION_OPTIONS.len(), forward);
+                self.normalize_action_field();
+            }
+            ActionField::TargetAgent
+            | ActionField::TargetWorkspace
+            | ActionField::ExportPath
+            | ActionField::RenameTitle
+            | ActionField::Execute => {}
+        }
+    }
+
+    pub fn target_provider_options(&self) -> Vec<&'static str> {
+        let source = self
+            .selected_session
+            .as_ref()
+            .map(|session| session.provider_id.as_str());
+
+        providers::all_provider_ids()
+            .iter()
+            .copied()
+            .filter(|provider| Some(*provider) != source)
+            .filter(|provider| {
+                providers::find_provider(provider)
+                    .map(|provider| provider.capabilities().write)
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    pub fn selected_target_provider(&self) -> Option<&'static str> {
+        let options = self.target_provider_options();
+        options.get(self.switch_target_index).copied()
+    }
+
+    pub fn selected_target_workspace(&self) -> Option<String> {
+        let workspace = self.target_workspace.trim();
+        if workspace.is_empty() {
+            self.workspace.clone().or_else(|| Some(".".to_string()))
+        } else {
+            Some(workspace.to_string())
+        }
+    }
+
+    pub fn filtered_workspace_options(&self) -> Vec<String> {
+        let query = self.target_workspace.trim().to_lowercase();
+        if query.is_empty()
+            || self
+                .workspace_options
+                .iter()
+                .any(|workspace| workspace.eq_ignore_ascii_case(self.target_workspace.trim()))
+        {
+            return self.workspace_options.clone();
+        }
+
+        self.workspace_options
+            .iter()
+            .filter(|workspace| workspace.to_lowercase().contains(&query))
+            .cloned()
+            .collect()
+    }
+
+    pub fn open_action_dialog(&mut self) {
+        match self.action_field {
+            ActionField::TargetAgent => {
+                if !self.target_provider_options().is_empty() {
+                    self.action_dialog = Some(ActionDialog::TargetAgent);
+                }
+            }
+            ActionField::TargetWorkspace => {
+                if self.target_workspace.trim().is_empty() {
+                    self.target_workspace =
+                        self.workspace.clone().unwrap_or_else(|| ".".to_string());
+                }
+                self.sync_workspace_picker();
+                self.action_dialog = Some(ActionDialog::TargetWorkspace);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn close_action_dialog(&mut self) {
+        self.action_dialog = None;
+    }
+
+    pub fn activate_modal_field(&mut self) {
+        match self.action_field {
+            ActionField::Action => self.move_modal_field_next(),
+            ActionField::TargetAgent | ActionField::TargetWorkspace => self.open_action_dialog(),
+            ActionField::ExportPath | ActionField::RenameTitle | ActionField::Execute => {
+                self.execute_modal_action()
+            }
+        }
+    }
+
+    pub fn cycle_action_dialog_selection(&mut self, forward: bool) {
+        match self.action_dialog {
+            Some(ActionDialog::TargetAgent) => {
+                let len = self.target_provider_options().len();
+                self.switch_target_index = cycle_index(self.switch_target_index, len, forward);
+            }
+            Some(ActionDialog::TargetWorkspace) => self.step_workspace_picker(forward),
+            None => {}
+        }
+    }
+
+    pub fn confirm_action_dialog(&mut self) {
+        match self.action_dialog {
+            Some(ActionDialog::TargetAgent) => {
+                self.action_dialog = None;
+                self.action_field = ActionField::TargetWorkspace;
+            }
+            Some(ActionDialog::TargetWorkspace) => {
+                if self.target_workspace.trim().is_empty() {
+                    self.target_workspace =
+                        self.workspace.clone().unwrap_or_else(|| ".".to_string());
+                }
+                self.action_dialog = None;
+                self.action_field = ActionField::Execute;
+            }
+            None => {}
+        }
+    }
+
+    pub fn edit_rename_input(&mut self, key: crossterm::event::KeyCode) {
+        match key {
+            crossterm::event::KeyCode::Char(ch) => {
+                if !ch.is_control() {
+                    self.rename_input.push(ch);
+                }
+            }
+            crossterm::event::KeyCode::Backspace => {
+                self.rename_input.pop();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn edit_workspace_input(&mut self, key: crossterm::event::KeyCode) {
+        match key {
+            crossterm::event::KeyCode::Char(ch) => {
+                if !ch.is_control() {
+                    self.target_workspace.push(ch);
+                }
+            }
+            crossterm::event::KeyCode::Backspace => {
+                self.target_workspace.pop();
+            }
+            _ => {}
+        }
+        self.sync_workspace_picker();
+    }
+
+    pub fn edit_export_output_prefix(&mut self, key: crossterm::event::KeyCode) {
+        match key {
+            crossterm::event::KeyCode::Char(ch) => {
+                if !ch.is_control() {
+                    self.export_output_prefix.push(ch);
+                }
+            }
+            crossterm::event::KeyCode::Backspace => {
+                self.export_output_prefix.pop();
+            }
+            _ => {}
+        }
+    }
+
+    pub fn execute_modal_action(&mut self) {
+        if self.action_result.is_some() {
+            self.close_action_modal();
+            return;
+        }
+
+        if self.current_action() == SessionAction::Delete
+            && self.action_field != ActionField::Execute
+        {
+            self.action_field = ActionField::Execute;
+            return;
+        }
+
+        match self.current_action() {
+            SessionAction::Switch => self.execute_modal_switch(),
+            SessionAction::Export => self.execute_modal_export(),
+            SessionAction::Rename => self.execute_modal_rename(),
+            SessionAction::Delete => self.execute_modal_delete(),
+            SessionAction::Details => self.execute_modal_details(),
+        }
+    }
+
+    fn execute_modal_switch(&mut self) {
+        let Some(selected) = self.selected_session.clone() else {
+            self.set_action_error("Switch failed", vec!["No session selected".to_string()]);
+            return;
+        };
+        let Some(target) = self.selected_target_provider() else {
+            self.set_action_error(
+                "Switch failed",
+                vec!["No target agent selected".to_string()],
+            );
             return;
         };
 
         let params = SwitchParams {
             from: selected.provider_id.clone(),
-            to: target.clone(),
+            to: target.to_string(),
             session_id: Some(selected.session_id.clone()),
-            to_dir: self.workspace.clone(),
+            to_dir: self.selected_target_workspace(),
         };
 
         match core::switch_session(&params) {
             Ok(result) => {
-                self.switch_result = Some(result);
+                self.set_action_success(
+                    "Switch complete",
+                    vec![
+                        format!("From: {}", result.from_name),
+                        format!("To: {}", result.to_name),
+                        format!("Source: {}", result.source_session_id),
+                        format!("Target: {}", result.target_session_id),
+                        format!(
+                            "Resume: {}",
+                            result.resume_command.as_deref().unwrap_or("N/A")
+                        ),
+                    ],
+                );
+                self.reload_after_action();
             }
-            Err(e) => {
-                self.switch_error = Some(format!("Switch failed: {}", e));
+            Err(e) => self.set_action_error("Switch failed", vec![e.to_string()]),
+        }
+    }
+
+    fn execute_modal_export(&mut self) {
+        let Some(selected) = self.selected_session.clone() else {
+            self.set_action_error("Export failed", vec!["No session selected".to_string()]);
+            return;
+        };
+
+        let output_prefix = self.export_output_prefix.trim();
+        if output_prefix.is_empty() {
+            self.set_action_error(
+                "Export failed",
+                vec!["Output prefix cannot be empty".to_string()],
+            );
+            return;
+        }
+
+        let params = ExportParams {
+            provider: selected.provider_id,
+            session_id: selected.session_id,
+            output_prefix: Some(output_prefix.to_string()),
+            format: "json".to_string(),
+        };
+
+        match core::export_session(&params) {
+            Ok(result) => self.set_action_success("Export complete", result.files),
+            Err(e) => self.set_action_error("Export failed", vec![e.to_string()]),
+        }
+    }
+
+    fn execute_modal_rename(&mut self) {
+        let Some(selected) = self.selected_session.clone() else {
+            self.set_action_error("Rename failed", vec!["No session selected".to_string()]);
+            return;
+        };
+        let new_title = self.rename_input.trim().to_string();
+        if new_title.is_empty() {
+            self.set_action_error("Rename failed", vec!["Title cannot be empty".to_string()]);
+            return;
+        }
+
+        match core::rename_session(&selected.provider_id, &selected.session_id, &new_title) {
+            Ok(()) => {
+                self.set_action_success("Rename complete", vec![new_title]);
+                self.reload_after_action();
+            }
+            Err(e) => self.set_action_error("Rename failed", vec![e.to_string()]),
+        }
+    }
+
+    fn execute_modal_delete(&mut self) {
+        let Some(selected) = self.selected_session.clone() else {
+            self.set_action_error("Delete failed", vec!["No session selected".to_string()]);
+            return;
+        };
+
+        match core::delete_session(&selected.provider_id, &selected.session_id) {
+            Ok(()) => {
+                self.set_action_success("Delete complete", vec![selected.session_id]);
+                self.reload_after_action();
+            }
+            Err(e) => self.set_action_error("Delete failed", vec![e.to_string()]),
+        }
+    }
+
+    fn execute_modal_details(&mut self) {
+        if self.selected_session.is_none() {
+            self.set_action_error("Details failed", vec!["No session selected".to_string()]);
+            return;
+        }
+        self.open_detail_modal();
+    }
+
+    fn refresh_workspace_options(&mut self, selected: Option<&SessionItem>) {
+        let mut options = Vec::new();
+        push_unique(&mut options, self.workspace.clone());
+        if let Some(session) = selected {
+            push_unique(&mut options, session.project_dir.clone());
+        }
+        if let Ok(workspaces) = config::known_workspaces() {
+            for workspace in workspaces {
+                push_unique(&mut options, Some(workspace.path));
             }
         }
+        if options.is_empty() {
+            options.push(".".to_string());
+        }
+
+        self.workspace_options = options;
+        self.sync_workspace_picker();
+    }
+
+    fn normalize_action_field(&mut self) {
+        let fields = self.modal_fields();
+        if !fields.contains(&self.action_field) {
+            self.action_field = ActionField::Action;
+        }
+    }
+
+    fn step_workspace_picker(&mut self, forward: bool) {
+        let options = self.filtered_workspace_options();
+        if options.is_empty() {
+            self.workspace_picker_index = 0;
+            return;
+        }
+
+        self.workspace_picker_index =
+            cycle_index(self.workspace_picker_index, options.len(), forward);
+        if let Some(option) = options.get(self.workspace_picker_index) {
+            self.target_workspace = option.clone();
+        }
+    }
+
+    fn sync_workspace_picker(&mut self) {
+        let options = self.filtered_workspace_options();
+        if options.is_empty() {
+            self.workspace_picker_index = 0;
+            return;
+        }
+
+        if let Some(index) = options
+            .iter()
+            .position(|option| option == &self.target_workspace)
+        {
+            self.workspace_picker_index = index;
+        } else {
+            self.workspace_picker_index = self
+                .workspace_picker_index
+                .min(options.len().saturating_sub(1));
+        }
+    }
+
+    fn sync_main_workspace_picker(&mut self) {
+        let options = self.filtered_main_workspace_options();
+        if options.is_empty() {
+            self.workspace_modal_index = 0;
+            return;
+        }
+
+        if let Some(index) = options
+            .iter()
+            .position(|option| option == &self.workspace_input)
+        {
+            self.workspace_modal_index = index;
+        } else {
+            self.workspace_modal_index = self
+                .workspace_modal_index
+                .min(options.len().saturating_sub(1));
+        }
+    }
+
+    fn reload_after_action(&mut self) {
+        if let Err(e) = self.load_sessions() {
+            self.show_error(format!("Failed to refresh sessions: {}", e));
+        }
+    }
+
+    fn set_action_success(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.action_result = Some(ActionResult {
+            title: title.into(),
+            lines,
+            is_error: false,
+        });
+    }
+
+    fn set_action_error(&mut self, title: impl Into<String>, lines: Vec<String>) {
+        self.action_result = Some(ActionResult {
+            title: title.into(),
+            lines,
+            is_error: true,
+        });
     }
 
     pub fn show_error(&mut self, msg: String) {
@@ -233,36 +1254,77 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> AppResult {
         match self.current_screen {
             Screen::SessionList => super::screens::session_list::handle_key(self, key),
-            Screen::SessionDetail => super::screens::session_detail::handle_key(self, key),
-            Screen::SwitchFlow => super::screens::switch_flow::handle_key(self, key),
         }
     }
 }
 
-/// 将 provider 列表映射到 TUI tab 索引。
-/// 单选时返回对应 tab，多选或空列表时返回 0（All）。
-fn providers_to_tab(providers: &[String]) -> usize {
-    if providers.len() != 1 {
-        return 0;
-    }
-    match providers[0].as_str() {
-        "claude" => 1,
-        "codex" => 2,
-        "opencode" => 3,
-        "cursor" => 4,
-        "kiro" => 5,
-        _ => 0,
+/// Map TUI tab index to provider list for config persistence.
+fn tab_to_providers(tab: usize) -> Vec<String> {
+    if tab == 0 {
+        Vec::new()
+    } else {
+        providers::all_provider_ids()
+            .get(tab - 1)
+            .map(|id| vec![id.to_string()])
+            .unwrap_or_default()
     }
 }
 
-/// 将 TUI tab 索引映射为 provider 列表，用于持久化到配置。
-fn tab_to_providers(tab: usize) -> Vec<String> {
-    match tab {
-        1 => vec!["claude".to_string()],
-        2 => vec!["codex".to_string()],
-        3 => vec!["opencode".to_string()],
-        4 => vec!["cursor".to_string()],
-        5 => vec!["kiro".to_string()],
-        _ => Vec::new(),
+pub fn provider_label(provider_id: &str) -> &'static str {
+    providers::find_provider(provider_id)
+        .map(|p| p.name())
+        .unwrap_or("Unknown")
+}
+
+fn push_unique(options: &mut Vec<String>, value: Option<String>) {
+    let Some(value) = value else { return };
+    if value.trim().is_empty() || options.iter().any(|existing| existing == &value) {
+        return;
+    }
+    options.push(value);
+}
+
+fn default_export_prefix(session: &SessionItem, workspace: Option<&str>) -> String {
+    let base = workspace
+        .filter(|value| !value.trim().is_empty())
+        .or(session.project_dir.as_deref());
+
+    match base {
+        Some(dir) => PathBuf::from(dir)
+            .join(&session.session_id)
+            .display()
+            .to_string(),
+        None => session.session_id.clone(),
+    }
+}
+
+fn cycle_index(current: usize, len: usize, forward: bool) -> usize {
+    if len == 0 {
+        return 0;
+    }
+
+    if forward {
+        (current + 1) % len
+    } else {
+        (current + len - 1) % len
+    }
+}
+
+fn session_matches(session: &SessionItem, scope: SearchScope, query: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+
+    let title = session.title.as_deref().unwrap_or("").to_lowercase();
+    let session_id = session.session_id.to_lowercase();
+    let workspace = session.project_dir.as_deref().unwrap_or("").to_lowercase();
+
+    match scope {
+        SearchScope::All => {
+            title.contains(query) || session_id.contains(query) || workspace.contains(query)
+        }
+        SearchScope::Title => title.contains(query),
+        SearchScope::SessionId => session_id.contains(query),
+        SearchScope::Workspace => workspace.contains(query),
     }
 }

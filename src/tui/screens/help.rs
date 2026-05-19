@@ -8,7 +8,7 @@ use crate::tui::app::App;
 use crate::tui::theme::Theme;
 
 #[allow(dead_code)]
-/// 绘制帮助页面
+/// Draw help page
 pub fn draw(frame: &mut Frame, _app: &App, area: Rect, theme: &Theme) {
     let help_text = format!(
         r#"memorph TUI - Help

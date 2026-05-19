@@ -7,12 +7,11 @@ use ratatui::{
     Frame,
 };
 
+use crate::providers;
 use crate::tui::app::{App, AppResult, Screen};
 use crate::tui::theme::Theme;
 
-const PROVIDER_OPTIONS: [&str; 5] = ["claude", "codex", "opencode", "cursor", "kiro"];
-
-/// 绘制迁移向导页面
+/// Draw migration wizard page
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let popup_area = centered_rect(70, 60, area);
 
@@ -66,7 +65,7 @@ fn draw_step_select_target(frame: &mut Frame, app: &App, area: Rect, theme: &The
 
     frame.render_widget(info, chunks[0]);
 
-    let items: Vec<ListItem> = PROVIDER_OPTIONS
+    let items: Vec<ListItem> = providers::all_provider_ids()
         .iter()
         .filter(|p| **p != selected_provider)
         .enumerate()
@@ -200,7 +199,7 @@ fn draw_step_result(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     frame.render_widget(result_widget, area);
 }
 
-/// 处理迁移向导的按键事件
+/// Handle migration wizard key events
 pub fn handle_key(app: &mut App, key: KeyEvent) -> AppResult {
     match app.switch_step {
         0 => handle_step0(app, key),
@@ -211,7 +210,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> AppResult {
 }
 
 fn handle_step0(app: &mut App, key: KeyEvent) -> AppResult {
-    let available_targets: Vec<usize> = PROVIDER_OPTIONS
+    let available_targets: Vec<usize> = providers::all_provider_ids()
         .iter()
         .enumerate()
         .filter(|(_, p)| {
@@ -252,7 +251,7 @@ fn handle_step0(app: &mut App, key: KeyEvent) -> AppResult {
         }
         KeyCode::Enter => {
             if let Some(selected) = app.switch_selection {
-                app.switch_target = Some(PROVIDER_OPTIONS[selected].to_string());
+                app.switch_target = Some(providers::all_provider_ids()[selected].to_string());
                 app.switch_step = 1;
             }
             AppResult::Continue

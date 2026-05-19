@@ -703,7 +703,7 @@ async function deleteSessionAndRefresh(url) {
         const closeText = lang === 'en' ? 'Close' : '关闭';
         mountModal('<dialog><article><header><h3>' + title + '</h3><button type="button" onclick="closeModal()">' + closeText + '</button></header><p>' + message + '</p></article></dialog>');
     } catch (error) {
-        mountModal('<dialog><article><h3>错误</h3><p></p><button onclick="closeModal()">关闭</button></article></dialog>');
+        mountModal('<dialog><article><h3>Error</h3><p></p><button onclick="closeModal()">Close</button></article></dialog>');
         const message = document.querySelector('#modal-container p');
         if (message) message.textContent = error.message;
     } finally {
@@ -783,7 +783,7 @@ document.addEventListener('click', function(event) {
     if (trigger) {
         event.preventDefault();
         loadModal(trigger.getAttribute('data-modal')).catch((error) => {
-            mountModal('<dialog><article><h3>错误</h3><p></p><button onclick="closeModal()">关闭</button></article></dialog>');
+            mountModal('<dialog><article><h3>Error</h3><p></p><button onclick="closeModal()">Close</button></article></dialog>');
             const message = document.querySelector('#modal-container p');
             if (message) message.textContent = error.message;
         });
@@ -805,7 +805,7 @@ document.addEventListener('submit', function(event) {
     event.preventDefault();
     const params = new URLSearchParams(new FormData(form));
     loadModal(form.action + '?' + params.toString()).catch((error) => {
-        mountModal('<dialog><article><h3>错误</h3><p></p><button onclick="closeModal()">关闭</button></article></dialog>');
+        mountModal('<dialog><article><h3>Error</h3><p></p><button onclick="closeModal()">Close</button></article></dialog>');
         const message = document.querySelector('#modal-container p');
         if (message) message.textContent = error.message;
     });

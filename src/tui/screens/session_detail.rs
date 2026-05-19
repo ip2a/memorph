@@ -11,7 +11,7 @@ use crate::model::{ContentBlock, MemorphRole};
 use crate::tui::app::{App, AppResult};
 use crate::tui::theme::{self, Theme};
 
-/// 绘制会话详情页面
+/// Draw session detail page
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     let selected = match &app.selected_session {
         Some(s) => s,
@@ -117,7 +117,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                 }
                 ContentBlock::Thinking { thinking, .. } => {
                     lines.push(Line::from(vec![
-                        Span::styled("[思考] ", Style::default().fg(theme.text_dim)),
+                        Span::styled("[thinking] ", Style::default().fg(theme.text_dim)),
                         Span::styled(
                             theme::truncate(thinking, 80),
                             Style::default().fg(theme.text_dim),
@@ -185,7 +185,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     frame.render_widget(messages_widget, area);
 }
 
-/// 处理会话详情页面的按键事件
+/// Handle session detail page key events
 pub fn handle_key(app: &mut App, key: KeyEvent) -> AppResult {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => {
@@ -201,8 +201,7 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> AppResult {
             AppResult::Continue
         }
         KeyCode::Char('s') => {
-            app.current_screen = crate::tui::app::Screen::SwitchFlow;
-            app.switch_step = 0;
+            app.current_screen = crate::tui::app::Screen::SessionList;
             AppResult::Continue
         }
         _ => AppResult::Continue,

@@ -13,19 +13,19 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::{self, stdout};
 
-/// 启动 TUI 应用
+/// Start the TUI application
 pub fn run_tui() -> Result<()> {
-    // 初始化终端
+    // Initialize terminal
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut app = App::new()?;
 
-    // 运行事件循环
+    // Run event loop
     let result = event::run(&mut terminal, &mut app);
 
-    // 恢复终端
+    // Restore terminal
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
 

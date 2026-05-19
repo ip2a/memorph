@@ -1,7 +1,10 @@
 use chrono::{DateTime, Utc};
 use ratatui::style::Color;
+use std::collections::HashMap;
 
-/// 主题颜色配置
+use crate::providers;
+
+/// Theme color configuration
 pub struct Theme {
     pub primary: Color,
     pub secondary: Color,
@@ -17,50 +20,57 @@ pub struct Theme {
     pub border: Color,
     pub border_focused: Color,
     pub highlight: Color,
-    pub provider_colors: [Color; 5],
+    pub provider_colors: HashMap<&'static str, Color>,
 }
 
 impl Default for Theme {
     fn default() -> Self {
+        let palette = [
+            Color::Rgb(150, 80, 0),
+            Color::Green,
+            Color::Magenta,
+            Color::Blue,
+            Color::Cyan,
+            Color::Rgb(0, 128, 255),
+            Color::Rgb(255, 165, 0),
+            Color::Rgb(128, 0, 128),
+            Color::Rgb(0, 150, 136),
+            Color::Rgb(233, 30, 99),
+        ];
+        let mut provider_colors = HashMap::new();
+        for (i, id) in providers::all_provider_ids().iter().enumerate() {
+            provider_colors.insert(*id, palette[i % palette.len()]);
+        }
+
         Self {
-            primary: Color::Cyan,
+            primary: Color::Blue,
             secondary: Color::Blue,
-            accent: Color::Yellow,
-            background: Color::Black,
-            surface: Color::Rgb(30, 30, 30),
-            text: Color::White,
-            text_dim: Color::Gray,
+            accent: Color::Magenta,
+            background: Color::White,
+            surface: Color::White,
+            text: Color::Black,
+            text_dim: Color::Black,
             success: Color::Green,
-            warning: Color::Yellow,
+            warning: Color::Rgb(184, 92, 0),
             error: Color::Red,
-            border: Color::Rgb(60, 60, 60),
-            border_focused: Color::Cyan,
-            highlight: Color::Rgb(40, 40, 40),
-            provider_colors: [
-                Color::Yellow,  // Claude
-                Color::Green,   // Codex
-                Color::Magenta, // OpenCode
-                Color::Blue,    // Cursor
-                Color::Cyan,    // Kiro
-            ],
+            border: Color::Black,
+            border_focused: Color::Blue,
+            highlight: Color::Rgb(220, 235, 255),
+            provider_colors,
         }
     }
 }
 
 impl Theme {
     pub fn provider_color(&self, provider_id: &str) -> Color {
-        match provider_id {
-            "claude" => self.provider_colors[0],
-            "codex" => self.provider_colors[1],
-            "opencode" => self.provider_colors[2],
-            "cursor" => self.provider_colors[3],
-            "kiro" => self.provider_colors[4],
-            _ => self.text_dim,
-        }
+        self.provider_colors
+            .get(provider_id)
+            .copied()
+            .unwrap_or(self.text_dim)
     }
 }
 
-/// 格式化时间戳为相对时间
+/// Format timestamp as relative time
 pub fn format_relative_time(timestamp: Option<i64>) -> String {
     let Some(ts) = timestamp else {
         return "-".to_string();
@@ -70,13 +80,13 @@ pub fn format_relative_time(timestamp: Option<i64>) -> String {
     let diff = now - ts;
 
     if diff < 60 {
-        "刚刚".to_string()
+        "just now".to_string()
     } else if diff < 3600 {
-        format!("{} 分钟前", diff / 60)
+        format!("{} minutes ago", diff / 60)
     } else if diff < 86400 {
-        format!("{} 小时前", diff / 3600)
+        format!("{} hours ago", diff / 3600)
     } else if diff < 604800 {
-        format!("{} 天前", diff / 86400)
+        format!("{} days ago", diff / 86400)
     } else {
         let dt = DateTime::<Utc>::from_timestamp(ts, 0);
         dt.map(|d| d.format("%Y-%m-%d").to_string())
@@ -84,7 +94,7 @@ pub fn format_relative_time(timestamp: Option<i64>) -> String {
     }
 }
 
-/// 截断字符串
+/// Truncate string
 pub fn truncate(s: &str, max_chars: usize) -> String {
     let count = s.chars().count();
     if count <= max_chars {

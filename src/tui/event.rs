@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use super::app::{App, AppResult};
 
-/// TUI 事件循环
+/// TUI event loop
 pub fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
     let mut last_tick = std::time::Instant::now();
     let tick_rate = Duration::from_millis(250);
@@ -39,7 +39,10 @@ pub fn run<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
 }
 
 fn handle_key_event(key: KeyEvent, app: &mut App) -> AppResult {
-    if key.kind != event::KeyEventKind::Press {
+    if !matches!(
+        key.kind,
+        event::KeyEventKind::Press | event::KeyEventKind::Repeat
+    ) {
         return AppResult::Continue;
     }
 
@@ -47,16 +50,19 @@ fn handle_key_event(key: KeyEvent, app: &mut App) -> AppResult {
         return AppResult::Quit;
     }
 
-    if key.code == KeyCode::Char('?') || key.code == KeyCode::Char('h') {
-        if key.modifiers.is_empty() {
-            app.toggle_help();
-            return AppResult::Continue;
-        }
+    if key.code == KeyCode::Char('?')
+        && !app.action_modal_open
+        && !app.workspace_modal_open
+        && !app.settings_modal_open
+        && key.modifiers.is_empty()
+    {
+        app.toggle_help();
+        return AppResult::Continue;
     }
 
     if app.show_help {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Char('h') => {
+            KeyCode::Esc | KeyCode::Char('?') => {
                 app.show_help = false;
             }
             _ => {}

@@ -233,7 +233,7 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
         Ok(prefs) => prefs,
         Err(e) => {
             return Html(
-                layout("memorph - 错误", error_markup(e), UiLanguage::Zh, None).into_string(),
+                layout("memorph - Error", error_markup(e), UiLanguage::Zh, None).into_string(),
             )
         }
     };
@@ -242,7 +242,7 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
         Ok(items) => items,
         Err(e) => {
             return Html(
-                layout("memorph - 错误", error_markup(e), prefs.language, None).into_string(),
+                layout("memorph - Error", error_markup(e), prefs.language, None).into_string(),
             )
         }
     };
@@ -251,7 +251,7 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
         Ok(value) => value,
         Err(e) => {
             return Html(
-                layout("memorph - 错误", error_markup(e), prefs.language, None).into_string(),
+                layout("memorph - Error", error_markup(e), prefs.language, None).into_string(),
             )
         }
     };
@@ -267,18 +267,18 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
         Ok(path) => path,
         Err(e) => {
             return Html(
-                layout("memorph - 错误", error_markup(e), prefs.language, None).into_string(),
+                layout("memorph - Error", error_markup(e), prefs.language, None).into_string(),
             )
         }
     };
 
     if let Err(e) = config::remember_workspace(&workspace) {
-        return Html(layout("memorph - 错误", error_markup(e), prefs.language, None).into_string());
+        return Html(layout("memorph - Error", error_markup(e), prefs.language, None).into_string());
     };
 
     let workspace_str = workspace.to_string_lossy().to_string();
 
-    // 解析并去重 URL 中的 provider 参数
+    // Parse and deduplicate provider params from URL
     let url_providers: Vec<String> = q
         .provider
         .iter()
@@ -289,18 +289,16 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
         .collect();
 
     let providers = if !url_providers.is_empty() {
-        // 用户主动选择了 provider，保存到配置
+        // User explicitly selected provider, save to config
         let _ = config::set_workspace_providers(&workspace_str, url_providers.clone());
         url_providers
     } else {
-        // 从配置读取该工作区的默认 provider
+        // Read default providers for this workspace from config
         config::workspace_providers(&workspace_str).unwrap_or_else(|_| {
-            vec![
-                "claude".to_string(),
-                "codex".to_string(),
-                "opencode".to_string(),
-                "kiro".to_string(),
-            ]
+            providers::all_provider_ids()
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         })
     };
 
@@ -322,19 +320,19 @@ async fn page_shared(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
         Ok(prefs) => prefs,
         Err(e) => {
             return Html(
-                layout("memorph - 错误", error_markup(e), UiLanguage::Zh, None).into_string(),
+                layout("memorph - Error", error_markup(e), UiLanguage::Zh, None).into_string(),
             )
         }
     };
     let lang = prefs.language;
     let items = match shared::list_groups() {
         Ok(items) => items,
-        Err(e) => return Html(layout("memorph - 错误", error_markup(e), lang, None).into_string()),
+        Err(e) => return Html(layout("memorph - Error", error_markup(e), lang, None).into_string()),
     };
 
     Html(
         layout(
-            "memorph - 共享",
+            "memorph - Shared",
             render_shared_list(&items, lang),
             lang,
             None,
@@ -352,14 +350,14 @@ async fn page_shared_detail(
         Ok(prefs) => prefs,
         Err(e) => {
             return Html(
-                layout("memorph - 错误", error_markup(e), UiLanguage::Zh, None).into_string(),
+                layout("memorph - Error", error_markup(e), UiLanguage::Zh, None).into_string(),
             )
         }
     };
     let lang = prefs.language;
     let mut group = match shared::load_group(&group_id) {
         Ok(group) => group,
-        Err(e) => return Html(layout("memorph - 错误", error_markup(e), lang, None).into_string()),
+        Err(e) => return Html(layout("memorph - Error", error_markup(e), lang, None).into_string()),
     };
     let _ = shared::refresh_active_times(&mut group);
 
@@ -679,12 +677,10 @@ fn normalize_provider_filter(provider_filter: &[String]) -> Vec<String> {
         .collect();
 
     if providers.is_empty() {
-        vec![
-            "claude".to_string(),
-            "codex".to_string(),
-            "opencode".to_string(),
-            "kiro".to_string(),
-        ]
+        crate::providers::all_provider_ids()
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     } else {
         providers
     }
@@ -1065,19 +1061,19 @@ async fn page_session(
         Ok(prefs) => prefs,
         Err(e) => {
             return Html(
-                layout("memorph - 错误", error_markup(e), UiLanguage::Zh, None).into_string(),
+                layout("memorph - Error", error_markup(e), UiLanguage::Zh, None).into_string(),
             )
         }
     };
     let lang = prefs.language;
     let session = match core::get_session(&provider, &session_id) {
         Ok(session) => session,
-        Err(e) => return Html(layout("memorph - 错误", error_markup(e), lang, None).into_string()),
+        Err(e) => return Html(layout("memorph - Error", error_markup(e), lang, None).into_string()),
     };
 
     if let Some(project_dir) = session.session.project_dir.as_deref() {
         if let Err(e) = config::remember_workspace(&PathBuf::from(project_dir)) {
-            return Html(layout("memorph - 错误", error_markup(e), lang, None).into_string());
+            return Html(layout("memorph - Error", error_markup(e), lang, None).into_string());
         }
     }
 
@@ -1259,7 +1255,7 @@ fn render_content_block(block: &ContentBlock) -> Markup {
 fn error_markup(error: impl std::fmt::Display) -> Markup {
     html! {
         div.empty-state {
-            h2 { "操作失败" }
+            h2 { "Operation Failed" }
             p { (error) }
         }
     }

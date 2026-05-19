@@ -223,7 +223,7 @@ pub fn known_workspaces() -> Result<Vec<WorkspaceEntry>> {
     Ok(workspaces)
 }
 
-/// 获取指定工作区保存的 provider 列表；未设置时返回默认显示列表。
+/// Get saved provider list for a workspace; returns the default list when unset.
 pub fn workspace_providers(workspace: &str) -> Result<Vec<String>> {
     let config = load_config()?;
     let entry = config.workspaces.iter().find(|e| e.path == workspace);
@@ -233,17 +233,15 @@ pub fn workspace_providers(workspace: &str) -> Result<Vec<String>> {
             if p.is_empty() { None } else { Some(p.clone()) }
         })
         .unwrap_or_else(|| {
-            vec![
-                "claude".to_string(),
-                "codex".to_string(),
-                "opencode".to_string(),
-                "kiro".to_string(),
-            ]
+            crate::providers::all_provider_ids()
+                .iter()
+                .map(|s| s.to_string())
+                .collect()
         });
     Ok(providers)
 }
 
-/// 保存指定工作区的 provider 列表到配置。
+/// Save provider list for a workspace into config.
 pub fn set_workspace_providers(workspace: &str, providers: Vec<String>) -> Result<()> {
     let mut config = load_config()?;
     let workspace = workspace.to_string();
