@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{provider_tabs, App, MainFocus, SettingsField, SETTINGS_FIELDS};
+use super::app::{provider_label, provider_tabs, App, MainFocus, SettingsField, SETTINGS_FIELDS};
 use super::theme::{self, Theme};
 use crate::config;
 use crate::web_assets::MEMORPH_ASCII;
@@ -315,8 +315,8 @@ fn draw_settings_modal(frame: &mut Frame, app: &App, theme: &Theme) {
 
     let provider = provider_tabs()
         .get(app.selected_provider_tab)
-        .copied()
-        .unwrap_or("All");
+        .cloned()
+        .unwrap_or_else(|| "All".to_string());
     let info = Paragraph::new(Text::from(vec![
         Line::from(vec![
             Span::styled("Version", Style::default().add_modifier(Modifier::BOLD)),
@@ -339,9 +339,10 @@ fn draw_settings_modal(frame: &mut Frame, app: &App, theme: &Theme) {
     .wrap(Wrap { trim: true });
     frame.render_widget(info, chunks[1]);
 
-    let footer =
-        Paragraph::new("↑↓ Select  ←→ Change  Digits Edit Count  Enter Toggle/Save  Esc Close")
-            .style(Style::default().fg(theme.text).bg(theme.surface));
+    let footer = Paragraph::new(
+        "↑↓ Select  ←→ Change/Choose Agent  Digits Edit Count  Enter Toggle/Save  Esc Close",
+    )
+    .style(Style::default().fg(theme.text).bg(theme.surface));
     frame.render_widget(footer, chunks[2]);
 }
 
@@ -371,6 +372,7 @@ fn settings_row(field: SettingsField, app: &App, theme: &Theme) -> Line<'static>
         SettingsField::AutoRefreshAfterDelete => {
             enabled_label(app.settings_auto_refresh_after_delete)
         }
+        SettingsField::PrimaryAgents => settings_agent_label(app),
         SettingsField::Save => "Write config".to_string(),
     };
 
@@ -379,6 +381,22 @@ fn settings_row(field: SettingsField, app: &App, theme: &Theme) -> Line<'static>
         Span::raw("  "),
         Span::styled(value, value_style),
     ])
+}
+
+fn settings_agent_label(app: &App) -> String {
+    let Some(agent) = app.settings_agent_order.get(app.settings_agent_index) else {
+        return "All visible".to_string();
+    };
+    let state = if app
+        .settings_primary_agents
+        .iter()
+        .any(|provider| provider == agent)
+    {
+        "Visible"
+    } else {
+        "Folded"
+    };
+    format!("{}: {}", provider_label(agent), state)
 }
 
 fn enabled_label(enabled: bool) -> String {

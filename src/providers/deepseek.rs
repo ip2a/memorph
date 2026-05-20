@@ -32,8 +32,9 @@ impl Provider for DeepseekProvider {
         if !db_path.exists() {
             return Ok(Vec::new());
         }
-        let conn = Connection::open(&db_path)
-            .with_context(|| format!("failed to open DeepSeek state db at {}", db_path.display()))?;
+        let conn = Connection::open(&db_path).with_context(|| {
+            format!("failed to open DeepSeek state db at {}", db_path.display())
+        })?;
 
         let mut stmt = conn.prepare(
             "SELECT id, preview, cwd, title, created_at, updated_at FROM threads WHERE archived = 0 ORDER BY updated_at DESC"
@@ -49,7 +50,11 @@ impl Provider for DeepseekProvider {
                 session_id: id.clone(),
                 title: title.or_else(|| {
                     let p = preview.trim();
-                    if p.is_empty() { None } else { Some(p.to_string()) }
+                    if p.is_empty() {
+                        None
+                    } else {
+                        Some(p.to_string())
+                    }
                 }),
                 project_dir: Some(cwd),
                 last_active_at: Some(updated),
@@ -68,8 +73,9 @@ impl Provider for DeepseekProvider {
 
     fn load_session(&self, source_path: &str) -> Result<MemorphSession> {
         let db_path = get_state_db_path();
-        let conn = Connection::open(&db_path)
-            .with_context(|| format!("failed to open DeepSeek state db at {}", db_path.display()))?;
+        let conn = Connection::open(&db_path).with_context(|| {
+            format!("failed to open DeepSeek state db at {}", db_path.display())
+        })?;
 
         // Load thread metadata
         let thread = conn
@@ -166,7 +172,11 @@ impl Provider for DeepseekProvider {
             }
 
             let mut extra = serde_json::Map::new();
-            if let Ok(item) = msg.item_json.as_deref().map_or(Ok(Value::Null), serde_json::from_str::<Value>) {
+            if let Ok(item) = msg
+                .item_json
+                .as_deref()
+                .map_or(Ok(Value::Null), serde_json::from_str::<Value>)
+            {
                 if !item.is_null() {
                     extra.insert("item".to_string(), item);
                 }
@@ -206,7 +216,11 @@ impl Provider for DeepseekProvider {
             id: thread.id,
             title: thread.title.or_else(|| {
                 let p = thread.preview.trim();
-                if p.is_empty() { None } else { Some(p.to_string()) }
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p.to_string())
+                }
             }),
             project_dir: Some(thread.cwd),
             created_at: chrono::DateTime::from_timestamp(thread.created_at, 0),
@@ -229,8 +243,9 @@ impl Provider for DeepseekProvider {
                 db_path.display()
             );
         }
-        let mut conn = Connection::open(&db_path)
-            .with_context(|| format!("failed to open DeepSeek state db at {}", db_path.display()))?;
+        let mut conn = Connection::open(&db_path).with_context(|| {
+            format!("failed to open DeepSeek state db at {}", db_path.display())
+        })?;
 
         let thread_id = format!("thread-{}", Uuid::new_v4());
         let now = Utc::now().timestamp();
@@ -279,9 +294,18 @@ impl Provider for DeepseekProvider {
                     ContentBlock::Text { text } => text.clone(),
                     ContentBlock::Thinking { thinking, .. } => thinking.clone(),
                     ContentBlock::ToolUse { id, name, input } => {
-                        format!("[Tool: {} id={}]\n{}", name, id, input.as_ref().map(|v| v.to_string()).unwrap_or_default())
+                        format!(
+                            "[Tool: {} id={}]\n{}",
+                            name,
+                            id,
+                            input.as_ref().map(|v| v.to_string()).unwrap_or_default()
+                        )
                     }
-                    ContentBlock::ToolResult { tool_use_id, content, .. } => {
+                    ContentBlock::ToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    } => {
                         format!("[Tool Result: {}]\n{}", tool_use_id, content)
                     }
                     ContentBlock::Image { mime_type, data } => {
@@ -294,7 +318,11 @@ impl Provider for DeepseekProvider {
                 .collect::<Vec<_>>()
                 .join("\n");
 
-            let item_json = if msg.metadata.as_ref().map_or(false, |m| !m.extra.is_null() && m.extra != Value::Null) {
+            let item_json = if msg
+                .metadata
+                .as_ref()
+                .map_or(false, |m| !m.extra.is_null() && m.extra != Value::Null)
+            {
                 msg.metadata.as_ref().and_then(|m| {
                     if m.extra.is_object() && m.extra.as_object().map_or(false, |o| !o.is_empty()) {
                         serde_json::to_string(&m.extra).ok()
@@ -337,7 +365,10 @@ impl Provider for DeepseekProvider {
         let conn = Connection::open(&db_path)?;
         conn.execute("DELETE FROM messages WHERE thread_id = ?1", [session_id])?;
         conn.execute("DELETE FROM checkpoints WHERE thread_id = ?1", [session_id])?;
-        conn.execute("DELETE FROM thread_dynamic_tools WHERE thread_id = ?1", [session_id])?;
+        conn.execute(
+            "DELETE FROM thread_dynamic_tools WHERE thread_id = ?1",
+            [session_id],
+        )?;
         conn.execute("DELETE FROM threads WHERE id = ?1", [session_id])?;
         Ok(())
     }

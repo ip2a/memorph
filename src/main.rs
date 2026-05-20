@@ -21,6 +21,8 @@ mod web_support;
 use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{Cli, Commands, ShareCommands};
+use std::path::Path;
+use std::process::Command;
 
 fn main() {
     if let Err(e) = run() {
@@ -31,6 +33,11 @@ fn main() {
 
 fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    if cli.version {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
 
     match cli.command {
         None => run_interactive_menu()?,
@@ -179,6 +186,10 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::Tui => {
             tui::run_tui()?;
         }
+
+        Commands::Update => {
+            update_memorph()?;
+        }
     }
 
     Ok(())
@@ -215,20 +226,21 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
             session_id,
             to_dir,
         } => {
-            let holding = shared::add_holding(
-                &shared::AddHoldingParams {
-                    group_id: group_id.clone(),
-                    provider,
-                    session_id,
-                    to_dir,
-                },
-            )?;
+            let holding = shared::add_holding(&shared::AddHoldingParams {
+                group_id: group_id.clone(),
+                provider,
+                session_id,
+                to_dir,
+            })?;
             println!(
                 "Holding added: {} | {} | {}",
                 holding.id, holding.provider, holding.session_id
             );
         }
-        ShareCommands::Unbind { group_id, holding_id } => {
+        ShareCommands::Unbind {
+            group_id,
+            holding_id,
+        } => {
             shared::remove_holding(&group_id, &holding_id)?;
             println!("Holding removed: {}", holding_id);
         }
@@ -249,8 +261,12 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 println!("No shared groups.");
             }
             for group in groups {
-                println!("\n{} | {} | holdings={} | updated={}",
-                    group.id, group.title, group.holdings.len(), group.updated_at
+                println!(
+                    "\n{} | {} | holdings={} | updated={}",
+                    group.id,
+                    group.title,
+                    group.holdings.len(),
+                    group.updated_at
                 );
                 for holding in group.holdings {
                     let dir = holding.target_dir.as_deref().unwrap_or("-");
@@ -279,12 +295,23 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                     group.id, group.title, group.created_at, group.updated_at
                 );
                 for holding in group.holdings {
-                    let active = holding.last_active_at.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string());
-                    let sync_at = holding.last_sync_at.map(|t| t.to_string()).unwrap_or_else(|| "-".to_string());
+                    let active = holding
+                        .last_active_at
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| "-".to_string());
+                    let sync_at = holding
+                        .last_sync_at
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| "-".to_string());
                     let sync_from = holding.last_sync_from.as_deref().unwrap_or("-");
                     println!(
                         "  {} | {} | {} | active_at={} | sync_at={} | sync_from={}",
-                        holding.id, holding.provider, holding.session_id, active, sync_at, sync_from
+                        holding.id,
+                        holding.provider,
+                        holding.session_id,
+                        active,
+                        sync_at,
+                        sync_from
                     );
                     if let Some(error) = holding.last_error {
                         println!("    error={}", error);
@@ -292,7 +319,10 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 }
             }
         }
-        ShareCommands::Sync { group_id, from_holding } => {
+        ShareCommands::Sync {
+            group_id,
+            from_holding,
+        } => {
             let report = if let Some(holding_id) = from_holding {
                 shared::push_sync(&group_id, &holding_id)?
             } else {
@@ -308,7 +338,10 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 eprintln!("  {}", error);
             }
         }
-        ShareCommands::Push { group_id, holding_id } => {
+        ShareCommands::Push {
+            group_id,
+            holding_id,
+        } => {
             let report = shared::push_sync(&group_id, &holding_id)?;
             println!(
                 "Push sync complete: source={} | success={:?} | errors={}",
@@ -345,6 +378,204 @@ fn run_api_server(port: u16) -> Result<()> {
     println!("Use `memorph web` for the Web UI.");
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(server::run_api(port))
+}
+
+fn update_memorph() -> Result<()> {
+    let plan = current_update_plan()?;
+
+    println!("Detected install source: {}", plan.source.label());
+    println!("Running: {}", plan.display());
+
+    let status = Command::new(&plan.program)
+        .args(&plan.args)
+        .status()
+        .with_context(|| format!("Failed to start update command: {}", plan.program))?;
+
+    if !status.success() {
+        anyhow::bail!("Update command failed with status: {}", status);
+    }
+
+    println!("Update complete. Run `memorph --version` or `memo --version` to verify.");
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallSource {
+    Npm,
+    PythonPip,
+    PythonPipx,
+    PythonUvTool,
+    Cargo,
+}
+
+impl InstallSource {
+    fn label(self) -> &'static str {
+        match self {
+            InstallSource::Npm => "npm",
+            InstallSource::PythonPip => "PyPI/pip",
+            InstallSource::PythonPipx => "PyPI/pipx",
+            InstallSource::PythonUvTool => "PyPI/uv tool",
+            InstallSource::Cargo => "Cargo",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdatePlan {
+    source: InstallSource,
+    program: String,
+    args: Vec<String>,
+}
+
+impl UpdatePlan {
+    fn display(&self) -> String {
+        std::iter::once(self.program.as_str())
+            .chain(self.args.iter().map(String::as_str))
+            .map(shell_word)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn current_update_plan() -> Result<UpdatePlan> {
+    let exe_path = std::env::current_exe().ok();
+    let source = detect_install_source(
+        std::env::var("MEMORPH_INSTALL_SOURCE").ok().as_deref(),
+        exe_path.as_deref(),
+        std::env::var("MEMORPH_PYTHON_PREFIX").ok().as_deref(),
+        std::env::var("MEMORPH_PYTHON_EXECUTABLE").ok().as_deref(),
+    )
+    .with_context(|| {
+        "Could not detect how memorph was installed.\n\
+         Try one of these commands manually:\n\
+         - npm install -g memorph@latest\n\
+         - python -m pip install --upgrade memorph\n\
+         - pipx upgrade memorph\n\
+         - uv tool upgrade memorph\n\
+         - cargo install memorph --force"
+    })?;
+
+    Ok(update_plan_for_source(
+        source,
+        std::env::var("MEMORPH_PYTHON_EXECUTABLE").ok(),
+    ))
+}
+
+fn update_plan_for_source(source: InstallSource, python_executable: Option<String>) -> UpdatePlan {
+    match source {
+        InstallSource::Npm => UpdatePlan {
+            source,
+            program: "npm".to_string(),
+            args: vec![
+                "install".to_string(),
+                "-g".to_string(),
+                "memorph@latest".to_string(),
+            ],
+        },
+        InstallSource::PythonPip => UpdatePlan {
+            source,
+            program: python_executable.unwrap_or_else(|| "python".to_string()),
+            args: vec![
+                "-m".to_string(),
+                "pip".to_string(),
+                "install".to_string(),
+                "--upgrade".to_string(),
+                "memorph".to_string(),
+            ],
+        },
+        InstallSource::PythonPipx => UpdatePlan {
+            source,
+            program: "pipx".to_string(),
+            args: vec!["upgrade".to_string(), "memorph".to_string()],
+        },
+        InstallSource::PythonUvTool => UpdatePlan {
+            source,
+            program: "uv".to_string(),
+            args: vec![
+                "tool".to_string(),
+                "upgrade".to_string(),
+                "memorph".to_string(),
+            ],
+        },
+        InstallSource::Cargo => UpdatePlan {
+            source,
+            program: "cargo".to_string(),
+            args: vec![
+                "install".to_string(),
+                "memorph".to_string(),
+                "--force".to_string(),
+            ],
+        },
+    }
+}
+
+fn detect_install_source(
+    source_env: Option<&str>,
+    exe_path: Option<&Path>,
+    python_prefix: Option<&str>,
+    python_executable: Option<&str>,
+) -> Option<InstallSource> {
+    if let Some(source) = source_env {
+        match source.to_ascii_lowercase().as_str() {
+            "npm" => return Some(InstallSource::Npm),
+            "python" | "pypi" | "pip" => {
+                if looks_like_uv_tool(python_prefix) || looks_like_uv_tool(python_executable) {
+                    return Some(InstallSource::PythonUvTool);
+                }
+                if looks_like_pipx(python_prefix) || looks_like_pipx(python_executable) {
+                    return Some(InstallSource::PythonPipx);
+                }
+                return Some(InstallSource::PythonPip);
+            }
+            "pipx" => return Some(InstallSource::PythonPipx),
+            "uv" | "uv-tool" | "uv_tool" => return Some(InstallSource::PythonUvTool),
+            "cargo" | "crates" | "crates.io" => return Some(InstallSource::Cargo),
+            _ => {}
+        }
+    }
+
+    let path = exe_path.map(normalize_path)?;
+    if path.contains("/node_modules/") && path.contains("memorph-bin") {
+        return Some(InstallSource::Npm);
+    }
+    if path.contains("/site-packages/") && path.contains("memorph_bin") {
+        return Some(InstallSource::PythonPip);
+    }
+    if path.contains("/.cargo/bin/") {
+        return Some(InstallSource::Cargo);
+    }
+    None
+}
+
+fn looks_like_uv_tool(value: Option<&str>) -> bool {
+    value
+        .map(|value| normalize_str_path(value).contains("/uv/tools/"))
+        .unwrap_or(false)
+}
+
+fn looks_like_pipx(value: Option<&str>) -> bool {
+    value
+        .map(|value| normalize_str_path(value).contains("/pipx/venvs/"))
+        .unwrap_or(false)
+}
+
+fn normalize_path(path: &Path) -> String {
+    normalize_str_path(&path.to_string_lossy())
+}
+
+fn normalize_str_path(path: &str) -> String {
+    path.replace('\\', "/").to_ascii_lowercase()
+}
+
+fn shell_word(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':' | '@'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 fn print_web_banner(kind: WebCommandKind) {
@@ -417,9 +648,108 @@ fn truncate(s: &str, max_chars: usize) -> String {
     }
 }
 
-
 fn provider_name(provider: &str) -> Result<String> {
     providers::find_provider(provider)
         .with_context(|| format!("Unknown provider: {}", provider))
         .map(|provider| provider.name().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn detects_install_source_from_wrapper_env() {
+        assert_eq!(
+            detect_install_source(Some("npm"), None, None, None),
+            Some(InstallSource::Npm)
+        );
+        assert_eq!(
+            detect_install_source(
+                Some("python"),
+                None,
+                Some("/Users/me/.local/share/uv/tools/memorph"),
+                Some("/Users/me/.local/share/uv/tools/memorph/bin/python")
+            ),
+            Some(InstallSource::PythonUvTool)
+        );
+        assert_eq!(
+            detect_install_source(
+                Some("python"),
+                None,
+                Some("/Users/me/.local/pipx/venvs/memorph"),
+                Some("/Users/me/.local/pipx/venvs/memorph/bin/python")
+            ),
+            Some(InstallSource::PythonPipx)
+        );
+        assert_eq!(
+            detect_install_source(Some("cargo"), None, None, None),
+            Some(InstallSource::Cargo)
+        );
+    }
+
+    #[test]
+    fn detects_install_source_from_executable_path() {
+        let npm_path =
+            PathBuf::from("/usr/local/lib/node_modules/memorph-bin-darwin-arm64/bin/memorph");
+        let pypi_path = PathBuf::from(
+            "/venv/lib/python3.12/site-packages/memorph_bin_darwin_arm64/bin/memorph",
+        );
+        let cargo_path = PathBuf::from("/Users/me/.cargo/bin/memo");
+
+        assert_eq!(
+            detect_install_source(None, Some(&npm_path), None, None),
+            Some(InstallSource::Npm)
+        );
+        assert_eq!(
+            detect_install_source(None, Some(&pypi_path), None, None),
+            Some(InstallSource::PythonPip)
+        );
+        assert_eq!(
+            detect_install_source(None, Some(&cargo_path), None, None),
+            Some(InstallSource::Cargo)
+        );
+    }
+
+    #[test]
+    fn builds_update_commands_for_install_sources() {
+        assert_eq!(
+            update_plan_for_source(InstallSource::Npm, None),
+            UpdatePlan {
+                source: InstallSource::Npm,
+                program: "npm".to_string(),
+                args: vec![
+                    "install".to_string(),
+                    "-g".to_string(),
+                    "memorph@latest".to_string()
+                ],
+            }
+        );
+        assert_eq!(
+            update_plan_for_source(
+                InstallSource::PythonPip,
+                Some("/venv/bin/python".to_string()),
+            ),
+            UpdatePlan {
+                source: InstallSource::PythonPip,
+                program: "/venv/bin/python".to_string(),
+                args: vec![
+                    "-m".to_string(),
+                    "pip".to_string(),
+                    "install".to_string(),
+                    "--upgrade".to_string(),
+                    "memorph".to_string()
+                ],
+            }
+        );
+        assert_eq!(
+            update_plan_for_source(InstallSource::Cargo, None).display(),
+            "cargo install memorph --force"
+        );
+        assert_eq!(
+            update_plan_for_source(InstallSource::PythonPipx, None).display(),
+            "pipx upgrade memorph"
+        );
+    }
 }

@@ -2,6 +2,7 @@
 name = "memorph"
 version = "0.1.8"
 edition = "2021"
+default-run = "memorph"
 authors = ["memorph contributors"]
 description = "Convert, import, and export AI coding sessions between Claude Code, Codex, and OpenCode"
 license = "MIT"
@@ -44,3 +45,11 @@ walkdir = "2.5"
 rand = "0.8"
 base64 = "0.22"
 md5 = "0.7"
+
+[[bin]]
+name = "memorph"
+path = "src/main.rs"
+
+[[bin]]
+name = "memo"
+path = "src/bin/memo.rs"

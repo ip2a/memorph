@@ -579,6 +579,7 @@ dialog footer { display: flex; justify-content: end; gap: 8px; margin-top: 16px;
 }
 .settings-row select { min-width: 136px; height: 34px; padding: 0 8px; }
 .settings-row input[type="number"] { width: 110px; height: 34px; padding: 0 8px; }
+.settings-row input[type="text"] { width: min(260px, 36vw); height: 34px; padding: 0 8px; }
 .settings-check {
     display: inline-flex;
     align-items: center;
@@ -592,6 +593,30 @@ dialog footer { display: flex; justify-content: end; gap: 8px; margin-top: 16px;
 }
 .settings-check:hover { background: var(--ink); color: var(--paper); }
 .settings-check input { width: 16px; height: 16px; margin: 0; }
+.agent-more {
+    display: inline-block;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 3px 8px;
+}
+.agent-more summary {
+    cursor: pointer;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+}
+.agent-more-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+.settings-agent-list {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    max-width: 300px;
+}
 .modal-subtitle {
     margin-top: 4px;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

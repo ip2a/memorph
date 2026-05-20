@@ -3,8 +3,12 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "memorph")]
 #[command(about = "Convert, import, and export AI coding sessions")]
-#[command(version = env!("CARGO_PKG_VERSION"))]
+#[command(disable_version_flag = true)]
 pub struct Cli {
+    /// Print version
+    #[arg(short = 'v', long = "version", action = clap::ArgAction::SetTrue)]
+    pub version: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -126,6 +130,8 @@ pub enum Commands {
     },
     /// Start the interactive TUI
     Tui,
+    /// Update memorph using the detected install source
+    Update,
 }
 
 #[derive(Subcommand)]

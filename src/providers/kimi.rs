@@ -40,7 +40,11 @@ impl Provider for KimiProvider {
         let dir_map = load_work_dir_map()?;
         let mut sessions = Vec::new();
 
-        for entry in WalkDir::new(&root).max_depth(2).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(&root)
+            .max_depth(2)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             let path = entry.path();
             if !path.is_dir() {
                 continue;
@@ -133,9 +137,7 @@ impl Provider for KimiProvider {
 
         let session = SessionInfo {
             id: session_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-            title: state
-                .and_then(|s| s.custom_title)
-                .filter(|t| !t.is_empty()),
+            title: state.and_then(|s| s.custom_title).filter(|t| !t.is_empty()),
             project_dir: None,
             created_at,
             last_active_at,
@@ -152,7 +154,9 @@ impl Provider for KimiProvider {
     fn write_session(&self, session: &MemorphSession, target_dir: &Path) -> Result<String> {
         let session_id = Uuid::new_v4().to_string();
         let project_hash = md5_hex(target_dir.to_string_lossy().as_bytes());
-        let session_dir = get_kimi_sessions_dir().join(&project_hash).join(&session_id);
+        let session_dir = get_kimi_sessions_dir()
+            .join(&project_hash)
+            .join(&session_id);
         std::fs::create_dir_all(&session_dir)?;
 
         let wire_path = session_dir.join("wire.jsonl");
@@ -237,8 +241,7 @@ impl Provider for KimiProvider {
                         && session.messages[i].role == MemorphRole::Assistant
                     {
                         let assistant = &session.messages[i];
-                        let assistant_ts =
-                            assistant.timestamp.timestamp_millis() as f64 / 1000.0;
+                        let assistant_ts = assistant.timestamp.timestamp_millis() as f64 / 1000.0;
                         let mut assistant_content = Vec::new();
 
                         for block in &assistant.content {
@@ -382,7 +385,10 @@ impl Provider for KimiProvider {
             .with_context(|| format!("Failed to parse state.json: {}", state_path.display()))?;
 
         if let Some(obj) = state.as_object_mut() {
-            obj.insert("custom_title".to_string(), Value::String(new_title.to_string()));
+            obj.insert(
+                "custom_title".to_string(),
+                Value::String(new_title.to_string()),
+            );
         }
 
         let mut file = File::create(&state_path)?;
@@ -474,7 +480,11 @@ fn load_work_dir_map() -> Result<HashMap<String, String>> {
 
 fn find_session_dir(session_id: &str) -> Option<PathBuf> {
     let root = get_kimi_sessions_dir();
-    for entry in WalkDir::new(&root).max_depth(2).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&root)
+        .max_depth(2)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         if path.is_dir() {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
@@ -506,7 +516,11 @@ fn wire_last_timestamp(wire_path: &Path) -> Option<i64> {
 
 fn load_from_wire(
     wire_path: &Path,
-) -> Result<(Vec<MemorphMessage>, Option<chrono::DateTime<Utc>>, Option<chrono::DateTime<Utc>>)> {
+) -> Result<(
+    Vec<MemorphMessage>,
+    Option<chrono::DateTime<Utc>>,
+    Option<chrono::DateTime<Utc>>,
+)> {
     let file = File::open(wire_path)
         .with_context(|| format!("Failed to open Kimi wire.jsonl: {}", wire_path.display()))?;
     let reader = BufReader::new(file);

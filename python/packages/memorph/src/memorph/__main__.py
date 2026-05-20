@@ -28,8 +28,13 @@ def main() -> None:
         print(f"Failed to locate memorph binary: {e}", file=sys.stderr)
         sys.exit(1)
 
+    env = os.environ.copy()
+    env["MEMORPH_INSTALL_SOURCE"] = "python"
+    env["MEMORPH_PYTHON_EXECUTABLE"] = sys.executable
+    env["MEMORPH_PYTHON_PREFIX"] = sys.prefix
+
     # execv replaces the current process, avoiding extra Python overhead
-    os.execv(str(binary_path), [str(binary_path)] + sys.argv[1:])
+    os.execve(str(binary_path), [str(binary_path)] + sys.argv[1:], env)
 
 
 if __name__ == "__main__":

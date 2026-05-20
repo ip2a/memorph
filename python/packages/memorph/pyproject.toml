@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 memorph = "memorph.__main__:main"
+memo = "memorph.__main__:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

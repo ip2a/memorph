@@ -36,6 +36,9 @@ pub(crate) struct SettingsExecQuery {
     per_page: Option<usize>,
     show_opencode_subagents: Option<String>,
     auto_refresh_after_delete: Option<String>,
+    agent_order: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_string_or_vec")]
+    primary_agent: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1155,6 +1158,9 @@ pub(crate) async fn modal_settings_form(Query(q): Query<WorkspaceQuery>) -> impl
         Ok(prefs) => prefs,
         Err(e) => return Html(modal_error(e, lang).into_string()),
     };
+    let ordered_provider_ids = config::ordered_provider_ids(&prefs);
+    let primary_provider_ids = config::primary_provider_ids(&prefs);
+    let agent_order = ordered_provider_ids.join(",");
 
     Html(
         html! {
@@ -1208,6 +1214,28 @@ pub(crate) async fn modal_settings_form(Query(q): Query<WorkspaceQuery>) -> impl
                             }
                             div.settings-row {
                                 div.settings-copy {
+                                    strong { (tr(lang, "Agent 显示顺序", "Agent Display Order")) }
+                                    span { (tr(lang, "用逗号分隔 provider id；未列出的 agent 会自动排在后面。", "Comma-separated provider ids; omitted agents are appended automatically.")) }
+                                }
+                                input id="settings-agent-order" name="agent_order" type="text" value=(agent_order);
+                            }
+                            div.settings-row {
+                                div.settings-copy {
+                                    strong { (tr(lang, "常用 Agent", "Primary Agents")) }
+                                    span { (tr(lang, "勾选的 agent 直接显示；其他 agent 折叠到“更多”。全部勾选等同于不折叠。", "Checked agents are shown directly; the rest are folded under More. Checking all means no folding.")) }
+                                }
+                                div.settings-agent-list {
+                                    @for id in &ordered_provider_ids {
+                                        @let name = providers::find_provider(id).map(|p| p.name().to_string()).unwrap_or_else(|| id.clone());
+                                        label.settings-check {
+                                            input type="checkbox" name="primary_agent" value=(id) checked[primary_provider_ids.iter().any(|selected| selected == id)];
+                                            span { (name) }
+                                        }
+                                    }
+                                }
+                            }
+                            div.settings-row {
+                                div.settings-copy {
                                     strong { (tr(lang, "版本", "Version")) }
                                     span { (format!("v{}", env!("CARGO_PKG_VERSION"))) }
                                 }
@@ -1231,8 +1259,17 @@ pub(crate) async fn modal_settings_exec(Query(q): Query<SettingsExecQuery>) -> i
     let language = q.lang.as_deref().and_then(parse_language);
     let show_opencode_subagents = q.show_opencode_subagents.is_some();
     let auto_refresh_after_delete = q.auto_refresh_after_delete.is_some();
+    let agent_order = parse_provider_list(q.agent_order.as_deref().unwrap_or(""));
 
-    match config::update_web_preferences(q.per_page, language, Some(show_opencode_subagents), Some(auto_refresh_after_delete)) {
+    let result = config::update_web_preferences(
+        q.per_page,
+        language,
+        Some(show_opencode_subagents),
+        Some(auto_refresh_after_delete),
+    )
+    .and_then(|_| config::update_agent_display_preferences(agent_order, q.primary_agent));
+
+    match result {
         Ok(()) => Html(
             html! {
                 dialog {
@@ -1252,6 +1289,15 @@ pub(crate) async fn modal_settings_exec(Query(q): Query<SettingsExecQuery>) -> i
         ),
         Err(e) => Html(modal_error(e, lang).into_string()),
     }
+}
+
+fn parse_provider_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 struct ProviderChoice {

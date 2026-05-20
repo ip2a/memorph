@@ -273,7 +273,9 @@ async fn page_home(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
     };
 
     if let Err(e) = config::remember_workspace(&workspace) {
-        return Html(layout("memorph - Error", error_markup(e), prefs.language, None).into_string());
+        return Html(
+            layout("memorph - Error", error_markup(e), prefs.language, None).into_string(),
+        );
     };
 
     let workspace_str = workspace.to_string_lossy().to_string();
@@ -327,7 +329,9 @@ async fn page_shared(RawQuery(raw_query): RawQuery) -> impl IntoResponse {
     let lang = prefs.language;
     let items = match shared::list_groups() {
         Ok(items) => items,
-        Err(e) => return Html(layout("memorph - Error", error_markup(e), lang, None).into_string()),
+        Err(e) => {
+            return Html(layout("memorph - Error", error_markup(e), lang, None).into_string())
+        }
     };
 
     Html(
@@ -357,7 +361,9 @@ async fn page_shared_detail(
     let lang = prefs.language;
     let mut group = match shared::load_group(&group_id) {
         Ok(group) => group,
-        Err(e) => return Html(layout("memorph - Error", error_markup(e), lang, None).into_string()),
+        Err(e) => {
+            return Html(layout("memorph - Error", error_markup(e), lang, None).into_string())
+        }
     };
     let _ = shared::refresh_active_times(&mut group);
 
@@ -497,11 +503,7 @@ fn render_shared_detail(group: &shared::SharedGroup, lang: UiLanguage) -> Markup
     }
 }
 
-fn render_holding_card(
-    group_id: &str,
-    holding: &shared::Holding,
-    lang: UiLanguage,
-) -> Markup {
+fn render_holding_card(group_id: &str, holding: &shared::Holding, lang: UiLanguage) -> Markup {
     let provider = provider_label(&holding.provider);
     let workspace = holding.target_dir.as_deref().unwrap_or("");
     let session_href = format!(
@@ -570,7 +572,9 @@ fn render_session_list(
     let lang = prefs.language;
     let per_page = prefs.sessions_per_provider.clamp(1, 200);
     let visible_limit = visible.unwrap_or(per_page).clamp(1, 1000);
-    let providers = provider_filter.to_vec();
+    let providers = config::sort_provider_ids_by_display(prefs, provider_filter);
+    let primary_provider_ids = config::primary_provider_ids(prefs);
+    let folded_provider_ids = config::folded_provider_ids(prefs);
 
     let groups_result = core::list_sessions(&core::SessionListParams {
         all: false,
@@ -615,11 +619,25 @@ fn render_session_list(
                     div.field.agent-field {
                         label for="provider" { (tr(lang, "终端智能体", "Terminal Agent")) }
                         div.agent-picker id="provider" role="group" aria-label=(tr(lang, "终端智能体", "Terminal Agent")) {
-                            @for id in providers::all_provider_ids() {
-                                @let name = providers::find_provider(id).map(|p| p.name()).unwrap_or(id);
+                            @for id in &primary_provider_ids {
+                                @let name = providers::find_provider(id).map(|p| p.name().to_string()).unwrap_or_else(|| id.clone());
                                 label.agent-pill {
-                                    input type="checkbox" name="provider" value=(id) checked[providers.iter().any(|provider| provider == *id)];
+                                    input type="checkbox" name="provider" value=(id) checked[providers.iter().any(|provider| provider == id)];
                                     span { (name) }
+                                }
+                            }
+                            @if !folded_provider_ids.is_empty() {
+                                details.agent-more {
+                                    summary { (tr(lang, "更多", "More")) }
+                                    div.agent-more-list {
+                                        @for id in &folded_provider_ids {
+                                            @let name = providers::find_provider(id).map(|p| p.name().to_string()).unwrap_or_else(|| id.clone());
+                                            label.agent-pill {
+                                                input type="checkbox" name="provider" value=(id) checked[providers.iter().any(|provider| provider == id)];
+                                                span { (name) }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1068,7 +1086,9 @@ async fn page_session(
     let lang = prefs.language;
     let session = match core::get_session(&provider, &session_id) {
         Ok(session) => session,
-        Err(e) => return Html(layout("memorph - Error", error_markup(e), lang, None).into_string()),
+        Err(e) => {
+            return Html(layout("memorph - Error", error_markup(e), lang, None).into_string())
+        }
     };
 
     if let Some(project_dir) = session.session.project_dir.as_deref() {
@@ -1118,15 +1138,16 @@ async fn page_session(
     );
 
     // Check if this session is already shared
-    let shared_group_id = shared::list_groups()
-        .ok()
-        .and_then(|groups| {
-            groups.into_iter().find(|g| {
-                g.holdings.iter().any(|h| {
-                    h.provider == provider && h.session_id == session_id
-                })
-            }).map(|g| g.id)
-        });
+    let shared_group_id = shared::list_groups().ok().and_then(|groups| {
+        groups
+            .into_iter()
+            .find(|g| {
+                g.holdings
+                    .iter()
+                    .any(|h| h.provider == provider && h.session_id == session_id)
+            })
+            .map(|g| g.id)
+    });
 
     let content = html! {
         section.session-header {

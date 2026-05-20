@@ -9,12 +9,34 @@ use crate::core::{self, ExportParams, SessionGroup, SessionItem, SwitchParams};
 use crate::model::MemorphSession;
 use crate::{config, providers};
 
-pub fn provider_tabs() -> Vec<&'static str> {
-    let mut tabs = vec!["All"];
-    for id in providers::all_provider_ids() {
-        tabs.push(providers::find_provider(id).map(|p| p.name()).unwrap_or(id));
+pub fn provider_tabs() -> Vec<String> {
+    let mut tabs = vec!["All".to_string()];
+    for filter in provider_tab_filters().into_iter().skip(1) {
+        if filter.len() == 1 {
+            let id = &filter[0];
+            tabs.push(
+                providers::find_provider(id)
+                    .map(|p| p.name().to_string())
+                    .unwrap_or_else(|| id.clone()),
+            );
+        } else {
+            tabs.push("More".to_string());
+        }
     }
     tabs
+}
+
+fn provider_tab_filters() -> Vec<Vec<String>> {
+    let prefs = config::web_preferences().unwrap_or_default();
+    let mut filters = vec![Vec::new()];
+    for id in config::primary_provider_ids(&prefs) {
+        filters.push(vec![id]);
+    }
+    let folded = config::folded_provider_ids(&prefs);
+    if !folded.is_empty() {
+        filters.push(folded);
+    }
+    filters
 }
 
 pub const ACTION_OPTIONS: [SessionAction; 5] = [
@@ -81,6 +103,7 @@ pub enum SettingsField {
     SessionsPerProvider,
     ShowOpenCodeSubagents,
     AutoRefreshAfterDelete,
+    PrimaryAgents,
     Save,
 }
 
@@ -91,16 +114,18 @@ impl SettingsField {
             Self::SessionsPerProvider => "Per Agent",
             Self::ShowOpenCodeSubagents => "OpenCode subagents",
             Self::AutoRefreshAfterDelete => "Auto Refresh After Delete",
+            Self::PrimaryAgents => "Primary Agents",
             Self::Save => "Save",
         }
     }
 }
 
-pub const SETTINGS_FIELDS: [SettingsField; 5] = [
+pub const SETTINGS_FIELDS: [SettingsField; 6] = [
     SettingsField::Language,
     SettingsField::SessionsPerProvider,
     SettingsField::ShowOpenCodeSubagents,
     SettingsField::AutoRefreshAfterDelete,
+    SettingsField::PrimaryAgents,
     SettingsField::Save,
 ];
 
@@ -172,6 +197,9 @@ pub struct App {
     pub settings_sessions_per_provider: usize,
     pub settings_show_opencode_subagents: bool,
     pub settings_auto_refresh_after_delete: bool,
+    pub settings_agent_order: Vec<String>,
+    pub settings_primary_agents: Vec<String>,
+    pub settings_agent_index: usize,
 
     // Action modal state
     pub action_modal_open: bool,
@@ -224,6 +252,9 @@ impl App {
             settings_sessions_per_provider: config::DEFAULT_SESSIONS_PER_PROVIDER,
             settings_show_opencode_subagents: false,
             settings_auto_refresh_after_delete: false,
+            settings_agent_order: Vec::new(),
+            settings_primary_agents: Vec::new(),
+            settings_agent_index: 0,
             action_modal_open: false,
             action_selection: 0,
             action_field: ActionField::Action,
@@ -263,11 +294,12 @@ impl App {
 
     fn get_filtered_providers(&self) -> Vec<String> {
         if self.selected_provider_tab == 0 {
-            Vec::new()
+            let prefs = config::web_preferences().unwrap_or_default();
+            config::ordered_provider_ids(&prefs)
         } else {
-            providers::all_provider_ids()
-                .get(self.selected_provider_tab - 1)
-                .map(|id| vec![id.to_string()])
+            provider_tab_filters()
+                .get(self.selected_provider_tab)
+                .cloned()
                 .unwrap_or_default()
         }
     }
@@ -464,6 +496,11 @@ impl App {
                 self.settings_sessions_per_provider = prefs.sessions_per_provider;
                 self.settings_show_opencode_subagents = prefs.show_opencode_subagents;
                 self.settings_auto_refresh_after_delete = prefs.auto_refresh_after_delete;
+                self.settings_agent_order = config::ordered_provider_ids(&prefs);
+                self.settings_primary_agents = config::primary_provider_ids(&prefs);
+                self.settings_agent_index = self
+                    .settings_agent_index
+                    .min(self.settings_agent_order.len().saturating_sub(1));
             }
             Err(e) => self.show_error(e.to_string()),
         }
@@ -515,6 +552,16 @@ impl App {
             SettingsField::AutoRefreshAfterDelete => {
                 self.settings_auto_refresh_after_delete = !self.settings_auto_refresh_after_delete;
             }
+            SettingsField::PrimaryAgents => {
+                if self.settings_agent_order.is_empty() {
+                    return;
+                }
+                self.settings_agent_index = cycle_index(
+                    self.settings_agent_index,
+                    self.settings_agent_order.len(),
+                    forward,
+                );
+            }
             SettingsField::Save => {}
         }
     }
@@ -548,21 +595,55 @@ impl App {
     pub fn activate_settings_field(&mut self) {
         if self.selected_settings_field() == SettingsField::Save {
             self.save_settings();
+        } else if self.selected_settings_field() == SettingsField::PrimaryAgents {
+            self.toggle_selected_settings_agent();
         } else {
             self.cycle_settings_value(true);
         }
     }
 
+    pub fn toggle_selected_settings_agent(&mut self) {
+        let Some(agent) = self
+            .settings_agent_order
+            .get(self.settings_agent_index)
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(index) = self
+            .settings_primary_agents
+            .iter()
+            .position(|provider| provider == &agent)
+        {
+            self.settings_primary_agents.remove(index);
+        } else {
+            self.settings_primary_agents.push(agent);
+            self.settings_primary_agents =
+                config::normalize_provider_ids(self.settings_primary_agents.clone());
+        }
+    }
+
     pub fn save_settings(&mut self) {
-        match config::update_web_preferences(
+        let result = config::update_web_preferences(
             Some(self.settings_sessions_per_provider),
             Some(self.settings_language),
             Some(self.settings_show_opencode_subagents),
             Some(self.settings_auto_refresh_after_delete),
-        ) {
+        )
+        .and_then(|_| {
+            config::update_agent_display_preferences(
+                self.settings_agent_order.clone(),
+                self.settings_primary_agents.clone(),
+            )
+        });
+
+        match result {
             Ok(()) => {
                 self.close_settings_modal();
                 self.show_error("Settings saved to ~/.memorph/config.json".to_string());
+                self.selected_provider_tab = self
+                    .selected_provider_tab
+                    .min(provider_tabs().len().saturating_sub(1));
             }
             Err(e) => self.show_error(e.to_string()),
         }
@@ -1260,14 +1341,7 @@ impl App {
 
 /// Map TUI tab index to provider list for config persistence.
 fn tab_to_providers(tab: usize) -> Vec<String> {
-    if tab == 0 {
-        Vec::new()
-    } else {
-        providers::all_provider_ids()
-            .get(tab - 1)
-            .map(|id| vec![id.to_string()])
-            .unwrap_or_default()
-    }
+    provider_tab_filters().get(tab).cloned().unwrap_or_default()
 }
 
 pub fn provider_label(provider_id: &str) -> &'static str {

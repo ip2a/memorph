@@ -2,13 +2,15 @@ pub mod claude;
 pub mod codex;
 pub mod cursor;
 pub mod deepseek;
-pub mod kiro;
 pub mod kimi;
+pub mod kiro;
 pub mod opencode;
 
 use crate::provider::Provider;
 
-const PROVIDER_IDS: &[&str] = &["claude", "codex", "cursor", "opencode", "kiro", "deepseek", "kimi"];
+const PROVIDER_IDS: &[&str] = &[
+    "claude", "codex", "cursor", "opencode", "kiro", "deepseek", "kimi",
+];
 
 pub struct ProviderRegistry;
 
@@ -45,6 +47,10 @@ pub fn default_switch_target(from: &str) -> &'static str {
     let ids = all_provider_ids();
     match from {
         "codex" => "claude",
-        _ => ids.iter().find(|&&id| id != from).copied().unwrap_or("codex"),
+        _ => ids
+            .iter()
+            .find(|&&id| id != from)
+            .copied()
+            .unwrap_or("codex"),
     }
 }

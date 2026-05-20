@@ -31,6 +31,8 @@ pub struct WebPreferences {
     pub auto_refresh_after_delete: bool,
     #[serde(default)]
     pub home_buttons: HomeButtonConfig,
+    #[serde(default)]
+    pub agent_display: AgentDisplayPreferences,
 }
 
 impl Default for WebPreferences {
@@ -41,6 +43,7 @@ impl Default for WebPreferences {
             show_opencode_subagents: default_show_opencode_subagents(),
             auto_refresh_after_delete: default_auto_refresh_after_delete(),
             home_buttons: HomeButtonConfig::default(),
+            agent_display: AgentDisplayPreferences::default(),
         }
     }
 }
@@ -89,6 +92,14 @@ fn default_true() -> bool {
 
 fn default_false() -> bool {
     false
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentDisplayPreferences {
+    #[serde(default)]
+    pub order: Vec<String>,
+    #[serde(default)]
+    pub primary: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -217,6 +228,83 @@ pub fn update_web_preferences(
     save_config(&config)
 }
 
+pub fn update_agent_display_preferences(order: Vec<String>, primary: Vec<String>) -> Result<()> {
+    let mut config = load_config()?;
+    config.web.agent_display.order = normalize_provider_ids(order);
+    config.web.agent_display.primary = normalize_provider_ids(primary);
+    save_config(&config)
+}
+
+pub fn ordered_provider_ids(prefs: &WebPreferences) -> Vec<String> {
+    let mut ordered = normalize_provider_ids(prefs.agent_display.order.clone());
+    for id in crate::providers::all_provider_ids() {
+        if !ordered.iter().any(|existing| existing == id) {
+            ordered.push((*id).to_string());
+        }
+    }
+    ordered
+}
+
+pub fn primary_provider_ids(prefs: &WebPreferences) -> Vec<String> {
+    let ordered = ordered_provider_ids(prefs);
+    let primary = normalize_provider_ids(prefs.agent_display.primary.clone());
+    if primary.is_empty() {
+        return ordered;
+    }
+
+    ordered
+        .into_iter()
+        .filter(|id| primary.iter().any(|selected| selected == id))
+        .collect()
+}
+
+pub fn folded_provider_ids(prefs: &WebPreferences) -> Vec<String> {
+    let primary = normalize_provider_ids(prefs.agent_display.primary.clone());
+    if primary.is_empty() {
+        return Vec::new();
+    }
+
+    ordered_provider_ids(prefs)
+        .into_iter()
+        .filter(|id| !primary.iter().any(|selected| selected == id))
+        .collect()
+}
+
+pub fn sort_provider_ids_by_display(
+    prefs: &WebPreferences,
+    provider_ids: &[String],
+) -> Vec<String> {
+    let provider_ids = normalize_provider_ids(provider_ids.to_vec());
+    if provider_ids.is_empty() {
+        return ordered_provider_ids(prefs);
+    }
+
+    let mut sorted = Vec::new();
+    for id in ordered_provider_ids(prefs) {
+        if provider_ids.iter().any(|provider| provider == &id) {
+            sorted.push(id);
+        }
+    }
+    sorted
+}
+
+pub fn normalize_provider_ids(provider_ids: Vec<String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for provider_id in provider_ids {
+        let provider_id = provider_id.trim();
+        if provider_id.is_empty()
+            || !crate::providers::all_provider_ids()
+                .iter()
+                .any(|known| *known == provider_id)
+            || normalized.iter().any(|existing| existing == provider_id)
+        {
+            continue;
+        }
+        normalized.push(provider_id.to_string());
+    }
+    normalized
+}
+
 pub fn known_workspaces() -> Result<Vec<WorkspaceEntry>> {
     let mut workspaces = load_config()?.workspaces;
     workspaces.sort_by_key(|entry| std::cmp::Reverse(entry.last_viewed_at));
@@ -230,7 +318,11 @@ pub fn workspace_providers(workspace: &str) -> Result<Vec<String>> {
     let providers = entry
         .and_then(|e| {
             let p = &e.providers;
-            if p.is_empty() { None } else { Some(p.clone()) }
+            if p.is_empty() {
+                None
+            } else {
+                Some(p.clone())
+            }
         })
         .unwrap_or_else(|| {
             crate::providers::all_provider_ids()

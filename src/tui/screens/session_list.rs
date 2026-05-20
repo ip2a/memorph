@@ -166,10 +166,10 @@ fn table_cell(
     ]))
 }
 
-fn draw_chip_row(
+fn draw_chip_row<T: AsRef<str>>(
     frame: &mut Frame,
     title: &str,
-    options: &[&str],
+    options: &[T],
     selected: usize,
     focused: bool,
     area: Rect,
@@ -187,7 +187,7 @@ fn draw_chip_row(
         } else {
             Style::default().fg(theme.text).bg(theme.surface)
         };
-        spans.push(Span::styled(format!(" {} ", option), style));
+        spans.push(Span::styled(format!(" {} ", option.as_ref()), style));
     }
 
     let row = Paragraph::new(Line::from(spans))

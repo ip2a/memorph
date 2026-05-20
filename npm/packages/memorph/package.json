@@ -8,7 +8,8 @@
     "url": "https://github.com/ip2a/memorph"
   },
   "bin": {
-    "memorph": "bin/memorph.js"
+    "memorph": "bin/memorph.js",
+    "memo": "bin/memorph.js"
   },
   "files": [
     "bin",

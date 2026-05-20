@@ -38,6 +38,10 @@ const binaryPath = getBinaryPath();
 const result = spawnSync(binaryPath, process.argv.slice(2), {
   stdio: "inherit",
   shell: false,
+  env: {
+    ...process.env,
+    MEMORPH_INSTALL_SOURCE: "npm",
+  },
 });
 
 if (result.error) {
