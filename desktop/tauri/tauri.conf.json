@@ -1,0 +1,19 @@
+{
+  "$schema": "../.schema/tauri-config-schema.json",
+  "productName": "memorph",
+  "version": "0.1.8",
+  "identifier": "com.memorph.desktop",
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ]
+  }
+}

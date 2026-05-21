@@ -1,57 +1,87 @@
-# 1. 忽略所有文件和目录
+# Ignore everything by default.
 *
 
-# 2. 但必须保留目录结构，否则 git 不会递归进去
+# Keep directory traversal so whitelisted paths below can be reached.
 !*/
 
-# 3. 白名单：根目录配置文件
-!Cargo.toml
-!Cargo.lock
-!build.rs
-!platforms.toml
-!README.md
-!README_zh.md
-!README_en.md
-!assets/**
-!.gitignore
-!LICENSE
+# Always ignore local-only directories and artifacts.
+/.claude/
+/.idea/
+/.memorph/
+/target/
+/reference-projects/
+/归档/
+/RUN.md
+/bot
+/bot.*
+/issy
+/issy.*
+/desktop/tauri/.idea/
+/desktop/tauri/.memorph/
+/desktop/tauri/gen/
+/desktop/tauri/target/
+**/__pycache__/
 
-# 4. 白名单：GitHub Actions 工作流
-!.github/
-!.github/workflows/
-!.github/workflows/*.yml
+# Root project metadata.
+!/.gitignore
+!/Cargo.toml
+!/Cargo.lock
+!/build.rs
+!/platforms.toml
+!/LICENSE
+!/README.md
+!/README_en.md
+!/README_zh.md
 
-# 5. 白名单：Rust 源码
-!src/
-!src/**/*.rs
+# GitHub workflows.
+!/.github/
+!/.github/workflows/
+!/.github/workflows/*.yml
 
-# 6. 白名单：构建/发布脚本
-!scripts/
-!scripts/*.sh
-!scripts/*.py
+# Rust CLI source.
+!/src/
+!/src/**/*.rs
 
-# 6.1 白名单：独立 Web 前端
-!web/
-!web/**
+# Web app source.
+!/web/
+!/web/**
 
-# 6.2 白名单：桌面壳
-!desktop/
-!desktop/**
+# Assets used by the published project.
+!/assets/
+!/assets/**
 
-# 7. 白名单：npm 发布包配置
-!npm/
-!npm/**/
-!npm/**/package.json
-!npm/**/README.md
-!npm/packages/memorph/bin/
-!npm/packages/memorph/bin/*.js
+# Build and release scripts.
+!/scripts/
+!/scripts/*.sh
+!/scripts/*.py
 
-# 8. 白名单：Python 发布包配置
-!python/
-!python/**/
-!python/**/pyproject.toml
-!python/**/README.md
-!python/packages/memorph/src/
-!python/packages/memorph/src/memorph/
-!python/packages/memorph/src/memorph/*.py
-.idea/
+# Desktop Tauri app source and config.
+!/desktop/
+!/desktop/tauri/
+!/desktop/tauri/Cargo.toml
+!/desktop/tauri/Cargo.lock
+!/desktop/tauri/build.rs
+!/desktop/tauri/tauri.conf.json
+!/desktop/tauri/capabilities/
+!/desktop/tauri/capabilities/**
+!/desktop/tauri/icons/
+!/desktop/tauri/icons/**
+!/desktop/tauri/src/
+!/desktop/tauri/src/**/*.rs
+
+# npm package manifests and launcher script.
+!/npm/
+!/npm/**/
+!/npm/**/package.json
+!/npm/**/README.md
+!/npm/packages/memorph/bin/
+!/npm/packages/memorph/bin/*.js
+
+# Python package manifests and source entrypoints.
+!/python/
+!/python/**/
+!/python/**/pyproject.toml
+!/python/**/README.md
+!/python/packages/memorph/src/
+!/python/packages/memorph/src/memorph/
+!/python/packages/memorph/src/memorph/*.py
