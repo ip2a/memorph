@@ -1,16 +1,20 @@
 use anyhow::Result;
+use base64::{engine::general_purpose, Engine as _};
 use crossterm::event::KeyEvent;
 use ratatui::widgets::TableState;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 use crate::config::UiLanguage;
 use crate::core::{self, ExportParams, SessionGroup, SessionItem, SwitchParams};
+use crate::i18n;
 use crate::model::MemorphSession;
 use crate::{config, providers};
 
-pub fn provider_tabs() -> Vec<String> {
-    let mut tabs = vec!["All".to_string()];
+pub fn provider_tabs(language: UiLanguage) -> Vec<String> {
+    let mut tabs = vec![i18n::text(language, "all").to_string()];
     for filter in provider_tab_filters().into_iter().skip(1) {
         if filter.len() == 1 {
             let id = &filter[0];
@@ -20,7 +24,7 @@ pub fn provider_tabs() -> Vec<String> {
                     .unwrap_or_else(|| id.clone()),
             );
         } else {
-            tabs.push("More".to_string());
+            tabs.push(i18n::text(language, "more").to_string());
         }
     }
     tabs
@@ -63,13 +67,13 @@ pub enum SessionAction {
 }
 
 impl SessionAction {
-    pub fn label(self) -> &'static str {
+    pub fn label(self, language: UiLanguage) -> &'static str {
         match self {
-            Self::Switch => "Switch",
-            Self::Export => "Export",
-            Self::Rename => "Rename",
-            Self::Delete => "Delete",
-            Self::Details => "Details",
+            Self::Switch => i18n::text(language, "switch"),
+            Self::Export => i18n::text(language, "export"),
+            Self::Rename => i18n::text(language, "rename"),
+            Self::Delete => i18n::text(language, "remove"),
+            Self::Details => i18n::text(language, "details"),
         }
     }
 }
@@ -108,14 +112,14 @@ pub enum SettingsField {
 }
 
 impl SettingsField {
-    pub fn label(self) -> &'static str {
+    pub fn label(self, language: UiLanguage) -> &'static str {
         match self {
-            Self::Language => "Interface Language",
-            Self::SessionsPerProvider => "Per Agent",
-            Self::ShowOpenCodeSubagents => "OpenCode subagents",
-            Self::AutoRefreshAfterDelete => "Auto Refresh After Delete",
-            Self::PrimaryAgents => "Primary Agents",
-            Self::Save => "Save",
+            Self::Language => i18n::text(language, "interfaceLanguage"),
+            Self::SessionsPerProvider => i18n::text(language, "sessionsPerProvider"),
+            Self::ShowOpenCodeSubagents => i18n::text(language, "showSubagents"),
+            Self::AutoRefreshAfterDelete => i18n::text(language, "autoRefreshDelete"),
+            Self::PrimaryAgents => i18n::text(language, "primaryAgents"),
+            Self::Save => i18n::text(language, "save"),
         }
     }
 }
@@ -145,12 +149,12 @@ pub enum SearchScope {
 }
 
 impl SearchScope {
-    pub fn label(self) -> &'static str {
+    pub fn label(self, language: UiLanguage) -> &'static str {
         match self {
-            Self::All => "All",
-            Self::Title => "Title",
-            Self::SessionId => "Session",
-            Self::Workspace => "Workspace",
+            Self::All => i18n::text(language, "all"),
+            Self::Title => i18n::text(language, "title"),
+            Self::SessionId => i18n::text(language, "session"),
+            Self::Workspace => i18n::text(language, "workspace"),
         }
     }
 }
@@ -181,6 +185,7 @@ pub struct App {
     pub show_help: bool,
     pub error_message: Option<String>,
     pub error_timeout: Option<std::time::Instant>,
+    pub ui_language: UiLanguage,
 
     // List navigation
     pub table_state: TableState,
@@ -229,6 +234,7 @@ impl App {
     pub fn new() -> Result<Self> {
         let cwd = std::env::current_dir()?;
         let cwd_str = cwd.to_string_lossy().to_string();
+        let prefs = config::web_preferences().unwrap_or_default();
 
         let mut app = Self {
             current_screen: Screen::SessionList,
@@ -240,6 +246,7 @@ impl App {
             show_help: false,
             error_message: None,
             error_timeout: None,
+            ui_language: prefs.language,
             table_state: TableState::default(),
             selected_provider_tab: 0,
             main_focus: MainFocus::Sessions,
@@ -248,12 +255,12 @@ impl App {
             workspace_input: cwd_str.clone(),
             workspace_modal_index: 0,
             settings_selection: 0,
-            settings_language: UiLanguage::default(),
-            settings_sessions_per_provider: config::DEFAULT_SESSIONS_PER_PROVIDER,
-            settings_show_opencode_subagents: false,
-            settings_auto_refresh_after_delete: false,
-            settings_agent_order: Vec::new(),
-            settings_primary_agents: Vec::new(),
+            settings_language: prefs.language,
+            settings_sessions_per_provider: prefs.sessions_per_provider,
+            settings_show_opencode_subagents: prefs.show_opencode_subagents,
+            settings_auto_refresh_after_delete: prefs.auto_refresh_after_delete,
+            settings_agent_order: config::ordered_provider_ids(&prefs),
+            settings_primary_agents: config::primary_provider_ids(&prefs),
             settings_agent_index: 0,
             action_modal_open: false,
             action_selection: 0,
@@ -292,6 +299,18 @@ impl App {
         Ok(())
     }
 
+    pub fn language(&self) -> UiLanguage {
+        self.ui_language
+    }
+
+    pub fn t(&self, key: &'static str) -> &'static str {
+        i18n::text(self.ui_language, key)
+    }
+
+    pub fn tf(&self, key: &'static str, replacements: &[(&str, &str)]) -> String {
+        i18n::format(self.ui_language, key, replacements)
+    }
+
     fn get_filtered_providers(&self) -> Vec<String> {
         if self.selected_provider_tab == 0 {
             let prefs = config::web_preferences().unwrap_or_default();
@@ -308,35 +327,35 @@ impl App {
     pub fn toggle_show_all(&mut self) {
         self.show_all = !self.show_all;
         if let Err(e) = self.load_sessions() {
-            self.show_error(format!("Failed to load sessions: {}", e));
+            self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
         }
     }
 
     pub fn next_provider_tab(&mut self) {
-        let tab_count = provider_tabs().len();
+        let tab_count = provider_tabs(self.ui_language).len();
         self.selected_provider_tab = (self.selected_provider_tab + 1) % tab_count;
         self.save_provider_tab();
         if let Err(e) = self.load_sessions() {
-            self.show_error(format!("Failed to load sessions: {}", e));
+            self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
         }
     }
 
     pub fn previous_provider_tab(&mut self) {
-        let tab_count = provider_tabs().len();
+        let tab_count = provider_tabs(self.ui_language).len();
         self.selected_provider_tab = (self.selected_provider_tab + tab_count - 1) % tab_count;
         self.save_provider_tab();
         if let Err(e) = self.load_sessions() {
-            self.show_error(format!("Failed to load sessions: {}", e));
+            self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
         }
     }
 
     #[allow(dead_code)]
     pub fn select_provider_tab(&mut self, tab: usize) {
-        if tab < provider_tabs().len() {
+        if tab < provider_tabs(self.ui_language).len() {
             self.selected_provider_tab = tab;
             self.save_provider_tab();
             if let Err(e) = self.load_sessions() {
-                self.show_error(format!("Failed to load sessions: {}", e));
+                self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
             }
         }
     }
@@ -640,10 +659,13 @@ impl App {
         match result {
             Ok(()) => {
                 self.close_settings_modal();
-                self.show_error("Settings saved to ~/.memorph/config.json".to_string());
+                self.ui_language = self.settings_language;
+                self.show_error(
+                    self.tf("settingsSavedPath", &[("path", "~/.memorph/config.json")]),
+                );
                 self.selected_provider_tab = self
                     .selected_provider_tab
-                    .min(provider_tabs().len().saturating_sub(1));
+                    .min(provider_tabs(self.ui_language).len().saturating_sub(1));
             }
             Err(e) => self.show_error(e.to_string()),
         }
@@ -699,7 +721,7 @@ impl App {
     pub fn confirm_workspace_modal(&mut self) {
         let workspace = self.workspace_input.trim();
         if workspace.is_empty() {
-            self.show_error("Workspace cannot be empty".to_string());
+            self.show_error(self.t("workspaceEmptyError").to_string());
             return;
         }
 
@@ -720,7 +742,7 @@ impl App {
         self.close_workspace_modal();
         self.refresh_workspace_options(None);
         if let Err(e) = self.load_sessions() {
-            self.show_error(format!("Failed to load sessions: {}", e));
+            self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
         }
     }
 
@@ -737,7 +759,7 @@ impl App {
                 self.action_dialog = None;
                 self.action_result = None;
             }
-            Err(e) => self.set_action_error("Details failed", vec![e.to_string()]),
+            Err(e) => self.set_action_error(self.t("detailsFailed"), vec![e.to_string()]),
         }
     }
 
@@ -1100,13 +1122,16 @@ impl App {
 
     fn execute_modal_switch(&mut self) {
         let Some(selected) = self.selected_session.clone() else {
-            self.set_action_error("Switch failed", vec!["No session selected".to_string()]);
+            self.set_action_error(
+                self.t("switchFailed"),
+                vec![self.t("noSessionSelected").to_string()],
+            );
             return;
         };
         let Some(target) = self.selected_target_provider() else {
             self.set_action_error(
-                "Switch failed",
-                vec!["No target agent selected".to_string()],
+                self.t("switchFailed"),
+                vec![self.t("noTargetAgentSelected").to_string()],
             );
             return;
         };
@@ -1120,36 +1145,46 @@ impl App {
 
         match core::switch_session(&params) {
             Ok(result) => {
-                self.set_action_success(
-                    "Switch complete",
-                    vec![
-                        format!("From: {}", result.from_name),
-                        format!("To: {}", result.to_name),
-                        format!("Source: {}", result.source_session_id),
-                        format!("Target: {}", result.target_session_id),
-                        format!(
-                            "Resume: {}",
-                            result.resume_command.as_deref().unwrap_or("N/A")
-                        ),
-                    ],
-                );
+                let resume = result
+                    .resume_command
+                    .as_deref()
+                    .unwrap_or(self.t("resumeNotAvailable"));
+                let mut lines = vec![
+                    format!("{}: {}", self.t("fromLabel"), result.from_name),
+                    format!("{}: {}", self.t("toLabel"), result.to_name),
+                    format!("{}: {}", self.t("source"), result.source_session_id),
+                    format!("{}: {}", self.t("target"), result.target_session_id),
+                    format!("{}: {}", self.t("resume"), resume),
+                ];
+                if let Some(command) = result.resume_command.as_deref() {
+                    match copy_to_clipboard(command) {
+                        Ok(()) => lines.push(self.t("resumeCopied").to_string()),
+                        Err(e) => {
+                            lines.push(self.tf("clipboardCopyFailed", &[("error", &e.to_string())]))
+                        }
+                    }
+                }
+                self.set_action_success(self.t("switchComplete"), lines);
                 self.reload_after_action();
             }
-            Err(e) => self.set_action_error("Switch failed", vec![e.to_string()]),
+            Err(e) => self.set_action_error(self.t("switchFailed"), vec![e.to_string()]),
         }
     }
 
     fn execute_modal_export(&mut self) {
         let Some(selected) = self.selected_session.clone() else {
-            self.set_action_error("Export failed", vec!["No session selected".to_string()]);
+            self.set_action_error(
+                self.t("exportFailed"),
+                vec![self.t("noSessionSelected").to_string()],
+            );
             return;
         };
 
         let output_prefix = self.export_output_prefix.trim();
         if output_prefix.is_empty() {
             self.set_action_error(
-                "Export failed",
-                vec!["Output prefix cannot be empty".to_string()],
+                self.t("exportFailed"),
+                vec![self.t("outputPrefixEmpty").to_string()],
             );
             return;
         }
@@ -1162,49 +1197,68 @@ impl App {
         };
 
         match core::export_session(&params) {
-            Ok(result) => self.set_action_success("Export complete", result.files),
-            Err(e) => self.set_action_error("Export failed", vec![e.to_string()]),
+            Ok(result) => self.set_action_success(self.t("exportComplete"), result.files),
+            Err(e) => self.set_action_error(self.t("exportFailed"), vec![e.to_string()]),
         }
     }
 
     fn execute_modal_rename(&mut self) {
         let Some(selected) = self.selected_session.clone() else {
-            self.set_action_error("Rename failed", vec!["No session selected".to_string()]);
+            self.set_action_error(
+                self.t("renameFailed"),
+                vec![self.t("noSessionSelected").to_string()],
+            );
             return;
         };
         let new_title = self.rename_input.trim().to_string();
         if new_title.is_empty() {
-            self.set_action_error("Rename failed", vec!["Title cannot be empty".to_string()]);
+            self.set_action_error(
+                self.t("renameFailed"),
+                vec![self.t("titleEmpty").to_string()],
+            );
             return;
         }
 
         match core::rename_session(&selected.provider_id, &selected.session_id, &new_title) {
-            Ok(()) => {
-                self.set_action_success("Rename complete", vec![new_title]);
+            Ok(result) => {
+                let mut lines = vec![
+                    format!("Display title: {}", result.display_title),
+                    format!("Native title updated: {}", result.native_updated),
+                ];
+                if let Some(warning) = result.warning {
+                    lines.push(format!("Warning: {}", warning));
+                }
+                self.set_action_success(self.t("renameComplete"), lines);
                 self.reload_after_action();
             }
-            Err(e) => self.set_action_error("Rename failed", vec![e.to_string()]),
+            Err(e) => self.set_action_error(self.t("renameFailed"), vec![e.to_string()]),
         }
     }
 
     fn execute_modal_delete(&mut self) {
         let Some(selected) = self.selected_session.clone() else {
-            self.set_action_error("Delete failed", vec!["No session selected".to_string()]);
+            self.set_action_error(
+                self.t("deleteFailed"),
+                vec![self.t("noSessionSelected").to_string()],
+            );
             return;
         };
 
         match core::delete_session(&selected.provider_id, &selected.session_id) {
             Ok(()) => {
-                self.set_action_success("Delete complete", vec![selected.session_id]);
+                self.set_action_success(self.t("deleteComplete"), vec![selected.session_id]);
                 self.reload_after_action();
             }
-            Err(e) => self.set_action_error("Delete failed", vec![e.to_string()]),
+            Err(e) => self.set_action_error(self.t("deleteFailed"), vec![e.to_string()]),
         }
     }
 
     fn execute_modal_details(&mut self) {
         if self.selected_session.is_none() {
-            self.set_action_error("Details failed", vec!["No session selected".to_string()]);
+            self.set_action_error(
+                self.t("detailsFailed"),
+                vec![self.t("noSessionSelected").to_string()],
+            );
             return;
         }
         self.open_detail_modal();
@@ -1290,7 +1344,7 @@ impl App {
 
     fn reload_after_action(&mut self) {
         if let Err(e) = self.load_sessions() {
-            self.show_error(format!("Failed to refresh sessions: {}", e));
+            self.show_error(self.tf("failedRefreshSessions", &[("error", &e.to_string())]));
         }
     }
 
@@ -1344,6 +1398,69 @@ fn tab_to_providers(tab: usize) -> Vec<String> {
     provider_tab_filters().get(tab).cloned().unwrap_or_default()
 }
 
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    if try_platform_clipboard(text).is_ok() {
+        return Ok(());
+    }
+
+    let encoded = general_purpose::STANDARD.encode(text.as_bytes());
+    let mut stdout = std::io::stdout();
+    write!(stdout, "\x1b]52;c;{}\x07", encoded)?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn try_platform_clipboard(text: &str) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        if write_clipboard_command("pbcopy", &[], text).is_ok() {
+            return Ok(());
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if write_clipboard_command("cmd", &["/C", "clip"], text).is_ok() {
+            return Ok(());
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        for (program, args) in [
+            ("wl-copy", &[][..]),
+            ("xclip", &["-selection", "clipboard"][..]),
+            ("xsel", &["--clipboard", "--input"][..]),
+        ] {
+            if write_clipboard_command(program, args, text).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    anyhow::bail!(i18n::text(UiLanguage::En, "noPlatformClipboard"))
+}
+
+fn write_clipboard_command(program: &str, args: &[&str], text: &str) -> Result<()> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(text.as_bytes())?;
+    }
+
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("{} exited with {}", program, status)
+    }
+}
+
 pub fn provider_label(provider_id: &str) -> &'static str {
     providers::find_provider(provider_id)
         .map(|p| p.name())
@@ -1390,14 +1507,18 @@ fn session_matches(session: &SessionItem, scope: SearchScope, query: &str) -> bo
     }
 
     let title = session.title.as_deref().unwrap_or("").to_lowercase();
+    let native_title = session.native_title.as_deref().unwrap_or("").to_lowercase();
     let session_id = session.session_id.to_lowercase();
     let workspace = session.project_dir.as_deref().unwrap_or("").to_lowercase();
 
     match scope {
         SearchScope::All => {
-            title.contains(query) || session_id.contains(query) || workspace.contains(query)
+            title.contains(query)
+                || native_title.contains(query)
+                || session_id.contains(query)
+                || workspace.contains(query)
         }
-        SearchScope::Title => title.contains(query),
+        SearchScope::Title => title.contains(query) || native_title.contains(query),
         SearchScope::SessionId => session_id.contains(query),
         SearchScope::Workspace => workspace.contains(query),
     }

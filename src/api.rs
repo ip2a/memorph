@@ -2,12 +2,18 @@ use axum::{
     extract::{Path, Query},
     http::StatusCode,
     response::IntoResponse,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, OnceLock};
 
 use crate::{config, core, shared};
+
+type FolderPicker =
+    dyn Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static;
+
+static FOLDER_PICKER: OnceLock<Arc<FolderPicker>> = OnceLock::new();
 
 #[derive(Serialize)]
 struct ApiResponse<T: Serialize> {
@@ -41,23 +47,26 @@ fn api_error(status: StatusCode, msg: impl ToString) -> impl IntoResponse {
 
 pub fn router() -> Router {
     Router::new()
+        .route("/api/v1/meta", get(get_meta))
+        .route("/api/v1/providers", get(list_providers))
+        .route("/api/v1/settings", get(get_settings).put(update_settings))
+        .route("/api/v1/system/select-folder", post(select_folder))
         .route("/api/v1/sessions", get(list_sessions))
         .route("/api/v1/sessions/{provider}/{session_id}", get(get_session))
         .route(
             "/api/v1/sessions/{provider}/{session_id}",
-            delete(delete_session),
-        )
-        .route(
-            "/api/v1/sessions/{provider}/{session_id}",
-            patch(rename_session),
+            delete(delete_session).patch(rename_session),
         )
         .route("/api/v1/export", post(export_session))
         .route("/api/v1/import", post(import_session))
         .route("/api/v1/switch", post(switch_session))
         .route("/api/v1/find", get(find_sessions))
         .route("/api/v1/workspaces", get(list_workspaces))
-        .route("/api/v1/share", get(list_shared_sessions))
-        .route("/api/v1/share", post(create_shared_session))
+        .route(
+            "/api/v1/workspaces/providers",
+            get(get_workspace_providers).put(update_workspace_providers),
+        )
+        .route("/api/v1/share", get(list_shared_sessions).post(create_shared_session))
         .route("/api/v1/share/status", get(shared_status))
         .route("/api/v1/share/sync", post(sync_shared_sessions))
         .route("/api/v1/share/bind", post(bind_shared_session))
@@ -65,8 +74,177 @@ pub fn router() -> Router {
             "/api/v1/share/holdings/{group_id}/{holding_id}",
             delete(unbind_shared_session),
         )
-        .route("/api/v1/share/{group_id}", delete(remove_shared_session))
-        .route("/api/v1/share/{group_id}", patch(rename_shared_session))
+        .route(
+            "/api/v1/share/{group_id}",
+            delete(remove_shared_session).patch(rename_shared_session),
+        )
+        .route("/api/v1/manager/preview", post(manager_preview))
+        .route("/api/v1/manager/clean", post(manager_clean))
+        .route("/api/v1/manager/backup", post(manager_backup))
+}
+
+pub fn register_folder_picker<F>(picker: F) -> bool
+where
+    F: Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static,
+{
+    FOLDER_PICKER.set(Arc::new(picker)).is_ok()
+}
+
+#[derive(Debug, Serialize)]
+struct ProviderInfo {
+    id: String,
+    name: String,
+    scan: bool,
+    load: bool,
+    write: bool,
+    delete: bool,
+    rename: bool,
+    resume: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SettingsPayload {
+    sessions_per_provider: usize,
+    language: config::UiLanguage,
+    show_opencode_subagents: bool,
+    auto_refresh_after_delete: bool,
+    home_buttons: config::HomeButtonConfig,
+    agent_order: Vec<String>,
+    primary_agents: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MetaPayload {
+    version: &'static str,
+    providers: Vec<ProviderInfo>,
+    selected_workspace: Option<String>,
+    workspaces: Vec<config::WorkspaceEntry>,
+    settings: SettingsPayload,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionDetailPayload {
+    session: crate::model::MemorphSession,
+    resume_command: Option<String>,
+    source_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SettingsBody {
+    sessions_per_provider: usize,
+    language: config::UiLanguage,
+    show_opencode_subagents: bool,
+    auto_refresh_after_delete: bool,
+    home_buttons: config::HomeButtonConfig,
+    #[serde(default)]
+    agent_order: Vec<String>,
+    #[serde(default)]
+    primary_agents: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct SelectFolderBody {
+    start_path: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SelectFolderPayload {
+    path: Option<String>,
+}
+
+fn provider_info_list() -> Vec<ProviderInfo> {
+    crate::providers::all_provider_ids()
+        .iter()
+        .filter_map(|id| crate::providers::find_provider(id))
+        .map(|provider| {
+            let capabilities = provider.capabilities();
+            ProviderInfo {
+                id: provider.id().to_string(),
+                name: provider.name().to_string(),
+                scan: capabilities.scan,
+                load: capabilities.load,
+                write: capabilities.write,
+                delete: capabilities.delete,
+                rename: capabilities.rename,
+                resume: capabilities.resume,
+            }
+        })
+        .collect()
+}
+
+fn settings_payload() -> anyhow::Result<SettingsPayload> {
+    let prefs = config::web_preferences()?;
+    Ok(SettingsPayload {
+        sessions_per_provider: prefs.sessions_per_provider,
+        language: prefs.language,
+        show_opencode_subagents: prefs.show_opencode_subagents,
+        auto_refresh_after_delete: prefs.auto_refresh_after_delete,
+        home_buttons: prefs.home_buttons.clone(),
+        agent_order: config::ordered_provider_ids(&prefs),
+        primary_agents: config::primary_provider_ids(&prefs),
+    })
+}
+
+async fn get_meta() -> impl IntoResponse {
+    match (
+        settings_payload(),
+        config::selected_workspace(),
+        config::known_workspaces(),
+    ) {
+        (Ok(settings), Ok(selected_workspace), Ok(workspaces)) => ApiResponse::success(MetaPayload {
+            version: env!("CARGO_PKG_VERSION"),
+            providers: provider_info_list(),
+            selected_workspace,
+            workspaces,
+            settings,
+        })
+        .into_response(),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+            api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
+        }
+    }
+}
+
+async fn list_providers() -> impl IntoResponse {
+    ApiResponse::success(provider_info_list()).into_response()
+}
+
+async fn select_folder(Json(body): Json<SelectFolderBody>) -> impl IntoResponse {
+    let Some(picker) = FOLDER_PICKER.get() else {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "Folder picker is only available in the desktop app.",
+        )
+        .into_response();
+    };
+
+    match picker(body.start_path) {
+        Ok(path) => ApiResponse::success(SelectFolderPayload { path }).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn get_settings() -> impl IntoResponse {
+    match settings_payload() {
+        Ok(settings) => ApiResponse::success(settings).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn update_settings(Json(body): Json<SettingsBody>) -> impl IntoResponse {
+    let update_result = config::update_web_preferences(
+        Some(body.sessions_per_provider),
+        Some(body.language),
+        Some(body.show_opencode_subagents),
+        Some(body.auto_refresh_after_delete),
+    )
+    .and_then(|_| config::update_home_button_config(body.home_buttons))
+    .and_then(|_| config::update_agent_display_preferences(body.agent_order, body.primary_agents));
+
+    match update_result.and_then(|_| settings_payload()) {
+        Ok(settings) => ApiResponse::success(settings).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -78,7 +256,7 @@ struct ListQuery {
 }
 
 async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
-    let providers = q
+    let providers: Vec<String> = q
         .provider
         .map(|p| p.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
@@ -87,6 +265,14 @@ async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
             .ok()
             .map(|p| p.to_string_lossy().to_string())
     });
+
+    if let Some(workspace) = cwd.as_deref() {
+        let _ = config::remember_workspace(std::path::Path::new(workspace));
+        if !providers.is_empty() {
+            let _ = config::set_workspace_providers(workspace, providers.clone());
+        }
+    }
+
     let params = core::SessionListParams {
         all: q.all.unwrap_or(false),
         providers,
@@ -105,9 +291,57 @@ async fn list_workspaces() -> impl IntoResponse {
     }
 }
 
+#[derive(Deserialize)]
+struct WorkspaceQuery {
+    workspace: String,
+}
+
+async fn get_workspace_providers(Query(q): Query<WorkspaceQuery>) -> impl IntoResponse {
+    match config::workspace_providers(&q.workspace) {
+        Ok(providers) => ApiResponse::success(providers).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct WorkspaceProvidersBody {
+    workspace: String,
+    providers: Vec<String>,
+}
+
+async fn update_workspace_providers(Json(body): Json<WorkspaceProvidersBody>) -> impl IntoResponse {
+    match config::set_workspace_providers(&body.workspace, body.providers) {
+        Ok(()) => match config::workspace_providers(&body.workspace) {
+            Ok(providers) => ApiResponse::success(providers).into_response(),
+            Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        },
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 async fn get_session(Path((provider, session_id)): Path<(String, String)>) -> impl IntoResponse {
     match core::get_session(&provider, &session_id) {
-        Ok(session) => ApiResponse::success(session).into_response(),
+        Ok(session) => {
+            if let Some(project_dir) = session.session.project_dir.as_deref() {
+                let _ = config::remember_workspace(std::path::Path::new(project_dir));
+            }
+            let resume_command = crate::providers::find_provider(&provider)
+                .and_then(|provider| provider.resume_command(&session_id));
+            let source_path = crate::providers::find_provider(&provider)
+                .and_then(|provider| provider.scan_sessions().ok())
+                .and_then(|sessions| {
+                    sessions
+                        .into_iter()
+                        .find(|meta| meta.session_id == session_id)
+                        .and_then(|meta| meta.source_path)
+                });
+            ApiResponse::success(SessionDetailPayload {
+                session,
+                resume_command,
+                source_path,
+            })
+            .into_response()
+        }
         Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
     }
 }
@@ -129,7 +363,7 @@ async fn rename_session(
     Json(body): Json<RenameBody>,
 ) -> impl IntoResponse {
     match core::rename_session(&provider, &session_id, &body.title) {
-        Ok(()) => ApiResponse::success("renamed").into_response(),
+        Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -363,4 +597,43 @@ async fn rename_shared_session(
         Ok(()) => ApiResponse::success("renamed").into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct ManagerPreviewBody {
+    #[serde(default)]
+    providers: Vec<String>,
+    older_than_days: Option<u32>,
+    larger_than_mb: Option<u32>,
+    workspace: Option<String>,
+}
+
+async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
+    let filter = crate::core::manager::ManagerFilter {
+        providers: body.providers,
+        older_than_days: body.older_than_days,
+        larger_than_mb: body.larger_than_mb,
+        workspace: body.workspace,
+    };
+    match crate::core::manager::preview(&filter) {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ManagerItemsBody {
+    items: Vec<crate::core::manager::ManagerItem>,
+    output_dir: Option<String>,
+}
+
+async fn manager_clean(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
+    let result = crate::core::manager::clean(&body.items);
+    ApiResponse::success(result).into_response()
+}
+
+async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
+    let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
+    let result = crate::core::manager::backup(&body.items, std::path::Path::new(&output_dir));
+    ApiResponse::success(result).into_response()
 }

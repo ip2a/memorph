@@ -35,7 +35,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 }
 
 fn draw_provider_tabs(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let tabs = provider_tabs();
+    let tabs = provider_tabs(app.language());
     draw_chip_row(
         frame,
         "Providers",
@@ -63,7 +63,12 @@ fn draw_session_table(frame: &mut Frame, app: &mut App, area: Rect, theme: &Them
         app.table_state.select(Some(0));
     }
 
-    let rows = build_table_rows(&app.session_groups, app.table_state.selected(), theme);
+    let rows = build_table_rows(
+        &app.session_groups,
+        app.table_state.selected(),
+        app.language(),
+        theme,
+    );
     let widths = [
         Constraint::Length(11),
         Constraint::Percentage(28),
@@ -102,6 +107,7 @@ fn draw_session_table(frame: &mut Frame, app: &mut App, area: Rect, theme: &Them
 fn build_table_rows(
     groups: &[SessionGroup],
     selected_row: Option<usize>,
+    language: crate::config::UiLanguage,
     theme: &Theme,
 ) -> Vec<Row<'static>> {
     let mut rows = Vec::new();
@@ -111,7 +117,7 @@ fn build_table_rows(
         for session in &group.sessions {
             let title = session.title.as_deref().unwrap_or("(untitled)");
             let dir = session.project_dir.as_deref().unwrap_or("(no dir)");
-            let time_str = theme::format_relative_time(session.last_active_at);
+            let time_str = theme::format_relative_time(session.last_active_at, language);
             let provider = provider_label(&session.provider_id);
             let selected = selected_row == Some(row_index);
             let value_style = if selected {
@@ -239,7 +245,10 @@ fn draw_action_modal(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 }
 
 fn draw_action_tabs(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let labels: Vec<&str> = ACTION_OPTIONS.iter().map(|action| action.label()).collect();
+    let labels: Vec<&str> = ACTION_OPTIONS
+        .iter()
+        .map(|action| action.label(app.language()))
+        .collect();
     draw_chip_row(
         frame,
         "Actions",
@@ -891,7 +900,7 @@ fn draw_search_query(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 fn draw_search_scope_tabs(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let labels: Vec<&str> = SEARCH_SCOPE_OPTIONS
         .iter()
-        .map(|scope| scope.label())
+        .map(|scope| scope.label(app.language()))
         .collect();
     draw_chip_row(
         frame,
@@ -986,7 +995,7 @@ fn search_preview_lines(app: &App, matches: &[usize], theme: &Theme) -> Vec<Line
             Span::styled("Active", Style::default().fg(theme.text_dim)),
             Span::raw(format!(
                 "  {}",
-                theme::format_relative_time(session.last_active_at)
+                theme::format_relative_time(session.last_active_at, app.language())
             )),
         ]),
         Line::from(vec![

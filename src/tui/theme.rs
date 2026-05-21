@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use ratatui::style::Color;
 use std::collections::HashMap;
 
+use crate::config::UiLanguage;
+use crate::i18n;
 use crate::providers;
 
 /// Theme color configuration
@@ -71,7 +73,7 @@ impl Theme {
 }
 
 /// Format timestamp as relative time
-pub fn format_relative_time(timestamp: Option<i64>) -> String {
+pub fn format_relative_time(timestamp: Option<i64>, language: UiLanguage) -> String {
     let Some(ts) = timestamp else {
         return "-".to_string();
     };
@@ -80,13 +82,13 @@ pub fn format_relative_time(timestamp: Option<i64>) -> String {
     let diff = now - ts;
 
     if diff < 60 {
-        "just now".to_string()
+        i18n::text(language, "justNow").to_string()
     } else if diff < 3600 {
-        format!("{} minutes ago", diff / 60)
+        i18n::format(language, "minutesAgo", &[("count", &(diff / 60).to_string())])
     } else if diff < 86400 {
-        format!("{} hours ago", diff / 3600)
+        i18n::format(language, "hoursAgo", &[("count", &(diff / 3600).to_string())])
     } else if diff < 604800 {
-        format!("{} days ago", diff / 86400)
+        i18n::format(language, "daysAgo", &[("count", &(diff / 86400).to_string())])
     } else {
         let dt = DateTime::<Utc>::from_timestamp(ts, 0);
         dt.map(|d| d.format("%Y-%m-%d").to_string())

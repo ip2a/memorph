@@ -68,8 +68,11 @@ pub struct SyncReport {
 // ---------------------------------------------------------------------------
 
 fn shared_dir() -> Result<PathBuf> {
-    let cwd = std::env::current_dir()?;
-    let dir = cwd.join(".memorph").join("shared");
+    let config_dir = crate::config::config_path()?
+        .parent()
+        .context("Config file path has no parent directory")?
+        .to_path_buf();
+    let dir = config_dir.join("shared");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }

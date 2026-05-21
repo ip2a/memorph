@@ -12,11 +12,10 @@ pub fn build_router() -> Router {
         .allow_headers(Any);
 
     let api_routes = api::router();
-    let web_routes = web::router();
-
     Router::new()
-        .merge(web_routes)
         .merge(api_routes)
+        .merge(web::router())
+        .fallback(web::serve_app)
         .layer(cors)
 }
 

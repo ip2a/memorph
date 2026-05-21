@@ -7,6 +7,7 @@
 # 3. 白名单：根目录配置文件
 !Cargo.toml
 !Cargo.lock
+!build.rs
 !platforms.toml
 !README.md
 !README_zh.md
@@ -28,6 +29,14 @@
 !scripts/
 !scripts/*.sh
 !scripts/*.py
+
+# 6.1 白名单：独立 Web 前端
+!web/
+!web/**
+
+# 6.2 白名单：桌面壳
+!desktop/
+!desktop/**
 
 # 7. 白名单：npm 发布包配置
 !npm/

@@ -1,26 +1,11 @@
 #![recursion_limit = "256"]
 
-mod api;
-mod cli;
-mod config;
-mod core;
-mod format;
-mod model;
-mod provider;
-mod providers;
-mod server;
-mod shared;
-mod storage;
-mod tui;
-mod utils;
-mod web;
-mod web_assets;
-mod web_modals;
-mod web_support;
-
 use anyhow::{Context, Result};
 use clap::Parser;
-use cli::{Cli, Commands, ShareCommands};
+use memorph::{
+    cli::{Cli, Commands, ShareCommands},
+    core, providers, server, shared, tui, web_assets,
+};
 use std::path::Path;
 use std::process::Command;
 
@@ -104,12 +89,17 @@ fn run_command(command: Commands) -> Result<()> {
             session_id,
             new_title,
         } => {
-            let provider_name = provider_name(&provider)?;
-            core::rename_session(&provider, &session_id, &new_title)?;
+            let result = core::rename_session(&provider, &session_id, &new_title)?;
             println!(
                 "Renamed session in {}: {} -> {}",
-                provider_name, session_id, new_title
+                result.provider_name, result.session_id, result.display_title
             );
+            if !result.native_updated {
+                println!("Native title was not updated.");
+            }
+            if let Some(warning) = result.warning {
+                println!("Warning: {}", warning);
+            }
         }
 
         Commands::Switch {

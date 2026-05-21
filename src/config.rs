@@ -102,6 +102,18 @@ pub struct AgentDisplayPreferences {
     pub primary: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DesktopWindowState {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DesktopPreferences {
+    #[serde(default)]
+    pub window: Option<DesktopWindowState>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MemorphConfig {
     #[serde(default)]
@@ -110,6 +122,8 @@ pub struct MemorphConfig {
     pub selected_workspace: Option<String>,
     #[serde(default)]
     pub web: WebPreferences,
+    #[serde(default)]
+    pub desktop: DesktopPreferences,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -204,6 +218,16 @@ pub fn selected_workspace() -> Result<Option<String>> {
     Ok(load_config()?.selected_workspace)
 }
 
+pub fn desktop_window_state() -> Result<Option<DesktopWindowState>> {
+    Ok(load_config()?.desktop.window)
+}
+
+pub fn set_desktop_window_state(state: DesktopWindowState) -> Result<()> {
+    let mut config = load_config()?;
+    config.desktop.window = Some(state);
+    save_config(&config)
+}
+
 pub fn update_web_preferences(
     sessions_per_provider: Option<usize>,
     language: Option<UiLanguage>,
@@ -232,6 +256,12 @@ pub fn update_agent_display_preferences(order: Vec<String>, primary: Vec<String>
     let mut config = load_config()?;
     config.web.agent_display.order = normalize_provider_ids(order);
     config.web.agent_display.primary = normalize_provider_ids(primary);
+    save_config(&config)
+}
+
+pub fn update_home_button_config(home_buttons: HomeButtonConfig) -> Result<()> {
+    let mut config = load_config()?;
+    config.web.home_buttons = home_buttons;
     save_config(&config)
 }
 

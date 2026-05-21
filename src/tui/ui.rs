@@ -44,7 +44,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let workspace = app.workspace.as_deref().unwrap_or("(no workspace)");
+    let workspace = app.workspace.as_deref().unwrap_or(app.t("workspaceEmpty"));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -80,21 +80,13 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     ))
     .style(Style::default().fg(theme.text).bg(theme.background))
     .alignment(Alignment::Left)
-    .block(top_block(
-        "Workspace",
-        app.main_focus == MainFocus::Workspace,
-        theme,
-    ));
+    .block(top_block(app.t("workspace"), app.main_focus == MainFocus::Workspace, theme));
     frame.render_widget(workspace_block, controls[0]);
 
-    let settings_block = Paragraph::new(" Settings ")
+    let settings_block = Paragraph::new(format!(" {} ", app.t("settings")))
         .style(Style::default().fg(theme.text).bg(theme.background))
         .alignment(Alignment::Center)
-        .block(top_block(
-            "Settings",
-            app.main_focus == MainFocus::Settings,
-            theme,
-        ));
+        .block(top_block(app.t("settings"), app.main_focus == MainFocus::Settings, theme));
     frame.render_widget(settings_block, controls[1]);
 }
 
@@ -107,22 +99,22 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         message
     } else if app.action_modal_open {
         if app.action_dialog.is_some() {
-            "↑↓ Select  Enter Save  Esc Cancel"
+            app.t("tuiFooterDialogSelectSave")
         } else {
-            "↑↓ Focus  ←→ Action  Enter Open/Run  Esc Close"
+            app.t("tuiFooterActionFocus")
         }
     } else if app.workspace_modal_open {
-        "Type Workspace  ↑↓ Suggestions  Enter Save  Esc Close"
+        app.t("tuiFooterWorkspaceModal")
     } else if app.settings_modal_open {
-        "Esc Close"
+        app.t("tuiFooterClose")
     } else if app.search_modal_open {
-        "Type Query  ←→ Scope  ↑↓ Results  Enter Jump  Esc Close"
+        app.t("tuiFooterSearch")
     } else if app.main_focus == MainFocus::Workspace {
-        "←→ Top Control  Enter Edit Workspace  ↓ Sessions  Esc Sessions"
+        app.t("tuiFooterTopWorkspace")
     } else if app.main_focus == MainFocus::Settings {
-        "←→ Top Control  Enter Settings  ↓ Sessions  Esc Sessions"
+        app.t("tuiFooterTopSettings")
     } else {
-        "←→ Provider  ↑↓ Session  Enter Actions  F Search  Q Quit"
+        app.t("tuiFooterMain")
     };
     let footer = Paragraph::new(hints)
         .style(
@@ -139,7 +131,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     frame.render_widget(footer, area);
 }
 
-fn draw_help_overlay(frame: &mut Frame, _app: &App, theme: &Theme) {
+fn draw_help_overlay(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
     let popup_area = centered_rect(60, 70, area);
 
@@ -147,50 +139,50 @@ fn draw_help_overlay(frame: &mut Frame, _app: &App, theme: &Theme) {
 
     let help_text = Text::from(vec![
         Line::from(Span::styled(
-            "Keyboard Shortcuts",
+            app.t("keyboardShortcuts"),
             Style::default()
                 .fg(theme.primary)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Navigation",
+            app.t("navigation"),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  ↑ / ↓     Select session, field, or popup option"),
-        Line::from("  ← / →     Switch provider, action, or search scope"),
-        Line::from("  Enter     Open actions, open pickers, or run action"),
-        Line::from("  F         Open search"),
-        Line::from("  Q         Quit from the main table"),
-        Line::from("  Esc       Close modal or search"),
+        Line::from(app.t("shortcutSelectSession")),
+        Line::from(app.t("shortcutSwitchProvider")),
+        Line::from(app.t("shortcutOpenAction")),
+        Line::from(app.t("shortcutOpenSearch")),
+        Line::from(app.t("shortcutQuit")),
+        Line::from(app.t("shortcutClose")),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Actions",
+            app.t("providers"),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  Switch    Create a session in another agent"),
-        Line::from("  Export    Write a JSON export file"),
-        Line::from("  Rename    Rename the provider session"),
-        Line::from("  Delete    Delete the provider session"),
-        Line::from("  Details   Open a dedicated session detail popup"),
+        Line::from(app.t("shortcutSwitch")),
+        Line::from(app.t("shortcutExport")),
+        Line::from(app.t("shortcutRename")),
+        Line::from(app.t("shortcutDelete")),
+        Line::from(app.t("shortcutDetails")),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "General",
+            app.t("general"),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  ?         Show this help"),
+        Line::from(app.t("shortcutShowHelp")),
     ]);
 
     let help = Paragraph::new(help_text)
         .block(
             Block::default()
-                .title(" Help ")
+                .title(format!(" {} ", app.t("help")))
                 .borders(Borders::ALL)
                 .style(Style::default().fg(theme.text).bg(theme.surface))
                 .border_style(theme.border_focused),
@@ -205,7 +197,7 @@ fn draw_workspace_modal(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
     let popup_area = centered_rect(80, 68, area);
     frame.render_widget(Clear, popup_area);
-    frame.render_widget(modal_block("Workspace", theme), popup_area);
+    frame.render_widget(modal_block(app.t("workspace"), theme), popup_area);
 
     let inner = popup_area.inner(ratatui::layout::Margin {
         horizontal: 2,
@@ -229,11 +221,11 @@ fn draw_workspace_modal(frame: &mut Frame, app: &App, theme: &Theme) {
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )),
         Line::from(Span::styled(
-            "Type a local workspace path.",
+            app.t("typeLocalWorkspacePath"),
             Style::default().fg(theme.text),
         )),
     ]))
-    .block(section_block("Workspace Path", true, theme))
+    .block(section_block(app.t("workspacePath"), true, theme))
     .style(Style::default().fg(theme.text).bg(theme.surface))
     .wrap(Wrap { trim: true });
     frame.render_widget(input, chunks[0]);
@@ -245,7 +237,7 @@ fn draw_workspace_modal(frame: &mut Frame, app: &App, theme: &Theme) {
     let mut lines = Vec::new();
     if options.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No saved workspace matches this path.",
+            app.t("noSavedWorkspaceMatchesPath"),
             Style::default().fg(theme.warning),
         )));
     } else {
@@ -265,12 +257,12 @@ fn draw_workspace_modal(frame: &mut Frame, app: &App, theme: &Theme) {
         }
     }
     let suggestions = Paragraph::new(Text::from(lines))
-        .block(section_block("Saved Workspaces", false, theme))
+        .block(section_block(app.t("savedWorkspaces"), false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(suggestions, chunks[1]);
 
-    let footer = Paragraph::new("Type path  ↑↓ Suggestions  Enter Save  Esc Cancel")
+    let footer = Paragraph::new(app.t("tuiFooterWorkspaceDialog"))
         .style(Style::default().fg(theme.text).bg(theme.surface));
     frame.render_widget(footer, chunks[2]);
 }
@@ -279,7 +271,7 @@ fn draw_settings_modal(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
     let popup_area = centered_rect(78, 76, area);
     frame.render_widget(Clear, popup_area);
-    frame.render_widget(modal_block("Settings", theme), popup_area);
+    frame.render_widget(modal_block(app.t("settings"), theme), popup_area);
 
     let inner = popup_area.inner(ratatui::layout::Margin {
         horizontal: 2,
@@ -308,40 +300,38 @@ fn draw_settings_modal(frame: &mut Frame, app: &App, theme: &Theme) {
     }
 
     let settings = Paragraph::new(Text::from(rows))
-        .block(section_block("Editable Settings", false, theme))
+        .block(section_block(app.t("editableSettings"), false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(settings, chunks[0]);
 
-    let provider = provider_tabs()
+    let provider = provider_tabs(app.language())
         .get(app.selected_provider_tab)
         .cloned()
-        .unwrap_or_else(|| "All".to_string());
+        .unwrap_or_else(|| app.t("all").to_string());
     let info = Paragraph::new(Text::from(vec![
         Line::from(vec![
-            Span::styled("Version", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(app.t("version"), Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(format!("  {}", env!("CARGO_PKG_VERSION"))),
         ]),
         Line::from(vec![
             Span::styled(
-                "Provider Filter",
+                app.t("providerFilter"),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!("  {}", provider)),
         ]),
         Line::from(vec![
-            Span::styled("Config", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(app.t("configPath"), Style::default().add_modifier(Modifier::BOLD)),
             Span::raw(format!("  {}", config_path)),
         ]),
     ]))
-    .block(section_block("Config", false, theme))
+    .block(section_block(app.t("configPath"), false, theme))
     .style(Style::default().fg(theme.text).bg(theme.surface))
     .wrap(Wrap { trim: true });
     frame.render_widget(info, chunks[1]);
 
-    let footer = Paragraph::new(
-        "↑↓ Select  ←→ Change/Choose Agent  Digits Edit Count  Enter Toggle/Save  Esc Close",
-    )
+    let footer = Paragraph::new(app.t("tuiFooterClose"))
     .style(Style::default().fg(theme.text).bg(theme.surface));
     frame.render_widget(footer, chunks[2]);
 }
@@ -363,21 +353,23 @@ fn settings_row(field: SettingsField, app: &App, theme: &Theme) -> Line<'static>
     };
     let value = match field {
         SettingsField::Language => match app.settings_language {
-            config::UiLanguage::Zh => "中文",
-            config::UiLanguage::En => "English",
+            config::UiLanguage::Zh => app.t("languageNativeZh"),
+            config::UiLanguage::En => app.t("languageNativeEn"),
         }
         .to_string(),
         SettingsField::SessionsPerProvider => app.settings_sessions_per_provider.to_string(),
-        SettingsField::ShowOpenCodeSubagents => enabled_label(app.settings_show_opencode_subagents),
+        SettingsField::ShowOpenCodeSubagents => {
+            enabled_label(app.language(), app.settings_show_opencode_subagents)
+        }
         SettingsField::AutoRefreshAfterDelete => {
-            enabled_label(app.settings_auto_refresh_after_delete)
+            enabled_label(app.language(), app.settings_auto_refresh_after_delete)
         }
         SettingsField::PrimaryAgents => settings_agent_label(app),
-        SettingsField::Save => "Write config".to_string(),
+        SettingsField::Save => app.t("writeConfig").to_string(),
     };
 
     Line::from(vec![
-        Span::styled(format!(" {} ", field.label()), label_style),
+        Span::styled(format!(" {} ", field.label(app.language())), label_style),
         Span::raw("  "),
         Span::styled(value, value_style),
     ])
@@ -385,25 +377,25 @@ fn settings_row(field: SettingsField, app: &App, theme: &Theme) -> Line<'static>
 
 fn settings_agent_label(app: &App) -> String {
     let Some(agent) = app.settings_agent_order.get(app.settings_agent_index) else {
-        return "All visible".to_string();
+        return app.t("allVisible").to_string();
     };
     let state = if app
         .settings_primary_agents
         .iter()
         .any(|provider| provider == agent)
     {
-        "Visible"
+        app.t("visibleState")
     } else {
-        "Folded"
+        app.t("foldedState")
     };
     format!("{}: {}", provider_label(agent), state)
 }
 
-fn enabled_label(enabled: bool) -> String {
+fn enabled_label(language: config::UiLanguage, enabled: bool) -> String {
     if enabled {
-        "Enabled".to_string()
+        crate::i18n::text(language, "enabled").to_string()
     } else {
-        "Disabled".to_string()
+        crate::i18n::text(language, "disabled").to_string()
     }
 }
 
