@@ -1,0 +1,18 @@
+#![recursion_limit = "256"]
+
+pub mod api;
+pub mod cli;
+pub mod config;
+pub mod core;
+pub mod format;
+pub mod i18n;
+pub mod model;
+pub mod provider;
+pub mod providers;
+pub mod server;
+pub mod shared;
+pub mod storage;
+pub mod tui;
+pub mod utils;
+pub mod web;
+pub mod web_assets;
