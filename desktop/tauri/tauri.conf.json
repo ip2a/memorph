@@ -1,7 +1,7 @@
 {
   "$schema": "../.schema/tauri-config-schema.json",
   "productName": "memorph",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "identifier": "com.memorph.desktop",
   "app": {
     "windows": [],
@@ -13,6 +13,7 @@
     "active": true,
     "targets": "all",
     "icon": [
+      "icons/icon.icns",
       "icons/icon.png"
     ]
   }
