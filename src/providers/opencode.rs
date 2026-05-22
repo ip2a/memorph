@@ -1,13 +1,18 @@
-use crate::model::{
-    ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, SessionInfo,
-    SessionMeta,
+use crate::canonical::{
+    ArtifactKind, CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata,
+    EventRole, EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
+    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionArtifact,
+    SessionContext, SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
 };
-use crate::provider::{Provider, ProviderCapabilities};
+use crate::provider::{
+    canonical_block_text, canonical_export_result, canonical_session_title, Provider,
+    ProviderCapabilities, ProviderSessionSummary,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::Connection;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -31,7 +36,7 @@ impl Provider for OpenCodeProvider {
         ProviderCapabilities::full_session_management()
     }
 
-    fn scan_sessions(&self) -> Result<Vec<SessionMeta>> {
+    fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
         let mut sessions = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
@@ -66,450 +71,21 @@ impl Provider for OpenCodeProvider {
         Ok(sessions)
     }
 
-    fn load_session(&self, source_path: &str) -> Result<MemorphSession> {
-        let session_id = source_path;
-
-        // Try DB first, fallback to filesystem
-        let (session_json, messages, parts) = if let Ok(data) = load_session_from_db(session_id) {
-            data
-        } else {
-            load_session_from_filesystem(session_id)?
-        };
-
-        // Build messages linearly: for each user message, then its assistant children
-        let mut memorph_messages = Vec::new();
-
-        // Sort messages by creation time
-        let mut msg_list: Vec<(i64, Value, Vec<Value>)> = messages
-            .into_iter()
-            .map(|(created, msg_json)| {
-                let msg_id = msg_json
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let msg_parts: Vec<Value> = parts.get(&msg_id).cloned().unwrap_or_default();
-                (created, msg_json, msg_parts)
-            })
-            .collect();
-        msg_list.sort_by_key(|(created, _, _)| *created);
-
-        for (_, msg_json, msg_parts) in msg_list {
-            let role_str = msg_json
-                .get("role")
-                .and_then(|v| v.as_str())
-                .unwrap_or("user");
-            let role = match role_str {
-                "user" => MemorphRole::User,
-                "assistant" => MemorphRole::Assistant,
-                _ => continue,
-            };
-
-            let msg_id = msg_json
-                .get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let parent_id = msg_json
-                .get("parentID")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let created = msg_json
-                .get("time")
-                .and_then(|v| v.get("created"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or_else(|| Utc::now().timestamp_millis());
-            let ts = chrono::DateTime::from_timestamp_millis(created).unwrap_or_else(Utc::now);
-
-            let mut content_blocks = Vec::new();
-
-            for part in msg_parts {
-                let part_type = part.get("type").and_then(|v| v.as_str());
-                match part_type {
-                    Some("text") => {
-                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                            content_blocks.push(ContentBlock::text(text));
-                        }
-                    }
-                    Some("reasoning") => {
-                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                            content_blocks.push(ContentBlock::Thinking {
-                                thinking: text.to_string(),
-                                signature: None,
-                            });
-                        }
-                    }
-                    Some("tool") => {
-                        let call_id = part
-                            .get("callID")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let state = part.get("state").cloned().unwrap_or_default();
-                        let status = state
-                            .get("status")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("completed");
-                        let output = state.get("output").and_then(|v| v.as_str()).unwrap_or("");
-                        let is_error = status == "error";
-                        content_blocks.push(ContentBlock::ToolResult {
-                            tool_use_id: call_id,
-                            content: output.to_string(),
-                            is_error: Some(is_error),
-                        });
-                    }
-                    Some("file") => {
-                        let mime = part
-                            .get("mime")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("application/octet-stream");
-                        let filename = part
-                            .get("filename")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("file");
-                        let url = part.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                        if mime.starts_with("image/") && url.starts_with("data:") {
-                            // Parse data URI
-                            if let Some((mime_type, data)) = parse_data_uri(url) {
-                                content_blocks.push(ContentBlock::Image {
-                                    mime_type: mime_type.to_string(),
-                                    data: data.to_string(),
-                                });
-                            }
-                        } else if !url.is_empty() {
-                            content_blocks.push(ContentBlock::File {
-                                path: filename.to_string(),
-                                content: Some(url.to_string()),
-                            });
-                        }
-                    }
-                    Some("patch") => {
-                        let files = part
-                            .get("files")
-                            .and_then(|v| v.as_array())
-                            .map(|arr| {
-                                arr.iter()
-                                    .filter_map(|v| v.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            })
-                            .unwrap_or_default();
-                        let hash = part.get("hash").and_then(|v| v.as_str()).unwrap_or("");
-                        content_blocks.push(ContentBlock::text(format!(
-                            "[Patch: {} (files: {})]",
-                            hash, files
-                        )));
-                    }
-                    Some("step-start") | Some("step-finish") | Some("compaction") => {
-                        // Skip metadata parts
-                    }
-                    _ => {}
-                }
-            }
-
-            if content_blocks.is_empty() {
-                continue;
-            }
-
-            let model = msg_json
-                .get("modelID")
-                .or_else(|| msg_json.get("model").and_then(|m| m.get("modelID")))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let provider = msg_json
-                .get("providerID")
-                .or_else(|| msg_json.get("model").and_then(|m| m.get("providerID")))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            let usage = msg_json.get("tokens").and_then(|t| {
-                Some(crate::model::TokenUsage {
-                    input_tokens: t.get("input").and_then(|v| v.as_u64()),
-                    output_tokens: t.get("output").and_then(|v| v.as_u64()),
-                    total_tokens: t.get("total").and_then(|v| v.as_u64()),
-                })
-            });
-
-            let finish = msg_json
-                .get("finish")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let cost = msg_json.get("cost").and_then(|v| v.as_f64());
-            let agent = msg_json
-                .get("agent")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let mode = msg_json
-                .get("mode")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            let mut extra = serde_json::Map::new();
-            if let Some(f) = finish {
-                extra.insert("finish".to_string(), Value::String(f));
-            }
-            if let Some(c) = cost {
-                extra.insert("cost".to_string(), Value::from(c));
-            }
-            if let Some(a) = agent {
-                extra.insert("agent".to_string(), Value::String(a));
-            }
-            if let Some(m) = mode {
-                extra.insert("mode".to_string(), Value::String(m));
-            }
-
-            memorph_messages.push(MemorphMessage {
-                id: msg_id,
-                role,
-                content: content_blocks,
-                timestamp: ts,
-                metadata: Some(crate::model::MessageMetadata {
-                    source: Some(crate::model::SourceMetadata {
-                        provider: provider.unwrap_or_else(|| PROVIDER_ID.to_string()),
-                        original_id: None,
-                        original_role: Some(role_str.to_string()),
-                    }),
-                    model,
-                    usage,
-                    extra: Value::Object(extra),
-                }),
-                parent_id,
-                turn_index: None,
-            });
-        }
-
-        let session_id_val = session_json
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or(session_id)
-            .to_string();
-        let title = session_json
-            .get("title")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let project_dir = session_json
-            .get("directory")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let created = session_json
-            .get("time")
-            .and_then(|v| v.get("created"))
-            .and_then(|v| v.as_i64());
-        let updated = session_json
-            .get("time")
-            .and_then(|v| v.get("updated"))
-            .and_then(|v| v.as_i64());
-
-        let meta = MemorphMeta {
-            version: "1.0".to_string(),
-            converted_from: PROVIDER_ID.to_string(),
-            converted_at: Utc::now(),
-            memorph_version: env!("CARGO_PKG_VERSION").to_string(),
-            source_session_id: session_id_val.clone(),
-            source_provider: PROVIDER_ID.to_string(),
-            converted_by: Some("memorph-cli".to_string()),
-        };
-
-        let session = SessionInfo {
-            id: session_id_val,
-            title: title.clone(),
-            project_dir,
-            created_at: created.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms)),
-            last_active_at: updated.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms)),
-            tags: None,
-        };
-
-        Ok(MemorphSession {
-            meta,
-            session,
-            messages: memorph_messages,
-        })
+    fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        import_canonical_session(source_path)
     }
 
-    fn write_session(&self, session: &MemorphSession, target_dir: &Path) -> Result<String> {
-        let now = Utc::now().timestamp_millis();
-        let session_id = generate_opencode_id("ses");
-        let project_id = find_or_create_project(target_dir)?;
-        let slug = generate_slug();
-        let target_dir_str = target_dir.to_string_lossy().to_string();
-        let title = session
-            .session
-            .title
-            .clone()
-            .unwrap_or_else(|| "Imported session".to_string());
-
-        // Build session JSON
-        let session_json = serde_json::json!({
-            "id": &session_id,
-            "slug": &slug,
-            "version": OPENCODE_VERSION,
-            "projectID": &project_id,
-            "directory": &target_dir_str,
-            "title": &title,
-            "time": {
-                "created": now,
-                "updated": now
-            }
-        });
-
-        // Convert memorph messages to OpenCode messages + parts
-        let mut oc_messages: Vec<(String, i64, Value)> = Vec::new();
-        let mut oc_parts: Vec<(String, String, i64, Value)> = Vec::new();
-        let mut last_user_msg_id: Option<String> = None;
-
-        for msg in &session.messages {
-            let msg_id = generate_opencode_id("msg");
-            let msg_created = msg.timestamp.timestamp_millis();
-
-            let (role, parent_id) = match msg.role {
-                MemorphRole::User => {
-                    last_user_msg_id = Some(msg_id.clone());
-                    ("user", None)
-                }
-                MemorphRole::Assistant => ("assistant", last_user_msg_id.clone()),
-                MemorphRole::Tool => ("user", last_user_msg_id.clone()),
-                MemorphRole::System => {
-                    // System messages become user messages in OpenCode
-                    last_user_msg_id = Some(msg_id.clone());
-                    ("user", None)
-                }
-                MemorphRole::Developer => {
-                    last_user_msg_id = Some(msg_id.clone());
-                    ("user", None)
-                }
-            };
-
-            let msg_json = build_opencode_message_data(
-                &session_id,
-                msg,
-                &msg_id,
-                role,
-                parent_id.as_deref(),
-                &target_dir_str,
-            );
-            oc_messages.push((msg_id.clone(), msg_created, msg_json));
-
-            // Convert content blocks to parts
-            for block in &msg.content {
-                let part_id = generate_opencode_id("prt");
-                let part_created = msg_created + 1;
-
-                let part_json = match block {
-                    ContentBlock::Text { text } => {
-                        serde_json::json!({
-                            "id": part_id,
-                            "sessionID": session_id,
-                            "messageID": msg_id,
-                            "type": "text",
-                            "text": text,
-                        })
-                    }
-                    ContentBlock::Thinking { thinking, .. } => {
-                        serde_json::json!({
-                            "id": part_id,
-                            "sessionID": session_id,
-                            "messageID": msg_id,
-                            "type": "reasoning",
-                            "text": thinking,
-                        })
-                    }
-                    ContentBlock::ToolUse { id, name, input } => {
-                        // OpenCode doesn't have explicit tool_use parts.
-                        // Store as a text annotation.
-                        serde_json::json!({
-                            "id": part_id,
-                            "sessionID": session_id,
-                            "messageID": msg_id,
-                            "type": "text",
-                            "text": format!(
-                                "[Tool Use: {} (id={})]\nInput: {}",
-                                name,
-                                id,
-                                input.as_ref().map(|v| v.to_string()).unwrap_or_default()
-                            ),
-                        })
-                    }
-                    ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        is_error,
-                    } => {
-                        serde_json::json!({
-                            "id": part_id,
-                            "sessionID": session_id,
-                            "messageID": msg_id,
-                            "type": "tool",
-                            "callID": tool_use_id,
-                            "tool": "unknown",
-                            "state": {
-                                "status": if *is_error == Some(true) { "error" } else { "completed" },
-                                "input": {},
-                                "output": content,
-                                "title": "Tool result",
-                                "metadata": {},
-                                "time": {
-                                    "start": part_created,
-                                    "end": part_created
-                                }
-                            }
-                        })
-                    }
-                    ContentBlock::Image { mime_type, data } => {
-                        serde_json::json!({
-                            "id": part_id,
-                            "sessionID": session_id,
-                            "messageID": msg_id,
-                            "type": "file",
-                            "mime": mime_type,
-                            "filename": "image.png",
-                            "url": format!("data:{};base64,{}" , mime_type, data),
-                        })
-                    }
-                    ContentBlock::File { path, content } => {
-                        serde_json::json!({
-                            "id": part_id,
-                            "sessionID": session_id,
-                            "messageID": msg_id,
-                            "type": "file",
-                            "mime": "text/plain",
-                            "filename": path,
-                            "url": content.as_deref().unwrap_or(""),
-                        })
-                    }
-                };
-
-                oc_parts.push((part_id, msg_id.clone(), part_created, part_json));
-            }
-        }
-
-        // The current OpenCode version uses SQLite as its primary storage.
-        // DB write failures must not be silently downgraded, otherwise memorph
-        // would report success while OpenCode cannot restore the session.
-        write_to_db(
-            &session_id,
-            &project_id,
-            &slug,
-            &target_dir_str,
-            &title,
-            now,
-            &oc_messages,
-            &oc_parts,
-        )
-        .context("Failed to write to OpenCode SQLite database")?;
-        load_session_from_db(&session_id)
-            .context("Failed to verify OpenCode SQLite write result")?;
-
-        // Also write to the filesystem to remain compatible with older OpenCode
-        // storage and this tool's fallback scan.
-        write_to_filesystem(
-            &session_id,
-            &project_id,
-            &session_json,
-            &oc_messages,
-            &oc_parts,
-        )?;
-
-        Ok(session_id)
+    fn export_session(
+        &self,
+        session: &CanonicalSession,
+        target_dir: &Path,
+    ) -> Result<ExportedSession> {
+        let session_id = export_canonical_session(session, target_dir)?;
+        Ok(canonical_export_result(
+            PROVIDER_ID,
+            session_id.clone(),
+            self.resume_command(&session_id),
+        ))
     }
 
     fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -656,6 +232,423 @@ impl Provider for OpenCodeProvider {
     }
 }
 
+fn import_canonical_session(session_id: &str) -> Result<ImportedSession> {
+    let (session_json, messages, parts) = if let Ok(data) = load_session_from_db(session_id) {
+        data
+    } else {
+        load_session_from_filesystem(session_id)?
+    };
+
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let mut events = Vec::new();
+    let mut artifacts = Vec::new();
+
+    let mut msg_list: Vec<(i64, Value, Vec<Value>)> = messages
+        .into_iter()
+        .map(|(created, msg_json)| {
+            let msg_id = msg_json
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let msg_parts: Vec<Value> = parts.get(&msg_id).cloned().unwrap_or_default();
+            (created, msg_json, msg_parts)
+        })
+        .collect();
+    msg_list.sort_by_key(|(created, _, _)| *created);
+
+    for (_, msg_json, msg_parts) in msg_list {
+        let role_str = msg_json
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("user");
+        let role = match role_str {
+            "user" => EventRole::User,
+            "assistant" => EventRole::Assistant,
+            other => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Info,
+                    disposition: MappingDisposition::Normalized,
+                    code: "unknown_role_normalized".to_string(),
+                    message: format!("Normalized unknown OpenCode role '{}'", other),
+                    path: None,
+                    raw: Some(msg_json.clone()),
+                });
+                EventRole::Unknown
+            }
+        };
+
+        let msg_id = msg_json
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let parent_id = msg_json
+            .get("parentID")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let created = msg_json
+            .get("time")
+            .and_then(|v| v.get("created"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| Utc::now().timestamp_millis());
+        let timestamp = chrono::DateTime::from_timestamp_millis(created).unwrap_or_else(Utc::now);
+
+        let blocks = canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report, &mut artifacts);
+        if blocks.is_empty() {
+            continue;
+        }
+
+        let model = msg_json
+            .get("modelID")
+            .or_else(|| msg_json.get("model").and_then(|m| m.get("modelID")))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let provider = msg_json
+            .get("providerID")
+            .or_else(|| msg_json.get("model").and_then(|m| m.get("providerID")))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| PROVIDER_ID.to_string());
+
+        let usage = msg_json.get("tokens").map(|t| UsageStats {
+            input_tokens: t.get("input").and_then(|v| v.as_u64()),
+            output_tokens: t.get("output").and_then(|v| v.as_u64()),
+            total_tokens: t.get("total").and_then(|v| v.as_u64()),
+        });
+
+        let finish = msg_json
+            .get("finish")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let cost = msg_json.get("cost").and_then(|v| v.as_f64());
+        let agent = msg_json
+            .get("agent")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let mode = msg_json
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let mut provider_ext = BTreeMap::new();
+        provider_ext.insert("opencode_message".to_string(), msg_json.clone());
+        if let Some(finish) = finish {
+            provider_ext.insert("finish".to_string(), Value::String(finish));
+        }
+        if let Some(cost) = cost {
+            provider_ext.insert("cost".to_string(), Value::from(cost));
+        }
+        if let Some(agent) = agent {
+            provider_ext.insert("agent".to_string(), Value::String(agent));
+        }
+        if let Some(mode) = mode {
+            provider_ext.insert("mode".to_string(), Value::String(mode));
+        }
+
+        let kind = derive_event_kind(&blocks);
+        events.push(SessionEvent {
+            id: msg_id.clone(),
+            kind,
+            role,
+            timestamp,
+            links: EventLinks {
+                parent_event_id: parent_id.clone(),
+                provider_parent_id: parent_id,
+                turn_index: None,
+                related_event_ids: Vec::new(),
+            },
+            blocks,
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: provider,
+                    original_id: Some(msg_id),
+                    original_role: Some(role_str.to_string()),
+                    phase: None,
+                },
+                model,
+                usage,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext,
+            },
+        });
+    }
+
+    let session_id_val = session_json
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or(session_id)
+        .to_string();
+    let title = session_json
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let project_dir = session_json
+        .get("directory")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let created = session_json
+        .get("time")
+        .and_then(|v| v.get("created"))
+        .and_then(|v| v.as_i64())
+        .and_then(chrono::DateTime::from_timestamp_millis);
+    let updated = session_json
+        .get("time")
+        .and_then(|v| v.get("updated"))
+        .and_then(|v| v.as_i64())
+        .and_then(chrono::DateTime::from_timestamp_millis);
+
+    let mut extensions = BTreeMap::new();
+    extensions.insert("opencode_session".to_string(), session_json.clone());
+
+    Ok(ImportedSession {
+        session: CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: session_id_val.clone(),
+                source_title: title,
+            },
+            provenance: SessionProvenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".to_string()),
+                primary_source: ProviderSessionRef {
+                    provider_id: PROVIDER_ID.to_string(),
+                    session_id: session_id_val.clone(),
+                    source_path: Some(session_id.to_string()),
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir: project_dir,
+                created_at: created,
+                last_active_at: updated,
+                tags: Vec::new(),
+            },
+            events,
+            artifacts,
+            extensions,
+        },
+        report,
+    })
+}
+
+fn canonical_blocks_from_parts(
+    msg_id: &str,
+    msg_parts: &[Value],
+    report: &mut MappingReport,
+    artifacts: &mut Vec<SessionArtifact>,
+) -> Vec<EventBlock> {
+    let mut blocks = Vec::new();
+
+    for (idx, part) in msg_parts.iter().enumerate() {
+        let part_type = part.get("type").and_then(|v| v.as_str());
+        match part_type {
+            Some("text") => {
+                if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                    blocks.push(EventBlock::Text {
+                        text: text.to_string(),
+                    });
+                }
+            }
+            Some("reasoning") => {
+                if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                    blocks.push(EventBlock::Thinking {
+                        text: text.to_string(),
+                        signature: None,
+                    });
+                }
+            }
+            Some("tool") => {
+                let call_id = part
+                    .get("callID")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tool_name = part
+                    .get("tool")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let state = part.get("state").cloned().unwrap_or_default();
+                let input = state.get("input").cloned();
+                let output = state
+                    .get("output")
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| v.to_string())
+                    })
+                    .unwrap_or_default();
+                let status = state
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("completed");
+
+                if tool_name != "unknown" || input.is_some() {
+                    blocks.push(EventBlock::ToolCall {
+                        tool_call_id: call_id.clone(),
+                        name: tool_name,
+                        input,
+                    });
+                }
+                blocks.push(EventBlock::ToolResult {
+                    tool_call_id: call_id,
+                    content: output,
+                    is_error: status == "error",
+                });
+            }
+            Some("file") => {
+                let mime = part
+                    .get("mime")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("application/octet-stream");
+                let filename = part
+                    .get("filename")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("file");
+                let url = part.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                if mime.starts_with("image/") && url.starts_with("data:") {
+                    if let Some((mime_type, data)) = parse_data_uri(url) {
+                        blocks.push(EventBlock::Image {
+                            mime_type: mime_type.to_string(),
+                            data: Some(data.to_string()),
+                            path: Some(filename.to_string()),
+                        });
+                        artifacts.push(SessionArtifact {
+                            id: format!("{}:image:{}", msg_id, idx),
+                            kind: ArtifactKind::Image,
+                            path: Some(filename.to_string()),
+                            mime_type: Some(mime_type.to_string()),
+                            content: None,
+                            metadata: BTreeMap::new(),
+                        });
+                    }
+                } else if !url.is_empty() {
+                    blocks.push(EventBlock::File {
+                        path: filename.to_string(),
+                        content: Some(url.to_string()),
+                        mime_type: Some(mime.to_string()),
+                    });
+                    artifacts.push(SessionArtifact {
+                        id: format!("{}:file:{}", msg_id, idx),
+                        kind: ArtifactKind::File,
+                        path: Some(filename.to_string()),
+                        mime_type: Some(mime.to_string()),
+                        content: Some(url.to_string()),
+                        metadata: BTreeMap::new(),
+                    });
+                }
+            }
+            Some("patch") => {
+                let files = part
+                    .get("files")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let hash = part
+                    .get("hash")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let diff_text = part
+                    .get("text")
+                    .or_else(|| part.get("diff"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                blocks.push(EventBlock::Patch {
+                    summary: None,
+                    diff_text: diff_text.clone(),
+                    files: files.clone(),
+                    hash: hash.clone(),
+                });
+                artifacts.push(SessionArtifact {
+                    id: format!("{}:patch:{}", msg_id, idx),
+                    kind: ArtifactKind::Patch,
+                    path: None,
+                    mime_type: None,
+                    content: diff_text,
+                    metadata: {
+                        let mut metadata = BTreeMap::new();
+                        if let Some(hash) = hash {
+                            metadata.insert("hash".to_string(), Value::String(hash));
+                        }
+                        if !files.is_empty() {
+                            metadata.insert(
+                                "files".to_string(),
+                                Value::Array(files.into_iter().map(Value::String).collect()),
+                            );
+                        }
+                        metadata
+                    },
+                });
+            }
+            Some("step-start") | Some("step-finish") | Some("compaction") => {
+                blocks.push(EventBlock::ProviderPayload {
+                    kind: part_type.unwrap_or("unknown").to_string(),
+                    payload: part.clone(),
+                });
+            }
+            Some(other) => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Info,
+                    disposition: MappingDisposition::Normalized,
+                    code: "unknown_part_preserved".to_string(),
+                    message: format!("Preserved unknown OpenCode part '{}'", other),
+                    path: Some(format!("{}:part:{}", msg_id, idx)),
+                    raw: Some(part.clone()),
+                });
+                blocks.push(EventBlock::Unknown { raw: part.clone() });
+            }
+            None => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Warning,
+                    disposition: MappingDisposition::Normalized,
+                    code: "missing_part_type".to_string(),
+                    message: "OpenCode part without a type was preserved as unknown payload"
+                        .to_string(),
+                    path: Some(format!("{}:part:{}", msg_id, idx)),
+                    raw: Some(part.clone()),
+                });
+                blocks.push(EventBlock::Unknown { raw: part.clone() });
+            }
+        }
+    }
+
+    blocks
+}
+
+fn derive_event_kind(blocks: &[EventBlock]) -> SessionEventKind {
+    if blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::Patch { .. }))
+    {
+        SessionEventKind::Patch
+    } else if blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+    {
+        SessionEventKind::ToolResult
+    } else if blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+    {
+        SessionEventKind::ToolCall
+    } else if blocks.iter().any(|block| {
+        matches!(
+            block,
+            EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
+        )
+    }) {
+        SessionEventKind::Unknown
+    } else {
+        SessionEventKind::Message
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -685,20 +678,108 @@ fn generate_slug() -> String {
     format!("{}-{}", adjectives[idx1], nouns[idx2])
 }
 
-fn parse_data_uri(uri: &str) -> Option<(&str, &str)> {
-    let rest = uri.strip_prefix("data:")?;
-    let (mime, data) = rest.split_once(";base64,")?;
-    Some((mime, data))
+fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
+    let now = Utc::now().timestamp_millis();
+    let session_id = generate_opencode_id("ses");
+    let project_id = find_or_create_project(target_dir)?;
+    let slug = generate_slug();
+    let target_dir_str = target_dir.to_string_lossy().to_string();
+    let title = canonical_session_title(session);
+
+    let session_json = serde_json::json!({
+        "id": &session_id,
+        "slug": &slug,
+        "version": OPENCODE_VERSION,
+        "projectID": &project_id,
+        "directory": &target_dir_str,
+        "title": &title,
+        "time": {
+            "created": now,
+            "updated": now
+        }
+    });
+
+    let mut oc_messages: Vec<(String, i64, Value)> = Vec::new();
+    let mut oc_parts: Vec<(String, String, i64, Value)> = Vec::new();
+    let mut last_user_msg_id: Option<String> = None;
+
+    for event in &session.events {
+        let msg_id = generate_opencode_id("msg");
+        let msg_created = event.timestamp.timestamp_millis();
+        let (role, parent_id) = match event.role {
+            EventRole::Assistant => ("assistant", last_user_msg_id.clone()),
+            EventRole::User => {
+                last_user_msg_id = Some(msg_id.clone());
+                ("user", None)
+            }
+            _ => {
+                last_user_msg_id = Some(msg_id.clone());
+                ("user", None)
+            }
+        };
+
+        let msg_json = build_opencode_message_data_from_event(
+            &session_id,
+            event,
+            &msg_id,
+            role,
+            parent_id.as_deref(),
+            &target_dir_str,
+        );
+        oc_messages.push((msg_id.clone(), msg_created, msg_json));
+
+        for block in &event.blocks {
+            let part_id = generate_opencode_id("prt");
+            let part_created = msg_created + 1;
+            let part_json = canonical_block_to_opencode_part(
+                &session_id,
+                &msg_id,
+                &part_id,
+                block,
+                part_created,
+            );
+            oc_parts.push((part_id, msg_id.clone(), part_created, part_json));
+        }
+    }
+
+    write_to_db(
+        &session_id,
+        &project_id,
+        &slug,
+        &target_dir_str,
+        &title,
+        now,
+        &oc_messages,
+        &oc_parts,
+    )
+    .context("Failed to write to OpenCode SQLite database")?;
+    load_session_from_db(&session_id).context("Failed to verify OpenCode SQLite write result")?;
+    write_to_filesystem(
+        &session_id,
+        &project_id,
+        &session_json,
+        &oc_messages,
+        &oc_parts,
+    )?;
+
+    Ok(session_id)
 }
 
-fn build_opencode_message_data(
+fn build_opencode_message_data_from_event(
     session_id: &str,
-    msg: &MemorphMessage,
+    event: &SessionEvent,
     msg_id: &str,
     role: &str,
     parent_id: Option<&str>,
     target_dir: &str,
 ) -> Value {
+    let provider_id = normalize_provider_id(event.metadata.source.provider_id.as_str());
+    let model_id = event
+        .metadata
+        .model
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default_model_id(&provider_id));
     let mut msg_json = serde_json::Map::new();
     msg_json.insert("id".to_string(), Value::String(msg_id.to_string()));
     msg_json.insert(
@@ -708,27 +789,11 @@ fn build_opencode_message_data(
     msg_json.insert("role".to_string(), Value::String(role.to_string()));
     msg_json.insert(
         "time".to_string(),
-        serde_json::json!({"created": msg.timestamp.timestamp_millis()}),
+        serde_json::json!({"created": event.timestamp.timestamp_millis()}),
     );
-    if let Some(pid) = parent_id {
-        msg_json.insert("parentID".to_string(), Value::String(pid.to_string()));
+    if let Some(parent_id) = parent_id {
+        msg_json.insert("parentID".to_string(), Value::String(parent_id.to_string()));
     }
-
-    let provider_id = msg
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.source.as_ref())
-        .map(|source| normalize_provider_id(&source.provider))
-        .unwrap_or_else(|| {
-            infer_provider_id(msg.metadata.as_ref().and_then(|m| m.model.as_deref()))
-        });
-    let model_id = msg
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.model.as_deref())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| default_model_id(&provider_id));
-
     msg_json.insert("providerID".to_string(), Value::String(provider_id.clone()));
     msg_json.insert("modelID".to_string(), Value::String(model_id.to_string()));
     msg_json.insert(
@@ -738,50 +803,107 @@ fn build_opencode_message_data(
             "modelID": model_id,
         }),
     );
-
-    let agent = metadata_string(msg, "agent").unwrap_or_else(|| "build".to_string());
-    let mode = metadata_string(msg, "mode").unwrap_or_else(|| agent.clone());
-    msg_json.insert("agent".to_string(), Value::String(agent));
-    msg_json.insert("mode".to_string(), Value::String(mode));
-
+    msg_json.insert("agent".to_string(), Value::String("build".to_string()));
+    msg_json.insert("mode".to_string(), Value::String("build".to_string()));
+    msg_json.insert(
+        "tokens".to_string(),
+        serde_json::json!({
+            "input": event.metadata.usage.as_ref().and_then(|usage| usage.input_tokens).unwrap_or(0),
+            "output": event.metadata.usage.as_ref().and_then(|usage| usage.output_tokens).unwrap_or(0),
+            "reasoning": 0,
+            "cache": {"read": 0, "write": 0},
+        }),
+    );
     if role == "assistant" {
         msg_json.insert(
             "path".to_string(),
-            serde_json::json!({
-                "cwd": target_dir,
-                "root": target_dir,
-            }),
+            serde_json::json!({"cwd": target_dir, "root": target_dir}),
         );
-        msg_json.insert(
-            "cost".to_string(),
-            metadata_value(msg, "cost").unwrap_or(Value::from(0)),
-        );
-        msg_json.insert(
-            "finish".to_string(),
-            metadata_value(msg, "finish").unwrap_or(Value::String("stop".to_string())),
-        );
+        msg_json.insert("cost".to_string(), Value::from(0));
+        msg_json.insert("finish".to_string(), Value::String("stop".to_string()));
     }
-
-    msg_json.insert("tokens".to_string(), message_tokens(msg));
-
-    for key in ["error", "summary", "system", "tools", "variant"] {
-        if let Some(value) = metadata_value(msg, key) {
-            msg_json.insert(key.to_string(), value);
-        }
-    }
-
     Value::Object(msg_json)
 }
 
-fn metadata_value(msg: &MemorphMessage, key: &str) -> Option<Value> {
-    msg.metadata
-        .as_ref()
-        .and_then(|metadata| metadata.extra.get(key))
-        .cloned()
+fn canonical_block_to_opencode_part(
+    session_id: &str,
+    msg_id: &str,
+    part_id: &str,
+    block: &EventBlock,
+    part_created: i64,
+) -> Value {
+    match block {
+        EventBlock::Text { text } => serde_json::json!({
+            "id": part_id,
+            "sessionID": session_id,
+            "messageID": msg_id,
+            "type": "text",
+            "text": text,
+        }),
+        EventBlock::Thinking { text, .. } => serde_json::json!({
+            "id": part_id,
+            "sessionID": session_id,
+            "messageID": msg_id,
+            "type": "reasoning",
+            "text": text,
+        }),
+        EventBlock::ToolResult {
+            tool_call_id,
+            content,
+            is_error,
+        } => serde_json::json!({
+            "id": part_id,
+            "sessionID": session_id,
+            "messageID": msg_id,
+            "type": "tool",
+            "callID": tool_call_id,
+            "tool": "unknown",
+            "state": {
+                "status": if *is_error { "error" } else { "completed" },
+                "input": {},
+                "output": content,
+                "title": "Tool result",
+                "metadata": {},
+                "time": {
+                    "start": part_created,
+                    "end": part_created
+                }
+            }
+        }),
+        EventBlock::Image {
+            mime_type, data, ..
+        } => serde_json::json!({
+            "id": part_id,
+            "sessionID": session_id,
+            "messageID": msg_id,
+            "type": "file",
+            "mime": mime_type,
+            "filename": "image.png",
+            "url": data.as_deref().unwrap_or(""),
+        }),
+        EventBlock::File { path, content, .. } => serde_json::json!({
+            "id": part_id,
+            "sessionID": session_id,
+            "messageID": msg_id,
+            "type": "file",
+            "mime": "text/plain",
+            "filename": path,
+            "url": content.as_deref().unwrap_or(""),
+        }),
+        _ => serde_json::json!({
+            "id": part_id,
+            "sessionID": session_id,
+            "messageID": msg_id,
+            "type": "text",
+            "text": canonical_block_text(block),
+        }),
+    }
 }
 
-fn metadata_string(msg: &MemorphMessage, key: &str) -> Option<String> {
-    metadata_value(msg, key).and_then(|value| value.as_str().map(str::to_string))
+fn parse_data_uri(uri: &str) -> Option<(&str, &str)> {
+    let rest = uri.strip_prefix("data:")?;
+    let (mime, data) = rest.split_once(";base64,")?;
+    Some((mime, data))
 }
 
 fn normalize_provider_id(provider: &str) -> String {
@@ -794,34 +916,11 @@ fn normalize_provider_id(provider: &str) -> String {
     }
 }
 
-fn infer_provider_id(model: Option<&str>) -> String {
-    match model.unwrap_or_default() {
-        value if value.starts_with("claude") => "anthropic".to_string(),
-        _ => "openai".to_string(),
-    }
-}
-
 fn default_model_id(provider: &str) -> &'static str {
     match provider {
         "anthropic" => "claude-sonnet-4-5",
         _ => "gpt-5.3-codex",
     }
-}
-
-fn message_tokens(msg: &MemorphMessage) -> Value {
-    let usage = msg
-        .metadata
-        .as_ref()
-        .and_then(|metadata| metadata.usage.as_ref());
-    serde_json::json!({
-        "input": usage.and_then(|value| value.input_tokens).unwrap_or(0),
-        "output": usage.and_then(|value| value.output_tokens).unwrap_or(0),
-        "reasoning": 0,
-        "cache": {
-            "read": 0,
-            "write": 0,
-        },
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -871,7 +970,7 @@ fn opencode_session_db_size(session_id: &str) -> Result<u64> {
     Ok(total)
 }
 
-fn scan_sessions_from_db() -> Result<Vec<SessionMeta>> {
+fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
     let db_path = get_db_path();
     if !db_path.exists() {
         return Ok(Vec::new());
@@ -887,7 +986,7 @@ fn scan_sessions_from_db() -> Result<Vec<SessionMeta>> {
         let title: String = row.get(3)?;
         let _created: i64 = row.get(4)?;
         let updated: i64 = row.get(5)?;
-        Ok(SessionMeta {
+        Ok(ProviderSessionSummary {
             session_id: session_id.clone(),
             title: Some(title),
             project_dir: Some(directory),
@@ -1089,7 +1188,7 @@ fn load_session_from_filesystem(
     Ok((session_json, messages, parts_map))
 }
 
-fn parse_session_file(path: &Path) -> Option<SessionMeta> {
+fn parse_session_file(path: &Path) -> Option<ProviderSessionSummary> {
     let file = File::open(path).ok()?;
     let json: Value = serde_json::from_reader(file).ok()?;
 
@@ -1111,7 +1210,7 @@ fn parse_session_file(path: &Path) -> Option<SessionMeta> {
         .and_then(|v| v.get("updated"))
         .and_then(|v| v.as_i64());
 
-    Some(SessionMeta {
+    Some(ProviderSessionSummary {
         session_id: session_id.clone(),
         title,
         project_dir: directory,
@@ -1282,36 +1381,39 @@ fn write_to_filesystem(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{MessageMetadata, SourceMetadata};
     use chrono::TimeZone;
 
     #[test]
     fn opencode_message_data_preserves_model_provider_metadata() {
-        let msg = MemorphMessage {
+        let event = SessionEvent {
             id: "source-message".to_string(),
-            role: MemorphRole::Assistant,
-            content: vec![ContentBlock::text("hello")],
+            kind: SessionEventKind::Message,
+            role: EventRole::Assistant,
+            blocks: vec![EventBlock::Text {
+                text: "hello".to_string(),
+            }],
             timestamp: Utc
                 .timestamp_millis_opt(1_700_000_000_000)
                 .single()
                 .unwrap(),
-            metadata: Some(MessageMetadata {
-                source: Some(SourceMetadata {
-                    provider: "codex".to_string(),
+            links: EventLinks::default(),
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "codex".to_string(),
                     original_id: None,
                     original_role: None,
-                }),
+                    phase: None,
+                },
                 model: Some("gpt-5.4".to_string()),
                 usage: None,
-                extra: Value::Null,
-            }),
-            parent_id: None,
-            turn_index: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: BTreeMap::new(),
+            },
         };
 
-        let data = build_opencode_message_data(
+        let data = build_opencode_message_data_from_event(
             "ses_test",
-            &msg,
+            &event,
             "msg_test",
             "assistant",
             Some("msg_parent"),

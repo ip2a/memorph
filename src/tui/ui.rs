@@ -80,13 +80,21 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     ))
     .style(Style::default().fg(theme.text).bg(theme.background))
     .alignment(Alignment::Left)
-    .block(top_block(app.t("workspace"), app.main_focus == MainFocus::Workspace, theme));
+    .block(top_block(
+        app.t("workspace"),
+        app.main_focus == MainFocus::Workspace,
+        theme,
+    ));
     frame.render_widget(workspace_block, controls[0]);
 
     let settings_block = Paragraph::new(format!(" {} ", app.t("settings")))
         .style(Style::default().fg(theme.text).bg(theme.background))
         .alignment(Alignment::Center)
-        .block(top_block(app.t("settings"), app.main_focus == MainFocus::Settings, theme));
+        .block(top_block(
+            app.t("settings"),
+            app.main_focus == MainFocus::Settings,
+            theme,
+        ));
     frame.render_widget(settings_block, controls[1]);
 }
 
@@ -311,7 +319,10 @@ fn draw_settings_modal(frame: &mut Frame, app: &App, theme: &Theme) {
         .unwrap_or_else(|| app.t("all").to_string());
     let info = Paragraph::new(Text::from(vec![
         Line::from(vec![
-            Span::styled(app.t("version"), Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                app.t("version"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw(format!("  {}", env!("CARGO_PKG_VERSION"))),
         ]),
         Line::from(vec![
@@ -322,7 +333,10 @@ fn draw_settings_modal(frame: &mut Frame, app: &App, theme: &Theme) {
             Span::raw(format!("  {}", provider)),
         ]),
         Line::from(vec![
-            Span::styled(app.t("configPath"), Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                app.t("configPath"),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
             Span::raw(format!("  {}", config_path)),
         ]),
     ]))
@@ -332,7 +346,7 @@ fn draw_settings_modal(frame: &mut Frame, app: &App, theme: &Theme) {
     frame.render_widget(info, chunks[1]);
 
     let footer = Paragraph::new(app.t("tuiFooterClose"))
-    .style(Style::default().fg(theme.text).bg(theme.surface));
+        .style(Style::default().fg(theme.text).bg(theme.surface));
     frame.render_widget(footer, chunks[2]);
 }
 
@@ -360,9 +374,6 @@ fn settings_row(field: SettingsField, app: &App, theme: &Theme) -> Line<'static>
         SettingsField::SessionsPerProvider => app.settings_sessions_per_provider.to_string(),
         SettingsField::ShowOpenCodeSubagents => {
             enabled_label(app.language(), app.settings_show_opencode_subagents)
-        }
-        SettingsField::AutoRefreshAfterDelete => {
-            enabled_label(app.language(), app.settings_auto_refresh_after_delete)
         }
         SettingsField::PrimaryAgents => settings_agent_label(app),
         SettingsField::Save => app.t("writeConfig").to_string(),

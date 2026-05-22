@@ -1,10 +1,10 @@
-use crate::model::SessionMeta;
+use crate::provider::ProviderSessionSummary;
 use crate::providers::cursor::db::{list_composers, ComposerData};
 use anyhow::Result;
 use std::path::Path;
 
 /// Scan Cursor Composer sessions and filter by workspace path.
-pub fn scan_sessions(workspace: Option<&Path>) -> Result<Vec<SessionMeta>> {
+pub fn scan_sessions(workspace: Option<&Path>) -> Result<Vec<ProviderSessionSummary>> {
     let composers = list_composers()?;
     let mut sessions = Vec::new();
 
@@ -27,10 +27,10 @@ pub fn scan_sessions(workspace: Option<&Path>) -> Result<Vec<SessionMeta>> {
     Ok(sessions)
 }
 
-fn composer_to_session_meta(composer: &ComposerData) -> SessionMeta {
+fn composer_to_session_meta(composer: &ComposerData) -> ProviderSessionSummary {
     let last_active = composer.created_at;
 
-    SessionMeta {
+    ProviderSessionSummary {
         session_id: composer.composer_id.clone(),
         title: composer
             .text

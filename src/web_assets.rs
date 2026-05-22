@@ -27,10 +27,7 @@ pub(crate) fn response_for_asset(path: &str) -> Response {
     match find(path) {
         Some((contents, mime)) => Response::builder()
             .status(StatusCode::OK)
-            .header(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(mime),
-            )
+            .header(header::CONTENT_TYPE, HeaderValue::from_static(mime))
             .body(Body::from(contents.to_vec()))
             .expect("static asset response is valid"),
         None => StatusCode::NOT_FOUND.into_response(),

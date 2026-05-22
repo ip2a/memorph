@@ -1,12 +1,12 @@
 #![recursion_limit = "256"]
 
 pub mod api;
+pub mod canonical;
 pub mod cli;
 pub mod config;
 pub mod core;
 pub mod format;
 pub mod i18n;
-pub mod model;
 pub mod provider;
 pub mod providers;
 pub mod server;

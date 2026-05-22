@@ -3,7 +3,6 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::model::MemorphSession;
 use crate::providers;
 
 // ---------------------------------------------------------------------------
@@ -150,8 +149,9 @@ pub fn create_group(params: &ShareCreateParams) -> Result<SharedGroup> {
         anyhow::bail!("At least one target provider is required");
     }
 
-    let source_session = crate::core::get_session(&params.provider, &params.session_id)
-        .with_context(|| format!("Failed to load source session {}", params.session_id))?;
+    let source_session =
+        crate::core::get_canonical_session(&params.provider, &params.session_id)
+            .with_context(|| format!("Failed to load source session {}", params.session_id))?;
     let target_dir = resolve_target_dir(params.to_dir.as_deref())?;
     let now = Utc::now().timestamp_millis();
     let group_id = uuid::Uuid::new_v4().to_string();
@@ -159,7 +159,7 @@ pub fn create_group(params: &ShareCreateParams) -> Result<SharedGroup> {
     let title = params
         .title
         .clone()
-        .or_else(|| source_session.session.title.clone())
+        .or_else(|| source_session.session.primary_title().map(str::to_string))
         .unwrap_or_else(|| "Shared session".to_string());
 
     let mut holdings = Vec::new();
@@ -170,10 +170,11 @@ pub fn create_group(params: &ShareCreateParams) -> Result<SharedGroup> {
         id: source_holding_id,
         provider: params.provider.clone(),
         session_id: params.session_id.clone(),
-        target_dir: source_session.session.project_dir.clone(),
+        target_dir: source_session.session.context.workspace_dir.clone(),
         created_at: now,
         last_active_at: source_session
             .session
+            .context
             .last_active_at
             .map(|dt| dt.timestamp_millis()),
         last_sync_at: Some(now),
@@ -188,14 +189,14 @@ pub fn create_group(params: &ShareCreateParams) -> Result<SharedGroup> {
         }
         let provider = providers::find_provider(target)
             .with_context(|| format!("Unknown target provider: {}", target))?;
-        if !provider.capabilities().write {
+        if !provider.capabilities().export {
             anyhow::bail!("Provider does not support writing sessions: {}", target);
         }
-        let new_session_id = provider.write_session(&source_session, &target_dir)?;
+        let exported = provider.export_session(&source_session.session, &target_dir)?;
         holdings.push(Holding {
             id: uuid::Uuid::new_v4().to_string(),
             provider: target.clone(),
-            session_id: new_session_id,
+            session_id: exported.session_id,
             target_dir: Some(target_dir.to_string_lossy().to_string()),
             created_at: now,
             last_active_at: None,
@@ -231,16 +232,16 @@ pub fn add_holding(params: &AddHoldingParams) -> Result<Holding> {
             Some(target_dir.to_string_lossy().to_string()),
         )
     } else {
-        if !provider.capabilities().write {
+        if !provider.capabilities().export {
             anyhow::bail!(
                 "Provider does not support writing sessions: {}",
                 params.provider
             );
         }
         let session = build_canonical_session(&group)?;
-        let new_session_id = provider.write_session(&session, &target_dir)?;
+        let exported = provider.export_session(&session, &target_dir)?;
         (
-            new_session_id,
+            exported.session_id,
             Some(target_dir.to_string_lossy().to_string()),
         )
     };
@@ -316,7 +317,7 @@ pub fn push_sync(group_id: &str, source_holding_id: &str) -> Result<SyncReport> 
         .with_context(|| format!("Source holding not found: {}", source_holding_id))?
         .clone();
 
-    let session = crate::core::get_session(&source.provider, &source.session_id)
+    let session = crate::core::get_canonical_session(&source.provider, &source.session_id)
         .with_context(|| format!("Failed to load source session from {}", source.provider))?;
 
     let mut report = SyncReport {
@@ -361,9 +362,9 @@ pub fn push_sync(group_id: &str, source_holding_id: &str) -> Result<SyncReport> 
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
-        match provider.write_session(&session, &target_dir) {
-            Ok(new_session_id) => {
-                holding.session_id = new_session_id;
+        match provider.export_session(&session.session, &target_dir) {
+            Ok(exported) => {
+                holding.session_id = exported.session_id;
                 holding.last_sync_at = Some(now);
                 holding.last_sync_from = Some(source.provider.clone());
                 holding.last_error = None;
@@ -420,12 +421,13 @@ pub fn refresh_active_times(group: &mut SharedGroup) -> Result<()> {
     Ok(())
 }
 
-fn build_canonical_session(group: &SharedGroup) -> Result<MemorphSession> {
+fn build_canonical_session(group: &SharedGroup) -> Result<crate::canonical::CanonicalSession> {
     // For now, build from the first holding that we can load.
     // In practice, add_holding is usually called with a specific session_id
     // or when creating a new projection from the group.
     if let Some(first) = group.holdings.first() {
-        crate::core::get_session(&first.provider, &first.session_id)
+        crate::core::get_canonical_session(&first.provider, &first.session_id)
+            .map(|imported| imported.session)
     } else {
         anyhow::bail!("Group has no holdings to build canonical session from")
     }

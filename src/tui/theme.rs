@@ -78,21 +78,42 @@ pub fn format_relative_time(timestamp: Option<i64>, language: UiLanguage) -> Str
         return "-".to_string();
     };
 
+    let ts = normalize_timestamp_secs(ts);
     let now = Utc::now().timestamp();
     let diff = now - ts;
 
     if diff < 60 {
         i18n::text(language, "justNow").to_string()
     } else if diff < 3600 {
-        i18n::format(language, "minutesAgo", &[("count", &(diff / 60).to_string())])
+        i18n::format(
+            language,
+            "minutesAgo",
+            &[("count", &(diff / 60).to_string())],
+        )
     } else if diff < 86400 {
-        i18n::format(language, "hoursAgo", &[("count", &(diff / 3600).to_string())])
+        i18n::format(
+            language,
+            "hoursAgo",
+            &[("count", &(diff / 3600).to_string())],
+        )
     } else if diff < 604800 {
-        i18n::format(language, "daysAgo", &[("count", &(diff / 86400).to_string())])
+        i18n::format(
+            language,
+            "daysAgo",
+            &[("count", &(diff / 86400).to_string())],
+        )
     } else {
         let dt = DateTime::<Utc>::from_timestamp(ts, 0);
         dt.map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| "-".to_string())
+    }
+}
+
+fn normalize_timestamp_secs(timestamp: i64) -> i64 {
+    if timestamp.abs() >= 100_000_000_000 {
+        timestamp / 1000
+    } else {
+        timestamp
     }
 }
 
@@ -105,5 +126,31 @@ pub fn truncate(s: &str, max_chars: usize) -> String {
         let mut result: String = s.chars().take(max_chars - 3).collect();
         result.push_str("...");
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn formats_millisecond_timestamps_as_elapsed_time() {
+        let two_hours_ago = (Utc::now() - Duration::hours(2)).timestamp_millis();
+
+        assert_eq!(
+            format_relative_time(Some(two_hours_ago), UiLanguage::En),
+            "2 hours ago"
+        );
+    }
+
+    #[test]
+    fn keeps_second_timestamps_supported() {
+        let three_days_ago = (Utc::now() - Duration::days(3)).timestamp();
+
+        assert_eq!(
+            format_relative_time(Some(three_days_ago), UiLanguage::Zh),
+            "3 天前"
+        );
     }
 }

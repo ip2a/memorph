@@ -71,7 +71,11 @@ mod tests {
             "3 sessions"
         );
         assert_eq!(
-            format(UiLanguage::Zh, "showingRange", &[("start", "1"), ("end", "5"), ("total", "9")]),
+            format(
+                UiLanguage::Zh,
+                "showingRange",
+                &[("start", "1"), ("end", "5"), ("total", "9")]
+            ),
             "显示 1-5 / 9"
         );
     }

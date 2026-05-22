@@ -1,12 +1,18 @@
-use crate::model::{
-    ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, SessionInfo,
-    SessionMeta,
+use crate::canonical::{
+    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
+    EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
+    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
+    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
-use crate::provider::{Provider, ProviderCapabilities};
+use crate::provider::{
+    canonical_block_text, canonical_event_text, canonical_export_result, canonical_session_title,
+    Provider, ProviderCapabilities, ProviderSessionSummary,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::Connection;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -30,7 +36,7 @@ impl Provider for CodexProvider {
         ProviderCapabilities::full_session_management()
     }
 
-    fn scan_sessions(&self) -> Result<Vec<SessionMeta>> {
+    fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
         let index_path = get_codex_dir().join("session_index.jsonl");
         if !index_path.exists() {
             return Ok(Vec::new());
@@ -81,7 +87,7 @@ impl Provider for CodexProvider {
                     .cloned()
                     .or_else(|| extract_cwd_from_session_file(&id));
 
-                sessions.push(SessionMeta {
+                sessions.push(ProviderSessionSummary {
                     session_id: id.clone(),
                     title: thread_name,
                     project_dir,
@@ -94,578 +100,21 @@ impl Provider for CodexProvider {
         Ok(sessions)
     }
 
-    fn load_session(&self, source_path: &str) -> Result<MemorphSession> {
-        let path = Path::new(source_path);
-        let file = File::open(path)
-            .with_context(|| format!("Failed to open Codex session: {}", path.display()))?;
-        let reader = BufReader::new(file);
-
-        let mut messages = Vec::new();
-        let mut session_id: Option<String> = None;
-        let mut project_dir: Option<String> = None;
-        let mut created_at: Option<i64> = None;
-        let mut base_instructions: Option<String> = None;
-        let mut model: Option<String> = None;
-
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let value: Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let line_type = value.get("type").and_then(|v| v.as_str());
-
-            match line_type {
-                Some("session_meta") => {
-                    if let Some(payload) = value.get("payload") {
-                        session_id = payload
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        project_dir = payload
-                            .get("cwd")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        created_at = payload
-                            .get("timestamp")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                            .map(|dt| dt.timestamp_millis());
-                        base_instructions = payload
-                            .get("base_instructions")
-                            .and_then(|v| v.get("text"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                        model = payload
-                            .get("model")
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string());
-                    }
-                }
-                Some("response_item") => {
-                    if let Some(payload) = value.get("payload") {
-                        let role = payload.get("role").and_then(|v| v.as_str());
-                        let msg_type = payload.get("type").and_then(|v| v.as_str());
-
-                        // Skip non-message items (like function calls handled separately)
-                        if msg_type != Some("message") {
-                            continue;
-                        }
-
-                        let memorph_role = match role {
-                            Some("user") => MemorphRole::User,
-                            Some("assistant") => MemorphRole::Assistant,
-                            Some("developer") => {
-                                // Skip Codex runtime-injected developer messages
-                                // (permissions, skills, collaboration_mode, etc.)
-                                // base_instructions are already extracted separately
-                                // from session_meta as a system message.
-                                continue;
-                            }
-                            Some("system") => MemorphRole::System,
-                            Some("tool") => MemorphRole::Tool,
-                            _ => continue,
-                        };
-
-                        let content = if let Some(content_arr) =
-                            payload.get("content").and_then(|v| v.as_array())
-                        {
-                            content_arr
-                                .iter()
-                                .filter_map(|block| {
-                                    let block_type = block.get("type").and_then(|v| v.as_str())?;
-                                    match block_type {
-                                        "input_text" | "output_text" => {
-                                            let text =
-                                                block.get("text").and_then(|v| v.as_str())?;
-                                            Some(ContentBlock::text(text))
-                                        }
-                                        "input_image" => {
-                                            // TODO: handle images
-                                            None
-                                        }
-                                        "refusal" => {
-                                            let text = block
-                                                .get("text")
-                                                .and_then(|v| v.as_str())
-                                                .unwrap_or("[refused]");
-                                            Some(ContentBlock::text(text))
-                                        }
-                                        _ => None,
-                                    }
-                                })
-                                .collect::<Vec<_>>()
-                        } else if let Some(text) = payload.get("content").and_then(|v| v.as_str()) {
-                            vec![ContentBlock::text(text)]
-                        } else {
-                            continue;
-                        };
-
-                        if content.is_empty() {
-                            continue;
-                        }
-
-                        // Skip Codex runtime-injected context messages that are
-                        // wrapped as user role (AGENTS.md, environment_context, etc.)
-                        if memorph_role == MemorphRole::User {
-                            let full_text: String = content
-                                .iter()
-                                .filter_map(|b| match b {
-                                    crate::model::ContentBlock::Text { text } => {
-                                        Some(text.as_str())
-                                    }
-                                    _ => None,
-                                })
-                                .collect();
-                            let is_injected = full_text.contains("<INSTRUCTIONS>")
-                                || full_text.contains("<environment_context>")
-                                || full_text.contains("<permissions instructions>")
-                                || full_text.contains("<skills_instructions>")
-                                || full_text.contains("<collaboration_mode>")
-                                || full_text.starts_with("# AGENTS.md instructions for");
-                            if is_injected {
-                                continue;
-                            }
-                        }
-
-                        let ts = value
-                            .get("timestamp")
-                            .and_then(|v| v.as_str())
-                            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                            .map(|dt| dt.with_timezone(&chrono::Utc))
-                            .unwrap_or_else(Utc::now);
-
-                        let msg_id = Uuid::new_v4().to_string();
-
-                        // Check if this is a commentary/thinking phase
-                        let phase = payload.get("phase").and_then(|v| v.as_str());
-                        let is_commentary = phase == Some("commentary");
-
-                        let final_content = if is_commentary && content.len() == 1 {
-                            // Wrap commentary as thinking block
-                            if let ContentBlock::Text { text } = &content[0] {
-                                vec![ContentBlock::Thinking {
-                                    thinking: text.clone(),
-                                    signature: None,
-                                }]
-                            } else {
-                                content
-                            }
-                        } else {
-                            content
-                        };
-
-                        messages.push(MemorphMessage {
-                            id: msg_id,
-                            role: memorph_role,
-                            content: final_content,
-                            timestamp: ts,
-                            metadata: Some(crate::model::MessageMetadata {
-                                source: Some(crate::model::SourceMetadata {
-                                    provider: PROVIDER_ID.to_string(),
-                                    original_id: None,
-                                    original_role: role.map(|s| s.to_string()),
-                                }),
-                                model: model.clone(),
-                                usage: None,
-                                extra: {
-                                    let mut extra = serde_json::Map::new();
-                                    if let Some(phase) = phase {
-                                        extra.insert(
-                                            "phase".to_string(),
-                                            serde_json::Value::String(phase.to_string()),
-                                        );
-                                    }
-                                    serde_json::Value::Object(extra)
-                                },
-                            }),
-                            parent_id: None,
-                            turn_index: None,
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Add base_instructions as first system/developer message if present
-        if let Some(instr) = base_instructions {
-            messages.insert(
-                0,
-                MemorphMessage {
-                    id: Uuid::new_v4().to_string(),
-                    role: MemorphRole::System,
-                    content: vec![ContentBlock::text(instr)],
-                    timestamp: created_at
-                        .map(|ms| {
-                            chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)
-                        })
-                        .unwrap_or_else(Utc::now),
-                    metadata: Some(crate::model::MessageMetadata {
-                        source: Some(crate::model::SourceMetadata {
-                            provider: PROVIDER_ID.to_string(),
-                            original_id: None,
-                            original_role: Some("developer".to_string()),
-                        }),
-                        model: None,
-                        usage: None,
-                        extra: serde_json::json!({"type": "base_instructions"}),
-                    }),
-                    parent_id: None,
-                    turn_index: Some(0),
-                },
-            );
-        }
-
-        let meta = MemorphMeta {
-            version: "1.0".to_string(),
-            converted_from: PROVIDER_ID.to_string(),
-            converted_at: Utc::now(),
-            memorph_version: env!("CARGO_PKG_VERSION").to_string(),
-            source_session_id: session_id.clone().unwrap_or_default(),
-            source_provider: PROVIDER_ID.to_string(),
-            converted_by: Some("memorph-cli".to_string()),
-        };
-
-        let session = SessionInfo {
-            id: session_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-            title: None,
-            project_dir,
-            created_at: created_at
-                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
-            last_active_at: created_at
-                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
-            tags: None,
-        };
-
-        Ok(MemorphSession {
-            meta,
-            session,
-            messages,
-        })
+    fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        import_canonical_session(Path::new(source_path))
     }
 
-    fn write_session(&self, session: &MemorphSession, target_dir: &Path) -> Result<String> {
-        let session_id = Uuid::new_v4().to_string();
-        let now = Utc::now();
-        let timestamp_str = now.format("%Y-%m-%dT%H-%M-%S").to_string();
-        let filename = format!("rollout-{}-{}.jsonl", timestamp_str, session_id);
-
-        // Codex stores sessions in dated subdirectories
-        let year = now.format("%Y").to_string();
-        let month = now.format("%m").to_string();
-        let day = now.format("%d").to_string();
-        let sessions_dir = get_codex_dir()
-            .join("sessions")
-            .join(&year)
-            .join(&month)
-            .join(&day);
-        std::fs::create_dir_all(&sessions_dir)?;
-
-        let file_path = sessions_dir.join(&filename);
-        let rollout_path = file_path.to_string_lossy().to_string();
-
-        let mut file = File::create(&file_path)?;
-
-        // Build base instructions from first system message
-        let base_instructions = session
-            .messages
-            .iter()
-            .find(|m| m.role == MemorphRole::System)
-            .and_then(|m| {
-                m.content.iter().find_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.clone()),
-                    _ => None,
-                })
-            });
-
-        // Write session_meta line
-        let git_info = get_git_info(target_dir);
-        let codex_version = get_codex_version();
-        let codex_model_provider = get_codex_model_provider();
-        let session_meta = serde_json::json!({
-            "timestamp": now.to_rfc3339(),
-            "type": "session_meta",
-            "payload": {
-                "id": session_id,
-                "timestamp": now.to_rfc3339(),
-                "cwd": target_dir.to_string_lossy().to_string(),
-                "originator": "memorph-cli",
-                "cli_version": codex_version,
-                "source": "cli",
-                "model_provider": codex_model_provider,
-                "base_instructions": base_instructions.as_ref().map(|text| {
-                    serde_json::json!({ "text": text })
-                }).unwrap_or(serde_json::Value::Null),
-                "git": {
-                    "commit_hash": git_info.as_ref().and_then(|g| g.commit_hash.clone()).unwrap_or_default(),
-                    "branch": git_info.as_ref().and_then(|g| g.branch.clone()).unwrap_or_default(),
-                }
-            }
-        });
-        writeln!(file, "{}", serde_json::to_string(&session_meta)?)?;
-
-        // Group non-system messages into turns (each user message starts a new turn)
-        let mut turns: Vec<Vec<&MemorphMessage>> = Vec::new();
-        for msg in &session.messages {
-            if msg.role == MemorphRole::System {
-                continue;
-            }
-            if msg.role == MemorphRole::User && !turns.is_empty() {
-                turns.push(Vec::new());
-            }
-            if turns.is_empty() {
-                turns.push(Vec::new());
-            }
-            turns.last_mut().unwrap().push(msg);
-        }
-
-        let target_dir_str = target_dir.to_string_lossy().to_string();
-
-        for turn in &turns {
-            let turn_id = Uuid::new_v4().to_string();
-            let first_msg = turn.first().unwrap();
-            let last_msg = turn.last().unwrap();
-            let started_at = first_msg.timestamp.timestamp();
-            let completed_at = last_msg.timestamp.timestamp();
-            let turn_ts = first_msg.timestamp.to_rfc3339();
-
-            // task_started
-            // NOTE: model_context_window is intentionally omitted.
-            // It is Option<i64> in Codex's protocol. Hard-coding it can trigger
-            // a known bug (GitHub #16068) where the token counter gets poisoned
-            // and auto-compaction never fires, leading to repeated context-window
-            // crashes. Let Codex derive the window size from its own config.
-            let task_started = serde_json::json!({
-                "timestamp": turn_ts,
-                "type": "event_msg",
-                "payload": {
-                    "type": "task_started",
-                    "turn_id": turn_id,
-                    "started_at": started_at,
-                    "collaboration_mode_kind": "default"
-                }
-            });
-            writeln!(file, "{}", serde_json::to_string(&task_started)?)?;
-
-            // turn_context
-            // NOTE: Only preserve history-specific info (turn_id, cwd, date, timezone).
-            // model/effort/sandbox_policy/collaboration_mode/approval_policy etc.
-            // Runtime configs are intentionally omitted; Codex reads them from config.toml.
-            let current_date = first_msg.timestamp.format("%Y-%m-%d").to_string();
-            let turn_context = serde_json::json!({
-                "timestamp": turn_ts,
-                "type": "turn_context",
-                "payload": {
-                    "turn_id": turn_id,
-                    "cwd": target_dir_str,
-                    "current_date": current_date,
-                    "timezone": "Asia/Shanghai"
-                }
-            });
-            writeln!(file, "{}", serde_json::to_string(&turn_context)?)?;
-
-            let last_assistant_idx = turn.iter().rposition(|m| m.role == MemorphRole::Assistant);
-            let mut user_message_written = false;
-
-            for (idx, msg) in turn.iter().enumerate() {
-                let timestamp = msg.timestamp.to_rfc3339();
-                let role_str = match msg.role {
-                    MemorphRole::User => "user",
-                    MemorphRole::Assistant => "assistant",
-                    MemorphRole::Tool => "user",
-                    MemorphRole::Developer => "developer",
-                    MemorphRole::System => continue,
-                };
-
-                let content_blocks: Vec<serde_json::Value> = match msg.role {
-                    MemorphRole::Tool => {
-                        let text = msg.content.iter()
-                            .filter_map(|b| match b {
-                                ContentBlock::Text { text } => Some(text.as_str()),
-                                ContentBlock::ToolResult { content, .. } => Some(content.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        vec![serde_json::json!({
-                            "type": "input_text",
-                            "text": format!("[Tool Result]\n{}", text),
-                        })]
-                    }
-                    MemorphRole::Assistant => {
-                        msg.content.iter()
-                            .filter_map(|b| match b {
-                                ContentBlock::Text { text } => Some(serde_json::json!({
-                                    "type": "output_text",
-                                    "text": text,
-                                })),
-                                ContentBlock::Thinking { thinking, .. } => Some(serde_json::json!({
-                                    "type": "output_text",
-                                    "text": format!("[Thinking]\n{}", thinking),
-                                })),
-                                ContentBlock::ToolUse { id, name, input } => Some(serde_json::json!({
-                                    "type": "output_text",
-                                    "text": format!("[Tool Use: {} (id={})]\nInput: {}", name, id, input.as_ref().map(|v| v.to_string()).unwrap_or_default()),
-                                })),
-                                _ => None,
-                            })
-                            .collect()
-                    }
-                    _ => {
-                        let text = msg.content.iter()
-                            .filter_map(|b| match b {
-                                ContentBlock::Text { text } => Some(text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        vec![serde_json::json!({
-                            "type": "input_text",
-                            "text": text,
-                        })]
-                    }
-                };
-
-                if content_blocks.is_empty() {
-                    continue;
-                }
-
-                let mut payload = serde_json::json!({
-                    "type": "message",
-                    "role": role_str,
-                    "content": content_blocks,
-                });
-                if msg.role == MemorphRole::Assistant {
-                    payload["phase"] = serde_json::Value::String("final_answer".to_string());
-                }
-                // agent_message event before the last assistant response_item
-                if Some(idx) == last_assistant_idx {
-                    let agent_text = msg
-                        .content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-                    let agent_event = serde_json::json!({
-                        "timestamp": timestamp,
-                        "type": "event_msg",
-                        "payload": {
-                            "type": "agent_message",
-                            "message": agent_text,
-                            "phase": "final_answer",
-                            "memory_citation": null
-                        }
-                    });
-                    writeln!(file, "{}", serde_json::to_string(&agent_event)?)?;
-                }
-
-                let response_item = serde_json::json!({
-                    "timestamp": timestamp,
-                    "type": "response_item",
-                    "payload": payload,
-                });
-                writeln!(file, "{}", serde_json::to_string(&response_item)?)?;
-
-                // user_message event after the first original user message
-                if msg.role == MemorphRole::User && !user_message_written {
-                    let user_text = msg
-                        .content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("");
-                    let user_event = serde_json::json!({
-                        "timestamp": timestamp,
-                        "type": "event_msg",
-                        "payload": {
-                            "type": "user_message",
-                            "message": user_text,
-                            "images": [],
-                            "local_images": [],
-                            "text_elements": []
-                        }
-                    });
-                    writeln!(file, "{}", serde_json::to_string(&user_event)?)?;
-                    user_message_written = true;
-                }
-            }
-
-            // task_complete
-            let last_agent_message = last_assistant_idx
-                .and_then(|idx| turn.get(idx))
-                .map(|msg| {
-                    msg.content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("")
-                })
-                .unwrap_or_default();
-
-            let task_complete = serde_json::json!({
-                "timestamp": last_msg.timestamp.to_rfc3339(),
-                "type": "event_msg",
-                "payload": {
-                    "type": "task_complete",
-                    "turn_id": turn_id,
-                    "last_agent_message": last_agent_message,
-                    "completed_at": completed_at,
-                    "duration_ms": 1000
-                }
-            });
-            writeln!(file, "{}", serde_json::to_string(&task_complete)?)?;
-        }
-
-        // Update session_index.jsonl
-        let index_path = get_codex_dir().join("session_index.jsonl");
-        let title = session
-            .session
-            .title
-            .clone()
-            .or_else(|| {
-                session
-                    .messages
-                    .iter()
-                    .find(|m| m.role == MemorphRole::User)
-                    .and_then(|m| {
-                        m.content.iter().find_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                    })
-            })
-            .unwrap_or_else(|| "Imported session".to_string());
-
-        let index_entry = serde_json::json!({
-            "id": session_id,
-            "thread_name": title,
-            "updated_at": now.to_rfc3339(),
-        });
-
-        let mut index_file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&index_path)?;
-        writeln!(index_file, "{}", serde_json::to_string(&index_entry)?)?;
-
-        // Update state_5.sqlite
-        update_codex_sqlite(&session_id, &rollout_path, target_dir, &title, &now)?;
-
-        Ok(session_id)
+    fn export_session(
+        &self,
+        session: &CanonicalSession,
+        target_dir: &Path,
+    ) -> Result<ExportedSession> {
+        let session_id = export_canonical_session(session, target_dir)?;
+        Ok(canonical_export_result(
+            PROVIDER_ID,
+            session_id.clone(),
+            self.resume_command(&session_id),
+        ))
     }
 
     fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -759,6 +208,513 @@ impl Provider for CodexProvider {
     }
 }
 
+fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
+    let file = File::open(path)
+        .with_context(|| format!("Failed to open Codex session: {}", path.display()))?;
+    let reader = BufReader::new(file);
+
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let mut events = Vec::new();
+    let mut session_id: Option<String> = None;
+    let mut project_dir: Option<String> = None;
+    let mut created_at: Option<chrono::DateTime<Utc>> = None;
+    let mut last_active_at: Option<chrono::DateTime<Utc>> = None;
+    let mut source_title: Option<String> = None;
+    let mut extensions = BTreeMap::new();
+
+    for (line_idx, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(error) => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Warning,
+                    disposition: MappingDisposition::Dropped,
+                    code: "invalid_jsonl_line".to_string(),
+                    message: format!("Failed to parse Codex session line: {}", error),
+                    path: Some(format!("line:{}", line_idx + 1)),
+                    raw: Some(Value::String(line)),
+                });
+                continue;
+            }
+        };
+
+        let line_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let timestamp = value
+            .get("timestamp")
+            .and_then(|v| v.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now);
+        last_active_at = Some(timestamp);
+
+        match line_type.as_str() {
+            "session_meta" => {
+                if let Some(payload) = value.get("payload") {
+                    session_id = payload
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .or(session_id);
+                    project_dir = payload
+                        .get("cwd")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .or(project_dir);
+                    created_at = payload
+                        .get("timestamp")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .or(created_at);
+
+                    if let Some(text) = payload
+                        .get("base_instructions")
+                        .and_then(|v| v.get("text"))
+                        .and_then(|v| v.as_str())
+                    {
+                        events.push(SessionEvent {
+                            id: format!("codex:base_instructions:{}", line_idx + 1),
+                            kind: SessionEventKind::Lifecycle,
+                            role: EventRole::System,
+                            timestamp,
+                            links: EventLinks::default(),
+                            blocks: vec![
+                                EventBlock::Text {
+                                    text: text.to_string(),
+                                },
+                                EventBlock::ProviderPayload {
+                                    kind: "session_meta".to_string(),
+                                    payload: payload.clone(),
+                                },
+                            ],
+                            metadata: EventMetadata {
+                                source: EventSource {
+                                    provider_id: PROVIDER_ID.to_string(),
+                                    original_id: None,
+                                    original_role: Some("developer".to_string()),
+                                    phase: None,
+                                },
+                                model: payload
+                                    .get("model")
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string),
+                                usage: None,
+                                fidelity: MappingDisposition::Preserved,
+                                provider_ext: {
+                                    let mut ext = BTreeMap::new();
+                                    ext.insert("codex_raw_line".to_string(), value.clone());
+                                    ext
+                                },
+                            },
+                        });
+                    } else {
+                        events.push(provider_payload_event(
+                            format!("codex:session_meta:{}", line_idx + 1),
+                            SessionEventKind::Lifecycle,
+                            EventRole::System,
+                            timestamp,
+                            "session_meta",
+                            payload.clone(),
+                            value.clone(),
+                            None,
+                        ));
+                    }
+
+                    source_title = payload
+                        .get("title")
+                        .or_else(|| payload.get("thread_name"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .or(source_title);
+                    extensions.insert("codex_session_meta".to_string(), payload.clone());
+                }
+            }
+            "turn_context" => {
+                if let Some(payload) = value.get("payload") {
+                    project_dir = payload
+                        .get("cwd")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .or(project_dir);
+                    events.push(provider_payload_event(
+                        format!("codex:turn_context:{}", line_idx + 1),
+                        SessionEventKind::Lifecycle,
+                        EventRole::System,
+                        timestamp,
+                        "turn_context",
+                        payload.clone(),
+                        value.clone(),
+                        None,
+                    ));
+                }
+            }
+            "event_msg" => {
+                if let Some(payload) = value.get("payload") {
+                    events.push(codex_event_msg_event(
+                        payload,
+                        timestamp,
+                        line_idx + 1,
+                        value.clone(),
+                    ));
+                }
+            }
+            "response_item" => {
+                if let Some(payload) = value.get("payload") {
+                    events.push(codex_response_item_event(
+                        payload,
+                        timestamp,
+                        line_idx + 1,
+                        value.clone(),
+                        &mut report,
+                    ));
+                }
+            }
+            other => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Info,
+                    disposition: MappingDisposition::Normalized,
+                    code: "unknown_codex_line".to_string(),
+                    message: format!("Preserved unknown Codex line type '{}'", other),
+                    path: Some(format!("line:{}", line_idx + 1)),
+                    raw: Some(value.clone()),
+                });
+                events.push(provider_payload_event(
+                    format!("codex:unknown:{}", line_idx + 1),
+                    SessionEventKind::Unknown,
+                    EventRole::Unknown,
+                    timestamp,
+                    other,
+                    value.get("payload").cloned().unwrap_or(Value::Null),
+                    value,
+                    None,
+                ));
+            }
+        }
+    }
+
+    let canonical_id = session_id
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    Ok(ImportedSession {
+        session: CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: canonical_id.clone(),
+                source_title,
+            },
+            provenance: SessionProvenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".to_string()),
+                primary_source: ProviderSessionRef {
+                    provider_id: PROVIDER_ID.to_string(),
+                    session_id: canonical_id,
+                    source_path: Some(path.to_string_lossy().to_string()),
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir: project_dir,
+                created_at,
+                last_active_at,
+                tags: Vec::new(),
+            },
+            events,
+            artifacts: Vec::new(),
+            extensions,
+        },
+        report,
+    })
+}
+
+fn codex_response_item_event(
+    payload: &Value,
+    timestamp: chrono::DateTime<Utc>,
+    line_no: usize,
+    raw_line: Value,
+    report: &mut MappingReport,
+) -> SessionEvent {
+    let role_str = payload.get("role").and_then(|v| v.as_str());
+    let msg_type = payload.get("type").and_then(|v| v.as_str());
+    let phase = payload
+        .get("phase")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let event_id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("codex:response_item:{}", line_no));
+
+    if msg_type != Some("message") {
+        return provider_payload_event(
+            event_id,
+            SessionEventKind::Unknown,
+            EventRole::Unknown,
+            timestamp,
+            msg_type.unwrap_or("response_item"),
+            payload.clone(),
+            raw_line,
+            phase,
+        );
+    }
+
+    let mut blocks = Vec::new();
+    if let Some(content_arr) = payload.get("content").and_then(|v| v.as_array()) {
+        for (idx, block) in content_arr.iter().enumerate() {
+            let Some(block_type) = block.get("type").and_then(|v| v.as_str()) else {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Warning,
+                    disposition: MappingDisposition::Normalized,
+                    code: "codex_block_missing_type".to_string(),
+                    message: "Codex content block without a type was preserved as unknown"
+                        .to_string(),
+                    path: Some(format!("response_item:{}:block:{}", line_no, idx)),
+                    raw: Some(block.clone()),
+                });
+                blocks.push(EventBlock::Unknown { raw: block.clone() });
+                continue;
+            };
+            match block_type {
+                "input_text" | "output_text" => {
+                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                        blocks.push(EventBlock::Text {
+                            text: text.to_string(),
+                        });
+                    }
+                }
+                "refusal" => {
+                    let text = block
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("[refused]");
+                    blocks.push(EventBlock::Text {
+                        text: text.to_string(),
+                    });
+                }
+                "input_image" => {
+                    if let Some(image_block) = codex_image_block(block) {
+                        blocks.push(image_block);
+                    } else {
+                        report.push_issue(MappingIssue {
+                            level: MappingIssueLevel::Info,
+                            disposition: MappingDisposition::Normalized,
+                            code: "codex_input_image_preserved_raw".to_string(),
+                            message: "Codex input_image block was preserved as provider payload"
+                                .to_string(),
+                            path: Some(format!("response_item:{}:block:{}", line_no, idx)),
+                            raw: Some(block.clone()),
+                        });
+                        blocks.push(EventBlock::ProviderPayload {
+                            kind: "input_image".to_string(),
+                            payload: block.clone(),
+                        });
+                    }
+                }
+                other => {
+                    report.push_issue(MappingIssue {
+                        level: MappingIssueLevel::Info,
+                        disposition: MappingDisposition::Normalized,
+                        code: "codex_unknown_block_preserved".to_string(),
+                        message: format!("Preserved unknown Codex content block '{}'", other),
+                        path: Some(format!("response_item:{}:block:{}", line_no, idx)),
+                        raw: Some(block.clone()),
+                    });
+                    blocks.push(EventBlock::Unknown { raw: block.clone() });
+                }
+            }
+        }
+    } else if let Some(text) = payload.get("content").and_then(|v| v.as_str()) {
+        blocks.push(EventBlock::Text {
+            text: text.to_string(),
+        });
+    } else {
+        blocks.push(EventBlock::ProviderPayload {
+            kind: "message_without_content".to_string(),
+            payload: payload.clone(),
+        });
+    }
+
+    if phase.as_deref() == Some("commentary") && blocks.len() == 1 {
+        if let EventBlock::Text { text } = &blocks[0] {
+            blocks[0] = EventBlock::Thinking {
+                text: text.clone(),
+                signature: None,
+            };
+        }
+    }
+
+    let role = match role_str {
+        Some("user") => EventRole::User,
+        Some("assistant") => EventRole::Assistant,
+        Some("developer") => EventRole::Developer,
+        Some("system") => EventRole::System,
+        Some("tool") => EventRole::Tool,
+        _ => EventRole::Unknown,
+    };
+
+    SessionEvent {
+        id: event_id,
+        kind: SessionEventKind::Message,
+        role,
+        timestamp,
+        links: EventLinks::default(),
+        blocks,
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id: None,
+                original_role: role_str.map(str::to_string),
+                phase,
+            },
+            model: None,
+            usage: None,
+            fidelity: MappingDisposition::Preserved,
+            provider_ext: {
+                let mut ext = BTreeMap::new();
+                ext.insert("codex_payload".to_string(), payload.clone());
+                ext.insert("codex_raw_line".to_string(), raw_line);
+                ext
+            },
+        },
+    }
+}
+
+fn codex_event_msg_event(
+    payload: &Value,
+    timestamp: chrono::DateTime<Utc>,
+    line_no: usize,
+    raw_line: Value,
+) -> SessionEvent {
+    let event_type = payload
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("event_msg");
+    let role = match event_type {
+        "user_message" => EventRole::User,
+        "agent_message" => EventRole::Assistant,
+        _ => EventRole::System,
+    };
+
+    let mut blocks = Vec::new();
+    if let Some(text) = payload.get("message").and_then(|v| v.as_str()) {
+        blocks.push(EventBlock::Text {
+            text: text.to_string(),
+        });
+    }
+    if let Some(text) = payload.get("last_agent_message").and_then(|v| v.as_str()) {
+        if !text.trim().is_empty() {
+            blocks.push(EventBlock::Text {
+                text: text.to_string(),
+            });
+        }
+    }
+    blocks.push(EventBlock::ProviderPayload {
+        kind: event_type.to_string(),
+        payload: payload.clone(),
+    });
+
+    let mut event = provider_payload_event(
+        format!("codex:event_msg:{}:{}", event_type, line_no),
+        SessionEventKind::Lifecycle,
+        role,
+        timestamp,
+        event_type,
+        payload.clone(),
+        raw_line,
+        payload
+            .get("phase")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+    );
+    event.blocks = blocks;
+    event
+}
+
+fn codex_image_block(block: &Value) -> Option<EventBlock> {
+    let mime_type = block
+        .get("mime_type")
+        .or_else(|| block.get("mimeType"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("image/*")
+        .to_string();
+    let image_url = block
+        .get("image_url")
+        .or_else(|| block.get("url"))
+        .or_else(|| block.get("source"))
+        .and_then(|v| v.as_str())?;
+    if let Some((mime, data)) = parse_data_uri(image_url) {
+        return Some(EventBlock::Image {
+            mime_type: mime.to_string(),
+            data: Some(data.to_string()),
+            path: None,
+        });
+    }
+    Some(EventBlock::Image {
+        mime_type,
+        data: None,
+        path: Some(image_url.to_string()),
+    })
+}
+
+fn parse_data_uri(uri: &str) -> Option<(&str, &str)> {
+    let rest = uri.strip_prefix("data:")?;
+    let (mime, data) = rest.split_once(";base64,")?;
+    Some((mime, data))
+}
+
+fn provider_payload_event(
+    id: String,
+    kind: SessionEventKind,
+    role: EventRole,
+    timestamp: chrono::DateTime<Utc>,
+    payload_kind: &str,
+    payload: Value,
+    raw_line: Value,
+    phase: Option<String>,
+) -> SessionEvent {
+    SessionEvent {
+        id,
+        kind,
+        role,
+        timestamp,
+        links: EventLinks::default(),
+        blocks: vec![EventBlock::ProviderPayload {
+            kind: payload_kind.to_string(),
+            payload: payload.clone(),
+        }],
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id: None,
+                original_role: None,
+                phase,
+            },
+            model: None,
+            usage: None,
+            fidelity: MappingDisposition::Preserved,
+            provider_ext: {
+                let mut ext = BTreeMap::new();
+                ext.insert("codex_payload".to_string(), payload);
+                ext.insert("codex_raw_line".to_string(), raw_line);
+                ext
+            },
+        },
+    }
+}
+
 fn build_cwd_lookup() -> Result<std::collections::HashMap<String, String>> {
     let sqlite_path = get_codex_dir().join("state_5.sqlite");
     if !sqlite_path.exists() {
@@ -802,6 +758,232 @@ fn get_codex_dir() -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(".codex"))
         .unwrap_or_else(|| PathBuf::from(".codex"))
+}
+
+fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
+    let session_id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+    let timestamp_str = now.format("%Y-%m-%dT%H-%M-%S").to_string();
+    let filename = format!("rollout-{}-{}.jsonl", timestamp_str, session_id);
+    let sessions_dir = get_codex_dir()
+        .join("sessions")
+        .join(now.format("%Y").to_string())
+        .join(now.format("%m").to_string())
+        .join(now.format("%d").to_string());
+    std::fs::create_dir_all(&sessions_dir)?;
+
+    let file_path = sessions_dir.join(&filename);
+    let rollout_path = file_path.to_string_lossy().to_string();
+    let mut file = File::create(&file_path)?;
+    let git_info = get_git_info(target_dir);
+    let codex_version = get_codex_version();
+    let codex_model_provider = get_codex_model_provider();
+    let target_dir_str = target_dir.to_string_lossy().to_string();
+    let title = canonical_session_title(session);
+    let base_instructions = session
+        .events
+        .iter()
+        .find(|event| matches!(event.role, EventRole::System | EventRole::Developer))
+        .map(canonical_event_text)
+        .filter(|text| !text.trim().is_empty());
+
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "timestamp": now.to_rfc3339(),
+            "type": "session_meta",
+            "payload": {
+                "id": session_id,
+                "timestamp": now.to_rfc3339(),
+                "cwd": target_dir_str,
+                "originator": "memorph-cli",
+                "cli_version": codex_version,
+                "source": "cli",
+                "model_provider": codex_model_provider,
+                "title": title,
+                "base_instructions": base_instructions.as_ref().map(|text| {
+                    serde_json::json!({ "text": text })
+                }).unwrap_or(Value::Null),
+                "git": {
+                    "commit_hash": git_info.as_ref().and_then(|git| git.commit_hash.clone()).unwrap_or_default(),
+                    "branch": git_info.as_ref().and_then(|git| git.branch.clone()).unwrap_or_default(),
+                }
+            }
+        }))?
+    )?;
+
+    let turn_id = Uuid::new_v4().to_string();
+    let first_ts = session
+        .events
+        .first()
+        .map(|event| event.timestamp)
+        .unwrap_or(now);
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "timestamp": first_ts.to_rfc3339(),
+            "type": "event_msg",
+            "payload": {
+                "type": "task_started",
+                "turn_id": turn_id,
+                "started_at": first_ts.timestamp(),
+                "collaboration_mode_kind": "default"
+            }
+        }))?
+    )?;
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "timestamp": first_ts.to_rfc3339(),
+            "type": "turn_context",
+            "payload": {
+                "turn_id": turn_id,
+                "cwd": target_dir_str,
+                "current_date": first_ts.format("%Y-%m-%d").to_string(),
+                "timezone": "Asia/Shanghai"
+            }
+        }))?
+    )?;
+
+    let mut wrote_user_event = false;
+    let mut last_agent_message = String::new();
+    for event in &session.events {
+        if event.role == EventRole::System {
+            continue;
+        }
+        let role = match event.role {
+            EventRole::Assistant => "assistant",
+            EventRole::Developer => "developer",
+            EventRole::User | EventRole::Tool | EventRole::Unknown => "user",
+            EventRole::System => continue,
+        };
+        let content = canonical_event_to_codex_content(event);
+        if content.is_empty() {
+            continue;
+        }
+        let mut payload = serde_json::json!({
+            "type": "message",
+            "role": role,
+            "content": content,
+        });
+        if event.role == EventRole::Assistant {
+            payload["phase"] = Value::String("final_answer".to_string());
+            last_agent_message = canonical_event_text(event);
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "timestamp": event.timestamp.to_rfc3339(),
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "agent_message",
+                        "message": last_agent_message,
+                        "phase": "final_answer",
+                        "memory_citation": null
+                    }
+                }))?
+            )?;
+        }
+        writeln!(
+            file,
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "timestamp": event.timestamp.to_rfc3339(),
+                "type": "response_item",
+                "payload": payload,
+            }))?
+        )?;
+        if event.role == EventRole::User && !wrote_user_event {
+            let user_text = canonical_event_text(event);
+            writeln!(
+                file,
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "timestamp": event.timestamp.to_rfc3339(),
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "user_message",
+                        "message": user_text,
+                        "images": [],
+                        "local_images": [],
+                        "text_elements": []
+                    }
+                }))?
+            )?;
+            wrote_user_event = true;
+        }
+    }
+
+    let last_ts = session
+        .events
+        .last()
+        .map(|event| event.timestamp)
+        .unwrap_or(now);
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "timestamp": last_ts.to_rfc3339(),
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": turn_id,
+                "last_agent_message": last_agent_message,
+                "completed_at": last_ts.timestamp(),
+                "duration_ms": 1000
+            }
+        }))?
+    )?;
+
+    let index_path = get_codex_dir().join("session_index.jsonl");
+    let mut index_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&index_path)?;
+    writeln!(
+        index_file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "id": session_id,
+            "thread_name": title,
+            "updated_at": now.to_rfc3339(),
+        }))?
+    )?;
+    update_codex_sqlite(&session_id, &rollout_path, target_dir, &title, &now)?;
+    Ok(session_id)
+}
+
+fn canonical_event_to_codex_content(event: &SessionEvent) -> Vec<Value> {
+    event
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            EventBlock::Text { text } => Some(serde_json::json!({
+                "type": if event.role == EventRole::Assistant { "output_text" } else { "input_text" },
+                "text": text,
+            })),
+            EventBlock::Thinking { text, .. } => Some(serde_json::json!({
+                "type": "output_text",
+                "text": format!("[Thinking]\n{}", text),
+            })),
+            EventBlock::Image { data: Some(data), .. } if event.role != EventRole::Assistant => {
+                Some(serde_json::json!({
+                    "type": "input_image",
+                    "image_url": data,
+                }))
+            }
+            _ => {
+                let text = canonical_block_text(block);
+                (!text.trim().is_empty()).then(|| serde_json::json!({
+                    "type": if event.role == EventRole::Assistant { "output_text" } else { "input_text" },
+                    "text": text,
+                }))
+            }
+        })
+        .collect()
 }
 
 fn find_session_file(id: &str) -> Option<PathBuf> {
@@ -1016,5 +1198,225 @@ fn get_git_branch(dir: &Path) -> Option<String> {
         Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn import_canonical_session_preserves_codex_runtime_and_message_events() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-1",
+                    "timestamp": "2026-05-21T10:00:00Z",
+                    "cwd": "/tmp/project",
+                    "base_instructions": { "text": "Be careful." },
+                    "model": "gpt-5.3-codex"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:01Z",
+                "type": "turn_context",
+                "payload": {
+                    "turn_id": "turn-1",
+                    "cwd": "/tmp/project",
+                    "current_date": "2026-05-21",
+                    "timezone": "Asia/Shanghai"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:02Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_started",
+                    "turn_id": "turn-1",
+                    "started_at": 1747821602
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:03Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [
+                        { "type": "input_text", "text": "# AGENTS.md instructions" }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:04Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "content": [
+                        { "type": "output_text", "text": "Thinking out loud" }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:05Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "shell"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:06Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "turn-1",
+                    "last_agent_message": "Done."
+                }
+            })
+        )
+        .unwrap();
+
+        let imported = import_canonical_session(file.path()).unwrap();
+        let events = &imported.session.events;
+
+        assert_eq!(imported.session.identity.canonical_id, "session-1");
+        assert_eq!(
+            imported.session.context.workspace_dir.as_deref(),
+            Some("/tmp/project")
+        );
+        assert!(events.iter().any(|event| {
+            event.role == EventRole::System
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::Text { text }) if text == "Be careful."
+                )
+        }));
+        assert!(events.iter().any(|event| {
+            event.role == EventRole::Developer
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::Text { text }) if text == "# AGENTS.md instructions"
+                )
+        }));
+        assert!(events.iter().any(|event| {
+            event.role == EventRole::Assistant
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::Thinking { text, .. }) if text == "Thinking out loud"
+                )
+        }));
+        assert!(events.iter().any(|event| {
+            event.id == "codex:response_item:6"
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::ProviderPayload { kind, .. }) if kind == "function_call"
+                )
+        }));
+        assert!(events.iter().any(|event| {
+            event.id == "codex:event_msg:task_complete:7"
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::Text { text }) if text == "Done."
+                )
+        }));
+    }
+
+    #[test]
+    fn import_canonical_session_decodes_input_image_data_uri() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-2",
+                    "timestamp": "2026-05-21T10:00:00Z",
+                    "cwd": "/tmp/project"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_image",
+                            "mime_type": "image/png",
+                            "image_url": "data:image/png;base64,QUJD"
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+
+        let imported = import_canonical_session(file.path()).unwrap();
+        let image_block = imported
+            .session
+            .events
+            .iter()
+            .flat_map(|event| event.blocks.iter())
+            .find_map(|block| match block {
+                EventBlock::Image {
+                    mime_type,
+                    data,
+                    path,
+                } => Some((mime_type, data, path)),
+                _ => None,
+            })
+            .expect("expected image block");
+
+        assert_eq!(image_block.0, "image/png");
+        assert_eq!(image_block.1.as_deref(), Some("QUJD"));
+        assert_eq!(image_block.2, &None);
     }
 }

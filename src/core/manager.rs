@@ -3,7 +3,6 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::model::MemorphSession;
 use crate::providers;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,34 +199,9 @@ pub fn backup(items: &[ManagerItem], output_dir: &Path) -> ManagerBackupResult {
     }
 
     for item in items {
-        let provider = match providers::find_provider(&item.provider_id) {
-            Some(p) => p,
-            None => {
-                failed += 1;
-                errors.push(format!(
-                    "Unknown provider: {} for session {}",
-                    item.provider_id, item.session_id
-                ));
-                continue;
-            }
-        };
-
-        // Load session
-        let source_path = match item.source_path.as_deref() {
-            Some(sp) => sp,
-            None => {
-                failed += 1;
-                errors.push(format!(
-                    "No source path for session {} ({})",
-                    item.session_id,
-                    item.title.as_deref().unwrap_or("untitled")
-                ));
-                continue;
-            }
-        };
-
-        let mut session = match provider.load_session(source_path) {
-            Ok(s) => s,
+        let session = match crate::core::get_canonical_session(&item.provider_id, &item.session_id)
+        {
+            Ok(imported) => imported.session,
             Err(e) => {
                 failed += 1;
                 errors.push(format!(
@@ -239,9 +213,6 @@ pub fn backup(items: &[ManagerItem], output_dir: &Path) -> ManagerBackupResult {
                 continue;
             }
         };
-
-        session.meta.source_session_id = item.session_id.clone();
-        session.meta.source_provider = item.provider_id.clone();
 
         let safe_title = item
             .title
@@ -282,7 +253,7 @@ pub fn backup(items: &[ManagerItem], output_dir: &Path) -> ManagerBackupResult {
     }
 }
 
-fn export_session_to_json(session: &MemorphSession, path: &Path) -> Result<()> {
+fn export_session_to_json(session: &crate::canonical::CanonicalSession, path: &Path) -> Result<()> {
     let json = serde_json::to_string_pretty(session)?;
     std::fs::write(path, json)
         .with_context(|| format!("Failed to write export file: {}", path.display()))?;

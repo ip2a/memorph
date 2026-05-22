@@ -25,6 +25,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate release context
+        shell: bash
+        run: python3 scripts/validate_release_context.py --build-run-id "${{ inputs.build_run_id }}"
+
       - name: Debug OIDC claims
         run: |
           python3 - <<'PY'
@@ -58,43 +62,11 @@ jobs:
               print(f"  {field}: {claims.get(field)}")
           PY
 
-      - name: Validate release source
-        shell: bash
-        run: |
-          echo "[info] Git ref: ${GITHUB_REF}"
-          echo "[info] Git sha: ${GITHUB_SHA}"
-          test -f python/packages/memorph/pyproject.toml || { echo "[error] Missing python/packages/memorph/pyproject.toml; this ref is not using the new release layout"; exit 1; }
-          grep -q 'npm_packages_dir = ROOT / "npm" / "packages"' scripts/sync_version.py || { echo "[error] scripts/sync_version.py is outdated (likely still references old paths)"; exit 1; }
-
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
 
-      - name: Sync versions
-        run: uv run python scripts/sync_version.py
-
-      - name: Validate Python dependency versions
-        run: |
-          uv run python - <<'PY'
-          import re
-          import tomllib
-          from pathlib import Path
-
-          root = Path(".")
-          cargo_text = (root / "Cargo.toml").read_text(encoding="utf-8")
-          match = re.search(r'^version\s*=\s*"([^"]+)"', cargo_text, flags=re.MULTILINE)
-          if not match:
-              raise SystemExit("Cargo.toml version is missing")
-          expected = match.group(1)
-
-          pyproject = tomllib.loads((root / "python/packages/memorph/pyproject.toml").read_text(encoding="utf-8"))
-          deps = pyproject["project"]["dependencies"]
-          for dep in deps:
-              if "memorph-bin-" not in dep:
-                  continue
-              if f"=={expected};" not in dep:
-                  raise SystemExit(f"Dependency version mismatch: {dep}, expected {expected}")
-          print(f"[ok] PyPI main package dependency versions are aligned: {expected}")
-          PY
+      - name: Validate release metadata
+        run: python3 scripts/release_preflight.py
 
       - name: Download release-build artifacts
         run: |

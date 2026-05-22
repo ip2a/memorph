@@ -3,8 +3,10 @@ mod load;
 mod scan;
 mod write;
 
-use crate::model::{MemorphSession, SessionMeta};
-use crate::provider::{Provider, ProviderCapabilities};
+use crate::canonical::{CanonicalSession, ExportedSession, ImportedSession};
+use crate::provider::{
+    canonical_export_result, Provider, ProviderCapabilities, ProviderSessionSummary,
+};
 use anyhow::Result;
 use std::path::Path;
 
@@ -24,24 +26,33 @@ impl Provider for CursorProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             scan: true,
-            load: true,
-            write: true,
+            import: true,
+            export: true,
             delete: true,
             rename: true,
             resume: false,
         }
     }
 
-    fn scan_sessions(&self) -> Result<Vec<SessionMeta>> {
+    fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
         scan::scan_sessions(None)
     }
 
-    fn load_session(&self, source_path: &str) -> Result<MemorphSession> {
-        load::load_session(source_path)
+    fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        load::import_session(source_path)
     }
 
-    fn write_session(&self, session: &MemorphSession, target_dir: &Path) -> Result<String> {
-        write::write_session(session, target_dir)
+    fn export_session(
+        &self,
+        session: &CanonicalSession,
+        target_dir: &Path,
+    ) -> Result<ExportedSession> {
+        let session_id = write::export_session(session, target_dir)?;
+        Ok(canonical_export_result(
+            PROVIDER_ID,
+            session_id.clone(),
+            self.resume_command(&session_id),
+        ))
     }
 
     fn delete_session(&self, session_id: &str) -> Result<()> {

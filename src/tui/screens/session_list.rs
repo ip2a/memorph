@@ -7,8 +7,8 @@ use ratatui::{
     Frame,
 };
 
+use crate::canonical::{EventBlock, EventRole, SessionEvent};
 use crate::core::{SessionGroup, SessionItem};
-use crate::model::{ContentBlock, MemorphMessage};
 use crate::tui::app::{
     provider_label, provider_tabs, ActionDialog, ActionField, ActionResult, App, AppResult,
     MainFocus, SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
@@ -692,12 +692,10 @@ fn draw_detail_metadata(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
     };
 
     let created = session
-        .session
         .created_at
         .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "-".to_string());
     let active = session
-        .session
         .last_active_at
         .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "-".to_string());
@@ -712,10 +710,10 @@ fn draw_detail_metadata(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
         ]),
         Line::from(vec![
             Span::styled("Messages", Style::default().fg(theme.text_dim)),
-            Span::raw(format!("  {}", session.messages.len())),
+            Span::raw(format!("  {}", session.message_count)),
             Span::raw("    "),
             Span::styled("Source", Style::default().fg(theme.text_dim)),
-            Span::raw(format!("  {}", session.meta.source_provider)),
+            Span::raw(format!("  {}", session.provider_name)),
         ]),
     ]);
 
@@ -735,7 +733,7 @@ fn draw_detail_messages(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
         return;
     };
 
-    let total = session.messages.len();
+    let total = session.events.len();
     if total == 0 {
         let empty = Paragraph::new("This session has no messages.")
             .block(section_block("Message Preview", false, theme))
@@ -751,19 +749,19 @@ fn draw_detail_messages(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
         Span::raw(format!("  {}-{} of {}", start + 1, end, total)),
     ])];
 
-    for message in session.messages.iter().skip(start).take(5) {
+    for event in session.events.iter().skip(start).take(5) {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled(
-                format!(" {} ", message.role.to_string().to_uppercase()),
-                role_style(message, theme),
+                format!(" {} ", role_name(event.role).to_uppercase()),
+                role_style(event, theme),
             ),
             Span::styled(
-                format!(" {}", message.timestamp.format("%H:%M:%S")),
+                format!(" {}", event.timestamp.format("%H:%M:%S")),
                 Style::default().fg(theme.text_dim),
             ),
         ]));
-        lines.push(Line::from(Span::raw(content_preview(message))));
+        lines.push(Line::from(Span::raw(content_preview(event))));
     }
 
     let block = Paragraph::new(Text::from(lines))
@@ -1323,11 +1321,12 @@ fn section_block(title: &str, focused: bool, theme: &Theme) -> Block<'static> {
         })
 }
 
-fn role_style(message: &MemorphMessage, theme: &Theme) -> Style {
-    let color = match message.role.to_string().as_str() {
-        "user" => theme.accent,
-        "assistant" => theme.primary,
-        "tool" => theme.secondary,
+fn role_style(event: &SessionEvent, theme: &Theme) -> Style {
+    let color = match event.role {
+        EventRole::User => theme.accent,
+        EventRole::Assistant => theme.primary,
+        EventRole::Tool => theme.secondary,
+        EventRole::Unknown => theme.warning,
         _ => theme.text_dim,
     };
 
@@ -1337,23 +1336,50 @@ fn role_style(message: &MemorphMessage, theme: &Theme) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-fn content_preview(message: &MemorphMessage) -> String {
-    for block in &message.content {
+fn role_name(role: EventRole) -> &'static str {
+    match role {
+        EventRole::User => "user",
+        EventRole::Assistant => "assistant",
+        EventRole::Tool => "tool",
+        EventRole::System => "system",
+        EventRole::Developer => "developer",
+        EventRole::Unknown => "unknown",
+    }
+}
+
+fn content_preview(event: &SessionEvent) -> String {
+    for block in &event.blocks {
         match block {
-            ContentBlock::Text { text } => return theme::truncate(text, 96),
-            ContentBlock::Thinking { thinking, .. } => {
-                return format!("Thinking: {}", theme::truncate(thinking, 84));
+            EventBlock::Text { text } => return theme::truncate(text, 96),
+            EventBlock::Thinking { text, .. } => {
+                return format!("Thinking: {}", theme::truncate(text, 84));
             }
-            ContentBlock::ToolUse { name, .. } => return format!("Tool call: {}", name),
-            ContentBlock::ToolResult { content, .. } => {
+            EventBlock::ToolCall { name, .. } => return format!("Tool call: {}", name),
+            EventBlock::ToolResult { content, .. } => {
                 return format!("Tool result: {}", theme::truncate(content, 80));
             }
-            ContentBlock::File { path, .. } => return format!("File: {}", path),
-            ContentBlock::Image { .. } => return "Image attachment".to_string(),
+            EventBlock::Patch { files, .. } => {
+                return if files.is_empty() {
+                    "Patch".to_string()
+                } else {
+                    format!("Patch: {}", theme::truncate(&files.join(", "), 80))
+                };
+            }
+            EventBlock::Command { command, .. } => return format!("Command: {}", command),
+            EventBlock::CommandResult { stdout, .. } => {
+                return format!(
+                    "Command result: {}",
+                    theme::truncate(stdout.as_deref().unwrap_or("(no output)"), 76)
+                );
+            }
+            EventBlock::File { path, .. } => return format!("File: {}", path),
+            EventBlock::Image { .. } => return "Image attachment".to_string(),
+            EventBlock::ProviderPayload { kind, .. } => return format!("Payload: {}", kind),
+            EventBlock::Unknown { .. } => return "Unknown payload".to_string(),
         }
     }
 
-    "(empty message)".to_string()
+    "(empty event)".to_string()
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

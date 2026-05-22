@@ -29,6 +29,7 @@
 !/build.rs
 !/platforms.toml
 !/LICENSE
+!/install.sh
 !/README.md
 !/README_en.md
 !/README_zh.md
@@ -37,6 +38,10 @@
 !/.github/
 !/.github/workflows/
 !/.github/workflows/*.yml
+
+# Release documentation.
+!/docs/
+!/docs/*.md
 
 # Rust CLI source.
 !/src/

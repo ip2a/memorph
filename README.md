@@ -35,6 +35,13 @@ memorph 是一个会话记忆管理工具，在不同AI 编程 Agent 之间导�
 ### 快速上手
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/ip2a/memorph/main/install.sh | bash
+memorph web
+```
+
+也可以直接运行：
+
+```bash
 npx memorph web
 ```
 

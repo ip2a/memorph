@@ -6,6 +6,13 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: build-${{ matrix.platform_id }}
@@ -35,6 +42,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Validate release context
+        shell: bash
+        run: python3 scripts/validate_release_context.py
+
+      - name: Validate release metadata
+        shell: bash
+        run: python3 scripts/release_preflight.py
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -122,3 +137,55 @@ jobs:
           name: memorph-darwin-x64
           path: dist/darwin-x64/*
           if-no-files-found: error
+
+  publish-github-release:
+    name: publish-github-release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release context
+        shell: bash
+        run: python3 scripts/validate_release_context.py
+
+      - name: Validate release metadata
+        shell: bash
+        run: python3 scripts/release_preflight.py
+
+      - name: Download build artifacts
+        shell: bash
+        run: |
+          mkdir -p dist
+          for platform in darwin-arm64 darwin-x64 linux-x64-gnu linux-arm64-gnu win32-x64-msvc; do
+            gh run download "${GITHUB_RUN_ID}" --name "memorph-${platform}" --dir "dist/${platform}"
+          done
+
+      - name: Prepare GitHub Release assets
+        shell: bash
+        run: python3 scripts/prepare_github_release_assets.py --dist-root dist --assets-dir release-assets
+
+      - name: Attest GitHub Release assets
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release-assets/*
+
+      - name: Publish GitHub Release assets
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" release-assets/* --clobber
+          else
+            gh release create "${tag}" release-assets/* --title "${tag}" --generate-notes --verify-tag
+          fi

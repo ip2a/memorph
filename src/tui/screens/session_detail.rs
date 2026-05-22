@@ -1,13 +1,13 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame,
 };
 
-use crate::model::{ContentBlock, MemorphRole};
+use crate::canonical::{EventBlock, EventRole};
 use crate::tui::app::{App, AppResult};
 use crate::tui::theme::{self, Theme};
 
@@ -80,23 +80,35 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    for message in &session.messages {
-        let role_color = match message.role {
-            MemorphRole::User => theme.accent,
-            MemorphRole::Assistant => theme.primary,
-            MemorphRole::Tool => theme.secondary,
-            MemorphRole::System => theme.text_dim,
-            MemorphRole::Developer => theme.text_dim,
+    for event in &session.events {
+        let role_color = match event.role {
+            EventRole::User => theme.accent,
+            EventRole::Assistant => theme.primary,
+            EventRole::Tool => theme.secondary,
+            EventRole::System => theme.text_dim,
+            EventRole::Developer => theme.text_dim,
+            EventRole::Unknown => theme.warning,
         };
 
-        let role_name = message.role.to_string();
-        let time_str = message.timestamp.format("%H:%M:%S").to_string();
+        let role_name = serde_json::to_string(&event.role)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+            .to_string();
+        let kind_name = serde_json::to_string(&event.kind)
+            .unwrap_or_else(|_| "\"unknown\"".to_string())
+            .trim_matches('"')
+            .to_string();
+        let time_str = event.timestamp.format("%H:%M:%S").to_string();
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled(
                 format!(" {} ", role_name.to_uppercase()),
                 Style::default().fg(role_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {} ", kind_name),
+                Style::default().fg(theme.text_dim),
             ),
             Span::styled(
                 format!(" {} ", time_str),
@@ -108,23 +120,23 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             Style::default().fg(theme.border),
         )));
 
-        for block in &message.content {
+        for block in &event.blocks {
             match block {
-                ContentBlock::Text { text } => {
+                EventBlock::Text { text } => {
                     for line in text.lines() {
                         lines.push(Line::from(Span::raw(line.to_string())));
                     }
                 }
-                ContentBlock::Thinking { thinking, .. } => {
+                EventBlock::Thinking { text, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("[thinking] ", Style::default().fg(theme.text_dim)),
                         Span::styled(
-                            theme::truncate(thinking, 80),
+                            theme::truncate(text, 80),
                             Style::default().fg(theme.text_dim),
                         ),
                     ]));
                 }
-                ContentBlock::ToolUse { name, input, .. } => {
+                EventBlock::ToolCall { name, input, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("Tool: ", Style::default().fg(theme.secondary)),
                         Span::styled(name, Style::default().fg(theme.text)),
@@ -137,15 +149,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         )]));
                     }
                 }
-                ContentBlock::ToolResult {
+                EventBlock::ToolResult {
                     content, is_error, ..
                 } => {
-                    let label = if is_error.unwrap_or(false) {
-                        "Error: "
-                    } else {
-                        "Result: "
-                    };
-                    let color = if is_error.unwrap_or(false) {
+                    let label = if *is_error { "Error: " } else { "Result: " };
+                    let color = if *is_error {
                         theme.error
                     } else {
                         theme.success
@@ -158,16 +166,65 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         ),
                     ]));
                 }
-                ContentBlock::File { path, .. } => {
+                EventBlock::Patch {
+                    files, diff_text, ..
+                } => {
+                    let preview = if !files.is_empty() {
+                        format!("Patch: {}", files.join(", "))
+                    } else {
+                        format!(
+                            "Patch: {}",
+                            theme::truncate(diff_text.as_deref().unwrap_or("(no diff)"), 72)
+                        )
+                    };
+                    lines.push(Line::from(Span::styled(
+                        preview,
+                        Style::default().fg(theme.secondary),
+                    )));
+                }
+                EventBlock::Command { command, .. } => {
+                    lines.push(Line::from(vec![
+                        Span::styled("Command: ", Style::default().fg(theme.secondary)),
+                        Span::raw(command),
+                    ]));
+                }
+                EventBlock::CommandResult {
+                    exit_code, stdout, ..
+                } => {
+                    let preview = stdout.as_deref().unwrap_or("(no output)");
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("Exit {}: ", exit_code.unwrap_or_default()),
+                            Style::default().fg(theme.success),
+                        ),
+                        Span::styled(
+                            theme::truncate(preview, 72),
+                            Style::default().fg(theme.text_dim),
+                        ),
+                    ]));
+                }
+                EventBlock::File { path, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("File: ", Style::default().fg(theme.secondary)),
                         Span::raw(path),
                     ]));
                 }
-                ContentBlock::Image { .. } => {
+                EventBlock::Image { .. } => {
                     lines.push(Line::from(Span::styled(
                         "[Image]",
                         Style::default().fg(theme.text_dim),
+                    )));
+                }
+                EventBlock::ProviderPayload { kind, .. } => {
+                    lines.push(Line::from(vec![
+                        Span::styled("Payload: ", Style::default().fg(theme.text_dim)),
+                        Span::raw(kind),
+                    ]));
+                }
+                EventBlock::Unknown { .. } => {
+                    lines.push(Line::from(Span::styled(
+                        "[Unknown payload]",
+                        Style::default().fg(theme.warning),
                     )));
                 }
             }

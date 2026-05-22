@@ -8,9 +8,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 use crate::config::UiLanguage;
-use crate::core::{self, ExportParams, SessionGroup, SessionItem, SwitchParams};
+use crate::core::{self, ExportParams, SessionDetailView, SessionGroup, SessionItem, SwitchParams};
 use crate::i18n;
-use crate::model::MemorphSession;
 use crate::{config, providers};
 
 pub fn provider_tabs(language: UiLanguage) -> Vec<String> {
@@ -106,7 +105,6 @@ pub enum SettingsField {
     Language,
     SessionsPerProvider,
     ShowOpenCodeSubagents,
-    AutoRefreshAfterDelete,
     PrimaryAgents,
     Save,
 }
@@ -117,18 +115,16 @@ impl SettingsField {
             Self::Language => i18n::text(language, "interfaceLanguage"),
             Self::SessionsPerProvider => i18n::text(language, "sessionsPerProvider"),
             Self::ShowOpenCodeSubagents => i18n::text(language, "showSubagents"),
-            Self::AutoRefreshAfterDelete => i18n::text(language, "autoRefreshDelete"),
             Self::PrimaryAgents => i18n::text(language, "primaryAgents"),
             Self::Save => i18n::text(language, "save"),
         }
     }
 }
 
-pub const SETTINGS_FIELDS: [SettingsField; 6] = [
+pub const SETTINGS_FIELDS: [SettingsField; 5] = [
     SettingsField::Language,
     SettingsField::SessionsPerProvider,
     SettingsField::ShowOpenCodeSubagents,
-    SettingsField::AutoRefreshAfterDelete,
     SettingsField::PrimaryAgents,
     SettingsField::Save,
 ];
@@ -179,7 +175,7 @@ pub struct App {
     pub current_screen: Screen,
     pub session_groups: Vec<SessionGroup>,
     pub selected_session: Option<SessionItem>,
-    pub loaded_session: Option<MemorphSession>,
+    pub loaded_session: Option<SessionDetailView>,
     pub workspace: Option<String>,
     pub show_all: bool,
     pub show_help: bool,
@@ -201,7 +197,6 @@ pub struct App {
     pub settings_language: UiLanguage,
     pub settings_sessions_per_provider: usize,
     pub settings_show_opencode_subagents: bool,
-    pub settings_auto_refresh_after_delete: bool,
     pub settings_agent_order: Vec<String>,
     pub settings_primary_agents: Vec<String>,
     pub settings_agent_index: usize,
@@ -258,7 +253,6 @@ impl App {
             settings_language: prefs.language,
             settings_sessions_per_provider: prefs.sessions_per_provider,
             settings_show_opencode_subagents: prefs.show_opencode_subagents,
-            settings_auto_refresh_after_delete: prefs.auto_refresh_after_delete,
             settings_agent_order: config::ordered_provider_ids(&prefs),
             settings_primary_agents: config::primary_provider_ids(&prefs),
             settings_agent_index: 0,
@@ -432,7 +426,7 @@ impl App {
     #[allow(dead_code)]
     pub fn load_selected_session(&mut self) -> Result<()> {
         if let Some(selected) = &self.selected_session {
-            self.loaded_session = Some(core::get_session(
+            self.loaded_session = Some(core::get_session_detail_view(
                 &selected.provider_id,
                 &selected.session_id,
             )?);
@@ -514,7 +508,6 @@ impl App {
                 self.settings_language = prefs.language;
                 self.settings_sessions_per_provider = prefs.sessions_per_provider;
                 self.settings_show_opencode_subagents = prefs.show_opencode_subagents;
-                self.settings_auto_refresh_after_delete = prefs.auto_refresh_after_delete;
                 self.settings_agent_order = config::ordered_provider_ids(&prefs);
                 self.settings_primary_agents = config::primary_provider_ids(&prefs);
                 self.settings_agent_index = self
@@ -567,9 +560,6 @@ impl App {
             }
             SettingsField::ShowOpenCodeSubagents => {
                 self.settings_show_opencode_subagents = !self.settings_show_opencode_subagents;
-            }
-            SettingsField::AutoRefreshAfterDelete => {
-                self.settings_auto_refresh_after_delete = !self.settings_auto_refresh_after_delete;
             }
             SettingsField::PrimaryAgents => {
                 if self.settings_agent_order.is_empty() {
@@ -647,7 +637,6 @@ impl App {
             Some(self.settings_sessions_per_provider),
             Some(self.settings_language),
             Some(self.settings_show_opencode_subagents),
-            Some(self.settings_auto_refresh_after_delete),
         )
         .and_then(|_| {
             config::update_agent_display_preferences(
@@ -750,7 +739,7 @@ impl App {
         let Some(selected) = self.selected_session.clone() else {
             return;
         };
-        match core::get_session(&selected.provider_id, &selected.session_id) {
+        match core::get_session_detail_view(&selected.provider_id, &selected.session_id) {
             Ok(session) => {
                 self.loaded_session = Some(session);
                 self.detail_modal_open = true;
@@ -777,7 +766,7 @@ impl App {
         let max_scroll = self
             .loaded_session
             .as_ref()
-            .map(|session| session.messages.len().saturating_sub(1))
+            .map(|session| session.events.len().saturating_sub(1))
             .unwrap_or(0);
         self.detail_scroll = (self.detail_scroll + 1).min(max_scroll);
     }
@@ -955,7 +944,7 @@ impl App {
             .filter(|provider| Some(*provider) != source)
             .filter(|provider| {
                 providers::find_provider(provider)
-                    .map(|provider| provider.capabilities().write)
+                    .map(|provider| provider.capabilities().export)
                     .unwrap_or(false)
             })
             .collect()

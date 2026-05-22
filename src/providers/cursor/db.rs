@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Cross-platform Cursor data directory.
@@ -49,7 +49,7 @@ pub fn open_global_db() -> Result<Connection> {
 }
 
 /// Cursor Composer session metadata stored in cursorDiskKV.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct ComposerData {
     #[serde(rename = "composerId")]
@@ -65,21 +65,21 @@ pub struct ComposerData {
     pub is_agentic: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct WorkspaceIdentifier {
     pub id: String,
     pub uri: WorkspaceUri,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WorkspaceUri {
     #[serde(rename = "fsPath")]
     pub fs_path: String,
 }
 
 /// Cursor bubble (message) stored in cursorDiskKV.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[allow(dead_code)]
 pub struct BubbleData {
     #[serde(rename = "bubbleId")]

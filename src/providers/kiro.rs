@@ -1,13 +1,19 @@
-use crate::model::{
-    ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, MessageMetadata,
-    SessionInfo, SessionMeta, SourceMetadata,
+use crate::canonical::{
+    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
+    EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
+    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
+    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
-use crate::provider::{Provider, ProviderCapabilities};
+use crate::provider::{
+    canonical_block_text, canonical_export_result, canonical_session_title, Provider,
+    ProviderCapabilities, ProviderSessionSummary,
+};
 use crate::utils::truncate_summary;
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -28,15 +34,15 @@ impl Provider for KiroProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             scan: true,
-            load: true,
-            write: true,
+            import: true,
+            export: true,
             delete: true,
             rename: true,
             resume: false,
         }
     }
 
-    fn scan_sessions(&self) -> Result<Vec<SessionMeta>> {
+    fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
         let global_dir = kiro_global_storage_dir()?;
         if !global_dir.exists() {
             return Ok(Vec::new());
@@ -44,13 +50,22 @@ impl Provider for KiroProvider {
         scan_sessions_in(&global_dir)
     }
 
-    fn load_session(&self, source_path: &str) -> Result<MemorphSession> {
-        load_session_from_path(Path::new(source_path))
+    fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        import_canonical_session_from_path(Path::new(source_path))
     }
 
-    fn write_session(&self, session: &MemorphSession, target_dir: &Path) -> Result<String> {
+    fn export_session(
+        &self,
+        session: &CanonicalSession,
+        target_dir: &Path,
+    ) -> Result<ExportedSession> {
         let global_dir = kiro_global_storage_dir()?;
-        write_session_in(&global_dir, session, target_dir)
+        let session_id = export_canonical_session_in(&global_dir, session, target_dir)?;
+        Ok(canonical_export_result(
+            PROVIDER_ID,
+            session_id.clone(),
+            self.resume_command(&session_id),
+        ))
     }
 
     fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -111,7 +126,7 @@ fn kiro_global_storage_dir() -> Result<PathBuf> {
         .join("kiro.kiroagent"))
 }
 
-fn scan_sessions_in(global_dir: &Path) -> Result<Vec<SessionMeta>> {
+fn scan_sessions_in(global_dir: &Path) -> Result<Vec<ProviderSessionSummary>> {
     let mut sessions = Vec::new();
 
     for list_path in session_list_paths(global_dir)? {
@@ -141,7 +156,7 @@ fn scan_sessions_in(global_dir: &Path) -> Result<Vec<SessionMeta>> {
             let last_active_at = path_mtime_ms(&session_path)
                 .or_else(|| entry.get("dateCreated").and_then(parse_ms));
 
-            sessions.push(SessionMeta {
+            sessions.push(ProviderSessionSummary {
                 session_id: session_id.to_string(),
                 title,
                 project_dir,
@@ -154,12 +169,16 @@ fn scan_sessions_in(global_dir: &Path) -> Result<Vec<SessionMeta>> {
     Ok(sessions)
 }
 
-fn load_session_from_path(path: &Path) -> Result<MemorphSession> {
+fn import_canonical_session_from_path(path: &Path) -> Result<ImportedSession> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read Kiro session: {}", path.display()))?;
     let value: Value = serde_json::from_str(&raw)
         .with_context(|| format!("Failed to parse Kiro session: {}", path.display()))?;
+    import_canonical_session_from_value(path, value)
+}
 
+fn import_canonical_session_from_value(path: &Path, value: Value) -> Result<ImportedSession> {
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
     let fallback_id = path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -175,7 +194,7 @@ fn load_session_from_path(path: &Path) -> Result<MemorphSession> {
         .and_then(|v| v.as_str())
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string);
-    let project_dir = value
+    let workspace_dir = value
         .get("workspaceDirectory")
         .and_then(|v| v.as_str())
         .filter(|value| !value.trim().is_empty())
@@ -183,96 +202,251 @@ fn load_session_from_path(path: &Path) -> Result<MemorphSession> {
     let session_time = path_mtime_ms(path).unwrap_or_else(|| Utc::now().timestamp_millis());
     let session_dt = chrono::DateTime::from_timestamp_millis(session_time).unwrap_or_else(Utc::now);
 
-    let mut messages = Vec::new();
+    let mut events = Vec::new();
     if let Some(history) = value.get("history").and_then(|v| v.as_array()) {
         for (index, item) in history.iter().enumerate() {
-            let Some(message) = item.get("message") else {
-                continue;
-            };
-            let role_str = message
-                .get("role")
-                .and_then(|v| v.as_str())
-                .unwrap_or("user");
-            let role = match role_str {
-                "user" => MemorphRole::User,
-                "assistant" | "bot" => MemorphRole::Assistant,
-                "tool" => MemorphRole::Tool,
-                "system" => MemorphRole::System,
-                "developer" => MemorphRole::Developer,
-                _ => continue,
-            };
-            let content = parse_kiro_content(message.get("content"));
-            if content.is_empty() {
-                continue;
-            }
-            let id = message
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| Uuid::new_v4().to_string());
-
-            messages.push(MemorphMessage {
-                id,
-                role,
-                content,
-                timestamp: session_dt,
-                metadata: Some(MessageMetadata {
-                    source: Some(SourceMetadata {
-                        provider: PROVIDER_ID.to_string(),
-                        original_id: None,
-                        original_role: Some(role_str.to_string()),
-                    }),
-                    model: None,
-                    usage: None,
-                    extra: json!({}),
+            match canonical_event_from_kiro_history_item(index, item, session_dt, &mut report) {
+                Some(event) => events.push(event),
+                None => report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Info,
+                    disposition: MappingDisposition::Dropped,
+                    code: "empty_history_item_dropped".to_string(),
+                    message: "Dropped Kiro history item without message content".to_string(),
+                    path: Some(format!("history:{}", index)),
+                    raw: Some(item.clone()),
                 }),
-                parent_id: None,
-                turn_index: Some(index as u32),
-            });
+            }
         }
     }
 
-    Ok(MemorphSession {
-        meta: MemorphMeta {
-            version: "1.0".to_string(),
-            converted_from: PROVIDER_ID.to_string(),
-            converted_at: Utc::now(),
-            memorph_version: env!("CARGO_PKG_VERSION").to_string(),
-            source_session_id: session_id.clone(),
-            source_provider: PROVIDER_ID.to_string(),
-            converted_by: Some("memorph-cli".to_string()),
+    let mut extensions = BTreeMap::new();
+    extensions.insert("kiro_session".to_string(), value);
+
+    Ok(ImportedSession {
+        session: CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: session_id.clone(),
+                source_title: title,
+            },
+            provenance: SessionProvenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".to_string()),
+                primary_source: ProviderSessionRef {
+                    provider_id: PROVIDER_ID.to_string(),
+                    session_id,
+                    source_path: Some(path.to_string_lossy().to_string()),
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir,
+                created_at: Some(session_dt),
+                last_active_at: Some(session_dt),
+                tags: Vec::new(),
+            },
+            events,
+            artifacts: Vec::new(),
+            extensions,
         },
-        session: SessionInfo {
-            id: session_id,
-            title,
-            project_dir,
-            created_at: Some(session_dt),
-            last_active_at: Some(session_dt),
-            tags: None,
-        },
-        messages,
+        report,
     })
 }
 
-fn write_session_in(
+fn canonical_event_from_kiro_history_item(
+    index: usize,
+    item: &Value,
+    timestamp: chrono::DateTime<Utc>,
+    report: &mut MappingReport,
+) -> Option<SessionEvent> {
+    let message = item.get("message")?;
+    let role_str = message
+        .get("role")
+        .and_then(|v| v.as_str())
+        .unwrap_or("user");
+    let role = match role_str {
+        "user" => EventRole::User,
+        "assistant" | "bot" => EventRole::Assistant,
+        "tool" => EventRole::Tool,
+        "system" => EventRole::System,
+        "developer" => EventRole::Developer,
+        other => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Info,
+                disposition: MappingDisposition::Normalized,
+                code: "unknown_role_normalized".to_string(),
+                message: format!("Normalized unknown Kiro role '{}'", other),
+                path: Some(format!("history:{}", index)),
+                raw: Some(item.clone()),
+            });
+            EventRole::Unknown
+        }
+    };
+    let blocks = kiro_event_blocks(message.get("content"), item, index, report);
+    if blocks.is_empty() {
+        return None;
+    }
+    let id = message
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("kiro:history:{}", index));
+
+    Some(SessionEvent {
+        id,
+        kind: kiro_event_kind(&blocks),
+        role,
+        timestamp,
+        links: EventLinks {
+            parent_event_id: None,
+            provider_parent_id: None,
+            turn_index: Some(index as u32),
+            related_event_ids: Vec::new(),
+        },
+        blocks,
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id: message
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                original_role: Some(role_str.to_string()),
+                phase: None,
+            },
+            model: None,
+            usage: None,
+            fidelity: MappingDisposition::Preserved,
+            provider_ext: {
+                let mut ext = BTreeMap::new();
+                ext.insert("kiro_history_item".to_string(), item.clone());
+                ext
+            },
+        },
+    })
+}
+
+fn kiro_event_blocks(
+    content: Option<&Value>,
+    raw_item: &Value,
+    index: usize,
+    report: &mut MappingReport,
+) -> Vec<EventBlock> {
+    match content {
+        Some(Value::String(text)) => {
+            if text.trim().is_empty() {
+                Vec::new()
+            } else {
+                vec![EventBlock::Text { text: text.clone() }]
+            }
+        }
+        Some(Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(block_index, item)| {
+                kiro_content_event_block(item, raw_item, index, block_index, report)
+            })
+            .collect(),
+        Some(Value::Object(object)) => {
+            if let Some(text) = object.get("text").and_then(|v| v.as_str()) {
+                if text.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    vec![EventBlock::Text {
+                        text: text.to_string(),
+                    }]
+                }
+            } else {
+                vec![EventBlock::ProviderPayload {
+                    kind: "content".to_string(),
+                    payload: content.cloned().unwrap_or(Value::Null),
+                }]
+            }
+        }
+        Some(other) => vec![EventBlock::Unknown { raw: other.clone() }],
+        None => Vec::new(),
+    }
+}
+
+fn kiro_content_event_block(
+    value: &Value,
+    raw_item: &Value,
+    index: usize,
+    block_index: usize,
+    report: &mut MappingReport,
+) -> EventBlock {
+    if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
+        return EventBlock::Text {
+            text: text.to_string(),
+        };
+    }
+    if let Some(thinking) = value.get("thinking").and_then(|v| v.as_str()) {
+        return EventBlock::Thinking {
+            text: thinking.to_string(),
+            signature: None,
+        };
+    }
+
+    let kind = value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("content");
+    report.push_issue(MappingIssue {
+        level: MappingIssueLevel::Info,
+        disposition: MappingDisposition::Preserved,
+        code: "provider_block_preserved".to_string(),
+        message: format!("Preserved unsupported Kiro content block '{}'", kind),
+        path: Some(format!("history:{}:block:{}", index, block_index)),
+        raw: Some(raw_item.clone()),
+    });
+    EventBlock::ProviderPayload {
+        kind: kind.to_string(),
+        payload: value.clone(),
+    }
+}
+
+fn kiro_event_kind(blocks: &[EventBlock]) -> SessionEventKind {
+    if blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+    {
+        SessionEventKind::ToolResult
+    } else if blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+    {
+        SessionEventKind::ToolCall
+    } else if blocks.iter().all(|block| {
+        matches!(
+            block,
+            EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
+        )
+    }) {
+        SessionEventKind::Unknown
+    } else {
+        SessionEventKind::Message
+    }
+}
+
+fn export_canonical_session_in(
     global_dir: &Path,
-    session: &MemorphSession,
+    session: &CanonicalSession,
     target_dir: &Path,
 ) -> Result<String> {
     let session_id = Uuid::new_v4().to_string();
     let target_dir_str = target_dir.to_string_lossy().to_string();
-    let title = infer_title(session);
+    let title = truncate_summary(&canonical_session_title(session), TITLE_MAX_CHARS);
     let now = Utc::now().timestamp_millis();
     let created = session
-        .session
+        .context
         .created_at
         .map(|dt| dt.timestamp_millis())
         .unwrap_or(now);
 
     let history: Vec<Value> = session
-        .messages
+        .events
         .iter()
-        .filter_map(memorph_message_to_kiro)
+        .filter_map(canonical_event_to_kiro_history_item)
         .collect();
 
     let session_json = json!({
@@ -302,6 +476,52 @@ fn write_session_in(
     )?;
 
     Ok(session_id)
+}
+
+fn canonical_event_to_kiro_history_item(event: &SessionEvent) -> Option<Value> {
+    let content = canonical_event_kiro_content(event);
+    if content.is_empty() {
+        return None;
+    }
+    let role = match event.role {
+        EventRole::Assistant => "assistant",
+        _ => "user",
+    };
+
+    Some(json!({
+        "message": {
+            "id": event.id,
+            "role": role,
+            "content": content
+        },
+        "contextItems": [],
+        "editorState": {}
+    }))
+}
+
+fn canonical_event_kiro_content(event: &SessionEvent) -> Vec<Value> {
+    event
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            EventBlock::Text { text } => Some(json!({
+                "type": "text",
+                "text": text
+            })),
+            EventBlock::Thinking { text, .. } => Some(json!({
+                "thinking": text
+            })),
+            _ => {
+                let text = canonical_block_text(block);
+                (!text.trim().is_empty()).then(|| {
+                    json!({
+                        "type": "text",
+                        "text": text
+                    })
+                })
+            }
+        })
+        .collect()
 }
 
 fn delete_session_in(global_dir: &Path, session_id: &str) -> Result<()> {
@@ -463,130 +683,6 @@ fn upsert_session_list_entry(path: &Path, entry: Value) -> Result<()> {
     write_session_list(path, &entries)
 }
 
-fn parse_kiro_content(value: Option<&Value>) -> Vec<ContentBlock> {
-    match value {
-        Some(Value::String(text)) => text_block(text).into_iter().collect(),
-        Some(Value::Array(items)) => items.iter().filter_map(parse_kiro_content_item).collect(),
-        Some(Value::Object(object)) => object
-            .get("text")
-            .and_then(|v| v.as_str())
-            .and_then(text_block)
-            .into_iter()
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn parse_kiro_content_item(value: &Value) -> Option<ContentBlock> {
-    let object = value.as_object()?;
-    if let Some(text) = object.get("text").and_then(|v| v.as_str()) {
-        return text_block(text);
-    }
-    if let Some(thinking) = object.get("thinking").and_then(|v| v.as_str()) {
-        if !thinking.trim().is_empty() {
-            return Some(ContentBlock::Thinking {
-                thinking: thinking.to_string(),
-                signature: None,
-            });
-        }
-    }
-    None
-}
-
-fn memorph_message_to_kiro(message: &MemorphMessage) -> Option<Value> {
-    let text = message_text(message);
-    if text.trim().is_empty() {
-        return None;
-    }
-
-    let role = match message.role {
-        MemorphRole::Assistant => "assistant",
-        _ => "user",
-    };
-
-    Some(json!({
-        "message": {
-            "id": message.id,
-            "role": role,
-            "content": [
-                {
-                    "type": "text",
-                    "text": text
-                }
-            ]
-        },
-        "contextItems": [],
-        "editorState": {}
-    }))
-}
-
-fn message_text(message: &MemorphMessage) -> String {
-    message
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.clone()),
-            ContentBlock::Thinking { thinking, .. } => Some(format!("[Thinking]\n{}", thinking)),
-            ContentBlock::ToolUse { id, name, input } => {
-                let input_text = input
-                    .as_ref()
-                    .map(|value| format!("\n{}", value))
-                    .unwrap_or_default();
-                Some(format!("[Tool use: {} ({})]{}", name, id, input_text))
-            }
-            ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } => {
-                let prefix = if is_error.unwrap_or(false) {
-                    "Tool error"
-                } else {
-                    "Tool result"
-                };
-                Some(format!("[{}: {}]\n{}", prefix, tool_use_id, content))
-            }
-            ContentBlock::Image { mime_type, .. } => Some(format!("[Image: {}]", mime_type)),
-            ContentBlock::File { path, content } => {
-                let body = content
-                    .as_ref()
-                    .map(|value| format!("\n{}", value))
-                    .unwrap_or_default();
-                Some(format!("[File: {}]{}", path, body))
-            }
-        })
-        .filter(|text| !text.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn infer_title(session: &MemorphSession) -> String {
-    if let Some(title) = session
-        .session
-        .title
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    {
-        return truncate_summary(title, TITLE_MAX_CHARS);
-    }
-
-    session
-        .messages
-        .iter()
-        .map(message_text)
-        .find(|text| !text.trim().is_empty())
-        .map(|text| truncate_summary(&text, TITLE_MAX_CHARS))
-        .unwrap_or_else(|| "Imported from memorph".to_string())
-}
-
-fn text_block(text: &str) -> Option<ContentBlock> {
-    if text.trim().is_empty() {
-        None
-    } else {
-        Some(ContentBlock::text(text))
-    }
-}
-
 fn parse_ms(value: &Value) -> Option<i64> {
     if let Some(ms) = value.as_i64() {
         return Some(ms);
@@ -607,7 +703,6 @@ fn path_mtime_ms(path: &Path) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::MemorphMeta;
 
     #[test]
     fn scans_and_loads_workspace_session() -> Result<()> {
@@ -643,7 +738,11 @@ mod tests {
                         "message": {
                             "id": "m2",
                             "role": "assistant",
-                            "content": "hello"
+                            "content": [
+                                {"thinking": "checking"},
+                                {"type": "text", "text": "hello"},
+                                {"type": "kiro_extra", "payload": {"ok": true}}
+                            ]
                         }
                     }
                 ],
@@ -661,11 +760,37 @@ mod tests {
         assert_eq!(sessions[0].title.as_deref(), Some("Hello Kiro"));
         assert_eq!(sessions[0].project_dir.as_deref(), Some(workspace));
 
-        let loaded = load_session_from_path(Path::new(sessions[0].source_path.as_ref().unwrap()))?;
-        assert_eq!(loaded.session.id, session_id);
-        assert_eq!(loaded.messages.len(), 2);
-        assert_eq!(loaded.messages[0].role, MemorphRole::User);
-        assert_eq!(loaded.messages[1].role, MemorphRole::Assistant);
+        let imported = import_canonical_session_from_path(Path::new(
+            sessions[0].source_path.as_ref().unwrap(),
+        ))?;
+        assert_eq!(imported.session.identity.canonical_id, session_id);
+        assert_eq!(
+            imported.session.identity.source_title.as_deref(),
+            Some("Hello Kiro")
+        );
+        assert_eq!(
+            imported.session.context.workspace_dir.as_deref(),
+            Some(workspace)
+        );
+        assert_eq!(imported.session.events.len(), 2);
+        assert!(matches!(
+            imported.session.events[0].blocks.first(),
+            Some(EventBlock::Text { text }) if text == "hi"
+        ));
+        assert!(imported.session.events[1]
+            .blocks
+            .iter()
+            .any(|block| matches!(
+                block,
+                EventBlock::Thinking { text, .. } if text == "checking"
+            )));
+        assert!(imported.session.events[1]
+            .blocks
+            .iter()
+            .any(|block| matches!(
+                block,
+                EventBlock::ProviderPayload { kind, .. } if kind == "kiro_extra"
+            )));
 
         Ok(())
     }
@@ -677,46 +802,98 @@ mod tests {
         let target_dir = temp.path().join("project");
         std::fs::create_dir_all(&target_dir)?;
 
-        let source = MemorphSession {
-            meta: MemorphMeta::default(),
-            session: SessionInfo {
-                id: "source-session".to_string(),
-                title: Some("Imported Session".to_string()),
-                project_dir: Some(target_dir.to_string_lossy().to_string()),
-                created_at: Some(Utc::now()),
-                last_active_at: Some(Utc::now()),
-                tags: None,
+        let now = Utc::now();
+        let source = CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: "source-session".to_string(),
+                source_title: Some("Imported Session".to_string()),
             },
-            messages: vec![
-                MemorphMessage {
-                    id: "user-1".to_string(),
-                    role: MemorphRole::User,
-                    content: vec![ContentBlock::text("Build this")],
-                    timestamp: Utc::now(),
-                    metadata: None,
-                    parent_id: None,
-                    turn_index: None,
+            provenance: SessionProvenance {
+                imported_at: now,
+                imported_by: Some("memorph-test".to_string()),
+                primary_source: ProviderSessionRef {
+                    provider_id: PROVIDER_ID.to_string(),
+                    session_id: "source-session".to_string(),
+                    source_path: None,
                 },
-                MemorphMessage {
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir: Some(target_dir.to_string_lossy().to_string()),
+                created_at: Some(now),
+                last_active_at: Some(now),
+                tags: Vec::new(),
+            },
+            events: vec![
+                SessionEvent {
+                    id: "user-1".to_string(),
+                    kind: SessionEventKind::Message,
+                    role: EventRole::User,
+                    timestamp: now,
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Text {
+                        text: "Build this".to_string(),
+                    }],
+                    metadata: EventMetadata {
+                        source: EventSource {
+                            provider_id: PROVIDER_ID.to_string(),
+                            original_id: None,
+                            original_role: Some("user".to_string()),
+                            phase: None,
+                        },
+                        model: None,
+                        usage: None,
+                        fidelity: MappingDisposition::Preserved,
+                        provider_ext: BTreeMap::new(),
+                    },
+                },
+                SessionEvent {
                     id: "assistant-1".to_string(),
-                    role: MemorphRole::Assistant,
-                    content: vec![ContentBlock::text("Done")],
-                    timestamp: Utc::now(),
-                    metadata: None,
-                    parent_id: None,
-                    turn_index: None,
+                    kind: SessionEventKind::Message,
+                    role: EventRole::Assistant,
+                    timestamp: now,
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Text {
+                        text: "Done".to_string(),
+                    }],
+                    metadata: EventMetadata {
+                        source: EventSource {
+                            provider_id: PROVIDER_ID.to_string(),
+                            original_id: None,
+                            original_role: Some("assistant".to_string()),
+                            phase: None,
+                        },
+                        model: None,
+                        usage: None,
+                        fidelity: MappingDisposition::Preserved,
+                        provider_ext: BTreeMap::new(),
+                    },
                 },
             ],
+            artifacts: Vec::new(),
+            extensions: BTreeMap::new(),
         };
 
-        let new_id = write_session_in(&global_dir, &source, &target_dir)?;
+        let new_id = export_canonical_session_in(&global_dir, &source, &target_dir)?;
         let sessions = scan_sessions_in(&global_dir)?;
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, new_id);
         assert_eq!(sessions[0].title.as_deref(), Some("Imported Session"));
 
-        let loaded = load_session_from_path(Path::new(sessions[0].source_path.as_ref().unwrap()))?;
-        assert_eq!(loaded.messages.len(), 2);
+        let imported = import_canonical_session_from_path(Path::new(
+            sessions[0].source_path.as_ref().unwrap(),
+        ))?;
+        let canonical_global_dir = temp.path().join("canonical-kiro.kiroagent");
+        let canonical_id =
+            export_canonical_session_in(&canonical_global_dir, &imported.session, &target_dir)?;
+        let canonical_sessions = scan_sessions_in(&canonical_global_dir)?;
+        assert_eq!(canonical_sessions.len(), 1);
+        assert_eq!(canonical_sessions[0].session_id, canonical_id);
+        assert_eq!(
+            canonical_sessions[0].title.as_deref(),
+            Some("Imported Session")
+        );
 
         rename_session_in(&global_dir, &new_id, "Renamed")?;
         let renamed = scan_sessions_in(&global_dir)?;

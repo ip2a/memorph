@@ -25,13 +25,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate release source
+      - name: Validate release context
         shell: bash
-        run: |
-          echo "[info] Git ref: ${GITHUB_REF}"
-          echo "[info] Git sha: ${GITHUB_SHA}"
-          test -f npm/packages/memorph/package.json || { echo "[error] Missing npm/packages/memorph/package.json; this ref is not using the new release layout"; exit 1; }
-          grep -q 'npm_packages_dir = ROOT / "npm" / "packages"' scripts/sync_version.py || { echo "[error] scripts/sync_version.py is outdated (likely still references old paths)"; exit 1; }
+        run: python3 scripts/validate_release_context.py --build-run-id "${{ inputs.build_run_id }}"
 
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -75,25 +71,8 @@ jobs:
               print(f"  {field}: {claims.get(field)}")
           PY
 
-      - name: Validate npm package metadata
-        run: |
-          uv run python - <<'PY'
-          import json
-          from pathlib import Path
-
-          expected = "https://github.com/ip2a/memorph"
-          root = Path("npm/packages")
-          for pkg in sorted(root.glob("*/package.json")):
-              data = json.loads(pkg.read_text(encoding="utf-8"))
-              repository = data.get("repository") or {}
-              url = repository.get("url")
-              if url != expected:
-                  raise SystemExit(f"Invalid repository.url in {pkg}: {url!r}, expected {expected!r}")
-          print("[ok] All npm package repository URLs are aligned")
-          PY
-
-      - name: Sync versions
-        run: uv run python scripts/sync_version.py
+      - name: Validate release metadata
+        run: python3 scripts/release_preflight.py
 
       - name: Download release-build artifacts
         run: |

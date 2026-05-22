@@ -18,15 +18,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate release context
+        shell: bash
+        run: python3 scripts/validate_release_context.py
+
+      - name: Validate release metadata
+        shell: bash
+        run: python3 scripts/release_preflight.py
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Validate Cargo.toml metadata
-        shell: bash
-        run: |
-          grep -q '^name = "memorph"' Cargo.toml || { echo "[error] Package name mismatch"; exit 1; }
-          grep -q '^readme = "README.md"' Cargo.toml || { echo "[error] Missing readme field"; exit 1; }
-          echo "[ok] Cargo.toml metadata valid"
 
       - name: Dry-run publish
         run: cargo publish --dry-run

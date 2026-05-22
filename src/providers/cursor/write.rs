@@ -1,4 +1,5 @@
-use crate::model::MemorphSession;
+use crate::canonical::{CanonicalSession, EventRole};
+use crate::provider::{canonical_event_text, canonical_session_title};
 use crate::providers::cursor::db::open_global_db;
 use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
@@ -26,7 +27,7 @@ fn random_base64_key() -> String {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    let bytes: [u8; 32] = rng.gen();
+    let bytes: [u8; 32] = rng.r#gen();
     STANDARD.encode(&bytes)
 }
 
@@ -340,18 +341,12 @@ fn build_bubble_json(
     })
 }
 
-/// Write a memorph session into Cursor's state.vscdb.
-///
-/// This creates a new Composer session with bubbles mapped from memorph messages.
-pub fn write_session(session: &MemorphSession, target_dir: &Path) -> Result<String> {
+pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
     let conn = open_global_db()?;
-
-    // Generate a new composer ID and workspace ID
     let composer_id = Uuid::new_v4().to_string();
     let workspace_id = Uuid::new_v4().to_string().replace("-", "");
     let workspace_path = target_dir.to_string_lossy().to_string();
 
-    // Pre-generate all bubble metadata so we can build composer indexes
     struct BubbleMeta {
         id: String,
         bubble_type: i32,
@@ -360,66 +355,40 @@ pub fn write_session(session: &MemorphSession, target_dir: &Path) -> Result<Stri
     }
 
     let bubbles: Vec<BubbleMeta> = session
-        .messages
+        .events
         .iter()
-        .map(|msg| {
-            let bubble_type = match msg.role {
-                crate::model::MemorphRole::User => 1,
-                crate::model::MemorphRole::Assistant => 2,
-                _ => 2,
-            };
-            let text = msg
-                .content
-                .iter()
-                .filter_map(|block| match block {
-                    crate::model::ContentBlock::Text { text } => Some(text.as_str()),
-                    crate::model::ContentBlock::Thinking { thinking, .. } => {
-                        Some(thinking.as_str())
-                    }
-                    crate::model::ContentBlock::ToolResult { content, .. } => {
-                        Some(content.as_str())
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            BubbleMeta {
-                id: Uuid::new_v4().to_string(),
-                bubble_type,
-                text,
-                timestamp: msg.timestamp,
+        .filter_map(|event| {
+            let text = canonical_event_text(event);
+            if text.trim().is_empty() {
+                return None;
             }
-        })
-        .collect();
-
-    // Build fullConversationHeadersOnly index
-    let headers: Vec<serde_json::Value> = bubbles
-        .iter()
-        .map(|b| {
-            json!({
-                "bubbleId": b.id,
-                "type": b.bubble_type
+            Some(BubbleMeta {
+                id: Uuid::new_v4().to_string(),
+                bubble_type: if event.role == EventRole::User { 1 } else { 2 },
+                text,
+                timestamp: event.timestamp,
             })
         })
         .collect();
 
-    let title = session
-        .session
-        .title
-        .as_deref()
-        .filter(|t| !t.trim().is_empty())
-        .unwrap_or("Imported from memorph");
+    let headers: Vec<serde_json::Value> = bubbles
+        .iter()
+        .map(|bubble| {
+            json!({
+                "bubbleId": bubble.id,
+                "type": bubble.bubble_type
+            })
+        })
+        .collect();
 
-    let first_active = session
-        .messages
+    let title = canonical_session_title(session);
+    let first_active = bubbles
         .first()
-        .map(|m| m.timestamp.timestamp_millis())
+        .map(|bubble| bubble.timestamp.timestamp_millis())
         .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
-
-    let last_active = session
-        .messages
+    let last_active = bubbles
         .last()
-        .map(|m| m.timestamp.timestamp_millis())
+        .map(|bubble| bubble.timestamp.timestamp_millis())
         .unwrap_or(first_active);
 
     let composer_data = json!({
@@ -441,48 +410,7 @@ pub fn write_session(session: &MemorphSession, target_dir: &Path) -> Result<Stri
                 "scheme": "file"
             }
         },
-        "context": {
-            "composers": [],
-            "selectedCommits": [],
-            "selectedPullRequests": [],
-            "selectedImages": [],
-            "folderSelections": [],
-            "fileSelections": [],
-            "selections": [],
-            "terminalSelections": [],
-            "selectedDocs": [],
-            "externalLinks": [],
-            "cursorRules": [],
-            "cursorCommands": [],
-            "gitPRDiffSelections": [],
-            "subagentSelections": [],
-            "browserSelections": [],
-            "extraContext": [],
-            "mentions": {
-                "composers": {},
-                "selectedCommits": {},
-                "selectedPullRequests": {},
-                "gitDiff": [],
-                "gitDiffFromBranchToMain": [],
-                "selectedImages": {},
-                "folderSelections": {},
-                "fileSelections": {},
-                "terminalFiles": {},
-                "selections": {},
-                "terminalSelections": {},
-                "selectedDocs": {},
-                "externalLinks": {},
-                "diffHistory": [],
-                "cursorRules": {},
-                "cursorCommands": {},
-                "uiElementSelections": [],
-                "consoleLogs": [],
-                "ideEditorsState": [],
-                "gitPRDiffSelections": {},
-                "subagentSelections": {},
-                "browserSelections": {}
-            }
-        },
+        "context": empty_bubble_context(),
         "createdAt": first_active,
         "lastUpdatedAt": last_active,
         "hasLoaded": true,
@@ -557,7 +485,6 @@ pub fn write_session(session: &MemorphSession, target_dir: &Path) -> Result<Stri
         "applyAgentBackendTypeRestrictions": false
     });
 
-    // Insert composer metadata
     let composer_key = format!("composerData:{}", composer_id);
     conn.execute(
         "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
@@ -565,22 +492,20 @@ pub fn write_session(session: &MemorphSession, target_dir: &Path) -> Result<Stri
     )
     .context("Failed to insert composer data")?;
 
-    // Insert bubbles
-    for (idx, b) in bubbles.iter().enumerate() {
-        let request_id = if b.bubble_type == 1 {
+    for (idx, bubble) in bubbles.iter().enumerate() {
+        let request_id = if bubble.bubble_type == 1 {
             Uuid::new_v4().to_string()
         } else {
             String::new()
         };
         let bubble_data = build_bubble_json(
-            b.bubble_type,
-            &b.id,
-            &b.text,
-            &b.timestamp.to_rfc3339(),
+            bubble.bubble_type,
+            &bubble.id,
+            &bubble.text,
+            &bubble.timestamp.to_rfc3339(),
             &request_id,
         );
-
-        let bubble_key = format!("bubbleId:{}:{}", composer_id, b.id);
+        let bubble_key = format!("bubbleId:{}:{}", composer_id, bubble.id);
         conn.execute(
             "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
             (&bubble_key, bubble_data.to_string().as_bytes()),
@@ -588,26 +513,17 @@ pub fn write_session(session: &MemorphSession, target_dir: &Path) -> Result<Stri
         .with_context(|| format!("Failed to insert bubble {}", idx))?;
     }
 
-    // Update composer.composerHeaders index
     let _ = upsert_composer_index(
         &conn,
         &composer_id,
-        title,
+        &title,
         "",
         &workspace_id,
         &workspace_path,
         first_active,
         last_active,
     );
-
-    // Best-effort WAL checkpoint
     let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
-
-    println!(
-        "Wrote Cursor session {} with {} messages",
-        composer_id,
-        session.messages.len()
-    );
 
     Ok(composer_id)
 }

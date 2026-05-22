@@ -27,8 +27,6 @@ pub struct WebPreferences {
     pub language: UiLanguage,
     #[serde(default = "default_show_opencode_subagents")]
     pub show_opencode_subagents: bool,
-    #[serde(default = "default_auto_refresh_after_delete")]
-    pub auto_refresh_after_delete: bool,
     #[serde(default)]
     pub home_buttons: HomeButtonConfig,
     #[serde(default)]
@@ -41,7 +39,6 @@ impl Default for WebPreferences {
             sessions_per_provider: DEFAULT_SESSIONS_PER_PROVIDER,
             language: UiLanguage::default(),
             show_opencode_subagents: default_show_opencode_subagents(),
-            auto_refresh_after_delete: default_auto_refresh_after_delete(),
             home_buttons: HomeButtonConfig::default(),
             agent_display: AgentDisplayPreferences::default(),
         }
@@ -53,10 +50,6 @@ fn default_sessions_per_provider() -> usize {
 }
 
 fn default_show_opencode_subagents() -> bool {
-    false
-}
-
-fn default_auto_refresh_after_delete() -> bool {
     false
 }
 
@@ -232,7 +225,6 @@ pub fn update_web_preferences(
     sessions_per_provider: Option<usize>,
     language: Option<UiLanguage>,
     show_opencode_subagents: Option<bool>,
-    auto_refresh_after_delete: Option<bool>,
 ) -> Result<()> {
     let mut config = load_config()?;
 
@@ -244,9 +236,6 @@ pub fn update_web_preferences(
     }
     if let Some(value) = show_opencode_subagents {
         config.web.show_opencode_subagents = value;
-    }
-    if let Some(value) = auto_refresh_after_delete {
-        config.web.auto_refresh_after_delete = value;
     }
 
     save_config(&config)
@@ -339,6 +328,16 @@ pub fn known_workspaces() -> Result<Vec<WorkspaceEntry>> {
     let mut workspaces = load_config()?.workspaces;
     workspaces.sort_by_key(|entry| std::cmp::Reverse(entry.last_viewed_at));
     Ok(workspaces)
+}
+
+pub fn remove_workspace_history(workspace: &str) -> Result<Vec<WorkspaceEntry>> {
+    let mut config = load_config()?;
+    config.workspaces.retain(|entry| entry.path != workspace);
+    if config.selected_workspace.as_deref() == Some(workspace) {
+        config.selected_workspace = None;
+    }
+    save_config(&config)?;
+    known_workspaces()
 }
 
 /// Get saved provider list for a workspace; returns the default list when unset.

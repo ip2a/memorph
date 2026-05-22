@@ -1,0 +1,119 @@
+name: release-build-desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-desktop:
+    name: build-desktop-${{ matrix.platform_id }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      TAURI_BUNDLER_DMG_IGNORE_CI: true
+      APPLE_SIGNING_IDENTITY: "-"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform_id: darwin-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release context
+        shell: bash
+        run: python3 scripts/validate_release_context.py
+
+      - name: Validate release metadata
+        shell: bash
+        run: python3 scripts/release_preflight.py
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Tauri CLI
+        shell: bash
+        run: cargo install tauri-cli --locked --version 2.10.1
+
+      - name: Build desktop dmg
+        shell: bash
+        working-directory: desktop/tauri
+        run: cargo tauri build --bundles dmg --target "${{ matrix.target }}"
+
+      - name: Upload desktop bundle outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: memorph-desktop-${{ matrix.platform_id }}
+          path: desktop/tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  publish-desktop-release:
+    name: publish-desktop-release
+    runs-on: ubuntu-latest
+    needs: build-desktop
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release context
+        shell: bash
+        run: python3 scripts/validate_release_context.py
+
+      - name: Validate release metadata
+        shell: bash
+        run: python3 scripts/release_preflight.py
+
+      - name: Download desktop bundle outputs
+        shell: bash
+        run: |
+          mkdir -p desktop/tauri/target/release/bundle/dmg
+          gh run download "${GITHUB_RUN_ID}" \
+            --name memorph-desktop-darwin-arm64 \
+            --dir desktop/tauri/target/release/bundle/dmg
+
+      - name: Prepare desktop release assets
+        shell: bash
+        run: python3 scripts/prepare_desktop_release_assets.py --target-root desktop/tauri/target --assets-dir desktop-release-assets
+
+      - name: Verify desktop release assets
+        shell: bash
+        run: python3 scripts/verify_desktop_release_assets.py --assets-dir desktop-release-assets
+
+      - name: Attest desktop release assets
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: desktop-release-assets/*
+
+      - name: Publish desktop release assets
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release upload "${tag}" desktop-release-assets/* --clobber
+          else
+            gh release create "${tag}" desktop-release-assets/* --title "${tag}" --generate-notes --verify-tag
+          fi

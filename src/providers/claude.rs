@@ -1,14 +1,20 @@
-use crate::model::{
-    ContentBlock, MemorphMessage, MemorphMeta, MemorphRole, MemorphSession, SessionInfo,
-    SessionMeta,
+use crate::canonical::{
+    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
+    EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
+    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
+    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
 };
-use crate::provider::{Provider, ProviderCapabilities};
+use crate::provider::{
+    canonical_block_text, canonical_event_text, canonical_export_result, canonical_session_title,
+    Provider, ProviderCapabilities, ProviderSessionSummary,
+};
 use crate::utils::{
     encode_project_dir, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -33,7 +39,7 @@ impl Provider for ClaudeProvider {
         ProviderCapabilities::full_session_management()
     }
 
-    fn scan_sessions(&self) -> Result<Vec<SessionMeta>> {
+    fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
         let root = get_claude_config_dir().join("projects");
         if !root.exists() {
             return Ok(Vec::new());
@@ -66,396 +72,21 @@ impl Provider for ClaudeProvider {
         Ok(sessions)
     }
 
-    fn load_session(&self, source_path: &str) -> Result<MemorphSession> {
-        let path = Path::new(source_path);
-        let file = File::open(path)
-            .with_context(|| format!("Failed to open Claude session: {}", path.display()))?;
-        let reader = BufReader::new(file);
-
-        let mut messages = Vec::new();
-        let mut session_title: Option<String> = None;
-        let mut project_dir: Option<String> = None;
-        let mut session_id: Option<String> = None;
-        let mut created_at: Option<i64> = None;
-        let mut last_active_at: Option<i64> = None;
-
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let value: Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            // Extract session-level metadata from early lines
-            if session_id.is_none() {
-                session_id = value
-                    .get("sessionId")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-            }
-            if project_dir.is_none() {
-                project_dir = value
-                    .get("cwd")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-            }
-            if created_at.is_none() {
-                created_at = value.get("timestamp").and_then(parse_timestamp_to_ms);
-            }
-            if last_active_at.is_none() {
-                if let Some(ts) = value.get("timestamp").and_then(parse_timestamp_to_ms) {
-                    last_active_at = Some(ts);
-                }
-            }
-            // custom-title
-            if value.get("type").and_then(|v| v.as_str()) == Some("custom-title") {
-                if let Some(title) = value.get("customTitle").and_then(|v| v.as_str()) {
-                    session_title = Some(title.to_string());
-                }
-            }
-
-            // Skip meta lines
-            if value.get("isMeta").and_then(|v| v.as_bool()) == Some(true) {
-                continue;
-            }
-            if value.get("type").and_then(|v| v.as_str()) == Some("permission-mode") {
-                continue;
-            }
-            if value.get("type").and_then(|v| v.as_str()) == Some("file-history-snapshot") {
-                continue;
-            }
-
-            let msg_type = value.get("type").and_then(|v| v.as_str());
-            let message = match value.get("message") {
-                Some(m) => m,
-                None => continue,
-            };
-
-            let role = match msg_type {
-                Some("user") => {
-                    let mut r = MemorphRole::User;
-                    // Check for tool_result-only content -> reclassify as tool
-                    if let Some(Value::Array(items)) = message.get("content") {
-                        let all_tool_results = !items.is_empty()
-                            && items.iter().all(|item| {
-                                item.get("type").and_then(|v| v.as_str()) == Some("tool_result")
-                            });
-                        if all_tool_results {
-                            r = MemorphRole::Tool;
-                        }
-                    }
-                    r
-                }
-                Some("assistant") => MemorphRole::Assistant,
-                _ => {
-                    if let Some(role_str) = message.get("role").and_then(|v| v.as_str()) {
-                        match role_str {
-                            "user" => MemorphRole::User,
-                            "assistant" => MemorphRole::Assistant,
-                            _ => continue,
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-            };
-
-            // Extract content blocks
-            let content = match message.get("content") {
-                Some(Value::Array(arr)) => arr.iter().filter_map(parse_content_block).collect(),
-                Some(Value::String(s)) => {
-                    vec![ContentBlock::text(s)]
-                }
-                _ => continue,
-            };
-
-            if content.is_empty() {
-                continue;
-            }
-
-            let ts = value
-                .get("timestamp")
-                .and_then(parse_timestamp_to_ms)
-                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now))
-                .unwrap_or_else(Utc::now);
-
-            let msg_id = value
-                .get("uuid")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| Uuid::new_v4().to_string());
-
-            let parent_id = value
-                .get("parentUuid")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-
-            messages.push(MemorphMessage {
-                id: msg_id,
-                role,
-                content,
-                timestamp: ts,
-                metadata: None,
-                parent_id,
-                turn_index: None,
-            });
-        }
-
-        let meta = MemorphMeta {
-            version: "1.0".to_string(),
-            converted_from: PROVIDER_ID.to_string(),
-            converted_at: Utc::now(),
-            memorph_version: env!("CARGO_PKG_VERSION").to_string(),
-            source_session_id: session_id.clone().unwrap_or_default(),
-            source_provider: PROVIDER_ID.to_string(),
-            converted_by: Some("memorph-cli".to_string()),
-        };
-
-        let session = SessionInfo {
-            id: session_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
-            title: session_title,
-            project_dir,
-            created_at: created_at
-                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
-            last_active_at: last_active_at
-                .map(|ms| chrono::DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)),
-            tags: None,
-        };
-
-        Ok(MemorphSession {
-            meta,
-            session,
-            messages,
-        })
+    fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        import_canonical_session(Path::new(source_path))
     }
 
-    fn write_session(&self, session: &MemorphSession, target_dir: &Path) -> Result<String> {
-        let session_id = Uuid::new_v4().to_string();
-        let encoded_dir = encode_project_dir(&target_dir.to_string_lossy());
-        let claude_projects_dir = get_claude_config_dir().join("projects").join(&encoded_dir);
-        std::fs::create_dir_all(&claude_projects_dir)?;
-
-        let file_path = claude_projects_dir.join(format!("{}.jsonl", session_id));
-        let sidecar_dir = claude_projects_dir.join(&session_id);
-        std::fs::create_dir_all(&sidecar_dir)?;
-        std::fs::create_dir_all(sidecar_dir.join("tool-results"))?;
-        std::fs::create_dir_all(sidecar_dir.join("subagents"))?;
-
-        let mut file = File::create(&file_path)?;
-
-        // Write permission mode line
-        let perm_line = serde_json::json!({
-            "type": "permission-mode",
-            "permissionMode": "bypassPermissions",
-            "sessionId": session_id,
-        });
-        writeln!(file, "{}", serde_json::to_string(&perm_line)?)?;
-
-        // Write custom-title line so Claude Code shows the correct title
-        let title = session
-            .session
-            .title
-            .clone()
-            .or_else(|| {
-                session
-                    .messages
-                    .iter()
-                    .find(|m| m.role == MemorphRole::User)
-                    .and_then(|m| {
-                        m.content.iter().find_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                    })
-            })
-            .unwrap_or_else(|| "Imported session".to_string());
-        let title_line = serde_json::json!({
-            "type": "custom-title",
-            "customTitle": title,
-            "sessionId": session_id,
-        });
-        writeln!(file, "{}", serde_json::to_string(&title_line)?)?;
-
-        let project_dir_str = target_dir.to_string_lossy().to_string();
-        let version = "2.1.116"; // TODO: detect actual version
-        let git_branch = get_git_branch(target_dir).unwrap_or_else(|| "main".to_string());
-
-        let mut prev_uuid: Option<String> = None;
-
-        for (_idx, msg) in session.messages.iter().enumerate() {
-            let msg_uuid = Uuid::new_v4().to_string();
-            let timestamp = msg.timestamp.to_rfc3339();
-
-            match msg.role {
-                MemorphRole::User
-                | MemorphRole::Tool
-                | MemorphRole::System
-                | MemorphRole::Developer => {
-                    // Build content: if tool role, wrap as tool_result block; otherwise extract text
-                    let content = if msg.role == MemorphRole::Tool {
-                        // Try to find matching tool_use_id from metadata or use generic
-                        let tool_use_id = msg
-                            .metadata
-                            .as_ref()
-                            .and_then(|m| m.extra.get("tool_use_id"))
-                            .and_then(|v| v.as_str())
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| {
-                                format!(
-                                    "toolu_{}",
-                                    Uuid::new_v4()
-                                        .to_string()
-                                        .replace("-", "")
-                                        .chars()
-                                        .take(20)
-                                        .collect::<String>()
-                                )
-                            });
-                        let text = msg
-                            .content
-                            .iter()
-                            .filter_map(|b| match b {
-                                ContentBlock::Text { text } => Some(text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        serde_json::json!([{
-                            "type": "tool_result",
-                            "tool_use_id": tool_use_id,
-                            "content": text,
-                        }])
-                    } else {
-                        let text = msg
-                            .content
-                            .iter()
-                            .filter_map(|b| match b {
-                                ContentBlock::Text { text } => Some(text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        serde_json::Value::String(text)
-                    };
-
-                    let line = serde_json::json!({
-                        "parentUuid": prev_uuid,
-                        "isSidechain": false,
-                        "promptId": Uuid::new_v4().to_string(),
-                        "type": "user",
-                        "message": {
-                            "role": "user",
-                            "content": content,
-                        },
-                        "uuid": msg_uuid,
-                        "timestamp": timestamp,
-                        "permissionMode": "bypassPermissions",
-                        "userType": "external",
-                        "entrypoint": "cli",
-                        "cwd": project_dir_str,
-                        "sessionId": session_id,
-                        "version": version,
-                        "gitBranch": git_branch,
-                    });
-                    writeln!(file, "{}", serde_json::to_string(&line)?)?;
-                }
-                MemorphRole::Assistant => {
-                    let mut content_blocks = Vec::new();
-                    let mut has_tool_use = false;
-
-                    for block in &msg.content {
-                        match block {
-                            ContentBlock::Text { text } => {
-                                content_blocks.push(serde_json::json!({
-                                    "type": "text",
-                                    "text": text,
-                                }));
-                            }
-                            ContentBlock::Thinking {
-                                thinking,
-                                signature,
-                            } => {
-                                let mut t = serde_json::json!({
-                                    "type": "thinking",
-                                    "thinking": thinking,
-                                });
-                                if let Some(sig) = signature {
-                                    t["signature"] = serde_json::Value::String(sig.clone());
-                                }
-                                content_blocks.push(t);
-                            }
-                            ContentBlock::ToolUse { id, name, input } => {
-                                has_tool_use = true;
-                                let mut t = serde_json::json!({
-                                    "type": "tool_use",
-                                    "id": id,
-                                    "name": name,
-                                });
-                                if let Some(inp) = input {
-                                    t["input"] = inp.clone();
-                                }
-                                content_blocks.push(t);
-                            }
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                content,
-                                ..
-                            } => {
-                                // tool_result in assistant? skip, should be in user message
-                                let _ = (tool_use_id, content);
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Fallback: if no blocks, add empty text
-                    if content_blocks.is_empty() {
-                        content_blocks.push(serde_json::json!({
-                            "type": "text",
-                            "text": "",
-                        }));
-                    }
-
-                    let stop_reason = if has_tool_use { "tool_use" } else { "end_turn" };
-
-                    let line = serde_json::json!({
-                        "parentUuid": prev_uuid,
-                        "isSidechain": false,
-                        "message": {
-                            "id": format!("msg_{}", Uuid::new_v4().to_string().replace("-", "").chars().take(20).collect::<String>()),
-                            "type": "message",
-                            "role": "assistant",
-                            "content": content_blocks,
-                            "model": msg.metadata.as_ref().and_then(|m| m.model.clone()).unwrap_or_else(|| "claude-sonnet-4-1".to_string()),
-                            "stop_reason": stop_reason,
-                            "usage": msg.metadata.as_ref().and_then(|m| m.usage.as_ref().map(|u| {
-                                serde_json::json!({
-                                    "input_tokens": u.input_tokens,
-                                    "output_tokens": u.output_tokens,
-                                })
-                            })).unwrap_or(serde_json::json!({})),
-                        },
-                        "type": "assistant",
-                        "uuid": msg_uuid,
-                        "timestamp": timestamp,
-                        "userType": "external",
-                        "entrypoint": "cli",
-                        "cwd": project_dir_str,
-                        "sessionId": session_id,
-                        "version": version,
-                        "gitBranch": git_branch,
-                    });
-                    writeln!(file, "{}", serde_json::to_string(&line)?)?;
-                }
-            }
-
-            prev_uuid = Some(msg_uuid);
-        }
-
-        Ok(session_id)
+    fn export_session(
+        &self,
+        session: &CanonicalSession,
+        target_dir: &Path,
+    ) -> Result<ExportedSession> {
+        let session_id = export_canonical_session(session, target_dir)?;
+        Ok(canonical_export_result(
+            PROVIDER_ID,
+            session_id.clone(),
+            self.resume_command(&session_id),
+        ))
     }
 
     fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -615,56 +246,607 @@ fn get_git_branch(dir: &Path) -> Option<String> {
     }
 }
 
-fn parse_content_block(value: &Value) -> Option<ContentBlock> {
-    let block_type = value.get("type").and_then(|v| v.as_str())?;
-    match block_type {
-        "text" => {
-            let text = value.get("text").and_then(|v| v.as_str())?;
-            Some(ContentBlock::text(text))
+fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
+    let session_id = Uuid::new_v4().to_string();
+    let encoded_dir = encode_project_dir(&target_dir.to_string_lossy());
+    let claude_projects_dir = get_claude_config_dir().join("projects").join(&encoded_dir);
+    std::fs::create_dir_all(&claude_projects_dir)?;
+
+    let file_path = claude_projects_dir.join(format!("{}.jsonl", session_id));
+    let sidecar_dir = claude_projects_dir.join(&session_id);
+    std::fs::create_dir_all(&sidecar_dir)?;
+    std::fs::create_dir_all(sidecar_dir.join("tool-results"))?;
+    std::fs::create_dir_all(sidecar_dir.join("subagents"))?;
+
+    let mut file = File::create(&file_path)?;
+    let title = canonical_session_title(session);
+    let project_dir_str = target_dir.to_string_lossy().to_string();
+    let version = "2.1.116";
+    let git_branch = get_git_branch(target_dir).unwrap_or_else(|| "main".to_string());
+
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "type": "permission-mode",
+            "permissionMode": "bypassPermissions",
+            "sessionId": session_id,
+        }))?
+    )?;
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "type": "custom-title",
+            "customTitle": title,
+            "sessionId": session_id,
+        }))?
+    )?;
+
+    let mut prev_uuid: Option<String> = None;
+    for event in &session.events {
+        let msg_uuid = Uuid::new_v4().to_string();
+        let timestamp = event.timestamp.to_rfc3339();
+        let line_type = if event.role == EventRole::Assistant {
+            "assistant"
+        } else {
+            "user"
+        };
+        let content = if event.role == EventRole::Assistant {
+            Value::Array(
+                event
+                    .blocks
+                    .iter()
+                    .filter_map(canonical_block_to_claude_content)
+                    .collect(),
+            )
+        } else if event
+            .blocks
+            .iter()
+            .all(|block| matches!(block, EventBlock::ToolResult { .. }))
+        {
+            Value::Array(
+                event
+                    .blocks
+                    .iter()
+                    .filter_map(canonical_block_to_claude_content)
+                    .collect(),
+            )
+        } else {
+            Value::String(canonical_event_text(event))
+        };
+        let message_role = if event.role == EventRole::Assistant {
+            "assistant"
+        } else {
+            "user"
+        };
+
+        let mut message = serde_json::json!({
+            "role": message_role,
+            "content": content,
+        });
+        if event.role == EventRole::Assistant {
+            message["id"] = Value::String(format!(
+                "msg_{}",
+                Uuid::new_v4()
+                    .to_string()
+                    .replace("-", "")
+                    .chars()
+                    .take(20)
+                    .collect::<String>()
+            ));
+            message["type"] = Value::String("message".to_string());
+            if let Some(model) = &event.metadata.model {
+                message["model"] = Value::String(model.clone());
+            }
+            message["stop_reason"] = Value::String(
+                if event
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+                {
+                    "tool_use"
+                } else {
+                    "end_turn"
+                }
+                .to_string(),
+            );
+            if let Some(usage) = &event.metadata.usage {
+                message["usage"] = serde_json::json!({
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                });
+            }
         }
-        "thinking" => {
-            let thinking = value.get("thinking").and_then(|v| v.as_str())?;
-            let signature = value
-                .get("signature")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            Some(ContentBlock::Thinking {
-                thinking: thinking.to_string(),
-                signature,
-            })
+
+        let line = serde_json::json!({
+            "parentUuid": prev_uuid,
+            "isSidechain": false,
+            "message": message,
+            "type": line_type,
+            "uuid": msg_uuid,
+            "timestamp": timestamp,
+            "userType": "external",
+            "entrypoint": "cli",
+            "cwd": project_dir_str,
+            "sessionId": session_id,
+            "version": version,
+            "gitBranch": git_branch,
+        });
+        writeln!(file, "{}", serde_json::to_string(&line)?)?;
+        prev_uuid = Some(msg_uuid);
+    }
+
+    Ok(session_id)
+}
+
+fn canonical_block_to_claude_content(block: &EventBlock) -> Option<Value> {
+    match block {
+        EventBlock::Text { text } => Some(serde_json::json!({
+            "type": "text",
+            "text": text,
+        })),
+        EventBlock::Thinking { text, signature } => {
+            let mut value = serde_json::json!({
+                "type": "thinking",
+                "thinking": text,
+            });
+            if let Some(signature) = signature {
+                value["signature"] = Value::String(signature.clone());
+            }
+            Some(value)
         }
-        "tool_use" => {
-            let id = value.get("id").and_then(|v| v.as_str())?;
-            let name = value.get("name").and_then(|v| v.as_str())?;
-            let input = value.get("input").cloned();
-            Some(ContentBlock::ToolUse {
-                id: id.to_string(),
-                name: name.to_string(),
-                input,
-            })
+        EventBlock::ToolCall {
+            tool_call_id,
+            name,
+            input,
+        } => {
+            let mut value = serde_json::json!({
+                "type": "tool_use",
+                "id": tool_call_id,
+                "name": name,
+            });
+            if let Some(input) = input {
+                value["input"] = input.clone();
+            }
+            Some(value)
         }
-        "tool_result" => {
-            let tool_use_id = value.get("tool_use_id").and_then(|v| v.as_str())?;
-            let content = value
-                .get("content")
-                .map(|v| {
-                    v.as_str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| v.to_string())
+        EventBlock::ToolResult {
+            tool_call_id,
+            content,
+            is_error,
+        } => Some(serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": tool_call_id,
+            "content": content,
+            "is_error": is_error,
+        })),
+        _ => {
+            let text = canonical_block_text(block);
+            (!text.trim().is_empty()).then(|| {
+                serde_json::json!({
+                    "type": "text",
+                    "text": text,
                 })
-                .unwrap_or_default();
-            let is_error = value.get("is_error").and_then(|v| v.as_bool());
-            Some(ContentBlock::ToolResult {
-                tool_use_id: tool_use_id.to_string(),
-                content,
-                is_error,
             })
         }
-        _ => None,
     }
 }
 
-fn parse_session(path: &Path) -> Option<SessionMeta> {
+fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
+    let file = File::open(path)
+        .with_context(|| format!("Failed to open Claude session: {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let mut events = Vec::new();
+    let mut session_id: Option<String> = None;
+    let mut project_dir: Option<String> = None;
+    let mut source_title: Option<String> = None;
+    let mut created_at: Option<chrono::DateTime<Utc>> = None;
+    let mut last_active_at: Option<chrono::DateTime<Utc>> = None;
+    let mut extensions = BTreeMap::new();
+
+    for (line_idx, line) in reader.lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(error) => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Warning,
+                    disposition: MappingDisposition::Dropped,
+                    code: "invalid_jsonl_line".to_string(),
+                    message: format!("Failed to parse Claude session line: {}", error),
+                    path: Some(format!("line:{}", line_idx + 1)),
+                    raw: Some(Value::String(line)),
+                });
+                continue;
+            }
+        };
+
+        let timestamp = value
+            .get("timestamp")
+            .and_then(parse_timestamp_to_ms)
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .unwrap_or_else(Utc::now);
+        created_at = created_at.or(Some(timestamp));
+        last_active_at = Some(timestamp);
+
+        session_id = value
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or(session_id);
+        project_dir = value
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or(project_dir);
+
+        let line_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        if line_type == "custom-title" {
+            source_title = value
+                .get("customTitle")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(str::to_string)
+                .or(source_title);
+            extensions.insert("claude_custom_title".to_string(), value.clone());
+        }
+
+        if let Some(event) = canonical_event_from_claude_line(
+            line_idx + 1,
+            line_type,
+            timestamp,
+            &value,
+            &mut report,
+        ) {
+            events.push(event);
+        }
+    }
+
+    let fallback_id = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let source_session_id = session_id.unwrap_or(fallback_id);
+
+    Ok(ImportedSession {
+        session: CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: source_session_id.clone(),
+                source_title,
+            },
+            provenance: SessionProvenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".to_string()),
+                primary_source: ProviderSessionRef {
+                    provider_id: PROVIDER_ID.to_string(),
+                    session_id: source_session_id,
+                    source_path: Some(path.to_string_lossy().to_string()),
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir: project_dir,
+                created_at,
+                last_active_at,
+                tags: Vec::new(),
+            },
+            events,
+            artifacts: Vec::new(),
+            extensions,
+        },
+        report,
+    })
+}
+
+fn canonical_event_from_claude_line(
+    line_number: usize,
+    line_type: &str,
+    timestamp: chrono::DateTime<Utc>,
+    value: &Value,
+    report: &mut MappingReport,
+) -> Option<SessionEvent> {
+    let event_id = value
+        .get("uuid")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("claude:line:{}", line_number));
+    let parent_id = value
+        .get("parentUuid")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+
+    let Some(message) = value.get("message") else {
+        return Some(provider_payload_event(
+            event_id,
+            SessionEventKind::Lifecycle,
+            EventRole::System,
+            timestamp,
+            line_type,
+            value.clone(),
+            value.clone(),
+            parent_id,
+        ));
+    };
+
+    let role = claude_event_role(line_type, message, value);
+    let blocks = claude_event_blocks(message.get("content"), value, line_number, report);
+    if blocks.is_empty() {
+        return Some(provider_payload_event(
+            event_id,
+            SessionEventKind::Unknown,
+            role,
+            timestamp,
+            line_type,
+            value.clone(),
+            value.clone(),
+            parent_id,
+        ));
+    }
+
+    let kind = claude_event_kind(&blocks);
+    let model = message
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let usage = message.get("usage").map(|usage| UsageStats {
+        input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()),
+        output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()),
+        total_tokens: usage.get("total_tokens").and_then(|v| v.as_u64()),
+    });
+
+    Some(SessionEvent {
+        id: event_id,
+        kind,
+        role,
+        timestamp,
+        links: EventLinks {
+            parent_event_id: parent_id.clone(),
+            provider_parent_id: parent_id,
+            turn_index: None,
+            related_event_ids: Vec::new(),
+        },
+        blocks,
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id: value
+                    .get("uuid")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+                original_role: message
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| Some(line_type.to_string())),
+                phase: Some(line_type.to_string()),
+            },
+            model,
+            usage,
+            fidelity: MappingDisposition::Preserved,
+            provider_ext: {
+                let mut ext = BTreeMap::new();
+                ext.insert("claude_raw_line".to_string(), value.clone());
+                ext
+            },
+        },
+    })
+}
+
+fn claude_event_role(line_type: &str, message: &Value, raw: &Value) -> EventRole {
+    match line_type {
+        "assistant" => EventRole::Assistant,
+        "user" => {
+            if let Some(Value::Array(items)) = message.get("content") {
+                let all_tool_results = !items.is_empty()
+                    && items.iter().all(|item| {
+                        item.get("type").and_then(|v| v.as_str()) == Some("tool_result")
+                    });
+                if all_tool_results {
+                    return EventRole::Tool;
+                }
+            }
+            EventRole::User
+        }
+        _ => match message.get("role").and_then(|v| v.as_str()) {
+            Some("assistant") => EventRole::Assistant,
+            Some("user") => {
+                if raw
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|v| v.as_array())
+                    .map(|items| {
+                        !items.is_empty()
+                            && items.iter().all(|item| {
+                                item.get("type").and_then(|v| v.as_str()) == Some("tool_result")
+                            })
+                    })
+                    .unwrap_or(false)
+                {
+                    EventRole::Tool
+                } else {
+                    EventRole::User
+                }
+            }
+            Some("system") => EventRole::System,
+            _ => EventRole::Unknown,
+        },
+    }
+}
+
+fn claude_event_blocks(
+    content: Option<&Value>,
+    raw_line: &Value,
+    line_number: usize,
+    report: &mut MappingReport,
+) -> Vec<EventBlock> {
+    match content {
+        Some(Value::String(text)) => vec![EventBlock::Text { text: text.clone() }],
+        Some(Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(idx, item)| claude_content_block(item, raw_line, line_number, idx, report))
+            .collect(),
+        Some(other) => vec![EventBlock::Unknown { raw: other.clone() }],
+        None => Vec::new(),
+    }
+}
+
+fn claude_content_block(
+    value: &Value,
+    raw_line: &Value,
+    line_number: usize,
+    block_index: usize,
+    report: &mut MappingReport,
+) -> EventBlock {
+    match value.get("type").and_then(|v| v.as_str()) {
+        Some("text") => EventBlock::Text {
+            text: value
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+        },
+        Some("thinking") => EventBlock::Thinking {
+            text: value
+                .get("thinking")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            signature: value
+                .get("signature")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        },
+        Some("tool_use") => EventBlock::ToolCall {
+            tool_call_id: value
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("claude-tool-{}-{}", line_number, block_index)),
+            name: value
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+            input: value.get("input").cloned(),
+        },
+        Some("tool_result") => EventBlock::ToolResult {
+            tool_call_id: value
+                .get("tool_use_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("claude-tool-{}-{}", line_number, block_index)),
+            content: value
+                .get("content")
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| v.to_string())
+                })
+                .unwrap_or_default(),
+            is_error: value
+                .get("is_error")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        },
+        Some(kind) => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Info,
+                disposition: MappingDisposition::Preserved,
+                code: "provider_block_preserved".to_string(),
+                message: format!("Preserved unsupported Claude content block '{}'", kind),
+                path: Some(format!("line:{}:block:{}", line_number, block_index)),
+                raw: Some(raw_line.clone()),
+            });
+            EventBlock::ProviderPayload {
+                kind: kind.to_string(),
+                payload: value.clone(),
+            }
+        }
+        None => EventBlock::Unknown { raw: value.clone() },
+    }
+}
+
+fn claude_event_kind(blocks: &[EventBlock]) -> SessionEventKind {
+    if blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+    {
+        SessionEventKind::ToolResult
+    } else if blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+    {
+        SessionEventKind::ToolCall
+    } else if blocks.iter().all(|block| {
+        matches!(
+            block,
+            EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
+        )
+    }) {
+        SessionEventKind::Unknown
+    } else {
+        SessionEventKind::Message
+    }
+}
+
+fn provider_payload_event(
+    id: String,
+    kind: SessionEventKind,
+    role: EventRole,
+    timestamp: chrono::DateTime<Utc>,
+    payload_kind: &str,
+    payload: Value,
+    raw_line: Value,
+    parent_id: Option<String>,
+) -> SessionEvent {
+    SessionEvent {
+        id,
+        kind,
+        role,
+        timestamp,
+        links: EventLinks {
+            parent_event_id: parent_id.clone(),
+            provider_parent_id: parent_id,
+            turn_index: None,
+            related_event_ids: Vec::new(),
+        },
+        blocks: vec![EventBlock::ProviderPayload {
+            kind: payload_kind.to_string(),
+            payload,
+        }],
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id: None,
+                original_role: Some(payload_kind.to_string()),
+                phase: Some(payload_kind.to_string()),
+            },
+            model: None,
+            usage: None,
+            fidelity: MappingDisposition::Preserved,
+            provider_ext: {
+                let mut ext = BTreeMap::new();
+                ext.insert("claude_raw_line".to_string(), raw_line);
+                ext
+            },
+        },
+    }
+}
+
+fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().filter_map(Result::ok).collect();
@@ -784,11 +966,186 @@ fn parse_session(path: &Path) -> Option<SessionMeta> {
 
     let _summary = summary.map(|text| truncate_summary(&text, 160));
 
-    Some(SessionMeta {
+    Some(ProviderSessionSummary {
         session_id: session_id.clone(),
         title,
         project_dir,
         last_active_at,
         source_path: Some(path.to_string_lossy().to_string()),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn import_canonical_session_preserves_claude_structured_and_meta_lines() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "permission-mode",
+                "permissionMode": "bypassPermissions",
+                "sessionId": "session-1",
+                "timestamp": "2026-01-01T00:00:00Z"
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom-title",
+                "customTitle": "Claude Title",
+                "sessionId": "session-1",
+                "timestamp": "2026-01-01T00:00:01Z"
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "user-1",
+                "sessionId": "session-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:02Z",
+                "message": {
+                    "role": "user",
+                    "content": "Build this"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "assistant-1",
+                "parentUuid": "user-1",
+                "sessionId": "session-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:03Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet",
+                    "usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 20
+                    },
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "Thinking",
+                            "signature": "sig"
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "Read",
+                            "input": { "file_path": "Cargo.toml" }
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "tool-result-1",
+                "parentUuid": "assistant-1",
+                "sessionId": "session-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:04Z",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "contents",
+                            "is_error": false
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "file-history-snapshot",
+                "sessionId": "session-1",
+                "timestamp": "2026-01-01T00:00:05Z",
+                "files": [{ "path": "Cargo.toml" }]
+            })
+        )
+        .unwrap();
+
+        let imported = import_canonical_session(file.path()).unwrap();
+
+        assert_eq!(imported.session.identity.canonical_id, "session-1");
+        assert_eq!(
+            imported.session.identity.source_title.as_deref(),
+            Some("Claude Title")
+        );
+        assert_eq!(
+            imported.session.context.workspace_dir.as_deref(),
+            Some("/tmp/project")
+        );
+        assert!(imported.session.events.iter().any(|event| {
+            event.kind == SessionEventKind::Lifecycle
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::ProviderPayload { kind, .. })
+                        if kind == "file-history-snapshot"
+                )
+        }));
+        let assistant = imported
+            .session
+            .events
+            .iter()
+            .find(|event| event.id == "assistant-1")
+            .unwrap();
+        assert_eq!(assistant.kind, SessionEventKind::ToolCall);
+        assert!(matches!(
+            assistant.blocks.first(),
+            Some(EventBlock::Thinking {
+                text,
+                signature: Some(signature)
+            }) if text == "Thinking" && signature == "sig"
+        ));
+        assert!(assistant.blocks.iter().any(|block| matches!(
+            block,
+            EventBlock::ToolCall {
+                tool_call_id,
+                name,
+                ..
+            } if tool_call_id == "toolu_1" && name == "Read"
+        )));
+        let tool_result = imported
+            .session
+            .events
+            .iter()
+            .find(|event| event.id == "tool-result-1")
+            .unwrap();
+        assert_eq!(tool_result.role, EventRole::Tool);
+        assert!(matches!(
+            tool_result.blocks.first(),
+            Some(EventBlock::ToolResult {
+                tool_call_id,
+                content,
+                is_error
+            }) if tool_call_id == "toolu_1" && content == "contents" && !is_error
+        ));
+    }
 }

@@ -16,6 +16,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Validate release metadata
+        run: python3 scripts/release_preflight.py
+
+      - name: Test release scripts
+        run: python3 scripts/test_release_scripts.py
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 

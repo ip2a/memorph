@@ -10,6 +10,9 @@ const state = {
   meta: null,
   route: parseRoute(window.location.pathname),
   loading: 0,
+  ui: {
+    homeProviderVisibleCount: null,
+  },
   home: {
     workspace: "",
     providers: [],
@@ -31,6 +34,10 @@ const modalRoot = document.getElementById("modal-root");
 window.addEventListener("popstate", () => {
   state.route = parseRoute(window.location.pathname);
   void loadRoute();
+});
+
+window.addEventListener("resize", () => {
+  scheduleHomeProviderLayout();
 });
 
 document.addEventListener("click", (event) => {
@@ -66,6 +73,10 @@ document.addEventListener("change", (event) => {
   if (target.dataset.role === "provider-toggle") {
     toggleProvider(target.value, target.checked);
   }
+  if (target.dataset.role === "home-search") {
+    state.home.search = target.value;
+    render();
+  }
   if (target.dataset.role === "select-all-manager") {
     document
       .querySelectorAll('input[name="manager_item"]')
@@ -96,7 +107,6 @@ async function bootstrap() {
         : state.meta.providers.map((item) => item.id);
     }
     await loadRoute();
-    toast("memorph", t("appReady"));
   } catch (error) {
     fatal(error);
   } finally {
@@ -116,7 +126,7 @@ async function loadRoute() {
         `/api/v1/sessions/${encodeURIComponent(route.provider)}/${encodeURIComponent(route.sessionId)}`
       );
       state.session = detail;
-      const detailWorkspace = detail.session?.session?.project_dir;
+      const detailWorkspace = detail.view?.workspace_dir;
       if (detailWorkspace && detailWorkspace !== state.home.workspace) {
         state.home.workspace = detailWorkspace;
         state.home.providers = await api(
@@ -240,6 +250,15 @@ async function handleAction(action, data, trigger = null) {
     case "open-import":
       openImportModal();
       break;
+    case "open-workspace-switch":
+      openWorkspaceSwitchModal();
+      break;
+    case "open-sort-options":
+      openSortOptionsModal();
+      break;
+    case "open-agent-filter":
+      openAgentFilterModal();
+      break;
     case "open-workspace-history":
       openWorkspaceHistoryModal();
       break;
@@ -283,6 +302,9 @@ async function handleAction(action, data, trigger = null) {
       closeModal();
       await setWorkspace(data.workspace || "");
       break;
+    case "delete-workspace-history":
+      await deleteWorkspaceHistory(data.workspace || "");
+      break;
     case "browse-folder":
       await browseFolderForField(trigger);
       break;
@@ -310,6 +332,19 @@ async function handleSubmit(kind, formData) {
             render();
           }
         }
+        break;
+      case "home-search":
+        state.home.search = String(formData.get("search") || "");
+        render();
+        break;
+      case "workspace-switch":
+        await setWorkspace(String(formData.get("workspace") || "").trim());
+        closeModal();
+        break;
+      case "home-list-options":
+        state.home.sort = String(formData.get("sort") || "recent");
+        state.home.visible = Number(formData.get("visible") || state.meta.settings.sessions_per_provider);
+        closeModal();
         break;
       case "import-session":
         await runImport(formData);
@@ -371,7 +406,6 @@ function openImportModal() {
     submit: "import-session",
     body: `
       <div class="stack">
-        <p class="muted">${t("modalHint")}</p>
         <label class="field">
           <span>${t("targetProvider")}</span>
           <select name="provider">${providerOptions()}</select>
@@ -386,6 +420,59 @@ function openImportModal() {
     submitLabel: t("import"),
   };
   render();
+}
+
+function openWorkspaceSwitchModal() {
+  const items = (state.meta.workspaces || [])
+    .map(
+      (item) => `
+      <div class="workspace-option workspace-switch-item">
+        <button type="button" class="workspace-option-main" data-action="pick-workspace" data-workspace="${escapeAttr(item.path)}">
+          <div class="workspace-option-head">
+            <strong>${escapeHtml(workspaceName(item.path))}</strong>
+            <span class="workspace-time">${escapeHtml(formatDate(item.last_viewed_at))}</span>
+          </div>
+          <div class="workspace-option-path">${escapeHtml(item.path)}</div>
+        </button>
+        <button type="button" class="ghost workspace-delete" data-action="delete-workspace-history" data-workspace="${escapeAttr(item.path)}">${t("remove")}</button>
+      </div>`
+    )
+    .join("");
+  state.modal = {
+    kind: "form",
+    title: t("switchWorkspace"),
+    submit: "workspace-switch",
+    body: `
+      <div class="stack">
+        <label class="field">
+          <span>${t("workspacePath")}</span>
+          <div class="path-picker">
+            <input name="workspace" list="known-workspaces" value="${escapeAttr(state.home.workspace || "")}" placeholder="${escapeAttr(
+              state.meta?.workspaces?.[0]?.path || ""
+            )}">
+            <button type="button" class="ghost" data-action="browse-folder" data-target-field="workspace">${t("browse")}</button>
+          </div>
+          <small class="muted">${t("workspaceFieldHint")}</small>
+        </label>
+        <div class="workspace-list workspace-switch-list">${items || `<div class="empty-state">${t("noWorkspace")}</div>`}</div>
+      </div>
+      ${renderWorkspaceDatalist()}`,
+    submitLabel: t("go"),
+  };
+  render();
+}
+
+async function deleteWorkspaceHistory(workspace) {
+  if (!workspace) return;
+  const workspaces = await api("/api/v1/workspaces/history", {
+    method: "DELETE",
+    body: { workspace },
+  });
+  state.meta.workspaces = workspaces;
+  if (state.meta.selected_workspace === workspace) {
+    state.meta.selected_workspace = null;
+  }
+  openWorkspaceSwitchModal();
 }
 
 function openWorkspaceHistoryModal() {
@@ -416,6 +503,55 @@ function openWorkspaceHistoryModal() {
   render();
 }
 
+function openSortOptionsModal() {
+  state.modal = {
+    kind: "form",
+    title: t("listOptions"),
+    submit: "home-list-options",
+    body: `
+      <div class="stack">
+        <label class="field">
+          <span>${t("sort")}</span>
+          <select name="sort">
+            <option value="recent" ${state.home.sort === "recent" ? "selected" : ""}>${t("recentFirst")}</option>
+            <option value="title" ${state.home.sort === "title" ? "selected" : ""}>${t("titleAsc")}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>${t("visible")}</span>
+          <input type="number" min="1" max="200" name="visible" value="${state.home.visible}">
+        </label>
+      </div>`,
+    submitLabel: t("apply"),
+  };
+  render();
+}
+
+function openAgentFilterModal() {
+  const items = getOrderedProviders()
+    .map((item) => {
+      const checked = state.home.providers.includes(item.id);
+      return `
+        <label class="agent-pill">
+          <input data-role="provider-toggle" type="checkbox" value="${escapeAttr(item.id)}" ${checked ? "checked" : ""}>
+          <span>${escapeHtml(item.name)}</span>
+        </label>`;
+    })
+    .join("");
+  state.modal = {
+    kind: "custom",
+    title: t("terminalAgents"),
+    body: `
+      <div class="stack">
+        <div class="agent-more-list modal-agent-list">${items || `<div class="empty-state">${t("emptySessions")}</div>`}</div>
+        <div class="modal-actions">
+          <button type="button" class="invert" data-action="close-modal">${t("done")}</button>
+        </div>
+      </div>`,
+  };
+  render();
+}
+
 function openSwitchModal(provider, sessionId, workspace) {
   const defaultTarget = getDefaultSwitchTarget(provider);
   state.modal = {
@@ -424,7 +560,6 @@ function openSwitchModal(provider, sessionId, workspace) {
     submit: "switch-session",
     body: `
       <div class="stack">
-        <p class="muted">${t("switchHint")}</p>
         <input type="hidden" name="from" value="${escapeAttr(provider)}">
         <input type="hidden" name="session_id" value="${escapeAttr(sessionId)}">
         <label class="field">
@@ -749,16 +884,6 @@ function openSettingsModal(draft = null) {
         </div>
         <div class="settings-row">
           <div class="settings-copy">
-            <strong>${t("autoRefreshDelete")}</strong>
-            <span>${t("settingsRefreshHint")}</span>
-          </div>
-          <label class="settings-check">
-            <input type="checkbox" name="auto_refresh_after_delete" value="true" ${settings.auto_refresh_after_delete ? "checked" : ""}>
-            <span>${t("done")}</span>
-          </label>
-        </div>
-        <div class="settings-row">
-          <div class="settings-copy">
             <strong>${t("homeButtons")}</strong>
             <span>${t("settingsHomeButtonsHint")}</span>
           </div>
@@ -821,7 +946,7 @@ function openManagerModal(draft = null, preview = null, report = null) {
 
   const previewSection = preview
     ? renderManagerPreview(preview, report)
-    : `<div class="empty-state"><p>${t("managerTitle")}</p><p class="muted">${t("modalHint")}</p></div>`;
+    : `<div class="empty-state"><p>${t("managerTitle")}</p></div>`;
 
   state.modal = {
     kind: "custom",
@@ -1013,21 +1138,8 @@ async function runDelete(formData) {
   if (state.route.name === "session") {
     replacePath("/");
     state.session = null;
-    await loadHome();
-  } else if (state.meta.settings.auto_refresh_after_delete) {
-    await loadHome();
-  } else {
-    state.home.groups = state.home.groups
-      .map((group) =>
-        group.provider_id === provider
-          ? {
-              ...group,
-              sessions: group.sessions.filter((item) => item.session_id !== sessionId),
-            }
-          : group
-      )
-      .filter((group) => group.sessions.length > 0);
   }
+  await loadHome();
   closeModal();
   openActionResultModal({
     title: t("deleted"),
@@ -1169,7 +1281,6 @@ async function runSaveSettings(formData) {
     sessions_per_provider: Number(formData.get("sessions_per_provider")),
     language: String(formData.get("language")),
     show_opencode_subagents: formData.get("show_opencode_subagents") === "true",
-    auto_refresh_after_delete: formData.get("auto_refresh_after_delete") === "true",
     home_buttons: {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
@@ -1318,7 +1429,6 @@ function readSettingsDraft() {
     sessions_per_provider: Number(formData.get("sessions_per_provider") || state.meta.settings.sessions_per_provider),
     language: String(formData.get("language") || state.meta.settings.language),
     show_opencode_subagents: formData.get("show_opencode_subagents") === "true",
-    auto_refresh_after_delete: formData.get("auto_refresh_after_delete") === "true",
     home_buttons: {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
@@ -1359,7 +1469,7 @@ function render() {
         <nav class="topbar">
           <div class="brand">memorph</div>
         </nav>
-        <main>${renderLoading()}</main>
+        <main class="app-main">${renderLoading()}</main>
       </div>`;
     modalRoot.innerHTML = "";
     return;
@@ -1372,22 +1482,16 @@ function render() {
         </div>
         <div class="top-actions">
           <a class="button" href="/shared" data-nav="/shared">${t("shared")}</a>
+          <button type="button" data-action="open-workspace-switch">${t("switchWorkspace")}</button>
+          <button type="button" data-action="open-import">${t("import")}</button>
           <button type="button" data-action="open-manager">${t("manage")}</button>
           <button type="button" data-action="open-settings">${t("settings")}</button>
           <a class="icon-button" href="https://github.com/ip2a/memorph" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub">
             ${githubIcon()}
           </a>
-          <label class="lang-switch">
-            <span>${t("language")}</span>
-            <select data-role="lang-switch">
-              <option value="zh" ${lang() === "zh" ? "selected" : ""}>中文</option>
-              <option value="en" ${lang() === "en" ? "selected" : ""}>English</option>
-            </select>
-          </label>
-          <span class="version">v${escapeHtml(state.meta?.version || "")}</span>
         </div>
       </nav>
-      <main>${renderPage()}</main>
+      <main class="app-main">${renderPage()}</main>
     </div>
     ${renderLoading()}
     ${renderToasts()}
@@ -1403,6 +1507,7 @@ function bindLocalButtons() {
   document.querySelectorAll('[data-action="shift-agent-down"]').forEach((button) => {
     button.addEventListener("click", () => shiftAgent("down", Number(button.dataset.index)));
   });
+  scheduleHomeProviderLayout();
 }
 
 function renderPage() {
@@ -1410,13 +1515,13 @@ function renderPage() {
     case "home":
       return renderHome();
     case "session":
-      return renderSessionDetail();
+      return `<div class="page-scroll">${renderSessionDetail()}</div>`;
     case "shared-list":
-      return renderSharedList();
+      return `<div class="page-scroll">${renderSharedList()}</div>`;
     case "shared-detail":
-      return renderSharedDetail();
+      return `<div class="page-scroll">${renderSharedDetail()}</div>`;
     default:
-      return `<div class="empty-state">${t("notFound")}</div>`;
+      return `<div class="page-scroll"><div class="empty-state">${t("notFound")}</div></div>`;
   }
 }
 
@@ -1425,61 +1530,42 @@ function renderHome() {
   const totalSessions = filteredGroups.reduce((sum, group) => sum + (group.total_sessions || group.sessions.length), 0);
   const shownSessions = filteredGroups.reduce((sum, group) => sum + group.sessions.length, 0);
   return `
-    <section class="ascii-banner"><pre>${escapeHtml(ASCII)}</pre></section>
-    <section class="workspace-panel">
-      <div class="workspace-hero">
-        <p class="eyebrow">${t("workspace")}</p>
-        <h1>${escapeHtml(workspaceName(state.home.workspace) || "memorph")}</h1>
-        <p class="workspace-path">${escapeHtml(state.home.workspace || "—")}</p>
-        <div class="meta-line">
-          <span>${t("sessionsStat")}=${totalSessions}</span>
-          <span>${t("terminalAgents")}=${filteredGroups.length}</span>
-          <span>${t("shown")}=${shownSessions}</span>
-        </div>
-      </div>
-      <div>
-        <form class="filter-panel" data-submit="home-filters">
-          <div class="filter-row filter-row-main">
-            ${renderWorkspacePicker()}
-            <label class="field agent-field">
-              <span>${t("terminalAgents")}</span>
-              ${renderProviderPicker()}
-            </label>
+    <div class="page-home">
+      <section class="home-hero">
+        <div class="ascii-banner"><pre>${escapeHtml(ASCII)}</pre></div>
+        <div class="workspace-hero">
+          <p class="eyebrow">${t("workspace")}</p>
+          <h1>${escapeHtml(workspaceName(state.home.workspace) || "memorph")}</h1>
+          <button type="button" class="workspace-path" data-action="open-workspace-switch" title="${escapeAttr(state.home.workspace || "")}">
+            ${escapeHtml(state.home.workspace || "—")}
+          </button>
+          <div class="meta-line">
+            <span>${t("sessionsStat")}=${totalSessions}</span>
+            <span>${t("terminalAgents")}=${filteredGroups.length}</span>
+            <span>${t("shown")}=${shownSessions}</span>
           </div>
-          <div class="filter-row filter-row-compact">
-            <label class="field">
-              <span>${t("search")}</span>
-              <input name="search" value="${escapeAttr(state.home.search)}" placeholder="${escapeAttr(
+        </div>
+      </section>
+      <section class="section-panel session-results">
+        <div class="section-heading home-list-head">
+          <div>
+            <strong>${t("recentSessions")}</strong>
+            <small>${t("filters")}</small>
+          </div>
+          <div class="home-list-controls">
+            ${renderProviderPicker()}
+            <form class="session-search" id="home-search-form" data-submit="home-search">
+              <input data-role="home-search" name="search" value="${escapeAttr(state.home.search)}" placeholder="${escapeAttr(
                 t("searchPlaceholder")
               )}">
-            </label>
-            <label class="field">
-              <span>${t("sort")}</span>
-              <select name="sort">
-                <option value="recent" ${state.home.sort === "recent" ? "selected" : ""}>${t("recentFirst")}</option>
-                <option value="title" ${state.home.sort === "title" ? "selected" : ""}>${t("titleAsc")}</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>${t("visible")}</span>
-              <input type="number" min="1" max="200" name="visible" value="${state.home.visible}">
-            </label>
-            <button type="submit" class="invert">${t("apply")}</button>
-            <button type="button" data-action="open-import">${t("import")}</button>
+            </form>
+            <button type="button" data-action="open-sort-options">${t("sort")}</button>
+            <button type="submit" form="home-search-form">${t("filters")}</button>
           </div>
-        </form>
-      </div>
-    </section>
-    <section class="section-panel session-results">
-      <div class="section-heading">
-        <div>
-          <strong>${t("recentSessions")}</strong>
-          <small>${t("filters")}</small>
         </div>
-        <a class="button" href="/shared" data-nav="/shared">${t("sharedGroups")}</a>
-      </div>
-      ${renderHomeGroups(filteredGroups, totalSessions, shownSessions)}
-    </section>`;
+        ${renderHomeGroups(filteredGroups, totalSessions, shownSessions)}
+      </section>
+    </div>`;
 }
 
 function renderWorkspacePicker() {
@@ -1499,8 +1585,7 @@ function renderWorkspacePicker() {
 }
 
 function renderProviderPicker() {
-  const primary = getPrimaryProviders();
-  const folded = getFoldedProviders();
+  const primary = getVisibleToolbarProviders();
   const primaryMarkup = primary
     .map((item) => {
       const checked = state.home.providers.includes(item.id);
@@ -1512,20 +1597,11 @@ function renderProviderPicker() {
     })
     .join("");
 
-  const foldedMarkup = folded
-    .map((item) => {
-      const checked = state.home.providers.includes(item.id);
-      return `
-        <label class="agent-pill">
-          <input data-role="provider-toggle" type="checkbox" value="${escapeAttr(item.id)}" ${checked ? "checked" : ""}>
-          <span>${escapeHtml(item.name)}</span>
-        </label>`;
-    })
-    .join("");
-
   return `
-    <div class="agent-picker">${primaryMarkup}</div>
-    ${folded.length ? `<details class="agent-more"><summary>${t("more")}</summary><div class="agent-more-list">${foldedMarkup}</div></details>` : ""}`;
+    <div class="agent-picker-shell home-provider-strip">
+      <div class="agent-picker">${primaryMarkup}</div>
+      <button type="button" class="agent-more-button" data-action="open-agent-filter">${t("more")}</button>
+    </div>`;
 }
 
 function renderHomeGroups(groups, totalSessions, shownSessions) {
@@ -1533,11 +1609,6 @@ function renderHomeGroups(groups, totalSessions, shownSessions) {
     return `<div class="empty-state">${t("emptySessions")}</div>`;
   }
   return `
-    <div class="stats">
-      <span>${t("sessionsStat")}=${totalSessions}</span>
-      <span>${t("terminalAgents")}=${groups.length}</span>
-      <span>${t("shown")}=${shownSessions}</span>
-    </div>
     ${groups
     .map(
       (group) => `
@@ -1594,19 +1665,21 @@ function renderSessionRow(item) {
 function renderSessionDetail() {
   if (!state.session) return `<div class="empty-state">${t("loading")}</div>`;
   const detail = state.session;
-  const session = detail.session;
-  const info = session.session || {};
+  if (!detail.view) return `<div class="empty-state">${t("loading")}</div>`;
+  return renderSessionDetailView(detail, detail.view);
+}
+
+function renderSessionDetailView(detail, view) {
   const sharedRef = findSharedRef(state.route.provider, state.route.sessionId);
-  const detailProvider = getOrderedProviders().find((item) => item.id === state.route.provider);
-  const workspace = info.project_dir || state.home.workspace || "";
+  const workspace = view.workspace_dir || state.home.workspace || "";
   return `
     <section class="session-header">
       <div>
-        <p class="eyebrow">${escapeHtml(detailProvider?.name || state.route.provider)}</p>
-        <h1>${escapeHtml(info.title || info.id || state.route.sessionId)}</h1>
+        <p class="eyebrow">${escapeHtml(view.provider_name || view.provider_id)}</p>
+        <h1>${escapeHtml(view.title || view.session_id || state.route.sessionId)}</h1>
         <div class="meta-line">
-          <span>id=<code>${escapeHtml(info.id || state.route.sessionId)}</code></span>
-          <span>${t("messageCount")}=${session.messages.length}</span>
+          <span>id=<code>${escapeHtml(view.session_id || state.route.sessionId)}</code></span>
+          <span>${t("messageCount")}=${view.message_count}</span>
           ${workspace ? `<span>${t("workspace")}=<code>${escapeHtml(workspace)}</code></span>` : ""}
           ${sharedRef ? `<a class="shared-badge" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("activeShared")}</a>` : ""}
         </div>
@@ -1614,17 +1687,17 @@ function renderSessionDetail() {
       <div class="session-actions">
         <a class="button" href="/" data-nav="/">${t("back")}</a>
         ${sharedRef ? `<a class="button" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("openShared")}</a>` : ""}
-        <button type="button" data-action="open-share-create" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(info.title || "")}">${t("share")}</button>
-        <button type="button" data-action="open-switch" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-workspace="${escapeAttr(info.project_dir || state.home.workspace)}">${t("switch")}</button>
+        <button type="button" data-action="open-share-create" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("share")}</button>
+        <button type="button" data-action="open-switch" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-workspace="${escapeAttr(workspace)}">${t("switch")}</button>
         <button type="button" data-action="open-export" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${t("export")}</button>
-        <button type="button" data-action="open-rename" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(info.title || "")}">${t("rename")}</button>
+        <button type="button" data-action="open-rename" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("rename")}</button>
         <button type="button" class="danger" data-action="open-delete" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${t("remove")}</button>
       </div>
     </section>
     <div class="detail-layout">
       <section>
         <div class="msg-list">
-          ${session.messages.length ? session.messages.map(renderMessage).join("") : `<div class="empty-state">${t("noMessages")}</div>`}
+          ${view.events.length ? view.events.map(renderDetailEvent).join("") : `<div class="empty-state">${t("noMessages")}</div>`}
         </div>
       </section>
       <aside class="detail-panel stack">
@@ -1632,16 +1705,112 @@ function renderSessionDetail() {
           <h3>${t("details")}</h3>
           <p class="muted">${t("overview")}</p>
         </div>
-        ${renderMetaLine(t("provider"), detailProvider?.name || state.route.provider)}
-        ${renderMetaLine(t("sessionId"), info.id || state.route.sessionId)}
-        ${renderMetaLine(t("messageCount"), String(session.messages.length))}
-        ${renderMetaLine(t("projectDir"), info.project_dir)}
-        ${renderMetaLine(t("createdAt"), info.created_at)}
-        ${renderMetaLine(t("lastActiveAt"), formatDate(info.last_active_at))}
-        ${renderMetaLine(t("sourcePath"), detail.source_path)}
-        ${renderMetaLine(t("resumeCommand"), detail.resume_command || "")}
+        ${renderMetaLine(t("provider"), view.provider_name || view.provider_id)}
+        ${renderMetaLine(t("sessionId"), view.session_id || state.route.sessionId)}
+        ${renderMetaLine(t("messageCount"), String(view.message_count))}
+        ${renderMetaLine(t("projectDir"), view.workspace_dir)}
+        ${renderMetaLine(t("createdAt"), view.created_at)}
+        ${renderMetaLine(t("lastActiveAt"), formatDate(view.last_active_at))}
+        ${renderMetaLine(t("sourcePath"), view.source_path)}
+        ${renderMetaLine(t("resumeCommand"), view.resume_command || "")}
       </aside>
     </div>`;
+}
+
+function renderDetailEvent(event) {
+  const blocks = (event.blocks || []).map(renderDetailBlock).join("");
+  const role = (event.role || "unknown").replaceAll("_", " ");
+  const kind = (event.kind || "unknown").replaceAll("_", " ");
+  return `
+    <article class="msg-item">
+      <header class="msg-header">
+        <span class="msg-role">${escapeHtml(role)}</span>
+        <span>${escapeHtml(kind)}</span>
+        <span>${escapeHtml(formatDate(event.timestamp))}</span>
+      </header>
+      <div class="msg-body">${blocks || `<p class="muted">${t("noDetails")}</p>`}</div>
+    </article>`;
+}
+
+function renderDetailBlock(block) {
+  switch (block.type) {
+    case "text":
+      return `<div>${markdown(block.text || "")}</div>`;
+    case "thinking":
+      return `<details class="thinking-block"><summary class="block-label">${t("thinking")}</summary><p>${escapeHtml(block.text || "")}</p></details>`;
+    case "tool_call":
+      return `<details class="tool-block"><summary class="block-label">${escapeHtml(
+        `${t("toolUse")}: ${block.name || ""}`.replace(/:\s$/, "")
+      )}</summary><pre><code>${escapeHtml(
+        JSON.stringify(
+          { tool_call_id: block.tool_call_id, name: block.name, input: block.input },
+          null,
+          2
+        )
+      )}</code></pre></details>`;
+    case "tool_result":
+      return `<details class="tool-block"><summary class="block-label">${t("toolResult")}</summary><pre><code>${escapeHtml(
+        block.content || ""
+      )}</code></pre></details>`;
+    case "patch":
+      return `<details class="tool-block"><summary class="block-label">Patch</summary><pre><code>${escapeHtml(
+        block.diff_text ||
+          JSON.stringify(
+            {
+              summary: block.summary,
+              files: block.files,
+              hash: block.hash,
+            },
+            null,
+            2
+          )
+      )}</code></pre></details>`;
+    case "command":
+      return `<details class="tool-block"><summary class="block-label">Command</summary><pre><code>${escapeHtml(
+        JSON.stringify(
+          {
+            command: block.command,
+            argv: block.argv,
+            cwd: block.cwd,
+          },
+          null,
+          2
+        )
+      )}</code></pre></details>`;
+    case "command_result":
+      return `<details class="tool-block"><summary class="block-label">Command Result</summary><pre><code>${escapeHtml(
+        JSON.stringify(
+          {
+            command: block.command,
+            exit_code: block.exit_code,
+            stdout: block.stdout,
+            stderr: block.stderr,
+          },
+          null,
+          2
+        )
+      )}</code></pre></details>`;
+    case "file":
+      return `<div class="tool-block"><span class="block-label">${t("file")}</span><code>${escapeHtml(block.path || "")}</code>${
+        block.content ? `<pre><code>${escapeHtml(block.content)}</code></pre>` : ""
+      }</div>`;
+    case "image":
+      return `<div class="tool-block"><span class="block-label">${t("image")}</span><code>${escapeHtml(
+        block.path || block.mime_type || ""
+      )}</code></div>`;
+    case "provider_payload":
+      return `<details class="tool-block"><summary class="block-label">${escapeHtml(
+        block.kind || "payload"
+      )}</summary><pre><code>${escapeHtml(
+        JSON.stringify(block.payload ?? {}, null, 2)
+      )}</code></pre></details>`;
+    case "unknown":
+      return `<details class="tool-block"><summary class="block-label">${t("details")}</summary><pre><code>${escapeHtml(
+        JSON.stringify(block.raw ?? block, null, 2)
+      )}</code></pre></details>`;
+    default:
+      return `<pre>${escapeHtml(JSON.stringify(block, null, 2))}</pre>`;
+  }
 }
 
 function renderMessage(message) {
@@ -1820,7 +1989,7 @@ function renderModal() {
         <div class="modal-head">
           <div>
             <h3>${escapeHtml(modal.title)}</h3>
-            <p class="muted">${t("modalHint")}</p>
+            ${modal.subtitle ? `<p class="muted">${escapeHtml(modal.subtitle)}</p>` : ""}
           </div>
           <button type="button" class="icon-button" data-action="close-modal">×</button>
         </div>
@@ -1968,18 +2137,103 @@ function getOrderedProviders() {
   return providers;
 }
 
+function getToolbarProviderCandidates() {
+  const ordered = getOrderedProviders();
+  const selected = ordered.filter((item) => state.home.providers.includes(item.id));
+  if (selected.length) return selected;
+
+  const fallbackIds = ["claude", "codex"];
+  const fallback = fallbackIds
+    .map((id) => ordered.find((item) => item.id === id))
+    .filter(Boolean);
+  return fallback.length ? fallback : ordered.slice(0, 2);
+}
+
+function getVisibleToolbarProviders() {
+  const candidates = getToolbarProviderCandidates();
+  if (!candidates.length) return [];
+
+  const minVisible = state.home.providers.length ? 1 : Math.min(2, candidates.length);
+  const storedCount = Number(state.ui.homeProviderVisibleCount || 0);
+  const visibleCount = storedCount > 0 ? storedCount : minVisible;
+  return candidates.slice(0, Math.max(minVisible, Math.min(visibleCount, candidates.length)));
+}
+
+let homeProviderLayoutFrame = 0;
+
+function scheduleHomeProviderLayout() {
+  window.cancelAnimationFrame(homeProviderLayoutFrame);
+  homeProviderLayoutFrame = window.requestAnimationFrame(updateHomeProviderLayout);
+}
+
+function updateHomeProviderLayout() {
+  if (state.route.name !== "home") return;
+
+  const strip = document.querySelector(".home-provider-strip");
+  if (!strip) return;
+
+  const candidates = getToolbarProviderCandidates();
+  if (!candidates.length) return;
+
+  const moreWidth = measureToolbarControlWidth(t("more"), true);
+  const available = strip.clientWidth;
+  const minVisible = state.home.providers.length ? 1 : Math.min(2, candidates.length);
+
+  let used = moreWidth;
+  let visible = 0;
+  for (const item of candidates) {
+    const pillWidth = measureToolbarControlWidth(item.name, false);
+    const nextUsed = used + (visible ? 8 : 0) + pillWidth;
+    if (nextUsed <= available || visible < minVisible) {
+      used = nextUsed;
+      visible += 1;
+      continue;
+    }
+    break;
+  }
+
+  const nextCount = Math.max(minVisible, Math.min(visible, candidates.length));
+  if (state.ui.homeProviderVisibleCount !== nextCount) {
+    state.ui.homeProviderVisibleCount = nextCount;
+    render();
+  }
+}
+
+function measureToolbarControlWidth(label, more = false) {
+  const root = document.createElement(more ? "button" : "label");
+  root.style.position = "fixed";
+  root.style.left = "-10000px";
+  root.style.top = "0";
+  root.style.visibility = "hidden";
+  root.style.pointerEvents = "none";
+
+  if (more) {
+    root.className = "agent-more-button";
+    root.textContent = label;
+  } else {
+    root.className = "agent-pill";
+    root.innerHTML = `<span>${escapeHtml(label)}</span>`;
+  }
+
+  document.body.append(root);
+  const width = Math.ceil(root.getBoundingClientRect().width);
+  root.remove();
+  return width;
+}
+
 function getPrimaryProviders() {
   const ordered = getOrderedProviders();
   const primaryIds = state.meta.settings.primary_agents || [];
-  if (!primaryIds.length) return ordered;
-  return ordered.filter((item) => primaryIds.includes(item.id));
+  const preferred = primaryIds.length
+    ? ordered.filter((item) => primaryIds.includes(item.id))
+    : ordered;
+  return preferred.slice(0, 3);
 }
 
 function getFoldedProviders() {
   const ordered = getOrderedProviders();
-  const primaryIds = state.meta.settings.primary_agents || [];
-  if (!primaryIds.length) return [];
-  return ordered.filter((item) => !primaryIds.includes(item.id));
+  const visiblePrimary = new Set(getPrimaryProviders().map((item) => item.id));
+  return ordered.filter((item) => !visiblePrimary.has(item.id));
 }
 
 function getDefaultSwitchTarget(sourceId) {

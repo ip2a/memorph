@@ -55,7 +55,9 @@ pub fn router() -> Router {
         .route("/api/v1/sessions/{provider}/{session_id}", get(get_session))
         .route(
             "/api/v1/sessions/{provider}/{session_id}",
-            delete(delete_session).patch(rename_session),
+            delete(delete_session)
+                .patch(rename_session)
+                .put(update_session_local_state),
         )
         .route("/api/v1/export", post(export_session))
         .route("/api/v1/import", post(import_session))
@@ -63,10 +65,17 @@ pub fn router() -> Router {
         .route("/api/v1/find", get(find_sessions))
         .route("/api/v1/workspaces", get(list_workspaces))
         .route(
+            "/api/v1/workspaces/history",
+            delete(remove_workspace_history),
+        )
+        .route(
             "/api/v1/workspaces/providers",
             get(get_workspace_providers).put(update_workspace_providers),
         )
-        .route("/api/v1/share", get(list_shared_sessions).post(create_shared_session))
+        .route(
+            "/api/v1/share",
+            get(list_shared_sessions).post(create_shared_session),
+        )
         .route("/api/v1/share/status", get(shared_status))
         .route("/api/v1/share/sync", post(sync_shared_sessions))
         .route("/api/v1/share/bind", post(bind_shared_session))
@@ -95,8 +104,8 @@ struct ProviderInfo {
     id: String,
     name: String,
     scan: bool,
-    load: bool,
-    write: bool,
+    import: bool,
+    export: bool,
     delete: bool,
     rename: bool,
     resume: bool,
@@ -107,7 +116,6 @@ struct SettingsPayload {
     sessions_per_provider: usize,
     language: config::UiLanguage,
     show_opencode_subagents: bool,
-    auto_refresh_after_delete: bool,
     home_buttons: config::HomeButtonConfig,
     agent_order: Vec<String>,
     primary_agents: Vec<String>,
@@ -124,9 +132,7 @@ struct MetaPayload {
 
 #[derive(Debug, Serialize)]
 struct SessionDetailPayload {
-    session: crate::model::MemorphSession,
-    resume_command: Option<String>,
-    source_path: Option<String>,
+    view: core::SessionDetailView,
 }
 
 #[derive(Deserialize)]
@@ -134,7 +140,6 @@ struct SettingsBody {
     sessions_per_provider: usize,
     language: config::UiLanguage,
     show_opencode_subagents: bool,
-    auto_refresh_after_delete: bool,
     home_buttons: config::HomeButtonConfig,
     #[serde(default)]
     agent_order: Vec<String>,
@@ -162,8 +167,8 @@ fn provider_info_list() -> Vec<ProviderInfo> {
                 id: provider.id().to_string(),
                 name: provider.name().to_string(),
                 scan: capabilities.scan,
-                load: capabilities.load,
-                write: capabilities.write,
+                import: capabilities.import,
+                export: capabilities.export,
                 delete: capabilities.delete,
                 rename: capabilities.rename,
                 resume: capabilities.resume,
@@ -178,7 +183,6 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
         sessions_per_provider: prefs.sessions_per_provider,
         language: prefs.language,
         show_opencode_subagents: prefs.show_opencode_subagents,
-        auto_refresh_after_delete: prefs.auto_refresh_after_delete,
         home_buttons: prefs.home_buttons.clone(),
         agent_order: config::ordered_provider_ids(&prefs),
         primary_agents: config::primary_provider_ids(&prefs),
@@ -191,14 +195,16 @@ async fn get_meta() -> impl IntoResponse {
         config::selected_workspace(),
         config::known_workspaces(),
     ) {
-        (Ok(settings), Ok(selected_workspace), Ok(workspaces)) => ApiResponse::success(MetaPayload {
-            version: env!("CARGO_PKG_VERSION"),
-            providers: provider_info_list(),
-            selected_workspace,
-            workspaces,
-            settings,
-        })
-        .into_response(),
+        (Ok(settings), Ok(selected_workspace), Ok(workspaces)) => {
+            ApiResponse::success(MetaPayload {
+                version: env!("CARGO_PKG_VERSION"),
+                providers: provider_info_list(),
+                selected_workspace,
+                workspaces,
+                settings,
+            })
+            .into_response()
+        }
         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
             api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
         }
@@ -236,7 +242,6 @@ async fn update_settings(Json(body): Json<SettingsBody>) -> impl IntoResponse {
         Some(body.sessions_per_provider),
         Some(body.language),
         Some(body.show_opencode_subagents),
-        Some(body.auto_refresh_after_delete),
     )
     .and_then(|_| config::update_home_button_config(body.home_buttons))
     .and_then(|_| config::update_agent_display_preferences(body.agent_order, body.primary_agents));
@@ -292,6 +297,18 @@ async fn list_workspaces() -> impl IntoResponse {
 }
 
 #[derive(Deserialize)]
+struct WorkspaceHistoryBody {
+    workspace: String,
+}
+
+async fn remove_workspace_history(Json(body): Json<WorkspaceHistoryBody>) -> impl IntoResponse {
+    match config::remove_workspace_history(&body.workspace) {
+        Ok(workspaces) => ApiResponse::success(workspaces).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
 struct WorkspaceQuery {
     workspace: String,
 }
@@ -320,27 +337,12 @@ async fn update_workspace_providers(Json(body): Json<WorkspaceProvidersBody>) ->
 }
 
 async fn get_session(Path((provider, session_id)): Path<(String, String)>) -> impl IntoResponse {
-    match core::get_session(&provider, &session_id) {
-        Ok(session) => {
-            if let Some(project_dir) = session.session.project_dir.as_deref() {
+    match core::get_session_detail_view(&provider, &session_id) {
+        Ok(view) => {
+            if let Some(project_dir) = view.workspace_dir.as_deref() {
                 let _ = config::remember_workspace(std::path::Path::new(project_dir));
             }
-            let resume_command = crate::providers::find_provider(&provider)
-                .and_then(|provider| provider.resume_command(&session_id));
-            let source_path = crate::providers::find_provider(&provider)
-                .and_then(|provider| provider.scan_sessions().ok())
-                .and_then(|sessions| {
-                    sessions
-                        .into_iter()
-                        .find(|meta| meta.session_id == session_id)
-                        .and_then(|meta| meta.source_path)
-                });
-            ApiResponse::success(SessionDetailPayload {
-                session,
-                resume_command,
-                source_path,
-            })
-            .into_response()
+            ApiResponse::success(SessionDetailPayload { view }).into_response()
         }
         Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
     }
@@ -364,6 +366,16 @@ async fn rename_session(
 ) -> impl IntoResponse {
     match core::rename_session(&provider, &session_id, &body.title) {
         Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn update_session_local_state(
+    Path((provider, session_id)): Path<(String, String)>,
+    Json(body): Json<crate::storage::session_state::SessionLocalStateUpdate>,
+) -> impl IntoResponse {
+    match core::update_session_local_state(&provider, &session_id, &body) {
+        Ok(state) => ApiResponse::success(state).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
