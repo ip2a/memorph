@@ -64,7 +64,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: memorph-desktop-${{ matrix.platform_id }}
-          path: desktop/tauri/target/release/bundle/dmg/*.dmg
+          path: |
+            desktop/tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            desktop/tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
   publish-desktop-release:

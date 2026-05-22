@@ -1,6 +1,6 @@
 {
   "name": "memorph-bin-linux-x64-gnu",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "memorph platform package (linux x64, statically linked)",
   "license": "MIT",
   "repository": {
