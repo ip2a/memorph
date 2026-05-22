@@ -60,6 +60,10 @@ jobs:
         working-directory: desktop/tauri
         run: cargo tauri build --bundles dmg --target "${{ matrix.target }}"
 
+      - name: Inspect desktop bundle outputs
+        shell: bash
+        run: find desktop/tauri/target -name '*.dmg' -print
+
       - name: Upload desktop bundle outputs
         uses: actions/upload-artifact@v4
         with:

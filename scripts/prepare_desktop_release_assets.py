@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import shutil
 import tomllib
 from pathlib import Path
@@ -37,17 +38,34 @@ def display_path(path: Path) -> Path:
         return path
 
 
-def find_single_bundle(bundle_dirs: list[Path], extension: str) -> Path:
-    for bundle_dir in bundle_dirs:
-        matches = sorted(path for path in bundle_dir.glob(f"*{extension}") if path.is_file())
-        if not matches:
+def find_single_bundle(target_root: Path, version: str, platform_id: str, extension: str) -> Path:
+    architecture_markers = {
+        "darwin-arm64": ["aarch64", "arm64"],
+    }
+    version_pattern = re.escape(version)
+    matches: list[Path] = []
+    for path in target_root.rglob(f"*{extension}"):
+        if not path.is_file():
             continue
-        if len(matches) != 1:
-            names = ", ".join(path.name for path in matches)
-            raise RuntimeError(f"Expected exactly one desktop bundle in {bundle_dir}, found: {names}")
-        return matches[0]
-    searched = ", ".join(str(path) for path in bundle_dirs)
-    raise FileNotFoundError(f"No desktop bundle found in: {searched}")
+        if "bundle" not in path.parts:
+            continue
+        filename = path.name
+        if not re.search(version_pattern, filename):
+            continue
+        if not any(marker in filename for marker in architecture_markers.get(platform_id, [])):
+            continue
+        matches.append(path)
+
+    if not matches:
+        raise FileNotFoundError(
+            f"No desktop bundle found under {target_root} for version={version} platform={platform_id}"
+        )
+    if len(matches) != 1:
+        names = ", ".join(str(path.relative_to(target_root)) for path in matches)
+        raise RuntimeError(
+            f"Expected exactly one desktop bundle for version={version} platform={platform_id}, found: {names}"
+        )
+    return matches[0]
 
 
 def main() -> None:
@@ -74,11 +92,12 @@ def main() -> None:
 
     copied_assets: list[Path] = []
     for desktop_target in DESKTOP_TARGETS:
-        bundle_dirs = [
-            target_root / desktop_target["target"] / "release" / "bundle" / "dmg",
-            target_root / "release" / "bundle" / "dmg",
-        ]
-        source = find_single_bundle(bundle_dirs, desktop_target["extension"])
+        source = find_single_bundle(
+            target_root=target_root,
+            version=version,
+            platform_id=desktop_target["platform_id"],
+            extension=desktop_target["extension"],
+        )
         destination = assets_dir / (
             f"{package_name}-desktop-v{version}-{desktop_target['platform_id']}{desktop_target['extension']}"
         )

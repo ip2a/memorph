@@ -156,6 +156,42 @@ class ReleaseScriptsTest(unittest.TestCase):
             self.assertTrue(checksum_file.exists())
             self.assertIn(expected_asset.name, checksum_file.read_text(encoding="utf-8"))
 
+    def test_generate_latest_release_manifest(self) -> None:
+        version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            release_assets = tmp_path / "release-assets"
+            desktop_assets = tmp_path / "desktop-release-assets"
+            release_assets.mkdir()
+            desktop_assets.mkdir()
+            (release_assets / f"memorph-v{version}-linux-x64-gnu.tar.gz").write_bytes(b"cli")
+            (release_assets / "SHA256SUMS.txt").write_text("checksum\n", encoding="utf-8")
+            (desktop_assets / f"memorph-desktop-v{version}-darwin-arm64.dmg").write_bytes(b"dmg")
+            (desktop_assets / "SHA256SUMS-desktop.txt").write_text("checksum\n", encoding="utf-8")
+            output = tmp_path / "latest.json"
+
+            run_command(
+                [
+                    "python3",
+                    "scripts/generate_latest_release_manifest.py",
+                    "--version",
+                    version,
+                    "--tag",
+                    f"v{version}",
+                    "--base-url",
+                    f"https://github.com/ip2a/memorph/releases/download/v{version}",
+                    "--assets-dir",
+                    str(release_assets),
+                    "--assets-dir",
+                    str(desktop_assets),
+                    "--output",
+                    str(output),
+                ]
+            )
+            payload = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(payload["version"], f"v{version}")
+            self.assertTrue(any(asset["name"].endswith(".dmg") for asset in payload["assets"]))
+
     def test_install_script_installs_from_release_assets(self) -> None:
         config = tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))
         version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]

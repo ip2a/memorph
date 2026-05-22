@@ -1,0 +1,50 @@
+name: release-update-latest-json
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released version to summarize (e.g., 0.1.9)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  update-latest-json:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download GitHub Release assets
+        shell: bash
+        run: |
+          mkdir -p release-assets desktop-release-assets
+          gh release download "v${{ inputs.version }}" --dir release-assets --pattern '*.tar.gz' --pattern '*.zip' --pattern 'SHA256SUMS.txt'
+          gh release download "v${{ inputs.version }}" --dir desktop-release-assets --pattern 'memorph-desktop-v*.dmg' --pattern 'SHA256SUMS-desktop.txt'
+
+      - name: Generate latest.json
+        shell: bash
+        run: |
+          python3 scripts/generate_latest_release_manifest.py \
+            --version "${{ inputs.version }}" \
+            --tag "v${{ inputs.version }}" \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${{ inputs.version }}" \
+            --assets-dir release-assets \
+            --assets-dir desktop-release-assets \
+            --output latest.json
+
+      - name: Upload latest.json
+        shell: bash
+        run: gh release upload "v${{ inputs.version }}" latest.json --clobber

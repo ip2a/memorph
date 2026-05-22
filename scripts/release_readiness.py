@@ -46,6 +46,7 @@ def build_readiness_report() -> dict[str, object]:
         "workflows": {
             "build": ".github/workflows/release-build.yml",
             "build_desktop": ".github/workflows/release-build-desktop.yml",
+            "update_latest_json": ".github/workflows/release-update-latest-json.yml",
             "publish_npm": ".github/workflows/release-publish-npm.yml",
             "publish_pypi": ".github/workflows/release-publish-pypi.yml",
             "publish_crates": ".github/workflows/release-publish-crates.yml",
@@ -97,6 +98,7 @@ def build_readiness_report() -> dict[str, object]:
             "Run release-publish-npm with build_run_id",
             "Run release-publish-pypi with build_run_id",
             "Run post-release-verify with version X.Y.Z",
+            "Run release-update-latest-json with version X.Y.Z",
             "Confirm install.sh installs the released version from GitHub Release",
             "Confirm desktop dmg asset exists on the same GitHub Release",
         ],

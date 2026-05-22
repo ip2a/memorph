@@ -1,6 +1,6 @@
 {
   "name": "memorph-bin-win32-x64-msvc",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "memorph platform package (win32 x64 msvc)",
   "license": "MIT",
   "repository": {
