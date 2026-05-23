@@ -146,11 +146,18 @@ def sync_cargo_lockfile(check: bool, check_lockfile: bool) -> None:
             check=True,
             stdout=subprocess.DEVNULL,
         )
+        subprocess.run(
+            ["cargo", "metadata", "--locked", "--format-version", "1"],
+            cwd=ROOT / "desktop" / "tauri",
+            check=True,
+            stdout=subprocess.DEVNULL,
+        )
         print("[ok] Cargo.lock is up to date")
         return
     if check:
         return
     subprocess.run(["cargo", "generate-lockfile"], cwd=ROOT, check=True)
+    subprocess.run(["cargo", "generate-lockfile"], cwd=ROOT / "desktop" / "tauri", check=True)
     print("[ok] Synced Cargo.lock")
 
 
