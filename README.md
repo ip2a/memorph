@@ -34,15 +34,10 @@ memorph 是一个会话记忆管理工具，在不同AI 编程 Agent 之间导�
 
 ### 快速上手
 
+#### 安装方式
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/ip2a/memorph/main/install.sh | bash
-memorph web
-```
-
-也可以直接运行：
-
-```bash
-npx memorph web
 ```
 
 或通过包管理器安装：
@@ -53,15 +48,18 @@ npx memorph web
 | uv | `uv tool install memorph` | `memorph <命令>` |
 | pip | `pip install memorph` | `memorph <命令>` |
 
-安装完成后，使用 `memorph web` 启动 Web UI，或直接用 `memorph <命令>` 操作 CLI 
+完成安装之后，可以使用`memo`或者完整的命令`memorph`
+
 
 ---
 
 
 ### Web
 
+可以直接运行：
+
 ```bash
-memorph web
+npx memorph web
 ```
 
 
@@ -77,7 +75,20 @@ memorph web
 
    ![迁移完成](assets/zh/web-switch.png)
 
+### TUI
+
+```bash
+npx memorph
+```
+会自动以当前的路径为工作空间展开，确保在几步的简洁操作内就可以迁移会话
+
+   ![TUI模式](assets/zh/tui.png)
+
+
+
 ### CLI
+
+CLI模式更多的是结合`SKILLS`之后利用agent帮你管理会话的迁移与管理
 
 #### 查看当前工作区的可用会话-list
 
@@ -224,6 +235,12 @@ memorph find --session "refactor" -p claude -p codex
 ```
 
 ---
+
+### 桌面端
+
+目前已经构建了mac端的dmg版本，稳定后会逐步支持全平台的桌面端
+
+   ![桌面端](assets/zh/dmg-app.png)
 
 
 ---
