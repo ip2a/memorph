@@ -126,6 +126,7 @@ pub fn resolve_providers(filter: &[String]) -> Vec<String> {
 
 pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
     let provider_ids = resolve_providers(&params.providers);
+    let explicit_provider_filter = !params.providers.is_empty();
     let session_states = session_state::load_state_store().unwrap_or_default();
     let mut groups = Vec::new();
 
@@ -138,7 +139,10 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
         if !capabilities.scan {
             continue;
         }
-        let sessions = prov.scan_sessions()?;
+        let Some(sessions) = scan_sessions_for_aggregate(prov.as_ref(), explicit_provider_filter)?
+        else {
+            continue;
+        };
         let mut filtered: Vec<SessionItem> = if params.all {
             sessions
                 .iter()
@@ -185,6 +189,17 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
     }
 
     Ok(groups)
+}
+
+fn scan_sessions_for_aggregate(
+    provider: &dyn provider::Provider,
+    explicit_provider_filter: bool,
+) -> Result<Option<Vec<ProviderSessionSummary>>> {
+    match provider.scan_sessions() {
+        Ok(sessions) => Ok(Some(sessions)),
+        Err(err) if explicit_provider_filter => Err(err),
+        Err(_) => Ok(None),
+    }
 }
 
 fn enrich_session_item(
@@ -727,6 +742,7 @@ pub struct FindParams {
 
 pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
     let provider_ids = resolve_providers(&params.providers);
+    let explicit_provider_filter = !params.providers.is_empty();
     let session_states = session_state::load_state_store().unwrap_or_default();
     let mut groups = Vec::new();
 
@@ -739,7 +755,10 @@ pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
         if !capabilities.scan {
             continue;
         }
-        let sessions = prov.scan_sessions()?;
+        let Some(sessions) = scan_sessions_for_aggregate(prov.as_ref(), explicit_provider_filter)?
+        else {
+            continue;
+        };
         let filtered: Vec<SessionItem> = sessions
             .iter()
             .map(|s| {
@@ -799,6 +818,40 @@ mod tests {
     use crate::storage::session_state::SessionStateStore;
     use chrono::Utc;
     use std::collections::BTreeMap;
+
+    struct FailingProvider;
+
+    impl provider::Provider for FailingProvider {
+        fn id(&self) -> &'static str {
+            "failing"
+        }
+
+        fn name(&self) -> &'static str {
+            "Failing"
+        }
+
+        fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
+            anyhow::bail!("scan failed")
+        }
+
+        fn import_session(&self, _source_path: &str) -> Result<ImportedSession> {
+            anyhow::bail!("unused")
+        }
+    }
+
+    #[test]
+    fn aggregate_scan_skips_provider_error_without_explicit_filter() {
+        let sessions = scan_sessions_for_aggregate(&FailingProvider, false).unwrap();
+
+        assert!(sessions.is_none());
+    }
+
+    #[test]
+    fn aggregate_scan_keeps_provider_error_with_explicit_filter() {
+        let error = scan_sessions_for_aggregate(&FailingProvider, true).unwrap_err();
+
+        assert!(error.to_string().contains("scan failed"));
+    }
 
     #[test]
     fn session_item_overlay_prefers_memorph_display_title() {

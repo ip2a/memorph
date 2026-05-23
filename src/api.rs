@@ -116,6 +116,8 @@ struct SettingsPayload {
     sessions_per_provider: usize,
     language: config::UiLanguage,
     show_opencode_subagents: bool,
+    #[serde(default)]
+    default_backup_dir: String,
     home_buttons: config::HomeButtonConfig,
     agent_order: Vec<String>,
     primary_agents: Vec<String>,
@@ -140,6 +142,7 @@ struct SettingsBody {
     sessions_per_provider: usize,
     language: config::UiLanguage,
     show_opencode_subagents: bool,
+    default_backup_dir: String,
     home_buttons: config::HomeButtonConfig,
     #[serde(default)]
     agent_order: Vec<String>,
@@ -183,6 +186,7 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
         sessions_per_provider: prefs.sessions_per_provider,
         language: prefs.language,
         show_opencode_subagents: prefs.show_opencode_subagents,
+        default_backup_dir: prefs.default_backup_dir.clone(),
         home_buttons: prefs.home_buttons.clone(),
         agent_order: config::ordered_provider_ids(&prefs),
         primary_agents: config::primary_provider_ids(&prefs),
@@ -242,6 +246,7 @@ async fn update_settings(Json(body): Json<SettingsBody>) -> impl IntoResponse {
         Some(body.sessions_per_provider),
         Some(body.language),
         Some(body.show_opencode_subagents),
+        Some(body.default_backup_dir),
     )
     .and_then(|_| config::update_home_button_config(body.home_buttons))
     .and_then(|_| config::update_agent_display_preferences(body.agent_order, body.primary_agents));
@@ -616,7 +621,10 @@ struct ManagerPreviewBody {
     #[serde(default)]
     providers: Vec<String>,
     older_than_days: Option<u32>,
+    older_than_ms: Option<i64>,
     larger_than_mb: Option<u32>,
+    larger_than_bytes: Option<u64>,
+    smaller_than_bytes: Option<u64>,
     workspace: Option<String>,
 }
 
@@ -624,7 +632,10 @@ async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoRespo
     let filter = crate::core::manager::ManagerFilter {
         providers: body.providers,
         older_than_days: body.older_than_days,
+        older_than_ms: body.older_than_ms,
         larger_than_mb: body.larger_than_mb,
+        larger_than_bytes: body.larger_than_bytes,
+        smaller_than_bytes: body.smaller_than_bytes,
         workspace: body.workspace,
     };
     match crate::core::manager::preview(&filter) {

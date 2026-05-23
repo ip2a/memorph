@@ -9,7 +9,10 @@ use crate::providers;
 pub struct ManagerFilter {
     pub providers: Vec<String>,
     pub older_than_days: Option<u32>,
+    pub older_than_ms: Option<i64>,
     pub larger_than_mb: Option<u32>,
+    pub larger_than_bytes: Option<u64>,
+    pub smaller_than_bytes: Option<u64>,
     pub workspace: Option<String>,
 }
 
@@ -59,12 +62,17 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
         filter.providers.clone()
     };
 
-    let cutoff_ms = filter.older_than_days.map(|days| {
-        let duration = chrono::Duration::days(days as i64);
-        (Utc::now() - duration).timestamp_millis()
+    let cutoff_ms = filter.older_than_ms.or_else(|| {
+        filter.older_than_days.map(|days| {
+            let duration = chrono::Duration::days(days as i64);
+            (Utc::now() - duration).timestamp_millis()
+        })
     });
 
-    let size_threshold = filter.larger_than_mb.map(|mb| mb as u64 * 1024 * 1024);
+    let larger_than_bytes = filter
+        .larger_than_bytes
+        .or_else(|| filter.larger_than_mb.map(|mb| mb as u64 * 1024 * 1024));
+    let smaller_than_bytes = filter.smaller_than_bytes;
 
     let mut items = Vec::new();
     let mut total_size_bytes: u64 = 0;
@@ -105,8 +113,13 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
             let size_bytes = provider.session_size(&meta.session_id).unwrap_or(0);
 
             // Filter by size
-            if let Some(threshold) = size_threshold {
+            if let Some(threshold) = larger_than_bytes {
                 if size_bytes < threshold {
+                    continue;
+                }
+            }
+            if let Some(threshold) = smaller_than_bytes {
+                if size_bytes > threshold {
                     continue;
                 }
             }

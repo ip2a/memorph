@@ -24,6 +24,11 @@ const state = {
   },
   session: null,
   sharedDetail: null,
+  manager: {
+    draft: null,
+    preview: null,
+    report: null,
+  },
   modal: null,
   toasts: [],
 };
@@ -81,6 +86,10 @@ document.addEventListener("change", (event) => {
     document
       .querySelectorAll('input[name="manager_item"]')
       .forEach((el) => (el.checked = target.checked));
+    updateManagerSelectionStats();
+  }
+  if (target.name === "manager_item") {
+    updateManagerSelectionStats();
   }
 });
 
@@ -141,6 +150,8 @@ async function loadRoute() {
       state.sharedDetail = await api(
         `/api/v1/share/status?group_id=${encodeURIComponent(route.groupId)}`
       );
+    } else if (route.name === "manager") {
+      state.home.sharedGroups = await api("/api/v1/share/status");
     }
   } catch (error) {
     toast(t("error"), error.message, true);
@@ -194,6 +205,9 @@ async function updateLanguage(language) {
 
 async function setWorkspace(workspace) {
   state.home.workspace = workspace;
+  if (state.route.name === "manager") {
+    state.manager = { draft: defaultManagerDraft(), preview: null, report: null };
+  }
   if (!workspace) {
     state.home.providers = [];
     await loadHome();
@@ -245,7 +259,7 @@ async function handleAction(action, data, trigger = null) {
       openSettingsModal();
       break;
     case "open-manager":
-      openManagerModal();
+      navigate("/manager");
       break;
     case "open-import":
       openImportModal();
@@ -295,6 +309,12 @@ async function handleAction(action, data, trigger = null) {
     case "open-unbind":
       openUnbindModal(data.groupId, data.holdingId, data.provider || "", data.sessionId || "");
       break;
+    case "open-manager-clean-confirm":
+      openManagerCleanConfirmModal();
+      break;
+    case "open-manager-backup-confirm":
+      openManagerBackupConfirmModal();
+      break;
     case "go-home":
       navigate("/");
       break;
@@ -304,6 +324,9 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "delete-workspace-history":
       await deleteWorkspaceHistory(data.workspace || "");
+      break;
+    case "close-toast":
+      closeToast(Number(data.toastIndex));
       break;
     case "browse-folder":
       await browseFolderForField(trigger);
@@ -386,10 +409,10 @@ async function handleSubmit(kind, formData) {
         await runManagerPreview(formData);
         break;
       case "clean-manager":
-        await runManagerClean(formData);
+        await runManagerClean();
         break;
       case "backup-manager":
-        await runManagerBackup(formData);
+        await runManagerBackup();
         break;
       default:
         break;
@@ -874,6 +897,20 @@ function openSettingsModal(draft = null) {
         </div>
         <div class="settings-row">
           <div class="settings-copy">
+            <strong>${t("defaultBackupDir")}</strong>
+            <span>${t("defaultBackupDirHint")}</span>
+          </div>
+          <div class="path-picker">
+            <input name="default_backup_dir" list="known-workspaces" value="${escapeAttr(
+              settings.default_backup_dir || "./backups"
+            )}" placeholder="./backups">
+            <button type="button" class="ghost" data-action="browse-folder" data-target-field="default_backup_dir">${t(
+              "browse"
+            )}</button>
+          </div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-copy">
             <strong>OpenCode subagents</strong>
             <span>${t("settingsSubagentsHint")}</span>
           </div>
@@ -930,77 +967,27 @@ function openSettingsModal(draft = null) {
   render();
 }
 
-function openManagerModal(draft = null, preview = null, report = null) {
-  const managerDraft = draft || defaultManagerDraft();
-  const providerChecks = getOrderedProviders()
-    .map(
-      (item) => `
-      <label class="check-row">
-        <input type="checkbox" name="providers" value="${escapeAttr(item.id)}"${
-          managerDraft.providers.includes(item.id) ? " checked" : ""
-        }>
-        <span>${escapeHtml(item.name)}</span>
-      </label>`
-    )
-    .join("");
-
-  const previewSection = preview
-    ? renderManagerPreview(preview, report)
-    : `<div class="empty-state"><p>${t("managerTitle")}</p></div>`;
-
-  state.modal = {
-    kind: "custom",
-    title: t("managerTitle"),
-    body: `
-      <div class="manager-layout">
-        <form class="stack" data-submit="preview-manager">
-          ${renderPathField("workspace", t("workspace"), managerDraft.workspace, t("managerWorkspaceHint"))}
-          <label class="field">
-            <span>${t("olderThanDays")}</span>
-            <input type="number" min="0" name="older_than_days" placeholder="30" value="${escapeAttr(
-              managerDraft.older_than_days
-            )}">
-          </label>
-          <label class="field">
-            <span>${t("largerThanMb")}</span>
-            <input type="number" min="0" name="larger_than_mb" placeholder="1" value="${escapeAttr(
-              managerDraft.larger_than_mb
-            )}">
-          </label>
-          <div class="stack">
-            <span class="eyebrow">${t("providers")}</span>
-            <div class="check-grid">${providerChecks}</div>
-          </div>
-          <button class="invert" type="submit">${t("preview")}</button>
-        </form>
-        ${renderWorkspaceDatalist()}
-        <div class="stack">${previewSection}</div>
-      </div>`,
-  };
-  render();
-}
-
 function renderManagerPreview(preview, report = null) {
   const rows = preview.items
     .map((item) => {
       const encoded = escapeAttr(encodeURIComponent(JSON.stringify(item)));
+      const href = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
       return `
-        <label class="manager-row">
+        <article class="manager-row">
           <div class="manager-row-head">
-            <label>
+            <label class="manager-select">
               <input type="checkbox" name="manager_item" value="${encoded}">
-              <span>
-                <strong>${escapeHtml(item.title || item.session_id)}</strong>
-                <div class="manager-meta">
-                  <span>${escapeHtml(item.provider_name)}</span>
-                  <span>${escapeHtml(formatBytes(item.size_bytes))}</span>
-                  <span>${escapeHtml(formatDate(item.last_active_at))}</span>
-                </div>
-              </span>
             </label>
+            <div class="manager-row-copy">
+              <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(item.title || item.session_id)}</a>
+              <div class="manager-meta">
+                <span>${escapeHtml(item.provider_name)}</span>
+                <span>${escapeHtml(formatBytes(item.size_bytes))}</span>
+                <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(item.last_active_at)))}</span>
+              </div>
+            </div>
           </div>
-          <div class="path-line">${escapeHtml(item.project_dir || item.source_path || "")}</div>
-        </label>`;
+        </article>`;
     })
     .join("");
   const reportSection = report
@@ -1024,23 +1011,85 @@ function renderManagerPreview(preview, report = null) {
     <div class="section-heading manager-section-head">
       <div>
         <strong>${t("managerPreview")}</strong>
-        <small>${t("managerSummary").replace("{count}", preview.total_count).replace("{size}", formatBytes(preview.total_size_bytes))}</small>
       </div>
-      <label class="check-row">
-        <input type="checkbox" data-role="select-all-manager">
-        <span>${t("selectAll")}</span>
-      </label>
+      <div class="manager-preview-actions">
+        <span class="manager-selection-summary" data-role="manager-selection-summary">
+          ${managerSelectionSummary(preview.total_count, 0, 0)}
+        </span>
+        <label class="check-row">
+          <input type="checkbox" data-role="select-all-manager">
+          <span>${t("selectAll")}</span>
+        </label>
+        <button type="button" class="danger" data-action="open-manager-clean-confirm">${t("cleanSelected")}</button>
+        <button type="button" data-action="open-manager-backup-confirm">${t("backupSelected")}</button>
+      </div>
     </div>
-    <div class="manager-list">${rows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>
-    <div class="modal-actions">
-      <form data-submit="clean-manager"><button class="danger" type="submit">${t("cleanSelected")}</button></form>
-      <form data-submit="backup-manager" class="actions-inline">
-        <input name="output_dir" placeholder="${escapeAttr(t("backupDirPlaceholder"))}" value="${escapeAttr(
-          preview.output_dir || ""
-        )}">
-        <button type="submit">${t("backupSelected")}</button>
-      </form>
-    </div>`;
+    <div class="manager-list">${rows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>`;
+}
+
+function managerSelectionSummary(total, selected, bytes) {
+  return t("managerSelectionSummary")
+    .replace("{count}", String(total))
+    .replace("{selected}", String(selected))
+    .replace("{size}", formatBytes(bytes));
+}
+
+function updateManagerSelectionStats() {
+  const preview = state.manager.preview;
+  const summary = document.querySelector('[data-role="manager-selection-summary"]');
+  if (!preview || !summary) return;
+  const selected = selectedManagerItems();
+  const bytes = selected.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0);
+  summary.textContent = managerSelectionSummary(preview.total_count, selected.length, bytes);
+  const all = [...document.querySelectorAll('input[name="manager_item"]')];
+  const selectAll = document.querySelector('input[data-role="select-all-manager"]');
+  if (selectAll) {
+    selectAll.checked = all.length > 0 && selected.length === all.length;
+    selectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+  }
+}
+
+function openManagerCleanConfirmModal() {
+  const items = selectedManagerItems();
+  if (!items.length) {
+    toast(t("error"), t("noSelection"), true);
+    return;
+  }
+  state.modal = {
+    kind: "form",
+    title: t("cleanSelected"),
+    submit: "clean-manager",
+    submitClass: "danger",
+    submitLabel: t("confirm"),
+    body: `
+      <div class="stack">
+        <p>${t("cleanConfirm")}</p>
+        <div class="path-line">${t("sessionsStat")}: ${items.length}</div>
+      </div>`,
+  };
+  render();
+}
+
+function openManagerBackupConfirmModal() {
+  const items = selectedManagerItems();
+  if (!items.length) {
+    toast(t("error"), t("noSelection"), true);
+    return;
+  }
+  const outputDir = state.meta.settings.default_backup_dir || "./backups";
+  state.modal = {
+    kind: "form",
+    title: t("backupSelected"),
+    submit: "backup-manager",
+    submitLabel: t("confirm"),
+    body: `
+      <div class="stack">
+        <p>${t("backupConfirm")}</p>
+        <div class="path-line">${t("sessionsStat")}: ${items.length}</div>
+        <div class="path-line">${t("backupDir")}: ${escapeHtml(outputDir)}</div>
+      </div>`,
+  };
+  render();
 }
 
 async function runImport(formData) {
@@ -1281,6 +1330,7 @@ async function runSaveSettings(formData) {
     sessions_per_provider: Number(formData.get("sessions_per_provider")),
     language: String(formData.get("language")),
     show_opencode_subagents: formData.get("show_opencode_subagents") === "true",
+    default_backup_dir: String(formData.get("default_backup_dir") || "./backups"),
     home_buttons: {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
@@ -1308,64 +1358,86 @@ async function saveSettings(body) {
 
 async function runManagerPreview(formData) {
   const draft = managerDraftFromFormData(formData);
-  const preview = await api("/api/v1/manager/preview", {
-    method: "POST",
-    body: managerPreviewBody(draft),
-  });
-  preview.output_dir = "";
-  openManagerModal(draft, preview);
+  if (!draft.providers.length) throw new Error(t("noTargetAgentSelected"));
+  setLoading(true);
+  try {
+    const preview = await api("/api/v1/manager/preview", {
+      method: "POST",
+      body: managerPreviewBody(draft),
+    });
+    preview.output_dir = "";
+    state.manager = { draft, preview, report: null };
+    if (state.route.name !== "manager") replacePath("/manager");
+    render();
+  } finally {
+    setLoading(false);
+  }
 }
 
 async function runManagerClean() {
   const draft = readManagerDraft();
   const items = selectedManagerItems();
   if (!items.length) throw new Error(t("noSelection"));
-  const result = await api("/api/v1/manager/clean", {
-    method: "POST",
-    body: { items },
-  });
-  toast(t("done"), `${result.success} ${t("managerCleaned")}`);
-  const preview = await api("/api/v1/manager/preview", {
-    method: "POST",
-    body: managerPreviewBody(draft),
-  });
-  preview.output_dir = "";
-  const report = {
-    title: t("cleanSelected"),
-    summary: `${result.success} ${t("managerCleaned")}, ${result.failed} ${t("managerFailed")}, ${formatBytes(
-      result.freed_bytes
-    )} ${t("managerFreed")}`,
-    toggleLabel: t("errors"),
-    lines: result.errors || [],
-  };
-  openManagerModal(draft, preview, report);
+  closeModal();
+  setLoading(true);
+  try {
+    const result = await api("/api/v1/manager/clean", {
+      method: "POST",
+      body: { items },
+    });
+    toast(t("done"), `${result.success} ${t("managerCleaned")}`);
+    const preview = await api("/api/v1/manager/preview", {
+      method: "POST",
+      body: managerPreviewBody(draft),
+    });
+    preview.output_dir = "";
+    const report = {
+      title: t("cleanSelected"),
+      summary: `${result.success} ${t("managerCleaned")}, ${result.failed} ${t("managerFailed")}, ${formatBytes(
+        result.freed_bytes
+      )} ${t("managerFreed")}`,
+      toggleLabel: t("errors"),
+      lines: result.errors || [],
+    };
+    state.manager = { draft, preview, report };
+    render();
+  } finally {
+    setLoading(false);
+  }
 }
 
-async function runManagerBackup(formData) {
+async function runManagerBackup() {
   const draft = readManagerDraft();
   const items = selectedManagerItems();
   if (!items.length) throw new Error(t("noSelection"));
-  const outputDir = emptyToNull(formData.get("output_dir")) || t("backupDirPlaceholder");
-  const result = await api("/api/v1/manager/backup", {
-    method: "POST",
-    body: {
-      items,
-      output_dir: outputDir,
-    },
-  });
-  toast(t("backup"), result.files.join("\n"));
-  const preview = await api("/api/v1/manager/preview", {
-    method: "POST",
-    body: managerPreviewBody(draft),
-  });
-  preview.output_dir = outputDir;
-  const report = {
-    title: t("backupSelected"),
-    summary: `${result.success} ${t("managerExported")}, ${result.failed} ${t("managerFailed")}`,
-    toggleLabel: result.errors?.length ? t("filesAndErrors") : t("files"),
-    lines: [...(result.files || []), ...(result.errors || [])],
-  };
-  openManagerModal(draft, preview, report);
+  const outputDir = state.meta.settings.default_backup_dir || "./backups";
+  closeModal();
+  setLoading(true);
+  try {
+    const result = await api("/api/v1/manager/backup", {
+      method: "POST",
+      body: {
+        items,
+        output_dir: outputDir,
+      },
+    });
+    toast(t("backup"), result.files.join("\n"));
+    const preview = await api("/api/v1/manager/preview", {
+      method: "POST",
+      body: managerPreviewBody(draft),
+    });
+    preview.output_dir = outputDir;
+    const report = {
+      title: t("backupSelected"),
+      summary: `${result.success} ${t("managerExported")}, ${result.failed} ${t("managerFailed")}`,
+      toggleLabel: result.errors?.length ? t("filesAndErrors") : t("files"),
+      lines: [...(result.files || []), ...(result.errors || [])],
+    };
+    state.manager = { draft, preview, report };
+    render();
+  } finally {
+    setLoading(false);
+  }
 }
 
 function selectedManagerItems() {
@@ -1378,16 +1450,22 @@ function defaultManagerDraft() {
   return {
     workspace: state.home.workspace || "",
     older_than_days: "",
-    larger_than_mb: "",
-    providers: [],
+    older_than_unit: "days",
+    size_operator: "gt",
+    size_value: "",
+    size_unit: "mb",
+    providers: state.meta ? getOrderedProviders().map((item) => item.id) : [],
   };
 }
 
 function managerDraftFromFormData(formData) {
   return {
-    workspace: String(formData.get("workspace") || ""),
+    workspace: state.home.workspace || "",
     older_than_days: String(formData.get("older_than_days") || ""),
-    larger_than_mb: String(formData.get("larger_than_mb") || ""),
+    older_than_unit: String(formData.get("older_than_unit") || "days"),
+    size_operator: String(formData.get("size_operator") || "gt"),
+    size_value: String(formData.get("size_value") || ""),
+    size_unit: String(formData.get("size_unit") || "mb"),
     providers: formData.getAll("providers").map(String),
   };
 }
@@ -1399,12 +1477,38 @@ function readManagerDraft() {
 }
 
 function managerPreviewBody(draft) {
+  const sizeBytes = managerSizeBytesValue(draft.size_value, draft.size_unit);
+  const sizeFilter =
+    sizeBytes === null
+      ? {}
+      : draft.size_operator === "lt"
+        ? { smaller_than_bytes: sizeBytes }
+        : { larger_than_bytes: sizeBytes };
   return {
     workspace: emptyToNull(draft.workspace),
-    older_than_days: numberOrNull(draft.older_than_days),
-    larger_than_mb: numberOrNull(draft.larger_than_mb),
+    older_than_ms: managerAgeMsValue(draft.older_than_days, draft.older_than_unit),
+    ...sizeFilter,
     providers: draft.providers,
   };
+}
+
+function managerAgeMsValue(value, unit) {
+  const amount = numberOrNull(value);
+  if (amount === null) return null;
+  const minute = 60 * 1000;
+  if (unit === "minutes") return Math.ceil(Date.now() - amount * minute);
+  if (unit === "hours") return Math.ceil(Date.now() - amount * 60 * minute);
+  if (unit === "weeks") return Math.ceil(Date.now() - amount * 7 * 24 * 60 * minute);
+  if (unit === "months") return Math.ceil(Date.now() - amount * 30 * 24 * 60 * minute);
+  return Math.ceil(Date.now() - amount * 24 * 60 * minute);
+}
+
+function managerSizeBytesValue(value, unit) {
+  const amount = numberOrNull(value);
+  if (amount === null) return null;
+  if (unit === "kb") return Math.ceil(amount * 1024);
+  if (unit === "gb") return Math.ceil(amount * 1024 * 1024 * 1024);
+  return Math.ceil(amount * 1024 * 1024);
 }
 
 function shiftAgent(direction, index) {
@@ -1429,6 +1533,7 @@ function readSettingsDraft() {
     sessions_per_provider: Number(formData.get("sessions_per_provider") || state.meta.settings.sessions_per_provider),
     language: String(formData.get("language") || state.meta.settings.language),
     show_opencode_subagents: formData.get("show_opencode_subagents") === "true",
+    default_backup_dir: String(formData.get("default_backup_dir") || state.meta.settings.default_backup_dir || "./backups"),
     home_buttons: {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
@@ -1479,12 +1584,14 @@ function render() {
       <nav class="topbar">
         <div class="brand-cluster">
           <a class="brand" href="/" data-nav="/">memorph</a>
+          ${renderTopbarContext()}
         </div>
         <div class="top-actions">
-          <a class="button" href="/shared" data-nav="/shared">${t("shared")}</a>
+          ${state.route.name === "home" ? "" : `<a class="button" href="/" data-nav="/">${t("openHome")}</a>`}
+          ${state.route.name === "shared-list" || state.route.name === "shared-detail" ? "" : `<a class="button" href="/shared" data-nav="/shared">${t("shared")}</a>`}
           <button type="button" data-action="open-workspace-switch">${t("switchWorkspace")}</button>
           <button type="button" data-action="open-import">${t("import")}</button>
-          <button type="button" data-action="open-manager">${t("manage")}</button>
+          ${state.route.name === "manager" ? "" : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
           <button type="button" data-action="open-settings">${t("settings")}</button>
           <a class="icon-button" href="https://github.com/ip2a/memorph" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub">
             ${githubIcon()}
@@ -1498,6 +1605,29 @@ function render() {
   `;
   renderModal();
   bindLocalButtons();
+}
+
+function renderTopbarContext() {
+  const label = pageTitle();
+  if (!label) return "";
+  return `
+    <span class="topbar-divider"></span>
+    <span class="topbar-page">${escapeHtml(label)}</span>`;
+}
+
+function pageTitle() {
+  switch (state.route.name) {
+    case "manager":
+      return t("managerTitle");
+    case "shared-list":
+      return t("sharedTitle");
+    case "shared-detail":
+      return t("sharedTitle");
+    case "session":
+      return state.session?.view?.provider_name || t("details");
+    default:
+      return "";
+  }
 }
 
 function bindLocalButtons() {
@@ -1520,6 +1650,8 @@ function renderPage() {
       return `<div class="page-scroll">${renderSharedList()}</div>`;
     case "shared-detail":
       return `<div class="page-scroll">${renderSharedDetail()}</div>`;
+    case "manager":
+      return `<div class="page-scroll">${renderManagerPage()}</div>`;
     default:
       return `<div class="page-scroll"><div class="empty-state">${t("notFound")}</div></div>`;
   }
@@ -1900,6 +2032,99 @@ function renderSharedRow(group) {
     </article>`;
 }
 
+function renderManagerPage() {
+  const draft = state.manager.draft || defaultManagerDraft();
+  const preview = state.manager.preview;
+  const report = state.manager.report;
+  return `
+    <div class="manager-page-layout">
+      <section class="section-panel manager-control-panel">
+        ${renderManagerForm(draft)}
+      </section>
+      <section class="section-panel stack">
+        ${renderManagerPreview(preview || emptyManagerPreview(), report)}
+      </section>
+    </div>`;
+}
+
+function emptyManagerPreview() {
+  return {
+    items: [],
+    total_count: 0,
+    total_size_bytes: 0,
+  };
+}
+
+function renderManagerForm(managerDraft) {
+  const providerChecks = getOrderedProviders()
+    .map((item) => {
+      const checked = managerDraft.providers.includes(item.id);
+      return `
+        <label class="agent-pill manager-agent-pill">
+          <input type="checkbox" name="providers" value="${escapeAttr(item.id)}" ${checked ? "checked" : ""}>
+          <span>${escapeHtml(item.name)}</span>
+        </label>`;
+    })
+    .join("");
+  return `
+    <form class="manager-filter-form" data-submit="preview-manager">
+      <section class="manager-workspace-summary">
+        <div>
+          <span class="eyebrow">${t("workspace")}</span>
+          <strong>${escapeHtml(workspaceName(state.home.workspace) || t("workspaceEmpty"))}</strong>
+          <p>${escapeHtml(state.home.workspace || "—")}</p>
+        </div>
+      </section>
+      <section class="manager-compact-filters">
+        <label class="field filter-line-field">
+          <span>${t("olderThanDays")}</span>
+          <div class="unit-field">
+            <input type="text" inputmode="decimal" name="older_than_days" placeholder="30" value="${escapeAttr(
+              managerDraft.older_than_days
+            )}">
+            <select name="older_than_unit">
+              ${unitOption("minutes", t("minutes"), managerDraft.older_than_unit)}
+              ${unitOption("hours", t("hours"), managerDraft.older_than_unit)}
+              ${unitOption("days", t("days"), managerDraft.older_than_unit)}
+              ${unitOption("weeks", t("weeks"), managerDraft.older_than_unit)}
+              ${unitOption("months", t("months"), managerDraft.older_than_unit)}
+            </select>
+          </div>
+        </label>
+        <label class="field filter-line-field">
+          <span>${t("storageUsage")}</span>
+          <div class="size-filter-field">
+            <select name="size_operator">
+              ${unitOption("gt", t("greaterThanShort"), managerDraft.size_operator)}
+              ${unitOption("lt", t("lessThanShort"), managerDraft.size_operator)}
+            </select>
+            <input type="text" inputmode="decimal" name="size_value" placeholder="1" value="${escapeAttr(
+              managerDraft.size_value
+            )}">
+            <select name="size_unit">
+              ${unitOption("kb", "KB", managerDraft.size_unit)}
+              ${unitOption("mb", "MB", managerDraft.size_unit)}
+              ${unitOption("gb", "GB", managerDraft.size_unit)}
+            </select>
+          </div>
+        </label>
+      </section>
+      <section class="stack">
+        <div class="section-heading">
+          <div>
+            <strong>${t("providers")}</strong>
+          </div>
+        </div>
+        <div class="manager-agent-grid">${providerChecks}</div>
+      </section>
+      <button class="invert" type="submit">${t("preview")}</button>
+    </form>`;
+}
+
+function unitOption(value, label, selected) {
+  return `<option value="${escapeAttr(value)}" ${selected === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
+}
+
 function renderSharedDetail() {
   if (!state.sharedDetail) return `<div class="empty-state">${t("loading")}</div>`;
   const group = state.sharedDetail;
@@ -2021,14 +2246,25 @@ function renderToasts() {
     <div class="toast-stack">
       ${state.toasts
         .map(
-          (item) => `
+          (item, index) => `
           <div class="toast ${item.error ? "error" : ""}">
-            <h4>${escapeHtml(item.title)}</h4>
-            <p>${escapeHtml(item.message)}</p>
+            <div>
+              <h4>${escapeHtml(item.title)}</h4>
+              <p>${escapeHtml(item.message)}</p>
+            </div>
+            <button type="button" class="toast-close" data-action="close-toast" data-toast-index="${index}" aria-label="${escapeAttr(
+              t("close")
+            )}">×</button>
           </div>`
         )
         .join("")}
     </div>`;
+}
+
+function closeToast(index) {
+  if (!Number.isInteger(index)) return;
+  state.toasts = state.toasts.filter((_, itemIndex) => itemIndex !== index);
+  render();
 }
 
 function closeModal() {
@@ -2092,6 +2328,7 @@ function filterAndSortGroups(groups) {
 }
 
 function parseRoute(pathname) {
+  if (pathname === "/manager") return { name: "manager" };
   if (pathname === "/shared") return { name: "shared-list" };
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)\/([^/]+)$/);
   if (sessionMatch) {

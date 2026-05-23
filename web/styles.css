@@ -210,6 +210,20 @@ button[disabled] {
   font-weight: 700;
 }
 
+.topbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+}
+
+.topbar-page {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 650;
+}
+
 .version,
 .eyebrow,
 .mono,
@@ -1141,23 +1155,38 @@ button[disabled] {
 
 .manager-row {
   display: grid;
-  gap: 8px;
   border-bottom: 1px solid var(--line);
-  padding: 10px 0;
+  padding: 12px 0;
 }
 
 .manager-row:last-child {
   border-bottom: 0;
 }
 
-.manager-row-head label {
+.manager-row-head {
   display: flex;
-  align-items: start;
+  align-items: flex-start;
   gap: 10px;
 }
 
-.manager-row-head input {
+.manager-select input {
   margin-top: 3px;
+}
+
+.manager-row-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.manager-title-link {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
+.manager-title-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .manager-meta {
@@ -1171,6 +1200,118 @@ button[disabled] {
 .manager-section-head {
   padding-bottom: 10px;
   border-bottom: 1px solid var(--line);
+}
+
+.manager-preview-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.manager-selection-summary {
+  min-width: 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.manager-page-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.44fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  margin-top: 0;
+}
+
+.manager-control-panel {
+  position: sticky;
+  top: 76px;
+}
+
+.manager-filter-form {
+  display: grid;
+  gap: 14px;
+}
+
+.manager-workspace-summary {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.manager-workspace-summary strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.manager-workspace-summary p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.manager-compact-filters {
+  display: grid;
+  gap: 10px;
+}
+
+.filter-line-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-line-field > span {
+  flex: 0 0 auto;
+}
+
+.unit-field {
+  display: inline-grid;
+  grid-template-columns: 48px 62px;
+  gap: 6px;
+  width: max-content;
+}
+
+.size-filter-field {
+  display: inline-grid;
+  grid-template-columns: 42px 48px 44px;
+  gap: 6px;
+  width: max-content;
+  max-width: 100%;
+}
+
+.unit-field input,
+.size-filter-field input {
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.unit-field select,
+.size-filter-field select {
+  min-width: 0;
+  padding: 0 6px;
+}
+
+.manager-agent-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.manager-agent-pill span {
+  min-height: 28px;
+  padding: 0 9px;
 }
 
 .overlay {
@@ -1248,9 +1389,13 @@ button[disabled] {
 }
 
 .toast {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
   min-width: 260px;
   max-width: 420px;
-  padding: 12px 14px;
+  padding: 12px 10px 12px 14px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--paper);
@@ -1270,10 +1415,16 @@ button[disabled] {
   font-size: 14px;
 }
 
-.manager-stats {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
+.toast-close {
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
 }
 
 @keyframes spin {
@@ -1286,6 +1437,8 @@ button[disabled] {
   .detail-layout,
   .shared-layout,
   .manager-layout,
+  .manager-page-layout,
+  .manager-compact-filters,
   .home-hero,
   .workspace-panel,
   .filter-row-main,
@@ -1318,6 +1471,10 @@ button[disabled] {
 
   .top-actions {
     justify-content: start;
+  }
+
+  .brand-cluster {
+    width: 100%;
   }
 
   .home-provider-strip {

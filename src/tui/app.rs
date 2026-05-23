@@ -637,6 +637,7 @@ impl App {
             Some(self.settings_sessions_per_provider),
             Some(self.settings_language),
             Some(self.settings_show_opencode_subagents),
+            None,
         )
         .and_then(|_| {
             config::update_agent_display_preferences(

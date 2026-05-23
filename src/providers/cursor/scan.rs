@@ -1,10 +1,14 @@
 use crate::provider::ProviderSessionSummary;
-use crate::providers::cursor::db::{list_composers, ComposerData};
+use crate::providers::cursor::db::{global_state_db_path, list_composers, ComposerData};
 use anyhow::Result;
 use std::path::Path;
 
 /// Scan Cursor Composer sessions and filter by workspace path.
 pub fn scan_sessions(workspace: Option<&Path>) -> Result<Vec<ProviderSessionSummary>> {
+    if !global_state_db_path()?.exists() {
+        return Ok(Vec::new());
+    }
+
     let composers = list_composers()?;
     let mut sessions = Vec::new();
 

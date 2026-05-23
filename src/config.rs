@@ -15,7 +15,7 @@ pub enum UiLanguage {
 
 impl Default for UiLanguage {
     fn default() -> Self {
-        Self::Zh
+        Self::En
     }
 }
 
@@ -27,6 +27,8 @@ pub struct WebPreferences {
     pub language: UiLanguage,
     #[serde(default = "default_show_opencode_subagents")]
     pub show_opencode_subagents: bool,
+    #[serde(default = "default_backup_dir")]
+    pub default_backup_dir: String,
     #[serde(default)]
     pub home_buttons: HomeButtonConfig,
     #[serde(default)]
@@ -39,6 +41,7 @@ impl Default for WebPreferences {
             sessions_per_provider: DEFAULT_SESSIONS_PER_PROVIDER,
             language: UiLanguage::default(),
             show_opencode_subagents: default_show_opencode_subagents(),
+            default_backup_dir: default_backup_dir(),
             home_buttons: HomeButtonConfig::default(),
             agent_display: AgentDisplayPreferences::default(),
         }
@@ -51,6 +54,10 @@ fn default_sessions_per_provider() -> usize {
 
 fn default_show_opencode_subagents() -> bool {
     false
+}
+
+fn default_backup_dir() -> String {
+    "./backups".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -225,6 +232,7 @@ pub fn update_web_preferences(
     sessions_per_provider: Option<usize>,
     language: Option<UiLanguage>,
     show_opencode_subagents: Option<bool>,
+    backup_dir: Option<String>,
 ) -> Result<()> {
     let mut config = load_config()?;
 
@@ -236,6 +244,14 @@ pub fn update_web_preferences(
     }
     if let Some(value) = show_opencode_subagents {
         config.web.show_opencode_subagents = value;
+    }
+    if let Some(value) = backup_dir {
+        let value = value.trim();
+        config.web.default_backup_dir = if value.is_empty() {
+            default_backup_dir()
+        } else {
+            value.to_string()
+        };
     }
 
     save_config(&config)
