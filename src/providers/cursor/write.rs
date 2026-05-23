@@ -1,8 +1,8 @@
 use crate::canonical::{CanonicalSession, EventRole};
 use crate::provider::{canonical_event_text, canonical_session_title};
-use crate::providers::cursor::db::open_global_db;
+use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
 use anyhow::{Context, Result};
-use rusqlite::OptionalExtension;
+use rusqlite::{params, OptionalExtension};
 use serde_json::json;
 use std::path::Path;
 use uuid::Uuid;
@@ -177,29 +177,102 @@ fn empty_bubble_context() -> serde_json::Value {
 /// Delete a Cursor Composer session and all its bubbles.
 pub fn delete_session(session_id: &str) -> Result<()> {
     let conn = open_global_db()?;
-
-    // Delete all bubbles for this composer
-    let bubble_pattern = format!("bubbleId:{}:%", session_id);
-    let bubbles_deleted = conn
-        .execute(
-            "DELETE FROM cursorDiskKV WHERE key LIKE ?1",
-            [&bubble_pattern],
-        )
-        .with_context(|| format!("Failed to delete bubbles for composer {}", session_id))?;
-
-    // Delete the composer metadata
-    let composer_key = format!("composerData:{}", session_id);
-    conn.execute("DELETE FROM cursorDiskKV WHERE key = ?1", [&composer_key])
-        .with_context(|| format!("Failed to delete composer {}", session_id))?;
-
-    // Remove from index
-    let _ = remove_composer_index(&conn, session_id);
+    let bubbles_deleted = delete_session_with_conn(&conn, session_id)?;
 
     println!(
         "Deleted Cursor session {} ({} bubbles)",
         session_id, bubbles_deleted
     );
     Ok(())
+}
+
+pub fn delete_sessions(session_ids: &[&str]) -> Vec<Result<()>> {
+    let mut conn = match open_global_db() {
+        Ok(conn) => conn,
+        Err(err) => {
+            let message = err.to_string();
+            return session_ids
+                .iter()
+                .map(|session_id| {
+                    Err(anyhow::anyhow!(
+                        "Failed to delete Cursor session {}: {}",
+                        session_id,
+                        message
+                    ))
+                })
+                .collect();
+        }
+    };
+    let tx = match conn.transaction() {
+        Ok(tx) => tx,
+        Err(err) => {
+            let message = err.to_string();
+            return session_ids
+                .iter()
+                .map(|session_id| {
+                    Err(anyhow::anyhow!(
+                        "Failed to delete Cursor session {}: {}",
+                        session_id,
+                        message
+                    ))
+                })
+                .collect();
+        }
+    };
+
+    let results: Vec<Result<()>> = session_ids
+        .iter()
+        .map(
+            |session_id| match delete_session_with_conn(&tx, session_id) {
+                Ok(bubbles_deleted) => {
+                    println!(
+                        "Deleted Cursor session {} ({} bubbles)",
+                        session_id, bubbles_deleted
+                    );
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            },
+        )
+        .collect();
+
+    if let Err(err) = tx.commit() {
+        let message = err.to_string();
+        return results
+            .into_iter()
+            .enumerate()
+            .map(|(idx, result)| {
+                result.and_then(|()| {
+                    Err(anyhow::anyhow!(
+                        "Failed to commit Cursor delete for session {}: {}",
+                        session_ids[idx],
+                        message
+                    ))
+                })
+            })
+            .collect();
+    }
+
+    results
+}
+
+fn delete_session_with_conn(conn: &rusqlite::Connection, session_id: &str) -> Result<usize> {
+    let bubble_prefix = format!("bubbleId:{}:", session_id);
+    let (bubble_lower, bubble_upper) = key_prefix_bounds(&bubble_prefix);
+    let bubbles_deleted = conn
+        .execute(
+            "DELETE FROM cursorDiskKV WHERE key >= ?1 AND key < ?2",
+            params![bubble_lower, bubble_upper],
+        )
+        .with_context(|| format!("Failed to delete bubbles for composer {}", session_id))?;
+
+    let composer_key = format!("composerData:{}", session_id);
+    conn.execute("DELETE FROM cursorDiskKV WHERE key = ?1", [&composer_key])
+        .with_context(|| format!("Failed to delete composer {}", session_id))?;
+
+    let _ = remove_composer_index(conn, session_id);
+
+    Ok(bubbles_deleted)
 }
 
 /// Rename a Cursor Composer session by updating its name field.

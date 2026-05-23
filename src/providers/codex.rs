@@ -150,7 +150,7 @@ impl Provider for CodexProvider {
         let db_path = get_codex_dir().join("state_5.sqlite");
         if db_path.exists() {
             let conn = Connection::open(&db_path)?;
-            conn.execute("DELETE FROM thread WHERE id = ?1", [session_id])?;
+            let _ = conn.execute("DELETE FROM threads WHERE id = ?1", [session_id]);
         }
 
         Ok(())

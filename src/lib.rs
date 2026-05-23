@@ -7,6 +7,7 @@ pub mod config;
 pub mod core;
 pub mod format;
 pub mod i18n;
+pub mod logging;
 pub mod provider;
 pub mod providers;
 pub mod server;

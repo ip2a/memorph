@@ -591,6 +591,7 @@ fn print_session_list(all: bool, providers: Vec<String>) -> Result<()> {
         all,
         providers,
         cwd: Some(cwd_str.clone()),
+        include_message_counts: true,
     })?;
     let total_shown: usize = groups.iter().map(|group| group.sessions.len()).sum();
 

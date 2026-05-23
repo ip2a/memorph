@@ -203,32 +203,45 @@ impl Provider for OpenCodeProvider {
     }
 
     fn session_size(&self, session_id: &str) -> Result<u64> {
-        // Try filesystem first
-        let storage_dir = get_opencode_dir().join("storage");
-        let session_path = storage_dir
-            .join("session")
-            .join(format!("{}.json", session_id));
-        if session_path.exists() {
-            let mut total = std::fs::metadata(&session_path)?.len();
-            let msg_dir = storage_dir.join("message").join(session_id);
-            if msg_dir.exists() {
-                for entry in std::fs::read_dir(&msg_dir)? {
-                    let entry = entry?;
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                        total += std::fs::metadata(&path)?.len();
-                    }
-                }
-            }
+        if let Some(total) = opencode_session_files_size(session_id)? {
             return Ok(total);
         }
 
-        // Fallback to DB size estimate
         if let Ok(size) = opencode_session_db_size(session_id) {
             return Ok(size);
         }
 
         Ok(0)
+    }
+
+    fn session_sizes(&self, session_ids: &[&str]) -> HashMap<String, u64> {
+        let mut sizes = HashMap::new();
+        let mut missing_db = Vec::new();
+        for session_id in session_ids {
+            match opencode_session_files_size(session_id) {
+                Ok(Some(size)) if size > 0 => {
+                    sizes.insert((*session_id).to_string(), size);
+                }
+                _ => missing_db.push(*session_id),
+            }
+        }
+
+        if missing_db.is_empty() {
+            return sizes;
+        }
+
+        let db_path = get_db_path();
+        let Ok(conn) = Connection::open(&db_path) else {
+            return sizes;
+        };
+        for session_id in missing_db {
+            if let Ok(size) = opencode_session_db_size_with_conn(&conn, session_id) {
+                if size > 0 {
+                    sizes.insert(session_id.to_string(), size);
+                }
+            }
+        }
+        sizes
     }
 }
 
@@ -938,6 +951,33 @@ fn opencode_session_db_size(session_id: &str) -> Result<u64> {
         return Ok(0);
     }
     let conn = Connection::open(&db_path)?;
+    opencode_session_db_size_with_conn(&conn, session_id)
+}
+
+fn opencode_session_files_size(session_id: &str) -> Result<Option<u64>> {
+    let storage_dir = get_opencode_dir().join("storage");
+    let session_path = storage_dir
+        .join("session")
+        .join(format!("{}.json", session_id));
+    if !session_path.exists() {
+        return Ok(None);
+    }
+
+    let mut total = std::fs::metadata(&session_path)?.len();
+    let msg_dir = storage_dir.join("message").join(session_id);
+    if msg_dir.exists() {
+        for entry in std::fs::read_dir(&msg_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                total += std::fs::metadata(&path)?.len();
+            }
+        }
+    }
+    Ok(Some(total))
+}
+
+fn opencode_session_db_size_with_conn(conn: &Connection, session_id: &str) -> Result<u64> {
     let mut total: u64 = 0;
 
     // Session row size (approximate via JSON fields)

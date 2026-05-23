@@ -8,6 +8,7 @@ use crate::provider::{
     canonical_export_result, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct CursorProvider;
@@ -59,11 +60,19 @@ impl Provider for CursorProvider {
         write::delete_session(session_id)
     }
 
+    fn delete_sessions(&self, session_ids: &[&str]) -> Vec<Result<()>> {
+        write::delete_sessions(session_ids)
+    }
+
     fn rename_session(&self, session_id: &str, new_title: &str) -> Result<()> {
         write::rename_session(session_id, new_title)
     }
 
     fn session_size(&self, session_id: &str) -> Result<u64> {
         db::composer_size(session_id)
+    }
+
+    fn session_sizes(&self, session_ids: &[&str]) -> HashMap<String, u64> {
+        db::composer_sizes(session_ids).unwrap_or_default()
     }
 }

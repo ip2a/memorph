@@ -286,6 +286,7 @@ impl App {
             all: self.show_all,
             providers,
             cwd: self.workspace.clone(),
+            include_message_counts: true,
         };
 
         self.session_groups = core::list_sessions(&params)?;
@@ -637,6 +638,7 @@ impl App {
             Some(self.settings_sessions_per_provider),
             Some(self.settings_language),
             Some(self.settings_show_opencode_subagents),
+            None,
             None,
         )
         .and_then(|_| {

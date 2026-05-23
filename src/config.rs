@@ -30,6 +30,8 @@ pub struct WebPreferences {
     #[serde(default = "default_backup_dir")]
     pub default_backup_dir: String,
     #[serde(default)]
+    pub logging: LogPreferences,
+    #[serde(default)]
     pub home_buttons: HomeButtonConfig,
     #[serde(default)]
     pub agent_display: AgentDisplayPreferences,
@@ -42,6 +44,7 @@ impl Default for WebPreferences {
             language: UiLanguage::default(),
             show_opencode_subagents: default_show_opencode_subagents(),
             default_backup_dir: default_backup_dir(),
+            logging: LogPreferences::default(),
             home_buttons: HomeButtonConfig::default(),
             agent_display: AgentDisplayPreferences::default(),
         }
@@ -58,6 +61,27 @@ fn default_show_opencode_subagents() -> bool {
 
 fn default_backup_dir() -> String {
     "./backups".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LogPreferences {
+    #[serde(default = "default_log_max_size_bytes")]
+    pub max_size_bytes: u64,
+    #[serde(default)]
+    pub retention_days: Option<u32>,
+}
+
+impl Default for LogPreferences {
+    fn default() -> Self {
+        Self {
+            max_size_bytes: default_log_max_size_bytes(),
+            retention_days: None,
+        }
+    }
+}
+
+fn default_log_max_size_bytes() -> u64 {
+    5 * 1024 * 1024
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,6 +161,11 @@ pub struct WorkspaceEntry {
 pub fn config_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("Unable to locate user home directory")?;
     Ok(home.join(".memorph").join("config.json"))
+}
+
+pub fn memorph_dir() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("Unable to locate user home directory")?;
+    Ok(home.join(".memorph"))
 }
 
 pub fn load_config() -> Result<MemorphConfig> {
@@ -233,6 +262,7 @@ pub fn update_web_preferences(
     language: Option<UiLanguage>,
     show_opencode_subagents: Option<bool>,
     backup_dir: Option<String>,
+    logging: Option<LogPreferences>,
 ) -> Result<()> {
     let mut config = load_config()?;
 
@@ -252,6 +282,9 @@ pub fn update_web_preferences(
         } else {
             value.to_string()
         };
+    }
+    if let Some(value) = logging {
+        config.web.logging = value;
     }
 
     save_config(&config)

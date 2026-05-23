@@ -3,6 +3,7 @@ use crate::canonical::{
     MappingDisposition, MappingReport, SessionEvent,
 };
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -84,6 +85,14 @@ pub trait Provider: Send + Sync {
         anyhow::bail!("Delete not supported for provider: {}", self.id())
     }
 
+    /// Delete multiple sessions. Providers can override this to batch database work.
+    fn delete_sessions(&self, session_ids: &[&str]) -> Vec<Result<()>> {
+        session_ids
+            .iter()
+            .map(|session_id| self.delete_session(session_id))
+            .collect()
+    }
+
     /// Rename a session
     fn rename_session(&self, session_id: &str, new_title: &str) -> Result<()> {
         let _ = session_id;
@@ -102,6 +111,18 @@ pub trait Provider: Send + Sync {
     fn session_size(&self, session_id: &str) -> Result<u64> {
         let _ = session_id;
         Ok(0)
+    }
+
+    fn session_sizes(&self, session_ids: &[&str]) -> HashMap<String, u64> {
+        session_ids
+            .iter()
+            .filter_map(|session_id| {
+                self.session_size(session_id)
+                    .ok()
+                    .filter(|size| *size > 0)
+                    .map(|size| ((*session_id).to_string(), size))
+            })
+            .collect()
     }
 }
 

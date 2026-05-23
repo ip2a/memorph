@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -141,28 +141,44 @@ impl Provider for DeepseekProvider {
             return Ok(0);
         }
         let conn = Connection::open(&db_path)?;
-        let mut total: u64 = 0;
-
-        // Thread row size
-        if let Ok(size) = conn.query_row(
-            "SELECT COALESCE(length(id), 0) + COALESCE(length(preview), 0) + COALESCE(length(cwd), 0) + COALESCE(length(title), 0) + COALESCE(length(status), 0) + COALESCE(length(model_provider), 0) + COALESCE(length(cli_version), 0) + COALESCE(length(source), 0) FROM threads WHERE id = ?1",
-            [session_id],
-            |row| row.get::<_, i64>(0),
-        ) {
-            total += size as u64;
-        }
-
-        // Messages size
-        let mut stmt = conn.prepare("SELECT COALESCE(length(role), 0) + COALESCE(length(content), 0) + COALESCE(length(item_json), 0) FROM messages WHERE thread_id = ?1")?;
-        let rows = stmt.query_map([session_id], |row| row.get::<_, i64>(0))?;
-        for row in rows {
-            if let Ok(size) = row {
-                total += size as u64;
-            }
-        }
-
-        Ok(total)
+        deepseek_session_size_with_conn(&conn, session_id)
     }
+
+    fn session_sizes(&self, session_ids: &[&str]) -> HashMap<String, u64> {
+        let db_path = get_state_db_path();
+        let Ok(conn) = Connection::open(&db_path) else {
+            return HashMap::new();
+        };
+        session_ids
+            .iter()
+            .filter_map(|session_id| {
+                deepseek_session_size_with_conn(&conn, session_id)
+                    .ok()
+                    .filter(|size| *size > 0)
+                    .map(|size| ((*session_id).to_string(), size))
+            })
+            .collect()
+    }
+}
+
+fn deepseek_session_size_with_conn(conn: &Connection, session_id: &str) -> Result<u64> {
+    let mut total: u64 = 0;
+
+    if let Ok(size) = conn.query_row(
+        "SELECT COALESCE(length(id), 0) + COALESCE(length(preview), 0) + COALESCE(length(cwd), 0) + COALESCE(length(title), 0) + COALESCE(length(status), 0) + COALESCE(length(model_provider), 0) + COALESCE(length(cli_version), 0) + COALESCE(length(source), 0) FROM threads WHERE id = ?1",
+        [session_id],
+        |row| row.get::<_, i64>(0),
+    ) {
+        total += size as u64;
+    }
+
+    let mut stmt = conn.prepare("SELECT COALESCE(length(role), 0) + COALESCE(length(content), 0) + COALESCE(length(item_json), 0) FROM messages WHERE thread_id = ?1")?;
+    let rows = stmt.query_map([session_id], |row| row.get::<_, i64>(0))?;
+    for row in rows.flatten() {
+        total += row as u64;
+    }
+
+    Ok(total)
 }
 
 // ---------------------------------------------------------------------------

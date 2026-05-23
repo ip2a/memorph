@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
-use crate::providers;
+use crate::{provider::ProviderSessionSummary, providers};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagerFilter {
@@ -88,29 +88,37 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
             Err(_) => continue,
         };
 
-        for meta in sessions {
+        let candidates: Vec<ProviderSessionSummary> = sessions
+            .into_iter()
+            .filter(|meta| {
+                if let Some(ref ws) = filter.workspace {
+                    let matches = meta
+                        .project_dir
+                        .as_deref()
+                        .map(|d| d == ws)
+                        .unwrap_or(false);
+                    if !matches {
+                        return false;
+                    }
+                }
+                if let Some(cutoff) = cutoff_ms {
+                    let last_active = meta.last_active_at.unwrap_or(i64::MAX);
+                    if last_active > cutoff {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect();
+        let session_ids: Vec<&str> = candidates
+            .iter()
+            .map(|meta| meta.session_id.as_str())
+            .collect();
+        let sizes = provider.session_sizes(&session_ids);
+
+        for meta in candidates {
             // Filter by workspace if specified
-            if let Some(ref ws) = filter.workspace {
-                let matches = meta
-                    .project_dir
-                    .as_deref()
-                    .map(|d| d == ws)
-                    .unwrap_or(false);
-                if !matches {
-                    continue;
-                }
-            }
-
-            // Filter by last active time
-            if let Some(cutoff) = cutoff_ms {
-                let last_active = meta.last_active_at.unwrap_or(i64::MAX);
-                if last_active > cutoff {
-                    continue;
-                }
-            }
-
-            // Get size
-            let size_bytes = provider.session_size(&meta.session_id).unwrap_or(0);
+            let size_bytes = sizes.get(&meta.session_id).copied().unwrap_or(0);
 
             // Filter by size
             if let Some(threshold) = larger_than_bytes {
@@ -155,32 +163,57 @@ pub fn clean(items: &[ManagerItem]) -> ManagerCleanResult {
     let mut freed_bytes: u64 = 0;
     let mut errors = Vec::new();
 
-    for item in items {
-        let provider = match providers::find_provider(&item.provider_id) {
+    let mut by_provider: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for (idx, item) in items.iter().enumerate() {
+        by_provider
+            .entry(item.provider_id.as_str())
+            .or_default()
+            .push(idx);
+    }
+
+    for (provider_id, indices) in by_provider {
+        let provider = match providers::find_provider(provider_id) {
             Some(p) => p,
             None => {
-                failed += 1;
-                errors.push(format!(
-                    "Unknown provider: {} for session {}",
-                    item.provider_id, item.session_id
-                ));
+                failed += indices.len();
+                for idx in indices {
+                    let item = &items[idx];
+                    errors.push(format!(
+                        "Unknown provider: {} for session {}",
+                        item.provider_id, item.session_id
+                    ));
+                }
                 continue;
             }
         };
 
-        match provider.delete_session(&item.session_id) {
-            Ok(()) => {
-                success += 1;
-                freed_bytes += item.size_bytes;
-            }
-            Err(e) => {
-                failed += 1;
-                errors.push(format!(
-                    "Failed to delete {} ({}): {}",
-                    item.session_id,
-                    item.title.as_deref().unwrap_or("untitled"),
-                    e
-                ));
+        let session_ids: Vec<&str> = indices
+            .iter()
+            .map(|idx| items[*idx].session_id.as_str())
+            .collect();
+        let mut results = provider.delete_sessions(&session_ids).into_iter();
+        for idx in indices {
+            let item = &items[idx];
+            let result = results.next().unwrap_or_else(|| {
+                Err(anyhow::anyhow!(
+                    "Provider returned no delete result for session {}",
+                    item.session_id
+                ))
+            });
+            match result {
+                Ok(()) => {
+                    success += 1;
+                    freed_bytes += item.size_bytes;
+                }
+                Err(e) => {
+                    failed += 1;
+                    errors.push(format!(
+                        "Failed to delete {} ({}): {}",
+                        item.session_id,
+                        item.title.as_deref().unwrap_or("untitled"),
+                        e
+                    ));
+                }
             }
         }
     }

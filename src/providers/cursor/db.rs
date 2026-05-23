@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 /// Cross-platform Cursor data directory.
@@ -46,6 +47,18 @@ pub fn open_global_db() -> Result<Connection> {
     }
     Connection::open(&path)
         .with_context(|| format!("Failed to open Cursor state database: {}", path.display()))
+}
+
+pub fn key_prefix_bounds(prefix: &str) -> (String, String) {
+    let mut upper = prefix.as_bytes().to_vec();
+    for idx in (0..upper.len()).rev() {
+        if upper[idx] < 0x7f {
+            upper[idx] += 1;
+            upper.truncate(idx + 1);
+            return (prefix.to_string(), String::from_utf8(upper).unwrap());
+        }
+    }
+    (prefix.to_string(), format!("{prefix}\u{10ffff}"))
 }
 
 /// Cursor Composer session metadata stored in cursorDiskKV.
@@ -98,10 +111,11 @@ pub struct BubbleData {
 /// Read all composer session metadata from the global database.
 pub fn list_composers() -> Result<Vec<ComposerData>> {
     let conn = open_global_db()?;
-    let mut stmt = conn
-        .prepare("SELECT CAST(value AS TEXT) FROM cursorDiskKV WHERE key LIKE 'composerData:%'")?;
+    let (lower, upper) = key_prefix_bounds("composerData:");
+    let mut stmt =
+        conn.prepare("SELECT CAST(value AS TEXT) FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")?;
 
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(params![lower, upper], |row| {
         let json: String = row.get(0)?;
         let parsed: ComposerData = serde_json::from_str(&json).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -121,11 +135,12 @@ pub fn list_composers() -> Result<Vec<ComposerData>> {
 /// Read all bubbles for a given composer session.
 pub fn list_bubbles(composer_id: &str) -> Result<Vec<BubbleData>> {
     let conn = open_global_db()?;
-    let pattern = format!("bubbleId:{}:%", composer_id);
+    let prefix = format!("bubbleId:{}:", composer_id);
+    let (lower, upper) = key_prefix_bounds(&prefix);
     let mut stmt =
-        conn.prepare("SELECT CAST(value AS TEXT) FROM cursorDiskKV WHERE key LIKE ?1")?;
+        conn.prepare("SELECT CAST(value AS TEXT) FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")?;
 
-    let rows = stmt.query_map([&pattern], |row| {
+    let rows = stmt.query_map(params![lower, upper], |row| {
         let json: String = row.get(0)?;
         let parsed: BubbleData = serde_json::from_str(&json).map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
@@ -157,9 +172,11 @@ pub fn composer_size(composer_id: &str) -> Result<u64> {
     }
 
     // All bubbles size
-    let pattern = format!("bubbleId:{}:%", composer_id);
-    let mut stmt = conn.prepare("SELECT length(value) FROM cursorDiskKV WHERE key LIKE ?")?;
-    let rows = stmt.query_map([&pattern], |row| row.get::<_, i64>(0))?;
+    let prefix = format!("bubbleId:{}:", composer_id);
+    let (lower, upper) = key_prefix_bounds(&prefix);
+    let mut stmt =
+        conn.prepare("SELECT length(value) FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")?;
+    let rows = stmt.query_map(params![lower, upper], |row| row.get::<_, i64>(0))?;
     for row in rows {
         if let Ok(size) = row {
             total += size as u64;
@@ -167,4 +184,39 @@ pub fn composer_size(composer_id: &str) -> Result<u64> {
     }
 
     Ok(total)
+}
+
+pub fn composer_sizes(composer_ids: &[&str]) -> Result<HashMap<String, u64>> {
+    let conn = open_global_db()?;
+    let mut sizes: HashMap<String, u64> = composer_ids
+        .iter()
+        .map(|composer_id| ((*composer_id).to_string(), 0))
+        .collect();
+
+    for composer_id in composer_ids {
+        let composer_key = format!("composerData:{}", composer_id);
+        if let Ok(size) = conn.query_row(
+            "SELECT length(value) FROM cursorDiskKV WHERE key = ?1",
+            [&composer_key],
+            |row| row.get::<_, i64>(0),
+        ) {
+            if let Some(total) = sizes.get_mut(*composer_id) {
+                *total += size as u64;
+            }
+        }
+
+        let prefix = format!("bubbleId:{}:", composer_id);
+        let (lower, upper) = key_prefix_bounds(&prefix);
+        let mut stmt =
+            conn.prepare("SELECT length(value) FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")?;
+        let rows = stmt.query_map(params![lower, upper], |row| row.get::<_, i64>(0))?;
+        for row in rows {
+            if let (Some(total), Ok(size)) = (sizes.get_mut(*composer_id), row) {
+                *total += size as u64;
+            }
+        }
+    }
+
+    sizes.retain(|_, size| *size > 0);
+    Ok(sizes)
 }

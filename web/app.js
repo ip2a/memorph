@@ -10,6 +10,7 @@ const state = {
   meta: null,
   route: parseRoute(window.location.pathname),
   loading: 0,
+  loadingInfo: null,
   ui: {
     homeProviderVisibleCount: null,
   },
@@ -28,6 +29,7 @@ const state = {
     draft: null,
     preview: null,
     report: null,
+    pendingItems: [],
   },
   modal: null,
   toasts: [],
@@ -96,7 +98,7 @@ document.addEventListener("change", (event) => {
 void bootstrap();
 
 async function bootstrap() {
-  setLoading(true);
+  setLoading(true, { label: t("loadingWorkspace"), detail: workspaceName(state.home.workspace) });
   try {
     await loadI18n();
     state.meta = await api("/api/v1/meta");
@@ -171,6 +173,7 @@ async function loadHome() {
     workspace: state.home.workspace,
     all: "false",
     provider: state.home.providers.join(","),
+    details: "false",
   });
   state.home.groups = await api(`/api/v1/sessions?${params.toString()}`);
   state.home.sharedGroups = await api("/api/v1/share/status");
@@ -204,23 +207,28 @@ async function updateLanguage(language) {
 }
 
 async function setWorkspace(workspace) {
+  setLoading(true, { label: t("loadingWorkspace"), detail: workspaceName(workspace) });
   state.home.workspace = workspace;
-  if (state.route.name === "manager") {
-    state.manager = { draft: defaultManagerDraft(), preview: null, report: null };
-  }
-  if (!workspace) {
-    state.home.providers = [];
+  try {
+    if (state.route.name === "manager") {
+      state.manager = { draft: defaultManagerDraft(), preview: null, report: null, pendingItems: [] };
+    }
+    if (!workspace) {
+      state.home.providers = [];
+      await loadHome();
+      await refreshWorkspaceMeta();
+      render();
+      return;
+    }
+    state.home.providers = await api(
+      `/api/v1/workspaces/providers?workspace=${encodeURIComponent(workspace)}`
+    );
     await loadHome();
     await refreshWorkspaceMeta();
     render();
-    return;
+  } finally {
+    setLoading(false);
   }
-  state.home.providers = await api(
-    `/api/v1/workspaces/providers?workspace=${encodeURIComponent(workspace)}`
-  );
-  await loadHome();
-  await refreshWorkspaceMeta();
-  render();
 }
 
 async function refreshWorkspaceMeta() {
@@ -911,6 +919,26 @@ function openSettingsModal(draft = null) {
         </div>
         <div class="settings-row">
           <div class="settings-copy">
+            <strong>${t("logSettings")}</strong>
+            <span>${t("logSettingsHint")}</span>
+          </div>
+          <div class="settings-agent-list">
+            <label class="field compact-number-field">
+              <span>${t("logMaxSizeMb")}</span>
+              <input type="text" inputmode="decimal" name="log_max_size_mb" value="${escapeAttr(
+                String(((settings.logging?.max_size_bytes || 5 * 1024 * 1024) / 1024 / 1024).toFixed(1).replace(/\.0$/, ""))
+              )}">
+            </label>
+            <label class="field compact-number-field">
+              <span>${t("logRetentionDays")}</span>
+              <input type="text" inputmode="numeric" name="log_retention_days" value="${escapeAttr(
+                settings.logging?.retention_days == null ? "" : String(settings.logging.retention_days)
+              )}" placeholder="${escapeAttr(t("unlimited"))}">
+            </label>
+          </div>
+        </div>
+        <div class="settings-row">
+          <div class="settings-copy">
             <strong>OpenCode subagents</strong>
             <span>${t("settingsSubagentsHint")}</span>
           </div>
@@ -975,9 +1003,6 @@ function renderManagerPreview(preview, report = null) {
       return `
         <article class="manager-row">
           <div class="manager-row-head">
-            <label class="manager-select">
-              <input type="checkbox" name="manager_item" value="${encoded}">
-            </label>
             <div class="manager-row-copy">
               <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(item.title || item.session_id)}</a>
               <div class="manager-meta">
@@ -986,6 +1011,9 @@ function renderManagerPreview(preview, report = null) {
                 <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(item.last_active_at)))}</span>
               </div>
             </div>
+            <label class="manager-select">
+              <input type="checkbox" name="manager_item" value="${encoded}">
+            </label>
           </div>
         </article>`;
     })
@@ -1011,17 +1039,17 @@ function renderManagerPreview(preview, report = null) {
     <div class="section-heading manager-section-head">
       <div>
         <strong>${t("managerPreview")}</strong>
-      </div>
-      <div class="manager-preview-actions">
         <span class="manager-selection-summary" data-role="manager-selection-summary">
           ${managerSelectionSummary(preview.total_count, 0, 0)}
         </span>
+      </div>
+      <div class="manager-preview-actions">
+        <button type="button" class="danger" data-action="open-manager-clean-confirm">${t("cleanSelected")}</button>
+        <button type="button" data-action="open-manager-backup-confirm">${t("backupSelected")}</button>
         <label class="check-row">
           <input type="checkbox" data-role="select-all-manager">
           <span>${t("selectAll")}</span>
         </label>
-        <button type="button" class="danger" data-action="open-manager-clean-confirm">${t("cleanSelected")}</button>
-        <button type="button" data-action="open-manager-backup-confirm">${t("backupSelected")}</button>
       </div>
     </div>
     <div class="manager-list">${rows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>`;
@@ -1055,6 +1083,7 @@ function openManagerCleanConfirmModal() {
     toast(t("error"), t("noSelection"), true);
     return;
   }
+  state.manager.pendingItems = items;
   state.modal = {
     kind: "form",
     title: t("cleanSelected"),
@@ -1076,6 +1105,7 @@ function openManagerBackupConfirmModal() {
     toast(t("error"), t("noSelection"), true);
     return;
   }
+  state.manager.pendingItems = items;
   const outputDir = state.meta.settings.default_backup_dir || "./backups";
   state.modal = {
     kind: "form",
@@ -1331,6 +1361,7 @@ async function runSaveSettings(formData) {
     language: String(formData.get("language")),
     show_opencode_subagents: formData.get("show_opencode_subagents") === "true",
     default_backup_dir: String(formData.get("default_backup_dir") || "./backups"),
+    logging: logSettingsFromFormData(formData),
     home_buttons: {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
@@ -1359,14 +1390,14 @@ async function saveSettings(body) {
 async function runManagerPreview(formData) {
   const draft = managerDraftFromFormData(formData);
   if (!draft.providers.length) throw new Error(t("noTargetAgentSelected"));
-  setLoading(true);
+  setLoading(true, { label: t("managerPreview"), detail: t("scanningSessions") });
   try {
     const preview = await api("/api/v1/manager/preview", {
       method: "POST",
       body: managerPreviewBody(draft),
     });
     preview.output_dir = "";
-    state.manager = { draft, preview, report: null };
+    state.manager = { draft, preview, report: null, pendingItems: [] };
     if (state.route.name !== "manager") replacePath("/manager");
     render();
   } finally {
@@ -1376,31 +1407,29 @@ async function runManagerPreview(formData) {
 
 async function runManagerClean() {
   const draft = readManagerDraft();
-  const items = selectedManagerItems();
+  const items = state.manager.pendingItems.length ? state.manager.pendingItems : selectedManagerItems();
   if (!items.length) throw new Error(t("noSelection"));
   closeModal();
-  setLoading(true);
+  setLoading(true, { label: t("cleanSelected"), detail: `${items.length} ${t("sessionsStat")}`, progress: 0.12 });
   try {
     const result = await api("/api/v1/manager/clean", {
       method: "POST",
       body: { items },
     });
-    toast(t("done"), `${result.success} ${t("managerCleaned")}`);
+    updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
     const preview = await api("/api/v1/manager/preview", {
       method: "POST",
       body: managerPreviewBody(draft),
     });
     preview.output_dir = "";
-    const report = {
+    state.manager = { draft, preview, report: null, pendingItems: [] };
+    openActionResultModal({
       title: t("cleanSelected"),
       summary: `${result.success} ${t("managerCleaned")}, ${result.failed} ${t("managerFailed")}, ${formatBytes(
         result.freed_bytes
       )} ${t("managerFreed")}`,
-      toggleLabel: t("errors"),
       lines: result.errors || [],
-    };
-    state.manager = { draft, preview, report };
-    render();
+    });
   } finally {
     setLoading(false);
   }
@@ -1408,11 +1437,11 @@ async function runManagerClean() {
 
 async function runManagerBackup() {
   const draft = readManagerDraft();
-  const items = selectedManagerItems();
+  const items = state.manager.pendingItems.length ? state.manager.pendingItems : selectedManagerItems();
   if (!items.length) throw new Error(t("noSelection"));
   const outputDir = state.meta.settings.default_backup_dir || "./backups";
   closeModal();
-  setLoading(true);
+  setLoading(true, { label: t("backupSelected"), detail: `${items.length} ${t("sessionsStat")}`, progress: 0.12 });
   try {
     const result = await api("/api/v1/manager/backup", {
       method: "POST",
@@ -1421,20 +1450,18 @@ async function runManagerBackup() {
         output_dir: outputDir,
       },
     });
-    toast(t("backup"), result.files.join("\n"));
+    updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
     const preview = await api("/api/v1/manager/preview", {
       method: "POST",
       body: managerPreviewBody(draft),
     });
     preview.output_dir = outputDir;
-    const report = {
+    state.manager = { draft, preview, report: null, pendingItems: [] };
+    openActionResultModal({
       title: t("backupSelected"),
       summary: `${result.success} ${t("managerExported")}, ${result.failed} ${t("managerFailed")}`,
-      toggleLabel: result.errors?.length ? t("filesAndErrors") : t("files"),
       lines: [...(result.files || []), ...(result.errors || [])],
-    };
-    state.manager = { draft, preview, report };
-    render();
+    });
   } finally {
     setLoading(false);
   }
@@ -1449,10 +1476,10 @@ function selectedManagerItems() {
 function defaultManagerDraft() {
   return {
     workspace: state.home.workspace || "",
-    older_than_days: "",
+    older_than_days: "14",
     older_than_unit: "days",
-    size_operator: "gt",
-    size_value: "",
+    size_operator: "lt",
+    size_value: "1",
     size_unit: "mb",
     providers: state.meta ? getOrderedProviders().map((item) => item.id) : [],
   };
@@ -1534,6 +1561,7 @@ function readSettingsDraft() {
     language: String(formData.get("language") || state.meta.settings.language),
     show_opencode_subagents: formData.get("show_opencode_subagents") === "true",
     default_backup_dir: String(formData.get("default_backup_dir") || state.meta.settings.default_backup_dir || "./backups"),
+    logging: logSettingsFromFormData(formData),
     home_buttons: {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
@@ -1543,6 +1571,15 @@ function readSettingsDraft() {
     },
     agent_order: formData.getAll("agent_order").map(String),
     primary_agents: formData.getAll("primary_agents").map(String),
+  };
+}
+
+function logSettingsFromFormData(formData) {
+  const maxSizeMb = numberOrNull(formData.get("log_max_size_mb"));
+  const retentionDays = numberOrNull(formData.get("log_retention_days"));
+  return {
+    max_size_bytes: Math.max(0, Math.round((maxSizeMb ?? 5) * 1024 * 1024)),
+    retention_days: retentionDays === null ? null : Math.max(0, Math.round(retentionDays)),
   };
 }
 
@@ -1580,7 +1617,7 @@ function render() {
     return;
   }
   appEl.innerHTML = `
-    <div class="app-shell">
+    <div class="app-shell ${state.route.name === "manager" ? "manager-shell" : ""}">
       <nav class="topbar">
         <div class="brand-cluster">
           <a class="brand" href="/" data-nav="/">memorph</a>
@@ -1651,7 +1688,7 @@ function renderPage() {
     case "shared-detail":
       return `<div class="page-scroll">${renderSharedDetail()}</div>`;
     case "manager":
-      return `<div class="page-scroll">${renderManagerPage()}</div>`;
+      return `<div class="page-scroll manager-page-scroll">${renderManagerPage()}</div>`;
     default:
       return `<div class="page-scroll"><div class="empty-state">${t("notFound")}</div></div>`;
   }
@@ -2041,7 +2078,7 @@ function renderManagerPage() {
       <section class="section-panel manager-control-panel">
         ${renderManagerForm(draft)}
       </section>
-      <section class="section-panel stack">
+      <section class="section-panel manager-result-panel">
         ${renderManagerPreview(preview || emptyManagerPreview(), report)}
       </section>
     </div>`;
@@ -2216,7 +2253,7 @@ function renderModal() {
             <h3>${escapeHtml(modal.title)}</h3>
             ${modal.subtitle ? `<p class="muted">${escapeHtml(modal.subtitle)}</p>` : ""}
           </div>
-          <button type="button" class="icon-button" data-action="close-modal">×</button>
+          <button type="button" class="text-close-button ghost" data-action="close-modal">${t("close")}</button>
         </div>
         ${formOpen
           ? `<form data-submit="${escapeAttr(modal.submit)}" class="modal-stack">
@@ -2232,11 +2269,22 @@ function renderModal() {
 }
 
 function renderLoading() {
+  const info = state.loadingInfo || {};
+  const progress = typeof info.progress === "number" ? Math.max(0, Math.min(1, info.progress)) : null;
   return `
     <div class="loading-layer ${state.loading ? "active" : ""}">
       <div class="loading-card">
         <span class="loading-spinner"></span>
-        <span>${t("loading")}</span>
+        <div class="loading-copy">
+          <strong>${escapeHtml(info.label || t("loading"))}</strong>
+          ${info.detail ? `<span>${escapeHtml(info.detail)}</span>` : ""}
+        </div>
+        ${
+          progress === null
+            ? `<div class="loading-bar indeterminate"><span></span></div>`
+            : `<div class="loading-bar"><span style="width: ${Math.round(progress * 100)}%"></span></div>
+               <span class="loading-percent">${Math.round(progress * 100)}%</span>`
+        }
       </div>
     </div>`;
 }
@@ -2254,7 +2302,7 @@ function renderToasts() {
             </div>
             <button type="button" class="toast-close" data-action="close-toast" data-toast-index="${index}" aria-label="${escapeAttr(
               t("close")
-            )}">×</button>
+            )}">${t("close")}</button>
           </div>`
         )
         .join("")}
@@ -2685,8 +2733,15 @@ function setDocumentLanguage() {
   document.documentElement.lang = lang() === "zh" ? "zh-CN" : "en";
 }
 
-function setLoading(active) {
+function setLoading(active, info = null) {
   state.loading += active ? 1 : -1;
   if (state.loading < 0) state.loading = 0;
+  if (active && info) state.loadingInfo = info;
+  if (!active && state.loading === 0) state.loadingInfo = null;
+  render();
+}
+
+function updateLoading(info) {
+  state.loadingInfo = { ...(state.loadingInfo || {}), ...info };
   render();
 }

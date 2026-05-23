@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::canonical::{
@@ -17,6 +18,7 @@ pub struct SessionListParams {
     pub all: bool,
     pub providers: Vec<String>,
     pub cwd: Option<String>,
+    pub include_message_counts: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,35 +145,34 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
         else {
             continue;
         };
-        let mut filtered: Vec<SessionItem> = if params.all {
-            sessions
-                .iter()
-                .map(|s| {
-                    enrich_session_item(
-                        prov.as_ref(),
-                        capabilities,
-                        pid.as_str(),
-                        s,
-                        &session_states,
-                    )
-                })
-                .collect()
+        let filtered_summaries: Vec<&ProviderSessionSummary> = if params.all {
+            sessions.iter().collect()
         } else {
             let cwd = params.cwd.as_deref().unwrap_or("");
             sessions
                 .iter()
                 .filter(|s| s.project_dir.as_ref().map(|d| d == cwd).unwrap_or(false))
-                .map(|s| {
-                    enrich_session_item(
-                        prov.as_ref(),
-                        capabilities,
-                        pid.as_str(),
-                        s,
-                        &session_states,
-                    )
-                })
                 .collect()
         };
+        let session_ids: Vec<&str> = filtered_summaries
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect();
+        let sizes = prov.session_sizes(&session_ids);
+        let mut filtered: Vec<SessionItem> = filtered_summaries
+            .iter()
+            .map(|s| {
+                enrich_session_item(
+                    prov.as_ref(),
+                    capabilities,
+                    pid.as_str(),
+                    s,
+                    &session_states,
+                    &sizes,
+                    params.include_message_counts,
+                )
+            })
+            .collect();
         filtered.sort_by_key(|s| {
             (
                 std::cmp::Reverse(s.pinned),
@@ -208,6 +209,8 @@ fn enrich_session_item(
     provider_id: &str,
     meta: &ProviderSessionSummary,
     session_states: &SessionStateStore,
+    sizes: &HashMap<String, u64>,
+    include_message_count: bool,
 ) -> SessionItem {
     let mut item = SessionItem::from((meta, provider_id));
     let state = resolve_session_state(
@@ -218,20 +221,16 @@ fn enrich_session_item(
         session_states,
     );
     apply_session_item_state(&mut item, &state);
-    item.size_bytes = provider
-        .session_size(&meta.session_id)
-        .ok()
-        .filter(|size| *size > 0)
-        .or_else(|| {
-            meta.source_path.as_deref().and_then(|path| {
-                std::fs::metadata(path)
-                    .ok()
-                    .filter(|metadata| metadata.is_file())
-                    .map(|metadata| metadata.len())
-            })
-        });
+    item.size_bytes = sizes.get(&meta.session_id).copied().or_else(|| {
+        meta.source_path.as_deref().and_then(|path| {
+            std::fs::metadata(path)
+                .ok()
+                .filter(|metadata| metadata.is_file())
+                .map(|metadata| metadata.len())
+        })
+    });
 
-    if capabilities.import {
+    if include_message_count && capabilities.import {
         if let Some(source_path) = meta.source_path.as_deref() {
             item.message_count = provider
                 .import_session(source_path)

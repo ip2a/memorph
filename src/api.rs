@@ -8,7 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, OnceLock};
 
-use crate::{config, core, shared};
+use crate::{config, core, logging, shared};
 
 type FolderPicker =
     dyn Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static;
@@ -35,12 +35,14 @@ impl<T: Serialize> ApiResponse<T> {
 }
 
 fn api_error(status: StatusCode, msg: impl ToString) -> impl IntoResponse {
+    let message = msg.to_string();
+    logging::error("api_error", &message);
     (
         status,
         Json(ApiResponse::<()> {
             ok: false,
             data: None,
-            error: Some(msg.to_string()),
+            error: Some(message),
         }),
     )
 }
@@ -118,6 +120,7 @@ struct SettingsPayload {
     show_opencode_subagents: bool,
     #[serde(default)]
     default_backup_dir: String,
+    logging: config::LogPreferences,
     home_buttons: config::HomeButtonConfig,
     agent_order: Vec<String>,
     primary_agents: Vec<String>,
@@ -143,6 +146,8 @@ struct SettingsBody {
     language: config::UiLanguage,
     show_opencode_subagents: bool,
     default_backup_dir: String,
+    #[serde(default)]
+    logging: config::LogPreferences,
     home_buttons: config::HomeButtonConfig,
     #[serde(default)]
     agent_order: Vec<String>,
@@ -187,6 +192,7 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
         language: prefs.language,
         show_opencode_subagents: prefs.show_opencode_subagents,
         default_backup_dir: prefs.default_backup_dir.clone(),
+        logging: prefs.logging.clone(),
         home_buttons: prefs.home_buttons.clone(),
         agent_order: config::ordered_provider_ids(&prefs),
         primary_agents: config::primary_provider_ids(&prefs),
@@ -247,6 +253,7 @@ async fn update_settings(Json(body): Json<SettingsBody>) -> impl IntoResponse {
         Some(body.language),
         Some(body.show_opencode_subagents),
         Some(body.default_backup_dir),
+        Some(body.logging),
     )
     .and_then(|_| config::update_home_button_config(body.home_buttons))
     .and_then(|_| config::update_agent_display_preferences(body.agent_order, body.primary_agents));
@@ -263,6 +270,7 @@ struct ListQuery {
     provider: Option<String>,
     dir: Option<String>,
     workspace: Option<String>,
+    details: Option<bool>,
 }
 
 async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
@@ -287,6 +295,7 @@ async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
         all: q.all.unwrap_or(false),
         providers,
         cwd,
+        include_message_counts: q.details.unwrap_or(true),
     };
     match core::list_sessions(&params) {
         Ok(groups) => ApiResponse::success(groups).into_response(),
@@ -652,11 +661,25 @@ struct ManagerItemsBody {
 
 async fn manager_clean(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
     let result = crate::core::manager::clean(&body.items);
+    logging::info(
+        "manager_clean",
+        format!(
+            "success={} failed={} freed_bytes={}",
+            result.success, result.failed, result.freed_bytes
+        ),
+    );
     ApiResponse::success(result).into_response()
 }
 
 async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
     let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
     let result = crate::core::manager::backup(&body.items, std::path::Path::new(&output_dir));
+    logging::info(
+        "manager_backup",
+        format!(
+            "success={} failed={} output_dir={}",
+            result.success, result.failed, output_dir
+        ),
+    );
     ApiResponse::success(result).into_response()
 }
