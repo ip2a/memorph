@@ -24,15 +24,23 @@
 
 # Root project metadata.
 !/.gitignore
-!/Cargo.toml
-!/Cargo.lock
-!/build.rs
 !/platforms.toml
 !/LICENSE
 !/install.sh
 !/README.md
 !/README_en.md
 !/README_zh.md
+
+# Rust workspace.
+!/rust/
+!/rust/Cargo.toml
+!/rust/Cargo.lock
+!/rust/crates/
+!/rust/crates/**/Cargo.toml
+!/rust/crates/**/*.rs
+!/rust/apps/
+!/rust/apps/**/Cargo.toml
+!/rust/apps/**/*.rs
 
 # GitHub workflows.
 !/.github/
@@ -43,9 +51,9 @@
 !/docs/
 !/docs/*.md
 
-# Rust CLI source.
-!/src/
-!/src/**/*.rs
+# Web app source.
+!/web/
+!/web/**
 
 # Web app source.
 !/web/
