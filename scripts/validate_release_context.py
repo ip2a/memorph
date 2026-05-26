@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_cargo_version() -> str:
-    cargo_toml = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    cargo_toml = (ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8")
     match = re.search(r'^version\s*=\s*"([^"]+)"', cargo_toml, flags=re.MULTILINE)
     if not match:
         raise SystemExit("[error] Cargo.toml version is missing")

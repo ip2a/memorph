@@ -45,6 +45,10 @@ class ReleaseScriptsTest(unittest.TestCase):
             report["workflows"]["publish_npm"],
             ".github/workflows/release-publish-npm.yml",
         )
+        desktop_assets = {(item["platform_id"], item["bundle"], item["extension"]) for item in report["desktop_assets"]}
+        self.assertIn(("darwin-arm64", "dmg", ".dmg"), desktop_assets)
+        self.assertIn(("linux-x64-gnu", "appimage", ".AppImage"), desktop_assets)
+        self.assertIn(("win32-x64-msvc", "nsis", ".exe"), desktop_assets)
 
     def test_prepare_github_release_assets_from_dist(self) -> None:
         config = tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))
@@ -119,15 +123,24 @@ class ReleaseScriptsTest(unittest.TestCase):
                 self.assertIn("SHA256SUMS", archive.namelist())
 
     def test_prepare_desktop_release_assets(self) -> None:
-        version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+        version = tomllib.loads((ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+        config = tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))
+        desktop_targets = config["desktop_targets"]
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             target_root = tmp_path / "desktop" / "tauri" / "target"
             assets_dir = tmp_path / "desktop-release-assets"
-            bundle_dir = target_root / "aarch64-apple-darwin" / "release" / "bundle" / "dmg"
-            bundle_dir.mkdir(parents=True)
-            source = bundle_dir / f"memorph_{version}_aarch64.dmg"
-            source.write_bytes(b"fake dmg")
+            expected_assets: list[Path] = []
+
+            for target in desktop_targets:
+                bundle_dir = target_root / target["target"] / "release" / "bundle" / target["bundle"]
+                bundle_dir.mkdir(parents=True, exist_ok=True)
+                marker = target["filename_markers"][0]
+                source = bundle_dir / f"memorph_{version}_{marker}{target['extension']}"
+                source.write_bytes(f"fake {target['platform_id']} {target['bundle']}".encode("utf-8"))
+                expected_assets.append(
+                    assets_dir / f"memorph-desktop-v{version}-{target['platform_id']}{target['extension']}"
+                )
 
             run_command(
                 [
@@ -150,14 +163,55 @@ class ReleaseScriptsTest(unittest.TestCase):
                 ]
             )
 
-            expected_asset = assets_dir / f"memorph-desktop-v{version}-darwin-arm64.dmg"
-            self.assertTrue(expected_asset.exists())
+            for expected_asset in expected_assets:
+                self.assertTrue(expected_asset.exists())
             checksum_file = assets_dir / "SHA256SUMS-desktop.txt"
             self.assertTrue(checksum_file.exists())
-            self.assertIn(expected_asset.name, checksum_file.read_text(encoding="utf-8"))
+            checksum_text = checksum_file.read_text(encoding="utf-8")
+            for expected_asset in expected_assets:
+                self.assertIn(expected_asset.name, checksum_text)
+
+    def test_prepare_desktop_release_assets_for_single_platform(self) -> None:
+        version = tomllib.loads((ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            target_root = tmp_path / "desktop" / "tauri" / "target"
+            assets_dir = tmp_path / "desktop-release-assets"
+            bundle_dir = target_root / "aarch64-apple-darwin" / "release" / "bundle" / "dmg"
+            bundle_dir.mkdir(parents=True)
+            source = bundle_dir / f"memorph_{version}_aarch64.dmg"
+            source.write_bytes(b"fake dmg")
+
+            run_command(
+                [
+                    "python3",
+                    "scripts/prepare_desktop_release_assets.py",
+                    "--target-root",
+                    str(target_root),
+                    "--assets-dir",
+                    str(assets_dir),
+                    "--platform-id",
+                    "darwin-arm64",
+                ]
+            )
+            run_command(
+                [
+                    "python3",
+                    "scripts/verify_desktop_release_assets.py",
+                    "--assets-dir",
+                    str(assets_dir),
+                    "--version",
+                    version,
+                    "--platform-id",
+                    "darwin-arm64",
+                ]
+            )
+
+            expected_asset = assets_dir / f"memorph-desktop-v{version}-darwin-arm64.dmg"
+            self.assertTrue(expected_asset.exists())
 
     def test_generate_latest_release_manifest(self) -> None:
-        version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+        version = tomllib.loads((ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             release_assets = tmp_path / "release-assets"
@@ -167,6 +221,7 @@ class ReleaseScriptsTest(unittest.TestCase):
             (release_assets / f"memorph-v{version}-linux-x64-gnu.tar.gz").write_bytes(b"cli")
             (release_assets / "SHA256SUMS.txt").write_text("checksum\n", encoding="utf-8")
             (desktop_assets / f"memorph-desktop-v{version}-darwin-arm64.dmg").write_bytes(b"dmg")
+            (desktop_assets / f"memorph-desktop-v{version}-linux-x64-gnu.deb").write_bytes(b"deb")
             (desktop_assets / "SHA256SUMS-desktop.txt").write_text("checksum\n", encoding="utf-8")
             output = tmp_path / "latest.json"
 
@@ -191,10 +246,11 @@ class ReleaseScriptsTest(unittest.TestCase):
             payload = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(payload["version"], f"v{version}")
             self.assertTrue(any(asset["name"].endswith(".dmg") for asset in payload["assets"]))
+            self.assertTrue(any(asset["name"].endswith(".deb") for asset in payload["assets"]))
 
     def test_install_script_installs_from_release_assets(self) -> None:
         config = tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))
-        version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+        version = tomllib.loads((ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
         platforms = config["platforms"]
 
         with tempfile.TemporaryDirectory() as tmp:

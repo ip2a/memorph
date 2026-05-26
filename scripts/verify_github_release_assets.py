@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_cargo_package() -> dict[str, object]:
-    cargo_toml = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    cargo_toml = (ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8")
     return tomllib.loads(cargo_toml)["package"]
 
 

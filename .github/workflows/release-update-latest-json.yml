@@ -32,7 +32,7 @@ jobs:
         run: |
           mkdir -p release-assets desktop-release-assets
           gh release download "v${{ inputs.version }}" --dir release-assets --pattern '*.tar.gz' --pattern '*.zip' --pattern 'SHA256SUMS.txt'
-          gh release download "v${{ inputs.version }}" --dir desktop-release-assets --pattern 'memorph-desktop-v*.dmg' --pattern 'SHA256SUMS-desktop.txt'
+          gh release download "v${{ inputs.version }}" --dir desktop-release-assets --pattern 'memorph-desktop-v*' --pattern 'SHA256SUMS-desktop.txt'
 
       - name: Generate latest.json
         shell: bash

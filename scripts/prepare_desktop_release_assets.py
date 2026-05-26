@@ -3,24 +3,29 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import re
 import shutil
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-DESKTOP_TARGETS = [
-    {
-        "platform_id": "darwin-arm64",
-        "target": "aarch64-apple-darwin",
-        "extension": ".dmg",
-    }
-]
-
 
 def read_cargo_package() -> dict[str, object]:
-    return tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+    return tomllib.loads((ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+
+
+def load_desktop_targets() -> list[dict[str, object]]:
+    return tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))["desktop_targets"]
+
+
+def select_desktop_targets(platform_ids: list[str]) -> list[dict[str, object]]:
+    targets = load_desktop_targets()
+    if not platform_ids:
+        return targets
+    selected = [target for target in targets if str(target["platform_id"]) in platform_ids]
+    if not selected:
+        raise SystemExit(f"[error] No desktop targets matched platform filters: {platform_ids}")
+    return selected
 
 
 def sha256(path: Path) -> str:
@@ -38,32 +43,32 @@ def display_path(path: Path) -> Path:
         return path
 
 
-def find_single_bundle(target_root: Path, version: str, platform_id: str, extension: str) -> Path:
-    architecture_markers = {
-        "darwin-arm64": ["aarch64", "arm64"],
-    }
-    version_pattern = re.escape(version)
+def find_single_bundle(
+    target_root: Path,
+    version: str,
+    extension: str,
+    markers: list[str],
+) -> Path:
     matches: list[Path] = []
     for path in target_root.rglob(f"*{extension}"):
         if not path.is_file():
             continue
-        if "bundle" not in path.parts:
-            continue
         filename = path.name
-        if not re.search(version_pattern, filename):
+        if version not in filename:
             continue
-        if not any(marker in filename for marker in architecture_markers.get(platform_id, [])):
+        lowered = filename.lower()
+        if markers and not any(marker.lower() in lowered for marker in markers):
             continue
         matches.append(path)
 
     if not matches:
         raise FileNotFoundError(
-            f"No desktop bundle found under {target_root} for version={version} platform={platform_id}"
+            f"No desktop bundle found under {target_root} for version={version} extension={extension}"
         )
     if len(matches) != 1:
         names = ", ".join(str(path.relative_to(target_root)) for path in matches)
         raise RuntimeError(
-            f"Expected exactly one desktop bundle for version={version} platform={platform_id}, found: {names}"
+            f"Expected exactly one desktop bundle for version={version} extension={extension}, found: {names}"
         )
     return matches[0]
 
@@ -80,10 +85,19 @@ def main() -> None:
         default="desktop-release-assets",
         help="output directory for release-ready desktop assets",
     )
+    parser.add_argument(
+        "--platform-id",
+        action="append",
+        default=[],
+        help="limit processing to one or more desktop platform ids",
+    )
     args = parser.parse_args()
 
     cargo_package = read_cargo_package()
-    package_name = str(cargo_package["name"])
+    config = tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))
+    meta = config["meta"]
+    desktop_targets = select_desktop_targets(args.platform_id)
+    package_name = str(meta.get("binary_name", cargo_package["name"]))
     version = str(cargo_package["version"])
 
     target_root = (ROOT / args.target_root).resolve()
@@ -91,12 +105,12 @@ def main() -> None:
     assets_dir.mkdir(parents=True, exist_ok=True)
 
     copied_assets: list[Path] = []
-    for desktop_target in DESKTOP_TARGETS:
+    for desktop_target in desktop_targets:
         source = find_single_bundle(
             target_root=target_root,
             version=version,
-            platform_id=desktop_target["platform_id"],
             extension=desktop_target["extension"],
+            markers=[str(item) for item in desktop_target.get("filename_markers", [])],
         )
         destination = assets_dir / (
             f"{package_name}-desktop-v{version}-{desktop_target['platform_id']}{desktop_target['extension']}"

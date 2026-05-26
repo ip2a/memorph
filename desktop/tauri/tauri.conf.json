@@ -5,14 +5,26 @@
   "identifier": "com.memorph.desktop",
   "app": {
     "windows": [],
+    "withGlobalTauri": true,
     "security": {
       "csp": null
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "dmg",
+      "deb",
+      "appimage",
+      "nsis"
+    ],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      }
+    },
     "icon": [
+      "icons/icon.ico",
       "icons/icon.icns",
       "icons/icon.png"
     ]

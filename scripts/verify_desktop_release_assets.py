@@ -8,11 +8,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-EXPECTED_DESKTOP_PLATFORMS = ["darwin-arm64"]
-
 
 def read_cargo_package() -> dict[str, object]:
-    return tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+    return tomllib.loads((ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+
+
+def load_desktop_targets() -> list[dict[str, object]]:
+    return tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))["desktop_targets"]
+
+
+def select_desktop_targets(platform_ids: list[str]) -> list[dict[str, object]]:
+    targets = load_desktop_targets()
+    if not platform_ids:
+        return targets
+    selected = [target for target in targets if str(target["platform_id"]) in platform_ids]
+    if not selected:
+        raise SystemExit(f"[error] No desktop targets matched platform filters: {platform_ids}")
+    return selected
 
 
 def sha256(path: Path) -> str:
@@ -35,10 +47,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Verify desktop release assets")
     parser.add_argument("--assets-dir", default="desktop-release-assets", help="release asset directory")
     parser.add_argument("--version", help="released version; defaults to Cargo.toml version")
+    parser.add_argument(
+        "--platform-id",
+        action="append",
+        default=[],
+        help="limit verification to one or more desktop platform ids",
+    )
     args = parser.parse_args()
 
     cargo_package = read_cargo_package()
-    package_name = str(cargo_package["name"])
+    config = tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))
+    meta = config["meta"]
+    desktop_targets = select_desktop_targets(args.platform_id)
+    binary_name = str(meta.get("binary_name", cargo_package["name"]))
     version = args.version or str(cargo_package["version"])
     assets_dir = (ROOT / args.assets_dir).resolve()
     checksum_path = assets_dir / "SHA256SUMS-desktop.txt"
@@ -47,7 +68,8 @@ def main() -> None:
         raise SystemExit(f"[error] Missing desktop checksum file: {checksum_path}")
 
     expected_names = {
-        f"{package_name}-desktop-v{version}-{platform}.dmg" for platform in EXPECTED_DESKTOP_PLATFORMS
+        f"{binary_name}-desktop-v{version}-{target['platform_id']}{target['extension']}"
+        for target in desktop_targets
     }
     actual_names = {
         path.name

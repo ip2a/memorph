@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_cargo_package() -> dict[str, object]:
-    cargo_toml = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    cargo_toml = (ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8")
     return tomllib.loads(cargo_toml)["package"]
 
 
@@ -139,10 +139,11 @@ def update_memorph_python_dependencies(version: str, check: bool) -> None:
 
 
 def sync_cargo_lockfile(check: bool, check_lockfile: bool) -> None:
+    rust_root = ROOT / "rust"
     if check and check_lockfile:
         subprocess.run(
             ["cargo", "metadata", "--locked", "--format-version", "1"],
-            cwd=ROOT,
+            cwd=rust_root,
             check=True,
             stdout=subprocess.DEVNULL,
         )
@@ -156,7 +157,7 @@ def sync_cargo_lockfile(check: bool, check_lockfile: bool) -> None:
         return
     if check:
         return
-    subprocess.run(["cargo", "generate-lockfile"], cwd=ROOT, check=True)
+    subprocess.run(["cargo", "generate-lockfile"], cwd=rust_root, check=True)
     subprocess.run(["cargo", "generate-lockfile"], cwd=ROOT / "desktop" / "tauri", check=True)
     print("[ok] Synced Cargo.lock")
 
@@ -193,6 +194,10 @@ def main() -> None:
     desktop_cargo = ROOT / "desktop" / "tauri" / "Cargo.toml"
     update_toml_package_version(desktop_cargo, version, args.check)
     print(f"[ok] Version aligned: {desktop_cargo.relative_to(ROOT)}")
+
+    app_cargo = ROOT / "rust" / "apps" / "memorph" / "Cargo.toml"
+    update_toml_package_version(app_cargo, version, args.check)
+    print(f"[ok] Version aligned: {app_cargo.relative_to(ROOT)}")
 
     tauri_config = ROOT / "desktop" / "tauri" / "tauri.conf.json"
     update_tauri_config_version(tauri_config, version, args.check)

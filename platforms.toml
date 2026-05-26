@@ -61,3 +61,51 @@ npm_dir = "memorph-bin-win32-x64-msvc"
 python_package = "memorph-bin-win32-x64-msvc"
 python_module = "memorph_bin_win32_x64_msvc"
 python_marker = "platform_system == 'Windows' and platform_machine == 'AMD64'"
+
+[[desktop_targets]]
+platform_id = "darwin-arm64"
+target = "aarch64-apple-darwin"
+runner = "macos-15"
+bundle = "dmg"
+extension = ".dmg"
+filename_markers = ["aarch64", "arm64"]
+
+[[desktop_targets]]
+platform_id = "linux-x64-gnu"
+target = "x86_64-unknown-linux-gnu"
+runner = "ubuntu-22.04"
+bundle = "deb"
+extension = ".deb"
+filename_markers = ["amd64", "x86_64"]
+
+[[desktop_targets]]
+platform_id = "linux-x64-gnu"
+target = "x86_64-unknown-linux-gnu"
+runner = "ubuntu-22.04"
+bundle = "appimage"
+extension = ".AppImage"
+filename_markers = ["amd64", "x86_64"]
+
+[[desktop_targets]]
+platform_id = "linux-arm64-gnu"
+target = "aarch64-unknown-linux-gnu"
+runner = "ubuntu-22.04-arm"
+bundle = "deb"
+extension = ".deb"
+filename_markers = ["arm64", "aarch64"]
+
+[[desktop_targets]]
+platform_id = "linux-arm64-gnu"
+target = "aarch64-unknown-linux-gnu"
+runner = "ubuntu-22.04-arm"
+bundle = "appimage"
+extension = ".AppImage"
+filename_markers = ["arm64", "aarch64"]
+
+[[desktop_targets]]
+platform_id = "win32-x64-msvc"
+target = "x86_64-pc-windows-msvc"
+runner = "windows-latest"
+bundle = "nsis"
+extension = ".exe"
+filename_markers = ["x64", "amd64", "setup"]

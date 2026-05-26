@@ -11,13 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_cargo_package() -> dict[str, object]:
-    cargo_toml = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    cargo_toml = (ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8")
     return tomllib.loads(cargo_toml)["package"]
 
 
-def load_platform_config() -> tuple[dict[str, str], list[dict[str, str]]]:
+def load_platform_config() -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, object]]]:
     data = tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))
-    return data["meta"], data["platforms"]
+    return data["meta"], data["platforms"], data.get("desktop_targets", [])
 
 
 def run_check(command: list[str]) -> None:
@@ -26,21 +26,31 @@ def run_check(command: list[str]) -> None:
 
 def build_readiness_report() -> dict[str, object]:
     cargo_package = read_cargo_package()
-    meta, platforms = load_platform_config()
-    package_name = str(cargo_package["name"])
+    meta, platforms, desktop_targets = load_platform_config()
+    cargo_name = str(cargo_package["name"])
+    binary_name = str(meta["binary_name"])
     version = str(cargo_package["version"])
     repository = str(cargo_package["repository"])
 
-    npm_packages = [package_name, *[platform["npm_package"] for platform in platforms]]
-    python_packages = [package_name, *[platform["python_package"] for platform in platforms]]
+    npm_packages = [binary_name, *[platform["npm_package"] for platform in platforms]]
+    python_packages = [binary_name, *[platform["python_package"] for platform in platforms]]
     platform_ids = [platform["id"] for platform in platforms]
+    desktop_assets = [
+        {
+            "platform_id": str(target["platform_id"]),
+            "bundle": str(target["bundle"]),
+            "extension": str(target["extension"]),
+        }
+        for target in desktop_targets
+    ]
 
     return {
-        "package_name": package_name,
+        "package_name": binary_name,
         "version": version,
         "repository": repository,
-        "binary_name": meta["binary_name"],
+        "binary_name": binary_name,
         "platforms": platform_ids,
+        "desktop_assets": desktop_assets,
         "npm_packages": npm_packages,
         "python_packages": python_packages,
         "workflows": {
@@ -78,12 +88,13 @@ def build_readiness_report() -> dict[str, object]:
                 "repository": repository.removeprefix("https://github.com/"),
                 "workflow": ".github/workflows/release-publish-crates.yml",
                 "environment": "crates",
-                "packages": [package_name],
+                "packages": [cargo_name, binary_name],
             },
         },
         "local_checks": [
             "python3 scripts/release_preflight.py",
             "python3 scripts/test_release_scripts.py",
+            "python3 scripts/test_web_ui_invariants.py",
         ],
         "release_sequence": [
             "Update Cargo.toml version",
@@ -100,7 +111,7 @@ def build_readiness_report() -> dict[str, object]:
             "Run post-release-verify with version X.Y.Z",
             "Run release-update-latest-json with version X.Y.Z",
             "Confirm install.sh installs the released version from GitHub Release",
-            "Confirm desktop dmg asset exists on the same GitHub Release",
+            "Confirm desktop release assets exist on the same GitHub Release",
         ],
     }
 
@@ -112,6 +123,9 @@ def print_text_report(report: dict[str, object]) -> None:
     print("Platforms:")
     for platform in report["platforms"]:
         print(f"  - {platform}")
+    print("Desktop Assets:")
+    for item in report["desktop_assets"]:
+        print(f"  - {item['platform_id']} ({item['bundle']}{item['extension']})")
     print("Official Install:")
     print(f"  - shell: {report['official_install']['shell']}")
     print(f"  - direct release: {report['official_install']['direct_release']}")

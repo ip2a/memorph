@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import tomllib
 from pathlib import Path
@@ -11,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_cargo_package() -> dict[str, object]:
-    cargo_toml = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    cargo_toml = (ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8")
     return tomllib.loads(cargo_toml)["package"]
 
 
@@ -30,9 +31,9 @@ def validate_cargo_metadata(cargo_package: dict[str, object]) -> None:
     print("[ok] Cargo package metadata is complete for release")
 
 
-def load_platform_config() -> tuple[dict[str, str], list[dict[str, str]]]:
+def load_platform_config() -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, object]]]:
     data = tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))
-    return data["meta"], data["platforms"]
+    return data["meta"], data["platforms"], data.get("desktop_targets", [])
 
 
 def read_json(path: Path) -> dict[str, object]:
@@ -57,6 +58,16 @@ def validate_unique_platforms(platforms: list[dict[str, str]]) -> None:
         seen_npm.add(npm_package)
         seen_python.add(python_package)
     print(f"[ok] Platform matrix has {len(platforms)} unique platforms")
+
+
+def validate_desktop_targets(desktop_targets: list[dict[str, object]]) -> None:
+    seen: set[tuple[str, str]] = set()
+    for target in desktop_targets:
+        key = (str(target["platform_id"]), str(target["bundle"]))
+        if key in seen:
+            raise SystemExit(f"[error] Duplicate desktop target: {key[0]} bundle={key[1]}")
+        seen.add(key)
+    print(f"[ok] Desktop target matrix has {len(desktop_targets)} unique bundle targets")
 
 
 def validate_npm_packages(package_name: str, version: str, repository_url: str, platforms: list[dict[str, str]]) -> None:
@@ -128,7 +139,7 @@ def validate_dist(dist_root: Path, platforms: list[dict[str, str]]) -> None:
     print(f"[ok] dist artifacts exist under {dist_root}")
 
 
-def validate_desktop_metadata(version: str, package_name: str) -> None:
+def validate_desktop_metadata(version: str, package_name: str, desktop_targets: list[dict[str, object]]) -> None:
     desktop_cargo_path = ROOT / "desktop" / "tauri" / "Cargo.toml"
     desktop_cargo = tomllib.loads(desktop_cargo_path.read_text(encoding="utf-8"))
     desktop_package = desktop_cargo["package"]
@@ -142,7 +153,92 @@ def validate_desktop_metadata(version: str, package_name: str) -> None:
         raise SystemExit(f"[error] desktop tauri.conf version mismatch in {tauri_config_path}")
     if tauri_config.get("productName") != package_name:
         raise SystemExit(f"[error] desktop productName mismatch in {tauri_config_path}")
+    bundle_config = tauri_config.get("bundle", {})
+    bundle_targets = bundle_config.get("targets", [])
+    expected_bundles = {str(target["bundle"]) for target in desktop_targets}
+    if set(bundle_targets) != expected_bundles:
+        raise SystemExit(
+            f"[error] desktop bundle.targets mismatch in {tauri_config_path}; expected={sorted(expected_bundles)} actual={sorted(bundle_targets)}"
+        )
+    icons = bundle_config.get("icon", [])
+    if not isinstance(icons, list):
+        raise SystemExit(f"[error] desktop bundle.icon must be a list in {tauri_config_path}")
+    for icon in icons:
+        icon_path = ROOT / "desktop" / "tauri" / str(icon)
+        if not icon_path.exists():
+            raise SystemExit(f"[error] Missing desktop icon asset: {icon_path}")
     print("[ok] Desktop metadata matches Cargo version")
+
+
+def validate_desktop_workflows(desktop_targets: list[dict[str, object]]) -> None:
+    expected: dict[str, dict[str, object]] = {}
+    for item in desktop_targets:
+        platform_id = str(item["platform_id"])
+        runner = str(item["runner"])
+        target = str(item["target"])
+        bundle = str(item["bundle"])
+        current = expected.setdefault(
+            platform_id,
+            {"runner": runner, "target": target, "bundles": set()},
+        )
+        if current["runner"] != runner or current["target"] != target:
+            raise SystemExit(f"[error] Inconsistent desktop target metadata for {platform_id}")
+        current["bundles"].add(bundle)
+
+    build_workflow_path = ROOT / ".github" / "workflows" / "release-build-desktop.yml"
+    build_workflow = build_workflow_path.read_text(encoding="utf-8")
+    pattern = re.compile(
+        r"^\s*-\s+platform_id:\s*(?P<platform_id>\S+)\n"
+        r"\s+runner:\s*(?P<runner>\S+)\n"
+        r"\s+target:\s*(?P<target>\S+)\n"
+        r"\s+bundles:\s*(?P<bundles>[^\n]+)",
+        re.MULTILINE,
+    )
+    actual: dict[str, dict[str, object]] = {}
+    for match in pattern.finditer(build_workflow):
+        platform_id = match.group("platform_id")
+        actual[platform_id] = {
+            "runner": match.group("runner"),
+            "target": match.group("target"),
+            "bundles": {item.strip() for item in match.group("bundles").split(",") if item.strip()},
+        }
+
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        raise SystemExit(
+            f"[error] Desktop build workflow platforms mismatch; missing={missing or '[]'} extra={extra or '[]'}"
+        )
+
+    for platform_id, info in expected.items():
+        actual_info = actual[platform_id]
+        if actual_info["runner"] != info["runner"] or actual_info["target"] != info["target"]:
+            raise SystemExit(
+                f"[error] Desktop build workflow target mismatch for {platform_id}; "
+                f"expected runner={info['runner']} target={info['target']}"
+            )
+        if actual_info["bundles"] != info["bundles"]:
+            raise SystemExit(
+                f"[error] Desktop build workflow bundles mismatch for {platform_id}; "
+                f"expected={sorted(info['bundles'])} actual={sorted(actual_info['bundles'])}"
+            )
+
+    verify_workflow_path = ROOT / ".github" / "workflows" / "post-release-verify.yml"
+    verify_workflow = verify_workflow_path.read_text(encoding="utf-8")
+    required_fragments = [
+        "verify-desktop-dmg:",
+        "desktop-release-assets/*.deb",
+        "desktop-release-assets/*.AppImage",
+        "desktop-release-assets/*.exe",
+        "desktop-release-assets/*.dmg",
+    ]
+    for fragment in required_fragments:
+        if fragment not in verify_workflow:
+            raise SystemExit(
+                f"[error] Desktop post-release verify workflow missing required fragment: {fragment}"
+            )
+
+    print("[ok] Desktop workflows match the configured platform matrix")
 
 
 def validate_version_sync() -> None:
@@ -160,20 +256,22 @@ def main() -> None:
     args = parser.parse_args()
 
     cargo_package = read_cargo_package()
-    package_name = read_required_string(cargo_package, "name")
     version = read_required_string(cargo_package, "version")
     repository_url = read_required_string(cargo_package, "repository")
     validate_cargo_metadata(cargo_package)
-    meta, platforms = load_platform_config()
+    meta, platforms, desktop_targets = load_platform_config()
     if meta.get("version_source") != "Cargo.toml":
         raise SystemExit("[error] platforms.toml meta.version_source must be Cargo.toml")
-    if not meta.get("binary_name"):
+    package_name = meta.get("binary_name")
+    if not package_name:
         raise SystemExit("[error] platforms.toml meta.binary_name is required")
 
     validate_unique_platforms(platforms)
+    validate_desktop_targets(desktop_targets)
     validate_npm_packages(package_name, version, repository_url, platforms)
     validate_python_packages(package_name, version, platforms)
-    validate_desktop_metadata(version, package_name)
+    validate_desktop_metadata(version, package_name, desktop_targets)
+    validate_desktop_workflows(desktop_targets)
     if not args.skip_sync_check:
         validate_version_sync()
     if args.dist_root:

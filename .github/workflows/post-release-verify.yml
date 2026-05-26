@@ -47,7 +47,7 @@ jobs:
           done
 
   verify-desktop-release:
-    runs-on: macos-15
+    runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -65,11 +65,37 @@ jobs:
         shell: bash
         run: |
           mkdir -p desktop-release-assets
-          gh release download "v${{ inputs.version }}" --dir desktop-release-assets --pattern 'memorph-desktop-v*.dmg' --pattern 'SHA256SUMS-desktop.txt'
+          gh release download "v${{ inputs.version }}" --dir desktop-release-assets --pattern 'memorph-desktop-v*' --pattern 'SHA256SUMS-desktop.txt'
 
       - name: Verify desktop release asset layout and checksums
         shell: bash
         run: python3 scripts/verify_desktop_release_assets.py --assets-dir desktop-release-assets --version "${{ inputs.version }}"
+
+      - name: Verify Linux desktop packages
+        shell: bash
+        run: |
+          for asset in desktop-release-assets/*.deb; do
+            dpkg-deb --info "$asset" >/dev/null
+          done
+          for asset in desktop-release-assets/*.AppImage; do
+            file "$asset" | grep -E 'ELF|executable'
+          done
+          for asset in desktop-release-assets/*.exe; do
+            file "$asset" | grep -E 'PE32|PE32\\+'
+          done
+
+  verify-desktop-dmg:
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Download macOS desktop bundle
+        shell: bash
+        run: |
+          mkdir -p desktop-release-assets
+          gh release download "v${{ inputs.version }}" --dir desktop-release-assets --pattern 'memorph-desktop-v*.dmg'
 
       - name: Verify dmg images
         shell: bash

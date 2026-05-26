@@ -31,6 +31,10 @@ const state = {
     report: null,
     pendingItems: [],
   },
+  compression: {
+    archives: [],
+    providers: [],
+  },
   modal: null,
   toasts: [],
 };
@@ -53,6 +57,16 @@ document.addEventListener("click", (event) => {
     event.preventDefault();
     navigate(nav.dataset.nav);
     return;
+  }
+
+  const externalLink = event.target.closest('a[href]');
+  if (externalLink) {
+    const href = externalLink.getAttribute("href") || "";
+    if (isExternalHttpUrl(href)) {
+      event.preventDefault();
+      void openExternalUrl(href);
+      return;
+    }
   }
 
   const action = event.target.closest("[data-action]");
@@ -154,6 +168,13 @@ async function loadRoute() {
       );
     } else if (route.name === "manager") {
       state.home.sharedGroups = await api("/api/v1/share/status");
+    } else if (route.name === "compression") {
+      const [archives, providers] = await Promise.all([
+        api("/api/v1/compression/archives"),
+        api("/api/v1/compression/providers"),
+      ]);
+      state.compression.archives = archives;
+      state.compression.providers = providers;
     }
   } catch (error) {
     toast(t("error"), error.message, true);
@@ -241,6 +262,11 @@ function toggleProvider(provider, checked) {
   if (checked) next.add(provider);
   else next.delete(provider);
   state.home.providers = [...next];
+  if (state.modal?.view === "agent-filter") {
+    openAgentFilterModal();
+  } else {
+    render();
+  }
   void persistProvidersAndReload();
 }
 
@@ -263,11 +289,32 @@ async function persistProvidersAndReload() {
 
 async function handleAction(action, data, trigger = null) {
   switch (action) {
+    case "open-external":
+      await openExternalUrl(data.url || trigger?.getAttribute("href") || "");
+      break;
     case "open-settings":
       openSettingsModal();
       break;
     case "open-manager":
       navigate("/manager");
+      break;
+    case "open-compression-restore":
+      openCompressionRestoreModal(data.archiveRef || "");
+      break;
+    case "open-compression-expand":
+      openCompressionExpandModal();
+      break;
+    case "refresh-compression":
+      {
+        const [archives, providers] = await Promise.all([
+          api("/api/v1/compression/archives"),
+          api("/api/v1/compression/providers"),
+        ]);
+        state.compression.archives = archives;
+        state.compression.providers = providers;
+      }
+      toast(t("refreshed"), t("compressionArchives"));
+      render();
       break;
     case "open-import":
       openImportModal();
@@ -422,6 +469,12 @@ async function handleSubmit(kind, formData) {
       case "backup-manager":
         await runManagerBackup();
         break;
+      case "restore-compression":
+        await runCompressionRestore(formData);
+        break;
+      case "expand-compression":
+        await runCompressionExpand(formData);
+        break;
       default:
         break;
     }
@@ -570,6 +623,7 @@ function openAgentFilterModal() {
     })
     .join("");
   state.modal = {
+    view: "agent-filter",
     kind: "custom",
     title: t("terminalAgents"),
     body: `
@@ -630,6 +684,73 @@ function openExportModal(provider, sessionId) {
         </label>
       </div>`,
     submitLabel: t("export"),
+  };
+  render();
+}
+
+function openCompressionRestoreModal(archiveRef) {
+  const defaultPrefix = archiveRef
+    .replace(/^memorph-archive:\/\//, "")
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  state.modal = {
+    kind: "form",
+    title: t("restoreCompressionArchive"),
+    submit: "restore-compression",
+    body: `
+      <input type="hidden" name="archive_ref" value="${escapeAttr(archiveRef)}">
+      <div class="stack">
+        <div class="verify-block">
+          <span class="block-label">${t("archiveRef")}</span>
+          <div class="path-line">${escapeHtml(archiveRef)}</div>
+        </div>
+        <label class="field">
+          <span>${t("outputPrefix")}</span>
+          <input name="output_prefix" value="${escapeAttr(defaultPrefix || "compression_archive")}">
+        </label>
+        <label class="field">
+          <span>${t("format")}</span>
+          <select name="format">
+            <option value="json">json</option>
+            <option value="md">md</option>
+            <option value="html">html</option>
+            <option value="morph">morph</option>
+            <option value="both">both</option>
+          </select>
+        </label>
+      </div>`,
+    submitLabel: t("restore"),
+  };
+  render();
+}
+
+function openCompressionExpandModal() {
+  state.modal = {
+    kind: "form",
+    title: t("expandCompressionSession"),
+    submit: "expand-compression",
+    body: `
+      <div class="stack">
+        <label class="field">
+          <span>${t("sessionFile")}</span>
+          <input name="file" placeholder="${escapeAttr(t("fileOrIdPlaceholder"))}">
+        </label>
+        <label class="field">
+          <span>${t("outputPrefix")}</span>
+          <input name="output_prefix" placeholder="session_expanded">
+        </label>
+        <label class="field">
+          <span>${t("format")}</span>
+          <select name="format">
+            <option value="json">json</option>
+            <option value="md">md</option>
+            <option value="html">html</option>
+            <option value="morph">morph</option>
+            <option value="both">both</option>
+          </select>
+        </label>
+      </div>`,
+    submitLabel: t("expand"),
   };
   render();
 }
@@ -1186,6 +1307,40 @@ async function runExport(formData) {
   });
 }
 
+async function runCompressionRestore(formData) {
+  const result = await api("/api/v1/compression/restore", {
+    method: "POST",
+    body: {
+      archive_ref: String(formData.get("archive_ref")),
+      output_prefix: emptyToNull(formData.get("output_prefix")),
+      format: String(formData.get("format")),
+    },
+  });
+  closeModal();
+  openActionResultModal({
+    title: t("restoreComplete"),
+    lines: result.files,
+  });
+}
+
+async function runCompressionExpand(formData) {
+  const file = String(formData.get("file") || "").trim();
+  if (!file) throw new Error(t("fileRequired"));
+  const result = await api("/api/v1/compression/expand", {
+    method: "POST",
+    body: {
+      file,
+      output_prefix: emptyToNull(formData.get("output_prefix")),
+      format: String(formData.get("format")),
+    },
+  });
+  closeModal();
+  openActionResultModal({
+    title: t("expandComplete"),
+    lines: result.files,
+  });
+}
+
 async function runRename(formData) {
   const provider = String(formData.get("provider"));
   const sessionId = String(formData.get("session_id"));
@@ -1617,7 +1772,7 @@ function render() {
     return;
   }
   appEl.innerHTML = `
-    <div class="app-shell ${state.route.name === "manager" ? "manager-shell" : ""}">
+    <div class="app-shell ${state.route.name === "manager" || state.route.name === "compression" ? "manager-shell" : ""}">
       <nav class="topbar">
         <div class="brand-cluster">
           <a class="brand" href="/" data-nav="/">memorph</a>
@@ -1628,9 +1783,10 @@ function render() {
           ${state.route.name === "shared-list" || state.route.name === "shared-detail" ? "" : `<a class="button" href="/shared" data-nav="/shared">${t("shared")}</a>`}
           <button type="button" data-action="open-workspace-switch">${t("switchWorkspace")}</button>
           <button type="button" data-action="open-import">${t("import")}</button>
+          ${state.route.name === "compression" ? "" : `<a class="button" href="/compression" data-nav="/compression">${t("compression")}</a>`}
           ${state.route.name === "manager" ? "" : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
           <button type="button" data-action="open-settings">${t("settings")}</button>
-          <a class="icon-button" href="https://github.com/ip2a/memorph" target="_blank" rel="noopener noreferrer" aria-label="GitHub repository" title="GitHub">
+          <a class="icon-button" href="https://github.com/ip2a/memorph" target="_blank" rel="noopener noreferrer" data-action="open-external" data-url="https://github.com/ip2a/memorph" aria-label="GitHub repository" title="GitHub">
             ${githubIcon()}
           </a>
         </div>
@@ -1656,6 +1812,8 @@ function pageTitle() {
   switch (state.route.name) {
     case "manager":
       return t("managerTitle");
+    case "compression":
+      return t("compressionTitle");
     case "shared-list":
       return t("sharedTitle");
     case "shared-detail":
@@ -1689,6 +1847,8 @@ function renderPage() {
       return `<div class="page-scroll">${renderSharedDetail()}</div>`;
     case "manager":
       return `<div class="page-scroll manager-page-scroll">${renderManagerPage()}</div>`;
+    case "compression":
+      return `<div class="page-scroll manager-page-scroll">${renderCompressionPage()}</div>`;
     default:
       return `<div class="page-scroll"><div class="empty-state">${t("notFound")}</div></div>`;
   }
@@ -2084,6 +2244,91 @@ function renderManagerPage() {
     </div>`;
 }
 
+function renderCompressionPage() {
+  const archives = state.compression.archives || [];
+  const providers = state.compression.providers || [];
+  const rows = archives
+    .map((archive) => {
+      const archiveRef = archive.archive_ref || "";
+      return `
+        <article class="manager-row">
+          <div class="manager-row-head">
+            <div class="manager-row-copy">
+              <div class="session-title">${escapeHtml(archive.canonical_id || t("compressionArchive"))}</div>
+              <div class="manager-meta">
+                <span>${escapeHtml(archive.source_provider_id || "—")} → ${escapeHtml(archive.target_provider_id || "—")}</span>
+                <span>${t("sourceEvents")}=${escapeHtml(String(archive.source_event_count ?? 0))}</span>
+                <span>${t("storedSize")}=${escapeHtml(formatBytes(archive.stored_size_bytes))}</span>
+                <span>${t("originalSize")}=${escapeHtml(formatBytes(archive.original_size_bytes))}</span>
+                <span>${t("compressionRatio")}=${escapeHtml(formatRatio(archive.compression_ratio))}</span>
+                <span>${t("createdAt")}=${escapeHtml(formatDate(archive.created_at))}</span>
+              </div>
+              <div class="path-line">${escapeHtml(archiveRef)}</div>
+            </div>
+            <div class="session-actions">
+              <button type="button" data-action="open-compression-restore" data-archive-ref="${escapeAttr(archiveRef)}">${t("restore")}</button>
+            </div>
+          </div>
+        </article>`;
+    })
+    .join("");
+
+  return `
+    <div class="manager-page-layout">
+      <section class="section-panel manager-control-panel">
+        <div class="stack">
+          <section class="manager-workspace-summary">
+            <div>
+              <span class="eyebrow">${t("compression")}</span>
+              <strong>${t("compressionTitle")}</strong>
+              <p>${t("compressionHint")}</p>
+            </div>
+          </section>
+          ${renderCompressionProviderSupport(providers)}
+          <button type="button" data-action="open-compression-expand">${t("expand")}</button>
+          <button class="invert" type="button" data-action="refresh-compression">${t("refresh")}</button>
+        </div>
+      </section>
+      <section class="section-panel manager-result-panel">
+        <div class="section-heading manager-section-head">
+          <div>
+            <strong>${t("compressionArchives")}</strong>
+            <span>${archives.length}</span>
+          </div>
+        </div>
+        <div class="manager-list">${rows || `<div class="empty-state">${t("emptyCompressionArchives")}</div>`}</div>
+      </section>
+    </div>`;
+}
+
+function renderCompressionProviderSupport(providers) {
+  const rows = providers
+    .map((provider) => {
+      const source = provider.detects_native_source ? t("native") : t("portable");
+      const target = provider.native_target_projection ? t("native") : t("portable");
+      const defaultProjection = provider.default_projection || "portable";
+      return `
+        <article class="manager-row">
+          <div class="manager-row-head">
+            <div class="manager-row-copy">
+              <div class="session-title">${escapeHtml(provider.provider_id || "—")}</div>
+              <div class="manager-meta">
+                <span>${t("source")}=${escapeHtml(source)}</span>
+                <span>${t("target")}=${escapeHtml(target)}</span>
+                <span>${t("defaultProjection")}=${escapeHtml(defaultProjection)}</span>
+              </div>
+            </div>
+          </div>
+        </article>`;
+    })
+    .join("");
+  return `
+    <section class="verify-block">
+      <span class="block-label">${t("providerCompressionSupport")}</span>
+      <div class="manager-list">${rows || `<div class="empty-state">${t("noProviders")}</div>`}</div>
+    </section>`;
+}
+
 function emptyManagerPreview() {
   return {
     items: [],
@@ -2324,6 +2569,29 @@ function githubIcon() {
   return `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.6 7.6 0 0 1 8 3.86c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
 }
 
+function isExternalHttpUrl(url) {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url, window.location.href);
+    return /^https?:$/.test(parsed.protocol) && parsed.origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+async function openExternalUrl(url) {
+  if (!url) return;
+  const tauriOpener = window.__TAURI__?.opener?.openUrl;
+  if (typeof tauriOpener === "function") {
+    await tauriOpener(url);
+    return;
+  }
+  const opened = window.open(url, "_blank", "noopener,noreferrer");
+  if (!opened) {
+    window.location.href = url;
+  }
+}
+
 function toast(title, message, error = false) {
   state.toasts = [...state.toasts, { title, message, error }].slice(-4);
   render();
@@ -2377,6 +2645,7 @@ function filterAndSortGroups(groups) {
 
 function parseRoute(pathname) {
   if (pathname === "/manager") return { name: "manager" };
+  if (pathname === "/compression") return { name: "compression" };
   if (pathname === "/shared") return { name: "shared-list" };
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)\/([^/]+)$/);
   if (sessionMatch) {
@@ -2677,6 +2946,12 @@ function formatBytes(value) {
     index += 1;
   }
   return `${size.toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+function formatRatio(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return `${(number * 100).toFixed(1)}%`;
 }
 
 function workspaceName(path) {

@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def read_cargo_package() -> dict[str, object]:
-    return tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]
+    return tomllib.loads((ROOT / "rust" / "crates" / "memorph" / "Cargo.toml").read_text(encoding="utf-8"))["package"]
 
 
 def list_release_assets(directory: Path) -> list[dict[str, str]]:
@@ -44,8 +44,10 @@ def main() -> None:
     args = parser.parse_args()
 
     cargo_package = read_cargo_package()
+    meta = tomllib.loads((ROOT / "platforms.toml").read_text(encoding="utf-8"))["meta"]
     version = args.version or str(cargo_package["version"])
     tag = args.tag or f"v{version}"
+    binary_name = str(meta.get("binary_name", cargo_package["name"]))
 
     assets: list[dict[str, str]] = []
     for directory in args.assets_dir:
@@ -55,7 +57,7 @@ def main() -> None:
             assets.append(asset)
 
     payload = {
-        "name": str(cargo_package["name"]),
+        "name": binary_name,
         "version": f"v{version}",
         "tag": tag,
         "release_url": f"https://github.com/{str(cargo_package['repository']).removeprefix('https://github.com/')}/releases/tag/{tag}",
