@@ -400,6 +400,10 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
             }
             "response_item" => {
                 if let Some(payload) = value.get("payload") {
+                    let msg_type = payload.get("type").and_then(|v| v.as_str());
+                    if msg_type == Some("token_count") {
+                        continue;
+                    }
                     events.push(codex_response_item_event(
                         payload,
                         timestamp,
@@ -640,6 +644,10 @@ fn codex_response_item_event(
                         });
                     }
                 }
+                "reasoning" => {
+                    // Skip reasoning blocks - they are provider-internal telemetry
+                    continue;
+                }
                 other => {
                     report.push_issue(MappingIssue {
                         level: MappingIssueLevel::Info,
@@ -726,13 +734,16 @@ fn codex_event_msg_event(
     };
 
     let mut blocks = Vec::new();
-    if let Some(text) = payload.get("message").and_then(|v| v.as_str()) {
+    let message_text = payload.get("message").and_then(|v| v.as_str());
+    let last_agent_text = payload.get("last_agent_message").and_then(|v| v.as_str());
+
+    if let Some(text) = message_text {
         blocks.push(EventBlock::Text {
             text: text.to_string(),
         });
     }
-    if let Some(text) = payload.get("last_agent_message").and_then(|v| v.as_str()) {
-        if !text.trim().is_empty() {
+    if let Some(text) = last_agent_text {
+        if message_text != Some(text) && !text.trim().is_empty() {
             blocks.push(EventBlock::Text {
                 text: text.to_string(),
             });
@@ -1890,5 +1901,128 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![workspace_a]
         );
+    }
+
+    #[test]
+    fn import_canonical_session_drops_token_count() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-tc",
+                    "timestamp": "2026-05-21T10:00:00Z",
+                    "cwd": "/tmp/project"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        { "type": "output_text", "text": "Hello" }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:02Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "input_tokens": 100,
+                        "output_tokens": 50
+                    }
+                }
+            })
+        )
+        .unwrap();
+
+        let imported = import_canonical_session(file.path()).unwrap();
+        // session_meta + message = 2 events; token_count is dropped
+        assert_eq!(imported.session.events.len(), 2);
+        assert!(!imported.session.events.iter().any(|event| {
+            event.blocks.iter().any(|block| matches!(block, EventBlock::ProviderPayload { kind, .. } if kind == "token_count"))
+        }));
+    }
+
+    #[test]
+    fn import_canonical_session_dedupes_last_agent_message() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-dedup",
+                    "timestamp": "2026-05-21T10:00:00Z",
+                    "cwd": "/tmp/project"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:01Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "message": "Same text",
+                    "last_agent_message": "Same text",
+                    "phase": "final_answer"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:02Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "turn-1",
+                    "last_agent_message": "Different text"
+                }
+            })
+        )
+        .unwrap();
+
+        let imported = import_canonical_session(file.path()).unwrap();
+        let events: Vec<_> = imported.session.events.iter().collect();
+
+        let agent_msg = events.iter().find(|e| e.id == "codex:event_msg:agent_message:2").unwrap();
+        let text_blocks: Vec<_> = agent_msg.blocks.iter().filter_map(|b| match b {
+            EventBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(text_blocks, vec!["Same text"]);
+
+        let complete_msg = events.iter().find(|e| e.id == "codex:event_msg:task_complete:3").unwrap();
+        let text_blocks: Vec<_> = complete_msg.blocks.iter().filter_map(|b| match b {
+            EventBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(text_blocks, vec!["Different text"]);
     }
 }
