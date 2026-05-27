@@ -73,7 +73,7 @@ jobs:
             build-essential \
             curl \
             file \
-            font-dejavu \
+            fonts-dejavu \
             libayatana-appindicator3-dev \
             libfuse2 \
             libgtk-3-dev \
