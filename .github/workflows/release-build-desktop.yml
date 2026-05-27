@@ -82,7 +82,8 @@ jobs:
             librsvg2-dev \
             libwebkit2gtk-4.1-dev \
             patchelf \
-            wget
+            wget \
+            xdg-utils
 
       - name: Install Tauri CLI
         shell: bash
