@@ -421,6 +421,7 @@ fn canonical_block_to_claude_content(block: &EventBlock) -> Option<Value> {
             "content": content,
             "is_error": is_error,
         })),
+        EventBlock::ProviderPayload { .. } => None,
         _ => {
             let text = canonical_block_text(block);
             (!text.trim().is_empty()).then(|| {
@@ -1177,5 +1178,14 @@ mod tests {
         assert!(!text.contains("old-event-1"));
         assert!(!text.contains("old-event-2"));
         assert!(!text.contains("old-event-3"));
+    }
+
+    #[test]
+    fn provider_payload_block_is_skipped_in_export() {
+        let block = EventBlock::ProviderPayload {
+            kind: "function_call".to_string(),
+            payload: serde_json::json!({ "name": "shell" }),
+        };
+        assert!(canonical_block_to_claude_content(&block).is_none());
     }
 }
