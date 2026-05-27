@@ -2,6 +2,7 @@ use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use crossterm::event::KeyEvent;
 use ratatui::widgets::TableState;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -11,36 +12,6 @@ use crate::config::UiLanguage;
 use crate::core::{self, ExportParams, SessionDetailView, SessionGroup, SessionItem, SwitchParams};
 use crate::i18n;
 use crate::{config, providers};
-
-pub fn provider_tabs(language: UiLanguage) -> Vec<String> {
-    let mut tabs = vec![i18n::text(language, "all").to_string()];
-    for filter in provider_tab_filters().into_iter().skip(1) {
-        if filter.len() == 1 {
-            let id = &filter[0];
-            tabs.push(
-                providers::find_provider(id)
-                    .map(|p| p.name().to_string())
-                    .unwrap_or_else(|| id.clone()),
-            );
-        } else {
-            tabs.push(i18n::text(language, "more").to_string());
-        }
-    }
-    tabs
-}
-
-fn provider_tab_filters() -> Vec<Vec<String>> {
-    let prefs = config::web_preferences().unwrap_or_default();
-    let mut filters = vec![Vec::new()];
-    for id in config::primary_provider_ids(&prefs) {
-        filters.push(vec![id]);
-    }
-    let folded = config::folded_provider_ids(&prefs);
-    if !folded.is_empty() {
-        filters.push(folded);
-    }
-    filters
-}
 
 pub const ACTION_OPTIONS: [SessionAction; 5] = [
     SessionAction::Switch,
@@ -105,6 +76,7 @@ pub enum SettingsField {
     Language,
     SessionsPerProvider,
     ShowOpenCodeSubagents,
+    SortProvidersBySessionCount,
     PrimaryAgents,
     Save,
 }
@@ -115,16 +87,20 @@ impl SettingsField {
             Self::Language => i18n::text(language, "interfaceLanguage"),
             Self::SessionsPerProvider => i18n::text(language, "sessionsPerProvider"),
             Self::ShowOpenCodeSubagents => i18n::text(language, "showSubagents"),
+            Self::SortProvidersBySessionCount => {
+                i18n::text(language, "sortProvidersBySessionCount")
+            }
             Self::PrimaryAgents => i18n::text(language, "primaryAgents"),
             Self::Save => i18n::text(language, "save"),
         }
     }
 }
 
-pub const SETTINGS_FIELDS: [SettingsField; 5] = [
+pub const SETTINGS_FIELDS: [SettingsField; 6] = [
     SettingsField::Language,
     SettingsField::SessionsPerProvider,
     SettingsField::ShowOpenCodeSubagents,
+    SettingsField::SortProvidersBySessionCount,
     SettingsField::PrimaryAgents,
     SettingsField::Save,
 ];
@@ -185,6 +161,7 @@ pub struct App {
 
     // List navigation
     pub table_state: TableState,
+    pub provider_filters_cache: Vec<Vec<String>>,
     pub selected_provider_tab: usize,
     pub main_focus: MainFocus,
 
@@ -197,6 +174,7 @@ pub struct App {
     pub settings_language: UiLanguage,
     pub settings_sessions_per_provider: usize,
     pub settings_show_opencode_subagents: bool,
+    pub settings_sort_providers_by_session_count: bool,
     pub settings_agent_order: Vec<String>,
     pub settings_primary_agents: Vec<String>,
     pub settings_agent_index: usize,
@@ -243,6 +221,7 @@ impl App {
             error_timeout: None,
             ui_language: prefs.language,
             table_state: TableState::default(),
+            provider_filters_cache: Vec::new(),
             selected_provider_tab: 0,
             main_focus: MainFocus::Sessions,
             workspace_modal_open: false,
@@ -253,6 +232,7 @@ impl App {
             settings_language: prefs.language,
             settings_sessions_per_provider: prefs.sessions_per_provider,
             settings_show_opencode_subagents: prefs.show_opencode_subagents,
+            settings_sort_providers_by_session_count: prefs.sort_providers_by_session_count,
             settings_agent_order: config::ordered_provider_ids(&prefs),
             settings_primary_agents: config::primary_provider_ids(&prefs),
             settings_agent_index: 0,
@@ -281,6 +261,9 @@ impl App {
     }
 
     pub fn load_sessions(&mut self) -> Result<()> {
+        self.provider_filters_cache = provider_tab_filters_for_workspace(self.workspace.as_deref());
+        let tab_count = self.provider_filters_cache.len();
+        self.selected_provider_tab = self.selected_provider_tab.min(tab_count.saturating_sub(1));
         let providers = self.get_filtered_providers();
         let params = core::SessionListParams {
             all: self.show_all,
@@ -307,15 +290,10 @@ impl App {
     }
 
     fn get_filtered_providers(&self) -> Vec<String> {
-        if self.selected_provider_tab == 0 {
-            let prefs = config::web_preferences().unwrap_or_default();
-            config::ordered_provider_ids(&prefs)
-        } else {
-            provider_tab_filters()
-                .get(self.selected_provider_tab)
-                .cloned()
-                .unwrap_or_default()
-        }
+        self.provider_filters_cache
+            .get(self.selected_provider_tab)
+            .cloned()
+            .unwrap_or_default()
     }
 
     #[allow(dead_code)]
@@ -327,18 +305,16 @@ impl App {
     }
 
     pub fn next_provider_tab(&mut self) {
-        let tab_count = provider_tabs(self.ui_language).len();
+        let tab_count = self.provider_tabs().len();
         self.selected_provider_tab = (self.selected_provider_tab + 1) % tab_count;
-        self.save_provider_tab();
         if let Err(e) = self.load_sessions() {
             self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
         }
     }
 
     pub fn previous_provider_tab(&mut self) {
-        let tab_count = provider_tabs(self.ui_language).len();
+        let tab_count = self.provider_tabs().len();
         self.selected_provider_tab = (self.selected_provider_tab + tab_count - 1) % tab_count;
-        self.save_provider_tab();
         if let Err(e) = self.load_sessions() {
             self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
         }
@@ -346,21 +322,12 @@ impl App {
 
     #[allow(dead_code)]
     pub fn select_provider_tab(&mut self, tab: usize) {
-        if tab < provider_tabs(self.ui_language).len() {
+        if tab < self.provider_tabs().len() {
             self.selected_provider_tab = tab;
-            self.save_provider_tab();
             if let Err(e) = self.load_sessions() {
                 self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
             }
         }
-    }
-
-    fn save_provider_tab(&self) {
-        let Some(ref workspace) = self.workspace else {
-            return;
-        };
-        let providers = tab_to_providers(self.selected_provider_tab);
-        let _ = config::set_workspace_providers(workspace, providers);
     }
 
     pub fn select_next(&mut self) {
@@ -509,6 +476,8 @@ impl App {
                 self.settings_language = prefs.language;
                 self.settings_sessions_per_provider = prefs.sessions_per_provider;
                 self.settings_show_opencode_subagents = prefs.show_opencode_subagents;
+                self.settings_sort_providers_by_session_count =
+                    prefs.sort_providers_by_session_count;
                 self.settings_agent_order = config::ordered_provider_ids(&prefs);
                 self.settings_primary_agents = config::primary_provider_ids(&prefs);
                 self.settings_agent_index = self
@@ -561,6 +530,10 @@ impl App {
             }
             SettingsField::ShowOpenCodeSubagents => {
                 self.settings_show_opencode_subagents = !self.settings_show_opencode_subagents;
+            }
+            SettingsField::SortProvidersBySessionCount => {
+                self.settings_sort_providers_by_session_count =
+                    !self.settings_sort_providers_by_session_count;
             }
             SettingsField::PrimaryAgents => {
                 if self.settings_agent_order.is_empty() {
@@ -638,6 +611,7 @@ impl App {
             Some(self.settings_sessions_per_provider),
             Some(self.settings_language),
             Some(self.settings_show_opencode_subagents),
+            Some(self.settings_sort_providers_by_session_count),
             None,
             None,
         )
@@ -657,7 +631,10 @@ impl App {
                 );
                 self.selected_provider_tab = self
                     .selected_provider_tab
-                    .min(provider_tabs(self.ui_language).len().saturating_sub(1));
+                    .min(self.provider_tabs().len().saturating_sub(1));
+                if let Err(e) = self.load_sessions() {
+                    self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
+                }
             }
             Err(e) => self.show_error(e.to_string()),
         }
@@ -1383,11 +1360,125 @@ impl App {
             Screen::SessionList => super::screens::session_list::handle_key(self, key),
         }
     }
+
+    pub fn provider_tabs(&self) -> Vec<String> {
+        provider_tabs_from_filters(self.ui_language, &self.provider_filters_cache)
+    }
+
+    pub fn provider_filters(&self) -> Vec<Vec<String>> {
+        self.provider_filters_cache.clone()
+    }
 }
 
-/// Map TUI tab index to provider list for config persistence.
-fn tab_to_providers(tab: usize) -> Vec<String> {
-    provider_tab_filters().get(tab).cloned().unwrap_or_default()
+fn provider_tabs_from_filters(language: UiLanguage, filters: &[Vec<String>]) -> Vec<String> {
+    let mut tabs = vec![i18n::text(language, "all").to_string()];
+    for filter in filters.iter().skip(1) {
+        if filter.len() == 1 {
+            let id = &filter[0];
+            tabs.push(
+                providers::find_provider(id)
+                    .map(|p| p.name().to_string())
+                    .unwrap_or_else(|| id.clone()),
+            );
+        } else {
+            tabs.push(i18n::text(language, "more").to_string());
+        }
+    }
+    tabs
+}
+
+fn provider_tab_filters_for_workspace(workspace: Option<&str>) -> Vec<Vec<String>> {
+    let prefs = config::web_preferences().unwrap_or_default();
+    let ordered = ordered_provider_ids_for_workspace(&prefs, workspace);
+    build_provider_tab_filters(
+        ordered,
+        config::normalize_provider_ids(prefs.agent_display.primary.clone()),
+    )
+}
+
+fn ordered_provider_ids_for_workspace(
+    prefs: &config::WebPreferences,
+    workspace: Option<&str>,
+) -> Vec<String> {
+    if let Some(workspace) = workspace {
+        if let Ok(Some(provider_ids)) = config::workspace_provider_override(workspace) {
+            return config::sort_provider_ids_by_display(prefs, &provider_ids);
+        }
+
+        if prefs.sort_providers_by_session_count {
+            let counts = provider_session_counts_for_workspace(workspace);
+            return sort_provider_ids_by_session_counts(
+                config::ordered_provider_ids(prefs),
+                &counts,
+            );
+        }
+    }
+
+    config::ordered_provider_ids(prefs)
+}
+
+fn provider_session_counts_for_workspace(workspace: &str) -> HashMap<String, usize> {
+    let params = core::SessionListParams {
+        all: false,
+        providers: Vec::new(),
+        cwd: Some(workspace.to_string()),
+        include_message_counts: false,
+    };
+
+    core::list_sessions(&params)
+        .map(|groups| {
+            groups
+                .into_iter()
+                .map(|group| (group.provider_id, group.sessions.len()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn sort_provider_ids_by_session_counts(
+    mut provider_ids: Vec<String>,
+    counts: &HashMap<String, usize>,
+) -> Vec<String> {
+    let index_map: HashMap<String, usize> = provider_ids
+        .iter()
+        .enumerate()
+        .map(|(index, provider_id)| (provider_id.clone(), index))
+        .collect();
+    provider_ids.sort_by(|left, right| {
+        let left_count = counts.get(left).copied().unwrap_or(0);
+        let right_count = counts.get(right).copied().unwrap_or(0);
+        right_count
+            .cmp(&left_count)
+            .then_with(|| index_map.get(left).cmp(&index_map.get(right)))
+    });
+    provider_ids
+}
+
+fn build_provider_tab_filters(ordered: Vec<String>, primary: Vec<String>) -> Vec<Vec<String>> {
+    let mut filters = vec![ordered.clone()];
+
+    if primary.is_empty() {
+        for id in ordered {
+            filters.push(vec![id]);
+        }
+        return filters;
+    }
+
+    for id in &ordered {
+        if primary.iter().any(|selected| selected == id) {
+            filters.push(vec![id.clone()]);
+        }
+    }
+
+    let folded: Vec<String> = ordered
+        .into_iter()
+        .filter(|id| !primary.iter().any(|selected| selected == id))
+        .collect();
+    if !folded.is_empty() {
+        filters.push(folded);
+    }
+
+    filters
 }
 
 fn copy_to_clipboard(text: &str) -> Result<()> {
@@ -1513,5 +1604,65 @@ fn session_matches(session: &SessionItem, scope: SearchScope, query: &str) -> bo
         SearchScope::Title => title.contains(query) || native_title.contains(query),
         SearchScope::SessionId => session_id.contains(query),
         SearchScope::Workspace => workspace.contains(query),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sorts_provider_ids_by_session_counts_descending() {
+        let provider_ids = vec![
+            "claude".to_string(),
+            "codex".to_string(),
+            "cursor".to_string(),
+            "opencode".to_string(),
+        ];
+        let counts = HashMap::from([
+            ("cursor".to_string(), 5_usize),
+            ("claude".to_string(), 2_usize),
+            ("opencode".to_string(), 2_usize),
+        ]);
+
+        let sorted = sort_provider_ids_by_session_counts(provider_ids, &counts);
+
+        assert_eq!(
+            sorted,
+            vec![
+                "cursor".to_string(),
+                "claude".to_string(),
+                "opencode".to_string(),
+                "codex".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_provider_tabs_with_primary_and_folded_groups() {
+        let ordered = vec![
+            "cursor".to_string(),
+            "claude".to_string(),
+            "opencode".to_string(),
+            "codex".to_string(),
+        ];
+        let primary = vec!["claude".to_string(), "codex".to_string()];
+
+        let filters = build_provider_tab_filters(ordered, primary);
+
+        assert_eq!(
+            filters,
+            vec![
+                vec![
+                    "cursor".to_string(),
+                    "claude".to_string(),
+                    "opencode".to_string(),
+                    "codex".to_string(),
+                ],
+                vec!["claude".to_string()],
+                vec!["codex".to_string()],
+                vec!["cursor".to_string(), "opencode".to_string()],
+            ]
+        );
     }
 }

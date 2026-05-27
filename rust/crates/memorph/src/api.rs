@@ -1,3 +1,4 @@
+use anyhow::Context;
 use axum::{
     extract::{Path, Query},
     http::StatusCode,
@@ -6,9 +7,10 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 
-use crate::{config, core, logging, shared};
+use crate::{config, core, logging, provider_features, shared};
 
 type FolderPicker =
     dyn Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static;
@@ -51,6 +53,14 @@ pub fn router() -> Router {
     Router::new()
         .route("/api/v1/meta", get(get_meta))
         .route("/api/v1/providers", get(list_providers))
+        .route(
+            "/api/v1/providers/{provider}/features",
+            get(list_provider_features),
+        )
+        .route(
+            "/api/v1/providers/{provider}/features/{feature_id}",
+            get(get_provider_feature).put(update_provider_feature),
+        )
         .route("/api/v1/settings", get(get_settings).put(update_settings))
         .route("/api/v1/system/select-folder", post(select_folder))
         .route("/api/v1/sessions", get(list_sessions))
@@ -130,10 +140,17 @@ struct ProviderInfo {
 }
 
 #[derive(Debug, Serialize)]
+struct ProviderFeaturePayload {
+    provider_id: String,
+    features: Vec<provider_features::ResolvedProviderFeature>,
+}
+
+#[derive(Debug, Serialize)]
 struct SettingsPayload {
     sessions_per_provider: usize,
     language: config::UiLanguage,
     show_opencode_subagents: bool,
+    sort_providers_by_session_count: bool,
     #[serde(default)]
     default_backup_dir: String,
     logging: config::LogPreferences,
@@ -161,6 +178,8 @@ struct SettingsBody {
     sessions_per_provider: usize,
     language: config::UiLanguage,
     show_opencode_subagents: bool,
+    #[serde(default)]
+    sort_providers_by_session_count: Option<bool>,
     default_backup_dir: String,
     #[serde(default)]
     logging: config::LogPreferences,
@@ -207,6 +226,7 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
         sessions_per_provider: prefs.sessions_per_provider,
         language: prefs.language,
         show_opencode_subagents: prefs.show_opencode_subagents,
+        sort_providers_by_session_count: prefs.sort_providers_by_session_count,
         default_backup_dir: prefs.default_backup_dir.clone(),
         logging: prefs.logging.clone(),
         home_buttons: prefs.home_buttons.clone(),
@@ -241,6 +261,31 @@ async fn list_providers() -> impl IntoResponse {
     ApiResponse::success(provider_info_list()).into_response()
 }
 
+async fn list_provider_features(Path(provider): Path<String>) -> impl IntoResponse {
+    match provider_features::list_provider_features(&provider) {
+        Ok(features) => ApiResponse::success(ProviderFeaturePayload {
+            provider_id: provider,
+            features,
+        })
+        .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn get_provider_feature(
+    Path((provider, feature_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match provider_features::list_provider_features(&provider).and_then(|features| {
+        features
+            .into_iter()
+            .find(|feature| feature.id == feature_id)
+            .with_context(|| format!("Unknown provider feature: {}.{}", provider, feature_id))
+    }) {
+        Ok(feature) => ApiResponse::success(feature).into_response(),
+        Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
 async fn select_folder(Json(body): Json<SelectFolderBody>) -> impl IntoResponse {
     let Some(picker) = FOLDER_PICKER.get() else {
         return api_error(
@@ -268,6 +313,7 @@ async fn update_settings(Json(body): Json<SettingsBody>) -> impl IntoResponse {
         Some(body.sessions_per_provider),
         Some(body.language),
         Some(body.show_opencode_subagents),
+        body.sort_providers_by_session_count,
         Some(body.default_backup_dir),
         Some(body.logging),
     )
@@ -302,9 +348,6 @@ async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
 
     if let Some(workspace) = cwd.as_deref() {
         let _ = config::remember_workspace(std::path::Path::new(workspace));
-        if !providers.is_empty() {
-            let _ = config::set_workspace_providers(workspace, providers.clone());
-        }
     }
 
     let params = core::SessionListParams {
@@ -390,6 +433,11 @@ struct RenameBody {
     title: String,
 }
 
+#[derive(Deserialize)]
+struct ProviderFeatureUpdateBody {
+    value: Option<Value>,
+}
+
 async fn rename_session(
     Path((provider, session_id)): Path<(String, String)>,
     Json(body): Json<RenameBody>,
@@ -406,6 +454,16 @@ async fn update_session_local_state(
 ) -> impl IntoResponse {
     match core::update_session_local_state(&provider, &session_id, &body) {
         Ok(state) => ApiResponse::success(state).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn update_provider_feature(
+    Path((provider, feature_id)): Path<(String, String)>,
+    Json(body): Json<ProviderFeatureUpdateBody>,
+) -> impl IntoResponse {
+    match provider_features::update_provider_feature(&provider, &feature_id, body.value) {
+        Ok(feature) => ApiResponse::success(feature).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }

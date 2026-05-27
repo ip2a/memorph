@@ -10,8 +10,8 @@ use ratatui::{
 use crate::canonical::{EventBlock, EventRole, SessionEvent};
 use crate::core::{SessionGroup, SessionItem};
 use crate::tui::app::{
-    provider_label, provider_tabs, ActionDialog, ActionField, ActionResult, App, AppResult,
-    MainFocus, SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
+    provider_label, ActionDialog, ActionField, ActionResult, App, AppResult, MainFocus,
+    SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
 };
 use crate::tui::theme::{self, Theme};
 
@@ -35,7 +35,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 }
 
 fn draw_provider_tabs(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let tabs = provider_tabs(app.language());
+    let tabs = app.provider_tabs();
     draw_chip_row(
         frame,
         "Providers",

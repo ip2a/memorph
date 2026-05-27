@@ -9,6 +9,7 @@ pub mod format;
 pub mod i18n;
 pub mod logging;
 pub mod provider;
+pub mod provider_features;
 pub mod providers;
 pub mod server;
 pub mod shared;

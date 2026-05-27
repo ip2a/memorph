@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{provider_label, provider_tabs, App, MainFocus, SettingsField, SETTINGS_FIELDS};
+use super::app::{provider_label, App, MainFocus, SettingsField, SETTINGS_FIELDS};
 use super::theme::{self, Theme};
 use crate::config;
 use crate::web_assets::MEMORPH_ASCII;
@@ -313,7 +313,8 @@ fn draw_settings_modal(frame: &mut Frame, app: &App, theme: &Theme) {
         .wrap(Wrap { trim: true });
     frame.render_widget(settings, chunks[0]);
 
-    let provider = provider_tabs(app.language())
+    let provider = app
+        .provider_tabs()
         .get(app.selected_provider_tab)
         .cloned()
         .unwrap_or_else(|| app.t("all").to_string());
@@ -374,6 +375,9 @@ fn settings_row(field: SettingsField, app: &App, theme: &Theme) -> Line<'static>
         SettingsField::SessionsPerProvider => app.settings_sessions_per_provider.to_string(),
         SettingsField::ShowOpenCodeSubagents => {
             enabled_label(app.language(), app.settings_show_opencode_subagents)
+        }
+        SettingsField::SortProvidersBySessionCount => {
+            enabled_label(app.language(), app.settings_sort_providers_by_session_count)
         }
         SettingsField::PrimaryAgents => settings_agent_label(app),
         SettingsField::Save => app.t("writeConfig").to_string(),

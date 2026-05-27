@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::storage::atomic_write;
@@ -27,6 +29,10 @@ pub struct WebPreferences {
     pub language: UiLanguage,
     #[serde(default = "default_show_opencode_subagents")]
     pub show_opencode_subagents: bool,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub provider_prefs: BTreeMap<String, Value>,
+    #[serde(default = "default_sort_providers_by_session_count")]
+    pub sort_providers_by_session_count: bool,
     #[serde(default = "default_backup_dir")]
     pub default_backup_dir: String,
     #[serde(default)]
@@ -43,6 +49,8 @@ impl Default for WebPreferences {
             sessions_per_provider: DEFAULT_SESSIONS_PER_PROVIDER,
             language: UiLanguage::default(),
             show_opencode_subagents: default_show_opencode_subagents(),
+            provider_prefs: BTreeMap::new(),
+            sort_providers_by_session_count: default_sort_providers_by_session_count(),
             default_backup_dir: default_backup_dir(),
             logging: LogPreferences::default(),
             home_buttons: HomeButtonConfig::default(),
@@ -57,6 +65,10 @@ fn default_sessions_per_provider() -> usize {
 
 fn default_show_opencode_subagents() -> bool {
     false
+}
+
+fn default_sort_providers_by_session_count() -> bool {
+    true
 }
 
 fn default_backup_dir() -> String {
@@ -254,7 +266,9 @@ pub fn remember_workspace(path: &Path) -> Result<()> {
 }
 
 pub fn web_preferences() -> Result<WebPreferences> {
-    Ok(load_config()?.web)
+    let mut prefs = load_config()?.web;
+    hydrate_legacy_provider_preferences(&mut prefs);
+    Ok(prefs)
 }
 
 pub fn selected_workspace() -> Result<Option<String>> {
@@ -275,6 +289,7 @@ pub fn update_web_preferences(
     sessions_per_provider: Option<usize>,
     language: Option<UiLanguage>,
     show_opencode_subagents: Option<bool>,
+    sort_providers_by_session_count: Option<bool>,
     backup_dir: Option<String>,
     logging: Option<LogPreferences>,
 ) -> Result<()> {
@@ -288,6 +303,15 @@ pub fn update_web_preferences(
     }
     if let Some(value) = show_opencode_subagents {
         config.web.show_opencode_subagents = value;
+        set_provider_preference_in_prefs(
+            &mut config.web,
+            "opencode",
+            "show_subagents",
+            Some(Value::Bool(value)),
+        )?;
+    }
+    if let Some(value) = sort_providers_by_session_count {
+        config.web.sort_providers_by_session_count = value;
     }
     if let Some(value) = backup_dir {
         let value = value.trim();
@@ -299,6 +323,25 @@ pub fn update_web_preferences(
     }
     if let Some(value) = logging {
         config.web.logging = value;
+    }
+
+    save_config(&config)
+}
+
+pub fn provider_preference(provider_id: &str, key: &str) -> Result<Option<Value>> {
+    let prefs = web_preferences()?;
+    Ok(provider_preference_from_prefs(&prefs, provider_id, key).cloned())
+}
+
+pub fn set_provider_preference(provider_id: &str, key: &str, value: Option<Value>) -> Result<()> {
+    let mut config = load_config()?;
+    set_provider_preference_in_prefs(&mut config.web, provider_id, key, value.clone())?;
+
+    if provider_id == "opencode" && key == "show_subagents" {
+        config.web.show_opencode_subagents = value
+            .as_ref()
+            .and_then(Value::as_bool)
+            .unwrap_or_else(default_show_opencode_subagents);
     }
 
     save_config(&config)
@@ -387,6 +430,88 @@ pub fn normalize_provider_ids(provider_ids: Vec<String>) -> Vec<String> {
     normalized
 }
 
+pub(crate) fn provider_preference_from_prefs<'a>(
+    prefs: &'a WebPreferences,
+    provider_id: &str,
+    key: &str,
+) -> Option<&'a Value> {
+    prefs.provider_prefs.get(provider_id)?.as_object()?.get(key)
+}
+
+fn hydrate_legacy_provider_preferences(prefs: &mut WebPreferences) {
+    if provider_preference_from_prefs(prefs, "opencode", "show_subagents").is_none() {
+        let _ = set_provider_preference_in_prefs(
+            prefs,
+            "opencode",
+            "show_subagents",
+            Some(Value::Bool(prefs.show_opencode_subagents)),
+        );
+    }
+
+    prefs.show_opencode_subagents = provider_preference_from_prefs(
+        prefs,
+        "opencode",
+        "show_subagents",
+    )
+    .and_then(Value::as_bool)
+    .unwrap_or_else(default_show_opencode_subagents);
+}
+
+fn ensure_known_provider(provider_id: &str) -> Result<()> {
+    if crate::providers::all_provider_ids()
+        .iter()
+        .any(|known| *known == provider_id)
+    {
+        return Ok(());
+    }
+
+    anyhow::bail!("Unknown provider: {}", provider_id);
+}
+
+fn set_provider_preference_in_prefs(
+    prefs: &mut WebPreferences,
+    provider_id: &str,
+    key: &str,
+    value: Option<Value>,
+) -> Result<()> {
+    ensure_known_provider(provider_id)?;
+
+    let provider_id = provider_id.trim();
+    let key = key.trim();
+    if key.is_empty() {
+        anyhow::bail!("Provider preference key cannot be empty");
+    }
+
+    match value {
+        Some(value) => {
+            let entry = prefs
+                .provider_prefs
+                .entry(provider_id.to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            let object = entry
+                .as_object_mut()
+                .with_context(|| format!("Provider preferences are not an object: {}", provider_id))?;
+            object.insert(key.to_string(), value);
+        }
+        None => {
+            let remove_provider = if let Some(entry) = prefs.provider_prefs.get_mut(provider_id) {
+                let object = entry.as_object_mut().with_context(|| {
+                    format!("Provider preferences are not an object: {}", provider_id)
+                })?;
+                object.remove(key);
+                object.is_empty()
+            } else {
+                false
+            };
+            if remove_provider {
+                prefs.provider_prefs.remove(provider_id);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn known_workspaces() -> Result<Vec<WorkspaceEntry>> {
     let mut workspaces = load_config()?.workspaces;
     workspaces.sort_by_key(|entry| std::cmp::Reverse(entry.last_viewed_at));
@@ -406,25 +531,31 @@ pub fn remove_workspace_history(workspace: &str) -> Result<Vec<WorkspaceEntry>> 
 
 /// Get saved provider list for a workspace; returns the default list when unset.
 pub fn workspace_providers(workspace: &str) -> Result<Vec<String>> {
+    if let Some(providers) = workspace_provider_override(workspace)? {
+        return Ok(providers);
+    }
+
+    Ok(crate::providers::all_provider_ids()
+        .iter()
+        .map(|s| s.to_string())
+        .collect())
+}
+
+pub fn workspace_provider_override(workspace: &str) -> Result<Option<Vec<String>>> {
     let workspace = normalize_workspace_key(workspace)?;
     let config = load_config()?;
-    let entry = config.workspaces.iter().find(|e| e.path == workspace);
-    let providers = entry
+    Ok(config
+        .workspaces
+        .iter()
+        .find(|e| e.path == workspace)
         .and_then(|e| {
-            let p = &e.providers;
-            if p.is_empty() {
+            let providers = normalize_provider_ids(e.providers.clone());
+            if providers.is_empty() {
                 None
             } else {
-                Some(p.clone())
+                Some(providers)
             }
-        })
-        .unwrap_or_else(|| {
-            crate::providers::all_provider_ids()
-                .iter()
-                .map(|s| s.to_string())
-                .collect()
-        });
-    Ok(providers)
+        }))
 }
 
 /// Save provider list for a workspace into config.
@@ -449,6 +580,7 @@ pub fn set_workspace_providers(workspace: &str, providers: Vec<String>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn normalize_workspace_key_canonicalizes_existing_paths() {
@@ -465,5 +597,35 @@ mod tests {
     fn normalize_workspace_key_preserves_missing_path_string() {
         let path = "relative/missing-workspace";
         assert_eq!(normalize_workspace_key(path).unwrap(), path);
+    }
+
+    #[test]
+    fn hydrates_legacy_opencode_setting_into_provider_prefs() {
+        let mut prefs = WebPreferences::default();
+        prefs.show_opencode_subagents = true;
+
+        hydrate_legacy_provider_preferences(&mut prefs);
+
+        assert_eq!(
+            provider_preference_from_prefs(&prefs, "opencode", "show_subagents")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn provider_preference_updates_remove_empty_provider_bucket() {
+        let mut prefs = WebPreferences::default();
+
+        set_provider_preference_in_prefs(
+            &mut prefs,
+            "opencode",
+            "show_subagents",
+            Some(Value::Bool(true)),
+        )
+        .unwrap();
+        set_provider_preference_in_prefs(&mut prefs, "opencode", "show_subagents", None).unwrap();
+
+        assert!(!prefs.provider_prefs.contains_key("opencode"));
     }
 }

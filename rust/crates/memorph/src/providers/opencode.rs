@@ -4,7 +4,9 @@ use crate::canonical::{
     MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionArtifact,
     SessionContext, SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
 };
-use crate::core::compression::{self, CompressionProjection};
+use crate::core::compression::{
+    self, CompressedSegment, CompressionProjection, NativeTargetProjection,
+};
 use crate::provider::{
     canonical_block_text, canonical_export_result, canonical_session_title, Provider,
     ProviderCapabilities, ProviderSessionSummary,
@@ -720,17 +722,21 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
         compression::target_projection(PROVIDER_ID) == CompressionProjection::Native;
 
     for event in &session.events {
-        if native_compression_target
-            && append_compressed_opencode_segment(
-                &session_id,
-                event,
-                &target_dir_str,
-                &mut last_user_msg_id,
-                &mut oc_messages,
-                &mut oc_parts,
-            )
-        {
-            continue;
+        if native_compression_target {
+            if let Some(NativeTargetProjection::OpencodeCompaction(segment)) =
+                compression::native_target_projection_for_event(PROVIDER_ID, event)
+            {
+                append_compressed_opencode_segment(
+                    &session_id,
+                    event,
+                    segment,
+                    &target_dir_str,
+                    &mut last_user_msg_id,
+                    &mut oc_messages,
+                    &mut oc_parts,
+                );
+                continue;
+            }
         }
 
         let msg_id = generate_opencode_id("msg");
@@ -797,17 +803,12 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
 fn append_compressed_opencode_segment(
     session_id: &str,
     event: &SessionEvent,
+    segment: CompressedSegment<'_>,
     target_dir: &str,
     last_user_msg_id: &mut Option<String>,
     oc_messages: &mut Vec<(String, i64, Value)>,
     oc_parts: &mut Vec<(String, String, i64, Value)>,
-) -> bool {
-    let Some((source_provider_id, summary, source_event_ids, archive_ref)) =
-        first_compressed_block(event)
-    else {
-        return false;
-    };
-
+) {
     let created = event.timestamp.timestamp_millis();
     let marker_msg_id = generate_opencode_id("msg");
     let summary_msg_id = generate_opencode_id("msg");
@@ -831,9 +832,10 @@ fn append_compressed_opencode_segment(
         session_id,
         &marker_msg_id,
         &marker_part_id,
-        source_provider_id,
-        source_event_ids,
-        archive_ref,
+        segment.source_provider_id,
+        segment.source_event_ids,
+        segment.source_event_count,
+        segment.archive_ref,
     );
     oc_parts.push((
         marker_part_id,
@@ -865,34 +867,11 @@ fn append_compressed_opencode_segment(
             "sessionID": session_id,
             "messageID": summary_msg_id,
             "type": "text",
-            "text": summary,
+            "text": segment.summary,
         }),
     ));
 
     *last_user_msg_id = Some(marker_msg_id);
-    true
-}
-
-fn first_compressed_block(event: &SessionEvent) -> Option<(&str, &str, &[String], Option<&str>)> {
-    event.blocks.iter().find_map(|block| {
-        if let EventBlock::Compressed {
-            source_provider_id,
-            summary,
-            source_event_ids,
-            archive_ref,
-            ..
-        } = block
-        {
-            Some((
-                source_provider_id.as_str(),
-                summary.as_str(),
-                source_event_ids.as_slice(),
-                archive_ref.as_deref(),
-            ))
-        } else {
-            None
-        }
-    })
 }
 
 fn opencode_compaction_part(
@@ -901,6 +880,7 @@ fn opencode_compaction_part(
     part_id: &str,
     source_provider_id: &str,
     source_event_ids: &[String],
+    source_event_count: Option<usize>,
     archive_ref: Option<&str>,
 ) -> Value {
     let mut part = serde_json::json!({
@@ -912,6 +892,7 @@ fn opencode_compaction_part(
         "memorph": {
             "sourceProviderID": source_provider_id,
             "sourceEventIDs": source_event_ids,
+            "sourceEventCount": source_event_count,
         }
     });
     if let Some(archive_ref) = archive_ref {
@@ -1658,17 +1639,20 @@ mod tests {
         let mut last_user_msg_id = None;
         let mut messages = Vec::new();
         let mut parts = Vec::new();
+        let projection = compression::native_target_projection_for_event(PROVIDER_ID, &event)
+            .expect("native opencode projection");
+        let NativeTargetProjection::OpencodeCompaction(segment) = projection;
 
-        let handled = append_compressed_opencode_segment(
+        append_compressed_opencode_segment(
             "ses_test",
             &event,
+            segment,
             "/tmp/project",
             &mut last_user_msg_id,
             &mut messages,
             &mut parts,
         );
 
-        assert!(handled);
         assert_eq!(messages.len(), 2);
         assert_eq!(parts.len(), 2);
         assert_eq!(
@@ -1697,6 +1681,14 @@ mod tests {
                 .and_then(|value| value.get("sourceProviderID"))
                 .and_then(Value::as_str),
             Some("opencode")
+        );
+        assert_eq!(
+            parts[0]
+                .3
+                .get("memorph")
+                .and_then(|value| value.get("sourceEventCount"))
+                .and_then(Value::as_u64),
+            Some(2)
         );
         assert_eq!(
             messages[1].2.get("summary").and_then(Value::as_bool),

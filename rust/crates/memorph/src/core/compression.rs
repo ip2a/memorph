@@ -20,27 +20,6 @@ const ARCHIVE_SCHEME: &str = "memorph-archive://";
 const ARCHIVE_VERSION: u32 = 1;
 const ARCHIVE_EXTENSION: &str = "json.gz";
 
-type NormalizeSourceFn = fn(
-    &CanonicalSession,
-    &CompressionPolicy,
-    Option<&Path>,
-    CompressionReport,
-) -> Result<(CanonicalSession, CompressionReport)>;
-
-struct NativeCompressionAdapter {
-    provider_id: &'static str,
-    detects_native_source: bool,
-    native_target_projection: bool,
-    normalize_source: NormalizeSourceFn,
-}
-
-const NATIVE_COMPRESSION_ADAPTERS: &[NativeCompressionAdapter] = &[NativeCompressionAdapter {
-    provider_id: "opencode",
-    detects_native_source: true,
-    native_target_projection: true,
-    normalize_source: normalize_opencode_source_compression,
-}];
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompressionMode {
@@ -55,6 +34,58 @@ pub enum CompressionProjection {
     Portable,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompressedSegment<'a> {
+    pub source_provider_id: &'a str,
+    pub summary: &'a str,
+    pub source_event_ids: &'a [String],
+    pub source_event_count: Option<usize>,
+    pub archive_ref: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeTargetProjection<'a> {
+    OpencodeCompaction(CompressedSegment<'a>),
+}
+
+type NormalizeSourceFn = fn(
+    &CanonicalSession,
+    &CompressionPolicy,
+    Option<&Path>,
+    CompressionReport,
+) -> Result<(CanonicalSession, CompressionReport)>;
+
+type ProjectNativeTargetFn = for<'a> fn(&'a SessionEvent) -> Option<NativeTargetProjection<'a>>;
+
+struct CompressionSourceAdapter {
+    detects_native: bool,
+    normalize: Option<NormalizeSourceFn>,
+}
+
+struct CompressionTargetAdapter {
+    projection: CompressionProjection,
+    project_native: Option<ProjectNativeTargetFn>,
+}
+
+struct CompressionProviderAdapter {
+    provider_id: &'static str,
+    source: CompressionSourceAdapter,
+    target: CompressionTargetAdapter,
+}
+
+const COMPRESSION_PROVIDER_ADAPTERS: &[CompressionProviderAdapter] =
+    &[CompressionProviderAdapter {
+        provider_id: "opencode",
+        source: CompressionSourceAdapter {
+            detects_native: true,
+            normalize: Some(normalize_opencode_source_compression),
+        },
+        target: CompressionTargetAdapter {
+            projection: CompressionProjection::Native,
+            project_native: Some(project_opencode_native_target),
+        },
+    }];
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderCompressionSupport {
     pub provider_id: String,
@@ -64,14 +95,14 @@ pub struct ProviderCompressionSupport {
 }
 
 pub fn provider_support(provider_id: &str) -> ProviderCompressionSupport {
-    let adapter = native_adapter(provider_id);
+    let adapter = provider_adapter(provider_id);
     let native_target_projection = adapter
-        .map(|adapter| adapter.native_target_projection)
+        .map(|adapter| adapter.target.projection == CompressionProjection::Native)
         .unwrap_or(false);
     ProviderCompressionSupport {
         provider_id: provider_id.to_string(),
         detects_native_source: adapter
-            .map(|adapter| adapter.detects_native_source)
+            .map(|adapter| adapter.source.detects_native)
             .unwrap_or(false),
         native_target_projection,
         default_projection: if native_target_projection {
@@ -82,19 +113,48 @@ pub fn provider_support(provider_id: &str) -> ProviderCompressionSupport {
     }
 }
 
-fn native_adapter(provider_id: &str) -> Option<&'static NativeCompressionAdapter> {
-    NATIVE_COMPRESSION_ADAPTERS
+fn provider_adapter(provider_id: &str) -> Option<&'static CompressionProviderAdapter> {
+    COMPRESSION_PROVIDER_ADAPTERS
         .iter()
         .find(|adapter| adapter.provider_id == provider_id)
 }
 
 pub fn target_projection(provider_id: &str) -> CompressionProjection {
-    let support = provider_support(provider_id);
-    if support.native_target_projection {
-        CompressionProjection::Native
-    } else {
-        CompressionProjection::Portable
-    }
+    provider_adapter(provider_id)
+        .map(|adapter| adapter.target.projection)
+        .unwrap_or(CompressionProjection::Portable)
+}
+
+pub fn compressed_segment(event: &SessionEvent) -> Option<CompressedSegment<'_>> {
+    event.blocks.iter().find_map(|block| {
+        if let EventBlock::Compressed {
+            source_provider_id,
+            summary,
+            source_event_ids,
+            source_event_count,
+            archive_ref,
+        } = block
+        {
+            Some(CompressedSegment {
+                source_provider_id: source_provider_id.as_str(),
+                summary: summary.as_str(),
+                source_event_ids: source_event_ids.as_slice(),
+                source_event_count: *source_event_count,
+                archive_ref: archive_ref.as_deref(),
+            })
+        } else {
+            None
+        }
+    })
+}
+
+pub fn native_target_projection_for_event<'a>(
+    provider_id: &str,
+    event: &'a SessionEvent,
+) -> Option<NativeTargetProjection<'a>> {
+    let adapter = provider_adapter(provider_id)?;
+    let project_native = adapter.target.project_native?;
+    project_native(event)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -244,10 +304,13 @@ fn normalize_native_source_compression(
     archive_dir: Option<&Path>,
     base_report: CompressionReport,
 ) -> Result<(CanonicalSession, CompressionReport)> {
-    let Some(adapter) = native_adapter(&policy.source_provider_id) else {
+    let Some(adapter) = provider_adapter(&policy.source_provider_id) else {
         return Ok((session.clone(), base_report));
     };
-    (adapter.normalize_source)(session, policy, archive_dir, base_report)
+    let Some(normalize) = adapter.source.normalize else {
+        return Ok((session.clone(), base_report));
+    };
+    normalize(session, policy, archive_dir, base_report)
 }
 
 fn normalize_opencode_source_compression(
@@ -275,28 +338,46 @@ fn normalize_opencode_source_compression(
         return Ok((session.clone(), base_report));
     }
 
-    let archived_events = session.events[..=compaction_idx].to_vec();
-    let source_event_ids = session.events[..=compaction_idx]
-        .iter()
-        .map(|event| event.id.clone())
-        .collect::<Vec<_>>();
-    let archive_ref = if let Some(archive_dir) = archive_dir {
-        Some(write_archive(
-            archive_dir,
-            session,
-            policy,
-            &session.events[summary_idx],
-            source_event_ids.clone(),
-            archived_events,
-        )?)
-    } else {
-        None
-    };
+    let existing_projection = opencode_compaction_projection(&session.events[compaction_idx]);
+    let (source_provider_id, source_event_ids, source_event_count, archive_ref) =
+        if let Some(projection) = existing_projection {
+            (
+                projection.source_provider_id,
+                projection.source_event_ids,
+                projection.source_event_count,
+                projection.archive_ref,
+            )
+        } else {
+            let archived_events = session.events[..=compaction_idx].to_vec();
+            let source_event_ids = session.events[..=compaction_idx]
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<Vec<_>>();
+            let archive_ref = if let Some(archive_dir) = archive_dir {
+                Some(write_archive(
+                    archive_dir,
+                    session,
+                    policy,
+                    &session.events[summary_idx],
+                    source_event_ids.clone(),
+                    archived_events,
+                )?)
+            } else {
+                None
+            };
+            (
+                policy.source_provider_id.clone(),
+                source_event_ids.clone(),
+                Some(source_event_ids.len()),
+                archive_ref,
+            )
+        };
     let compressed_event = compressed_summary_event(
         &session.events[summary_idx],
-        &policy.source_provider_id,
+        &source_provider_id,
         summary,
         source_event_ids,
+        source_event_count,
         archive_ref.clone(),
     );
 
@@ -542,14 +623,17 @@ fn compressed_summary_event(
     source_provider_id: &str,
     summary: String,
     source_event_ids: Vec<String>,
+    source_event_count: Option<usize>,
     archive_ref: Option<String>,
 ) -> SessionEvent {
+    let source_event_count = source_event_count
+        .or_else(|| (!source_event_ids.is_empty()).then_some(source_event_ids.len()));
     let mut provider_ext = BTreeMap::new();
     provider_ext.insert(
         "memorph_compression".to_string(),
         serde_json::json!({
             "source_provider_id": source_provider_id,
-            "source_event_count": source_event_ids.len(),
+            "source_event_count": source_event_count,
             "created_from_event_id": summary_event.id,
             "archive_ref": archive_ref,
         }),
@@ -564,7 +648,7 @@ fn compressed_summary_event(
         blocks: vec![EventBlock::Compressed {
             source_provider_id: source_provider_id.to_string(),
             summary,
-            source_event_count: Some(source_event_ids.len()),
+            source_event_count,
             source_event_ids,
             archive_ref,
         }],
@@ -791,6 +875,62 @@ fn has_opencode_compaction(event: &SessionEvent) -> bool {
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OpencodeCompactionProjection {
+    source_provider_id: String,
+    source_event_ids: Vec<String>,
+    source_event_count: Option<usize>,
+    archive_ref: Option<String>,
+}
+
+fn opencode_compaction_projection(event: &SessionEvent) -> Option<OpencodeCompactionProjection> {
+    let projection = event.blocks.iter().find_map(|block| {
+        let EventBlock::ProviderPayload { kind, payload } = block else {
+            return None;
+        };
+        if kind != "compaction" {
+            return None;
+        }
+        let memorph = payload.get("memorph")?.as_object()?;
+        let source_provider_id = memorph
+            .get("sourceProviderID")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)?;
+        let source_event_ids = memorph
+            .get("sourceEventIDs")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let source_event_count = memorph
+            .get("sourceEventCount")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .or_else(|| (!source_event_ids.is_empty()).then_some(source_event_ids.len()));
+        let archive_ref = memorph
+            .get("archiveRef")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        Some(OpencodeCompactionProjection {
+            source_provider_id,
+            source_event_ids,
+            source_event_count,
+            archive_ref,
+        })
+    })?;
+
+    Some(projection)
+}
+
 fn is_opencode_summary_event(event: &SessionEvent) -> bool {
     event
         .metadata
@@ -800,6 +940,10 @@ fn is_opencode_summary_event(event: &SessionEvent) -> bool {
         .and_then(|message| message.get("summary"))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn project_opencode_native_target(event: &SessionEvent) -> Option<NativeTargetProjection<'_>> {
+    compressed_segment(event).map(NativeTargetProjection::OpencodeCompaction)
 }
 
 #[cfg(test)]
@@ -1022,6 +1166,112 @@ mod tests {
     }
 
     #[test]
+    fn preserve_opencode_compaction_reuses_memorph_projection_metadata() {
+        let now = Utc::now();
+        let session = CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: "native-roundtrip".to_string(),
+                source_title: None,
+            },
+            provenance: SessionProvenance {
+                imported_at: now,
+                imported_by: Some("test".to_string()),
+                primary_source: ProviderSessionRef {
+                    provider_id: "opencode".to_string(),
+                    session_id: "native-roundtrip".to_string(),
+                    source_path: None,
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext::default(),
+            events: vec![
+                compaction_event_with_memorph_projection(
+                    "compact-marker",
+                    "kimi",
+                    Vec::new(),
+                    Some(42),
+                    Some("memorph-archive://portable/a.json"),
+                ),
+                text_event("summary", EventRole::Assistant, "portable summary", true),
+                text_event("tail", EventRole::User, "new request", false),
+            ],
+            artifacts: Vec::new(),
+            extensions: BTreeMap::new(),
+        };
+
+        let policy = CompressionPolicy::preserve("opencode", "codex");
+        let temp = tempfile::tempdir().unwrap();
+        let (prepared, report) =
+            prepare_for_export_with_archive_dir(&session, &policy, temp.path()).unwrap();
+
+        assert_eq!(report.normalized_segments, 1);
+        assert_eq!(report.removed_expanded_events, 1);
+        assert_eq!(
+            report.archive_refs,
+            vec!["memorph-archive://portable/a.json".to_string()]
+        );
+        assert!(matches!(
+            prepared.events[0].blocks.first(),
+            Some(EventBlock::Compressed {
+                source_provider_id,
+                summary,
+                source_event_ids,
+                source_event_count: Some(42),
+                archive_ref: Some(archive_ref),
+            }) if source_provider_id == "kimi"
+                && summary == "portable summary"
+                && source_event_ids.is_empty()
+                && archive_ref == "memorph-archive://portable/a.json"
+        ));
+        assert_eq!(prepared.events[1].id, "tail");
+        assert!(list_archives_in_dir(temp.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn native_target_projection_exposes_opencode_compaction_view() {
+        let event = SessionEvent {
+            id: "compressed-source".to_string(),
+            kind: SessionEventKind::Message,
+            role: EventRole::Assistant,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::Compressed {
+                source_provider_id: "deepseek".to_string(),
+                summary: "compressed summary".to_string(),
+                source_event_ids: vec!["old-1".to_string()],
+                source_event_count: Some(9),
+                archive_ref: Some("memorph-archive://x/archive.json.gz".to_string()),
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "memorph".to_string(),
+                    original_id: None,
+                    original_role: None,
+                    phase: Some("compression".to_string()),
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Normalized,
+                provider_ext: BTreeMap::new(),
+            },
+        };
+
+        let projection =
+            native_target_projection_for_event("opencode", &event).expect("native projection");
+        let NativeTargetProjection::OpencodeCompaction(segment) = projection;
+        assert_eq!(segment.source_provider_id, "deepseek");
+        assert_eq!(segment.summary, "compressed summary");
+        assert_eq!(segment.source_event_ids, ["old-1".to_string()]);
+        assert_eq!(segment.source_event_count, Some(9));
+        assert_eq!(
+            segment.archive_ref,
+            Some("memorph-archive://x/archive.json.gz")
+        );
+        assert!(native_target_projection_for_event("codex", &event).is_none());
+    }
+
+    #[test]
     fn list_archives_returns_refs_sorted_by_created_time() {
         let temp = tempfile::tempdir().unwrap();
         write_test_archive(
@@ -1092,12 +1342,13 @@ mod tests {
 
     #[test]
     fn native_adapter_registry_keeps_known_and_unknown_providers_separate() {
-        let adapter = native_adapter("opencode").expect("opencode adapter should be registered");
+        let adapter = provider_adapter("opencode").expect("opencode adapter should be registered");
         assert_eq!(adapter.provider_id, "opencode");
-        assert!(adapter.detects_native_source);
-        assert!(adapter.native_target_projection);
+        assert!(adapter.source.detects_native);
+        assert_eq!(adapter.target.projection, CompressionProjection::Native);
+        assert!(adapter.target.project_native.is_some());
 
-        assert!(native_adapter("closed-provider").is_none());
+        assert!(provider_adapter("closed-provider").is_none());
     }
 
     #[test]
@@ -1217,6 +1468,46 @@ mod tests {
             blocks: vec![EventBlock::ProviderPayload {
                 kind: "compaction".to_string(),
                 payload: serde_json::json!({ "type": "compaction" }),
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "opencode".to_string(),
+                    original_id: Some(id.to_string()),
+                    original_role: None,
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: BTreeMap::new(),
+            },
+        }
+    }
+
+    fn compaction_event_with_memorph_projection(
+        id: &str,
+        source_provider_id: &str,
+        source_event_ids: Vec<String>,
+        source_event_count: Option<usize>,
+        archive_ref: Option<&str>,
+    ) -> SessionEvent {
+        SessionEvent {
+            id: id.to_string(),
+            kind: SessionEventKind::Unknown,
+            role: EventRole::User,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::ProviderPayload {
+                kind: "compaction".to_string(),
+                payload: serde_json::json!({
+                    "type": "compaction",
+                    "memorph": {
+                        "sourceProviderID": source_provider_id,
+                        "sourceEventIDs": source_event_ids,
+                        "sourceEventCount": source_event_count,
+                        "archiveRef": archive_ref,
+                    }
+                }),
             }],
             metadata: EventMetadata {
                 source: EventSource {
