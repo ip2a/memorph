@@ -17,6 +17,7 @@ DST_DIR="${REPO_ROOT}/dist/${PLATFORM_ID}"
 DST_BIN="${DST_DIR}/${ARTIFACT_BINARY}"
 
 echo "[run] Building target=${TARGET_TRIPLE}"
+export CARGO_TARGET_DIR="${REPO_ROOT}/target"
 cargo build --release --target "${TARGET_TRIPLE}" --manifest-path "${REPO_ROOT}/rust/Cargo.toml" --bin memorph
 
 if [ ! -f "${SRC_BIN}" ]; then
