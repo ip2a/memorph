@@ -490,6 +490,91 @@ fn codex_response_item_event(
         .map(str::to_string)
         .unwrap_or_else(|| format!("codex:response_item:{}", line_no));
 
+    if msg_type == Some("function_call") {
+        let name = payload
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let call_id = payload
+            .get("call_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let input = payload.get("arguments").cloned();
+        let role = match role_str {
+            Some("assistant") => EventRole::Assistant,
+            _ => EventRole::Unknown,
+        };
+        return SessionEvent {
+            id: event_id,
+            kind: SessionEventKind::ToolCall,
+            role,
+            timestamp,
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::ToolCall {
+                tool_call_id: call_id.to_string(),
+                name: name.to_string(),
+                input,
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: PROVIDER_ID.to_string(),
+                    original_id: None,
+                    original_role: role_str.map(str::to_string),
+                    phase: phase.clone(),
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: {
+                    let mut ext = BTreeMap::new();
+                    ext.insert("codex_payload".to_string(), payload.clone());
+                    ext.insert("codex_raw_line".to_string(), raw_line);
+                    ext
+                },
+            },
+        };
+    }
+
+    if msg_type == Some("function_call_output") {
+        let call_id = payload
+            .get("call_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let content = payload
+            .get("output")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        return SessionEvent {
+            id: event_id,
+            kind: SessionEventKind::ToolResult,
+            role: EventRole::Tool,
+            timestamp,
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::ToolResult {
+                tool_call_id: call_id.to_string(),
+                content: content.to_string(),
+                is_error: false,
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: PROVIDER_ID.to_string(),
+                    original_id: None,
+                    original_role: Some("tool".to_string()),
+                    phase: phase.clone(),
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: {
+                    let mut ext = BTreeMap::new();
+                    ext.insert("codex_payload".to_string(), payload.clone());
+                    ext.insert("codex_raw_line".to_string(), raw_line);
+                    ext
+                },
+            },
+        };
+    }
+
     if msg_type != Some("message") {
         return provider_payload_event(
             event_id,
@@ -1477,7 +1562,23 @@ mod tests {
                 "type": "response_item",
                 "payload": {
                     "type": "function_call",
-                    "name": "shell"
+                    "name": "shell",
+                    "call_id": "call_1",
+                    "arguments": "{\"cmd\":\"echo hello\"}"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:05Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "hello"
                 }
             })
         )
@@ -1530,11 +1631,20 @@ mod tests {
             event.id == "codex:response_item:6"
                 && matches!(
                     event.blocks.first(),
-                    Some(EventBlock::ProviderPayload { kind, .. }) if kind == "function_call"
+                    Some(EventBlock::ToolCall { name, tool_call_id, .. })
+                        if name == "shell" && tool_call_id == "call_1"
                 )
         }));
         assert!(events.iter().any(|event| {
-            event.id == "codex:event_msg:task_complete:7"
+            event.id == "codex:response_item:7"
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::ToolResult { content, tool_call_id, .. })
+                        if content == "hello" && tool_call_id == "call_1"
+                )
+        }));
+        assert!(events.iter().any(|event| {
+            event.id == "codex:event_msg:task_complete:8"
                 && matches!(
                     event.blocks.first(),
                     Some(EventBlock::Text { text }) if text == "Done."
