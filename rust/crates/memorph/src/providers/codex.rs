@@ -8,6 +8,7 @@ use crate::provider::{
     canonical_block_text, canonical_event_text, canonical_export_result, canonical_session_title,
     Provider, ProviderCapabilities, ProviderSessionSummary,
 };
+use crate::utils;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::Connection;
@@ -22,6 +23,33 @@ use walkdir::WalkDir;
 pub struct CodexProvider;
 
 const PROVIDER_ID: &str = "codex";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct CodexWorkspaceRepairItem {
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    pub rollout_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_model_provider: Option<String>,
+    pub current_model_provider: String,
+    pub updated_model_provider: bool,
+    pub added_to_index: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct CodexWorkspaceRepairReport {
+    pub workspace_dir: String,
+    pub current_model_provider: String,
+    pub scanned_rollouts: usize,
+    pub workspace_session_count: usize,
+    pub hidden_session_count: usize,
+    pub repaired_session_count: usize,
+    pub reindexed_session_count: usize,
+    pub touched_sessions: Vec<CodexWorkspaceRepairItem>,
+}
 
 impl Provider for CodexProvider {
     fn id(&self) -> &'static str {
@@ -238,6 +266,111 @@ impl Provider for CodexProvider {
         }
         Ok(0)
     }
+}
+
+pub fn repair_workspace_sessions(workspace: Option<&str>) -> Result<CodexWorkspaceRepairReport> {
+    repair_workspace_sessions_in_codex_home(&get_codex_dir(), workspace)
+}
+
+fn repair_workspace_sessions_in_codex_home(
+    codex_dir: &Path,
+    workspace: Option<&str>,
+) -> Result<CodexWorkspaceRepairReport> {
+    let workspace_root = crate::config::resolve_workspace(workspace)?;
+    let workspace_key = crate::provider::default_normalized_workspace_key(workspace_root.to_str())
+        .with_context(|| {
+            format!(
+                "Failed to normalize workspace path: {}",
+                workspace_root.display()
+            )
+        })?;
+    let current_model_provider = read_codex_model_provider(codex_dir);
+    let mut report = CodexWorkspaceRepairReport {
+        workspace_dir: utils::user_visible_path(&workspace_key),
+        current_model_provider: current_model_provider.clone(),
+        scanned_rollouts: 0,
+        workspace_session_count: 0,
+        hidden_session_count: 0,
+        repaired_session_count: 0,
+        reindexed_session_count: 0,
+        touched_sessions: Vec::new(),
+    };
+
+    let index_path = codex_dir.join("session_index.jsonl");
+    let mut indexed_session_ids = load_session_index_ids(&index_path)?;
+    let sessions_root = codex_dir.join("sessions");
+
+    if !sessions_root.exists() {
+        update_codex_global_state_file_if_exists(codex_dir, &workspace_root)?;
+        return Ok(report);
+    }
+
+    for entry in WalkDir::new(&sessions_root)
+        .max_depth(5)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+
+        report.scanned_rollouts += 1;
+        let Some(mut session) = read_codex_rollout_summary(path)? else {
+            continue;
+        };
+
+        if !crate::provider::default_workspace_matches(
+            session.workspace_dir.as_deref(),
+            Some(&workspace_key),
+        ) {
+            continue;
+        }
+
+        report.workspace_session_count += 1;
+        let provider_mismatch =
+            session.model_provider.as_deref() != Some(current_model_provider.as_str());
+        if provider_mismatch {
+            report.hidden_session_count += 1;
+        }
+
+        let mut updated_model_provider = false;
+        if provider_mismatch {
+            rewrite_rollout_model_provider(path, &current_model_provider)?;
+            session.model_provider = Some(current_model_provider.clone());
+            updated_model_provider = true;
+            report.repaired_session_count += 1;
+        }
+
+        let mut added_to_index = false;
+        if !indexed_session_ids.contains(&session.session_id) {
+            append_session_index_entry(
+                &index_path,
+                &session.session_id,
+                session.title.as_deref().unwrap_or(&session.session_id),
+                session.updated_at.as_deref(),
+            )?;
+            indexed_session_ids.insert(session.session_id.clone());
+            added_to_index = true;
+            report.reindexed_session_count += 1;
+        }
+
+        if updated_model_provider || added_to_index {
+            report.touched_sessions.push(CodexWorkspaceRepairItem {
+                session_id: session.session_id,
+                title: session.title,
+                rollout_path: utils::user_visible_path(&path.to_string_lossy()),
+                workspace_dir: session.workspace_dir.as_deref().map(utils::user_visible_path),
+                previous_model_provider: session.original_model_provider,
+                current_model_provider: current_model_provider.clone(),
+                updated_model_provider,
+                added_to_index,
+            });
+        }
+    }
+
+    update_codex_global_state_file_if_exists(codex_dir, &workspace_root)?;
+    Ok(report)
 }
 
 fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
@@ -544,10 +677,7 @@ fn codex_response_item_event(
             .get("call_id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let content = payload
-            .get("output")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let content = payload.get("output").and_then(|v| v.as_str()).unwrap_or("");
         return SessionEvent {
             id: event_id,
             kind: SessionEventKind::ToolResult,
@@ -864,6 +994,188 @@ fn build_cwd_lookup() -> Result<std::collections::HashMap<String, String>> {
     Ok(map)
 }
 
+#[derive(Debug, Clone)]
+struct CodexRolloutSummary {
+    session_id: String,
+    title: Option<String>,
+    workspace_dir: Option<String>,
+    model_provider: Option<String>,
+    original_model_provider: Option<String>,
+    updated_at: Option<String>,
+}
+
+fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRolloutSummary>> {
+    let file = File::open(path)
+        .with_context(|| format!("Failed to open Codex rollout file: {}", path.display()))?;
+    let reader = BufReader::new(file);
+
+    let mut session_id = None;
+    let mut title = None;
+    let mut workspace_dir = None;
+    let mut model_provider = None;
+    let mut updated_at = None;
+
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+
+        if let Some(timestamp) = value.get("timestamp").and_then(|value| value.as_str()) {
+            updated_at = Some(timestamp.to_string());
+        }
+
+        if value.get("type").and_then(|value| value.as_str()) != Some("session_meta") {
+            continue;
+        }
+
+        let Some(payload) = value.get("payload") else {
+            continue;
+        };
+        session_id = payload
+            .get("id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .or(session_id);
+        title = payload
+            .get("title")
+            .or_else(|| payload.get("thread_name"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .or(title);
+        workspace_dir = payload
+            .get("cwd")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .or(workspace_dir);
+        model_provider = payload
+            .get("model_provider")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .or(model_provider);
+    }
+
+    let Some(session_id) = session_id else {
+        return Ok(None);
+    };
+
+    Ok(Some(CodexRolloutSummary {
+        session_id,
+        title,
+        workspace_dir,
+        original_model_provider: model_provider.clone(),
+        model_provider,
+        updated_at,
+    }))
+}
+
+fn load_session_index_ids(index_path: &Path) -> Result<HashSet<String>> {
+    if !index_path.exists() {
+        return Ok(HashSet::new());
+    }
+
+    let file = File::open(index_path).with_context(|| {
+        format!(
+            "Failed to open Codex session index: {}",
+            index_path.display()
+        )
+    })?;
+    let reader = BufReader::new(file);
+    let mut ids = HashSet::new();
+    for line in reader.lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if let Some(id) = value.get("id").and_then(|value| value.as_str()) {
+            ids.insert(id.to_string());
+        }
+    }
+    Ok(ids)
+}
+
+fn append_session_index_entry(
+    index_path: &Path,
+    session_id: &str,
+    title: &str,
+    updated_at: Option<&str>,
+) -> Result<()> {
+    if let Some(parent) = index_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut index_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(index_path)?;
+    let updated_at = updated_at
+        .map(str::to_string)
+        .unwrap_or_else(|| Utc::now().to_rfc3339());
+    writeln!(
+        index_file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "id": session_id,
+            "thread_name": title,
+            "updated_at": updated_at,
+        }))?
+    )?;
+    Ok(())
+}
+
+fn rewrite_rollout_model_provider(path: &Path, model_provider: &str) -> Result<()> {
+    let file = File::open(path)
+        .with_context(|| format!("Failed to open Codex rollout file: {}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut lines = Vec::new();
+    let mut updated = false;
+
+    for line in reader.lines() {
+        let line = line?;
+        if updated || line.trim().is_empty() {
+            lines.push(line);
+            continue;
+        }
+        let mut value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => {
+                lines.push(line);
+                continue;
+            }
+        };
+        if value.get("type").and_then(|value| value.as_str()) == Some("session_meta") {
+            if let Some(payload) = value.get_mut("payload").and_then(Value::as_object_mut) {
+                payload.insert(
+                    "model_provider".to_string(),
+                    Value::String(model_provider.to_string()),
+                );
+                updated = true;
+                lines.push(serde_json::to_string(&value)?);
+                continue;
+            }
+        }
+        lines.push(line);
+    }
+
+    if !updated {
+        anyhow::bail!(
+            "Codex rollout file is missing session_meta payload: {}",
+            path.display()
+        );
+    }
+
+    std::fs::write(path, lines.join("\n") + "\n")
+        .with_context(|| format!("Failed to write Codex rollout file: {}", path.display()))?;
+    Ok(())
+}
+
 fn extract_cwd_from_session_file(id: &str) -> Option<String> {
     let path = find_session_file(id)?;
     let file = File::open(&path).ok()?;
@@ -1114,6 +1426,7 @@ fn canonical_event_to_codex_content(event: &SessionEvent) -> Vec<Value> {
                     "image_url": data,
                 }))
             }
+            EventBlock::ProviderPayload { .. } => None,
             _ => {
                 let text = canonical_block_text(block);
                 (!text.trim().is_empty()).then(|| serde_json::json!({
@@ -1296,6 +1609,14 @@ fn update_codex_global_state_workspace(workspace_root: &Path) -> Result<()> {
     update_codex_global_state_file(&global_state_path, workspace_root)
 }
 
+fn update_codex_global_state_file_if_exists(codex_dir: &Path, workspace_root: &Path) -> Result<()> {
+    let global_state_path = codex_dir.join(".codex-global-state.json");
+    if !global_state_path.exists() {
+        return Ok(());
+    }
+    update_codex_global_state_file(&global_state_path, workspace_root)
+}
+
 fn update_codex_global_state_file(global_state_path: &Path, workspace_root: &Path) -> Result<()> {
     let content = std::fs::read_to_string(global_state_path).with_context(|| {
         format!(
@@ -1417,8 +1738,8 @@ fn delete_related_rows(
     Ok(())
 }
 
-fn get_codex_model_provider() -> String {
-    let config_path = get_codex_dir().join("config.toml");
+fn read_codex_model_provider(codex_dir: &Path) -> String {
+    let config_path = codex_dir.join("config.toml");
     if let Ok(content) = std::fs::read_to_string(&config_path) {
         for line in content.lines() {
             let trimmed = line.trim();
@@ -1430,6 +1751,10 @@ fn get_codex_model_provider() -> String {
         }
     }
     "openai".to_string()
+}
+
+fn get_codex_model_provider() -> String {
+    read_codex_model_provider(&get_codex_dir())
 }
 
 fn get_codex_model_config() -> (String, String) {
@@ -1904,6 +2229,98 @@ mod tests {
     }
 
     #[test]
+    fn repair_workspace_sessions_updates_provider_and_reindexes_matching_workspace() {
+        let temp = tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        let workspace = temp.path().join("repo");
+        let sessions_dir = codex_dir.join("sessions/2026/05/27");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            "model_provider = \"custom-provider\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            codex_dir.join(".codex-global-state.json"),
+            serde_json::to_string(&json!({
+                "electron-saved-workspace-roots": [],
+                "project-order": [],
+                "active-workspace-roots": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let session_path = sessions_dir.join("rollout-2026-05-27T12-00-00-session-1.jsonl");
+        std::fs::write(
+            &session_path,
+            [
+                serde_json::to_string(&json!({
+                    "timestamp": "2026-05-27T12:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "session-1",
+                        "timestamp": "2026-05-27T12:00:00Z",
+                        "cwd": workspace.to_string_lossy(),
+                        "model_provider": "openai",
+                        "title": "Repair me"
+                    }
+                }))
+                .unwrap(),
+                serde_json::to_string(&json!({
+                    "timestamp": "2026-05-27T12:05:00Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "user_message",
+                        "message": "hello"
+                    }
+                }))
+                .unwrap(),
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+
+        let report =
+            repair_workspace_sessions_in_codex_home(&codex_dir, Some(workspace.to_str().unwrap()))
+                .unwrap();
+
+        assert_eq!(report.current_model_provider, "custom-provider");
+        assert_eq!(report.workspace_session_count, 1);
+        assert_eq!(report.hidden_session_count, 1);
+        assert_eq!(report.repaired_session_count, 1);
+        assert_eq!(report.reindexed_session_count, 1);
+        assert_eq!(report.touched_sessions.len(), 1);
+        assert_eq!(
+            report.touched_sessions[0]
+                .previous_model_provider
+                .as_deref(),
+            Some("openai")
+        );
+
+        let updated_rollout = std::fs::read_to_string(&session_path).unwrap();
+        assert!(updated_rollout.contains("\"model_provider\":\"custom-provider\""));
+
+        let index = std::fs::read_to_string(codex_dir.join("session_index.jsonl")).unwrap();
+        assert!(index.contains("\"id\":\"session-1\""));
+
+        let global_state: Value = serde_json::from_str(
+            &std::fs::read_to_string(codex_dir.join(".codex-global-state.json")).unwrap(),
+        )
+        .unwrap();
+        let saved = global_state["electron-saved-workspace-roots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        let canonical_workspace = workspace.canonicalize().unwrap();
+        assert_eq!(saved, vec![canonical_workspace.to_string_lossy().as_ref()]);
+    }
+
+    #[test]
     fn import_canonical_session_drops_token_count() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(
@@ -2011,18 +2428,71 @@ mod tests {
         let imported = import_canonical_session(file.path()).unwrap();
         let events: Vec<_> = imported.session.events.iter().collect();
 
-        let agent_msg = events.iter().find(|e| e.id == "codex:event_msg:agent_message:2").unwrap();
-        let text_blocks: Vec<_> = agent_msg.blocks.iter().filter_map(|b| match b {
-            EventBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        }).collect();
+        let agent_msg = events
+            .iter()
+            .find(|e| e.id == "codex:event_msg:agent_message:2")
+            .unwrap();
+        let text_blocks: Vec<_> = agent_msg
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                EventBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(text_blocks, vec!["Same text"]);
 
-        let complete_msg = events.iter().find(|e| e.id == "codex:event_msg:task_complete:3").unwrap();
-        let text_blocks: Vec<_> = complete_msg.blocks.iter().filter_map(|b| match b {
-            EventBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        }).collect();
+        let complete_msg = events
+            .iter()
+            .find(|e| e.id == "codex:event_msg:task_complete:3")
+            .unwrap();
+        let text_blocks: Vec<_> = complete_msg
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                EventBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
         assert_eq!(text_blocks, vec!["Different text"]);
+    }
+
+    #[test]
+    fn provider_payload_block_is_skipped_in_codex_export() {
+        let event = SessionEvent {
+            id: "test".to_string(),
+            kind: SessionEventKind::Message,
+            role: EventRole::Assistant,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks: vec![
+                EventBlock::Text {
+                    text: "Hello".to_string(),
+                },
+                EventBlock::ProviderPayload {
+                    kind: "task_complete".to_string(),
+                    payload: serde_json::json!({"type": "task_complete"}),
+                },
+            ],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "codex".to_string(),
+                    original_id: None,
+                    original_role: None,
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: BTreeMap::new(),
+            },
+        };
+
+        let content = canonical_event_to_codex_content(&event);
+        assert_eq!(content.len(), 1);
+        assert_eq!(
+            content[0].get("text").and_then(Value::as_str),
+            Some("Hello")
+        );
     }
 }
