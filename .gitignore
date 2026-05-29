@@ -38,6 +38,8 @@
 !/rust/crates/
 !/rust/crates/**/Cargo.toml
 !/rust/crates/**/*.rs
+!/rust/crates/**/assets/
+!/rust/crates/**/assets/*.json
 !/rust/apps/
 !/rust/apps/**/Cargo.toml
 !/rust/apps/**/*.rs
