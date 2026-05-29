@@ -890,6 +890,79 @@ button[disabled] {
   padding: 12px;
 }
 
+.agent-provider-list {
+  display: grid;
+  gap: 10px;
+  max-height: none;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 10px;
+  scrollbar-gutter: stable;
+}
+
+.agent-provider-item {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  text-align: left;
+  background: transparent;
+  white-space: normal;
+}
+
+.agent-provider-item.is-active {
+  border-color: var(--ink);
+  background: var(--mist);
+}
+
+.agent-provider-item:hover {
+  background: var(--mist);
+}
+
+.agent-provider-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  min-width: 0;
+  gap: 10px;
+  align-items: center;
+}
+
+.agent-provider-name {
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.agent-provider-head .pill {
+  flex-shrink: 0;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.agent-provider-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  font-size: 12px;
+  line-height: 1;
+  justify-self: end;
+}
+
+.agent-provider-state.is-installed {
+  font-size: 11px;
+}
+
+.agent-provider-state.is-missing {
+  font-size: 13px;
+}
+
 .workspace-option:hover,
 .manager-row:hover {
   background: var(--mist);
@@ -1044,6 +1117,11 @@ button[disabled] {
   grid-template-columns: 1fr;
 }
 
+.agent-management-page-layout {
+  grid-template-columns: minmax(212px, 228px) minmax(0, 1fr);
+  gap: 12px;
+}
+
 .pill-row {
   display: flex;
   flex-wrap: wrap;
@@ -1083,9 +1161,70 @@ button[disabled] {
   padding: 16px;
 }
 
+.agent-provider-panel,
+.agent-provider-detail-panel {
+  min-height: 0;
+  height: 100%;
+}
+
+.agent-provider-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+  overflow: hidden;
+}
+
+.agent-provider-detail-panel {
+  overflow: hidden;
+}
+
+.agent-provider-detail-scroll {
+  display: grid;
+  gap: 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  align-content: start;
+  padding-right: 10px;
+  scrollbar-gutter: stable;
+}
+
+.agent-provider-detail-header {
+  align-items: flex-start;
+  margin-bottom: 4px;
+}
+
 .settings-list {
   display: grid;
   border-top: 1px solid var(--line);
+}
+
+.manager-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+
+.agent-environment-grid {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.agent-environment-grid .stack {
+  gap: 4px;
+  min-width: 0;
+}
+
+.agent-environment-paths {
+  margin-top: 10px;
+}
+
+.agent-provider-detail-head {
+  min-width: 0;
+}
+
+.agent-provider-detail-head .pill-row {
+  margin-top: 2px;
 }
 
 .settings-row {
@@ -1104,6 +1243,13 @@ button[disabled] {
   min-width: 0;
 }
 
+.settings-copy-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 10px;
+}
+
 .settings-copy strong {
   font-size: 14px;
 }
@@ -1111,6 +1257,53 @@ button[disabled] {
 .settings-copy span {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-inline-link,
+.settings-update-meta,
+.settings-update-command,
+.settings-update-status {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.settings-inline-link,
+.settings-update-meta,
+.settings-update-command {
+  color: var(--muted);
+}
+
+.settings-inline-link {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settings-update-status {
+  color: var(--ink);
+}
+
+.settings-update-status.is-available {
+  font-weight: 700;
+}
+
+.settings-update-status.is-error {
+  color: var(--danger);
+}
+
+.settings-copy-inline span {
+  color: var(--muted);
+}
+
+.agent-detail-row {
+  grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.2fr);
+  align-items: start;
+}
+
+.agent-detail-row .path-line {
+  min-width: 0;
+  line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
@@ -1569,15 +1762,35 @@ button[disabled] {
     align-items: start;
   }
 
+  .agent-management-page-layout {
+    grid-template-columns: 1fr;
+  }
+
   .manager-control-panel,
   .manager-result-panel {
     height: auto;
     overflow: visible;
   }
 
+  .agent-provider-panel,
+  .agent-provider-detail-panel {
+    height: auto;
+    overflow: visible;
+  }
+
+  .agent-provider-detail-scroll {
+    overflow: visible;
+    padding-right: 0;
+  }
+
   .manager-result-panel .manager-list {
     flex: 0 1 auto;
     max-height: 60vh;
+  }
+
+  .agent-provider-list {
+    max-height: 60vh;
+    padding-right: 0;
   }
 
   .workspace-hero {

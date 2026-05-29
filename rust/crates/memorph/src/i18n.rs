@@ -15,7 +15,7 @@ static CATALOG: OnceLock<Catalog> = OnceLock::new();
 
 fn catalog() -> &'static Catalog {
     CATALOG.get_or_init(|| {
-        serde_json::from_str(include_str!("../../../../web/i18n.json"))
+        serde_json::from_str(include_str!("../assets/i18n.json"))
             .expect("web/i18n.json must be valid JSON")
     })
 }

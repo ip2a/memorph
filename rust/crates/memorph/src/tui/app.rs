@@ -2,6 +2,7 @@ use anyhow::Result;
 use base64::{engine::general_purpose, Engine as _};
 use crossterm::event::KeyEvent;
 use ratatui::widgets::TableState;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
@@ -11,7 +12,7 @@ use std::process::{Command, Stdio};
 use crate::config::UiLanguage;
 use crate::core::{self, ExportParams, SessionDetailView, SessionGroup, SessionItem, SwitchParams};
 use crate::i18n;
-use crate::{config, providers};
+use crate::{config, provider_settings, providers};
 
 pub const ACTION_OPTIONS: [SessionAction; 5] = [
     SessionAction::Switch,
@@ -67,15 +68,37 @@ pub enum ActionDialog {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainFocus {
     Workspace,
+    Agents,
     Settings,
     Sessions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentManagementFocus {
+    Providers,
+    Actions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentManagementActionKind {
+    Detect,
+    Toggle,
+    Action,
+}
+
+#[derive(Debug, Clone)]
+pub struct AgentManagementAction {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub kind: AgentManagementActionKind,
+    pub enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsField {
     Language,
     SessionsPerProvider,
-    ShowOpenCodeSubagents,
     SortProvidersBySessionCount,
     PrimaryAgents,
     Save,
@@ -86,7 +109,6 @@ impl SettingsField {
         match self {
             Self::Language => i18n::text(language, "interfaceLanguage"),
             Self::SessionsPerProvider => i18n::text(language, "sessionsPerProvider"),
-            Self::ShowOpenCodeSubagents => i18n::text(language, "showSubagents"),
             Self::SortProvidersBySessionCount => {
                 i18n::text(language, "sortProvidersBySessionCount")
             }
@@ -96,10 +118,9 @@ impl SettingsField {
     }
 }
 
-pub const SETTINGS_FIELDS: [SettingsField; 6] = [
+pub const SETTINGS_FIELDS: [SettingsField; 5] = [
     SettingsField::Language,
     SettingsField::SessionsPerProvider,
-    SettingsField::ShowOpenCodeSubagents,
     SettingsField::SortProvidersBySessionCount,
     SettingsField::PrimaryAgents,
     SettingsField::Save,
@@ -164,9 +185,14 @@ pub struct App {
     pub provider_filters_cache: Vec<Vec<String>>,
     pub selected_provider_tab: usize,
     pub main_focus: MainFocus,
+    pub agent_management_entries: Vec<crate::agent_management::AgentManagementEntry>,
+    pub agent_management_index: usize,
+    pub agent_management_focus: AgentManagementFocus,
+    pub agent_management_action_index: usize,
 
     // Top-level modal state
     pub workspace_modal_open: bool,
+    pub agents_modal_open: bool,
     pub settings_modal_open: bool,
     pub workspace_input: String,
     pub workspace_modal_index: usize,
@@ -191,6 +217,7 @@ pub struct App {
     pub export_output_prefix: String,
     pub rename_input: String,
     pub action_result: Option<ActionResult>,
+    pub agent_management_result: Option<ActionResult>,
 
     // Search modal state
     pub search_modal_open: bool,
@@ -224,7 +251,12 @@ impl App {
             provider_filters_cache: Vec::new(),
             selected_provider_tab: 0,
             main_focus: MainFocus::Sessions,
+            agent_management_entries: Vec::new(),
+            agent_management_index: 0,
+            agent_management_focus: AgentManagementFocus::Providers,
+            agent_management_action_index: 0,
             workspace_modal_open: false,
+            agents_modal_open: false,
             settings_modal_open: false,
             workspace_input: cwd_str.clone(),
             workspace_modal_index: 0,
@@ -247,6 +279,7 @@ impl App {
             export_output_prefix: cwd_str.clone(),
             rename_input: String::new(),
             action_result: None,
+            agent_management_result: None,
             search_modal_open: false,
             search_query: String::new(),
             search_scope_index: 0,
@@ -273,6 +306,17 @@ impl App {
         };
 
         self.session_groups = core::list_sessions(&params)?;
+        if let Ok(prefs) = config::web_preferences() {
+            if !prefs.show_opencode_subagents {
+                for group in &mut self.session_groups {
+                    if group.provider_id == "opencode" {
+                        group.sessions.retain(|session| {
+                            !is_opencode_subagent_title(session.title.as_deref())
+                        });
+                    }
+                }
+            }
+        }
         self.ensure_selected_row();
         Ok(())
     }
@@ -407,6 +451,10 @@ impl App {
             self.open_workspace_modal();
             return;
         }
+        if self.main_focus == MainFocus::Agents {
+            self.open_agents_modal();
+            return;
+        }
         if self.main_focus == MainFocus::Settings {
             self.open_settings_modal();
             return;
@@ -445,14 +493,16 @@ impl App {
     pub fn focus_previous_top_control(&mut self) {
         self.main_focus = match self.main_focus {
             MainFocus::Workspace => MainFocus::Settings,
-            MainFocus::Settings => MainFocus::Workspace,
+            MainFocus::Agents => MainFocus::Workspace,
+            MainFocus::Settings => MainFocus::Agents,
             MainFocus::Sessions => MainFocus::Sessions,
         };
     }
 
     pub fn focus_next_top_control(&mut self) {
         self.main_focus = match self.main_focus {
-            MainFocus::Workspace => MainFocus::Settings,
+            MainFocus::Workspace => MainFocus::Agents,
+            MainFocus::Agents => MainFocus::Settings,
             MainFocus::Settings => MainFocus::Workspace,
             MainFocus::Sessions => MainFocus::Sessions,
         };
@@ -464,6 +514,7 @@ impl App {
         self.sync_main_workspace_picker();
         self.workspace_modal_open = true;
         self.settings_modal_open = false;
+        self.agents_modal_open = false;
     }
 
     pub fn close_workspace_modal(&mut self) {
@@ -475,7 +526,6 @@ impl App {
             Ok(prefs) => {
                 self.settings_language = prefs.language;
                 self.settings_sessions_per_provider = prefs.sessions_per_provider;
-                self.settings_show_opencode_subagents = prefs.show_opencode_subagents;
                 self.settings_sort_providers_by_session_count =
                     prefs.sort_providers_by_session_count;
                 self.settings_agent_order = config::ordered_provider_ids(&prefs);
@@ -489,10 +539,346 @@ impl App {
         self.settings_selection = 0;
         self.settings_modal_open = true;
         self.workspace_modal_open = false;
+        self.agents_modal_open = false;
     }
 
     pub fn close_settings_modal(&mut self) {
         self.settings_modal_open = false;
+    }
+
+    pub fn open_agents_modal(&mut self) {
+        if let Ok(prefs) = config::web_preferences() {
+            self.settings_show_opencode_subagents = prefs.show_opencode_subagents;
+        }
+        self.agent_management_result = None;
+        self.agent_management_focus = AgentManagementFocus::Providers;
+        self.agent_management_action_index = 0;
+        match crate::agent_management::list_agent_management_entries() {
+            Ok(entries) => {
+                let preferred = self
+                    .get_filtered_providers()
+                    .into_iter()
+                    .find(|provider| provider != "all");
+                self.agent_management_entries = entries;
+                if let Some(provider) = preferred {
+                    if let Some(index) = self
+                        .agent_management_entries
+                        .iter()
+                        .position(|entry| entry.provider_id == provider)
+                    {
+                        self.agent_management_index = index;
+                    }
+                }
+                self.agent_management_index = self
+                    .agent_management_index
+                    .min(self.agent_management_entries.len().saturating_sub(1));
+                self.agent_management_action_index = self.agent_management_action_index.min(
+                    self.current_agent_management_actions()
+                        .len()
+                        .saturating_sub(1),
+                );
+            }
+            Err(error) => {
+                self.agent_management_entries.clear();
+                self.agent_management_index = 0;
+                self.agent_management_action_index = 0;
+                self.agent_management_result = Some(ActionResult {
+                    title: self.t("agents").to_string(),
+                    lines: vec![error.to_string()],
+                    is_error: true,
+                });
+            }
+        }
+        self.agents_modal_open = true;
+        self.workspace_modal_open = false;
+        self.settings_modal_open = false;
+    }
+
+    pub fn close_agents_modal(&mut self) {
+        self.agents_modal_open = false;
+        self.agent_management_result = None;
+    }
+
+    pub fn run_primary_agent_management_action(&mut self) {
+        self.run_selected_agent_management_action();
+    }
+
+    pub fn run_selected_agent_management_action(&mut self) {
+        let Some(provider_id) = self.current_managed_provider_id() else {
+            self.agent_management_result = Some(ActionResult {
+                title: self.t("agents").to_string(),
+                lines: vec![self.t("noProviders").to_string()],
+                is_error: true,
+            });
+            return;
+        };
+        let Some(action) = self.selected_agent_management_action() else {
+            self.agent_management_result = Some(ActionResult {
+                title: self.t("agents").to_string(),
+                lines: vec![self.t("noAgentManagementActionForProvider").to_string()],
+                is_error: true,
+            });
+            return;
+        };
+
+        self.agent_management_result = Some(match action.kind {
+            AgentManagementActionKind::Detect => {
+                match crate::agent_management::detect_agent_management_entry(&provider_id) {
+                    Ok(entry) => {
+                        if let Some(index) = self
+                            .agent_management_entries
+                            .iter()
+                            .position(|current| current.provider_id == provider_id)
+                        {
+                            self.agent_management_entries[index] = entry.clone();
+                            self.agent_management_index = index;
+                        }
+                        self.agent_management_action_index =
+                            self.agent_management_action_index.min(
+                                self.current_agent_management_actions()
+                                    .len()
+                                    .saturating_sub(1),
+                            );
+                        ActionResult {
+                            title: self.t("agents").to_string(),
+                            lines: vec![
+                                format!("{}: {}", self.t("provider"), provider_label(&provider_id)),
+                                format!(
+                                    "{}: {}",
+                                    self.t("agentInstallStatus"),
+                                    if entry.environment.installed {
+                                        self.t("installed")
+                                    } else {
+                                        self.t("notDetected")
+                                    }
+                                ),
+                                format!(
+                                    "{}: {}",
+                                    self.t("agentInstallMethod"),
+                                    if entry.environment.install_method.trim().is_empty() {
+                                        self.t("unknown")
+                                    } else {
+                                        entry.environment.install_method.as_str()
+                                    }
+                                ),
+                                format!(
+                                    "{}: {}",
+                                    self.t("agentExecutablePath"),
+                                    entry.environment.executable_path.as_deref().unwrap_or("—")
+                                ),
+                            ],
+                            is_error: false,
+                        }
+                    }
+                    Err(error) => ActionResult {
+                        title: self.t("agents").to_string(),
+                        lines: vec![error.to_string()],
+                        is_error: true,
+                    },
+                }
+            }
+            AgentManagementActionKind::Action => {
+                match provider_settings::run_provider_setting(
+                    &provider_id,
+                    &action.id,
+                    provider_settings::ProviderSettingContext {
+                        workspace: self.workspace.clone(),
+                    },
+                ) {
+                    Ok(provider_settings::ProviderSettingOutput::CodexWorkspaceRepair(report)) => {
+                        let mut lines = vec![
+                            format!("Workspace: {}", report.workspace_dir),
+                            format!("Current provider: {}", report.current_model_provider),
+                            format!("Scanned rollout files: {}", report.scanned_rollouts),
+                            format!("Workspace sessions: {}", report.workspace_session_count),
+                            format!("Hidden sessions: {}", report.hidden_session_count),
+                            format!("Repaired sessions: {}", report.repaired_session_count),
+                            format!("Reindexed sessions: {}", report.reindexed_session_count),
+                            format!("Updated SQLite rows: {}", report.sqlite_rows_updated),
+                        ];
+                        if let Some(backup_dir) = &report.backup_dir {
+                            lines.push(format!("Backup: {}", backup_dir));
+                        }
+                        if report.pruned_backup_count > 0 {
+                            lines.push(format!("Pruned backups: {}", report.pruned_backup_count));
+                        }
+                        if !report.skipped_rollout_files.is_empty() {
+                            lines.push(format!(
+                                "Skipped rollout files: {}",
+                                report.skipped_rollout_files.len()
+                            ));
+                        }
+                        if report.touched_sessions.is_empty() {
+                            lines.push("No Codex sessions needed sync.".to_string());
+                        } else {
+                            lines.push(String::new());
+                            for item in report.touched_sessions {
+                                lines.push(format!(
+                                    "{} | {} | {} -> {} | index_added={}",
+                                    item.session_id,
+                                    item.title.unwrap_or_else(|| "(untitled)".to_string()),
+                                    item.previous_model_provider
+                                        .unwrap_or_else(|| "(none)".to_string()),
+                                    item.current_model_provider,
+                                    item.added_to_index
+                                ));
+                            }
+                        }
+                        if !report.skipped_rollout_files.is_empty() {
+                            lines.push(String::new());
+                            for path in report.skipped_rollout_files {
+                                lines.push(format!("skipped rollout: {}", path));
+                            }
+                        }
+                        let _ = self.load_sessions();
+                        if let Ok(entries) =
+                            crate::agent_management::list_agent_management_entries()
+                        {
+                            self.agent_management_entries = entries;
+                            self.agent_management_index = self
+                                .agent_management_index
+                                .min(self.agent_management_entries.len().saturating_sub(1));
+                        }
+                        ActionResult {
+                            title: self.t("agents").to_string(),
+                            lines,
+                            is_error: false,
+                        }
+                    }
+                    Err(error) => ActionResult {
+                        title: self.t("agents").to_string(),
+                        lines: vec![error.to_string()],
+                        is_error: true,
+                    },
+                }
+            }
+            AgentManagementActionKind::Toggle => {
+                let next = !action.enabled.unwrap_or(false);
+                match provider_settings::update_provider_setting(
+                    &provider_id,
+                    &action.id,
+                    Some(Value::Bool(next)),
+                ) {
+                    Ok(_) => {
+                        if provider_id == "opencode" && action.id == "show_subagents" {
+                            self.settings_show_opencode_subagents = next;
+                        }
+                        let _ = self.load_sessions();
+                        if let Ok(entries) =
+                            crate::agent_management::list_agent_management_entries()
+                        {
+                            self.agent_management_entries = entries;
+                            self.agent_management_index = self
+                                .agent_management_index
+                                .min(self.agent_management_entries.len().saturating_sub(1));
+                            self.agent_management_action_index =
+                                self.agent_management_action_index.min(
+                                    self.current_agent_management_actions()
+                                        .len()
+                                        .saturating_sub(1),
+                                );
+                        }
+                        ActionResult {
+                            title: self.t("agents").to_string(),
+                            lines: vec![format!(
+                                "{}: {}",
+                                action.label,
+                                if next {
+                                    self.t("enabled")
+                                } else {
+                                    self.t("disabled")
+                                }
+                            )],
+                            is_error: false,
+                        }
+                    }
+                    Err(error) => ActionResult {
+                        title: self.t("agents").to_string(),
+                        lines: vec![error.to_string()],
+                        is_error: true,
+                    },
+                }
+            }
+        });
+    }
+
+    pub fn current_managed_provider_id(&self) -> Option<String> {
+        self.selected_agent_management_entry()
+            .map(|entry| entry.provider_id.clone())
+    }
+
+    pub fn current_agent_management_actions(&self) -> Vec<AgentManagementAction> {
+        let Some(entry) = self.selected_agent_management_entry() else {
+            return Vec::new();
+        };
+        let mut actions = vec![AgentManagementAction {
+            id: "detect".to_string(),
+            label: self.t("detect").to_string(),
+            description: self.t("agentManagementProviderHint").to_string(),
+            kind: AgentManagementActionKind::Detect,
+            enabled: None,
+        }];
+        for setting in &entry.settings {
+            let kind = match setting.kind {
+                provider_settings::SettingKind::Toggle => AgentManagementActionKind::Toggle,
+                provider_settings::SettingKind::Action => AgentManagementActionKind::Action,
+                provider_settings::SettingKind::View => continue,
+            };
+            actions.push(AgentManagementAction {
+                id: setting.id.clone(),
+                label: agent_management_setting_label(
+                    self.ui_language,
+                    &setting.id,
+                    &setting.title,
+                ),
+                description: setting.description.clone(),
+                kind,
+                enabled: setting.value.as_ref().and_then(Value::as_bool),
+            });
+        }
+        actions
+    }
+
+    pub fn selected_agent_management_action(&self) -> Option<AgentManagementAction> {
+        let actions = self.current_agent_management_actions();
+        actions
+            .get(
+                self.agent_management_action_index
+                    .min(actions.len().saturating_sub(1)),
+            )
+            .cloned()
+    }
+
+    pub fn selected_agent_management_entry(
+        &self,
+    ) -> Option<&crate::agent_management::AgentManagementEntry> {
+        self.agent_management_entries.get(
+            self.agent_management_index
+                .min(self.agent_management_entries.len().saturating_sub(1)),
+        )
+    }
+
+    pub fn step_agent_management_selection(&mut self, forward: bool) {
+        if self.agent_management_entries.is_empty() {
+            self.agent_management_index = 0;
+            return;
+        }
+        self.agent_management_index = cycle_index(
+            self.agent_management_index,
+            self.agent_management_entries.len(),
+            forward,
+        );
+        self.agent_management_action_index = 0;
+    }
+
+    pub fn step_agent_management_action(&mut self, forward: bool) {
+        let actions = self.current_agent_management_actions();
+        if actions.is_empty() {
+            self.agent_management_action_index = 0;
+            return;
+        }
+        self.agent_management_action_index =
+            cycle_index(self.agent_management_action_index, actions.len(), forward);
     }
 
     pub fn selected_settings_field(&self) -> SettingsField {
@@ -527,9 +913,6 @@ impl App {
                     self.settings_sessions_per_provider =
                         self.settings_sessions_per_provider.saturating_sub(1).max(1);
                 }
-            }
-            SettingsField::ShowOpenCodeSubagents => {
-                self.settings_show_opencode_subagents = !self.settings_show_opencode_subagents;
             }
             SettingsField::SortProvidersBySessionCount => {
                 self.settings_sort_providers_by_session_count =
@@ -610,7 +993,7 @@ impl App {
         let result = config::update_web_preferences(
             Some(self.settings_sessions_per_provider),
             Some(self.settings_language),
-            Some(self.settings_show_opencode_subagents),
+            None,
             Some(self.settings_sort_providers_by_session_count),
             None,
             None,
@@ -1548,6 +1931,23 @@ pub fn provider_label(provider_id: &str) -> &'static str {
     providers::find_provider(provider_id)
         .map(|p| p.name())
         .unwrap_or("Unknown")
+}
+
+fn agent_management_setting_label(language: UiLanguage, setting_id: &str, title: &str) -> String {
+    match setting_id {
+        "repair_workspace_sessions" => i18n::text(language, "repairCurrentWorkspaceSessions"),
+        "show_subagents" => i18n::text(language, "showSubagents"),
+        _ if !title.trim().is_empty() => title,
+        _ => setting_id,
+    }
+    .to_string()
+}
+
+fn is_opencode_subagent_title(title: Option<&str>) -> bool {
+    let Some(title) = title else {
+        return false;
+    };
+    title.contains("(@") && title.contains(" subagent)")
 }
 
 fn push_unique(options: &mut Vec<String>, value: Option<String>) {

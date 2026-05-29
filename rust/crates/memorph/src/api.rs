@@ -1,4 +1,3 @@
-use anyhow::Context;
 use axum::{
     extract::{Path, Query},
     http::StatusCode,
@@ -6,11 +5,16 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
+use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
-use crate::{config, core, logging, provider_features, shared};
+use crate::{
+    agent_management, config, core, logging, provider_features, provider_settings, shared,
+};
 
 type FolderPicker =
     dyn Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static;
@@ -52,17 +56,50 @@ fn api_error(status: StatusCode, msg: impl ToString) -> impl IntoResponse {
 pub fn router() -> Router {
     Router::new()
         .route("/api/v1/meta", get(get_meta))
+        .route("/api/v1/update-check", get(check_for_update))
+        .route("/api/v1/agents", get(list_agent_management))
+        .route(
+            "/api/v1/agents/{provider}",
+            get(get_agent_management_provider),
+        )
+        .route(
+            "/api/v1/agents/{provider}/detect",
+            post(detect_agent_management_provider),
+        )
         .route("/api/v1/providers", get(list_providers))
         .route(
             "/api/v1/providers/{provider}/features",
-            get(list_provider_features),
+            get(list_legacy_provider_features),
+        )
+        .route(
+            "/api/v1/providers/{provider}/settings",
+            get(list_provider_settings),
+        )
+        .route(
+            "/api/v1/providers/{provider}/controls",
+            get(list_legacy_provider_controls),
         )
         .route(
             "/api/v1/providers/{provider}/features/{feature_id}",
-            get(get_provider_feature).put(update_provider_feature),
+            get(get_legacy_provider_feature)
+                .put(update_legacy_provider_feature)
+                .post(run_legacy_provider_feature),
+        )
+        .route(
+            "/api/v1/providers/{provider}/settings/{setting_id}",
+            get(get_provider_setting)
+                .put(update_provider_setting)
+                .post(run_provider_setting),
+        )
+        .route(
+            "/api/v1/providers/{provider}/controls/{control_id}",
+            get(get_legacy_provider_control)
+                .put(update_legacy_provider_control)
+                .post(run_legacy_provider_control),
         )
         .route("/api/v1/settings", get(get_settings).put(update_settings))
         .route("/api/v1/system/select-folder", post(select_folder))
+        .route("/api/v1/system/open-external", post(open_external))
         .route("/api/v1/sessions", get(list_sessions))
         .route("/api/v1/sessions/{provider}/{session_id}", get(get_session))
         .route(
@@ -140,9 +177,26 @@ struct ProviderInfo {
 }
 
 #[derive(Debug, Serialize)]
-struct ProviderFeaturePayload {
+struct LegacyProviderFeaturePayload {
     provider_id: String,
     features: Vec<provider_features::ResolvedProviderFeature>,
+}
+
+#[derive(Debug, Serialize)]
+struct LegacyProviderControlsPayload {
+    provider_id: String,
+    controls: Vec<provider_settings::ProviderSettingItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct ProviderSettingsPayload {
+    provider_id: String,
+    settings: Vec<provider_settings::ProviderSettingItem>,
+}
+
+#[derive(Debug, Serialize)]
+struct AgentManagementPayload {
+    providers: Vec<agent_management::AgentManagementEntry>,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,6 +254,58 @@ struct SelectFolderPayload {
     path: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct OpenExternalBody {
+    url: String,
+}
+
+#[derive(Serialize)]
+struct OpenExternalPayload {
+    opened: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UpdateCheckPayload {
+    current_version: &'static str,
+    latest_version: String,
+    install_source: String,
+    install_source_label: String,
+    has_update: bool,
+    update_command: String,
+    release_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct NpmLatestPayload {
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PypiProjectPayload {
+    info: PypiProjectInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct PypiProjectInfo {
+    version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CratesIoPayload {
+    #[serde(rename = "crate")]
+    crate_info: CratesIoCrateInfo,
+}
+
+#[derive(Debug, Deserialize)]
+struct CratesIoCrateInfo {
+    max_version: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleasePayload {
+    tag_name: String,
+}
+
 fn provider_info_list() -> Vec<ProviderInfo> {
     crate::providers::all_provider_ids()
         .iter()
@@ -218,6 +324,252 @@ fn provider_info_list() -> Vec<ProviderInfo> {
             }
         })
         .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallSource {
+    Npm,
+    PythonPip,
+    PythonPipx,
+    PythonUvTool,
+    Cargo,
+    DesktopApp,
+}
+
+impl InstallSource {
+    fn slug(self) -> &'static str {
+        match self {
+            InstallSource::Npm => "npm",
+            InstallSource::PythonPip => "pip",
+            InstallSource::PythonPipx => "pipx",
+            InstallSource::PythonUvTool => "uv-tool",
+            InstallSource::Cargo => "cargo",
+            InstallSource::DesktopApp => "desktop-app",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            InstallSource::Npm => "npm",
+            InstallSource::PythonPip => "PyPI/pip",
+            InstallSource::PythonPipx => "PyPI/pipx",
+            InstallSource::PythonUvTool => "PyPI/uv tool",
+            InstallSource::Cargo => "Cargo",
+            InstallSource::DesktopApp => "GitHub Desktop App",
+        }
+    }
+
+    fn release_url(self) -> &'static str {
+        match self {
+            InstallSource::Npm => "https://www.npmjs.com/package/memorph",
+            InstallSource::PythonPip
+            | InstallSource::PythonPipx
+            | InstallSource::PythonUvTool => "https://pypi.org/project/memorph/",
+            InstallSource::Cargo => "https://crates.io/crates/memorph",
+            InstallSource::DesktopApp => "https://github.com/ip2a/memorph/releases/latest",
+        }
+    }
+
+    fn update_command(self, python_executable: Option<String>) -> String {
+        match self {
+            InstallSource::Npm => "npm install -g memorph@latest".to_string(),
+            InstallSource::PythonPip => format!(
+                "{} -m pip install --upgrade memorph",
+                python_executable.unwrap_or_else(|| "python".to_string())
+            ),
+            InstallSource::PythonPipx => "pipx upgrade memorph".to_string(),
+            InstallSource::PythonUvTool => "uv tool upgrade memorph".to_string(),
+            InstallSource::Cargo => "cargo install memorph --force".to_string(),
+            InstallSource::DesktopApp => {
+                "Open the latest GitHub release and download the updated DMG.".to_string()
+            }
+        }
+    }
+}
+
+fn normalize_str_path(value: &str) -> String {
+    value.replace('\\', "/").to_ascii_lowercase()
+}
+
+fn normalize_path(value: &std::path::Path) -> String {
+    normalize_str_path(&value.to_string_lossy())
+}
+
+fn looks_like_uv_tool(value: Option<&str>) -> bool {
+    value
+        .map(|value| normalize_str_path(value).contains("/uv/tools/"))
+        .unwrap_or(false)
+}
+
+fn looks_like_pipx(value: Option<&str>) -> bool {
+    value
+        .map(|value| normalize_str_path(value).contains("/pipx/venvs/"))
+        .unwrap_or(false)
+}
+
+fn detect_install_source(
+    source_env: Option<&str>,
+    exe_path: Option<&std::path::Path>,
+    python_prefix: Option<&str>,
+    python_executable: Option<&str>,
+) -> Option<InstallSource> {
+    if let Some(source) = source_env {
+        match source.to_ascii_lowercase().as_str() {
+            "npm" => return Some(InstallSource::Npm),
+            "python" | "pypi" | "pip" => {
+                if looks_like_uv_tool(python_prefix) || looks_like_uv_tool(python_executable) {
+                    return Some(InstallSource::PythonUvTool);
+                }
+                if looks_like_pipx(python_prefix) || looks_like_pipx(python_executable) {
+                    return Some(InstallSource::PythonPipx);
+                }
+                return Some(InstallSource::PythonPip);
+            }
+            "pipx" => return Some(InstallSource::PythonPipx),
+            "uv" | "uv-tool" | "uv_tool" => return Some(InstallSource::PythonUvTool),
+            "cargo" | "crates" | "crates.io" => return Some(InstallSource::Cargo),
+            "desktop" | "desktop-app" | "dmg" | "tauri" => return Some(InstallSource::DesktopApp),
+            _ => {}
+        }
+    }
+
+    let path = exe_path.map(normalize_path)?;
+    if path.contains(".app/contents/macos/") {
+        return Some(InstallSource::DesktopApp);
+    }
+    if path.contains("/node_modules/") && path.contains("memorph-bin") {
+        return Some(InstallSource::Npm);
+    }
+    if path.contains("/site-packages/") && path.contains("memorph_bin") {
+        return Some(InstallSource::PythonPip);
+    }
+    if path.contains("/.cargo/bin/") {
+        return Some(InstallSource::Cargo);
+    }
+    if path.contains("/target/debug/") || path.contains("/target/release/") {
+        return Some(InstallSource::Cargo);
+    }
+    None
+}
+
+fn compare_versions(left: &str, right: &str) -> Ordering {
+    fn parse(value: &str) -> Vec<u64> {
+        value
+            .trim()
+            .trim_start_matches('v')
+            .split('+')
+            .next()
+            .unwrap_or(value)
+            .split(['.', '-'])
+            .filter_map(|part| {
+                let digits: String = part.chars().take_while(|ch| ch.is_ascii_digit()).collect();
+                if digits.is_empty() {
+                    None
+                } else {
+                    digits.parse::<u64>().ok()
+                }
+            })
+            .collect()
+    }
+
+    let left_parts = parse(left);
+    let right_parts = parse(right);
+    let max_len = left_parts.len().max(right_parts.len());
+    for index in 0..max_len {
+        let left_part = *left_parts.get(index).unwrap_or(&0);
+        let right_part = *right_parts.get(index).unwrap_or(&0);
+        match left_part.cmp(&right_part) {
+            Ordering::Equal => continue,
+            ordering => return ordering,
+        }
+    }
+    Ordering::Equal
+}
+
+async fn fetch_latest_version(source: InstallSource) -> anyhow::Result<String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .user_agent(format!("memorph/{}", env!("CARGO_PKG_VERSION")))
+        .build()?;
+
+    match source {
+        InstallSource::Npm => {
+            let payload = client
+                .get("https://registry.npmjs.org/memorph/latest")
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<NpmLatestPayload>()
+                .await?;
+            Ok(payload.version)
+        }
+        InstallSource::PythonPip | InstallSource::PythonPipx | InstallSource::PythonUvTool => {
+            let payload = client
+                .get("https://pypi.org/pypi/memorph/json")
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<PypiProjectPayload>()
+                .await?;
+            Ok(payload.info.version)
+        }
+        InstallSource::Cargo => {
+            let payload = client
+                .get("https://crates.io/api/v1/crates/memorph")
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<CratesIoPayload>()
+                .await?;
+            Ok(payload.crate_info.max_version)
+        }
+        InstallSource::DesktopApp => {
+            let payload = client
+                .get("https://api.github.com/repos/ip2a/memorph/releases/latest")
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await?
+                .error_for_status()?
+                .json::<GitHubReleasePayload>()
+                .await?;
+            Ok(payload.tag_name)
+        }
+    }
+}
+
+async fn update_check_payload() -> anyhow::Result<UpdateCheckPayload> {
+    let source = detect_install_source(
+        std::env::var("MEMORPH_INSTALL_SOURCE").ok().as_deref(),
+        std::env::current_exe().ok().as_deref(),
+        std::env::var("MEMORPH_PYTHON_PREFIX").ok().as_deref(),
+        std::env::var("MEMORPH_PYTHON_EXECUTABLE").ok().as_deref(),
+    )
+    .ok_or_else(|| {
+        anyhow!(
+            "Could not detect how memorph was installed.\n\
+             Try one of these commands manually:\n\
+             - npm install -g memorph@latest\n\
+             - python -m pip install --upgrade memorph\n\
+             - pipx upgrade memorph\n\
+             - uv tool upgrade memorph\n\
+             - cargo install memorph --force"
+        )
+    })?;
+
+    let latest_version = fetch_latest_version(source)
+        .await
+        .with_context(|| format!("Failed to fetch latest version from {}", source.label()))?;
+    let current_version = env!("CARGO_PKG_VERSION");
+
+    Ok(UpdateCheckPayload {
+        current_version,
+        latest_version: latest_version.clone(),
+        install_source: source.slug().to_string(),
+        install_source_label: source.label().to_string(),
+        has_update: compare_versions(&latest_version, current_version) == Ordering::Greater,
+        update_command: source.update_command(std::env::var("MEMORPH_PYTHON_EXECUTABLE").ok()),
+        release_url: source.release_url().to_string(),
+    })
 }
 
 fn settings_payload() -> anyhow::Result<SettingsPayload> {
@@ -257,13 +609,41 @@ async fn get_meta() -> impl IntoResponse {
     }
 }
 
+async fn check_for_update() -> impl IntoResponse {
+    match update_check_payload().await {
+        Ok(payload) => ApiResponse::success(payload).into_response(),
+        Err(error) => api_error(StatusCode::BAD_GATEWAY, error).into_response(),
+    }
+}
+
+async fn list_agent_management() -> impl IntoResponse {
+    match agent_management::list_agent_management_entries() {
+        Ok(providers) => ApiResponse::success(AgentManagementPayload { providers }).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn get_agent_management_provider(Path(provider): Path<String>) -> impl IntoResponse {
+    match agent_management::get_agent_management_entry(&provider) {
+        Ok(provider) => ApiResponse::success(provider).into_response(),
+        Err(error) => api_error(StatusCode::NOT_FOUND, error).into_response(),
+    }
+}
+
+async fn detect_agent_management_provider(Path(provider): Path<String>) -> impl IntoResponse {
+    match agent_management::detect_agent_management_entry(&provider) {
+        Ok(provider) => ApiResponse::success(provider).into_response(),
+        Err(error) => api_error(StatusCode::NOT_FOUND, error).into_response(),
+    }
+}
+
 async fn list_providers() -> impl IntoResponse {
     ApiResponse::success(provider_info_list()).into_response()
 }
 
-async fn list_provider_features(Path(provider): Path<String>) -> impl IntoResponse {
+async fn list_legacy_provider_features(Path(provider): Path<String>) -> impl IntoResponse {
     match provider_features::list_provider_features(&provider) {
-        Ok(features) => ApiResponse::success(ProviderFeaturePayload {
+        Ok(features) => ApiResponse::success(LegacyProviderFeaturePayload {
             provider_id: provider,
             features,
         })
@@ -272,16 +652,51 @@ async fn list_provider_features(Path(provider): Path<String>) -> impl IntoRespon
     }
 }
 
-async fn get_provider_feature(
+async fn list_legacy_provider_controls(Path(provider): Path<String>) -> impl IntoResponse {
+    match provider_settings::list_provider_settings(&provider) {
+        Ok(controls) => ApiResponse::success(LegacyProviderControlsPayload {
+            provider_id: provider,
+            controls,
+        })
+        .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn list_provider_settings(Path(provider): Path<String>) -> impl IntoResponse {
+    match provider_settings::list_provider_settings(&provider) {
+        Ok(settings) => ApiResponse::success(ProviderSettingsPayload {
+            provider_id: provider,
+            settings,
+        })
+        .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn get_legacy_provider_feature(
     Path((provider, feature_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match provider_features::list_provider_features(&provider).and_then(|features| {
-        features
-            .into_iter()
-            .find(|feature| feature.id == feature_id)
-            .with_context(|| format!("Unknown provider feature: {}.{}", provider, feature_id))
-    }) {
+    match provider_features::get_provider_feature(&provider, &feature_id) {
         Ok(feature) => ApiResponse::success(feature).into_response(),
+        Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+async fn get_provider_setting(
+    Path((provider, setting_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match provider_settings::get_provider_setting(&provider, &setting_id) {
+        Ok(setting) => ApiResponse::success(setting).into_response(),
+        Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+async fn get_legacy_provider_control(
+    Path((provider, control_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match provider_settings::get_provider_setting(&provider, &control_id) {
+        Ok(control) => ApiResponse::success(control).into_response(),
         Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
     }
 }
@@ -298,6 +713,18 @@ async fn select_folder(Json(body): Json<SelectFolderBody>) -> impl IntoResponse 
     match picker(body.start_path) {
         Ok(path) => ApiResponse::success(SelectFolderPayload { path }).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn open_external(Json(body): Json<OpenExternalBody>) -> impl IntoResponse {
+    let url = body.url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return api_error(StatusCode::BAD_REQUEST, "Only http(s) URLs are supported.").into_response();
+    }
+
+    match open::that_detached(url) {
+        Ok(()) => ApiResponse::success(OpenExternalPayload { opened: true }).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
@@ -434,8 +861,13 @@ struct RenameBody {
 }
 
 #[derive(Deserialize)]
-struct ProviderFeatureUpdateBody {
+struct ProviderSettingUpdateBody {
     value: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct ProviderSettingRunBody {
+    workspace: Option<String>,
 }
 
 async fn rename_session(
@@ -458,12 +890,80 @@ async fn update_session_local_state(
     }
 }
 
-async fn update_provider_feature(
+async fn update_legacy_provider_feature(
     Path((provider, feature_id)): Path<(String, String)>,
-    Json(body): Json<ProviderFeatureUpdateBody>,
+    Json(body): Json<ProviderSettingUpdateBody>,
 ) -> impl IntoResponse {
     match provider_features::update_provider_feature(&provider, &feature_id, body.value) {
         Ok(feature) => ApiResponse::success(feature).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn update_legacy_provider_control(
+    Path((provider, control_id)): Path<(String, String)>,
+    Json(body): Json<ProviderSettingUpdateBody>,
+) -> impl IntoResponse {
+    match provider_settings::update_provider_setting(&provider, &control_id, body.value) {
+        Ok(control) => ApiResponse::success(control).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn update_provider_setting(
+    Path((provider, setting_id)): Path<(String, String)>,
+    Json(body): Json<ProviderSettingUpdateBody>,
+) -> impl IntoResponse {
+    match provider_settings::update_provider_setting(&provider, &setting_id, body.value) {
+        Ok(setting) => ApiResponse::success(setting).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn run_legacy_provider_feature(
+    Path((provider, feature_id)): Path<(String, String)>,
+    Json(body): Json<ProviderSettingRunBody>,
+) -> impl IntoResponse {
+    match provider_features::run_provider_feature(
+        &provider,
+        &feature_id,
+        provider_features::ProviderFeatureContext {
+            workspace: body.workspace,
+        },
+    ) {
+        Ok(output) => ApiResponse::success(output).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn run_provider_setting(
+    Path((provider, setting_id)): Path<(String, String)>,
+    Json(body): Json<ProviderSettingRunBody>,
+) -> impl IntoResponse {
+    match provider_settings::run_provider_setting(
+        &provider,
+        &setting_id,
+        provider_settings::ProviderSettingContext {
+            workspace: body.workspace,
+        },
+    ) {
+        Ok(output) => ApiResponse::success(output).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn run_legacy_provider_control(
+    Path((provider, control_id)): Path<(String, String)>,
+    Json(body): Json<ProviderSettingRunBody>,
+) -> impl IntoResponse {
+    match provider_settings::run_provider_setting(
+        &provider,
+        &control_id,
+        provider_settings::ProviderSettingContext {
+            workspace: body.workspace,
+        },
+    ) {
+        Ok(output) => ApiResponse::success(output).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -811,4 +1311,205 @@ async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse
         ),
     );
     ApiResponse::success(result).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::Request,
+    };
+    use tower::util::ServiceExt;
+
+    async fn read_json(app: Router, request: Request<Body>) -> (StatusCode, serde_json::Value) {
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        (status, value)
+    }
+
+    #[tokio::test]
+    async fn settings_route_lists_codex_repair_setting() {
+        let request = Request::builder()
+            .uri("/api/v1/providers/codex/settings")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+
+        let settings = value["data"]["settings"].as_array().unwrap();
+        assert!(settings
+            .iter()
+            .any(|setting| setting["id"] == "repair_workspace_sessions"));
+    }
+
+    #[tokio::test]
+    async fn agents_route_exposes_settings_field() {
+        let request = Request::builder()
+            .uri("/api/v1/agents")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+
+        let providers = value["data"]["providers"].as_array().unwrap();
+        let codex = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "codex")
+            .expect("missing codex agent entry");
+        assert!(codex.get("settings").is_some());
+        assert!(codex.get("environment").is_some());
+        assert!(codex.get("features").is_none());
+    }
+
+    #[tokio::test]
+    async fn agents_route_keeps_environment_block_and_flat_fields_in_sync() {
+        let request = Request::builder()
+            .uri("/api/v1/agents")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let providers = value["data"]["providers"].as_array().unwrap();
+        let codex = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "codex")
+            .expect("missing codex agent entry");
+
+        assert_eq!(codex["environment"]["installed"], codex["installed"]);
+        assert_eq!(codex["environment"]["config_path"], codex["config_path"]);
+        assert_eq!(
+            codex["environment"]["install_method"],
+            codex["install_method"]
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_detail_route_returns_single_provider_entry() {
+        let request = Request::builder()
+            .uri("/api/v1/agents/codex")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["data"]["provider_id"], "codex");
+        assert!(value["data"]["settings"].is_array());
+        assert!(value["data"]["environment"].is_object());
+        assert_eq!(
+            value["data"]["environment"]["config_path"],
+            value["data"]["config_path"]
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_detect_route_matches_detail_route_for_provider_entry() {
+        let detail_request = Request::builder()
+            .uri("/api/v1/agents/codex")
+            .body(Body::empty())
+            .unwrap();
+        let detect_request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/agents/codex/detect")
+            .body(Body::empty())
+            .unwrap();
+
+        let (detail_status, detail_value) = read_json(router(), detail_request).await;
+        let (detect_status, detect_value) = read_json(router(), detect_request).await;
+
+        assert_eq!(detail_status, StatusCode::OK);
+        assert_eq!(detect_status, StatusCode::OK);
+        assert_eq!(
+            detail_value["data"]["provider_id"],
+            detect_value["data"]["provider_id"]
+        );
+        assert_eq!(
+            detail_value["data"]["environment"],
+            detect_value["data"]["environment"]
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_features_route_matches_settings_route_for_codex_repair() {
+        let setting_request = Request::builder()
+            .uri("/api/v1/providers/codex/settings/repair_workspace_sessions")
+            .body(Body::empty())
+            .unwrap();
+        let feature_request = Request::builder()
+            .uri("/api/v1/providers/codex/features/repair_workspace_sessions")
+            .body(Body::empty())
+            .unwrap();
+
+        let (setting_status, setting_value) = read_json(router(), setting_request).await;
+        let (feature_status, feature_value) = read_json(router(), feature_request).await;
+
+        assert_eq!(setting_status, StatusCode::OK);
+        assert_eq!(feature_status, StatusCode::OK);
+        assert_eq!(setting_value["data"]["id"], feature_value["data"]["id"]);
+        assert_eq!(setting_value["data"]["kind"], feature_value["data"]["kind"]);
+        assert_eq!(
+            setting_value["data"]["scope"],
+            feature_value["data"]["scope"]
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_features_list_route_matches_settings_route_for_codex() {
+        let setting_request = Request::builder()
+            .uri("/api/v1/providers/codex/settings")
+            .body(Body::empty())
+            .unwrap();
+        let feature_request = Request::builder()
+            .uri("/api/v1/providers/codex/features")
+            .body(Body::empty())
+            .unwrap();
+
+        let (setting_status, setting_value) = read_json(router(), setting_request).await;
+        let (feature_status, feature_value) = read_json(router(), feature_request).await;
+
+        assert_eq!(setting_status, StatusCode::OK);
+        assert_eq!(feature_status, StatusCode::OK);
+        assert_eq!(
+            setting_value["data"]["settings"][0]["id"],
+            feature_value["data"]["features"][0]["id"]
+        );
+        assert_eq!(
+            setting_value["data"]["settings"][0]["kind"],
+            feature_value["data"]["features"][0]["kind"]
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_controls_route_matches_settings_route_for_codex() {
+        let settings_request = Request::builder()
+            .uri("/api/v1/providers/codex/settings")
+            .body(Body::empty())
+            .unwrap();
+        let controls_request = Request::builder()
+            .uri("/api/v1/providers/codex/controls")
+            .body(Body::empty())
+            .unwrap();
+
+        let (settings_status, settings_value) = read_json(router(), settings_request).await;
+        let (controls_status, controls_value) = read_json(router(), controls_request).await;
+
+        assert_eq!(settings_status, StatusCode::OK);
+        assert_eq!(controls_status, StatusCode::OK);
+        assert_eq!(
+            settings_value["data"]["settings"][0]["id"],
+            controls_value["data"]["controls"][0]["id"]
+        );
+        assert_eq!(
+            settings_value["data"]["settings"][0]["kind"],
+            controls_value["data"]["controls"][0]["kind"]
+        );
+    }
 }

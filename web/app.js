@@ -5,6 +5,7 @@ const ASCII = `███    ███   ███████   ███    █
 ██      ██   ███████   ██      ██   ██████   ██   ██  ██       ██    ██`;
 
 let I18N = { zh: {}, en: {} };
+const REPOSITORY_URL = "https://github.com/ip2a/memorph";
 
 const state = {
   meta: null,
@@ -34,6 +35,16 @@ const state = {
   compression: {
     archives: [],
     providers: [],
+  },
+  agents: {
+    providers: [],
+    selectedProvider: "",
+    settingResults: {},
+  },
+  updateCheck: {
+    checking: false,
+    result: null,
+    error: "",
   },
   modal: null,
   toasts: [],
@@ -94,6 +105,9 @@ document.addEventListener("change", (event) => {
   if (target.dataset.role === "provider-toggle") {
     toggleProvider(target.value, target.checked);
   }
+  if (target.dataset.role === "agent-setting-toggle") {
+    void updateAgentSetting(target.dataset.provider, target.dataset.settingId, target.checked);
+  }
   if (target.dataset.role === "home-search") {
     state.home.search = target.value;
     render();
@@ -140,6 +154,9 @@ async function bootstrap() {
 }
 
 async function loadRoute() {
+  if (state.route.name === "agents" && window.location.pathname === "/tools") {
+    replacePath("/agents");
+  }
   render();
   const route = state.route;
   setLoading(true);
@@ -175,6 +192,8 @@ async function loadRoute() {
       ]);
       state.compression.archives = archives;
       state.compression.providers = providers;
+    } else if (route.name === "agents") {
+      await loadAgentManagement();
     }
   } catch (error) {
     toast(t("error"), error.message, true);
@@ -198,6 +217,55 @@ async function loadHome() {
   });
   state.home.groups = await api(`/api/v1/sessions?${params.toString()}`);
   state.home.sharedGroups = await api("/api/v1/share/status");
+}
+
+async function loadAgentManagement() {
+  const payload = await api("/api/v1/agents");
+  state.agents.providers = payload.providers || [];
+  if (
+    !state.agents.selectedProvider ||
+    !state.agents.providers.some((item) => item.provider_id === state.agents.selectedProvider)
+  ) {
+    state.agents.selectedProvider = state.agents.providers[0]?.provider_id || "";
+  }
+}
+
+async function detectAgentProvider(providerId) {
+  if (!providerId) return;
+  const provider = await api(`/api/v1/agents/${encodeURIComponent(providerId)}/detect`, {
+    method: "POST",
+  });
+  const index = state.agents.providers.findIndex((item) => item.provider_id === provider.provider_id);
+  if (index >= 0) {
+    state.agents.providers[index] = provider;
+  } else {
+    state.agents.providers.push(provider);
+  }
+  state.agents.selectedProvider = provider.provider_id;
+  render();
+}
+
+function refreshSettingsModalWithCurrentDraft() {
+  if (state.modal?.submit !== "save-settings") {
+    render();
+    return;
+  }
+  openSettingsModal(readSettingsDraft());
+}
+
+async function runUpdateCheck() {
+  state.updateCheck.checking = true;
+  state.updateCheck.error = "";
+  refreshSettingsModalWithCurrentDraft();
+  try {
+    state.updateCheck.result = await api("/api/v1/update-check");
+  } catch (error) {
+    state.updateCheck.result = null;
+    state.updateCheck.error = error.message;
+  } finally {
+    state.updateCheck.checking = false;
+    refreshSettingsModalWithCurrentDraft();
+  }
 }
 
 function navigate(path) {
@@ -245,6 +313,9 @@ async function setWorkspace(workspace) {
       `/api/v1/workspaces/providers?workspace=${encodeURIComponent(workspace)}`
     );
     await loadHome();
+    if (state.route.name === "agents") {
+      await loadAgentManagement();
+    }
     await refreshWorkspaceMeta();
     render();
   } finally {
@@ -292,11 +363,31 @@ async function handleAction(action, data, trigger = null) {
     case "open-external":
       await openExternalUrl(data.url || trigger?.getAttribute("href") || "");
       break;
+    case "check-update":
+      await runUpdateCheck();
+      break;
     case "open-settings":
       openSettingsModal();
       break;
+    case "open-agents":
+      navigate("/agents");
+      break;
     case "open-manager":
       navigate("/manager");
+      break;
+    case "detect-agent-provider":
+      await detectAgentProvider(data.provider);
+      break;
+    case "refresh-agents":
+      await loadAgentManagement();
+      render();
+      break;
+    case "select-agent-provider":
+      state.agents.selectedProvider = data.provider || "";
+      render();
+      break;
+    case "run-agent-setting":
+      await runAgentSetting(data.provider, data.settingId);
       break;
     case "open-compression-restore":
       openCompressionRestoreModal(data.archiveRef || "");
@@ -976,6 +1067,23 @@ function openActionResultModal({ title, summary = "", lines = [], navPath = "", 
   render();
 }
 
+function renderUpdateCheckSummary() {
+  if (state.updateCheck.error) {
+    return `<span class="settings-update-status is-error">${escapeHtml(`${t("updateCheckFailed")}: ${state.updateCheck.error}`)}</span>`;
+  }
+  if (!state.updateCheck.result) return "";
+
+  const result = state.updateCheck.result;
+  const statusText = result.has_update ? t("updateAvailableStatus") : t("upToDateStatus");
+  const summaryText = `${t("installSource")}: ${result.install_source_label} · ${t("latestVersionLabel")}: v${result.latest_version}`;
+  const commandText = `${t("updateCommandLabel")}: ${result.update_command}`;
+
+  return `
+    <span class="settings-update-status ${result.has_update ? "is-available" : ""}">${escapeHtml(statusText)}</span>
+    <span class="settings-update-meta">${escapeHtml(summaryText)}</span>
+    <span class="settings-update-command">${escapeHtml(commandText)}</span>`;
+}
+
 function openSettingsModal(draft = null) {
   const settings = draft || state.meta.settings;
   const items = [...settings.agent_order]
@@ -1060,16 +1168,6 @@ function openSettingsModal(draft = null) {
         </div>
         <div class="settings-row">
           <div class="settings-copy">
-            <strong>OpenCode subagents</strong>
-            <span>${t("settingsSubagentsHint")}</span>
-          </div>
-          <label class="settings-check">
-            <input type="checkbox" name="show_opencode_subagents" value="true" ${settings.show_opencode_subagents ? "checked" : ""}>
-            <span>${t("done")}</span>
-          </label>
-        </div>
-        <div class="settings-row">
-          <div class="settings-copy">
             <strong>${t("homeButtons")}</strong>
             <span>${t("settingsHomeButtonsHint")}</span>
           </div>
@@ -1107,8 +1205,14 @@ function openSettingsModal(draft = null) {
           <div class="settings-copy">
             <strong>${t("version")}</strong>
             <span>v${escapeHtml(state.meta?.version || "")}</span>
+            <a class="settings-inline-link" href="${escapeAttr(REPOSITORY_URL)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+              REPOSITORY_URL
+            )}</a>
+            ${renderUpdateCheckSummary()}
           </div>
-          <a class="button" href="https://www.npmjs.com/package/memorph" target="_blank" rel="noopener noreferrer">${t("checkUpdate")}</a>
+          <button type="button" data-action="check-update" ${state.updateCheck.checking ? "disabled" : ""}>
+            ${state.updateCheck.checking ? t("checkingUpdate") : t("checkUpdate")}
+          </button>
         </div>
       </div>`,
     submitLabel: t("save"),
@@ -1514,7 +1618,7 @@ async function runSaveSettings(formData) {
   const body = {
     sessions_per_provider: Number(formData.get("sessions_per_provider")),
     language: String(formData.get("language")),
-    show_opencode_subagents: formData.get("show_opencode_subagents") === "true",
+    show_opencode_subagents: Boolean(state.meta.settings.show_opencode_subagents),
     default_backup_dir: String(formData.get("default_backup_dir") || "./backups"),
     logging: logSettingsFromFormData(formData),
     home_buttons: {
@@ -1714,7 +1818,7 @@ function readSettingsDraft() {
   return {
     sessions_per_provider: Number(formData.get("sessions_per_provider") || state.meta.settings.sessions_per_provider),
     language: String(formData.get("language") || state.meta.settings.language),
-    show_opencode_subagents: formData.get("show_opencode_subagents") === "true",
+    show_opencode_subagents: Boolean(state.meta.settings.show_opencode_subagents),
     default_backup_dir: String(formData.get("default_backup_dir") || state.meta.settings.default_backup_dir || "./backups"),
     logging: logSettingsFromFormData(formData),
     home_buttons: {
@@ -1772,7 +1876,7 @@ function render() {
     return;
   }
   appEl.innerHTML = `
-    <div class="app-shell ${state.route.name === "manager" || state.route.name === "compression" ? "manager-shell" : ""}">
+    <div class="app-shell ${state.route.name === "manager" || state.route.name === "compression" || state.route.name === "agents" ? "manager-shell" : ""}">
       <nav class="topbar">
         <div class="brand-cluster">
           <a class="brand" href="/" data-nav="/">memorph</a>
@@ -1782,6 +1886,7 @@ function render() {
           ${state.route.name === "home" ? "" : `<a class="button" href="/" data-nav="/">${t("openHome")}</a>`}
           ${state.route.name === "shared-list" || state.route.name === "shared-detail" ? "" : `<a class="button" href="/shared" data-nav="/shared">${t("shared")}</a>`}
           <button type="button" data-action="open-workspace-switch">${t("switchWorkspace")}</button>
+          ${state.route.name === "agents" ? "" : `<a class="button" href="/agents" data-nav="/agents">${t("agentManagement")}</a>`}
           <button type="button" data-action="open-import">${t("import")}</button>
           ${state.route.name === "compression" ? "" : `<a class="button" href="/compression" data-nav="/compression">${t("compression")}</a>`}
           ${state.route.name === "manager" ? "" : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
@@ -1814,6 +1919,8 @@ function pageTitle() {
       return t("managerTitle");
     case "compression":
       return t("compressionTitle");
+    case "agents":
+      return t("agentManagementTitle");
     case "shared-list":
       return t("sharedTitle");
     case "shared-detail":
@@ -1849,9 +1956,318 @@ function renderPage() {
       return `<div class="page-scroll manager-page-scroll">${renderManagerPage()}</div>`;
     case "compression":
       return `<div class="page-scroll manager-page-scroll">${renderCompressionPage()}</div>`;
+    case "agents":
+      return `<div class="page-scroll manager-page-scroll">${renderAgentManagementPage()}</div>`;
     default:
       return `<div class="page-scroll"><div class="empty-state">${t("notFound")}</div></div>`;
   }
+}
+
+function renderAgentManagementPage() {
+  const selected = currentAgentProvider();
+  return `
+    <div class="manager-page-layout agent-management-page-layout">
+      <section class="section-panel manager-control-panel agent-provider-panel">
+        <section class="manager-workspace-summary">
+          <div>
+            <span class="eyebrow">${t("workspace")}</span>
+            <strong>${escapeHtml(workspaceName(state.home.workspace) || t("workspaceEmpty"))}</strong>
+            <p>${escapeHtml(state.home.workspace || "—")}</p>
+          </div>
+        </section>
+        ${renderAgentProviderList()}
+      </section>
+      <section class="section-panel manager-result-panel agent-provider-detail-panel">
+        ${selected ? renderAgentProviderDetail(selected) : `<div class="empty-state">${t("noProviders")}</div>`}
+      </section>
+    </div>`;
+}
+
+function currentAgentProvider() {
+  return (
+    state.agents.providers.find((item) => item.provider_id === state.agents.selectedProvider) ||
+    state.agents.providers[0] ||
+    null
+  );
+}
+
+function renderAgentProviderList() {
+  if (!state.agents.providers.length) {
+    return `<div class="empty-state">${t("noProviders")}</div>`;
+  }
+  return `
+    <div class="manager-list agent-provider-list">
+      ${state.agents.providers
+        .map((item) => {
+          const selected = item.provider_id === state.agents.selectedProvider;
+          const installed = agentProviderEnvironment(item).installed;
+          const statusLabel = installed ? t("installed") : t("notDetected");
+          return `
+            <button
+              type="button"
+              class="agent-provider-item ${selected ? "is-active" : ""}"
+              data-action="select-agent-provider"
+              data-provider="${escapeAttr(item.provider_id)}"
+            >
+              <span class="agent-provider-head">
+                <strong class="agent-provider-name">${escapeHtml(agentProviderDisplayName(item))}</strong>
+                <span class="agent-provider-state ${installed ? "is-installed" : "is-missing"}" title="${escapeAttr(statusLabel)}" aria-label="${escapeAttr(statusLabel)}">
+                  ${installed ? "●" : "○"}
+                </span>
+              </span>
+            </button>`;
+        })
+        .join("")}
+    </div>`;
+}
+
+function renderAgentProviderDetail(provider) {
+  const settings = provider.settings || [];
+  const items = settings.filter((setting) => setting.kind === "toggle" || setting.kind === "action");
+  const actionItems = items.filter((setting) => setting.kind === "action");
+  const environment = agentProviderEnvironment(provider);
+  return `
+    <div class="agent-provider-detail-scroll">
+    <header class="manager-section-head agent-provider-detail-header">
+      <div class="stack agent-provider-detail-head">
+        <strong>${escapeHtml(agentProviderDisplayName(provider))}</strong>
+        <small>${t("agentManagementProviderHint")}</small>
+        <div class="pill-row">
+          <span class="pill">${escapeHtml(provider.provider_id)}</span>
+          <span class="pill">${escapeHtml(environment.installed ? t("installed") : t("notDetected"))}</span>
+          <span class="pill">${escapeHtml(environment.install_method || t("unknown"))}</span>
+        </div>
+      </div>
+      <button
+        type="button"
+        data-action="detect-agent-provider"
+        data-provider="${escapeAttr(provider.provider_id)}"
+      >${t("detect")}</button>
+    </header>
+    <div class="stack">
+      <div class="section-heading">
+        <div>
+          <strong>${t("agentManagementEnvironment")}</strong>
+          <small>${t("agentManagementEnvironmentHint")}</small>
+        </div>
+      </div>
+      <div class="manager-summary-grid agent-environment-grid">
+        ${renderMetaLine(t("agentInstallStatus"), environment.installed ? t("installed") : t("notDetected"))}
+        ${renderMetaLine(t("agentInstallMethod"), environment.install_method || t("unknown"))}
+      </div>
+      <div class="settings-list agent-environment-paths">
+        ${renderAgentDetailRow(t("agentExecutablePath"), environment.executable_path || "—", t("agentExecutablePathHint"))}
+        ${renderAgentDetailRow(t("agentExecutableDir"), environment.executable_dir || "—", t("agentExecutableDirHint"))}
+        ${renderAgentDetailRow(t("agentConfigPath"), environment.config_path || "—", t("agentConfigPathHint"))}
+      </div>
+    </div>
+    <div class="stack">
+      <div class="section-heading">
+        <div>
+          <strong>${t("agentProviderItems")}</strong>
+          <small>${t("agentProviderItemsHint")}</small>
+        </div>
+      </div>
+      ${
+        items.length
+          ? `<div class="settings-list">${items
+              .map((setting) =>
+                setting.kind === "toggle"
+                  ? renderAgentToggleRow(provider, setting)
+                  : renderAgentActionRow(provider, setting)
+              )
+              .join("")}</div>`
+          : `<div class="empty-state">${t("agentProviderItemsEmpty")}</div>`
+      }
+      ${actionItems.map((setting) => renderAgentSettingResult(provider.provider_id, setting.id)).join("")}
+    </div>
+    </div>`;
+}
+
+function renderAgentDetailRow(label, value, hint) {
+  return `
+    <div class="settings-row agent-detail-row">
+      <div class="settings-copy settings-copy-inline">
+        <strong>${escapeHtml(label)}</strong>
+        <span>${escapeHtml(hint)}</span>
+      </div>
+      <div class="path-line">${escapeHtml(String(value || "—"))}</div>
+    </div>`;
+}
+
+function renderAgentToggleRow(provider, setting) {
+  return `
+    <div class="settings-row">
+      <div class="settings-copy settings-copy-inline">
+        <strong>${escapeHtml(agentSettingLabel(setting))}</strong>
+        <span>${escapeHtml(setting.description || "")}</span>
+      </div>
+      <label class="settings-check">
+        <input
+          type="checkbox"
+          data-role="agent-setting-toggle"
+          data-provider="${escapeAttr(provider.provider_id)}"
+          data-setting-id="${escapeAttr(setting.id)}"
+          ${setting.value ? "checked" : ""}
+        >
+        <span>${setting.value ? t("enabled") : t("disabled")}</span>
+      </label>
+    </div>`;
+}
+
+function renderAgentActionRow(provider, setting) {
+  return `
+    <div class="settings-row">
+      <div class="settings-copy settings-copy-inline">
+        <strong>${escapeHtml(agentSettingLabel(setting))}</strong>
+        <span>${escapeHtml(setting.description || "")}</span>
+      </div>
+      <button
+        type="button"
+        class="invert"
+        data-action="run-agent-setting"
+        data-provider="${escapeAttr(provider.provider_id)}"
+        data-setting-id="${escapeAttr(setting.id)}"
+      >${escapeHtml(agentSettingLabel(setting))}</button>
+    </div>`;
+}
+
+function renderAgentSettingResult(providerId, settingId) {
+  const result = state.agents.settingResults[`${providerId}:${settingId}`];
+  if (!result) return "";
+  if (settingId === "repair_workspace_sessions") {
+    return renderCodexRepairReport(result);
+  }
+  return `<pre class="code-block">${escapeHtml(JSON.stringify(result, null, 2))}</pre>`;
+}
+
+function renderCodexRepairReport(result) {
+  const report = result?.type === "codex_workspace_repair" ? result.data : null;
+  if (!report) {
+    return "";
+  }
+  const touched = report.touched_sessions || [];
+  return `
+    <section class="manager-workspace-summary">
+      <div class="manager-summary-grid">
+        ${renderMetaLine(t("workspace"), report.workspace_dir)}
+        ${renderMetaLine(t("currentProvider"), report.current_model_provider)}
+        ${renderMetaLine(t("scanned"), String(report.scanned_rollouts))}
+        ${renderMetaLine(t("workspaceSessions"), String(report.workspace_session_count))}
+        ${renderMetaLine(t("hiddenSessions"), String(report.hidden_session_count))}
+        ${renderMetaLine(t("repairedSessions"), String(report.repaired_session_count))}
+        ${renderMetaLine(t("reindexedSessions"), String(report.reindexed_session_count))}
+        ${renderMetaLine(t("updatedSqliteRows"), String(report.sqlite_rows_updated || 0))}
+        ${report.backup_dir ? renderMetaLine(t("backupLocation"), report.backup_dir) : ""}
+        ${report.pruned_backup_count ? renderMetaLine(t("prunedBackups"), String(report.pruned_backup_count)) : ""}
+        ${report.skipped_rollout_files?.length ? renderMetaLine(t("skippedRollouts"), String(report.skipped_rollout_files.length)) : ""}
+      </div>
+      ${
+        touched.length
+          ? `<div class="session-list">
+              ${touched
+                .map(
+                  (item) => `
+                <article class="session-row">
+                  <div class="session-row-main">
+                    <div class="session-info">
+                      <div class="session-title-line">
+                        <span class="session-title">${escapeHtml(item.title || item.session_id)}</span>
+                        <span class="session-workspace">${escapeHtml(item.current_model_provider)}</span>
+                      </div>
+                      <div class="session-meta-bar">
+                        <span class="session-id-pill">${escapeHtml(item.session_id)}</span>
+                        <span class="meta-dot">·</span>
+                        <span class="meta-item">${escapeHtml(item.previous_model_provider || "—")} → ${escapeHtml(
+                          item.current_model_provider || "—"
+                        )}</span>
+                        <span class="meta-dot">·</span>
+                        <span class="meta-item">${escapeHtml(item.added_to_index ? t("reindexed") : t("providerUpdated"))}</span>
+                      </div>
+                    </div>
+                  </div>
+                </article>`
+                )
+                .join("")}
+            </div>`
+          : `<div class="empty-state">${t("noRepairNeeded")}</div>`
+      }
+    </section>`;
+}
+
+function agentSettingLabel(setting) {
+  switch (setting.id) {
+    case "repair_workspace_sessions":
+      return t("repairCurrentWorkspaceSessions");
+    case "show_subagents":
+      return t("showSubagents");
+    default:
+      return setting.title || setting.id;
+  }
+}
+
+function agentProviderDisplayName(provider) {
+  switch (provider?.provider_id) {
+    case "claude":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "cursor":
+      return "Cursor";
+    case "deepseek":
+      return "DeepSeek";
+    case "kiro":
+      return "Kiro";
+    case "kimi":
+      return "Kimi";
+    case "opencode":
+      return "OpenCode";
+    default:
+      return provider?.name || provider?.provider_id || "Unknown";
+  }
+}
+
+function agentProviderEnvironment(provider) {
+  return provider?.environment || {
+    installed: provider?.installed || false,
+    executable_path: provider?.executable_path || null,
+    executable_dir: provider?.executable_dir || null,
+    config_path: provider?.config_path || "",
+    install_method: provider?.install_method || "",
+  };
+}
+
+async function updateAgentSetting(providerId, settingId, value) {
+  try {
+    await api(`/api/v1/providers/${encodeURIComponent(providerId)}/settings/${encodeURIComponent(settingId)}`, {
+      method: "PUT",
+      body: { value },
+    });
+    if (providerId === "opencode" && settingId === "show_subagents") {
+      state.meta.settings.show_opencode_subagents = value;
+    }
+    await loadAgentManagement();
+    toast(t("saved"), agentSettingLabel({ id: settingId, title: settingId }));
+    render();
+  } catch (error) {
+    toast(t("error"), error.message, true);
+  }
+}
+
+async function runAgentSetting(providerId, settingId) {
+  const result = await api(`/api/v1/providers/${encodeURIComponent(providerId)}/settings/${encodeURIComponent(settingId)}`, {
+    method: "POST",
+    body: {
+      workspace: state.home.workspace || null,
+    },
+  });
+  state.agents.settingResults[`${providerId}:${settingId}`] = result;
+  await loadAgentManagement();
+  if (providerId === "codex" && settingId === "repair_workspace_sessions" && state.home.workspace) {
+    await loadHome();
+  }
+  toast(t("done"), agentSettingLabel({ id: settingId, title: settingId }));
+  render();
 }
 
 function renderHome() {
@@ -2581,6 +2997,15 @@ function isExternalHttpUrl(url) {
 
 async function openExternalUrl(url) {
   if (!url) return;
+  try {
+    await api("/api/v1/system/open-external", {
+      method: "POST",
+      body: { url },
+    });
+    return;
+  } catch (_error) {
+    // Fall through to browser-side open as a best-effort fallback.
+  }
   const tauriOpener = window.__TAURI__?.opener?.openUrl;
   if (typeof tauriOpener === "function") {
     await tauriOpener(url);
@@ -2644,6 +3069,7 @@ function filterAndSortGroups(groups) {
 }
 
 function parseRoute(pathname) {
+  if (pathname === "/agents" || pathname === "/tools") return { name: "agents" };
   if (pathname === "/manager") return { name: "manager" };
   if (pathname === "/compression") return { name: "compression" };
   if (pathname === "/shared") return { name: "shared-list" };

@@ -23,6 +23,12 @@ use walkdir::WalkDir;
 pub struct CodexProvider;
 
 const PROVIDER_ID: &str = "codex";
+const CODEX_SYNC_BACKUP_NAMESPACE: &str = "provider-sync";
+const DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT: usize = 5;
+const CODEX_SYNC_SESSION_DIRS: &[&str] = &["sessions", "archived_sessions"];
+const CODEX_SQLITE_FILE_BASENAME: &str = "state_5.sqlite";
+const CODEX_GLOBAL_STATE_FILE_BASENAME: &str = ".codex-global-state.json";
+const CODEX_GLOBAL_STATE_BACKUP_FILE_BASENAME: &str = ".codex-global-state.json.bak";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct CodexWorkspaceRepairItem {
@@ -48,7 +54,43 @@ pub struct CodexWorkspaceRepairReport {
     pub hidden_session_count: usize,
     pub repaired_session_count: usize,
     pub reindexed_session_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_dir: Option<String>,
+    pub sqlite_rows_updated: usize,
+    pub sqlite_provider_rows_updated: usize,
+    pub sqlite_user_event_rows_updated: usize,
+    pub sqlite_cwd_rows_updated: usize,
+    pub pruned_backup_count: usize,
+    #[serde(default)]
+    pub skipped_rollout_files: Vec<String>,
     pub touched_sessions: Vec<CodexWorkspaceRepairItem>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CodexWorkspaceSqliteStats {
+    rows_updated: usize,
+    provider_rows_updated: usize,
+    user_event_rows_updated: usize,
+    cwd_rows_updated: usize,
+}
+
+#[derive(Debug, Clone)]
+struct CodexWorkspaceSyncCandidate {
+    rollout_path: PathBuf,
+    session: CodexRolloutSummary,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CodexSyncBackupMetadata {
+    version: u8,
+    namespace: String,
+    codex_home: String,
+    target_provider: String,
+    created_at: String,
+    session_index_present: bool,
+    session_files: Vec<String>,
+    db_files: Vec<String>,
+    global_state_files: Vec<String>,
 }
 
 impl Provider for CodexProvider {
@@ -268,14 +310,30 @@ impl Provider for CodexProvider {
     }
 }
 
-pub fn repair_workspace_sessions(workspace: Option<&str>) -> Result<CodexWorkspaceRepairReport> {
-    repair_workspace_sessions_in_codex_home(&get_codex_dir(), workspace)
+pub fn sync_workspace_sessions(
+    workspace: Option<&str>,
+    codex_home: Option<&Path>,
+    keep_backups: usize,
+) -> Result<CodexWorkspaceRepairReport> {
+    let codex_dir = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(get_codex_dir);
+    sync_workspace_sessions_in_codex_home(&codex_dir, workspace, keep_backups)
 }
 
-fn repair_workspace_sessions_in_codex_home(
+pub fn repair_workspace_sessions(workspace: Option<&str>) -> Result<CodexWorkspaceRepairReport> {
+    sync_workspace_sessions(workspace, None, DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT)
+}
+
+fn sync_workspace_sessions_in_codex_home(
     codex_dir: &Path,
     workspace: Option<&str>,
+    keep_backups: usize,
 ) -> Result<CodexWorkspaceRepairReport> {
+    if keep_backups < 1 {
+        anyhow::bail!("keep_backups must be at least 1");
+    }
+
     let workspace_root = crate::config::resolve_workspace(workspace)?;
     let workspace_key = crate::provider::default_normalized_workspace_key(workspace_root.to_str())
         .with_context(|| {
@@ -293,84 +351,517 @@ fn repair_workspace_sessions_in_codex_home(
         hidden_session_count: 0,
         repaired_session_count: 0,
         reindexed_session_count: 0,
+        backup_dir: None,
+        sqlite_rows_updated: 0,
+        sqlite_provider_rows_updated: 0,
+        sqlite_user_event_rows_updated: 0,
+        sqlite_cwd_rows_updated: 0,
+        pruned_backup_count: 0,
+        skipped_rollout_files: Vec::new(),
         touched_sessions: Vec::new(),
     };
 
     let index_path = codex_dir.join("session_index.jsonl");
     let mut indexed_session_ids = load_session_index_ids(&index_path)?;
-    let sessions_root = codex_dir.join("sessions");
+    let mut candidates = Vec::new();
 
-    if !sessions_root.exists() {
-        update_codex_global_state_file_if_exists(codex_dir, &workspace_root)?;
-        return Ok(report);
-    }
-
-    for entry in WalkDir::new(&sessions_root)
-        .max_depth(5)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-    {
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+    for dir_name in CODEX_SYNC_SESSION_DIRS {
+        let root = codex_dir.join(dir_name);
+        if !root.exists() {
             continue;
         }
 
-        report.scanned_rollouts += 1;
-        let Some(mut session) = read_codex_rollout_summary(path)? else {
-            continue;
-        };
+        for entry in WalkDir::new(&root)
+            .max_depth(5)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
 
-        if !crate::provider::default_workspace_matches(
-            session.workspace_dir.as_deref(),
-            Some(&workspace_key),
-        ) {
-            continue;
-        }
+            report.scanned_rollouts += 1;
+            let Some(session) = (match read_codex_rollout_summary(path) {
+                Ok(session) => session,
+                Err(error) if is_rollout_file_busy_error(&error) => {
+                    report
+                        .skipped_rollout_files
+                        .push(utils::user_visible_path(&path.to_string_lossy()));
+                    continue;
+                }
+                Err(error) => return Err(error),
+            }) else {
+                continue;
+            };
 
-        report.workspace_session_count += 1;
-        let provider_mismatch =
-            session.model_provider.as_deref() != Some(current_model_provider.as_str());
-        if provider_mismatch {
-            report.hidden_session_count += 1;
-        }
+            if !crate::provider::default_workspace_matches(
+                session.workspace_dir.as_deref(),
+                Some(&workspace_key),
+            ) {
+                continue;
+            }
 
-        let mut updated_model_provider = false;
-        if provider_mismatch {
-            rewrite_rollout_model_provider(path, &current_model_provider)?;
-            session.model_provider = Some(current_model_provider.clone());
-            updated_model_provider = true;
-            report.repaired_session_count += 1;
-        }
+            report.workspace_session_count += 1;
+            if session.model_provider.as_deref() != Some(current_model_provider.as_str()) {
+                report.hidden_session_count += 1;
+            }
 
-        let mut added_to_index = false;
-        if !indexed_session_ids.contains(&session.session_id) {
-            append_session_index_entry(
-                &index_path,
-                &session.session_id,
-                session.title.as_deref().unwrap_or(&session.session_id),
-                session.updated_at.as_deref(),
-            )?;
-            indexed_session_ids.insert(session.session_id.clone());
-            added_to_index = true;
-            report.reindexed_session_count += 1;
-        }
-
-        if updated_model_provider || added_to_index {
-            report.touched_sessions.push(CodexWorkspaceRepairItem {
-                session_id: session.session_id,
-                title: session.title,
-                rollout_path: utils::user_visible_path(&path.to_string_lossy()),
-                workspace_dir: session.workspace_dir.as_deref().map(utils::user_visible_path),
-                previous_model_provider: session.original_model_provider,
-                current_model_provider: current_model_provider.clone(),
-                updated_model_provider,
-                added_to_index,
+            candidates.push(CodexWorkspaceSyncCandidate {
+                rollout_path: path.to_path_buf(),
+                session,
             });
         }
     }
 
-    update_codex_global_state_file_if_exists(codex_dir, &workspace_root)?;
+    if candidates.is_empty() {
+        update_codex_global_state_file_if_exists(codex_dir, &workspace_root)?;
+        return Ok(report);
+    }
+
+    let backup_dir = create_codex_sync_backup(
+        codex_dir,
+        &current_model_provider,
+        &candidates
+            .iter()
+            .map(|candidate| candidate.rollout_path.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    report.backup_dir = Some(utils::user_visible_path(&backup_dir.to_string_lossy()));
+
+    let sync_result: Result<()> = (|| {
+        let mut synced_sessions = Vec::new();
+
+        for candidate in candidates {
+            let mut session = candidate.session;
+            let provider_mismatch =
+                session.model_provider.as_deref() != Some(current_model_provider.as_str());
+            let mut updated_model_provider = false;
+
+            if provider_mismatch {
+                match rewrite_rollout_model_provider(&candidate.rollout_path, &current_model_provider) {
+                    Ok(()) => {
+                        session.model_provider = Some(current_model_provider.clone());
+                        updated_model_provider = true;
+                        report.repaired_session_count += 1;
+                    }
+                    Err(error) if is_rollout_file_busy_error(&error) => {
+                        report.skipped_rollout_files.push(utils::user_visible_path(
+                            &candidate.rollout_path.to_string_lossy(),
+                        ));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+
+            let mut added_to_index = false;
+            if !indexed_session_ids.contains(&session.session_id) {
+                append_session_index_entry(
+                    &index_path,
+                    &session.session_id,
+                    session.title.as_deref().unwrap_or(&session.session_id),
+                    session.updated_at.as_deref(),
+                )?;
+                indexed_session_ids.insert(session.session_id.clone());
+                added_to_index = true;
+                report.reindexed_session_count += 1;
+            }
+
+            if updated_model_provider || added_to_index {
+                report.touched_sessions.push(CodexWorkspaceRepairItem {
+                    session_id: session.session_id.clone(),
+                    title: session.title.clone(),
+                    rollout_path: utils::user_visible_path(&candidate.rollout_path.to_string_lossy()),
+                    workspace_dir: session
+                        .workspace_dir
+                        .as_deref()
+                        .map(utils::user_visible_path),
+                    previous_model_provider: session.original_model_provider.clone(),
+                    current_model_provider: current_model_provider.clone(),
+                    updated_model_provider,
+                    added_to_index,
+                });
+            }
+
+            synced_sessions.push(session);
+        }
+
+        let sqlite_stats = sync_workspace_sqlite_metadata(
+            codex_dir,
+            &current_model_provider,
+            &synced_sessions,
+        )?;
+        report.sqlite_rows_updated = sqlite_stats.rows_updated;
+        report.sqlite_provider_rows_updated = sqlite_stats.provider_rows_updated;
+        report.sqlite_user_event_rows_updated = sqlite_stats.user_event_rows_updated;
+        report.sqlite_cwd_rows_updated = sqlite_stats.cwd_rows_updated;
+
+        update_codex_global_state_file_if_exists(codex_dir, &workspace_root)?;
+        Ok(())
+    })();
+
+    if let Err(error) = sync_result {
+        restore_codex_sync_backup(codex_dir, &backup_dir).with_context(|| {
+            format!(
+                "Failed to restore Codex sync backup after error: {}",
+                backup_dir.display()
+            )
+        })?;
+        return Err(error);
+    }
+
+    report.pruned_backup_count = prune_codex_sync_backups(codex_dir, keep_backups)?;
     Ok(report)
+}
+
+fn sync_workspace_sqlite_metadata(
+    codex_dir: &Path,
+    target_provider: &str,
+    sessions: &[CodexRolloutSummary],
+) -> Result<CodexWorkspaceSqliteStats> {
+    if sessions.is_empty() {
+        return Ok(CodexWorkspaceSqliteStats::default());
+    }
+
+    let sqlite_path = codex_dir.join(CODEX_SQLITE_FILE_BASENAME);
+    if !sqlite_path.exists() {
+        return Ok(CodexWorkspaceSqliteStats::default());
+    }
+
+    let conn = Connection::open(&sqlite_path)
+        .with_context(|| format!("Failed to open Codex SQLite: {}", sqlite_path.display()))?;
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    conn.execute("BEGIN IMMEDIATE", [])
+        .with_context(|| "Failed to lock Codex SQLite for workspace sync")?;
+
+    let sync_result: Result<CodexWorkspaceSqliteStats> = (|| {
+        if !has_table(&conn, "threads")? {
+            return Ok(CodexWorkspaceSqliteStats::default());
+        }
+
+        let has_provider_column = has_columns(&conn, "threads", &["model_provider"])?;
+        let has_user_event_column = has_columns(&conn, "threads", &["has_user_event"])?;
+        let has_cwd_column = has_columns(&conn, "threads", &["cwd"])?;
+
+        let mut stats = CodexWorkspaceSqliteStats::default();
+        let mut seen_ids = HashSet::new();
+
+        let mut provider_stmt = if has_provider_column {
+            Some(conn.prepare(
+                "UPDATE threads SET model_provider = ?1 WHERE id = ?2 AND COALESCE(model_provider, '') <> ?1",
+            )?)
+        } else {
+            None
+        };
+        let mut user_event_stmt = if has_user_event_column {
+            Some(conn.prepare(
+                "UPDATE threads SET has_user_event = 1 WHERE id = ?1 AND COALESCE(has_user_event, 0) <> 1",
+            )?)
+        } else {
+            None
+        };
+        let mut cwd_stmt = if has_cwd_column {
+            Some(conn.prepare(
+                "UPDATE threads SET cwd = ?1 WHERE id = ?2 AND COALESCE(cwd, '') <> ?1",
+            )?)
+        } else {
+            None
+        };
+
+        for session in sessions {
+            if !seen_ids.insert(session.session_id.clone()) {
+                continue;
+            }
+
+            if let Some(stmt) = provider_stmt.as_mut() {
+                stats.provider_rows_updated += stmt.execute(rusqlite::params![
+                    target_provider,
+                    &session.session_id
+                ])?;
+            }
+
+            if session.has_user_event {
+                if let Some(stmt) = user_event_stmt.as_mut() {
+                    stats.user_event_rows_updated +=
+                        stmt.execute(rusqlite::params![&session.session_id])?;
+                }
+            }
+
+            if let Some(workspace_dir) = session.workspace_dir.as_deref() {
+                if !workspace_dir.trim().is_empty() {
+                    if let Some(stmt) = cwd_stmt.as_mut() {
+                        stats.cwd_rows_updated += stmt.execute(rusqlite::params![
+                            workspace_dir,
+                            &session.session_id
+                        ])?;
+                    }
+                }
+            }
+        }
+
+        stats.rows_updated = stats.provider_rows_updated
+            + stats.user_event_rows_updated
+            + stats.cwd_rows_updated;
+        Ok(stats)
+    })();
+
+    match sync_result {
+        Ok(stats) => {
+            conn.execute("COMMIT", [])?;
+            Ok(stats)
+        }
+        Err(error) => {
+            let _ = conn.execute("ROLLBACK", []);
+            Err(error)
+        }
+    }
+}
+
+fn create_codex_sync_backup(
+    codex_dir: &Path,
+    target_provider: &str,
+    rollout_paths: &[PathBuf],
+) -> Result<PathBuf> {
+    let backup_root = codex_sync_backup_root(codex_dir);
+    let backup_dir = backup_root.join(codex_sync_backup_slug());
+    let rollouts_dir = backup_dir.join("rollouts");
+    let db_dir = backup_dir.join("db");
+    std::fs::create_dir_all(&rollouts_dir)?;
+    std::fs::create_dir_all(&db_dir)?;
+
+    let session_index_path = codex_dir.join("session_index.jsonl");
+    let session_index_present =
+        copy_if_present(&session_index_path, &backup_dir.join("session_index.jsonl"))?;
+
+    let mut session_files = Vec::new();
+    for rollout_path in rollout_paths {
+        let relative = rollout_path.strip_prefix(codex_dir).with_context(|| {
+            format!(
+                "Failed to compute Codex rollout backup path: {}",
+                rollout_path.display()
+            )
+        })?;
+        let backup_path = rollouts_dir.join(relative);
+        if let Some(parent) = backup_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(rollout_path, &backup_path).with_context(|| {
+            format!(
+                "Failed to back up Codex rollout file: {}",
+                rollout_path.display()
+            )
+        })?;
+        session_files.push(relative.to_string_lossy().to_string());
+    }
+
+    let mut db_files = Vec::new();
+    for file_name in [
+        CODEX_SQLITE_FILE_BASENAME,
+        "state_5.sqlite-shm",
+        "state_5.sqlite-wal",
+    ] {
+        let source = codex_dir.join(file_name);
+        let destination = db_dir.join(file_name);
+        if copy_if_present(&source, &destination)? {
+            db_files.push(file_name.to_string());
+        }
+    }
+
+    let mut global_state_files = Vec::new();
+    for file_name in [
+        CODEX_GLOBAL_STATE_FILE_BASENAME,
+        CODEX_GLOBAL_STATE_BACKUP_FILE_BASENAME,
+    ] {
+        let source = codex_dir.join(file_name);
+        let destination = backup_dir.join(file_name);
+        if copy_if_present(&source, &destination)? {
+            global_state_files.push(file_name.to_string());
+        }
+    }
+
+    let metadata = CodexSyncBackupMetadata {
+        version: 1,
+        namespace: CODEX_SYNC_BACKUP_NAMESPACE.to_string(),
+        codex_home: codex_dir.to_string_lossy().to_string(),
+        target_provider: target_provider.to_string(),
+        created_at: Utc::now().to_rfc3339(),
+        session_index_present,
+        session_files,
+        db_files,
+        global_state_files,
+    };
+    std::fs::write(
+        backup_dir.join("metadata.json"),
+        serde_json::to_string_pretty(&metadata)?,
+    )?;
+
+    Ok(backup_dir)
+}
+
+fn restore_codex_sync_backup(codex_dir: &Path, backup_dir: &Path) -> Result<()> {
+    let metadata_path = backup_dir.join("metadata.json");
+    let metadata: CodexSyncBackupMetadata =
+        serde_json::from_str(&std::fs::read_to_string(&metadata_path).with_context(|| {
+            format!(
+                "Failed to read Codex sync backup metadata: {}",
+                metadata_path.display()
+            )
+        })?)?;
+
+    if metadata.codex_home != codex_dir.to_string_lossy() {
+        anyhow::bail!(
+            "Codex sync backup belongs to another home: {}",
+            metadata.codex_home
+        );
+    }
+
+    let session_index_path = codex_dir.join("session_index.jsonl");
+    if metadata.session_index_present {
+        std::fs::copy(backup_dir.join("session_index.jsonl"), &session_index_path).with_context(
+            || {
+                format!(
+                    "Failed to restore Codex session index from backup: {}",
+                    session_index_path.display()
+                )
+            },
+        )?;
+    } else if session_index_path.exists() {
+        std::fs::remove_file(&session_index_path).with_context(|| {
+            format!(
+                "Failed to remove newly created Codex session index: {}",
+                session_index_path.display()
+            )
+        })?;
+    }
+
+    for relative in &metadata.session_files {
+        let source = backup_dir.join("rollouts").join(relative);
+        let target = codex_dir.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(&source, &target).with_context(|| {
+            format!(
+                "Failed to restore Codex rollout file from backup: {}",
+                target.display()
+            )
+        })?;
+    }
+
+    let known_db_files = [
+        CODEX_SQLITE_FILE_BASENAME,
+        "state_5.sqlite-shm",
+        "state_5.sqlite-wal",
+    ];
+    for file_name in known_db_files {
+        let target = codex_dir.join(file_name);
+        if metadata.db_files.iter().any(|entry| entry == file_name) {
+            std::fs::copy(backup_dir.join("db").join(file_name), &target).with_context(|| {
+                format!("Failed to restore Codex SQLite backup: {}", target.display())
+            })?;
+        } else if target.exists() {
+            std::fs::remove_file(&target).with_context(|| {
+                format!(
+                    "Failed to remove SQLite sidecar created during sync: {}",
+                    target.display()
+                )
+            })?;
+        }
+    }
+
+    for file_name in &metadata.global_state_files {
+        let source = backup_dir.join(file_name);
+        let target = codex_dir.join(file_name);
+        std::fs::copy(&source, &target).with_context(|| {
+            format!(
+                "Failed to restore Codex global state backup: {}",
+                target.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn prune_codex_sync_backups(codex_dir: &Path, keep_backups: usize) -> Result<usize> {
+    let backup_root = codex_sync_backup_root(codex_dir);
+    if !backup_root.exists() {
+        return Ok(0);
+    }
+
+    let mut managed_dirs = std::fs::read_dir(&backup_root)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && is_managed_codex_sync_backup(path))
+        .collect::<Vec<_>>();
+    managed_dirs.sort_by(|left, right| {
+        right
+            .file_name()
+            .and_then(|name| name.to_str())
+            .cmp(&left.file_name().and_then(|name| name.to_str()))
+    });
+
+    let mut deleted = 0;
+    for stale in managed_dirs.into_iter().skip(keep_backups) {
+        std::fs::remove_dir_all(&stale).with_context(|| {
+            format!("Failed to remove stale Codex sync backup: {}", stale.display())
+        })?;
+        deleted += 1;
+    }
+
+    Ok(deleted)
+}
+
+fn is_managed_codex_sync_backup(path: &Path) -> bool {
+    let metadata_path = path.join("metadata.json");
+    let Ok(content) = std::fs::read_to_string(metadata_path) else {
+        return false;
+    };
+    let Ok(metadata) = serde_json::from_str::<CodexSyncBackupMetadata>(&content) else {
+        return false;
+    };
+    metadata.namespace == CODEX_SYNC_BACKUP_NAMESPACE
+}
+
+fn codex_sync_backup_root(codex_dir: &Path) -> PathBuf {
+    codex_dir
+        .join("backups_state")
+        .join(CODEX_SYNC_BACKUP_NAMESPACE)
+}
+
+fn codex_sync_backup_slug() -> String {
+    let now = Utc::now();
+    format!(
+        "{}{:03}Z",
+        now.format("%Y%m%dT%H%M%S"),
+        now.timestamp_subsec_millis()
+    )
+}
+
+fn copy_if_present(source: &Path, destination: &Path) -> Result<bool> {
+    if !source.exists() {
+        return Ok(false);
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(source, destination).with_context(|| {
+        format!(
+            "Failed to copy backup file: {} -> {}",
+            source.display(),
+            destination.display()
+        )
+    })?;
+    Ok(true)
+}
+
+fn is_rollout_file_busy_error(error: &anyhow::Error) -> bool {
+    let message = format!("{:#}", error).to_lowercase();
+    message.contains("resource busy")
+        || message.contains("being used by another process")
+        || message.contains("currently in use")
+        || message.contains("permission denied")
 }
 
 fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
@@ -1002,6 +1493,7 @@ struct CodexRolloutSummary {
     model_provider: Option<String>,
     original_model_provider: Option<String>,
     updated_at: Option<String>,
+    has_user_event: bool,
 }
 
 fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRolloutSummary>> {
@@ -1014,6 +1506,7 @@ fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRolloutSummary>
     let mut workspace_dir = None;
     let mut model_provider = None;
     let mut updated_at = None;
+    let mut has_user_event = false;
 
     for line in reader.lines() {
         let line = line?;
@@ -1024,6 +1517,9 @@ fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRolloutSummary>
             Ok(value) => value,
             Err(_) => continue,
         };
+        if !has_user_event && rollout_value_has_user_event(&value) {
+            has_user_event = true;
+        }
 
         if let Some(timestamp) = value.get("timestamp").and_then(|value| value.as_str()) {
             updated_at = Some(timestamp.to_string());
@@ -1070,7 +1566,32 @@ fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRolloutSummary>
         original_model_provider: model_provider.clone(),
         model_provider,
         updated_at,
+        has_user_event,
     }))
+}
+
+fn rollout_value_has_user_event(value: &Value) -> bool {
+    if value.get("type").and_then(|value| value.as_str()) == Some("event_msg") {
+        if value
+            .get("payload")
+            .and_then(|payload| payload.get("type"))
+            .and_then(|value| value.as_str())
+            == Some("user_message")
+        {
+            return true;
+        }
+    }
+
+    let Some(payload) = value.get("payload") else {
+        return false;
+    };
+    if payload.get("type").and_then(|value| value.as_str()) == Some("message") {
+        if payload.get("role").and_then(|value| value.as_str()) == Some("user") {
+            return true;
+        }
+    }
+
+    false
 }
 
 fn load_session_index_ids(index_path: &Path) -> Result<HashSet<String>> {
@@ -2283,15 +2804,20 @@ mod tests {
         )
         .unwrap();
 
-        let report =
-            repair_workspace_sessions_in_codex_home(&codex_dir, Some(workspace.to_str().unwrap()))
-                .unwrap();
+        let report = sync_workspace_sessions_in_codex_home(
+            &codex_dir,
+            Some(workspace.to_str().unwrap()),
+            DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT,
+        )
+        .unwrap();
 
         assert_eq!(report.current_model_provider, "custom-provider");
         assert_eq!(report.workspace_session_count, 1);
         assert_eq!(report.hidden_session_count, 1);
         assert_eq!(report.repaired_session_count, 1);
         assert_eq!(report.reindexed_session_count, 1);
+        assert_eq!(report.sqlite_rows_updated, 0);
+        assert!(report.backup_dir.is_some());
         assert_eq!(report.touched_sessions.len(), 1);
         assert_eq!(
             report.touched_sessions[0]
@@ -2318,6 +2844,225 @@ mod tests {
             .collect::<Vec<_>>();
         let canonical_workspace = workspace.canonicalize().unwrap();
         assert_eq!(saved, vec![canonical_workspace.to_string_lossy().as_ref()]);
+    }
+
+    #[test]
+    fn sync_workspace_sessions_updates_archived_rollouts_sqlite_and_prunes_backups() {
+        let temp = tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        let workspace = temp.path().join("repo");
+        let sessions_dir = codex_dir.join("sessions/2026/05/27");
+        let archived_dir = codex_dir.join("archived_sessions/2026/05/20");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::create_dir_all(&archived_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            "model_provider = \"custom-provider\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            codex_dir.join(CODEX_GLOBAL_STATE_FILE_BASENAME),
+            serde_json::to_string(&json!({
+                "electron-saved-workspace-roots": [],
+                "project-order": [],
+                "active-workspace-roots": [],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            codex_dir.join("session_index.jsonl"),
+            serde_json::to_string(&json!({
+                "id": "session-active",
+                "thread_name": "Existing index",
+                "updated_at": "2026-05-27T12:05:00Z",
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+
+        let active_path = sessions_dir.join("rollout-2026-05-27T12-00-00-session-active.jsonl");
+        std::fs::write(
+            &active_path,
+            [
+                serde_json::to_string(&json!({
+                    "timestamp": "2026-05-27T12:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "session-active",
+                        "timestamp": "2026-05-27T12:00:00Z",
+                        "cwd": workspace.to_string_lossy(),
+                        "model_provider": "openai",
+                        "title": "Active hidden"
+                    }
+                }))
+                .unwrap(),
+                serde_json::to_string(&json!({
+                    "timestamp": "2026-05-27T12:05:00Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "user_message",
+                        "message": "hello"
+                    }
+                }))
+                .unwrap(),
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+
+        let archived_path =
+            archived_dir.join("rollout-2026-05-20T08-00-00-session-archived.jsonl");
+        std::fs::write(
+            &archived_path,
+            [
+                serde_json::to_string(&json!({
+                    "timestamp": "2026-05-20T08:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "session-archived",
+                        "timestamp": "2026-05-20T08:00:00Z",
+                        "cwd": workspace.to_string_lossy(),
+                        "model_provider": "openai",
+                        "title": "Archived hidden"
+                    }
+                }))
+                .unwrap(),
+                serde_json::to_string(&json!({
+                    "timestamp": "2026-05-20T08:01:00Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            { "type": "input_text", "text": "need sync" }
+                        ]
+                    }
+                }))
+                .unwrap(),
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+
+        let sqlite_path = codex_dir.join(CODEX_SQLITE_FILE_BASENAME);
+        let conn = Connection::open(&sqlite_path).unwrap();
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                model_provider TEXT,
+                cwd TEXT,
+                has_user_event INTEGER
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (id, model_provider, cwd, has_user_event) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["session-active", "openai", "/tmp/other", 0],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (id, model_provider, cwd, has_user_event) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["session-archived", "openai", "/tmp/other", 0],
+        )
+        .unwrap();
+
+        let stale_backup_dir = codex_dir
+            .join("backups_state")
+            .join(CODEX_SYNC_BACKUP_NAMESPACE)
+            .join("20200101T000000000Z");
+        std::fs::create_dir_all(&stale_backup_dir).unwrap();
+        std::fs::write(
+            stale_backup_dir.join("metadata.json"),
+            serde_json::to_string_pretty(&CodexSyncBackupMetadata {
+                version: 1,
+                namespace: CODEX_SYNC_BACKUP_NAMESPACE.to_string(),
+                codex_home: codex_dir.to_string_lossy().to_string(),
+                target_provider: "openai".to_string(),
+                created_at: "2020-01-01T00:00:00Z".to_string(),
+                session_index_present: false,
+                session_files: Vec::new(),
+                db_files: Vec::new(),
+                global_state_files: Vec::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let report = sync_workspace_sessions_in_codex_home(
+            &codex_dir,
+            Some(workspace.to_str().unwrap()),
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(report.scanned_rollouts, 2);
+        assert_eq!(report.workspace_session_count, 2);
+        assert_eq!(report.hidden_session_count, 2);
+        assert_eq!(report.repaired_session_count, 2);
+        assert_eq!(report.reindexed_session_count, 1);
+        assert_eq!(report.sqlite_provider_rows_updated, 2);
+        assert_eq!(report.sqlite_user_event_rows_updated, 2);
+        assert_eq!(report.sqlite_cwd_rows_updated, 2);
+        assert_eq!(report.sqlite_rows_updated, 6);
+        assert_eq!(report.pruned_backup_count, 1);
+        assert!(report.skipped_rollout_files.is_empty());
+
+        let backup_dir = PathBuf::from(report.backup_dir.clone().unwrap());
+        assert!(backup_dir.exists());
+
+        let active_rollout = std::fs::read_to_string(&active_path).unwrap();
+        assert!(active_rollout.contains("\"model_provider\":\"custom-provider\""));
+        let archived_rollout = std::fs::read_to_string(&archived_path).unwrap();
+        assert!(archived_rollout.contains("\"model_provider\":\"custom-provider\""));
+
+        let index = std::fs::read_to_string(codex_dir.join("session_index.jsonl")).unwrap();
+        assert!(index.contains("\"id\":\"session-active\""));
+        assert!(index.contains("\"id\":\"session-archived\""));
+
+        let verify_conn = Connection::open(&sqlite_path).unwrap();
+        let mut stmt = verify_conn
+            .prepare("SELECT model_provider, cwd, has_user_event FROM threads WHERE id = ?1")
+            .unwrap();
+        let active_row = stmt
+            .query_row(rusqlite::params!["session-active"], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(active_row.0, "custom-provider");
+        assert_eq!(active_row.1, workspace.to_string_lossy().to_string());
+        assert_eq!(active_row.2, 1);
+        let archived_row = stmt
+            .query_row(rusqlite::params!["session-archived"], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(archived_row.0, "custom-provider");
+        assert_eq!(archived_row.1, workspace.to_string_lossy().to_string());
+        assert_eq!(archived_row.2, 1);
+
+        let backup_entries = std::fs::read_dir(
+            codex_dir
+                .join("backups_state")
+                .join(CODEX_SYNC_BACKUP_NAMESPACE),
+        )
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .collect::<Vec<_>>();
+        assert_eq!(backup_entries.len(), 1);
     }
 
     #[test]

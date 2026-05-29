@@ -3,8 +3,11 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use memorph_lib::{
-    cli::{Cli, Commands, CompressionCommands, ShareCommands},
-    core, providers, server, shared, tui, web_assets,
+    cli::{
+        Cli, Commands, CompressionCommands, LegacyCodexToolCommands, LegacyToolCommands,
+        ShareCommands,
+    },
+    core, provider_features, providers, server, shared, tui, web_assets,
 };
 use std::path::Path;
 use std::process::Command;
@@ -179,12 +182,122 @@ fn run_command(command: Commands) -> Result<()> {
             tui::run_tui()?;
         }
 
+        Commands::Codex {
+            sync,
+            repair_workspace_sessions,
+            workspace,
+            codex_home,
+            keep,
+        } => {
+            if !sync && !repair_workspace_sessions {
+                anyhow::bail!("No Codex action selected. Use --sync.");
+            }
+            run_codex_sync_workspace_sessions(workspace, codex_home, keep)?;
+        }
+
+        Commands::LegacyTool { command } => run_legacy_tool_command(command)?,
+
         Commands::Update => {
             update_memorph()?;
         }
     }
 
     Ok(())
+}
+
+fn run_legacy_tool_command(command: LegacyToolCommands) -> Result<()> {
+    match command {
+        LegacyToolCommands::Codex { command } => match command {
+            LegacyCodexToolCommands::RepairWorkspaceSessions { workspace } => {
+                let output = provider_features::run_provider_feature(
+                    "codex",
+                    "repair_workspace_sessions",
+                    provider_features::ProviderFeatureContext { workspace },
+                )?;
+                match output {
+                    provider_features::ProviderFeatureOutput::CodexWorkspaceRepair(report) => {
+                        print_codex_repair_report(report)
+                    }
+                }
+            }
+        },
+    }
+
+    Ok(())
+}
+
+fn run_codex_sync_workspace_sessions(
+    workspace: Option<String>,
+    codex_home: Option<String>,
+    keep: usize,
+) -> Result<()> {
+    let report = providers::codex::sync_workspace_sessions(
+        workspace.as_deref(),
+        codex_home.as_deref().map(Path::new),
+        keep,
+    )?;
+    print_codex_repair_report(report);
+    Ok(())
+}
+
+fn print_codex_repair_report(report: providers::codex::CodexWorkspaceRepairReport) {
+    println!("Workspace: {}", report.workspace_dir);
+    println!("Current provider: {}", report.current_model_provider);
+    println!("Scanned rollout files: {}", report.scanned_rollouts);
+    println!("Workspace sessions: {}", report.workspace_session_count);
+    println!("Hidden sessions: {}", report.hidden_session_count);
+    println!("Repaired sessions: {}", report.repaired_session_count);
+    println!("Reindexed sessions: {}", report.reindexed_session_count);
+    println!("Updated SQLite rows: {}", report.sqlite_rows_updated);
+    if report.sqlite_provider_rows_updated > 0 {
+        println!(
+            "Updated SQLite provider rows: {}",
+            report.sqlite_provider_rows_updated
+        );
+    }
+    if report.sqlite_user_event_rows_updated > 0 {
+        println!(
+            "Updated SQLite user-event rows: {}",
+            report.sqlite_user_event_rows_updated
+        );
+    }
+    if report.sqlite_cwd_rows_updated > 0 {
+        println!("Updated SQLite cwd rows: {}", report.sqlite_cwd_rows_updated);
+    }
+    if let Some(backup_dir) = &report.backup_dir {
+        println!("Backup: {}", backup_dir);
+    }
+    if report.pruned_backup_count > 0 {
+        println!("Pruned backups: {}", report.pruned_backup_count);
+    }
+    if !report.skipped_rollout_files.is_empty() {
+        println!(
+            "Skipped rollout files: {}",
+            report.skipped_rollout_files.len()
+        );
+    }
+    if report.touched_sessions.is_empty() {
+        println!("No Codex sessions needed sync.");
+    } else {
+        println!();
+        for item in report.touched_sessions {
+            println!(
+                "- {} | {} | provider: {} -> {} | index_added={}",
+                item.session_id,
+                item.title.unwrap_or_else(|| "(untitled)".to_string()),
+                item.previous_model_provider
+                    .unwrap_or_else(|| "(none)".to_string()),
+                item.current_model_provider,
+                item.added_to_index
+            );
+        }
+    }
+    if !report.skipped_rollout_files.is_empty() {
+        println!();
+        for path in report.skipped_rollout_files {
+            println!("- skipped rollout: {}", path);
+        }
+    }
 }
 
 fn run_compression_command(command: CompressionCommands) -> Result<()> {

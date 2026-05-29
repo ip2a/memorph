@@ -7,7 +7,7 @@ use crate::canonical::{
 };
 use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state::{self, SessionStateStore};
-use crate::{provider, providers};
+use crate::{provider, providers, utils};
 
 pub mod compression;
 pub mod manager;
@@ -105,9 +105,9 @@ impl From<(&ProviderSessionSummary, &str)> for SessionItem {
             hidden: false,
             pinned: false,
             preferred_targets: Vec::new(),
-            project_dir: meta.project_dir.clone(),
+            project_dir: meta.project_dir.as_deref().map(utils::user_visible_path),
             last_active_at: meta.last_active_at,
-            source_path: meta.source_path.clone(),
+            source_path: meta.source_path.as_deref().map(utils::user_visible_path),
             provider_id: provider_id.to_string(),
             message_count: None,
             size_bytes: None,
@@ -329,7 +329,10 @@ fn build_session_detail_view(
         .or_else(|| native_title.clone())
         .or_else(|| session.identity.source_title.clone());
     let message_count = session_message_count(&session);
-    let source_path = source_path.or_else(|| session.provenance.primary_source.source_path.clone());
+    let source_path = source_path
+        .or_else(|| session.provenance.primary_source.source_path.clone())
+        .as_deref()
+        .map(utils::user_visible_path);
 
     SessionDetailView {
         provider_id: provider_id.to_string(),
@@ -339,7 +342,11 @@ fn build_session_detail_view(
         title,
         native_title,
         display_title,
-        workspace_dir: session.context.workspace_dir.clone(),
+        workspace_dir: session
+            .context
+            .workspace_dir
+            .as_deref()
+            .map(utils::user_visible_path),
         created_at: session.context.created_at,
         last_active_at: session.context.last_active_at,
         source_path,

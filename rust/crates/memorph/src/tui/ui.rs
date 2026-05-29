@@ -6,7 +6,10 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{provider_label, App, MainFocus, SettingsField, SETTINGS_FIELDS};
+use super::app::{
+    provider_label, AgentManagementActionKind, AgentManagementFocus, App, MainFocus, SettingsField,
+    SETTINGS_FIELDS,
+};
 use super::theme::{self, Theme};
 use crate::config;
 use crate::web_assets::MEMORPH_ASCII;
@@ -38,6 +41,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.workspace_modal_open {
         draw_workspace_modal(frame, app, &theme);
+    } else if app.agents_modal_open {
+        draw_agents_modal(frame, app, &theme);
     } else if app.settings_modal_open {
         draw_settings_modal(frame, app, &theme);
     }
@@ -71,7 +76,11 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     let controls = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(24), Constraint::Length(16)])
+        .constraints([
+            Constraint::Min(24),
+            Constraint::Length(12),
+            Constraint::Length(16),
+        ])
         .split(chunks[3]);
 
     let workspace_block = Paragraph::new(theme::truncate(
@@ -87,6 +96,16 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     ));
     frame.render_widget(workspace_block, controls[0]);
 
+    let tools_block = Paragraph::new(format!(" {} ", app.t("agents")))
+        .style(Style::default().fg(theme.text).bg(theme.background))
+        .alignment(Alignment::Center)
+        .block(top_block(
+            app.t("agents"),
+            app.main_focus == MainFocus::Agents,
+            theme,
+        ));
+    frame.render_widget(tools_block, controls[1]);
+
     let settings_block = Paragraph::new(format!(" {} ", app.t("settings")))
         .style(Style::default().fg(theme.text).bg(theme.background))
         .alignment(Alignment::Center)
@@ -95,7 +114,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
             app.main_focus == MainFocus::Settings,
             theme,
         ));
-    frame.render_widget(settings_block, controls[1]);
+    frame.render_widget(settings_block, controls[2]);
 }
 
 fn draw_main(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
@@ -113,12 +132,16 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         }
     } else if app.workspace_modal_open {
         app.t("tuiFooterWorkspaceModal")
+    } else if app.agents_modal_open {
+        app.t("tuiFooterAgentsModal")
     } else if app.settings_modal_open {
         app.t("tuiFooterClose")
     } else if app.search_modal_open {
         app.t("tuiFooterSearch")
     } else if app.main_focus == MainFocus::Workspace {
         app.t("tuiFooterTopWorkspace")
+    } else if app.main_focus == MainFocus::Agents {
+        app.t("tuiFooterTopAgents")
     } else if app.main_focus == MainFocus::Settings {
         app.t("tuiFooterTopSettings")
     } else {
@@ -275,6 +298,207 @@ fn draw_workspace_modal(frame: &mut Frame, app: &App, theme: &Theme) {
     frame.render_widget(footer, chunks[2]);
 }
 
+fn draw_agents_modal(frame: &mut Frame, app: &App, theme: &Theme) {
+    let area = frame.area();
+    let popup_area = centered_rect(82, 58, area);
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(modal_block(app.t("agents"), theme), popup_area);
+
+    let inner = popup_area.inner(ratatui::layout::Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(24), Constraint::Min(0)])
+        .split(inner);
+
+    let mut provider_lines = Vec::new();
+    if app.agent_management_entries.is_empty() {
+        provider_lines.push(Line::from(Span::styled(
+            app.t("noProviders"),
+            Style::default().fg(theme.warning),
+        )));
+    } else {
+        for (index, entry) in app.agent_management_entries.iter().enumerate() {
+            let selected = index == app.agent_management_index;
+            let label = provider_label(&entry.provider_id);
+            let status = if entry.environment.installed {
+                app.t("installed")
+            } else {
+                app.t("notDetected")
+            };
+            let style = agent_management_item_style(
+                selected,
+                app.agent_management_focus == AgentManagementFocus::Providers,
+                theme,
+            );
+            provider_lines.push(Line::from(Span::styled(
+                format!(" {} [{}] ", label, status),
+                style,
+            )));
+            if index + 1 < app.agent_management_entries.len() {
+                provider_lines.push(Line::from(""));
+            }
+        }
+    }
+    let providers = Paragraph::new(Text::from(provider_lines))
+        .block(section_block(
+            app.t("agentManagementProvidersLabel"),
+            app.agent_management_focus == AgentManagementFocus::Providers,
+            theme,
+        ))
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(providers, chunks[0]);
+
+    let right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Min(8),
+        ])
+        .split(chunks[1]);
+
+    let selected = app.selected_agent_management_entry();
+    let detail_lines = if let Some(entry) = selected {
+        let mut lines = vec![
+            Line::from(format!(
+                "{}: {}",
+                app.t("provider"),
+                provider_label(&entry.provider_id)
+            )),
+            Line::from(format!(
+                "{}: {}",
+                app.t("workspace"),
+                app.workspace.as_deref().unwrap_or(app.t("workspaceEmpty"))
+            )),
+            Line::from(format!(
+                "{}: {}",
+                app.t("agentInstallStatus"),
+                if entry.environment.installed {
+                    app.t("installed")
+                } else {
+                    app.t("notDetected")
+                }
+            )),
+            Line::from(format!(
+                "{}: {}",
+                app.t("agentInstallMethod"),
+                if entry.environment.install_method.trim().is_empty() {
+                    app.t("unknown")
+                } else {
+                    entry.environment.install_method.as_str()
+                }
+            )),
+            Line::from(format!(
+                "{}: {}",
+                app.t("agentConfigPath"),
+                entry.environment.config_path
+            )),
+            Line::from(format!(
+                "{}: {}",
+                app.t("agentExecutableDir"),
+                entry.environment.executable_dir.as_deref().unwrap_or("—")
+            )),
+            Line::from(format!(
+                "{}: {}",
+                app.t("agentExecutablePath"),
+                entry.environment.executable_path.as_deref().unwrap_or("—")
+            )),
+        ];
+        if entry.provider_id == "opencode" {
+            lines.push(Line::from(format!(
+                "{}: {}",
+                app.t("showSubagents"),
+                if app.settings_show_opencode_subagents {
+                    app.t("enabled")
+                } else {
+                    app.t("disabled")
+                }
+            )));
+        }
+        lines
+    } else {
+        vec![Line::from(app.t("noProviders"))]
+    };
+    let summary = Paragraph::new(detail_lines)
+        .block(section_block(
+            app.t("agentManagementEnvironment"),
+            false,
+            theme,
+        ))
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(summary, right[0]);
+
+    let actions = app.current_agent_management_actions();
+    let mut action_lines = Vec::new();
+    if actions.is_empty() {
+        action_lines.push(Line::from(Span::styled(
+            app.t("noAgentManagementActionForProvider"),
+            Style::default().fg(theme.warning),
+        )));
+    } else {
+        for (index, action) in actions.iter().enumerate() {
+            let selected = index == app.agent_management_action_index;
+            let label = match action.kind {
+                AgentManagementActionKind::Toggle => format!(
+                    "{} [{}]",
+                    action.label,
+                    enabled_label(app.language(), action.enabled.unwrap_or(false))
+                ),
+                AgentManagementActionKind::Action | AgentManagementActionKind::Detect => {
+                    action.label.clone()
+                }
+            };
+            action_lines.push(Line::from(Span::styled(
+                format!(" {} ", label),
+                agent_management_item_style(
+                    selected,
+                    app.agent_management_focus == AgentManagementFocus::Actions,
+                    theme,
+                ),
+            )));
+            if index + 1 < actions.len() {
+                action_lines.push(Line::from(""));
+            }
+        }
+        if let Some(action) = app.selected_agent_management_action() {
+            action_lines.push(Line::from(""));
+            action_lines.push(Line::from(Span::styled(
+                action.description,
+                Style::default().fg(theme.text_dim).bg(theme.surface),
+            )));
+        }
+    }
+    let action_panel = Paragraph::new(Text::from(action_lines))
+        .block(section_block(
+            app.t("agentManagementControls"),
+            app.agent_management_focus == AgentManagementFocus::Actions,
+            theme,
+        ))
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(action_panel, right[1]);
+
+    let result_lines = if let Some(result) = &app.agent_management_result {
+        result.lines.clone()
+    } else {
+        vec![app.t("agentsIdleHint").to_string()]
+    };
+    let result = Paragraph::new(result_lines.join("\n"))
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .block(section_block(
+            app.t("agentManagementResultTitle"),
+            false,
+            theme,
+        ))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(result, right[2]);
+}
+
 fn draw_settings_modal(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
     let popup_area = centered_rect(78, 76, area);
@@ -373,9 +597,6 @@ fn settings_row(field: SettingsField, app: &App, theme: &Theme) -> Line<'static>
         }
         .to_string(),
         SettingsField::SessionsPerProvider => app.settings_sessions_per_provider.to_string(),
-        SettingsField::ShowOpenCodeSubagents => {
-            enabled_label(app.language(), app.settings_show_opencode_subagents)
-        }
         SettingsField::SortProvidersBySessionCount => {
             enabled_label(app.language(), app.settings_sort_providers_by_session_count)
         }
@@ -411,6 +632,21 @@ fn enabled_label(language: config::UiLanguage, enabled: bool) -> String {
         crate::i18n::text(language, "enabled").to_string()
     } else {
         crate::i18n::text(language, "disabled").to_string()
+    }
+}
+
+fn agent_management_item_style(selected: bool, focused: bool, theme: &Theme) -> Style {
+    if selected {
+        if focused {
+            highlighted_value_style(theme)
+        } else {
+            Style::default()
+                .fg(theme.primary)
+                .bg(theme.surface)
+                .add_modifier(Modifier::BOLD)
+        }
+    } else {
+        Style::default().fg(theme.text).bg(theme.surface)
     }
 }
 

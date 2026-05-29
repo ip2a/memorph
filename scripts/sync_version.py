@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -138,6 +139,21 @@ def update_memorph_python_dependencies(version: str, check: bool) -> None:
     print(f"[ok] Main package dependency versions are aligned: {path.relative_to(ROOT)}")
 
 
+def sync_i18n_asset(check: bool) -> None:
+    source = ROOT / "web" / "i18n.json"
+    dest = ROOT / "rust" / "crates" / "memorph" / "assets" / "i18n.json"
+    if check:
+        if not dest.exists():
+            raise RuntimeError(f"Missing i18n asset: {dest.relative_to(ROOT)}")
+        if source.read_bytes() != dest.read_bytes():
+            raise RuntimeError(f"i18n asset out of sync: {dest.relative_to(ROOT)}")
+        print("[ok] i18n asset is synced")
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+    print(f"[ok] i18n asset synced: {dest.relative_to(ROOT)}")
+
+
 def sync_cargo_lockfile(check: bool, check_lockfile: bool) -> None:
     rust_root = ROOT / "rust"
     if check and check_lockfile:
@@ -204,6 +220,7 @@ def main() -> None:
     print(f"[ok] Version aligned: {tauri_config.relative_to(ROOT)}")
 
     update_memorph_python_dependencies(version, args.check)
+    sync_i18n_asset(args.check)
     sync_cargo_lockfile(args.check, args.check_lockfile)
 
 

@@ -1,5 +1,7 @@
 #![recursion_limit = "256"]
 
+pub mod agent_environment;
+pub mod agent_management;
 pub mod api;
 pub mod canonical;
 pub mod cli;
@@ -9,7 +11,11 @@ pub mod format;
 pub mod i18n;
 pub mod logging;
 pub mod provider;
+#[doc(hidden)]
+pub mod provider_controls;
+#[doc(hidden)]
 pub mod provider_features;
+pub mod provider_settings;
 pub mod providers;
 pub mod server;
 pub mod shared;

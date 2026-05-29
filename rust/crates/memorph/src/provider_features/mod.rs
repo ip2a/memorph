@@ -1,6 +1,6 @@
-mod opencode;
+//! Legacy compatibility layer for feature-named routes and commands.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -12,6 +12,16 @@ pub enum FeatureScope {
     Session,
 }
 
+impl From<crate::provider_settings::SettingScope> for FeatureScope {
+    fn from(scope: crate::provider_settings::SettingScope) -> Self {
+        match scope {
+            crate::provider_settings::SettingScope::Global => Self::Global,
+            crate::provider_settings::SettingScope::Workspace => Self::Workspace,
+            crate::provider_settings::SettingScope::Session => Self::Session,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureKind {
@@ -20,13 +30,14 @@ pub enum FeatureKind {
     View,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-pub struct ProviderFeature {
-    pub id: &'static str,
-    pub title: &'static str,
-    pub description: &'static str,
-    pub scope: FeatureScope,
-    pub kind: FeatureKind,
+impl From<crate::provider_settings::SettingKind> for FeatureKind {
+    fn from(kind: crate::provider_settings::SettingKind) -> Self {
+        match kind {
+            crate::provider_settings::SettingKind::Toggle => Self::Toggle,
+            crate::provider_settings::SettingKind::Action => Self::Action,
+            crate::provider_settings::SettingKind::View => Self::View,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -40,41 +51,65 @@ pub struct ResolvedProviderFeature {
     pub value: Option<Value>,
 }
 
-pub trait ProviderFeatureModule: Send + Sync {
-    fn provider_id(&self) -> &'static str;
-    fn features(&self) -> &'static [ProviderFeature];
+impl From<crate::provider_settings::ProviderSettingItem> for ResolvedProviderFeature {
+    fn from(setting: crate::provider_settings::ProviderSettingItem) -> Self {
+        Self {
+            id: setting.id,
+            title: setting.title,
+            description: setting.description,
+            scope: setting.scope.into(),
+            kind: setting.kind.into(),
+            value: setting.value,
+        }
+    }
 }
 
-struct ProviderFeatureRegistry;
+#[derive(Debug, Clone, Default)]
+pub struct ProviderFeatureContext {
+    pub workspace: Option<String>,
+}
 
-impl ProviderFeatureRegistry {
-    fn find(provider_id: &str) -> Option<&'static dyn ProviderFeatureModule> {
-        match provider_id {
-            "opencode" => Some(&opencode::OpenCodeFeatureModule),
-            _ => None,
+impl From<ProviderFeatureContext> for crate::provider_settings::ProviderSettingContext {
+    fn from(context: ProviderFeatureContext) -> Self {
+        Self {
+            workspace: context.workspace,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum ProviderFeatureOutput {
+    CodexWorkspaceRepair(crate::providers::codex::CodexWorkspaceRepairReport),
+}
+
+impl From<crate::provider_settings::ProviderSettingOutput> for ProviderFeatureOutput {
+    fn from(output: crate::provider_settings::ProviderSettingOutput) -> Self {
+        match output {
+            crate::provider_settings::ProviderSettingOutput::CodexWorkspaceRepair(report) => {
+                Self::CodexWorkspaceRepair(report)
+            }
         }
     }
 }
 
 pub fn list_provider_features(provider_id: &str) -> Result<Vec<ResolvedProviderFeature>> {
-    ensure_known_provider(provider_id)?;
-    let prefs = crate::config::web_preferences()?;
-    let Some(module) = ProviderFeatureRegistry::find(provider_id) else {
-        return Ok(Vec::new());
-    };
+    Ok(
+        crate::provider_settings::list_provider_settings(provider_id)?
+            .into_iter()
+            .map(ResolvedProviderFeature::from)
+            .collect(),
+    )
+}
 
-    Ok(module
-        .features()
-        .iter()
-        .map(|feature| ResolvedProviderFeature {
-            id: feature.id.to_string(),
-            title: feature.title.to_string(),
-            description: feature.description.to_string(),
-            scope: feature.scope,
-            kind: feature.kind,
-            value: feature_value(&prefs, provider_id, feature),
-        })
-        .collect())
+pub fn get_provider_feature(
+    provider_id: &str,
+    feature_id: &str,
+) -> Result<ResolvedProviderFeature> {
+    list_provider_features(provider_id)?
+        .into_iter()
+        .find(|feature| feature.id == feature_id)
+        .ok_or_else(|| anyhow::anyhow!("Unknown provider feature: {}.{}", provider_id, feature_id))
 }
 
 pub fn update_provider_feature(
@@ -82,78 +117,17 @@ pub fn update_provider_feature(
     feature_id: &str,
     value: Option<Value>,
 ) -> Result<ResolvedProviderFeature> {
-    let feature = feature(provider_id, feature_id)?;
-
-    if feature.scope != FeatureScope::Global {
-        anyhow::bail!(
-            "Feature updates are only implemented for global scope: {}.{}",
-            provider_id,
-            feature_id
-        );
-    }
-
-    match feature.kind {
-        FeatureKind::Toggle => {
-            if let Some(raw) = value.as_ref() {
-                if !raw.is_boolean() {
-                    anyhow::bail!(
-                        "Toggle feature expects a boolean value: {}.{}",
-                        provider_id,
-                        feature_id
-                    );
-                }
-            }
-            crate::config::set_provider_preference(provider_id, feature_id, value)?;
-        }
-        _ => {
-            anyhow::bail!(
-                "Feature updates are not implemented for kind {:?}: {}.{}",
-                feature.kind,
-                provider_id,
-                feature_id
-            );
-        }
-    }
-
-    list_provider_features(provider_id)?
-        .into_iter()
-        .find(|feature| feature.id == feature_id)
-        .with_context(|| format!("Feature disappeared after update: {}.{}", provider_id, feature_id))
+    crate::provider_settings::update_provider_setting(provider_id, feature_id, value)
+        .map(ResolvedProviderFeature::from)
 }
 
-fn feature(provider_id: &str, feature_id: &str) -> Result<&'static ProviderFeature> {
-    ensure_known_provider(provider_id)?;
-    let module = ProviderFeatureRegistry::find(provider_id)
-        .with_context(|| format!("Provider has no registered features: {}", provider_id))?;
-    module
-        .features()
-        .iter()
-        .find(|feature| feature.id == feature_id)
-        .with_context(|| format!("Unknown provider feature: {}.{}", provider_id, feature_id))
-}
-
-fn feature_value(
-    prefs: &crate::config::WebPreferences,
+pub fn run_provider_feature(
     provider_id: &str,
-    feature: &ProviderFeature,
-) -> Option<Value> {
-    match feature.scope {
-        FeatureScope::Global => {
-            crate::config::provider_preference_from_prefs(prefs, provider_id, feature.id).cloned()
-        }
-        FeatureScope::Workspace | FeatureScope::Session => None,
-    }
-}
-
-fn ensure_known_provider(provider_id: &str) -> Result<()> {
-    if crate::providers::all_provider_ids()
-        .iter()
-        .any(|known| *known == provider_id)
-    {
-        return Ok(());
-    }
-
-    anyhow::bail!("Unknown provider: {}", provider_id);
+    feature_id: &str,
+    context: ProviderFeatureContext,
+) -> Result<ProviderFeatureOutput> {
+    crate::provider_settings::run_provider_setting(provider_id, feature_id, context.into())
+        .map(ProviderFeatureOutput::from)
 }
 
 #[cfg(test)]
@@ -163,6 +137,37 @@ mod tests {
     #[test]
     fn opencode_feature_registry_exposes_toggle() {
         let features = list_provider_features("opencode").unwrap();
-        assert!(features.iter().any(|feature| feature.id == "show_subagents"));
+        assert!(features
+            .iter()
+            .any(|feature| feature.id == "show_subagents"));
+    }
+
+    #[test]
+    fn codex_feature_registry_exposes_repair_action() {
+        let features = list_provider_features("codex").unwrap();
+        let feature = features
+            .iter()
+            .find(|feature| feature.id == "repair_workspace_sessions")
+            .expect("missing codex repair action");
+        assert_eq!(feature.kind, FeatureKind::Action);
+        assert_eq!(feature.scope, FeatureScope::Workspace);
+    }
+
+    #[test]
+    fn legacy_feature_wrapper_matches_provider_settings() {
+        for provider_id in ["codex", "opencode"] {
+            let legacy = list_provider_features(provider_id).unwrap();
+            let settings = crate::provider_settings::list_provider_settings(provider_id).unwrap();
+
+            assert_eq!(legacy.len(), settings.len());
+            for (feature, setting) in legacy.iter().zip(settings.iter()) {
+                assert_eq!(feature.id, setting.id);
+                assert_eq!(feature.title, setting.title);
+                assert_eq!(feature.description, setting.description);
+                assert_eq!(feature.value, setting.value);
+                assert_eq!(feature.scope, setting.scope.into());
+                assert_eq!(feature.kind, setting.kind.into());
+            }
+        }
     }
 }

@@ -83,3 +83,57 @@ pub fn path_basename(value: &str) -> Option<String> {
         .filter(|segment| !segment.is_empty())?;
     Some(last.to_string())
 }
+
+/// Convert Windows extended-length paths into the standard form users expect.
+pub fn user_visible_path(value: &str) -> String {
+    if cfg!(windows) {
+        return normalize_windows_user_visible_path(value);
+    }
+
+    value.to_string()
+}
+
+fn normalize_windows_user_visible_path(value: &str) -> String {
+    const UNC_PREFIX: &str = r"\\?\UNC\";
+    const VERBATIM_PREFIX: &str = r"\\?\";
+
+    if value.len() >= UNC_PREFIX.len() && value[..UNC_PREFIX.len()].eq_ignore_ascii_case(UNC_PREFIX)
+    {
+        return format!(r"\\{}", &value[UNC_PREFIX.len()..]);
+    }
+
+    if let Some(stripped) = value.strip_prefix(VERBATIM_PREFIX) {
+        return stripped.to_string();
+    }
+
+    value.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_windows_user_visible_path;
+
+    #[test]
+    fn windows_display_path_strips_verbatim_drive_prefix() {
+        assert_eq!(
+            normalize_windows_user_visible_path(r"\\?\D:\work\memorph"),
+            r"D:\work\memorph"
+        );
+    }
+
+    #[test]
+    fn windows_display_path_strips_verbatim_unc_prefix() {
+        assert_eq!(
+            normalize_windows_user_visible_path(r"\\?\UNC\server\share\memorph"),
+            r"\\server\share\memorph"
+        );
+    }
+
+    #[test]
+    fn windows_display_path_leaves_normal_path_unchanged() {
+        assert_eq!(
+            normalize_windows_user_visible_path(r"D:\work\memorph"),
+            r"D:\work\memorph"
+        );
+    }
+}

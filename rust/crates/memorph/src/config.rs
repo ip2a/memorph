@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::storage::atomic_write;
+use crate::{storage::atomic_write, utils};
 
 pub const DEFAULT_SESSIONS_PER_PROVIDER: usize = 12;
 
@@ -272,7 +272,9 @@ pub fn web_preferences() -> Result<WebPreferences> {
 }
 
 pub fn selected_workspace() -> Result<Option<String>> {
-    Ok(load_config()?.selected_workspace)
+    Ok(load_config()?
+        .selected_workspace
+        .map(|path| utils::user_visible_path(&path)))
 }
 
 pub fn desktop_window_state() -> Result<Option<DesktopWindowState>> {
@@ -448,13 +450,10 @@ fn hydrate_legacy_provider_preferences(prefs: &mut WebPreferences) {
         );
     }
 
-    prefs.show_opencode_subagents = provider_preference_from_prefs(
-        prefs,
-        "opencode",
-        "show_subagents",
-    )
-    .and_then(Value::as_bool)
-    .unwrap_or_else(default_show_opencode_subagents);
+    prefs.show_opencode_subagents =
+        provider_preference_from_prefs(prefs, "opencode", "show_subagents")
+            .and_then(Value::as_bool)
+            .unwrap_or_else(default_show_opencode_subagents);
 }
 
 fn ensure_known_provider(provider_id: &str) -> Result<()> {
@@ -488,9 +487,9 @@ fn set_provider_preference_in_prefs(
                 .provider_prefs
                 .entry(provider_id.to_string())
                 .or_insert_with(|| Value::Object(Map::new()));
-            let object = entry
-                .as_object_mut()
-                .with_context(|| format!("Provider preferences are not an object: {}", provider_id))?;
+            let object = entry.as_object_mut().with_context(|| {
+                format!("Provider preferences are not an object: {}", provider_id)
+            })?;
             object.insert(key.to_string(), value);
         }
         None => {
@@ -515,6 +514,9 @@ fn set_provider_preference_in_prefs(
 pub fn known_workspaces() -> Result<Vec<WorkspaceEntry>> {
     let mut workspaces = load_config()?.workspaces;
     workspaces.sort_by_key(|entry| std::cmp::Reverse(entry.last_viewed_at));
+    for entry in &mut workspaces {
+        entry.path = utils::user_visible_path(&entry.path);
+    }
     Ok(workspaces)
 }
 

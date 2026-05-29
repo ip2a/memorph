@@ -10,8 +10,8 @@ use ratatui::{
 use crate::canonical::{EventBlock, EventRole, SessionEvent};
 use crate::core::{SessionGroup, SessionItem};
 use crate::tui::app::{
-    provider_label, ActionDialog, ActionField, ActionResult, App, AppResult, MainFocus,
-    SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
+    provider_label, ActionDialog, ActionField, ActionResult, AgentManagementFocus, App, AppResult,
+    MainFocus, SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
 };
 use crate::tui::theme::{self, Theme};
 
@@ -1020,6 +1020,9 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> AppResult {
     if app.workspace_modal_open {
         return handle_workspace_modal_key(app, key);
     }
+    if app.agents_modal_open {
+        return handle_agents_modal_key(app, key);
+    }
     if app.settings_modal_open {
         return handle_settings_modal_key(app, key);
     }
@@ -1131,6 +1134,47 @@ fn handle_settings_modal_key(app: &mut App, key: KeyEvent) -> AppResult {
         }
         KeyCode::Backspace | KeyCode::Char(_) => {
             app.edit_settings_number(key.code);
+            AppResult::Continue
+        }
+        _ => AppResult::Continue,
+    }
+}
+
+fn handle_agents_modal_key(app: &mut App, key: KeyEvent) -> AppResult {
+    match key.code {
+        KeyCode::Left => {
+            app.agent_management_focus = AgentManagementFocus::Providers;
+            AppResult::Continue
+        }
+        KeyCode::Right => {
+            app.agent_management_focus = AgentManagementFocus::Actions;
+            AppResult::Continue
+        }
+        KeyCode::Up => {
+            match app.agent_management_focus {
+                AgentManagementFocus::Providers => app.step_agent_management_selection(false),
+                AgentManagementFocus::Actions => app.step_agent_management_action(false),
+            }
+            AppResult::Continue
+        }
+        KeyCode::Down => {
+            match app.agent_management_focus {
+                AgentManagementFocus::Providers => app.step_agent_management_selection(true),
+                AgentManagementFocus::Actions => app.step_agent_management_action(true),
+            }
+            AppResult::Continue
+        }
+        KeyCode::Enter => {
+            match app.agent_management_focus {
+                AgentManagementFocus::Providers => {
+                    app.agent_management_focus = AgentManagementFocus::Actions;
+                }
+                AgentManagementFocus::Actions => app.run_primary_agent_management_action(),
+            }
+            AppResult::Continue
+        }
+        KeyCode::Esc => {
+            app.close_agents_modal();
             AppResult::Continue
         }
         _ => AppResult::Continue,

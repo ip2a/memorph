@@ -39,7 +39,7 @@ pub enum Commands {
         #[arg(short, long, value_name = "FORMAT", default_value = "json")]
         format: String,
     },
-    /// Import a session into a target tool directory
+    /// Import a session into a target provider directory
     Import {
         /// Target provider ID
         #[arg(value_name = "PROVIDER")]
@@ -135,8 +135,51 @@ pub enum Commands {
     },
     /// Start the interactive TUI
     Tui,
+    /// Run Codex-specific maintenance actions
+    Codex {
+        /// Sync Codex sessions for the current workspace so hidden sessions show up again
+        #[arg(long)]
+        sync: bool,
+        /// Legacy alias for `--sync`
+        #[arg(long, hide = true)]
+        repair_workspace_sessions: bool,
+        /// Workspace directory to sync (default: current directory)
+        #[arg(short, long, value_name = "DIR")]
+        workspace: Option<String>,
+        /// Explicit Codex home directory (default: ~/.codex)
+        #[arg(long, value_name = "DIR")]
+        codex_home: Option<String>,
+        /// Number of recent sync backups to keep
+        #[arg(long, default_value = "5", value_name = "N")]
+        keep: usize,
+    },
+    #[command(name = "tool", hide = true)]
+    /// Legacy alias for provider-specific agent actions
+    LegacyTool {
+        #[command(subcommand)]
+        command: LegacyToolCommands,
+    },
     /// Update memorph using the detected install source
     Update,
+}
+
+#[derive(Subcommand)]
+pub enum LegacyToolCommands {
+    /// Codex-specific tools
+    Codex {
+        #[command(subcommand)]
+        command: LegacyCodexToolCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum LegacyCodexToolCommands {
+    /// Repair Codex sessions for the current workspace so hidden sessions show up again
+    RepairWorkspaceSessions {
+        /// Workspace directory to repair (default: current directory)
+        #[arg(short, long, value_name = "DIR")]
+        workspace: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -259,4 +302,60 @@ pub enum ShareCommands {
         #[arg(value_name = "HOLDING_ID")]
         holding_id: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_sync_command_accepts_new_primary_flag() {
+        let cli = Cli::parse_from(["memorph", "codex", "--sync"]);
+        match cli.command {
+            Some(Commands::Codex {
+                sync,
+                repair_workspace_sessions,
+                workspace,
+                codex_home,
+                keep,
+            }) => {
+                assert!(sync);
+                assert!(!repair_workspace_sessions);
+                assert_eq!(workspace, None);
+                assert_eq!(codex_home, None);
+                assert_eq!(keep, 5);
+            }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn codex_sync_command_keeps_workspace_and_backup_options() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "codex",
+            "--sync",
+            "--workspace",
+            "/tmp/repo",
+            "--codex-home",
+            "/tmp/.codex",
+            "--keep",
+            "3",
+        ]);
+        match cli.command {
+            Some(Commands::Codex {
+                sync,
+                workspace,
+                codex_home,
+                keep,
+                ..
+            }) => {
+                assert!(sync);
+                assert_eq!(workspace.as_deref(), Some("/tmp/repo"));
+                assert_eq!(codex_home.as_deref(), Some("/tmp/.codex"));
+                assert_eq!(keep, 3);
+            }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
 }
