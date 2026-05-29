@@ -6,6 +6,7 @@ const ASCII = `███    ███   ███████   ███    █
 
 let I18N = { zh: {}, en: {} };
 const REPOSITORY_URL = "https://github.com/ip2a/memorph";
+const NPM_PACKAGE_URL = "https://www.npmjs.com/package/memorph";
 
 const state = {
   meta: null,
@@ -1207,6 +1208,9 @@ function openSettingsModal(draft = null) {
             <span>v${escapeHtml(state.meta?.version || "")}</span>
             <a class="settings-inline-link" href="${escapeAttr(REPOSITORY_URL)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
               REPOSITORY_URL
+            )}</a>
+            <a class="settings-inline-link" href="${escapeAttr(NPM_PACKAGE_URL)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+              NPM_PACKAGE_URL
             )}</a>
             ${renderUpdateCheckSummary()}
           </div>
