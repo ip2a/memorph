@@ -5,7 +5,7 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
 };
 use crate::provider::{
-    canonical_block_text, canonical_event_text, canonical_export_result, canonical_session_title,
+    canonical_block_text, canonical_export_result, canonical_session_title,
     Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use crate::utils::{
@@ -285,41 +285,15 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
 
     let mut prev_uuid: Option<String> = None;
     for event in &session.events {
+        let Some(message_role) = claude_message_role(event) else {
+            continue;
+        };
+        let Some(content) = canonical_event_to_claude_message_content(event) else {
+            continue;
+        };
         let msg_uuid = Uuid::new_v4().to_string();
         let timestamp = event.timestamp.to_rfc3339();
-        let line_type = if event.role == EventRole::Assistant {
-            "assistant"
-        } else {
-            "user"
-        };
-        let content = if event.role == EventRole::Assistant {
-            Value::Array(
-                event
-                    .blocks
-                    .iter()
-                    .filter_map(canonical_block_to_claude_content)
-                    .collect(),
-            )
-        } else if event
-            .blocks
-            .iter()
-            .all(|block| matches!(block, EventBlock::ToolResult { .. }))
-        {
-            Value::Array(
-                event
-                    .blocks
-                    .iter()
-                    .filter_map(canonical_block_to_claude_content)
-                    .collect(),
-            )
-        } else {
-            Value::String(canonical_event_text(event))
-        };
-        let message_role = if event.role == EventRole::Assistant {
-            "assistant"
-        } else {
-            "user"
-        };
+        let line_type = message_role;
 
         let mut message = serde_json::json!({
             "role": message_role,
@@ -378,6 +352,51 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     }
 
     Ok(session_id)
+}
+
+fn claude_message_role(event: &SessionEvent) -> Option<&'static str> {
+    if event.kind == SessionEventKind::Lifecycle || event.role == EventRole::System {
+        return None;
+    }
+    Some(if event.role == EventRole::Assistant {
+        "assistant"
+    } else {
+        "user"
+    })
+}
+
+fn canonical_event_to_claude_message_content(event: &SessionEvent) -> Option<Value> {
+    if event.role == EventRole::Assistant {
+        let content = event
+            .blocks
+            .iter()
+            .filter_map(canonical_block_to_claude_content)
+            .collect::<Vec<_>>();
+        return (!content.is_empty()).then_some(Value::Array(content));
+    }
+
+    if event
+        .blocks
+        .iter()
+        .all(|block| matches!(block, EventBlock::ToolResult { .. }))
+    {
+        let content = event
+            .blocks
+            .iter()
+            .filter_map(canonical_block_to_claude_content)
+            .collect::<Vec<_>>();
+        return (!content.is_empty()).then_some(Value::Array(content));
+    }
+
+    let text = event
+        .blocks
+        .iter()
+        .filter(|block| !matches!(block, EventBlock::ProviderPayload { .. }))
+        .map(canonical_block_text)
+        .filter(|text| !text.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.trim().is_empty()).then_some(Value::String(text))
 }
 
 fn canonical_block_to_claude_content(block: &EventBlock) -> Option<Value> {
@@ -979,7 +998,32 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
+    use std::collections::BTreeMap;
     use tempfile::NamedTempFile;
+
+    fn test_event(kind: SessionEventKind, role: EventRole, blocks: Vec<EventBlock>) -> SessionEvent {
+        SessionEvent {
+            id: "test-event".to_string(),
+            kind,
+            role,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks,
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "codex".to_string(),
+                    original_id: None,
+                    original_role: None,
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: BTreeMap::new(),
+            },
+        }
+    }
 
     #[test]
     fn import_canonical_session_preserves_claude_structured_and_meta_lines() {
@@ -1187,5 +1231,51 @@ mod tests {
             payload: serde_json::json!({ "name": "shell" }),
         };
         assert!(canonical_block_to_claude_content(&block).is_none());
+    }
+
+    #[test]
+    fn lifecycle_events_are_skipped_in_claude_export() {
+        let event = test_event(
+            SessionEventKind::Lifecycle,
+            EventRole::Assistant,
+            vec![
+                EventBlock::Text {
+                    text: "Done.".to_string(),
+                },
+                EventBlock::ProviderPayload {
+                    kind: "task_complete".to_string(),
+                    payload: serde_json::json!({
+                        "type": "task_complete",
+                        "last_agent_message": "Done."
+                    }),
+                },
+            ],
+        );
+
+        assert!(claude_message_role(&event).is_none());
+        assert!(canonical_event_to_claude_message_content(&event).is_some());
+    }
+
+    #[test]
+    fn non_assistant_text_fallback_omits_provider_payload_blocks() {
+        let event = test_event(
+            SessionEventKind::Message,
+            EventRole::User,
+            vec![
+                EventBlock::Text {
+                    text: "Build this".to_string(),
+                },
+                EventBlock::ProviderPayload {
+                    kind: "token_count".to_string(),
+                    payload: serde_json::json!({
+                        "input_tokens": 10,
+                        "output_tokens": 20
+                    }),
+                },
+            ],
+        );
+
+        let content = canonical_event_to_claude_message_content(&event).unwrap();
+        assert_eq!(content.as_str(), Some("Build this"));
     }
 }

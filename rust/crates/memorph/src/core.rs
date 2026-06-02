@@ -1005,9 +1005,9 @@ mod tests {
             .expect("codex support profile");
         assert_eq!(
             codex.default_projection,
-            compression::CompressionProjection::Portable
+            compression::CompressionProjection::Native
         );
-        assert!(!codex.detects_native_source);
-        assert!(!codex.native_target_projection);
+        assert!(codex.detects_native_source);
+        assert!(codex.native_target_projection);
     }
 }

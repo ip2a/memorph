@@ -4,6 +4,9 @@ use crate::canonical::{
     MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
+use crate::core::compression::{
+    self, CompressedSegment, CompressionProjection, NativeTargetProjection,
+};
 use crate::provider::{
     canonical_block_text, canonical_event_text, canonical_export_result, canonical_session_title,
     Provider, ProviderCapabilities, ProviderSessionSummary,
@@ -1037,6 +1040,16 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                     ));
                 }
             }
+            "compacted" => {
+                if let Some(payload) = value.get("payload") {
+                    events.push(codex_compacted_event(
+                        payload,
+                        timestamp,
+                        line_idx + 1,
+                        value.clone(),
+                    ));
+                }
+            }
             other => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Info,
@@ -1097,6 +1110,90 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
         },
         report,
     })
+}
+
+fn codex_compacted_event(
+    payload: &Value,
+    timestamp: chrono::DateTime<Utc>,
+    line_no: usize,
+    raw_line: Value,
+) -> SessionEvent {
+    let memorph = payload.get("memorph").and_then(Value::as_object);
+    let source_provider_id = memorph
+        .and_then(|value| value.get("source_provider_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(PROVIDER_ID)
+        .to_string();
+    let summary = memorph
+        .and_then(|value| value.get("summary"))
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("message").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string();
+    let source_event_ids = memorph
+        .and_then(|value| value.get("source_event_ids"))
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let source_event_count = memorph
+        .and_then(|value| value.get("source_event_count"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .or_else(|| (!source_event_ids.is_empty()).then_some(source_event_ids.len()));
+    let archive_ref = memorph
+        .and_then(|value| value.get("archive_ref"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let mut provider_ext = BTreeMap::new();
+    provider_ext.insert("codex_payload".to_string(), payload.clone());
+    provider_ext.insert("codex_raw_line".to_string(), raw_line);
+    provider_ext.insert(
+        "memorph_compression".to_string(),
+        serde_json::json!({
+            "source_provider_id": source_provider_id.clone(),
+            "source_event_count": source_event_count,
+            "archive_ref": archive_ref.clone(),
+            "native": "codex",
+        }),
+    );
+
+    SessionEvent {
+        id: format!("codex:compacted:{}", line_no),
+        kind: SessionEventKind::Message,
+        role: EventRole::Assistant,
+        timestamp,
+        links: EventLinks::default(),
+        blocks: vec![EventBlock::Compressed {
+            source_provider_id,
+            summary,
+            source_event_ids,
+            source_event_count,
+            archive_ref,
+        }],
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id: None,
+                original_role: Some("assistant".to_string()),
+                phase: Some("compression".to_string()),
+            },
+            model: None,
+            usage: None,
+            fidelity: MappingDisposition::Normalized,
+            provider_ext,
+        },
+    }
 }
 
 fn codex_response_item_event(
@@ -1722,11 +1819,19 @@ fn get_codex_dir() -> PathBuf {
 }
 
 fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
+    export_canonical_session_in_codex_dir(session, target_dir, &get_codex_dir())
+}
+
+fn export_canonical_session_in_codex_dir(
+    session: &CanonicalSession,
+    target_dir: &Path,
+    codex_dir: &Path,
+) -> Result<String> {
     let session_id = Uuid::new_v4().to_string();
     let now = Utc::now();
     let timestamp_str = now.format("%Y-%m-%dT%H-%M-%S").to_string();
     let filename = format!("rollout-{}-{}.jsonl", timestamp_str, session_id);
-    let sessions_dir = get_codex_dir()
+    let sessions_dir = codex_dir
         .join("sessions")
         .join(now.format("%Y").to_string())
         .join(now.format("%m").to_string())
@@ -1737,8 +1842,8 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     let rollout_path = file_path.to_string_lossy().to_string();
     let mut file = File::create(&file_path)?;
     let git_info = get_git_info(target_dir);
-    let codex_version = get_codex_version();
-    let codex_model_provider = get_codex_model_provider();
+    let codex_version = get_codex_version_in_codex_dir(codex_dir);
+    let codex_model_provider = read_codex_model_provider(codex_dir);
     let target_dir_str = target_dir.to_string_lossy().to_string();
     let title = canonical_session_title(session);
     let first_user_message = first_user_message(session);
@@ -1813,9 +1918,22 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
 
     let mut wrote_user_event = false;
     let mut last_agent_message = String::new();
+    let native_compression_target =
+        compression::target_projection(PROVIDER_ID) == CompressionProjection::Native;
     for event in &session.events {
         if event.role == EventRole::System {
             continue;
+        }
+        if native_compression_target {
+            if let Some(NativeTargetProjection::CodexCompaction(segment)) =
+                compression::native_target_projection_for_event(PROVIDER_ID, event)
+            {
+                write_codex_compacted_rollout_item(&mut file, event, segment)?;
+                if event.role == EventRole::Assistant {
+                    last_agent_message = segment.summary.to_string();
+                }
+                continue;
+            }
         }
         let role = match event.role {
             EventRole::Assistant => "assistant",
@@ -1901,7 +2019,7 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
         }))?
     )?;
 
-    let index_path = get_codex_dir().join("session_index.jsonl");
+    let index_path = codex_dir.join("session_index.jsonl");
     let mut index_file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -1916,6 +2034,7 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
         }))?
     )?;
     update_codex_sqlite(
+        codex_dir,
         &session_id,
         &rollout_path,
         target_dir,
@@ -1924,8 +2043,70 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
         has_user_event,
         &now,
     )?;
-    update_codex_global_state_workspace(target_dir)?;
+    update_codex_global_state_file_if_exists(codex_dir, target_dir)?;
     Ok(session_id)
+}
+
+fn write_codex_compacted_rollout_item(
+    file: &mut impl Write,
+    event: &SessionEvent,
+    segment: CompressedSegment<'_>,
+) -> Result<()> {
+    let model_visible_summary = codex_compacted_history_text(segment);
+    let source_event_count = segment.source_event_count.or_else(|| {
+        (!segment.source_event_ids.is_empty()).then_some(segment.source_event_ids.len())
+    });
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "timestamp": event.timestamp.to_rfc3339(),
+            "type": "compacted",
+            "payload": {
+                "message": segment.summary,
+                "replacement_history": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": model_visible_summary,
+                            }
+                        ]
+                    }
+                ],
+                "memorph": {
+                    "source_provider_id": segment.source_provider_id,
+                    "summary": segment.summary,
+                    "source_event_ids": segment.source_event_ids,
+                    "source_event_count": source_event_count,
+                    "archive_ref": segment.archive_ref,
+                }
+            }
+        }))?
+    )?;
+    Ok(())
+}
+
+fn codex_compacted_history_text(segment: CompressedSegment<'_>) -> String {
+    let mut parts = vec![
+        format!(
+            "[Compressed session segment from {}]",
+            segment.source_provider_id
+        ),
+        segment.summary.to_string(),
+    ];
+    let source_event_count = segment
+        .source_event_count
+        .unwrap_or(segment.source_event_ids.len());
+    if source_event_count > 0 {
+        parts.push(format!("Source event count: {}", source_event_count));
+    }
+    if let Some(archive_ref) = segment.archive_ref {
+        parts.push(format!("Archive: {}", archive_ref));
+    }
+    parts.join("\n")
 }
 
 fn canonical_event_to_codex_content(event: &SessionEvent) -> Vec<Value> {
@@ -2055,6 +2236,7 @@ fn has_user_event(session: &CanonicalSession) -> bool {
 }
 
 fn update_codex_sqlite(
+    codex_dir: &Path,
     session_id: &str,
     rollout_path: &str,
     cwd: &Path,
@@ -2063,7 +2245,7 @@ fn update_codex_sqlite(
     has_user_event: bool,
     now: &chrono::DateTime<Utc>,
 ) -> Result<()> {
-    let sqlite_path = get_codex_dir().join("state_5.sqlite");
+    let sqlite_path = codex_dir.join("state_5.sqlite");
     if !sqlite_path.exists() {
         // SQLite not present, skip
         return Ok(());
@@ -2075,9 +2257,9 @@ fn update_codex_sqlite(
     let created_at = now.timestamp();
     let created_at_ms = now.timestamp_millis();
     let cwd_str = cwd.to_string_lossy().to_string();
-    let codex_version = get_codex_version();
-    let codex_model_provider = get_codex_model_provider();
-    let (codex_model, codex_reasoning) = get_codex_model_config();
+    let codex_version = get_codex_version_in_codex_dir(codex_dir);
+    let codex_model_provider = read_codex_model_provider(codex_dir);
+    let (codex_model, codex_reasoning) = get_codex_model_config_in_codex_dir(codex_dir);
     let sandbox_json = format!(
         "{{\"type\":\"workspace-write\",\"writable_roots\":[],\"network_access\":false,\"exclude_tmpdir_env_var\":false,\"exclude_slash_tmp\":false}}"
     );
@@ -2120,14 +2302,6 @@ fn update_codex_sqlite(
     .with_context(|| "Failed to insert thread into Codex SQLite")?;
 
     Ok(())
-}
-
-fn update_codex_global_state_workspace(workspace_root: &Path) -> Result<()> {
-    let global_state_path = get_codex_dir().join(".codex-global-state.json");
-    if !global_state_path.exists() {
-        return Ok(());
-    }
-    update_codex_global_state_file(&global_state_path, workspace_root)
 }
 
 fn update_codex_global_state_file_if_exists(codex_dir: &Path, workspace_root: &Path) -> Result<()> {
@@ -2180,8 +2354,8 @@ fn ensure_unique_string_array_entry(value: &mut Value, key: &str, entry: &str) {
     items.push(Value::String(entry.to_string()));
 }
 
-fn get_codex_version() -> String {
-    let version_path = get_codex_dir().join("version.json");
+fn get_codex_version_in_codex_dir(codex_dir: &Path) -> String {
+    let version_path = codex_dir.join("version.json");
     if let Ok(content) = std::fs::read_to_string(&version_path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
             if let Some(ver) = v.get("latest_version").and_then(|v| v.as_str()) {
@@ -2274,12 +2448,8 @@ fn read_codex_model_provider(codex_dir: &Path) -> String {
     "openai".to_string()
 }
 
-fn get_codex_model_provider() -> String {
-    read_codex_model_provider(&get_codex_dir())
-}
-
-fn get_codex_model_config() -> (String, String) {
-    let config_path = get_codex_dir().join("config.toml");
+fn get_codex_model_config_in_codex_dir(codex_dir: &Path) -> (String, String) {
+    let config_path = codex_dir.join("config.toml");
     let mut model = String::new();
     let mut reasoning = String::new();
     if let Ok(content) = std::fs::read_to_string(&config_path) {
@@ -2569,7 +2739,251 @@ mod tests {
     }
 
     #[test]
-    fn compressed_segment_exports_as_portable_codex_text() {
+    fn import_canonical_session_maps_native_compacted_to_compressed_block() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-compacted",
+                    "timestamp": "2026-05-21T10:00:00Z",
+                    "cwd": "/tmp/project"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:01Z",
+                "type": "compacted",
+                "payload": {
+                    "message": "compressed summary",
+                    "replacement_history": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "[Compressed session segment from claude]\ncompressed summary\nSource event count: 2\nArchive: memorph-archive://s1/archive.json.gz"
+                                }
+                            ]
+                        }
+                    ],
+                    "memorph": {
+                        "source_provider_id": "claude",
+                        "summary": "compressed summary",
+                        "source_event_ids": ["old-event-1", "old-event-2"],
+                        "source_event_count": 2,
+                        "archive_ref": "memorph-archive://s1/archive.json.gz"
+                    }
+                }
+            })
+        )
+        .unwrap();
+
+        let imported = import_canonical_session(file.path()).unwrap();
+        let compressed = imported
+            .session
+            .events
+            .iter()
+            .find_map(|event| {
+                event.blocks.iter().find_map(|block| match block {
+                    EventBlock::Compressed {
+                        source_provider_id,
+                        summary,
+                        source_event_ids,
+                        source_event_count,
+                        archive_ref,
+                    } => Some((
+                        source_provider_id,
+                        summary,
+                        source_event_ids,
+                        source_event_count,
+                        archive_ref,
+                    )),
+                    _ => None,
+                })
+            })
+            .expect("expected compressed block");
+
+        assert_eq!(compressed.0, "claude");
+        assert_eq!(compressed.1, "compressed summary");
+        assert_eq!(
+            compressed.2,
+            &vec!["old-event-1".to_string(), "old-event-2".to_string()]
+        );
+        assert_eq!(*compressed.3, Some(2));
+        assert_eq!(
+            compressed.4.as_deref(),
+            Some("memorph-archive://s1/archive.json.gz")
+        );
+    }
+
+    #[test]
+    fn compressed_segment_exports_as_native_codex_compacted_rollout() {
+        let temp = tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        let workspace = temp.path().join("repo");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            "model_provider = \"test-provider\"\n",
+        )
+        .unwrap();
+
+        let session = CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: "session-native-compact".to_string(),
+                source_title: Some("Native Compact".to_string()),
+            },
+            provenance: SessionProvenance {
+                imported_at: Utc::now(),
+                imported_by: None,
+                primary_source: ProviderSessionRef {
+                    provider_id: "claude".to_string(),
+                    session_id: "session-native-compact".to_string(),
+                    source_path: None,
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir: Some(workspace.to_string_lossy().to_string()),
+                created_at: None,
+                last_active_at: None,
+                tags: Vec::new(),
+            },
+            events: vec![
+                SessionEvent {
+                    id: "compressed-source".to_string(),
+                    kind: SessionEventKind::Message,
+                    role: EventRole::Assistant,
+                    timestamp: Utc::now(),
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Compressed {
+                        source_provider_id: "claude".to_string(),
+                        summary: "compressed summary".to_string(),
+                        source_event_ids: vec![
+                            "old-event-1".to_string(),
+                            "old-event-2".to_string(),
+                            "old-event-3".to_string(),
+                        ],
+                        source_event_count: None,
+                        archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
+                    }],
+                    metadata: EventMetadata {
+                        source: EventSource {
+                            provider_id: "memorph".to_string(),
+                            original_id: None,
+                            original_role: Some("assistant".to_string()),
+                            phase: Some("compression".to_string()),
+                        },
+                        model: None,
+                        usage: None,
+                        fidelity: MappingDisposition::Normalized,
+                        provider_ext: BTreeMap::new(),
+                    },
+                },
+                SessionEvent {
+                    id: "tail-user".to_string(),
+                    kind: SessionEventKind::Message,
+                    role: EventRole::User,
+                    timestamp: Utc::now(),
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Text {
+                        text: "latest request".to_string(),
+                    }],
+                    metadata: EventMetadata {
+                        source: EventSource {
+                            provider_id: "memorph".to_string(),
+                            original_id: None,
+                            original_role: Some("user".to_string()),
+                            phase: None,
+                        },
+                        model: None,
+                        usage: None,
+                        fidelity: MappingDisposition::Preserved,
+                        provider_ext: BTreeMap::new(),
+                    },
+                },
+            ],
+            artifacts: Vec::new(),
+            extensions: BTreeMap::new(),
+        };
+
+        let session_id =
+            export_canonical_session_in_codex_dir(&session, &workspace, &codex_dir).unwrap();
+        let rollout_path = WalkDir::new(codex_dir.join("sessions"))
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.into_path())
+            .find(|path| {
+                path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+                    && path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|value| value.contains(&session_id))
+            })
+            .expect("exported rollout");
+        let lines = std::fs::read_to_string(&rollout_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+
+        let compacted = lines
+            .iter()
+            .find(|line| line.get("type").and_then(Value::as_str) == Some("compacted"))
+            .expect("native compacted line");
+        let payload = compacted.get("payload").expect("compacted payload");
+        assert_eq!(
+            payload.get("message").and_then(Value::as_str),
+            Some("compressed summary")
+        );
+        assert_eq!(
+            payload
+                .pointer("/memorph/source_provider_id")
+                .and_then(Value::as_str),
+            Some("claude")
+        );
+        assert_eq!(
+            payload
+                .pointer("/memorph/source_event_count")
+                .and_then(Value::as_u64),
+            Some(3)
+        );
+        let model_visible_text = payload
+            .pointer("/replacement_history/0/content/0/text")
+            .and_then(Value::as_str)
+            .expect("replacement history text");
+        assert!(model_visible_text.contains("[Compressed session segment from claude]"));
+        assert!(model_visible_text.contains("compressed summary"));
+        assert!(model_visible_text.contains("Source event count: 3"));
+        assert!(model_visible_text.contains("Archive: memorph-archive://s1/archive.json.gz"));
+        assert!(!model_visible_text.contains("old-event-1"));
+
+        let compressed_response_item = lines.iter().any(|line| {
+            line.get("type").and_then(Value::as_str) == Some("response_item")
+                && line
+                    .to_string()
+                    .contains("[Compressed session segment from claude]")
+        });
+        assert!(!compressed_response_item);
+        assert!(lines.iter().any(|line| {
+            line.get("type").and_then(Value::as_str) == Some("response_item")
+                && line.to_string().contains("latest request")
+        }));
+    }
+
+    #[test]
+    fn compressed_segment_content_fallback_stays_portable_for_non_native_paths() {
         let event = SessionEvent {
             id: "compressed-source".to_string(),
             kind: SessionEventKind::Message,

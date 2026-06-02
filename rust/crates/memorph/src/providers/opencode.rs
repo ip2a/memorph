@@ -1641,7 +1641,9 @@ mod tests {
         let mut parts = Vec::new();
         let projection = compression::native_target_projection_for_event(PROVIDER_ID, &event)
             .expect("native opencode projection");
-        let NativeTargetProjection::OpencodeCompaction(segment) = projection;
+        let NativeTargetProjection::OpencodeCompaction(segment) = projection else {
+            panic!("expected opencode compaction projection");
+        };
 
         append_compressed_opencode_segment(
             "ses_test",
