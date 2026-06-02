@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use crate::config::UiLanguage;
 use crate::core::{self, ExportParams, SessionDetailView, SessionGroup, SessionItem, SwitchParams};
@@ -167,6 +168,19 @@ pub enum AppResult {
     Error(anyhow::Error),
 }
 
+struct SessionLoadPayload {
+    provider_filters_cache: Vec<Vec<String>>,
+    selected_provider_tab: usize,
+    session_groups: Vec<SessionGroup>,
+}
+
+type SessionLoadMessage = std::result::Result<SessionLoadPayload, String>;
+
+struct PendingSessionLoad {
+    receiver: Receiver<SessionLoadMessage>,
+    error_key: &'static str,
+}
+
 /// TUI application state machine
 pub struct App {
     pub current_screen: Screen,
@@ -228,6 +242,8 @@ pub struct App {
     // Detail modal state
     pub detail_modal_open: bool,
     pub detail_scroll: usize,
+    pending_session_load: Option<PendingSessionLoad>,
+    loading_frame: usize,
 }
 
 impl App {
@@ -286,39 +302,48 @@ impl App {
             search_match_index: 0,
             detail_modal_open: false,
             detail_scroll: 0,
+            pending_session_load: None,
+            loading_frame: 0,
         };
 
         app.refresh_workspace_options(None);
-        app.load_sessions()?;
+        app.start_load_sessions("failedLoadSessions");
         Ok(app)
     }
 
-    pub fn load_sessions(&mut self) -> Result<()> {
-        self.provider_filters_cache = provider_tab_filters_for_workspace(self.workspace.as_deref());
-        let tab_count = self.provider_filters_cache.len();
-        self.selected_provider_tab = self.selected_provider_tab.min(tab_count.saturating_sub(1));
-        let providers = self.get_filtered_providers();
-        let params = core::SessionListParams {
-            all: self.show_all,
-            providers,
-            cwd: self.workspace.clone(),
-            include_message_counts: true,
-        };
+    fn start_load_sessions(&mut self, error_key: &'static str) {
+        let workspace = self.workspace.clone();
+        let show_all = self.show_all;
+        let selected_provider_tab = self.selected_provider_tab;
+        let (sender, receiver) = mpsc::channel();
 
-        self.session_groups = core::list_sessions(&params)?;
-        if let Ok(prefs) = config::web_preferences() {
-            if !prefs.show_opencode_subagents {
-                for group in &mut self.session_groups {
-                    if group.provider_id == "opencode" {
-                        group.sessions.retain(|session| {
-                            !is_opencode_subagent_title(session.title.as_deref())
-                        });
-                    }
-                }
-            }
-        }
+        self.pending_session_load = Some(PendingSessionLoad {
+            receiver,
+            error_key,
+        });
+        self.loading_frame = 0;
+
+        std::thread::spawn(move || {
+            let result = build_session_load_payload(workspace, show_all, selected_provider_tab)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(result);
+        });
+    }
+
+    fn apply_session_load_payload(&mut self, payload: SessionLoadPayload) {
+        self.provider_filters_cache = payload.provider_filters_cache;
+        self.selected_provider_tab = payload.selected_provider_tab;
+        self.session_groups = payload.session_groups;
         self.ensure_selected_row();
-        Ok(())
+    }
+
+    pub fn is_loading(&self) -> bool {
+        self.pending_session_load.is_some()
+    }
+
+    pub fn loading_spinner(&self) -> &'static str {
+        const FRAMES: [&str; 4] = ["|", "/", "-", "\\"];
+        FRAMES[self.loading_frame % FRAMES.len()]
     }
 
     pub fn language(&self) -> UiLanguage {
@@ -343,34 +368,26 @@ impl App {
     #[allow(dead_code)]
     pub fn toggle_show_all(&mut self) {
         self.show_all = !self.show_all;
-        if let Err(e) = self.load_sessions() {
-            self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
-        }
+        self.start_load_sessions("failedLoadSessions");
     }
 
     pub fn next_provider_tab(&mut self) {
         let tab_count = self.provider_tabs().len();
         self.selected_provider_tab = (self.selected_provider_tab + 1) % tab_count;
-        if let Err(e) = self.load_sessions() {
-            self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
-        }
+        self.start_load_sessions("failedLoadSessions");
     }
 
     pub fn previous_provider_tab(&mut self) {
         let tab_count = self.provider_tabs().len();
         self.selected_provider_tab = (self.selected_provider_tab + tab_count - 1) % tab_count;
-        if let Err(e) = self.load_sessions() {
-            self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
-        }
+        self.start_load_sessions("failedLoadSessions");
     }
 
     #[allow(dead_code)]
     pub fn select_provider_tab(&mut self, tab: usize) {
         if tab < self.provider_tabs().len() {
             self.selected_provider_tab = tab;
-            if let Err(e) = self.load_sessions() {
-                self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
-            }
+            self.start_load_sessions("failedLoadSessions");
         }
     }
 
@@ -730,7 +747,7 @@ impl App {
                                 lines.push(format!("skipped rollout: {}", path));
                             }
                         }
-                        let _ = self.load_sessions();
+                        self.start_load_sessions("failedRefreshSessions");
                         if let Ok(entries) =
                             crate::agent_management::list_agent_management_entries()
                         {
@@ -763,7 +780,7 @@ impl App {
                         if provider_id == "opencode" && action.id == "show_subagents" {
                             self.settings_show_opencode_subagents = next;
                         }
-                        let _ = self.load_sessions();
+                        self.start_load_sessions("failedRefreshSessions");
                         if let Ok(entries) =
                             crate::agent_management::list_agent_management_entries()
                         {
@@ -1015,9 +1032,7 @@ impl App {
                 self.selected_provider_tab = self
                     .selected_provider_tab
                     .min(self.provider_tabs().len().saturating_sub(1));
-                if let Err(e) = self.load_sessions() {
-                    self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
-                }
+                self.start_load_sessions("failedLoadSessions");
             }
             Err(e) => self.show_error(e.to_string()),
         }
@@ -1093,9 +1108,7 @@ impl App {
         }
         self.close_workspace_modal();
         self.refresh_workspace_options(None);
-        if let Err(e) = self.load_sessions() {
-            self.show_error(self.tf("failedLoadSessions", &[("error", &e.to_string())]));
-        }
+        self.start_load_sessions("failedLoadSessions");
     }
 
     pub fn open_detail_modal(&mut self) {
@@ -1695,9 +1708,7 @@ impl App {
     }
 
     fn reload_after_action(&mut self) {
-        if let Err(e) = self.load_sessions() {
-            self.show_error(self.tf("failedRefreshSessions", &[("error", &e.to_string())]));
-        }
+        self.start_load_sessions("failedRefreshSessions");
     }
 
     fn set_action_success(&mut self, title: impl Into<String>, lines: Vec<String>) {
@@ -1736,6 +1747,25 @@ impl App {
                 self.clear_error();
             }
         }
+
+        if let Some((error_key, result)) = self.pending_session_load.as_ref().and_then(|pending| {
+            match pending.receiver.try_recv() {
+                Ok(result) => Some((pending.error_key, result)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some((
+                    pending.error_key,
+                    Err("session loader disconnected".to_string()),
+                )),
+            }
+        }) {
+            self.pending_session_load = None;
+            match result {
+                Ok(payload) => self.apply_session_load_payload(payload),
+                Err(error) => self.show_error(self.tf(error_key, &[("error", &error)])),
+            }
+        } else if self.pending_session_load.is_some() {
+            self.loading_frame = self.loading_frame.wrapping_add(1);
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> AppResult {
@@ -1770,52 +1800,84 @@ fn provider_tabs_from_filters(language: UiLanguage, filters: &[Vec<String>]) -> 
     tabs
 }
 
-fn provider_tab_filters_for_workspace(workspace: Option<&str>) -> Vec<Vec<String>> {
+fn build_session_load_payload(
+    workspace: Option<String>,
+    show_all: bool,
+    selected_provider_tab: usize,
+) -> Result<SessionLoadPayload> {
     let prefs = config::web_preferences().unwrap_or_default();
-    let ordered = ordered_provider_ids_for_workspace(&prefs, workspace);
-    build_provider_tab_filters(
-        ordered,
-        config::normalize_provider_ids(prefs.agent_display.primary.clone()),
-    )
-}
-
-fn ordered_provider_ids_for_workspace(
-    prefs: &config::WebPreferences,
-    workspace: Option<&str>,
-) -> Vec<String> {
-    if let Some(workspace) = workspace {
-        if let Ok(Some(provider_ids)) = config::workspace_provider_override(workspace) {
-            return config::sort_provider_ids_by_display(prefs, &provider_ids);
-        }
-
-        if prefs.sort_providers_by_session_count {
-            let counts = provider_session_counts_for_workspace(workspace);
-            return sort_provider_ids_by_session_counts(
-                config::ordered_provider_ids(prefs),
-                &counts,
-            );
-        }
-    }
-
-    config::ordered_provider_ids(prefs)
-}
-
-fn provider_session_counts_for_workspace(workspace: &str) -> HashMap<String, usize> {
-    let params = core::SessionListParams {
-        all: false,
-        providers: Vec::new(),
-        cwd: Some(workspace.to_string()),
-        include_message_counts: false,
+    let workspace_provider_override = match workspace.as_deref() {
+        Some(workspace) => config::workspace_provider_override(workspace)?,
+        None => None,
     };
+    let base_provider_ids = workspace_provider_override
+        .as_ref()
+        .map(|provider_ids| config::sort_provider_ids_by_display(&prefs, provider_ids))
+        .unwrap_or_else(|| config::ordered_provider_ids(&prefs));
+    let should_sort_by_session_count =
+        workspace_provider_override.is_none() && prefs.sort_providers_by_session_count;
+    let primary_provider_ids = config::normalize_provider_ids(prefs.agent_display.primary.clone());
 
-    core::list_sessions(&params)
-        .map(|groups| {
-            groups
-                .into_iter()
-                .map(|group| (group.provider_id, group.sessions.len()))
-                .collect()
-        })
-        .unwrap_or_default()
+    let (provider_filters_cache, selected_provider_tab, session_groups) =
+        if should_sort_by_session_count {
+            let params = core::SessionListParams {
+                all: show_all,
+                providers: base_provider_ids.clone(),
+                cwd: workspace,
+                include_message_counts: false,
+            };
+            let mut session_groups = core::list_sessions(&params)?;
+            apply_session_group_preferences(&mut session_groups, &prefs);
+            let counts = session_groups
+                .iter()
+                .map(|group| (group.provider_id.clone(), group.sessions.len()))
+                .collect();
+            let ordered_provider_ids =
+                sort_provider_ids_by_session_counts(base_provider_ids, &counts);
+            let provider_filters_cache =
+                build_provider_tab_filters(ordered_provider_ids, primary_provider_ids);
+            let tab_count = provider_filters_cache.len();
+            let selected_provider_tab = selected_provider_tab.min(tab_count.saturating_sub(1));
+            let selected_providers = provider_filters_cache
+                .get(selected_provider_tab)
+                .cloned()
+                .unwrap_or_default();
+            let session_groups = select_session_groups(session_groups, &selected_providers);
+            (
+                provider_filters_cache,
+                selected_provider_tab,
+                session_groups,
+            )
+        } else {
+            let provider_filters_cache =
+                build_provider_tab_filters(base_provider_ids, primary_provider_ids);
+            let tab_count = provider_filters_cache.len();
+            let selected_provider_tab = selected_provider_tab.min(tab_count.saturating_sub(1));
+            let selected_providers = provider_filters_cache
+                .get(selected_provider_tab)
+                .cloned()
+                .unwrap_or_default();
+            let params = core::SessionListParams {
+                all: show_all,
+                providers: selected_providers.clone(),
+                cwd: workspace,
+                include_message_counts: false,
+            };
+            let mut session_groups = core::list_sessions(&params)?;
+            apply_session_group_preferences(&mut session_groups, &prefs);
+            let session_groups = select_session_groups(session_groups, &selected_providers);
+            (
+                provider_filters_cache,
+                selected_provider_tab,
+                session_groups,
+            )
+        };
+
+    Ok(SessionLoadPayload {
+        provider_filters_cache,
+        selected_provider_tab,
+        session_groups,
+    })
 }
 
 fn sort_provider_ids_by_session_counts(
@@ -1862,6 +1924,39 @@ fn build_provider_tab_filters(ordered: Vec<String>, primary: Vec<String>) -> Vec
     }
 
     filters
+}
+
+fn apply_session_group_preferences(
+    session_groups: &mut Vec<SessionGroup>,
+    prefs: &config::WebPreferences,
+) {
+    if !prefs.show_opencode_subagents {
+        for group in session_groups.iter_mut() {
+            if group.provider_id == "opencode" {
+                group
+                    .sessions
+                    .retain(|session| !is_opencode_subagent_title(session.title.as_deref()));
+            }
+        }
+    }
+
+    session_groups.retain(|group| !group.sessions.is_empty());
+}
+
+fn select_session_groups(
+    mut session_groups: Vec<SessionGroup>,
+    selected_providers: &[String],
+) -> Vec<SessionGroup> {
+    let order: HashMap<String, usize> = selected_providers
+        .iter()
+        .enumerate()
+        .map(|(index, provider_id)| (provider_id.clone(), index))
+        .collect();
+
+    session_groups.retain(|group| order.contains_key(&group.provider_id));
+    session_groups
+        .sort_by_key(|group| order.get(&group.provider_id).copied().unwrap_or(usize::MAX));
+    session_groups
 }
 
 fn copy_to_clipboard(text: &str) -> Result<()> {

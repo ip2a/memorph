@@ -1,5 +1,5 @@
 use crate::canonical::{CanonicalSession, EventRole, SessionEvent};
-use crate::provider::{canonical_event_text, canonical_session_title};
+use crate::provider::{canonical_event_visible_text, canonical_session_title};
 use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
@@ -602,7 +602,7 @@ pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<S
 }
 
 fn cursor_bubble_text(event: &SessionEvent) -> String {
-    canonical_event_text(event)
+    canonical_event_visible_text(event)
 }
 
 #[cfg(test)]

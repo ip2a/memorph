@@ -70,5 +70,9 @@ fn handle_key_event(key: KeyEvent, app: &mut App) -> AppResult {
         return AppResult::Continue;
     }
 
+    if app.is_loading() {
+        return AppResult::Continue;
+    }
+
     app.handle_key(key)
 }

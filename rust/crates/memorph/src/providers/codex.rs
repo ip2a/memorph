@@ -32,6 +32,14 @@ const CODEX_SYNC_SESSION_DIRS: &[&str] = &["sessions", "archived_sessions"];
 const CODEX_SQLITE_FILE_BASENAME: &str = "state_5.sqlite";
 const CODEX_GLOBAL_STATE_FILE_BASENAME: &str = ".codex-global-state.json";
 const CODEX_GLOBAL_STATE_BACKUP_FILE_BASENAME: &str = ".codex-global-state.json.bak";
+const CODEX_INTERNAL_DEVELOPER_TAGS: &[&str] = &[
+    "<model_switch>",
+    "<collaboration_mode>",
+    "<permissions instructions>",
+    "<skills_instructions>",
+    "<personality_spec>",
+];
+const CODEX_INTERNAL_USER_CONTEXT_TAGS: &[&str] = &["<environment_context>"];
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct CodexWorkspaceRepairItem {
@@ -442,7 +450,10 @@ fn sync_workspace_sessions_in_codex_home(
             let mut updated_model_provider = false;
 
             if provider_mismatch {
-                match rewrite_rollout_model_provider(&candidate.rollout_path, &current_model_provider) {
+                match rewrite_rollout_model_provider(
+                    &candidate.rollout_path,
+                    &current_model_provider,
+                ) {
                     Ok(()) => {
                         session.model_provider = Some(current_model_provider.clone());
                         updated_model_provider = true;
@@ -475,7 +486,9 @@ fn sync_workspace_sessions_in_codex_home(
                 report.touched_sessions.push(CodexWorkspaceRepairItem {
                     session_id: session.session_id.clone(),
                     title: session.title.clone(),
-                    rollout_path: utils::user_visible_path(&candidate.rollout_path.to_string_lossy()),
+                    rollout_path: utils::user_visible_path(
+                        &candidate.rollout_path.to_string_lossy(),
+                    ),
                     workspace_dir: session
                         .workspace_dir
                         .as_deref()
@@ -490,11 +503,8 @@ fn sync_workspace_sessions_in_codex_home(
             synced_sessions.push(session);
         }
 
-        let sqlite_stats = sync_workspace_sqlite_metadata(
-            codex_dir,
-            &current_model_provider,
-            &synced_sessions,
-        )?;
+        let sqlite_stats =
+            sync_workspace_sqlite_metadata(codex_dir, &current_model_provider, &synced_sessions)?;
         report.sqlite_rows_updated = sqlite_stats.rows_updated;
         report.sqlite_provider_rows_updated = sqlite_stats.provider_rows_updated;
         report.sqlite_user_event_rows_updated = sqlite_stats.user_event_rows_updated;
@@ -564,13 +574,14 @@ fn sync_workspace_sqlite_metadata(
         } else {
             None
         };
-        let mut cwd_stmt = if has_cwd_column {
-            Some(conn.prepare(
-                "UPDATE threads SET cwd = ?1 WHERE id = ?2 AND COALESCE(cwd, '') <> ?1",
-            )?)
-        } else {
-            None
-        };
+        let mut cwd_stmt =
+            if has_cwd_column {
+                Some(conn.prepare(
+                    "UPDATE threads SET cwd = ?1 WHERE id = ?2 AND COALESCE(cwd, '') <> ?1",
+                )?)
+            } else {
+                None
+            };
 
         for session in sessions {
             if !seen_ids.insert(session.session_id.clone()) {
@@ -578,10 +589,8 @@ fn sync_workspace_sqlite_metadata(
             }
 
             if let Some(stmt) = provider_stmt.as_mut() {
-                stats.provider_rows_updated += stmt.execute(rusqlite::params![
-                    target_provider,
-                    &session.session_id
-                ])?;
+                stats.provider_rows_updated +=
+                    stmt.execute(rusqlite::params![target_provider, &session.session_id])?;
             }
 
             if session.has_user_event {
@@ -594,18 +603,15 @@ fn sync_workspace_sqlite_metadata(
             if let Some(workspace_dir) = session.workspace_dir.as_deref() {
                 if !workspace_dir.trim().is_empty() {
                     if let Some(stmt) = cwd_stmt.as_mut() {
-                        stats.cwd_rows_updated += stmt.execute(rusqlite::params![
-                            workspace_dir,
-                            &session.session_id
-                        ])?;
+                        stats.cwd_rows_updated +=
+                            stmt.execute(rusqlite::params![workspace_dir, &session.session_id])?;
                     }
                 }
             }
         }
 
-        stats.rows_updated = stats.provider_rows_updated
-            + stats.user_event_rows_updated
-            + stats.cwd_rows_updated;
+        stats.rows_updated =
+            stats.provider_rows_updated + stats.user_event_rows_updated + stats.cwd_rows_updated;
         Ok(stats)
     })();
 
@@ -761,7 +767,10 @@ fn restore_codex_sync_backup(codex_dir: &Path, backup_dir: &Path) -> Result<()> 
         let target = codex_dir.join(file_name);
         if metadata.db_files.iter().any(|entry| entry == file_name) {
             std::fs::copy(backup_dir.join("db").join(file_name), &target).with_context(|| {
-                format!("Failed to restore Codex SQLite backup: {}", target.display())
+                format!(
+                    "Failed to restore Codex SQLite backup: {}",
+                    target.display()
+                )
             })?;
         } else if target.exists() {
             std::fs::remove_file(&target).with_context(|| {
@@ -808,7 +817,10 @@ fn prune_codex_sync_backups(codex_dir: &Path, keep_backups: usize) -> Result<usi
     let mut deleted = 0;
     for stale in managed_dirs.into_iter().skip(keep_backups) {
         std::fs::remove_dir_all(&stale).with_context(|| {
-            format!("Failed to remove stale Codex sync backup: {}", stale.display())
+            format!(
+                "Failed to remove stale Codex sync backup: {}",
+                stale.display()
+            )
         })?;
         deleted += 1;
     }
@@ -1226,7 +1238,7 @@ fn codex_response_item_event(
             .unwrap_or("");
         let input = payload.get("arguments").cloned();
         let role = match role_str {
-            Some("assistant") => EventRole::Assistant,
+            Some("assistant") | None => EventRole::Assistant,
             _ => EventRole::Unknown,
         };
         return SessionEvent {
@@ -1408,6 +1420,72 @@ fn codex_response_item_event(
         _ => EventRole::Unknown,
     };
 
+    if codex_is_turn_aborted_sentinel(role_str, &blocks) {
+        report.push_issue(MappingIssue {
+            level: MappingIssueLevel::Info,
+            disposition: MappingDisposition::Normalized,
+            code: "codex_turn_aborted_sentinel_hidden".to_string(),
+            message:
+                "Codex synthetic <turn_aborted> message was normalized into a hidden lifecycle event"
+                    .to_string(),
+            path: Some(format!("response_item:{}", line_no)),
+            raw: Some(payload.clone()),
+        });
+        return codex_hidden_response_item_event(
+            event_id,
+            timestamp,
+            "turn_aborted_sentinel",
+            payload.clone(),
+            raw_line,
+            phase,
+            role_str,
+        );
+    }
+
+    if codex_is_internal_user_context_message(role_str, &blocks) {
+        report.push_issue(MappingIssue {
+            level: MappingIssueLevel::Info,
+            disposition: MappingDisposition::Normalized,
+            code: "codex_internal_user_context_hidden".to_string(),
+            message:
+                "Codex runtime-injected user context was normalized into a hidden lifecycle event"
+                    .to_string(),
+            path: Some(format!("response_item:{}", line_no)),
+            raw: Some(payload.clone()),
+        });
+        return codex_hidden_response_item_event(
+            event_id,
+            timestamp,
+            "user_context_message",
+            payload.clone(),
+            raw_line,
+            phase,
+            role_str,
+        );
+    }
+
+    if codex_is_internal_developer_control_message(role_str, &blocks) {
+        report.push_issue(MappingIssue {
+            level: MappingIssueLevel::Info,
+            disposition: MappingDisposition::Normalized,
+            code: "codex_internal_developer_message_hidden".to_string(),
+            message:
+                "Codex internal developer control message was normalized into a hidden lifecycle event"
+                    .to_string(),
+            path: Some(format!("response_item:{}", line_no)),
+            raw: Some(payload.clone()),
+        });
+        return codex_hidden_response_item_event(
+            event_id,
+            timestamp,
+            "developer_control_message",
+            payload.clone(),
+            raw_line,
+            phase,
+            role_str,
+        );
+    }
+
     SessionEvent {
         id: event_id,
         kind: SessionEventKind::Message,
@@ -1433,6 +1511,98 @@ fn codex_response_item_event(
             },
         },
     }
+}
+
+fn codex_hidden_response_item_event(
+    id: String,
+    timestamp: chrono::DateTime<Utc>,
+    payload_kind: &str,
+    payload: Value,
+    raw_line: Value,
+    phase: Option<String>,
+    original_role: Option<&str>,
+) -> SessionEvent {
+    let mut event = provider_payload_event(
+        id,
+        SessionEventKind::Lifecycle,
+        EventRole::System,
+        timestamp,
+        payload_kind,
+        payload,
+        raw_line,
+        phase,
+    );
+    event.metadata.fidelity = MappingDisposition::Normalized;
+    event.metadata.source.original_role = original_role.map(str::to_string);
+    event
+}
+
+fn codex_is_turn_aborted_sentinel(role_str: Option<&str>, blocks: &[EventBlock]) -> bool {
+    if role_str != Some("user") {
+        return false;
+    }
+    let mut text_blocks = blocks.iter().filter_map(|block| match block {
+        EventBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    });
+    let Some(text) = text_blocks.next() else {
+        return false;
+    };
+    text_blocks.next().is_none()
+        && text.trim_start().starts_with("<turn_aborted>")
+        && text.trim_end().ends_with("</turn_aborted>")
+}
+
+fn codex_is_internal_developer_control_message(
+    role_str: Option<&str>,
+    blocks: &[EventBlock],
+) -> bool {
+    if role_str != Some("developer") {
+        return false;
+    }
+    let mut saw_text = false;
+    for text in blocks.iter().filter_map(|block| match block {
+        EventBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    }) {
+        saw_text = true;
+        if !CODEX_INTERNAL_DEVELOPER_TAGS
+            .iter()
+            .any(|tag| text.trim_start().starts_with(tag))
+        {
+            return false;
+        }
+    }
+    saw_text
+}
+
+fn codex_is_internal_user_context_message(role_str: Option<&str>, blocks: &[EventBlock]) -> bool {
+    if role_str != Some("user") {
+        return false;
+    }
+    let mut saw_text = false;
+    for text in blocks.iter().filter_map(|block| match block {
+        EventBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    }) {
+        saw_text = true;
+        if !codex_is_internal_user_context_text(text) {
+            return false;
+        }
+    }
+    saw_text
+}
+
+fn codex_is_internal_user_context_text(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    CODEX_INTERNAL_USER_CONTEXT_TAGS
+        .iter()
+        .any(|tag| trimmed.starts_with(tag) && text.trim_end().ends_with("</environment_context>"))
+        || codex_is_agents_instructions_text(trimmed)
+}
+
+fn codex_is_agents_instructions_text(text: &str) -> bool {
+    text.starts_with("# AGENTS.md instructions") && text.contains("<INSTRUCTIONS>")
 }
 
 fn codex_event_msg_event(
@@ -2656,6 +2826,7 @@ mod tests {
         }));
         assert!(events.iter().any(|event| {
             event.id == "codex:response_item:6"
+                && event.role == EventRole::Assistant
                 && matches!(
                     event.blocks.first(),
                     Some(EventBlock::ToolCall { name, tool_call_id, .. })
@@ -2675,6 +2846,152 @@ mod tests {
                 && matches!(
                     event.blocks.first(),
                     Some(EventBlock::Text { text }) if text == "Done."
+                )
+        }));
+    }
+
+    #[test]
+    fn import_canonical_session_hides_turn_aborted_and_internal_developer_controls() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-hidden-controls",
+                    "timestamp": "2026-05-21T10:00:00Z",
+                    "cwd": "/tmp/project"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:00.500Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "# AGENTS.md instructions for /tmp/project\n\n<INSTRUCTIONS>\nBe careful.\n</INSTRUCTIONS>"
+                        },
+                        {
+                            "type": "input_text",
+                            "text": "<environment_context>\n  <cwd>/tmp/project</cwd>\n  <shell>zsh</shell>\n  <current_date>2026-05-21</current_date>\n  <timezone>Asia/Shanghai</timezone>\n</environment_context>"
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "<turn_aborted>\nInterrupted.\n</turn_aborted>"
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:02Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "turn_aborted",
+                    "turn_id": "turn-1",
+                    "reason": "interrupted"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:03Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "<model_switch>\nSwitch context\n</model_switch>"
+                        },
+                        {
+                            "type": "input_text",
+                            "text": "<collaboration_mode># Collaboration Mode: Default\n</collaboration_mode>"
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+
+        let imported = import_canonical_session(file.path()).unwrap();
+        let events = &imported.session.events;
+
+        assert!(!events.iter().any(|event| {
+            event.role == EventRole::User
+                && event
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block, EventBlock::Text { text } if text.contains("<turn_aborted>")))
+        }));
+        assert!(!events.iter().any(|event| {
+            event.role == EventRole::Developer
+                && event
+                    .blocks
+                    .iter()
+                    .any(|block| matches!(block, EventBlock::Text { text } if text.contains("<model_switch>")))
+        }));
+        assert!(!events.iter().any(|event| {
+            event.role == EventRole::User
+                && event.blocks.iter().any(|block| {
+                    matches!(block, EventBlock::Text { text } if text.contains("<environment_context>") || text.contains("# AGENTS.md instructions"))
+                })
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == SessionEventKind::Lifecycle
+                && event.role == EventRole::System
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::ProviderPayload { kind, .. }) if kind == "turn_aborted_sentinel"
+                )
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == SessionEventKind::Lifecycle
+                && event.role == EventRole::System
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::ProviderPayload { kind, .. }) if kind == "developer_control_message"
+                )
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == SessionEventKind::Lifecycle
+                && event.role == EventRole::System
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::ProviderPayload { kind, .. }) if kind == "user_context_message"
                 )
         }));
     }
@@ -3328,8 +3645,7 @@ mod tests {
         )
         .unwrap();
 
-        let archived_path =
-            archived_dir.join("rollout-2026-05-20T08-00-00-session-archived.jsonl");
+        let archived_path = archived_dir.join("rollout-2026-05-20T08-00-00-session-archived.jsonl");
         std::fs::write(
             &archived_path,
             [
@@ -3408,12 +3724,9 @@ mod tests {
         )
         .unwrap();
 
-        let report = sync_workspace_sessions_in_codex_home(
-            &codex_dir,
-            Some(workspace.to_str().unwrap()),
-            1,
-        )
-        .unwrap();
+        let report =
+            sync_workspace_sessions_in_codex_home(&codex_dir, Some(workspace.to_str().unwrap()), 1)
+                .unwrap();
 
         assert_eq!(report.scanned_rollouts, 2);
         assert_eq!(report.workspace_session_count, 2);

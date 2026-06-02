@@ -5,8 +5,8 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
 use crate::provider::{
-    canonical_block_text, canonical_event_text, canonical_export_result, canonical_session_title,
-    Provider, ProviderCapabilities, ProviderSessionSummary,
+    canonical_event_visible_text, canonical_export_result, canonical_session_title,
+    canonical_visible_block_text, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -321,12 +321,12 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
                     "{}",
                     serde_json::json!({
                         "role": "assistant",
-                        "content": canonical_event_text(event)
+                        "content": canonical_event_visible_text(event)
                     })
                 )?;
             }
             _ => {
-                let text = canonical_event_text(event);
+                let text = canonical_event_visible_text(event);
                 if text.trim().is_empty() {
                     continue;
                 }
@@ -433,15 +433,12 @@ fn canonical_block_to_kimi_content_part(block: &EventBlock) -> Option<Value> {
             "think": text,
             "encrypted": null
         })),
-        _ => {
-            let text = canonical_block_text(block);
-            (!text.trim().is_empty()).then(|| {
-                serde_json::json!({
-                    "type": "text",
-                    "text": text
-                })
+        _ => canonical_visible_block_text(block).map(|text| {
+            serde_json::json!({
+                "type": "text",
+                "text": text
             })
-        }
+        }),
     }
 }
 
@@ -1025,5 +1022,15 @@ mod tests {
         assert!(!text.contains("old-event-1"));
         assert!(!text.contains("old-event-2"));
         assert!(!text.contains("old-event-3"));
+    }
+
+    #[test]
+    fn provider_payload_block_is_skipped_in_kimi_text_part_export() {
+        let block = EventBlock::ProviderPayload {
+            kind: "custom".to_string(),
+            payload: serde_json::json!({"kept": true}),
+        };
+
+        assert!(canonical_block_to_kimi_content_part(&block).is_none());
     }
 }

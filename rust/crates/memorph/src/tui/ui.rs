@@ -46,6 +46,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.settings_modal_open {
         draw_settings_modal(frame, app, &theme);
     }
+    if app.is_loading() {
+        draw_loading_overlay(frame, app, &theme);
+    }
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
@@ -222,6 +225,44 @@ fn draw_help_overlay(frame: &mut Frame, app: &App, theme: &Theme) {
         .wrap(Wrap { trim: true });
 
     frame.render_widget(help, popup_area);
+}
+
+fn draw_loading_overlay(frame: &mut Frame, app: &App, theme: &Theme) {
+    let area = frame.area();
+    let label = app.t("loading");
+    let width = (label.chars().count() as u16 + 10)
+        .max(18)
+        .min(area.width.max(1));
+    let height = 3.min(area.height.max(1));
+    let popup_area = Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let inner = popup_area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(theme.text).bg(theme.surface))
+            .border_style(theme.border_focused),
+        popup_area,
+    );
+
+    let spinner = Paragraph::new(format!("{} {}", app.loading_spinner(), label))
+        .style(
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.surface)
+                .add_modifier(Modifier::BOLD),
+        )
+        .alignment(Alignment::Center);
+    frame.render_widget(spinner, inner);
 }
 
 fn draw_workspace_modal(frame: &mut Frame, app: &App, theme: &Theme) {

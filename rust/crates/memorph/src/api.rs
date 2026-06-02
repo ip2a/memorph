@@ -1,3 +1,4 @@
+use anyhow::{anyhow, Context};
 use axum::{
     extract::{Path, Query},
     http::StatusCode,
@@ -5,7 +6,6 @@ use axum::{
     routing::{delete, get, post},
     Json, Router,
 };
-use anyhow::{anyhow, Context};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -362,9 +362,9 @@ impl InstallSource {
     fn release_url(self) -> &'static str {
         match self {
             InstallSource::Npm => "https://www.npmjs.com/package/memorph",
-            InstallSource::PythonPip
-            | InstallSource::PythonPipx
-            | InstallSource::PythonUvTool => "https://pypi.org/project/memorph/",
+            InstallSource::PythonPip | InstallSource::PythonPipx | InstallSource::PythonUvTool => {
+                "https://pypi.org/project/memorph/"
+            }
             InstallSource::Cargo => "https://crates.io/crates/memorph",
             InstallSource::DesktopApp => "https://github.com/ip2a/memorph/releases/latest",
         }
@@ -719,7 +719,8 @@ async fn select_folder(Json(body): Json<SelectFolderBody>) -> impl IntoResponse 
 async fn open_external(Json(body): Json<OpenExternalBody>) -> impl IntoResponse {
     let url = body.url.trim();
     if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return api_error(StatusCode::BAD_REQUEST, "Only http(s) URLs are supported.").into_response();
+        return api_error(StatusCode::BAD_REQUEST, "Only http(s) URLs are supported.")
+            .into_response();
     }
 
     match open::that_detached(url) {

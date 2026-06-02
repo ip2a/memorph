@@ -5,8 +5,8 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
 };
 use crate::provider::{
-    canonical_block_text, canonical_export_result, canonical_session_title,
-    Provider, ProviderCapabilities, ProviderSessionSummary,
+    canonical_block_text, canonical_event_visible_text, canonical_export_result,
+    canonical_session_title, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use crate::utils::{
     encode_project_dir, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,
@@ -355,7 +355,9 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
 }
 
 fn claude_message_role(event: &SessionEvent) -> Option<&'static str> {
-    if event.kind == SessionEventKind::Lifecycle || event.role == EventRole::System {
+    if event.kind == SessionEventKind::Lifecycle
+        || matches!(event.role, EventRole::System | EventRole::Developer)
+    {
         return None;
     }
     Some(if event.role == EventRole::Assistant {
@@ -388,14 +390,7 @@ fn canonical_event_to_claude_message_content(event: &SessionEvent) -> Option<Val
         return (!content.is_empty()).then_some(Value::Array(content));
     }
 
-    let text = event
-        .blocks
-        .iter()
-        .filter(|block| !matches!(block, EventBlock::ProviderPayload { .. }))
-        .map(canonical_block_text)
-        .filter(|text| !text.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let text = canonical_event_visible_text(event);
     (!text.trim().is_empty()).then_some(Value::String(text))
 }
 
@@ -1002,7 +997,11 @@ mod tests {
     use std::collections::BTreeMap;
     use tempfile::NamedTempFile;
 
-    fn test_event(kind: SessionEventKind, role: EventRole, blocks: Vec<EventBlock>) -> SessionEvent {
+    fn test_event(
+        kind: SessionEventKind,
+        role: EventRole,
+        blocks: Vec<EventBlock>,
+    ) -> SessionEvent {
         SessionEvent {
             id: "test-event".to_string(),
             kind,
@@ -1254,6 +1253,47 @@ mod tests {
 
         assert!(claude_message_role(&event).is_none());
         assert!(canonical_event_to_claude_message_content(&event).is_some());
+    }
+
+    #[test]
+    fn developer_events_are_skipped_in_claude_export() {
+        let event = test_event(
+            SessionEventKind::Message,
+            EventRole::Developer,
+            vec![EventBlock::Text {
+                text: "<model_switch>internal</model_switch>".to_string(),
+            }],
+        );
+
+        assert!(claude_message_role(&event).is_none());
+    }
+
+    #[test]
+    fn assistant_tool_calls_export_as_structured_tool_use() {
+        let event = test_event(
+            SessionEventKind::ToolCall,
+            EventRole::Assistant,
+            vec![EventBlock::ToolCall {
+                tool_call_id: "call_1".to_string(),
+                name: "exec_command".to_string(),
+                input: Some(serde_json::json!({
+                    "cmd": "git status --short"
+                })),
+            }],
+        );
+
+        let content = canonical_event_to_claude_message_content(&event).unwrap();
+        let items = content.as_array().expect("structured assistant content");
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].get("type").and_then(Value::as_str),
+            Some("tool_use")
+        );
+        assert_eq!(items[0].get("id").and_then(Value::as_str), Some("call_1"));
+        assert_eq!(
+            items[0].get("name").and_then(Value::as_str),
+            Some("exec_command")
+        );
     }
 
     #[test]

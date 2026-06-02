@@ -5,7 +5,7 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
 use crate::provider::{
-    canonical_event_role_label, canonical_event_text, canonical_export_result,
+    canonical_event_role_label, canonical_event_visible_text, canonical_export_result,
     canonical_session_title, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use anyhow::{Context, Result};
@@ -266,7 +266,7 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
 }
 
 fn deepseek_message_content(event: &SessionEvent) -> String {
-    canonical_event_text(event)
+    canonical_event_visible_text(event)
 }
 
 #[derive(Debug)]

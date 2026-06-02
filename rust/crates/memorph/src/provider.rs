@@ -230,6 +230,26 @@ pub fn canonical_event_text(event: &SessionEvent) -> String {
         .join("\n")
 }
 
+pub fn canonical_visible_block_text(block: &EventBlock) -> Option<String> {
+    if matches!(
+        block,
+        EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
+    ) {
+        return None;
+    }
+    let text = canonical_block_text(block);
+    (!text.trim().is_empty()).then_some(text)
+}
+
+pub fn canonical_event_visible_text(event: &SessionEvent) -> String {
+    event
+        .blocks
+        .iter()
+        .filter_map(canonical_visible_block_text)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn canonical_block_text(block: &EventBlock) -> String {
     match block {
         EventBlock::Text { text } => text.clone(),
@@ -381,6 +401,56 @@ mod tests {
         assert!(text.contains("Source event count: 20"));
         assert!(text.contains("memorph-archive://session/archive.json"));
         assert!(!text.contains("source-event-19"));
+    }
+
+    #[test]
+    fn canonical_visible_block_text_drops_provider_internal_blocks() {
+        assert!(canonical_visible_block_text(&EventBlock::ProviderPayload {
+            kind: "token_count".to_string(),
+            payload: serde_json::json!({"input_tokens": 10}),
+        })
+        .is_none());
+        assert!(canonical_visible_block_text(&EventBlock::Unknown {
+            raw: serde_json::json!({"type": "mystery"}),
+        })
+        .is_none());
+    }
+
+    #[test]
+    fn canonical_event_visible_text_omits_provider_internal_blocks() {
+        let event = SessionEvent {
+            id: "event-1".to_string(),
+            kind: crate::canonical::SessionEventKind::Message,
+            role: EventRole::User,
+            timestamp: chrono::Utc::now(),
+            links: crate::canonical::EventLinks::default(),
+            blocks: vec![
+                EventBlock::Text {
+                    text: "hello".to_string(),
+                },
+                EventBlock::ProviderPayload {
+                    kind: "token_count".to_string(),
+                    payload: serde_json::json!({"input_tokens": 10}),
+                },
+                EventBlock::Unknown {
+                    raw: serde_json::json!({"type": "mystery"}),
+                },
+            ],
+            metadata: crate::canonical::EventMetadata {
+                source: crate::canonical::EventSource {
+                    provider_id: "codex".to_string(),
+                    original_id: None,
+                    original_role: None,
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: std::collections::BTreeMap::new(),
+            },
+        };
+
+        assert_eq!(canonical_event_visible_text(&event), "hello");
     }
 }
 

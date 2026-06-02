@@ -262,7 +262,10 @@ fn print_codex_repair_report(report: providers::codex::CodexWorkspaceRepairRepor
         );
     }
     if report.sqlite_cwd_rows_updated > 0 {
-        println!("Updated SQLite cwd rows: {}", report.sqlite_cwd_rows_updated);
+        println!(
+            "Updated SQLite cwd rows: {}",
+            report.sqlite_cwd_rows_updated
+        );
     }
     if let Some(backup_dir) = &report.backup_dir {
         println!("Backup: {}", backup_dir);
