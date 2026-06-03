@@ -41,6 +41,53 @@ const CODEX_INTERNAL_DEVELOPER_TAGS: &[&str] = &[
 ];
 const CODEX_INTERNAL_USER_CONTEXT_TAGS: &[&str] = &["<environment_context>"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodexInternalMessageKind {
+    LifecycleSentinel,
+    RuntimeContext,
+    ProviderControl,
+}
+
+impl CodexInternalMessageKind {
+    fn class(self) -> &'static str {
+        match self {
+            Self::LifecycleSentinel => "lifecycle_sentinel",
+            Self::RuntimeContext => "runtime_context",
+            Self::ProviderControl => "provider_control",
+        }
+    }
+
+    fn payload_kind(self) -> &'static str {
+        match self {
+            Self::LifecycleSentinel => "turn_aborted_sentinel",
+            Self::RuntimeContext => "user_context_message",
+            Self::ProviderControl => "developer_control_message",
+        }
+    }
+
+    fn issue_code(self) -> &'static str {
+        match self {
+            Self::LifecycleSentinel => "codex_turn_aborted_sentinel_hidden",
+            Self::RuntimeContext => "codex_internal_user_context_hidden",
+            Self::ProviderControl => "codex_internal_developer_message_hidden",
+        }
+    }
+
+    fn issue_message(self) -> &'static str {
+        match self {
+            Self::LifecycleSentinel => {
+                "Codex synthetic <turn_aborted> message was normalized into a hidden lifecycle event"
+            }
+            Self::RuntimeContext => {
+                "Codex runtime-injected user context was normalized into a hidden lifecycle event"
+            }
+            Self::ProviderControl => {
+                "Codex internal developer control message was normalized into a hidden lifecycle event"
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct CodexWorkspaceRepairItem {
     pub session_id: String,
@@ -1420,65 +1467,19 @@ fn codex_response_item_event(
         _ => EventRole::Unknown,
     };
 
-    if codex_is_turn_aborted_sentinel(role_str, &blocks) {
+    if let Some(internal_kind) = codex_internal_message_kind(role_str, &blocks) {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Info,
             disposition: MappingDisposition::Normalized,
-            code: "codex_turn_aborted_sentinel_hidden".to_string(),
-            message:
-                "Codex synthetic <turn_aborted> message was normalized into a hidden lifecycle event"
-                    .to_string(),
+            code: internal_kind.issue_code().to_string(),
+            message: internal_kind.issue_message().to_string(),
             path: Some(format!("response_item:{}", line_no)),
             raw: Some(payload.clone()),
         });
         return codex_hidden_response_item_event(
             event_id,
             timestamp,
-            "turn_aborted_sentinel",
-            payload.clone(),
-            raw_line,
-            phase,
-            role_str,
-        );
-    }
-
-    if codex_is_internal_user_context_message(role_str, &blocks) {
-        report.push_issue(MappingIssue {
-            level: MappingIssueLevel::Info,
-            disposition: MappingDisposition::Normalized,
-            code: "codex_internal_user_context_hidden".to_string(),
-            message:
-                "Codex runtime-injected user context was normalized into a hidden lifecycle event"
-                    .to_string(),
-            path: Some(format!("response_item:{}", line_no)),
-            raw: Some(payload.clone()),
-        });
-        return codex_hidden_response_item_event(
-            event_id,
-            timestamp,
-            "user_context_message",
-            payload.clone(),
-            raw_line,
-            phase,
-            role_str,
-        );
-    }
-
-    if codex_is_internal_developer_control_message(role_str, &blocks) {
-        report.push_issue(MappingIssue {
-            level: MappingIssueLevel::Info,
-            disposition: MappingDisposition::Normalized,
-            code: "codex_internal_developer_message_hidden".to_string(),
-            message:
-                "Codex internal developer control message was normalized into a hidden lifecycle event"
-                    .to_string(),
-            path: Some(format!("response_item:{}", line_no)),
-            raw: Some(payload.clone()),
-        });
-        return codex_hidden_response_item_event(
-            event_id,
-            timestamp,
-            "developer_control_message",
+            internal_kind,
             payload.clone(),
             raw_line,
             phase,
@@ -1516,7 +1517,7 @@ fn codex_response_item_event(
 fn codex_hidden_response_item_event(
     id: String,
     timestamp: chrono::DateTime<Utc>,
-    payload_kind: &str,
+    internal_kind: CodexInternalMessageKind,
     payload: Value,
     raw_line: Value,
     phase: Option<String>,
@@ -1527,24 +1528,51 @@ fn codex_hidden_response_item_event(
         SessionEventKind::Lifecycle,
         EventRole::System,
         timestamp,
-        payload_kind,
+        internal_kind.payload_kind(),
         payload,
         raw_line,
         phase,
     );
     event.metadata.fidelity = MappingDisposition::Normalized;
     event.metadata.source.original_role = original_role.map(str::to_string);
+    event.metadata.provider_ext.insert(
+        "codex_internal_message".to_string(),
+        serde_json::json!({
+            "class": internal_kind.class(),
+            "payload_kind": internal_kind.payload_kind(),
+        }),
+    );
     event
+}
+
+fn codex_internal_message_kind(
+    role_str: Option<&str>,
+    blocks: &[EventBlock],
+) -> Option<CodexInternalMessageKind> {
+    if codex_is_turn_aborted_sentinel(role_str, blocks) {
+        return Some(CodexInternalMessageKind::LifecycleSentinel);
+    }
+    if codex_is_internal_user_context_message(role_str, blocks) {
+        return Some(CodexInternalMessageKind::RuntimeContext);
+    }
+    if codex_is_internal_developer_control_message(role_str, blocks) {
+        return Some(CodexInternalMessageKind::ProviderControl);
+    }
+    None
+}
+
+fn codex_text_blocks(blocks: &[EventBlock]) -> impl Iterator<Item = &str> {
+    blocks.iter().filter_map(|block| match block {
+        EventBlock::Text { text } => Some(text.as_str()),
+        _ => None,
+    })
 }
 
 fn codex_is_turn_aborted_sentinel(role_str: Option<&str>, blocks: &[EventBlock]) -> bool {
     if role_str != Some("user") {
         return false;
     }
-    let mut text_blocks = blocks.iter().filter_map(|block| match block {
-        EventBlock::Text { text } => Some(text.as_str()),
-        _ => None,
-    });
+    let mut text_blocks = codex_text_blocks(blocks);
     let Some(text) = text_blocks.next() else {
         return false;
     };
@@ -1561,10 +1589,7 @@ fn codex_is_internal_developer_control_message(
         return false;
     }
     let mut saw_text = false;
-    for text in blocks.iter().filter_map(|block| match block {
-        EventBlock::Text { text } => Some(text.as_str()),
-        _ => None,
-    }) {
+    for text in codex_text_blocks(blocks) {
         saw_text = true;
         if !CODEX_INTERNAL_DEVELOPER_TAGS
             .iter()
@@ -1581,10 +1606,7 @@ fn codex_is_internal_user_context_message(role_str: Option<&str>, blocks: &[Even
         return false;
     }
     let mut saw_text = false;
-    for text in blocks.iter().filter_map(|block| match block {
-        EventBlock::Text { text } => Some(text.as_str()),
-        _ => None,
-    }) {
+    for text in codex_text_blocks(blocks) {
         saw_text = true;
         if !codex_is_internal_user_context_text(text) {
             return false;
@@ -2977,6 +2999,13 @@ mod tests {
                     event.blocks.first(),
                     Some(EventBlock::ProviderPayload { kind, .. }) if kind == "turn_aborted_sentinel"
                 )
+                && event
+                    .metadata
+                    .provider_ext
+                    .get("codex_internal_message")
+                    .and_then(|value| value.get("class"))
+                    .and_then(Value::as_str)
+                    == Some("lifecycle_sentinel")
         }));
         assert!(events.iter().any(|event| {
             event.kind == SessionEventKind::Lifecycle
@@ -2985,6 +3014,13 @@ mod tests {
                     event.blocks.first(),
                     Some(EventBlock::ProviderPayload { kind, .. }) if kind == "developer_control_message"
                 )
+                && event
+                    .metadata
+                    .provider_ext
+                    .get("codex_internal_message")
+                    .and_then(|value| value.get("class"))
+                    .and_then(Value::as_str)
+                    == Some("provider_control")
         }));
         assert!(events.iter().any(|event| {
             event.kind == SessionEventKind::Lifecycle
@@ -2993,6 +3029,13 @@ mod tests {
                     event.blocks.first(),
                     Some(EventBlock::ProviderPayload { kind, .. }) if kind == "user_context_message"
                 )
+                && event
+                    .metadata
+                    .provider_ext
+                    .get("codex_internal_message")
+                    .and_then(|value| value.get("class"))
+                    .and_then(Value::as_str)
+                    == Some("runtime_context")
         }));
     }
 
