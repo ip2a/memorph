@@ -2366,3 +2366,87 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 19：补 CLI retrieve 的端到端 smoke 或 JSON 输出验证，确保用户从 compressed block 复制 `memorph compression retrieve ... --query ...` 后能获得包含 `retrieval_mode` 的结构化输出。
+
+### 2026-06-07：Phase 19 / CLI retrieve 端到端 JSON 输出验证
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认本阶段目标是补 CLI retrieve 的端到端验收。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+本阶段目标：
+
+- 验证用户从 compressed block 中复制：
+  - `memorph compression retrieve <ARCHIVE_REF> --query <terms> --max-results 5`
+  后，真实 CLI 二进制能输出结构化 JSON。
+- 验证 CLI 输出包含 Phase 17 的 `retrieval_mode` 和 `recommended_next_action`。
+- 验证 query retrieval 在 CLI 端仍是局部结果，不是全量 archive。
+
+已完成：
+
+- 新增 app crate integration test：
+  - `rust/apps/memorph/tests/compression_cli.rs`
+- 测试直接运行真实 `memorph` binary：
+  - `compression retrieve <ARCHIVE_REF> --query needle --max-results 5`
+- 测试 fixture：
+  - 使用唯一 group 名写入 archive。
+  - archive 路径位于标准 memorph archive 目录下：
+    - `~/.memorph/compression_archives/<unique-test-group>/archive.json`
+  - fixture 使用 JSON archive，覆盖生产 loader 路径。
+  - `Drop` 清理唯一 group 目录，避免遗留测试 archive。
+- CLI stdout JSON 验证：
+  - `archive_ref` 正确。
+  - `retrieval_mode == "query_matches"`。
+  - `recommended_next_action` 包含 partial retrieval 提示。
+  - `source_event_count == 2`。
+  - `returned_event_count == 1`。
+  - `events[0].id == "needle-event"`。
+  - `matches[0].event_id == "needle-event"`。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有改变 CLI retrieve 行为；仍输出 core retrieve result 的 pretty JSON。
+- 没有改变 archive loader。
+- 没有改变 retrieve query search 算法。
+- 没有新增依赖；fixture 直接写 JSON archive。
+
+为什么这一步重要：
+
+- Phase 15 把 query-first CLI 命令写进 compressed block。
+- Phase 16 能为 archive_ref 生成 query-first instructions。
+- Phase 17 给 retrieval result 加了上下文安全标记。
+- Phase 18 验证 API route 成功路径。
+- Phase 19 验证最终用户/agent 实际执行 CLI 命令时能拿到同样的安全 JSON 输出。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph compression_retrieve_cli_outputs_query_mode_json -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，139 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph`：通过，4 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- 真实 `memorph` binary 的 `compression retrieve` query 模式。
+- CLI stdout JSON 可被解析。
+- CLI stdout 包含 `retrieval_mode`、`recommended_next_action`、局部 event/match。
+
+遇到的问题：
+
+- 为避免给 app crate 增加额外依赖，integration test 没有构造 Rust archive struct，而是直接写生产 loader 可解析的 archive JSON。
+- 这保持了测试轻量，同时仍然覆盖真实 CLI binary、archive loader 和 stdout JSON。
+
+提交范围：
+
+- `rust/apps/memorph/tests/compression_cli.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 20：评估是否需要补 retrieval archive fixture 的清理/隔离工具，或开始补更强的 query scoring/BM25。建议优先做轻量清理/隔离工具，保证持续测试不会污染用户 archive 目录。
