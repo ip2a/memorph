@@ -1453,7 +1453,18 @@ mod tests {
         (status, value)
     }
 
-    fn write_api_retrieve_archive_fixture() -> (String, std::path::PathBuf) {
+    struct ArchiveFixture {
+        archive_ref: String,
+        group_dir: std::path::PathBuf,
+    }
+
+    impl Drop for ArchiveFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.group_dir);
+        }
+    }
+
+    fn write_api_retrieve_archive_fixture() -> ArchiveFixture {
         let now = Utc::now();
         let group = format!("api-retrieve-{}", uuid::Uuid::new_v4());
         let archive_dir = config::memorph_dir()
@@ -1514,10 +1525,10 @@ mod tests {
         )
         .unwrap();
 
-        (
-            format!("memorph-archive://{}/archive.json", group),
-            archive_dir,
-        )
+        ArchiveFixture {
+            archive_ref: format!("memorph-archive://{}/archive.json", group),
+            group_dir: archive_dir,
+        }
     }
 
     #[tokio::test]
@@ -1691,14 +1702,14 @@ mod tests {
 
     #[tokio::test]
     async fn compression_retrieve_route_returns_query_matches_from_archive() {
-        let (archive_ref, archive_dir) = write_api_retrieve_archive_fixture();
+        let fixture = write_api_retrieve_archive_fixture();
         let request = Request::builder()
             .method("POST")
             .uri("/api/v1/compression/retrieve")
             .header("content-type", "application/json")
             .body(Body::from(
                 serde_json::to_vec(&serde_json::json!({
-                    "archive_ref": archive_ref.clone(),
+                    "archive_ref": fixture.archive_ref.clone(),
                     "query": "needle",
                     "max_results": 5
                 }))
@@ -1707,11 +1718,10 @@ mod tests {
             .unwrap();
 
         let (status, value) = read_json(router(), request).await;
-        let _ = std::fs::remove_dir_all(&archive_dir);
 
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value["ok"], true);
-        assert_eq!(value["data"]["archive_ref"], archive_ref);
+        assert_eq!(value["data"]["archive_ref"], fixture.archive_ref);
         assert_eq!(value["data"]["retrieval_mode"], "query_matches");
         assert!(value["data"]["recommended_next_action"]
             .as_str()

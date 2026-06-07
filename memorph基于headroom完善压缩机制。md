@@ -2541,3 +2541,72 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 21：建议优先做 retrieval archive fixture 的共享隔离/清理工具，降低 API/CLI 测试重复和污染用户 archive 目录的风险；仍然不做 MCP。
+
+### 2026-06-07：Phase 21 / API retrieve 测试 archive 清理 guard
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认本阶段是测试隔离/清理可靠性，不改变压缩功能本身。
+- 已检查当前工作区状态，Phase 20 已提交，开始时工作区干净。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+本阶段目标：
+
+- 降低 API retrieve 成功路径测试污染用户 archive 目录的风险。
+- 保持测试 fixture 仍使用真实 memorph archive loader 路径。
+- 避免为了共享 fixture 过早引入 `test-support` feature 或独立测试支持 crate。
+
+已完成：
+
+- API 测试新增 `ArchiveFixture` guard：
+  - 持有 `archive_ref`。
+  - 持有唯一 `group_dir`。
+  - `Drop` 时执行 `remove_dir_all(group_dir)`。
+- `compression_retrieve_route_returns_query_matches_from_archive` 改为使用 guard。
+- 删除测试中手写的显式清理语句，避免 route/panic 早退时遗漏清理。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有新增 MCP tool。
+- 没有改变生产 archive loader。
+- 没有改变 API/CLI 请求或返回协议。
+- 没有强行把 API test helper 暴露给 CLI integration test。
+- 没有新增 `test-support` feature；当前收益不足以引入额外架构。
+
+为什么这一步重要：
+
+- Phase 18 和 Phase 19 都需要在标准 memorph archive 目录下写真实 archive，才能覆盖生产 loader。
+- CLI 测试已经有 RAII cleanup；API 测试此前是手动 cleanup。
+- Phase 21 让 API/CLI 两边的清理模型一致：
+  - 正常路径会清理。
+  - 断言 panic/unwind 时也尽量清理。
+  - 不触碰用户已有 archives，因为测试 group 使用唯一前缀。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieve_route_returns_query_matches_from_archive -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，139 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- 本阶段没有新增行为测试；目标是强化已有 API retrieve 成功路径测试的隔离和清理可靠性。
+
+遇到的问题：
+
+- API unit test helper 不能被 CLI integration test 直接复用，除非引入 feature-gated test-support API 或独立测试 crate。
+- 本阶段选择不引入该抽象，因为当前重复很小，且用户要求核心功能不要被半拉子抽象拖慢。
+
+提交范围：
+
+- `rust/crates/memorph/src/api.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 22：建议开始补 query retrieval 的排序/匹配质量测试，先把当前朴素 search 的行为边界固定下来，再决定是否引入 BM25/term scoring；仍然不做 MCP。
