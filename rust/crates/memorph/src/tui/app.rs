@@ -15,8 +15,9 @@ use crate::core::{self, ExportParams, SessionDetailView, SessionGroup, SessionIt
 use crate::i18n;
 use crate::{config, provider_settings, providers};
 
-pub const ACTION_OPTIONS: [SessionAction; 5] = [
+pub const ACTION_OPTIONS: [SessionAction; 6] = [
     SessionAction::Switch,
+    SessionAction::Compress,
     SessionAction::Export,
     SessionAction::Rename,
     SessionAction::Delete,
@@ -32,6 +33,7 @@ pub const SEARCH_SCOPE_OPTIONS: [SearchScope; 4] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionAction {
     Switch,
+    Compress,
     Export,
     Rename,
     Delete,
@@ -42,6 +44,7 @@ impl SessionAction {
     pub fn label(self, language: UiLanguage) -> &'static str {
         match self {
             Self::Switch => i18n::text(language, "switch"),
+            Self::Compress => i18n::text(language, "compression"),
             Self::Export => i18n::text(language, "export"),
             Self::Rename => i18n::text(language, "rename"),
             Self::Delete => i18n::text(language, "remove"),
@@ -55,6 +58,7 @@ pub enum ActionField {
     Action,
     TargetAgent,
     TargetWorkspace,
+    CompressionCandidates,
     ExportPath,
     RenameTitle,
     Execute,
@@ -230,6 +234,10 @@ pub struct App {
     pub workspace_picker_index: usize,
     pub export_output_prefix: String,
     pub rename_input: String,
+    pub compression_plan: Option<core::active_compression::ActiveCompressionReport>,
+    pub compression_plan_error: Option<String>,
+    pub compression_candidate_index: usize,
+    pub compression_selected_candidate_ids: Vec<String>,
     pub action_result: Option<ActionResult>,
     pub agent_management_result: Option<ActionResult>,
 
@@ -294,6 +302,10 @@ impl App {
             workspace_picker_index: 0,
             export_output_prefix: cwd_str.clone(),
             rename_input: String::new(),
+            compression_plan: None,
+            compression_plan_error: None,
+            compression_candidate_index: 0,
+            compression_selected_candidate_ids: Vec::new(),
             action_result: None,
             agent_management_result: None,
             search_modal_open: false,
@@ -497,6 +509,10 @@ impl App {
             .or_else(|| selected.project_dir.clone())
             .unwrap_or_else(|| ".".to_string());
         self.export_output_prefix = default_export_prefix(&selected, self.workspace.as_deref());
+        self.compression_plan = None;
+        self.compression_plan_error = None;
+        self.compression_candidate_index = 0;
+        self.compression_selected_candidate_ids.clear();
         self.sync_workspace_picker();
     }
 
@@ -1257,6 +1273,12 @@ impl App {
                 ActionField::TargetWorkspace,
                 ActionField::Execute,
             ],
+            SessionAction::Compress => vec![
+                ActionField::Action,
+                ActionField::TargetAgent,
+                ActionField::CompressionCandidates,
+                ActionField::Execute,
+            ],
             SessionAction::Rename => vec![
                 ActionField::Action,
                 ActionField::RenameTitle,
@@ -1299,6 +1321,12 @@ impl App {
                 self.action_selection =
                     cycle_index(self.action_selection, ACTION_OPTIONS.len(), forward);
                 self.normalize_action_field();
+                if self.current_action() == SessionAction::Compress {
+                    self.refresh_compression_plan();
+                }
+            }
+            ActionField::CompressionCandidates => {
+                self.step_compression_candidate(forward);
             }
             ActionField::TargetAgent
             | ActionField::TargetWorkspace
@@ -1337,6 +1365,90 @@ impl App {
             self.workspace.clone().or_else(|| Some(".".to_string()))
         } else {
             Some(workspace.to_string())
+        }
+    }
+
+    pub fn active_compression_candidates(
+        &self,
+    ) -> &[core::active_compression::CompressionCandidateReport] {
+        self.compression_plan
+            .as_ref()
+            .map(|report| report.candidates.as_slice())
+            .unwrap_or(&[])
+    }
+
+    pub fn selected_compression_candidate_id(&self) -> Option<&str> {
+        self.active_compression_candidates()
+            .get(
+                self.compression_candidate_index
+                    .min(self.active_compression_candidates().len().saturating_sub(1)),
+            )
+            .map(|candidate| candidate.id.as_str())
+    }
+
+    pub fn compression_candidate_selected(&self, candidate_id: &str) -> bool {
+        self.compression_selected_candidate_ids
+            .iter()
+            .any(|id| id == candidate_id)
+    }
+
+    pub fn step_compression_candidate(&mut self, forward: bool) {
+        let len = self.active_compression_candidates().len();
+        self.compression_candidate_index =
+            cycle_index(self.compression_candidate_index, len, forward);
+    }
+
+    pub fn toggle_selected_compression_candidate(&mut self) {
+        let Some(candidate_id) = self.selected_compression_candidate_id().map(str::to_string)
+        else {
+            return;
+        };
+        if let Some(index) = self
+            .compression_selected_candidate_ids
+            .iter()
+            .position(|id| id == &candidate_id)
+        {
+            self.compression_selected_candidate_ids.remove(index);
+        } else {
+            self.compression_selected_candidate_ids.push(candidate_id);
+        }
+    }
+
+    fn refresh_compression_plan(&mut self) {
+        self.compression_plan = None;
+        self.compression_plan_error = None;
+        self.compression_candidate_index = 0;
+        self.compression_selected_candidate_ids.clear();
+
+        let Some(selected) = self.selected_session.clone() else {
+            self.compression_plan_error = Some(self.t("noSessionSelected").to_string());
+            return;
+        };
+        let Some(target) = self.selected_target_provider() else {
+            self.compression_plan_error = Some(self.t("noTargetAgentSelected").to_string());
+            return;
+        };
+
+        let mut policy = core::active_compression::ActiveCompressionPolicy::default();
+        policy.mode = core::active_compression::ActiveCompressionMode::PlanOnly;
+        match core::active_compression_dry_run(&core::ActiveCompressionDryRunParams {
+            source_provider_id: selected.provider_id,
+            target_provider_id: target.to_string(),
+            session_id: Some(selected.session_id),
+            file: None,
+            policy,
+        }) {
+            Ok(report) => {
+                self.compression_selected_candidate_ids = report
+                    .candidates
+                    .iter()
+                    .map(|candidate| candidate.id.clone())
+                    .collect();
+                self.compression_plan = Some(report);
+            }
+            Err(error) => {
+                self.compression_plan_error = Some(error.to_string());
+            }
         }
     }
 
@@ -1385,6 +1497,7 @@ impl App {
         match self.action_field {
             ActionField::Action => self.move_modal_field_next(),
             ActionField::TargetAgent | ActionField::TargetWorkspace => self.open_action_dialog(),
+            ActionField::CompressionCandidates => self.toggle_selected_compression_candidate(),
             ActionField::ExportPath | ActionField::RenameTitle | ActionField::Execute => {
                 self.execute_modal_action()
             }
@@ -1406,7 +1519,12 @@ impl App {
         match self.action_dialog {
             Some(ActionDialog::TargetAgent) => {
                 self.action_dialog = None;
-                self.action_field = ActionField::TargetWorkspace;
+                if self.current_action() == SessionAction::Compress {
+                    self.refresh_compression_plan();
+                    self.action_field = ActionField::CompressionCandidates;
+                } else {
+                    self.action_field = ActionField::TargetWorkspace;
+                }
             }
             Some(ActionDialog::TargetWorkspace) => {
                 if self.target_workspace.trim().is_empty() {
@@ -1478,6 +1596,7 @@ impl App {
 
         match self.current_action() {
             SessionAction::Switch => self.execute_modal_switch(),
+            SessionAction::Compress => self.execute_modal_compress(),
             SessionAction::Export => self.execute_modal_export(),
             SessionAction::Rename => self.execute_modal_rename(),
             SessionAction::Delete => self.execute_modal_delete(),
@@ -1533,6 +1652,72 @@ impl App {
                 self.reload_after_action();
             }
             Err(e) => self.set_action_error(self.t("switchFailed"), vec![e.to_string()]),
+        }
+    }
+
+    fn execute_modal_compress(&mut self) {
+        let Some(selected) = self.selected_session.clone() else {
+            self.set_action_error(
+                self.t("compressionTitle"),
+                vec![self.t("noSessionSelected").to_string()],
+            );
+            return;
+        };
+        let Some(target) = self.selected_target_provider() else {
+            self.set_action_error(
+                self.t("compressionTitle"),
+                vec![self.t("noTargetAgentSelected").to_string()],
+            );
+            return;
+        };
+        if self.compression_selected_candidate_ids.is_empty() {
+            self.set_action_error(
+                self.t("compressionTitle"),
+                vec!["No compression candidates selected.".to_string()],
+            );
+            return;
+        }
+
+        let mut policy = core::active_compression::ActiveCompressionPolicy::default();
+        policy.mode = core::active_compression::ActiveCompressionMode::Auto;
+        let params = core::ActiveCompressionApplyCommandParams {
+            source_provider_id: selected.provider_id.clone(),
+            target_provider_id: target.to_string(),
+            session_id: Some(selected.session_id.clone()),
+            file: None,
+            policy,
+            candidate_ids: self.compression_selected_candidate_ids.clone(),
+            output_prefix: Some(default_compression_prefix(
+                &selected,
+                self.workspace.as_deref(),
+            )),
+            format: "json".to_string(),
+        };
+
+        match core::active_compression_apply(&params) {
+            Ok(result) => {
+                let mut lines = vec![
+                    format!("Applied candidates: {}", result.report.candidates.len()),
+                    format!(
+                        "Estimated bytes saved: {}",
+                        result.report.estimated_bytes_saved
+                    ),
+                    format!(
+                        "Estimated tokens saved: {}",
+                        result.report.estimated_tokens_saved
+                    ),
+                ];
+                for file in result.files {
+                    lines.push(format!("File: {}", file));
+                }
+                for archive_ref in result.archive_refs {
+                    lines.push(format!("Archive: {}", archive_ref));
+                }
+                self.set_action_success(self.t("compressionTitle"), lines);
+            }
+            Err(error) => {
+                self.set_action_error(self.t("compressionTitle"), vec![error.to_string()])
+            }
         }
     }
 
@@ -2067,6 +2252,18 @@ fn default_export_prefix(session: &SessionItem, workspace: Option<&str>) -> Stri
     }
 }
 
+fn default_compression_prefix(session: &SessionItem, workspace: Option<&str>) -> String {
+    let base = workspace
+        .filter(|value| !value.trim().is_empty())
+        .or(session.project_dir.as_deref());
+    let filename = format!("{}_active_compressed", session.session_id);
+
+    match base {
+        Some(dir) => PathBuf::from(dir).join(filename).display().to_string(),
+        None => filename,
+    }
+}
+
 fn cycle_index(current: usize, len: usize, forward: bool) -> usize {
     if len == 0 {
         return 0;
@@ -2158,6 +2355,81 @@ mod tests {
                 vec!["codex".to_string()],
                 vec!["cursor".to_string(), "opencode".to_string()],
             ]
+        );
+    }
+
+    #[test]
+    fn action_options_include_compression_after_switch() {
+        assert_eq!(ACTION_OPTIONS[0], SessionAction::Switch);
+        assert_eq!(ACTION_OPTIONS[1], SessionAction::Compress);
+    }
+
+    #[test]
+    fn compression_action_uses_target_candidates_and_execute_fields() {
+        let mut app = App::new().unwrap();
+        app.action_modal_open = true;
+        app.action_selection = ACTION_OPTIONS
+            .iter()
+            .position(|action| *action == SessionAction::Compress)
+            .unwrap();
+        app.action_field = ActionField::Action;
+
+        assert_eq!(
+            app.modal_fields(),
+            vec![
+                ActionField::Action,
+                ActionField::TargetAgent,
+                ActionField::CompressionCandidates,
+                ActionField::Execute,
+            ]
+        );
+    }
+
+    #[test]
+    fn toggles_selected_compression_candidate() {
+        let mut app = App::new().unwrap();
+        app.compression_plan = Some(core::active_compression::ActiveCompressionReport {
+            source_provider_id: "claude".to_string(),
+            target_provider_id: "codex".to_string(),
+            dry_run: true,
+            policy: core::active_compression::ActiveCompressionPolicy::default(),
+            session_event_count: 1,
+            message_event_count: 1,
+            already_compressed_event_count: 0,
+            original_estimated_bytes: 1000,
+            original_estimated_tokens: 250,
+            compressed_estimated_bytes: 500,
+            compressed_estimated_tokens: 125,
+            estimated_bytes_saved: 500,
+            estimated_tokens_saved: 125,
+            candidates: vec![core::active_compression::CompressionCandidateReport {
+                id: "candidate-0001".to_string(),
+                kind: core::active_compression::CompressionCandidateKind::LargeToolOutput,
+                event_ids: vec!["event-1".to_string()],
+                start_event_index: 0,
+                end_event_index: 0,
+                reason: core::active_compression::CompressionSelectionReason::LargeToolOutput,
+                risk: core::active_compression::CompressionRisk::Low,
+                original_estimated_bytes: 1000,
+                original_estimated_tokens: 250,
+                compressed_estimated_bytes: 500,
+                compressed_estimated_tokens: 125,
+                estimated_bytes_saved: 500,
+                estimated_tokens_saved: 125,
+                archive_refs: Vec::new(),
+            }],
+            skipped: Vec::new(),
+            archive_refs: Vec::new(),
+        });
+        app.compression_selected_candidate_ids = vec!["candidate-0001".to_string()];
+
+        app.toggle_selected_compression_candidate();
+        assert!(app.compression_selected_candidate_ids.is_empty());
+
+        app.toggle_selected_compression_candidate();
+        assert_eq!(
+            app.compression_selected_candidate_ids,
+            vec!["candidate-0001".to_string()]
         );
     }
 }

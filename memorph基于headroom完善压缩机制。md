@@ -1376,3 +1376,79 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 8：TUI 用户选择，在界面中展示 candidates、skips、before/after 信息，并允许用户确认 apply。
+
+### 2026-06-07：Phase 8 / TUI 用户选择
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 8 的目标是“在 TUI 展示候选，并让用户选择压缩”。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已确认本阶段边界：接入 TUI action modal，不直接修改 provider 原生会话仓库，不把压缩自动接入 switch，不做 LLM summarizer。
+
+已完成：
+
+- 在 TUI session action modal 中新增 `Compress` 动作。
+- `Compress` 动作复用现有 action modal 交互风格，不另起不一致的 wizard。
+- 压缩面板支持选择 target agent：
+  - target agent 用于 projection-aware compression plan。
+  - 切换 target agent 后会重新生成 active compression plan。
+- 压缩面板会展示 dry-run plan：
+  - candidate 数量。
+  - 已选择 candidate 数量。
+  - estimated bytes saved。
+  - estimated tokens saved。
+  - candidate id。
+  - candidate kind。
+  - risk。
+  - source event ids。
+  - skipped 事件数量。
+- 用户可选择哪些 candidate 要压缩：
+  - 默认勾选全部 candidates。
+  - 在 `CompressionCandidates` 区域使用左右切换候选。
+  - Enter 勾选/取消当前候选。
+  - Execute 时只 apply 被勾选的 candidate ids。
+- TUI apply 行为：
+  - 调用 `active_compression_apply`。
+  - 输入来源为当前 provider/session id。
+  - 输出为压缩后的 canonical JSON export。
+  - 输出路径默认在当前 workspace 下生成 `{session_id}_active_compressed.json`。
+  - 返回 applied candidates、estimated savings、output file、archive refs。
+- 明确保持安全边界：
+  - TUI apply 不直接改 Codex/Claude/Kimi/DeepSeek 等 provider storage。
+  - 原文继续写入 durable archive。
+  - 目标 provider native projection 仍由后续 export/switch 流程负责。
+
+明确未做：
+
+- 没有把 active compression 自动接入 session switch。
+- 没有做 TUI 中的压缩 policy 参数编辑。
+- 没有在 TUI 中展示每个 skipped event 的完整明细，只展示 skipped 数量。
+- 没有 MCP retrieval。
+- 没有 LLM summarizer。
+- 没有 provider-specific tokenizer。
+
+测试：
+
+- `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib tui::app::tests`：通过，5 passed。
+- `cargo check --manifest-path rust/Cargo.toml -p memorph-lib`：通过。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，121 passed。
+- `git diff --check`：通过。
+
+遇到的问题：
+
+- 原计划只做“一键压缩全部候选”会弱化用户选择能力。
+- 处理方式：本阶段直接补上 candidate 勾选状态，默认全选但允许用户取消任意 candidate，避免 TUI 比 CLI/API 能力退化太多。
+
+提交范围：
+
+- `rust/crates/memorph/src/tui/app.rs`
+- `rust/crates/memorph/src/tui/screens/session_list.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 9：Retrieval bridge，提供 CLI/API 级 `memorph-archive://...` 原始内容检索能力，为后续 MCP retrieval 打基础。
