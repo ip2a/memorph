@@ -6,8 +6,8 @@ use crate::canonical::{
     CanonicalSession, ImportedSession, SessionArtifact, SessionEvent, SessionEventKind,
 };
 use crate::core::active_compression::{
-    ActiveCompressionApplyParams, ActiveCompressionParams, ActiveCompressionPolicy,
-    ActiveCompressionReport,
+    ActiveCompressionApplyParams, ActiveCompressionMode, ActiveCompressionParams,
+    ActiveCompressionPolicy, ActiveCompressionReport,
 };
 use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state::{self, SessionStateStore};
@@ -789,8 +789,12 @@ pub fn update_session_local_state(
 pub struct SwitchParams {
     pub from: String,
     pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_compression: Option<ActiveCompressionPolicy>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -800,6 +804,8 @@ pub struct SwitchResult {
     pub source_session_id: String,
     pub target_session_id: String,
     pub resume_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_compression_report: Option<ActiveCompressionReport>,
 }
 
 pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
@@ -851,11 +857,14 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
         );
     }
     let target_dir = target_prov.resolve_workspace_dir(params.to_dir.as_deref())?;
-    let (session, _) = session_management::prepare_session_for_export(
+    let (source_session, active_compression_report) = apply_switch_active_compression(
         &imported.session,
         &params.from,
         &params.to,
+        params.active_compression.clone(),
     )?;
+    let (session, _) =
+        session_management::prepare_session_for_export(&source_session, &params.from, &params.to)?;
     let exported = target_prov.export_session(&session, &target_dir)?;
 
     Ok(SwitchResult {
@@ -864,7 +873,55 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
         source_session_id,
         target_session_id: exported.session_id,
         resume_command: exported.resume_command,
+        active_compression_report,
     })
+}
+
+fn apply_switch_active_compression(
+    session: &CanonicalSession,
+    source_provider_id: &str,
+    target_provider_id: &str,
+    policy: Option<ActiveCompressionPolicy>,
+) -> Result<(CanonicalSession, Option<ActiveCompressionReport>)> {
+    let Some(mut policy) = policy else {
+        return Ok((session.clone(), None));
+    };
+    policy.mode = ActiveCompressionMode::Auto;
+    let applied = active_compression::apply_active_compression(
+        session,
+        ActiveCompressionApplyParams {
+            source_provider_id: source_provider_id.to_string(),
+            target_provider_id: target_provider_id.to_string(),
+            policy,
+            candidate_ids: Vec::new(),
+        },
+    )?;
+    Ok((applied.session, Some(applied.report)))
+}
+
+#[cfg(test)]
+fn apply_switch_active_compression_with_archive_dir(
+    session: &CanonicalSession,
+    source_provider_id: &str,
+    target_provider_id: &str,
+    policy: Option<ActiveCompressionPolicy>,
+    archive_dir: &std::path::Path,
+) -> Result<(CanonicalSession, Option<ActiveCompressionReport>)> {
+    let Some(mut policy) = policy else {
+        return Ok((session.clone(), None));
+    };
+    policy.mode = ActiveCompressionMode::Auto;
+    let applied = active_compression::apply_active_compression_with_archive_dir(
+        session,
+        ActiveCompressionApplyParams {
+            source_provider_id: source_provider_id.to_string(),
+            target_provider_id: target_provider_id.to_string(),
+            policy,
+            candidate_ids: Vec::new(),
+        },
+        archive_dir,
+    )?;
+    Ok((applied.session, Some(applied.report)))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1326,6 +1383,81 @@ mod tests {
         assert_eq!(retrieved.source_event_ids, vec!["old-user"]);
         assert_eq!(retrieved.source_event_count, 1);
         assert!(retrieved.events.iter().any(|event| event.id == "old-user"));
+    }
+
+    #[test]
+    fn switch_params_omit_active_compression_by_default() {
+        let params = SwitchParams {
+            from: "claude".to_string(),
+            to: "codex".to_string(),
+            session_id: None,
+            to_dir: None,
+            active_compression: None,
+        };
+
+        let value = serde_json::to_value(params).unwrap();
+
+        assert!(value.get("active_compression").is_none());
+    }
+
+    #[test]
+    fn switch_active_compression_is_opt_in_and_archive_backed() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let source = active_compression_source_session();
+
+        let (unchanged, report) = apply_switch_active_compression_with_archive_dir(
+            &source,
+            "claude",
+            "codex",
+            None,
+            archive_dir.path(),
+        )
+        .unwrap();
+        assert!(report.is_none());
+        assert_eq!(
+            serde_json::to_value(&unchanged.events).unwrap(),
+            serde_json::to_value(&source.events).unwrap()
+        );
+
+        let (compressed, report) = apply_switch_active_compression_with_archive_dir(
+            &source,
+            "claude",
+            "codex",
+            Some(active_compression::ActiveCompressionPolicy {
+                protect_recent_message_events: 1,
+                min_candidate_bytes: 16,
+                min_savings_ratio_percent: 20,
+                mode: active_compression::ActiveCompressionMode::PlanOnly,
+            }),
+            archive_dir.path(),
+        )
+        .unwrap();
+        let report = report.expect("switch active compression report");
+
+        assert!(!report.dry_run);
+        assert_eq!(report.source_provider_id, "claude");
+        assert_eq!(report.target_provider_id, "codex");
+        assert_eq!(
+            report.policy.mode,
+            active_compression::ActiveCompressionMode::Auto
+        );
+        assert_eq!(report.archive_refs.len(), 1);
+        assert!(compressed.events.iter().any(|event| {
+            event.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    EventBlock::Compressed {
+                        archive_ref: Some(archive_ref),
+                        ..
+                    } if archive_ref == &report.archive_refs[0]
+                )
+            })
+        }));
+        assert!(!compressed.events.iter().any(|event| event.id == "old-user"));
+        assert!(compressed
+            .events
+            .iter()
+            .any(|event| event.id == "recent-user"));
     }
 
     fn active_compression_source_session() -> CanonicalSession {

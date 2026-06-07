@@ -1621,3 +1621,92 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 11：将 active compression 作为可选 switch policy 接入会话切换流程，但必须默认保守，且不能绕过 plan/apply/report/archive/retrieval 的安全闭环。
+
+### 2026-06-07：Phase 11 / 可选 switch active compression policy
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 11 的目标是把 active compression 接入会话切换流程，但必须 opt-in。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已确认本阶段边界：只做 switch 的可选 policy，不改变默认 switch，不把 TUI switch 改成自动压缩，不引入真实 LLM API。
+
+已完成：
+
+- `SwitchParams` 新增可选字段：
+  - `active_compression: Option<ActiveCompressionPolicy>`
+  - serde 默认缺省为 `None`，序列化时 `None` 不输出。
+- `SwitchResult` 新增可选字段：
+  - `active_compression_report: Option<ActiveCompressionReport>`
+  - 只有 opt-in switch compression 时返回。
+- `switch_session` 流程现在支持：
+  - source provider scan/import。
+  - 如果 `active_compression == None`，保持原来的 imported canonical session 原样进入 `prepare_session_for_export`。
+  - 如果 `active_compression == Some(policy)`，先对 imported canonical session 执行 archive-backed active compression。
+  - 压缩后的 canonical session 再进入现有 `prepare_session_for_export`，继续复用 target provider projection。
+  - source provider 原始 session 不被修改。
+- switch opt-in compression 会强制把 policy mode 设为 `Auto`：
+  - 原因：switch 阶段没有 candidate 手工选择 UI，显式传入 `--active-compression` 的语义是“切换前应用安全候选压缩”，不是只 plan。
+  - candidate 选择仍经过 planner、recent protection、size gate、savings gate 和 archive 写入。
+- CLI `switch` 新增显式 opt-in：
+  - `memorph switch FROM TO --active-compression`
+  - `--protect-recent-message-events N`
+  - `--min-candidate-bytes BYTES`
+  - `--min-savings-ratio-percent PERCENT`
+- CLI policy knobs 必须配合 `--active-compression` 使用，避免用户传了阈值但实际没有启用压缩的静默误解。
+- CLI switch 成功后，如果执行了 active compression，会输出同一套 active compression report 摘要和 archive refs。
+- API `SwitchBody` 新增：
+  - `active_compression: Option<ActiveCompressionPolicy>`
+  - body 不传时行为不变。
+- TUI switch 明确传 `active_compression: None`：
+  - 默认切换仍完全保守。
+  - TUI 已有独立 Compress action，用户要压缩时走显式压缩动作。
+
+明确未做：
+
+- 没有把 TUI switch 改成默认压缩。
+- 没有在 switch 中加入 candidate 手工选择。
+- 没有接入真实 LLM summarizer。
+- 没有新增 MCP retrieval。
+- 没有改变 provider projection 规则；仍使用现有 canonical compressed block -> target provider native/portable 投影。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib switch_params_omit_active_compression_by_default -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib switch_accepts_active_compression_policy_options -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib switch_active_compression_is_opt_in_and_archive_backed -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，129 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- 默认 `SwitchParams` 序列化时不输出 `active_compression`，证明默认路径仍保守。
+- CLI `switch --active-compression` 和 policy 阈值参数可解析。
+- switch compression helper 在 `None` 时返回原 session 且无 report。
+- switch compression helper 在 `Some(policy)` 时：
+  - 产生非 dry-run report。
+  - 强制 mode 为 `Auto`。
+  - 写入 archive ref。
+  - 用 `EventBlock::Compressed` 替换旧大事件。
+  - 保留最近受保护事件。
+
+遇到的问题：
+
+- 初始测试直接比较 `Vec<SessionEvent>`，但 `SessionEvent` 没有 `PartialEq`。
+- 处理方式：不为了测试扩大 canonical 类型 trait，而是用 serde JSON 等价比较默认不压缩路径，保持变更面更小。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `rust/crates/memorph/src/cli.rs`
+- `rust/crates/memorph/src/api.rs`
+- `rust/crates/memorph/src/tui/app.rs`
+- `rust/apps/memorph/src/main.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 12：补 provider-specific token/size policy 或 retrieval bridge 的 provider runtime 暴露。优先建议做 provider-aware token estimate/report，因为当前 active compression gate 仍以字节和粗 token 估算为主，能工作但还不是 Headroom 那种 provider/model tokenizer 级别。

@@ -1625,6 +1625,7 @@ impl App {
             to: target.to_string(),
             session_id: Some(selected.session_id.clone()),
             to_dir: self.selected_target_workspace(),
+            active_compression: None,
         };
 
         match core::switch_session(&params) {
