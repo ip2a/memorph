@@ -1135,3 +1135,60 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 5：Codex target verification，验证主动压缩后的 canonical compressed block 在导出到 Codex 时会变成 Codex 原生 `compacted`，并且从 Codex 再导入时仍能映射回 canonical compressed block。
+
+### 2026-06-07：Phase 5 / Codex target verification
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 5 的目标是验证 active compression 的产物能正确投影到 Codex native compaction。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已检查现有 Codex compression 测试，确认已有覆盖是“手写 compressed block -> Codex compacted”，缺少“active apply 产物 -> Codex compacted”的端到端覆盖。
+
+已完成：
+
+- 在 `rust/crates/memorph/src/providers/codex.rs` 新增测试：
+  - `active_compression_export_round_trips_as_native_codex_compacted_rollout`
+- 测试覆盖真实流程：
+  - 构造 Claude 来源 canonical session。
+  - 使用 `apply_active_compression_with_archive_dir` 真实执行 active compression。
+  - 确认 apply 产生 `archive_ref`。
+  - 使用 `export_canonical_session_in_codex_dir` 导出到 Codex rollout。
+  - 确认导出的 rollout 中存在 Codex 原生 `type: "compacted"` 行。
+  - 确认 `payload.memorph.source_provider_id == "claude"`。
+  - 确认 `payload.memorph.source_event_ids` 包含被压缩的原 event。
+  - 确认 `payload.memorph.archive_ref` 等于 active compression 生成的 archive ref。
+  - 确认 `replacement_history` 的 model-visible 文本包含 compressed marker 和 archive ref。
+  - 确认旧原文没有作为普通 `response_item` 被导出给 Codex。
+  - 再用 `import_canonical_session` 导入导出的 Codex rollout。
+  - 确认导入后仍是 `EventBlock::Compressed`，并保留 source provider、source event ids、archive ref。
+
+明确未做：
+
+- 没有改 Codex 生产导出逻辑，因为现有实现已经支持 native compaction projection。
+- 没有接入 session switch。
+- 没有新增 CLI/API/TUI。
+- 没有引入 LLM。
+- 没有扩展其他 provider 的 active compression target 验证。
+
+测试：
+
+- `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_export_round_trips_as_native_codex_compacted_rollout`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib providers::codex::tests`：通过，14 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，112 passed。
+
+遇到的问题：
+
+- 本阶段没有发现生产逻辑缺陷。
+- 结论：Codex native projection 现有架构能优雅承接 active compression 产物，Phase 5 主要补强了验收证据。
+
+提交范围：
+
+- `rust/crates/memorph/src/providers/codex.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 6：CLI/API dry-run，让用户能在不 apply 的情况下查看 active compression candidates、skips、estimated savings、risk。
