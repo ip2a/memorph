@@ -118,6 +118,10 @@ pub fn router() -> Router {
             get(list_compression_providers),
         )
         .route(
+            "/api/v1/compression/tool-spec",
+            get(get_compression_tool_spec),
+        )
+        .route(
             "/api/v1/compression/restore",
             post(restore_compression_archive),
         )
@@ -1012,6 +1016,10 @@ async fn list_compression_providers() -> impl IntoResponse {
     ApiResponse::success(core::list_compression_provider_support())
 }
 
+async fn get_compression_tool_spec() -> impl IntoResponse {
+    ApiResponse::success(core::compression_retrieval_tool_spec())
+}
+
 #[derive(Deserialize)]
 struct RestoreCompressionArchiveBody {
     archive_ref: String,
@@ -1594,6 +1602,33 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Unsupported compression archive ref"));
+    }
+
+    #[tokio::test]
+    async fn compression_tool_spec_route_returns_retrieval_contract() {
+        let request = Request::builder()
+            .uri("/api/v1/compression/tool-spec")
+            .body(Body::empty())
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+        assert_eq!(
+            value["data"]["name"],
+            "memorph_retrieve_compression_archive"
+        );
+        assert_eq!(value["data"]["api"]["path"], "/api/v1/compression/retrieve");
+        assert_eq!(
+            value["data"]["input_schema"]["required"],
+            serde_json::json!(["archive_ref"])
+        );
+        assert!(value["data"]["usage_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| rule.as_str().unwrap().contains("Prefer query retrieval")));
     }
 
     #[tokio::test]

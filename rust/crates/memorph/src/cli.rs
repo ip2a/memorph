@@ -200,6 +200,8 @@ pub enum CompressionCommands {
     List,
     /// List provider compression support profiles
     Providers,
+    /// Print the archive retrieval tool specification as JSON
+    ToolSpec,
     /// Restore a compressed archive to file(s)
     Restore {
         /// Archive ref, for example memorph-archive://...
@@ -595,6 +597,18 @@ mod tests {
                 assert_eq!(query.as_deref(), Some("needle"));
                 assert_eq!(max_results, Some(3));
             }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn compression_tool_spec_command_is_available() {
+        let cli = Cli::parse_from(["memorph", "compression", "tool-spec"]);
+
+        match cli.command {
+            Some(Commands::Compression {
+                command: CompressionCommands::ToolSpec,
+            }) => {}
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
     }
