@@ -268,6 +268,7 @@ fn draw_action_tabs(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 fn draw_action_body(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     match app.current_action() {
         SessionAction::Switch => draw_switch_panel(frame, app, area, theme),
+        SessionAction::Compress => draw_compress_panel(frame, app, area, theme),
         SessionAction::Rename => draw_rename_panel(frame, app, area, theme),
         SessionAction::Delete => draw_delete_panel(frame, app, area, theme),
         SessionAction::Export => draw_export_panel(frame, app, area, theme),
@@ -323,6 +324,160 @@ fn draw_switch_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     .style(Style::default().fg(theme.text).bg(theme.surface))
     .wrap(Wrap { trim: true });
     frame.render_widget(note, chunks[3]);
+}
+
+fn draw_compress_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(9),
+            Constraint::Length(4),
+            Constraint::Length(5),
+        ])
+        .split(area);
+
+    draw_picker_block(
+        frame,
+        "Target Agent",
+        app.selected_target_provider()
+            .map(provider_label)
+            .unwrap_or("-"),
+        "Press Enter to choose the target agent profile for compression.",
+        app.action_field == ActionField::TargetAgent,
+        chunks[0],
+        theme,
+    );
+
+    draw_compression_candidates(frame, app, chunks[1], theme);
+
+    draw_execute_block(
+        frame,
+        "Run Compression",
+        app.action_field == ActionField::Execute,
+        chunks[2],
+        theme,
+    );
+
+    let note = Paragraph::new(
+        "Compression writes a smaller canonical export and archives original events. It does not mutate provider storage directly.",
+    )
+    .block(section_block("What Happens", false, theme))
+    .style(Style::default().fg(theme.text).bg(theme.surface))
+    .wrap(Wrap { trim: true });
+    frame.render_widget(note, chunks[3]);
+}
+
+fn draw_compression_candidates(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
+    if let Some(error) = &app.compression_plan_error {
+        let body = Paragraph::new(error.clone())
+            .block(section_block(
+                "Compression Candidates",
+                app.action_field == ActionField::CompressionCandidates,
+                theme,
+            ))
+            .style(Style::default().fg(theme.error).bg(theme.surface))
+            .wrap(Wrap { trim: true });
+        frame.render_widget(body, area);
+        return;
+    }
+
+    let Some(report) = &app.compression_plan else {
+        let body = Paragraph::new("Choose a target agent to generate a compression plan.")
+            .block(section_block(
+                "Compression Candidates",
+                app.action_field == ActionField::CompressionCandidates,
+                theme,
+            ))
+            .style(Style::default().fg(theme.text).bg(theme.surface))
+            .wrap(Wrap { trim: true });
+        frame.render_widget(body, area);
+        return;
+    };
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Candidates", Style::default().fg(theme.text_dim)),
+            Span::raw(format!("  {}", report.candidates.len())),
+            Span::raw("    "),
+            Span::styled("Selected", Style::default().fg(theme.text_dim)),
+            Span::raw(format!(
+                "  {}",
+                app.compression_selected_candidate_ids.len()
+            )),
+        ]),
+        Line::from(vec![
+            Span::styled("Estimated saved", Style::default().fg(theme.text_dim)),
+            Span::raw(format!(
+                "  {} bytes / {} tokens",
+                report.estimated_bytes_saved, report.estimated_tokens_saved
+            )),
+        ]),
+    ];
+
+    if report.candidates.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "No compression candidates. Recent context and small/unsafe events are protected.",
+            Style::default().fg(theme.warning),
+        )));
+    } else {
+        let selected_index = app
+            .compression_candidate_index
+            .min(report.candidates.len().saturating_sub(1));
+        let start = selected_index.saturating_sub(2);
+        let end = (start + 5).min(report.candidates.len());
+        for (index, candidate) in report.candidates.iter().enumerate().take(end).skip(start) {
+            let active = index == selected_index;
+            let checked = if app.compression_candidate_selected(&candidate.id) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let style = if active {
+                highlighted_value_style(theme)
+            } else {
+                Style::default().fg(theme.text).bg(theme.surface)
+            };
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "{} {} {:?} saved={}B risk={:?}",
+                    checked,
+                    candidate.id,
+                    candidate.kind,
+                    candidate.estimated_bytes_saved,
+                    candidate.risk
+                ),
+                style,
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("events: {}", candidate.event_ids.join(", ")),
+                Style::default().fg(theme.text_dim),
+            )));
+        }
+    }
+
+    if !report.skipped.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "Skipped: {} protected/already-small/unsupported events",
+                report.skipped.len()
+            ),
+            Style::default().fg(theme.text_dim),
+        )));
+    }
+
+    let body = Paragraph::new(Text::from(lines))
+        .block(section_block(
+            "Compression Candidates",
+            app.action_field == ActionField::CompressionCandidates,
+            theme,
+        ))
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .wrap(Wrap { trim: true });
+    frame.render_widget(body, area);
 }
 
 fn draw_rename_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
@@ -1344,6 +1499,7 @@ fn action_footer_text(app: &App) -> &'static str {
         ActionField::Action => "↑↓ Focus  ←→ Action  Enter Next  Esc Close",
         ActionField::TargetAgent => "↑↓ Focus  Enter Choose Target  Esc Close",
         ActionField::TargetWorkspace => "↑↓ Focus  Enter Choose Workspace  Esc Close",
+        ActionField::CompressionCandidates => "←→ Candidate  Enter Toggle  ↑↓ Focus  Esc Close",
         ActionField::ExportPath => "Type path  ↑↓ Focus  Enter Run  Esc Close",
         ActionField::RenameTitle => "Type title  ↑↓ Focus  Enter Run  Esc Close",
         ActionField::Execute => "↑↓ Focus  Enter Run  Esc Close",
