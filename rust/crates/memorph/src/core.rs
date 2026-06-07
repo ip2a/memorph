@@ -642,6 +642,7 @@ pub fn compression_retrieval_tool_spec() -> CompressionRetrievalToolSpec {
         usage_rules: vec![
             "Do not expand a compressed archive unconditionally when switching or continuing a session.".to_string(),
             "Prefer query retrieval before full retrieval to avoid putting large archived history back into context.".to_string(),
+            "Query scores prioritize exact phrase matches, then coverage of distinct query terms, with repeated single-term hits treated as weak evidence.".to_string(),
             "Use full retrieval only when the task explicitly requires the complete original segment.".to_string(),
             "Archive retrieval is lossless; summaries are model-visible hints, not the source of truth.".to_string(),
         ],
@@ -676,6 +677,7 @@ pub fn compression_retrieval_instructions(
             "Extract the memorph-archive://... value from the compressed block.".to_string(),
             "Choose a narrow query from the current user question or missing detail.".to_string(),
             "Run query retrieval and use only the returned matching events/snippets.".to_string(),
+            "When multiple matches are returned, prefer higher scores; scoring favors exact phrases and broader term coverage over repeated single-term noise.".to_string(),
             "Use full retrieval only if query retrieval is insufficient and complete original context is required.".to_string(),
         ],
     })
@@ -1610,6 +1612,10 @@ mod tests {
             .usage_rules
             .iter()
             .any(|rule| rule.contains("Prefer query retrieval")));
+        assert!(spec
+            .usage_rules
+            .iter()
+            .any(|rule| rule.contains("exact phrase matches")));
     }
 
     #[test]
@@ -1638,6 +1644,10 @@ mod tests {
             .suggested_steps
             .iter()
             .any(|step| step.contains("full retrieval only")));
+        assert!(instructions
+            .suggested_steps
+            .iter()
+            .any(|step| step.contains("broader term coverage")));
     }
 
     #[test]
