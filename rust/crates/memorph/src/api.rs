@@ -1023,6 +1023,8 @@ struct RestoreCompressionArchiveBody {
 #[derive(Deserialize)]
 struct RetrieveCompressionArchiveBody {
     archive_ref: String,
+    query: Option<String>,
+    max_results: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1077,6 +1079,8 @@ async fn retrieve_compression_archive(
 ) -> impl IntoResponse {
     let params = core::RetrieveCompressionArchiveParams {
         archive_ref: body.archive_ref,
+        query: body.query,
+        max_results: body.max_results,
     };
     match core::retrieve_compression_archive(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),

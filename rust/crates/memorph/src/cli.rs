@@ -217,6 +217,12 @@ pub enum CompressionCommands {
         /// Archive ref, for example memorph-archive://...
         #[arg(value_name = "ARCHIVE_REF")]
         archive_ref: String,
+        /// Search query for retrieving only matching archived events
+        #[arg(short, long, value_name = "QUERY")]
+        query: Option<String>,
+        /// Maximum matching events to return when --query is provided
+        #[arg(long, value_name = "N")]
+        max_results: Option<usize>,
     },
     /// Expand compressed segments in a canonical export file to file(s)
     Expand {
@@ -570,13 +576,24 @@ mod tests {
             "compression",
             "retrieve",
             "memorph-archive://group/archive.json.gz",
+            "--query",
+            "needle",
+            "--max-results",
+            "3",
         ]);
 
         match cli.command {
             Some(Commands::Compression {
-                command: CompressionCommands::Retrieve { archive_ref },
+                command:
+                    CompressionCommands::Retrieve {
+                        archive_ref,
+                        query,
+                        max_results,
+                    },
             }) => {
                 assert_eq!(archive_ref, "memorph-archive://group/archive.json.gz");
+                assert_eq!(query.as_deref(), Some("needle"));
+                assert_eq!(max_results, Some(3));
             }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
