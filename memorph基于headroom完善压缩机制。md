@@ -2272,3 +2272,97 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 18：补压缩 archive/retrieval 的 API 成功路径 fixture 或端到端 smoke，减少目前 API retrieve 成功路径主要靠 core 临时目录测试覆盖的间接性。
+
+### 2026-06-07：Phase 18 / API retrieve 成功路径 fixture
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认本阶段目标是加强 retrieval API 的直接验收证据。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+本阶段目标：
+
+- 补上 `/api/v1/compression/retrieve` 的成功路径测试。
+- 不只依赖 core 层临时 archive dir 测试间接证明 API 成功路径。
+- 验证 API query retrieval 返回的是局部结果，并带 Phase 17 的上下文安全字段。
+
+已完成：
+
+- 在 API 测试模块新增 isolated archive fixture helper：
+  - 写入唯一 group 名的 archive。
+  - archive 路径位于 memorph 标准 archive 目录下：
+    - `~/.memorph/compression_archives/<unique-test-group>/archive.json`
+  - fixture 使用 legacy `.json` archive，覆盖生产 loader 支持的 archive 格式。
+  - 测试结束后删除该唯一 group 目录。
+- 新增 API 成功路径测试：
+  - `compression_retrieve_route_returns_query_matches_from_archive`
+- 测试 fixture 包含两个 archived events：
+  - `needle-event`：包含 query 命中的 `needle detail`。
+  - `other-event`：不匹配 query。
+- API request：
+  - `POST /api/v1/compression/retrieve`
+  - body 包含 `archive_ref`、`query: "needle"`、`max_results: 5`。
+- 验证 API response：
+  - `ok == true`
+  - `archive_ref` 回显正确。
+  - `retrieval_mode == "query_matches"`
+  - `recommended_next_action` 提示 partial retrieval。
+  - `source_event_count == 2`
+  - `returned_event_count == 1`
+  - `events[0].id == "needle-event"`
+  - `matches[0].event_id == "needle-event"`
+  - snippet 包含 `needle detail`。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有改变 API 参数。
+- 没有改变 archive loader。
+- 没有改变 query search 算法。
+- 没有把测试 archive 写入固定共享文件；使用唯一 group 并清理。
+
+为什么这一步重要：
+
+- Phase 13 已经在 core 层证明 query retrieval 可用。
+- Phase 17 已经在 core 层证明 retrieval mode 可用。
+- Phase 18 补的是 API 真实 route 成功路径证据：
+  - router。
+  - JSON body。
+  - archive loader。
+  - response serialization。
+  - retrieval mode/recommended action。
+- 这减少了“API retrieve 成功路径只有间接覆盖”的风险。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieve_route_returns_query_matches_from_archive -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieve_route_rejects_invalid_archive_ref -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_apply_from_file_writes_archive_and_expandable_output -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，139 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- `/api/v1/compression/retrieve` 成功读取真实 archive fixture。
+- API query retrieval 返回局部结果，而不是全量 archive。
+- API response 包含 `retrieval_mode` 和 `recommended_next_action`。
+- API invalid-ref 路径继续通过。
+
+遇到的问题：
+
+- API route 使用全局 memorph archive dir，而 core test helper 使用临时 archive dir，不能直接复用。
+- 处理方式：使用唯一 test archive group 写入标准 archive dir，并在测试结束后清理该唯一目录。避免改动生产 config/path 逻辑，也避免触碰用户已有 archives。
+
+提交范围：
+
+- `rust/crates/memorph/src/api.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 19：补 CLI retrieve 的端到端 smoke 或 JSON 输出验证，确保用户从 compressed block 复制 `memorph compression retrieve ... --query ...` 后能获得包含 `retrieval_mode` 的结构化输出。

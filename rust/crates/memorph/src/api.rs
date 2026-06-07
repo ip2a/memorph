@@ -1453,6 +1453,73 @@ mod tests {
         (status, value)
     }
 
+    fn write_api_retrieve_archive_fixture() -> (String, std::path::PathBuf) {
+        let now = Utc::now();
+        let group = format!("api-retrieve-{}", uuid::Uuid::new_v4());
+        let archive_dir = config::memorph_dir()
+            .unwrap()
+            .join("compression_archives")
+            .join(&group);
+        std::fs::create_dir_all(&archive_dir).unwrap();
+
+        let source = EventSource {
+            provider_id: "claude".to_string(),
+            original_id: None,
+            original_role: Some("user".to_string()),
+            phase: None,
+        };
+        let metadata = EventMetadata {
+            source,
+            model: None,
+            usage: None,
+            fidelity: MappingDisposition::Preserved,
+            provider_ext: BTreeMap::new(),
+        };
+        let archive = core::compression::CompressionArchive {
+            version: 1,
+            created_at: now,
+            canonical_id: group.clone(),
+            source_provider_id: "claude".to_string(),
+            target_provider_id: "codex".to_string(),
+            summary_event_id: "summary-event".to_string(),
+            source_event_ids: vec!["needle-event".to_string(), "other-event".to_string()],
+            events: vec![
+                SessionEvent {
+                    id: "needle-event".to_string(),
+                    kind: SessionEventKind::Message,
+                    role: EventRole::User,
+                    timestamp: now,
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Text {
+                        text: "needle detail from archived original event".to_string(),
+                    }],
+                    metadata: metadata.clone(),
+                },
+                SessionEvent {
+                    id: "other-event".to_string(),
+                    kind: SessionEventKind::Message,
+                    role: EventRole::Assistant,
+                    timestamp: now,
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Text {
+                        text: "unrelated archived original event".to_string(),
+                    }],
+                    metadata,
+                },
+            ],
+        };
+        std::fs::write(
+            archive_dir.join("archive.json"),
+            serde_json::to_string_pretty(&archive).unwrap(),
+        )
+        .unwrap();
+
+        (
+            format!("memorph-archive://{}/archive.json", group),
+            archive_dir,
+        )
+    }
+
     #[tokio::test]
     async fn compression_plan_route_returns_candidates_from_file() {
         let now = Utc::now();
@@ -1620,6 +1687,44 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Unsupported compression archive ref"));
+    }
+
+    #[tokio::test]
+    async fn compression_retrieve_route_returns_query_matches_from_archive() {
+        let (archive_ref, archive_dir) = write_api_retrieve_archive_fixture();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/compression/retrieve")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "archive_ref": archive_ref.clone(),
+                    "query": "needle",
+                    "max_results": 5
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+        let _ = std::fs::remove_dir_all(&archive_dir);
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["data"]["archive_ref"], archive_ref);
+        assert_eq!(value["data"]["retrieval_mode"], "query_matches");
+        assert!(value["data"]["recommended_next_action"]
+            .as_str()
+            .unwrap()
+            .contains("partial retrieval"));
+        assert_eq!(value["data"]["source_event_count"], 2);
+        assert_eq!(value["data"]["returned_event_count"], 1);
+        assert_eq!(value["data"]["events"][0]["id"], "needle-event");
+        assert_eq!(value["data"]["matches"][0]["event_id"], "needle-event");
+        assert!(value["data"]["matches"][0]["snippets"][0]
+            .as_str()
+            .unwrap()
+            .contains("needle detail"));
     }
 
     #[tokio::test]
