@@ -1016,6 +1016,7 @@ dependencies = [
  "anyhow",
  "clap",
  "memorph-lib",
+ "serde_json",
  "tokio",
 ]
 

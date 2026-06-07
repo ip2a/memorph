@@ -122,6 +122,10 @@ pub fn router() -> Router {
             post(restore_compression_archive),
         )
         .route(
+            "/api/v1/compression/retrieve",
+            post(retrieve_compression_archive),
+        )
+        .route(
             "/api/v1/compression/expand",
             post(expand_compression_session),
         )
@@ -1017,6 +1021,11 @@ struct RestoreCompressionArchiveBody {
 }
 
 #[derive(Deserialize)]
+struct RetrieveCompressionArchiveBody {
+    archive_ref: String,
+}
+
+#[derive(Deserialize)]
 struct ExpandCompressionSessionBody {
     file: String,
     output_prefix: Option<String>,
@@ -1058,6 +1067,18 @@ async fn restore_compression_archive(
         format: body.format,
     };
     match core::restore_compression_archive(&params) {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn retrieve_compression_archive(
+    Json(body): Json<RetrieveCompressionArchiveBody>,
+) -> impl IntoResponse {
+    let params = core::RetrieveCompressionArchiveParams {
+        archive_ref: body.archive_ref,
+    };
+    match core::retrieve_compression_archive(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -1543,6 +1564,30 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Use either session_id or file"));
+    }
+
+    #[tokio::test]
+    async fn compression_retrieve_route_rejects_invalid_archive_ref() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/compression/retrieve")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "archive_ref": "not-an-archive-ref"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(value["ok"], false);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported compression archive ref"));
     }
 
     #[tokio::test]

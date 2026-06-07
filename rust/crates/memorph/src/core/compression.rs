@@ -262,7 +262,10 @@ pub fn load_archive(archive_ref: &str) -> Result<CompressionArchive> {
     load_archive_from_dir(&archive_base_dir()?, archive_ref)
 }
 
-fn load_archive_from_dir(archive_dir: &Path, archive_ref: &str) -> Result<CompressionArchive> {
+pub(crate) fn load_archive_from_dir(
+    archive_dir: &Path,
+    archive_ref: &str,
+) -> Result<CompressionArchive> {
     let path = archive_path_from_ref_in_dir(archive_dir, archive_ref)?;
     let raw = read_archive_text(&path)?;
     serde_json::from_str(&raw)

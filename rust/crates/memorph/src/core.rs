@@ -489,6 +489,64 @@ pub fn restore_compression_archive(
     session_management::restore_compression_archive(params)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrieveCompressionArchiveParams {
+    pub archive_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievedCompressionArchive {
+    pub archive_ref: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub canonical_id: String,
+    pub source_provider_id: String,
+    pub target_provider_id: String,
+    pub summary_event_id: String,
+    pub source_event_ids: Vec<String>,
+    pub source_event_count: usize,
+    pub events: Vec<SessionEvent>,
+}
+
+pub fn retrieve_compression_archive(
+    params: &RetrieveCompressionArchiveParams,
+) -> Result<RetrievedCompressionArchive> {
+    let archive = compression::load_archive(&params.archive_ref)?;
+    Ok(retrieved_compression_archive(
+        params.archive_ref.clone(),
+        archive,
+    ))
+}
+
+#[cfg(test)]
+fn retrieve_compression_archive_in_dir(
+    params: &RetrieveCompressionArchiveParams,
+    archive_dir: &std::path::Path,
+) -> Result<RetrievedCompressionArchive> {
+    let archive = compression::load_archive_from_dir(archive_dir, &params.archive_ref)?;
+    Ok(retrieved_compression_archive(
+        params.archive_ref.clone(),
+        archive,
+    ))
+}
+
+fn retrieved_compression_archive(
+    archive_ref: String,
+    archive: compression::CompressionArchive,
+) -> RetrievedCompressionArchive {
+    let source_event_count = archive.events.len();
+    RetrievedCompressionArchive {
+        archive_ref,
+        created_at: archive.created_at,
+        canonical_id: archive.canonical_id,
+        source_provider_id: archive.source_provider_id,
+        target_provider_id: archive.target_provider_id,
+        summary_event_id: archive.summary_event_id,
+        source_event_ids: archive.source_event_ids,
+        source_event_count,
+        events: archive.events,
+    }
+}
+
 pub fn list_compression_archives() -> Result<Vec<compression::CompressionArchiveSummary>> {
     session_management::list_compression_archives()
 }
@@ -1255,6 +1313,19 @@ mod tests {
         assert_eq!(expand_report.expanded_segments, 1);
         assert_eq!(expand_report.restored_events, 1);
         assert!(expanded.events.iter().any(|event| event.id == "old-user"));
+
+        let retrieved = retrieve_compression_archive_in_dir(
+            &RetrieveCompressionArchiveParams {
+                archive_ref: result.archive_refs[0].clone(),
+            },
+            archive_dir.path(),
+        )
+        .unwrap();
+        assert_eq!(retrieved.source_provider_id, "claude");
+        assert_eq!(retrieved.target_provider_id, "codex");
+        assert_eq!(retrieved.source_event_ids, vec!["old-user"]);
+        assert_eq!(retrieved.source_event_count, 1);
+        assert!(retrieved.events.iter().any(|event| event.id == "old-user"));
     }
 
     fn active_compression_source_session() -> CanonicalSession {
