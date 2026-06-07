@@ -9,7 +9,7 @@ use crate::core::compression::{
 };
 use crate::provider::{
     canonical_block_text, canonical_event_text, canonical_export_result, canonical_session_title,
-    Provider, ProviderCapabilities, ProviderSessionSummary,
+    compression_retrieval_hint, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use crate::utils;
 use anyhow::{Context, Result};
@@ -2297,6 +2297,7 @@ fn codex_compacted_history_text(segment: CompressedSegment<'_>) -> String {
     }
     if let Some(archive_ref) = segment.archive_ref {
         parts.push(format!("Archive: {}", archive_ref));
+        parts.push(compression_retrieval_hint(archive_ref));
     }
     parts.join("\n")
 }
