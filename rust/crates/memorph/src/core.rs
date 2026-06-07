@@ -770,10 +770,15 @@ fn search_archive_events(
         return (Vec::new(), Vec::new());
     }
     let query_lower = query.to_ascii_lowercase();
-    let terms = query_lower
+    let mut terms = Vec::new();
+    for term in query_lower
         .split_whitespace()
         .filter(|term| !term.is_empty())
-        .collect::<Vec<_>>();
+    {
+        if !terms.contains(&term) {
+            terms.push(term);
+        }
+    }
     if terms.is_empty() {
         return (events.to_vec(), Vec::new());
     }
@@ -784,13 +789,7 @@ fn search_archive_events(
         .filter_map(|(event_index, event)| {
             let text = provider::canonical_event_text(event);
             let text_lower = text.to_ascii_lowercase();
-            let mut score = terms
-                .iter()
-                .map(|term| text_lower.matches(term).count())
-                .sum::<usize>();
-            if text_lower.contains(&query_lower) {
-                score += 5;
-            }
+            let score = archive_query_score(&text_lower, &query_lower, &terms);
             if score == 0 {
                 return None;
             }
@@ -821,6 +820,30 @@ fn search_archive_events(
         .map(|(_, _, _, search_match)| search_match)
         .collect::<Vec<_>>();
     (events, matches)
+}
+
+fn archive_query_score(text_lower: &str, query_lower: &str, terms: &[&str]) -> usize {
+    let mut matched_terms = 0;
+    let mut capped_occurrences = 0;
+    for term in terms {
+        let count = text_lower.matches(term).count();
+        if count > 0 {
+            matched_terms += 1;
+            capped_occurrences += count.min(3);
+        }
+    }
+    if matched_terms == 0 {
+        return 0;
+    }
+
+    let mut score = matched_terms * 20 + capped_occurrences;
+    if matched_terms == terms.len() {
+        score += 50;
+    }
+    if text_lower.contains(query_lower) {
+        score += 100;
+    }
+    score
 }
 
 fn archive_search_snippets(text: &str, query_lower: &str, terms: &[&str]) -> Vec<String> {
@@ -1890,7 +1913,7 @@ mod tests {
     }
 
     #[test]
-    fn archive_query_search_ranks_phrase_and_term_frequency_deterministically() {
+    fn archive_query_search_ranks_phrase_before_repeated_scattered_terms() {
         let events = vec![
             archive_search_event(
                 "earlier-single",
@@ -1904,7 +1927,7 @@ mod tests {
             ),
             archive_search_event(
                 "term-frequency",
-                "needle detail needle detail needle detail",
+                "needle appears repeatedly but detail is only connected loosely to needle",
                 EventRole::User,
             ),
         ];
@@ -1916,14 +1939,14 @@ mod tests {
                 .iter()
                 .map(|event| event.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["term-frequency", "phrase-match"]
+            vec!["phrase-match", "term-frequency"]
         );
         assert_eq!(
             matches
                 .iter()
                 .map(|search_match| search_match.event_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["term-frequency", "phrase-match"]
+            vec!["phrase-match", "term-frequency"]
         );
         assert!(matches[0].score > matches[1].score);
         assert!(matches[1].score > 0);
@@ -1931,6 +1954,33 @@ mod tests {
             .snippets
             .iter()
             .any(|snippet| snippet.contains("needle detail")));
+    }
+
+    #[test]
+    fn archive_query_search_ranks_term_coverage_before_single_term_repetition() {
+        let events = vec![
+            archive_search_event(
+                "single-term-repeated",
+                "needle needle needle needle needle",
+                EventRole::User,
+            ),
+            archive_search_event(
+                "covered-terms",
+                "needle appears with the missing detail",
+                EventRole::Assistant,
+            ),
+        ];
+
+        let (events, matches) = search_archive_events(&events, "needle detail", 10);
+
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["covered-terms", "single-term-repeated"]
+        );
+        assert!(matches[0].score > matches[1].score);
     }
 
     #[test]
