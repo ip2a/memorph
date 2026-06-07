@@ -200,6 +200,12 @@ pub enum CompressionCommands {
         #[arg(short, long, value_name = "FORMAT", default_value = "json")]
         format: String,
     },
+    /// Retrieve archived original events and print them as JSON
+    Retrieve {
+        /// Archive ref, for example memorph-archive://...
+        #[arg(value_name = "ARCHIVE_REF")]
+        archive_ref: String,
+    },
     /// Expand compressed segments in a canonical export file to file(s)
     Expand {
         /// Path to .json/.md/.html/.morph canonical export file
@@ -503,6 +509,25 @@ mod tests {
                 );
                 assert_eq!(output.as_deref(), Some("compressed/session"));
                 assert_eq!(format, "both");
+            }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn compression_retrieve_accepts_archive_ref() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "compression",
+            "retrieve",
+            "memorph-archive://group/archive.json.gz",
+        ]);
+
+        match cli.command {
+            Some(Commands::Compression {
+                command: CompressionCommands::Retrieve { archive_ref },
+            }) => {
+                assert_eq!(archive_ref, "memorph-archive://group/archive.json.gz");
             }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }

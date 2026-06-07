@@ -1452,3 +1452,79 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 9：Retrieval bridge，提供 CLI/API 级 `memorph-archive://...` 原始内容检索能力，为后续 MCP retrieval 打基础。
+
+### 2026-06-07：Phase 9 / Retrieval bridge
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 9 的目标是提供 CLI/API 级 `memorph-archive://...` 原始内容检索能力。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已确认本阶段边界：只做 durable archive retrieval bridge，不做 MCP server，不做 runtime proxy，不改变压缩 apply/switch 行为。
+
+已完成：
+
+- 新增 core 检索参数和结果结构：
+  - `RetrieveCompressionArchiveParams`
+  - `RetrievedCompressionArchive`
+- 新增 core 检索入口：
+  - `retrieve_compression_archive`
+- 检索结果直接返回 archive 中的原始内容：
+  - `archive_ref`
+  - `created_at`
+  - `canonical_id`
+  - `source_provider_id`
+  - `target_provider_id`
+  - `summary_event_id`
+  - `source_event_ids`
+  - `source_event_count`
+  - `events`
+- 新增 CLI 命令：
+  - `memorph compression retrieve ARCHIVE_REF`
+  - 输出完整 JSON，便于脚本和后续 MCP bridge 复用。
+- 新增 API 路由：
+  - `POST /api/v1/compression/retrieve`
+  - body：`{ "archive_ref": "memorph-archive://..." }`
+  - 返回 `RetrievedCompressionArchive`。
+- 将 archive loader 的内部可见性调整为 crate 内可用，便于测试在临时 archive dir 中验证，不改变外部公开 API。
+- app crate 显式增加 `serde_json` 依赖，用于 CLI 输出完整结构化 JSON；`Cargo.lock` 仅记录 app crate dependency 列表变化，没有引入新的包版本。
+
+明确未做：
+
+- 没有实现 MCP retrieval tool。
+- 没有实现按 query 检索 archive 内部片段。
+- 没有把 retrieval 自动注入 provider runtime。
+- 没有改变现有 `restore` 行为；`restore` 仍负责写文件，`retrieve` 负责直接返回原始 events。
+
+测试：
+
+- `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieve_accepts_archive_ref`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_apply_from_file_writes_archive_and_expandable_output`：通过，1 passed；该测试新增验证 retrieve 能从 archive 恢复原始 `old-user` event。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieve_route_rejects_invalid_archive_ref`：通过，1 passed。
+- `cargo check --manifest-path rust/Cargo.toml -p memorph`：通过。
+- `cargo check --manifest-path rust/Cargo.toml -p memorph-lib`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，123 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+遇到的问题：
+
+- CLI retrieve 最初直接使用 `serde_json::to_string_pretty`，但 `memorph` app crate 没显式依赖 `serde_json`，导致 app 编译失败。
+- 处理方式：保留完整 JSON 输出能力，在 app crate 增加 `serde_json = "1"` 显式依赖，而不是降级为不完整的文本摘要。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `rust/crates/memorph/src/core/compression.rs`
+- `rust/crates/memorph/src/cli.rs`
+- `rust/crates/memorph/src/api.rs`
+- `rust/apps/memorph/src/main.rs`
+- `rust/apps/memorph/Cargo.toml`
+- `rust/Cargo.lock`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 10：LLM summarizer 可选后端，在 deterministic summary 稳定闭环之上增加可选 LLM 摘要，并保持失败 fallback、size gate 和 archive 可逆性。
