@@ -202,6 +202,12 @@ pub enum CompressionCommands {
     Providers,
     /// Print the archive retrieval tool specification as JSON
     ToolSpec,
+    /// Print query-first retrieval instructions for an archive ref
+    Instructions {
+        /// Archive ref, for example memorph-archive://...
+        #[arg(value_name = "ARCHIVE_REF")]
+        archive_ref: String,
+    },
     /// Restore a compressed archive to file(s)
     Restore {
         /// Archive ref, for example memorph-archive://...
@@ -609,6 +615,25 @@ mod tests {
             Some(Commands::Compression {
                 command: CompressionCommands::ToolSpec,
             }) => {}
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn compression_instructions_accepts_archive_ref() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "compression",
+            "instructions",
+            "memorph-archive://group/archive.json.gz",
+        ]);
+
+        match cli.command {
+            Some(Commands::Compression {
+                command: CompressionCommands::Instructions { archive_ref },
+            }) => {
+                assert_eq!(archive_ref, "memorph-archive://group/archive.json.gz");
+            }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
     }

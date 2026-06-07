@@ -18,6 +18,8 @@ pub mod compression;
 pub mod manager;
 pub mod session_management;
 
+const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListParams {
     pub all: bool,
@@ -557,11 +559,22 @@ pub struct CompressionRetrievalToolOutputContract {
     pub query_retrieval: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionRetrievalInstructions {
+    pub archive_ref: String,
+    pub summary: String,
+    pub query_first_cli: String,
+    pub full_cli: String,
+    pub api_query_body: serde_json::Value,
+    pub api_full_body: serde_json::Value,
+    pub suggested_steps: Vec<String>,
+}
+
 pub fn compression_retrieval_tool_spec() -> CompressionRetrievalToolSpec {
     CompressionRetrievalToolSpec {
         name: "memorph_retrieve_compression_archive".to_string(),
         description: "Retrieve original events from a durable memorph compression archive. Use query retrieval first when only specific details are needed.".to_string(),
-        archive_ref_scheme: "memorph-archive://".to_string(),
+        archive_ref_scheme: MEMORPH_ARCHIVE_SCHEME.to_string(),
         api: CompressionRetrievalToolApiSpec {
             method: "POST".to_string(),
             path: "/api/v1/compression/retrieve".to_string(),
@@ -615,6 +628,39 @@ pub fn compression_retrieval_tool_spec() -> CompressionRetrievalToolSpec {
             "Archive retrieval is lossless; summaries are model-visible hints, not the source of truth.".to_string(),
         ],
     }
+}
+
+pub fn compression_retrieval_instructions(
+    archive_ref: &str,
+) -> Result<CompressionRetrievalInstructions> {
+    let archive_ref = archive_ref.trim();
+    if !archive_ref.starts_with(MEMORPH_ARCHIVE_SCHEME) {
+        anyhow::bail!("Unsupported compression archive ref: {}", archive_ref);
+    }
+
+    Ok(CompressionRetrievalInstructions {
+        archive_ref: archive_ref.to_string(),
+        summary: "Use query retrieval first. Full retrieval should be reserved for tasks that explicitly need the entire original compressed segment.".to_string(),
+        query_first_cli: format!(
+            "memorph compression retrieve {} --query <terms> --max-results 5",
+            archive_ref
+        ),
+        full_cli: format!("memorph compression retrieve {}", archive_ref),
+        api_query_body: serde_json::json!({
+            "archive_ref": archive_ref,
+            "query": "<terms>",
+            "max_results": 5
+        }),
+        api_full_body: serde_json::json!({
+            "archive_ref": archive_ref
+        }),
+        suggested_steps: vec![
+            "Extract the memorph-archive://... value from the compressed block.".to_string(),
+            "Choose a narrow query from the current user question or missing detail.".to_string(),
+            "Run query retrieval and use only the returned matching events/snippets.".to_string(),
+            "Use full retrieval only if query retrieval is insufficient and complete original context is required.".to_string(),
+        ],
+    })
 }
 
 pub fn retrieve_compression_archive(
@@ -1493,6 +1539,42 @@ mod tests {
             .usage_rules
             .iter()
             .any(|rule| rule.contains("Prefer query retrieval")));
+    }
+
+    #[test]
+    fn compression_retrieval_instructions_are_archive_specific_and_query_first() {
+        let instructions =
+            compression_retrieval_instructions("memorph-archive://session/archive.json.gz")
+                .unwrap();
+
+        assert_eq!(
+            instructions.archive_ref,
+            "memorph-archive://session/archive.json.gz"
+        );
+        assert!(instructions
+            .query_first_cli
+            .contains("--query <terms> --max-results 5"));
+        assert_eq!(
+            instructions.full_cli,
+            "memorph compression retrieve memorph-archive://session/archive.json.gz"
+        );
+        assert_eq!(
+            instructions.api_query_body["archive_ref"],
+            "memorph-archive://session/archive.json.gz"
+        );
+        assert_eq!(instructions.api_query_body["max_results"], 5);
+        assert!(instructions
+            .suggested_steps
+            .iter()
+            .any(|step| step.contains("full retrieval only")));
+    }
+
+    #[test]
+    fn compression_retrieval_instructions_reject_invalid_refs() {
+        let error = compression_retrieval_instructions("not-an-archive-ref").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Unsupported compression archive ref"));
     }
 
     #[test]

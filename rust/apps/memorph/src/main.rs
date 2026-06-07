@@ -373,6 +373,10 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             let spec = core::compression_retrieval_tool_spec();
             println!("{}", serde_json::to_string_pretty(&spec)?);
         }
+        CompressionCommands::Instructions { archive_ref } => {
+            let instructions = core::compression_retrieval_instructions(&archive_ref)?;
+            println!("{}", serde_json::to_string_pretty(&instructions)?);
+        }
         CompressionCommands::Restore {
             archive_ref,
             output,

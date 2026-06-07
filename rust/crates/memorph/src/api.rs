@@ -122,6 +122,10 @@ pub fn router() -> Router {
             get(get_compression_tool_spec),
         )
         .route(
+            "/api/v1/compression/instructions",
+            post(get_compression_retrieval_instructions),
+        )
+        .route(
             "/api/v1/compression/restore",
             post(restore_compression_archive),
         )
@@ -1021,6 +1025,20 @@ async fn get_compression_tool_spec() -> impl IntoResponse {
 }
 
 #[derive(Deserialize)]
+struct CompressionRetrievalInstructionsBody {
+    archive_ref: String,
+}
+
+async fn get_compression_retrieval_instructions(
+    Json(body): Json<CompressionRetrievalInstructionsBody>,
+) -> impl IntoResponse {
+    match core::compression_retrieval_instructions(&body.archive_ref) {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
 struct RestoreCompressionArchiveBody {
     archive_ref: String,
     output_prefix: Option<String>,
@@ -1629,6 +1647,62 @@ mod tests {
             .unwrap()
             .iter()
             .any(|rule| rule.as_str().unwrap().contains("Prefer query retrieval")));
+    }
+
+    #[tokio::test]
+    async fn compression_instructions_route_returns_archive_specific_examples() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/compression/instructions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "archive_ref": "memorph-archive://group/archive.json.gz"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+        assert_eq!(
+            value["data"]["archive_ref"],
+            "memorph-archive://group/archive.json.gz"
+        );
+        assert!(value["data"]["query_first_cli"]
+            .as_str()
+            .unwrap()
+            .contains("--query <terms> --max-results 5"));
+        assert_eq!(
+            value["data"]["api_query_body"]["archive_ref"],
+            "memorph-archive://group/archive.json.gz"
+        );
+    }
+
+    #[tokio::test]
+    async fn compression_instructions_route_rejects_invalid_archive_ref() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/compression/instructions")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "archive_ref": "not-an-archive-ref"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(value["ok"], false);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported compression archive ref"));
     }
 
     #[tokio::test]
