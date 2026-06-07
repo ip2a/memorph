@@ -1156,6 +1156,7 @@ struct SwitchBody {
     to: String,
     session_id: Option<String>,
     to_dir: Option<String>,
+    active_compression: Option<core::active_compression::ActiveCompressionPolicy>,
 }
 
 async fn switch_session(Json(body): Json<SwitchBody>) -> impl IntoResponse {
@@ -1164,6 +1165,7 @@ async fn switch_session(Json(body): Json<SwitchBody>) -> impl IntoResponse {
         to: body.to,
         session_id: body.session_id,
         to_dir: body.to_dir,
+        active_compression: body.active_compression,
     };
     match core::switch_session(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),

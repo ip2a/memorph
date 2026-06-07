@@ -110,12 +110,33 @@ fn run_command(command: Commands) -> Result<()> {
             to,
             session_id,
             to_dir,
+            active_compression,
+            protect_recent_message_events,
+            min_candidate_bytes,
+            min_savings_ratio_percent,
         } => {
+            let active_compression = if active_compression {
+                let mut policy = core::active_compression::ActiveCompressionPolicy::default();
+                policy.mode = core::active_compression::ActiveCompressionMode::Auto;
+                if let Some(value) = protect_recent_message_events {
+                    policy.protect_recent_message_events = value;
+                }
+                if let Some(value) = min_candidate_bytes {
+                    policy.min_candidate_bytes = value;
+                }
+                if let Some(value) = min_savings_ratio_percent {
+                    policy.min_savings_ratio_percent = value;
+                }
+                Some(policy)
+            } else {
+                None
+            };
             let result = core::switch_session(&core::SwitchParams {
                 from,
                 to,
                 session_id,
                 to_dir,
+                active_compression,
             })?;
 
             println!("Switched from {} to {}", result.from_name, result.to_name);
@@ -123,6 +144,9 @@ fn run_command(command: Commands) -> Result<()> {
             println!("  Target: {}", result.target_session_id);
             if let Some(cmd) = result.resume_command {
                 println!("  Resume: {}", cmd);
+            }
+            if let Some(report) = result.active_compression_report {
+                print_active_compression_report(&report);
             }
         }
 
@@ -361,9 +385,10 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             }
         }
         CompressionCommands::Retrieve { archive_ref } => {
-            let result = core::retrieve_compression_archive(
-                &core::RetrieveCompressionArchiveParams { archive_ref },
-            )?;
+            let result =
+                core::retrieve_compression_archive(&core::RetrieveCompressionArchiveParams {
+                    archive_ref,
+                })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         CompressionCommands::Expand {
@@ -462,7 +487,9 @@ fn print_active_compression_report(report: &core::active_compression::ActiveComp
     );
     println!(
         "events={} messages={} already_compressed={}",
-        report.session_event_count, report.message_event_count, report.already_compressed_event_count
+        report.session_event_count,
+        report.message_event_count,
+        report.already_compressed_event_count
     );
     println!(
         "estimated: {}B/{} tokens -> {}B/{} tokens, saved {}B/{} tokens",
