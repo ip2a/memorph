@@ -500,6 +500,12 @@ fn print_active_compression_report(report: &core::active_compression::ActiveComp
         report.estimated_bytes_saved,
         report.estimated_tokens_saved
     );
+    println!(
+        "token estimator: {:?}, effective={} chars/token x100={}",
+        report.token_estimator.strategy,
+        report.token_estimator.effective_provider_id,
+        report.token_estimator.effective_chars_per_token_x100
+    );
 
     if report.candidates.is_empty() {
         println!("No compression candidates.");

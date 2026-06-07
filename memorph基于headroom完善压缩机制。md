@@ -1710,3 +1710,101 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 12：补 provider-specific token/size policy 或 retrieval bridge 的 provider runtime 暴露。优先建议做 provider-aware token estimate/report，因为当前 active compression gate 仍以字节和粗 token 估算为主，能工作但还不是 Headroom 那种 provider/model tokenizer 级别。
+
+### 2026-06-07：Phase 12 / provider-aware token estimator report
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 12 的优先方向是补 provider-aware token/size policy。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已确认本阶段边界：不引入外部 tokenizer，不调用网络，不声称精确 token；先把 provider-aware heuristic 和 report 暴露出来，替换原来所有场景固定 `bytes / 4` 的估算。
+
+已完成：
+
+- 新增 token estimator report：
+  - `CompressionTokenEstimatorReport`
+  - `CompressionTokenEstimatorStrategy::ProviderHeuristic`
+- `ActiveCompressionReport` 新增：
+  - `token_estimator`
+- estimator report 当前记录：
+  - `strategy`
+  - `source_provider_chars_per_token_x100`
+  - `target_provider_chars_per_token_x100`
+  - `effective_provider_id`
+  - `effective_chars_per_token_x100`
+- active compression planner 现在按 target provider heuristic 估算 token：
+  - session total token estimate
+  - candidate original/compressed token estimate
+  - skipped event token estimate
+  - report saved token estimate
+- 当前 provider heuristic：
+  - Claude/Anthropic：3.50 chars/token
+  - Codex/OpenAI/OpenCode：4.00 chars/token
+  - Gemini/Google：3.60 chars/token
+  - Kimi：3.20 chars/token
+  - DeepSeek：3.30 chars/token
+  - unknown：4.00 chars/token
+- effective provider 选择 target provider：
+  - 原因：active compression 的目标是让迁移后的目标 agent 读取更小上下文，所以 target provider 的上下文计费/估算更重要。
+- 保留旧 `estimate_tokens_from_bytes(bytes)` 作为通用 fallback：
+  - 兼容旧测试和未来非 provider-aware 调用点。
+  - 新 planner 内部使用 `estimate_tokens_from_bytes_with_estimator`。
+- CLI active compression report 新增输出 estimator：
+  - strategy
+  - effective provider
+  - chars/token x100
+
+明确未做：
+
+- 没有接入真实 provider tokenizer。
+- 没有按具体 model 名称选择 tokenizer。
+- 没有改变字节级 savings gate；当前 hard gate 仍以 bytes 为主，token estimate 作为 report 和后续决策基础。
+- 没有新增用户可配置 estimator 参数，避免过早暴露不稳定接口。
+
+为什么这不是“半拉子简化”：
+
+- 这一步没有降低压缩安全边界：
+  - archive 仍完整保存原文。
+  - recent/system/developer/already-compressed 保护仍存在。
+  - bytes savings gate 仍存在。
+  - summarizer size gate 仍存在。
+- 它补的是 Headroom 中“provider/model tokenizer aware”的工程缝隙：
+  - 当前先用 provider heuristic 替换固定粗估。
+  - report 明确暴露 estimator 来源，避免用户误以为 token 是真实模型 tokenizer 精确值。
+  - 后续真实 tokenizer 只需要替换 estimator 函数，不需要重写 planner/apply/switch。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression -- --nocapture`：通过，16 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib toggles_selected_compression_candidate -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，130 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- `dry_run_report_serializes_with_stable_policy_fields` 现在同时验证 `token_estimator` 序列化字段。
+- `dry_run_uses_target_provider_token_estimator` 验证同一 session 在不同 target provider 下产生不同 token estimate：
+  - Codex 使用 4.00 chars/token。
+  - Kimi 使用 3.20 chars/token。
+  - Kimi 的 token estimate 高于 Codex。
+- TUI 手工 report 测试补上 default estimator，证明新增字段不破坏已有 TUI candidate selection。
+
+遇到的问题：
+
+- `ActiveCompressionReport` 新增字段后，TUI 测试里手工构造 report 需要补字段。
+- 处理方式：使用 `CompressionTokenEstimatorReport::default()`，不改变 TUI 运行行为。
+
+提交范围：
+
+- `rust/crates/memorph/src/core/active_compression.rs`
+- `rust/crates/memorph/src/tui/app.rs`
+- `rust/apps/memorph/src/main.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 13：优先补 retrieval bridge 的 query/search 能力，向 Headroom CCR 的 `retrieve(hash, query=...)` 靠近。当前 retrieval 已能按 archive_ref 返回完整原始 events，但还不能只取相关片段；做 query/search 后，后续 MCP retrieval 才不会无条件把大 archive 展开回上下文。
