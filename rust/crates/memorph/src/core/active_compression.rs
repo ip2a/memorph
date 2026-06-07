@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::canonical::{CanonicalSession, EventBlock, SessionEventKind};
+use crate::canonical::{CanonicalSession, EventBlock, EventRole, SessionEvent, SessionEventKind};
 use crate::provider::canonical_event_text;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -128,6 +128,7 @@ pub enum CompressionSkipReason {
     SystemOrDeveloperInstruction,
     AlreadyCompressed,
     BelowByteThreshold,
+    InsufficientEstimatedSavings,
     UnsupportedEventShape,
 }
 
@@ -145,13 +146,26 @@ pub fn build_dry_run_report(
     session: &CanonicalSession,
     params: ActiveCompressionParams,
 ) -> ActiveCompressionReport {
+    let policy = params.policy;
     let original_estimated_bytes = estimate_session_bytes(session);
     let original_estimated_tokens = estimate_tokens_from_bytes(original_estimated_bytes);
+    let (candidates, skipped) = plan_compression_candidates(session, &policy);
+    let estimated_bytes_saved = candidates
+        .iter()
+        .map(|candidate| candidate.estimated_bytes_saved)
+        .sum();
+    let estimated_tokens_saved = candidates
+        .iter()
+        .map(|candidate| candidate.estimated_tokens_saved)
+        .sum();
+    let compressed_estimated_bytes = original_estimated_bytes.saturating_sub(estimated_bytes_saved);
+    let compressed_estimated_tokens =
+        original_estimated_tokens.saturating_sub(estimated_tokens_saved);
     ActiveCompressionReport {
         source_provider_id: params.source_provider_id,
         target_provider_id: params.target_provider_id,
         dry_run: true,
-        policy: params.policy,
+        policy,
         session_event_count: session.events.len(),
         message_event_count: session
             .events
@@ -170,26 +184,269 @@ pub fn build_dry_run_report(
             .count(),
         original_estimated_bytes,
         original_estimated_tokens,
-        compressed_estimated_bytes: original_estimated_bytes,
-        compressed_estimated_tokens: original_estimated_tokens,
-        estimated_bytes_saved: 0,
-        estimated_tokens_saved: 0,
-        candidates: Vec::new(),
-        skipped: Vec::new(),
+        compressed_estimated_bytes,
+        compressed_estimated_tokens,
+        estimated_bytes_saved,
+        estimated_tokens_saved,
+        candidates,
+        skipped,
         archive_refs: Vec::new(),
     }
 }
 
+pub fn plan_compression_candidates(
+    session: &CanonicalSession,
+    policy: &ActiveCompressionPolicy,
+) -> (Vec<CompressionCandidateReport>, Vec<CompressionSkipReport>) {
+    let protected_message_indexes = protected_recent_message_indexes(session, policy);
+    let mut candidates = Vec::new();
+    let mut skipped = Vec::new();
+
+    for (event_index, event) in session.events.iter().enumerate() {
+        let estimated_bytes = estimate_event_bytes(event);
+        let estimated_tokens = estimate_tokens_from_bytes(estimated_bytes);
+
+        if matches!(event.role, EventRole::System | EventRole::Developer) {
+            skipped.push(skip_report(
+                event,
+                event_index,
+                CompressionSkipReason::SystemOrDeveloperInstruction,
+                estimated_bytes,
+                estimated_tokens,
+            ));
+            continue;
+        }
+
+        if event
+            .blocks
+            .iter()
+            .any(|block| matches!(block, EventBlock::Compressed { .. }))
+        {
+            skipped.push(skip_report(
+                event,
+                event_index,
+                CompressionSkipReason::AlreadyCompressed,
+                estimated_bytes,
+                estimated_tokens,
+            ));
+            continue;
+        }
+
+        if protected_message_indexes.contains(&event_index) {
+            skipped.push(skip_report(
+                event,
+                event_index,
+                CompressionSkipReason::ProtectedRecentMessage,
+                estimated_bytes,
+                estimated_tokens,
+            ));
+            continue;
+        }
+
+        if estimated_bytes < policy.min_candidate_bytes {
+            skipped.push(skip_report(
+                event,
+                event_index,
+                CompressionSkipReason::BelowByteThreshold,
+                estimated_bytes,
+                estimated_tokens,
+            ));
+            continue;
+        }
+
+        let Some((kind, reason, risk)) = classify_candidate(event) else {
+            skipped.push(skip_report(
+                event,
+                event_index,
+                CompressionSkipReason::UnsupportedEventShape,
+                estimated_bytes,
+                estimated_tokens,
+            ));
+            continue;
+        };
+
+        let compressed_estimated_bytes = estimate_candidate_compressed_bytes(estimated_bytes, kind);
+        let compressed_estimated_tokens = estimate_tokens_from_bytes(compressed_estimated_bytes);
+        let estimated_bytes_saved = estimated_bytes.saturating_sub(compressed_estimated_bytes);
+        let estimated_tokens_saved = estimated_tokens.saturating_sub(compressed_estimated_tokens);
+        if estimated_bytes_saved.saturating_mul(100)
+            < estimated_bytes.saturating_mul(policy.min_savings_ratio_percent as usize)
+        {
+            skipped.push(skip_report(
+                event,
+                event_index,
+                CompressionSkipReason::InsufficientEstimatedSavings,
+                estimated_bytes,
+                estimated_tokens,
+            ));
+            continue;
+        }
+        candidates.push(CompressionCandidateReport {
+            id: format!("candidate-{:04}", candidates.len() + 1),
+            kind,
+            event_ids: vec![event.id.clone()],
+            start_event_index: event_index,
+            end_event_index: event_index,
+            reason,
+            risk,
+            original_estimated_bytes: estimated_bytes,
+            original_estimated_tokens: estimated_tokens,
+            compressed_estimated_bytes,
+            compressed_estimated_tokens,
+            estimated_bytes_saved,
+            estimated_tokens_saved,
+            archive_refs: Vec::new(),
+        });
+    }
+
+    (candidates, skipped)
+}
+
 pub fn estimate_session_bytes(session: &CanonicalSession) -> usize {
-    session
-        .events
-        .iter()
-        .map(|event| canonical_event_text(event).len())
-        .sum()
+    session.events.iter().map(estimate_event_bytes).sum()
 }
 
 pub fn estimate_tokens_from_bytes(bytes: usize) -> usize {
     bytes.div_ceil(4)
+}
+
+fn protected_recent_message_indexes(
+    session: &CanonicalSession,
+    policy: &ActiveCompressionPolicy,
+) -> Vec<usize> {
+    session
+        .events
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, event)| event.kind == SessionEventKind::Message)
+        .take(policy.protect_recent_message_events)
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+fn estimate_event_bytes(event: &SessionEvent) -> usize {
+    canonical_event_text(event).len()
+}
+
+fn classify_candidate(
+    event: &SessionEvent,
+) -> Option<(
+    CompressionCandidateKind,
+    CompressionSelectionReason,
+    CompressionRisk,
+)> {
+    if event
+        .blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+    {
+        return Some((
+            CompressionCandidateKind::LargeToolOutput,
+            CompressionSelectionReason::LargeToolOutput,
+            CompressionRisk::Low,
+        ));
+    }
+
+    if event
+        .blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::CommandResult { .. }))
+    {
+        return Some((
+            CompressionCandidateKind::LargeLogOutput,
+            CompressionSelectionReason::LargeCommandOutput,
+            CompressionRisk::Low,
+        ));
+    }
+
+    let text = canonical_event_text(event);
+    if looks_like_search_results(&text) {
+        return Some((
+            CompressionCandidateKind::SearchResults,
+            CompressionSelectionReason::LargeSearchResult,
+            CompressionRisk::Low,
+        ));
+    }
+
+    if event
+        .blocks
+        .iter()
+        .any(|block| matches!(block, EventBlock::ProviderPayload { .. }))
+    {
+        return Some((
+            CompressionCandidateKind::ProviderPayloadText,
+            CompressionSelectionReason::HistoricalContext,
+            CompressionRisk::High,
+        ));
+    }
+
+    if event.kind == SessionEventKind::Message
+        && matches!(
+            event.role,
+            EventRole::User | EventRole::Assistant | EventRole::Tool
+        )
+        && !text.trim().is_empty()
+    {
+        return Some((
+            CompressionCandidateKind::HistoricalConversationRange,
+            CompressionSelectionReason::HistoricalContext,
+            CompressionRisk::Medium,
+        ));
+    }
+
+    None
+}
+
+fn looks_like_search_results(text: &str) -> bool {
+    let matching_lines = text
+        .lines()
+        .filter(|line| {
+            let mut parts = line.splitn(3, ':');
+            let Some(path) = parts.next() else {
+                return false;
+            };
+            let Some(line_number) = parts.next() else {
+                return false;
+            };
+            parts.next().is_some()
+                && (path.contains('/') || path.contains('.'))
+                && line_number.parse::<usize>().is_ok()
+        })
+        .take(3)
+        .count();
+    matching_lines >= 2
+}
+
+fn estimate_candidate_compressed_bytes(
+    original_bytes: usize,
+    kind: CompressionCandidateKind,
+) -> usize {
+    let ratio = match kind {
+        CompressionCandidateKind::LargeToolOutput => 20,
+        CompressionCandidateKind::LargeLogOutput => 20,
+        CompressionCandidateKind::SearchResults => 30,
+        CompressionCandidateKind::HistoricalConversationRange => 35,
+        CompressionCandidateKind::ProviderPayloadText => 50,
+    };
+    let estimated = original_bytes.saturating_mul(ratio) / 100;
+    estimated.max(128).min(original_bytes)
+}
+
+fn skip_report(
+    event: &SessionEvent,
+    event_index: usize,
+    reason: CompressionSkipReason,
+    estimated_bytes: usize,
+    estimated_tokens: usize,
+) -> CompressionSkipReport {
+    CompressionSkipReport {
+        event_id: event.id.clone(),
+        event_index,
+        reason,
+        estimated_bytes,
+        estimated_tokens,
+    }
 }
 
 fn default_recent_message_protection() -> usize {
@@ -277,6 +534,89 @@ mod tests {
         assert_eq!(value["policy"]["mode"], "plan_only");
     }
 
+    #[test]
+    fn planner_selects_large_candidates_and_reports_skips() {
+        let session = planner_sample_session();
+        let policy = ActiveCompressionPolicy {
+            protect_recent_message_events: 1,
+            min_candidate_bytes: 16,
+            min_savings_ratio_percent: 20,
+            mode: ActiveCompressionMode::PlanOnly,
+        };
+        let report = build_dry_run_report(
+            &session,
+            ActiveCompressionParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy,
+                dry_run: true,
+            },
+        );
+
+        let candidate_kinds = report
+            .candidates
+            .iter()
+            .map(|candidate| candidate.kind)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            candidate_kinds,
+            vec![
+                CompressionCandidateKind::HistoricalConversationRange,
+                CompressionCandidateKind::LargeToolOutput,
+                CompressionCandidateKind::LargeLogOutput,
+                CompressionCandidateKind::SearchResults,
+            ]
+        );
+        assert_eq!(report.candidates[0].id, "candidate-0001");
+        assert_eq!(report.candidates[0].event_ids, vec!["old-user"]);
+        assert!(report.estimated_bytes_saved > 0);
+        assert!(report.compressed_estimated_bytes < report.original_estimated_bytes);
+
+        assert_skip(
+            &report,
+            "system",
+            CompressionSkipReason::SystemOrDeveloperInstruction,
+        );
+        assert_skip(
+            &report,
+            "compressed",
+            CompressionSkipReason::AlreadyCompressed,
+        );
+        assert_skip(&report, "small", CompressionSkipReason::BelowByteThreshold);
+        assert_skip(
+            &report,
+            "recent",
+            CompressionSkipReason::ProtectedRecentMessage,
+        );
+    }
+
+    #[test]
+    fn planner_rejects_candidates_below_required_savings_ratio() {
+        let mut session = sample_session();
+        session.events = vec![text_event("old-user", EventRole::User, &"x".repeat(200))];
+        let report = build_dry_run_report(
+            &session,
+            ActiveCompressionParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 0,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 90,
+                    mode: ActiveCompressionMode::PlanOnly,
+                },
+                dry_run: true,
+            },
+        );
+
+        assert!(report.candidates.is_empty());
+        assert_skip(
+            &report,
+            "old-user",
+            CompressionSkipReason::InsufficientEstimatedSavings,
+        );
+    }
+
     fn sample_session() -> CanonicalSession {
         let now = Utc::now();
         CanonicalSession {
@@ -304,6 +644,43 @@ mod tests {
             artifacts: Vec::new(),
             extensions: BTreeMap::new(),
         }
+    }
+
+    fn planner_sample_session() -> CanonicalSession {
+        let mut session = sample_session();
+        session.events = vec![
+            text_event(
+                "system",
+                EventRole::System,
+                &"system instruction ".repeat(4),
+            ),
+            text_event(
+                "old-user",
+                EventRole::User,
+                &"historical context ".repeat(40),
+            ),
+            tool_result_event("tool-output", &"tool output line\n".repeat(12)),
+            command_result_event("command-output", &"compiler warning\n".repeat(12)),
+            text_event(
+                "search",
+                EventRole::Tool,
+                &[
+                    "src/lib.rs:10:match one repeated context",
+                    "src/core.rs:22:match two repeated context",
+                    "src/api.rs:33:match three repeated context",
+                ]
+                .join("\n")
+                .repeat(8),
+            ),
+            compressed_event("compressed"),
+            text_event("small", EventRole::Assistant, "tiny"),
+            text_event(
+                "recent",
+                EventRole::User,
+                &"latest active request ".repeat(8),
+            ),
+        ];
+        session
     }
 
     fn text_event(id: &str, role: EventRole, text: &str) -> SessionEvent {
@@ -338,6 +715,39 @@ mod tests {
         }
     }
 
+    fn tool_result_event(id: &str, content: &str) -> SessionEvent {
+        SessionEvent {
+            id: id.to_string(),
+            kind: SessionEventKind::ToolResult,
+            role: EventRole::Tool,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::ToolResult {
+                tool_call_id: "tool-1".to_string(),
+                content: content.to_string(),
+                is_error: false,
+            }],
+            metadata: event_metadata("claude", id),
+        }
+    }
+
+    fn command_result_event(id: &str, stdout: &str) -> SessionEvent {
+        SessionEvent {
+            id: id.to_string(),
+            kind: SessionEventKind::CommandResult,
+            role: EventRole::Tool,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::CommandResult {
+                command: Some("cargo check".to_string()),
+                exit_code: Some(0),
+                stdout: Some(stdout.to_string()),
+                stderr: None,
+            }],
+            metadata: event_metadata("claude", id),
+        }
+    }
+
     fn event_metadata(provider_id: &str, original_id: &str) -> EventMetadata {
         EventMetadata {
             source: EventSource {
@@ -351,5 +761,22 @@ mod tests {
             fidelity: MappingDisposition::Preserved,
             provider_ext: BTreeMap::new(),
         }
+    }
+
+    fn assert_skip(
+        report: &ActiveCompressionReport,
+        event_id: &str,
+        reason: CompressionSkipReason,
+    ) {
+        assert!(
+            report
+                .skipped
+                .iter()
+                .any(|skip| skip.event_id == event_id && skip.reason == reason),
+            "missing skip reason {:?} for {} in {:?}",
+            reason,
+            event_id,
+            report.skipped
+        );
     }
 }

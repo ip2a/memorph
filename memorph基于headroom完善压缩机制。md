@@ -991,3 +991,78 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 3：Planner MVP，从 `CanonicalSession` 中找候选 event ranges，并输出 selected/skipped reasons。
+
+### 2026-06-07：Phase 3 / Planner MVP
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认当前目标是持续推进 memorph 的主动压缩机制。
+- 已确认 Phase 3 边界：只做候选规划和 skipped reason，不写 archive，不替换 events，不接入 switch/export。
+- 已检查工作区状态。
+
+已完成：
+
+- 在 `build_dry_run_report` 中接入 planner，dry-run report 现在会包含：
+  - `candidates`
+  - `skipped`
+  - `estimated_bytes_saved`
+  - `estimated_tokens_saved`
+  - `compressed_estimated_bytes`
+  - `compressed_estimated_tokens`
+- 新增 `plan_compression_candidates`。
+- 新增最近消息保护逻辑：
+  - 默认保护最近 `protect_recent_message_events` 个 message events。
+- 新增 skip rules：
+  - system/developer 指令跳过：`SystemOrDeveloperInstruction`
+  - 已有压缩块跳过：`AlreadyCompressed`
+  - 最近消息跳过：`ProtectedRecentMessage`
+  - 小于阈值跳过：`BelowByteThreshold`
+  - 估算节省率不足跳过：`InsufficientEstimatedSavings`
+  - 暂不支持的 event shape 跳过：`UnsupportedEventShape`
+- 新增 candidate classification：
+  - `HistoricalConversationRange`
+  - `LargeToolOutput`
+  - `LargeLogOutput`
+  - `SearchResults`
+  - `ProviderPayloadText`
+- 新增保守估算：
+  - tool/log 预计保留 20%
+  - search 预计保留 30%
+  - historical conversation 预计保留 35%
+  - provider payload 预计保留 50%
+  - summary 下限 128 bytes，避免过度乐观。
+- 新增测试覆盖：
+  - 大 conversation/tool/log/search 会进入 candidates。
+  - system、已压缩、小内容、最近消息会进入 skipped。
+  - 高 savings threshold 会拒绝候选。
+
+明确未做：
+
+- 还没有多事件 range 合并。
+- 还没有实际摘要生成。
+- 还没有 archive-backed apply。
+- 还没有删除或替换任何原始 event。
+- 还没有 CLI/API/TUI 暴露。
+
+测试：
+
+- `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression`：通过，4 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，109 passed。
+
+遇到的问题：
+
+- 第一次运行 `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression` 时，`planner_selects_large_candidates_and_reports_skips` 失败。
+- 原因：测试样例里的 conversation/search 内容太短，保守 summary 下限 128 bytes 导致估算节省率不足，被 planner 正确拒绝。
+- 处理方式：不放宽规则，改为使用真正的大内容样例，测试通过。
+
+提交范围：
+
+- `rust/crates/memorph/src/core/active_compression.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 4：Archive-backed apply，把 selected candidate 的原始 events 写入 archive，并用 `EventBlock::Compressed` 替换。
