@@ -1,0 +1,926 @@
+# memorph 基于 Headroom 完善压缩机制
+
+## 0. 目标原文与执行纪律
+
+### 0.1 当前长期目标
+
+用户目标：
+
+> 这个对我非常重要 我需要你把你的这个记录放到一个 新的文件里 就叫 memorph基于headroom完善压缩机制。md 的文件里 写清楚 写详细所有要做的工作 要写的非常非常详细 这个对我非常重要 所有能从headroom学习到的东西都要写清楚，然后准备开始给我依照这些md文件推进，每当你做了一次记忆整理的时候 都要去看一下我的目标是什么 不要丢失目标 给我持续推进 每完成一个小环节就给我做好一次git 这个非常非常重要，完成一部分就在这个md上标注一部分进展 开始执行
+
+### 0.2 这个文件的定位
+
+这个文件不是普通调研总结，而是后续推进 memorph 压缩机制的长期工程规格书和进度面板。
+
+后续每次处理本目标时，必须先读本文件，确认：
+
+- 当前目标是什么。
+- 已完成了哪些小环节。
+- 下一个最小可交付环节是什么。
+- 哪些部分不能简化。
+- 哪些 Headroom 思路是要学习的，哪些不要搬。
+
+### 0.3 后续执行纪律
+
+每完成一个小环节必须做三件事：
+
+1. 更新本文件的“进展记录”。
+2. 只提交本环节相关文件，不把用户已有无关改动带入提交。
+3. 做一次 git commit，commit message 要能说明完成的小环节。
+
+如果某一小环节涉及代码改动，还要补充：
+
+- 对应测试。
+- 测试命令和结果。
+- 未能测试的原因。
+
+---
+
+## 1. 当前已确认事实
+
+### 1.1 memorph 已经具备的基础
+
+memorph 不是从零开始做压缩。当前代码里已经有一部分非常关键的基础：
+
+- canonical 层已有 `EventBlock::Compressed`。
+- 已有 `memorph-archive://...` 形式的 archive reference。
+- 已有压缩 archive 的写入、加载、列表、恢复、展开能力。
+- 已有 provider-native compression projection 的架构。
+- Codex 已支持把 canonical compressed block 导出成 Codex 原生 `type: "compacted"` rollout item。
+- Codex 已支持导入 `type: "compacted"` 并映射回 `EventBlock::Compressed`。
+- workspace 已经是一等能力，session 列表、切换、Codex 修复逻辑都有 workspace 维度。
+
+这说明当前缺失的不是“能不能表示压缩块”，而是：
+
+> memorph 还不能主动从普通 canonical session 中选择一段正常历史，把它真实压缩成一个新的 `EventBlock::Compressed`，并把原文完整归档。
+
+### 1.2 当前 memorph 压缩机制的位置
+
+当前已有逻辑主要是：
+
+- 对已有压缩块进行 preserve。
+- 对已有 native compaction 进行 normalize。
+- 需要时 expand compressed segment。
+- target provider 导出时把已有 compressed block 投影成目标 provider 的格式。
+
+当前缺失的主动压缩流程是：
+
+```text
+普通 canonical events
+-> 选择可压缩 range
+-> 生成摘要/压缩内容
+-> archive 原始 events
+-> 用 EventBlock::Compressed 替换原 range
+-> 再交给 provider projection
+```
+
+### 1.3 Headroom 的定位
+
+Headroom 是一个 runtime request compression layer，不是 session migration tool。
+
+Headroom 的核心目标是：
+
+```text
+agent/app 发给 LLM 的请求
+-> Headroom proxy/SDK 先压缩 tool outputs/logs/RAG/history/files
+-> 再转发给模型
+```
+
+所以 Headroom 解决的是“在线请求送进模型前变小”，memorph 当前目标解决的是“跨 agent 会话中间态和会话文件迁移时变小”。
+
+两者不是同一层，但 Headroom 的压缩原则可以学习。
+
+---
+
+## 2. Headroom 需要学习的内容
+
+### 2.1 必须深学：CCR
+
+CCR = Compress, Cache, Retrieve。
+
+Headroom 的 CCR 含义：
+
+```text
+原始大内容
+-> 压缩成短内容/marker
+-> 原文存进本地 store
+-> prompt 里带 hash marker
+-> 模型需要细节时调用 retrieve tool
+-> runtime 根据 hash 取回原文
+```
+
+Headroom Rust 里的关键点：
+
+- 原文 payload 会计算 hash。
+- hash 用 BLAKE3。
+- marker 格式类似 `<<ccr:HASH>>`。
+- store 可以是 memory/sqlite/redis。
+- runtime 通过 `headroom_retrieve` 查回原文。
+
+memorph 应该学习的是语义，不是照搬实现。
+
+memorph 对应实现应该是：
+
+```text
+source events
+-> 写入 durable compression archive
+-> 得到 memorph-archive://...
+-> compressed event 里带 archive_ref
+-> CLI/API/MCP 可以按 archive_ref 取回原文
+```
+
+memorph 不应该照搬 Headroom 的 5 分钟 TTL cache，因为 session archive 需要长期稳定可恢复。
+
+memorph 必须保证：
+
+- 压缩块可逆。
+- archive ref 稳定。
+- 原始事件完整保存。
+- restore/expand 不依赖 LLM。
+
+### 2.2 必须深学：ContentRouter
+
+Headroom 不把所有内容都交给一个摘要器，而是先识别内容类型，再选择策略。
+
+Headroom 的内容类型大致包括：
+
+- JSON array。
+- tool output。
+- logs/build/test output。
+- search/ripgrep results。
+- git diff。
+- code。
+- plain text。
+- mixed content。
+
+Headroom 的策略大致是：
+
+```text
+detect content type
+-> route to SmartCrusher / LogCompressor / SearchCompressor / DiffCompressor / CodeCompressor / Kompress
+-> 得到 compressed candidate
+-> 验证是否真的更小
+-> 接受或拒绝
+```
+
+memorph 应该学习这个分层：
+
+```text
+canonical event/block
+-> 判断是 conversation / tool output / log / search result / code / provider payload
+-> 使用对应压缩策略
+```
+
+memorph 不应该一开始就做大而全算法。第一阶段可以先做 deterministic router 的最小可用版本：
+
+- conversation range：保留任务目标、关键决定、未解决问题、最后结论。
+- tool/log：保留命令、退出状态、错误摘要、关键路径、最后 N 行、失败原因。
+- search result：保留 query、命中文件列表、关键匹配行摘要。
+- code/diff：默认保守，不主动压缩正文，只记录文件路径和变更摘要，除非后续有专门策略。
+
+### 2.3 必须深学：live-zone 原则
+
+Headroom 新版明确不再做 rolling window 式“删历史消息”，而是只压缩 live zone。
+
+Headroom runtime 里的 live-zone 大意：
+
+- 不动 provider prompt cache 热区。
+- 不动 system/tool definitions/historical prefix。
+- 只动最新请求中模型马上要用的大块内容。
+- 失败时原文原样转发。
+
+memorph 是 session-level，不是 request-level，所以映射方式不同：
+
+memorph 的 live-zone-like 原则应该是：
+
+- 默认不压最近 N 轮。
+- 默认不压当前任务目标、最新用户问题、最新 assistant 结论。
+- 优先压旧历史、重复 tool output、大日志、大搜索结果。
+- 切换 agent 时，目标 agent 不应该看到大量已失效的原文历史。
+
+这个原则不是为了“偷懒少压”，而是为了防止把当前任务状态压没。
+
+### 2.4 必须深学：token validation gate
+
+Headroom 每个 block 压缩后会检查：
+
+```text
+compressed_tokens < original_tokens
+```
+
+如果不满足，就记录 `RejectedNotSmaller`，保留原文。
+
+memorph 也必须有类似 gate：
+
+```text
+estimated_compressed_size < original_size
+```
+
+建议第一阶段不要追求 provider 精确 tokenizer，可以先做两层：
+
+1. 字符/字节级 size gate：压缩文本必须比原 canonical text 小。
+2. 粗略 token estimate gate：按 3.5 或 4 chars/token 估算。
+
+后续可以增加 provider-specific tokenizer。
+
+必须拒绝的情况：
+
+- 摘要太长。
+- archive marker + metadata 之后没有节省。
+- range 太小，不值得压。
+- 压缩后无法生成足够有意义的 summary。
+
+### 2.5 必须深学：manifest / decision report
+
+Headroom 的每个 block 都会记录 outcome。
+
+典型 outcome：
+
+- `Compressed`：压缩成功。
+- `RejectedNotSmaller`：压了但没变小，拒绝。
+- `BelowByteThreshold`：太小，不压。
+- `NoCompressionApplied`：没有适合的压缩器。
+- `CompressorError`：压缩器失败，当前 block 回退。
+- `Excluded`：属于 hot zone，不能动。
+
+memorph 必须学习这个，因为用户明确不希望“没底线没有标准的简化”。
+
+memorph 的 dry-run report 应该至少包括：
+
+- candidate id。
+- event range。
+- source event ids。
+- role 分布。
+- 原始 size。
+- 预计压缩后 size。
+- 预计节省。
+- 选择原因。
+- 风险级别。
+- 是否会 archive。
+- 如果跳过，跳过原因。
+
+### 2.6 必须深学：provider-specific projection
+
+Headroom 分 provider 的原因不是每个 provider 用完全不同压缩算法，而是：
+
+- 请求格式不同。
+- live zone 定位不同。
+- cache hot zone 不同。
+- tool/result 结构不同。
+- 认证/订阅策略不同。
+- runtime 工具注册方式不同。
+
+例如：
+
+- Anthropic `/v1/messages`：内容在 `messages[].content[]`，有 cache_control。
+- OpenAI Chat `/v1/chat/completions`：tool result 是 `role=tool` message。
+- OpenAI Responses `/v1/responses`：内容是 typed input item。
+- Codex wrap：需要改 `~/.codex/config.toml`，支持 WebSocket/HTTP 和 MCP。
+
+memorph 对应 provider 差异应该是：
+
+- source detection：能不能识别源 agent 的原生压缩块。
+- normalize：源原生压缩块如何变成 `EventBlock::Compressed`。
+- target projection：目标 agent 能否接收 native compressed block。
+- portable fallback：不能 native 时怎么展示。
+- retrieval support：目标 agent 能不能通过 MCP/API/CLI 找回 archive。
+- workspace semantics：目标 agent 的 workspace/session index 怎么写。
+
+memorph 不应该让每个 provider 自己做压缩算法。压缩算法应该在 canonical 层完成，provider adapter 只负责原生格式映射。
+
+### 2.7 可浅学：byte-range surgery
+
+Headroom 的 runtime proxy 为了不破坏 prompt cache，会做 byte-range surgery：
+
+```text
+out = original_body[..block_start] + replacement + original_body[block_end..]
+```
+
+这样不会因为 JSON reserialize 改变空格、key 顺序、数字格式。
+
+memorph 当前处理 canonical session，不是在线 API body，所以第一阶段不需要这个。
+
+只有未来 memorph 要做 runtime proxy 时，才需要深学。
+
+### 2.8 可浅学：Headroom memory
+
+Headroom 有 cross-agent memory，但它是长期记忆同步，不是 session compression。
+
+对 memorph 有启发：
+
+- 可以按 workspace 隔离记忆。
+- 可以给 Codex 写 AGENTS.md。
+- 可以做 agent-native memory adapter。
+
+但这不是当前压缩主线。
+
+### 2.9 不要学习/不要照搬
+
+不要照搬：
+
+- Python proxy 架构。
+- runtime subscription/auth 代理细节。
+- 5 分钟 TTL CCR cache 作为 session archive。
+- 把压缩逻辑分散到每个 provider adapter。
+- LLM-only compression。
+- 无条件展开 compressed segments。
+
+---
+
+## 3. memorph 目标架构
+
+### 3.1 总原则
+
+memorph 的核心设计应该是：
+
+```text
+provider raw session
+-> provider import
+-> CanonicalSession
+-> active_compression
+-> CanonicalSession with EventBlock::Compressed
+-> prepare_session_for_target_provider
+-> provider export/native projection
+```
+
+压缩应该发生在 canonical 层。
+
+provider adapter 不做主动压缩，只做：
+
+- 识别原生压缩。
+- 归一化为 canonical compressed block。
+- 把 canonical compressed block 投影成目标 provider 原生格式。
+
+### 3.2 新模块：`core/active_compression`
+
+职责：
+
+- 接收 `CanonicalSession`。
+- 接收 compression policy。
+- 调用 planner 找候选 range。
+- 调用 strategy 生成 summary。
+- 调用 archive writer 写原始 events。
+- 用 compressed event 替换原 range。
+- 生成 `ActiveCompressionReport`。
+
+建议核心结构：
+
+```rust
+pub struct ActiveCompressionParams {
+    pub source_provider_id: String,
+    pub target_provider_id: String,
+    pub policy: ActiveCompressionPolicy,
+    pub dry_run: bool,
+}
+
+pub struct ActiveCompressionReport {
+    pub candidates: Vec<CompressionCandidateReport>,
+    pub applied_segments: usize,
+    pub skipped_segments: usize,
+    pub original_estimated_tokens: usize,
+    pub compressed_estimated_tokens: usize,
+    pub archive_refs: Vec<String>,
+}
+```
+
+### 3.3 新模块：`core/compression_planner`
+
+职责：
+
+- 扫描 canonical events。
+- 建立 event range candidates。
+- 保护最近上下文。
+- 跳过不可压缩内容。
+- 给每个 candidate 生成原因。
+
+第一阶段 candidate 类型：
+
+- `HistoricalConversationRange`
+- `LargeToolOutput`
+- `LargeLogOutput`
+- `SearchResults`
+- `ProviderPayloadText`
+
+第一阶段默认策略：
+
+- 保护最近 4 到 8 个 message events。
+- 不压 system/developer 指令。
+- 不压当前最后一个 user event。
+- 不压已经是 `EventBlock::Compressed` 的 event。
+- 不压没有 archive 能力的内容。
+- 大于阈值才进入候选。
+
+### 3.4 新模块：`core/compression_strategy`
+
+职责：
+
+- 对 candidate 生成 compressed summary。
+- 估算 before/after size。
+- 返回是否可接受。
+
+第一阶段策略：
+
+#### 3.4.1 Conversation deterministic summary
+
+保留：
+
+- 起始用户目标。
+- 关键任务目标变化。
+- 用户明确要求。
+- 已做决定。
+- 已完成工作。
+- 未完成工作。
+- 涉及文件路径。
+- 错误/阻塞。
+- 最后状态。
+
+不保留：
+
+- 冗余寒暄。
+- 重复确认。
+- 大段已过期工具输出。
+- 已经归档的细节。
+
+#### 3.4.2 Tool/log reducer
+
+保留：
+
+- 命令或工具名。
+- 是否成功。
+- exit code。
+- 关键 error/warn。
+- 关键文件路径。
+- 最后 N 行。
+- output 总行数/字节数。
+
+不保留：
+
+- 大量重复安装日志。
+- 重复构建进度条。
+- 大量无意义 stack trace 中重复帧。
+
+#### 3.4.3 Search result reducer
+
+保留：
+
+- 查询词。
+- 命中文件。
+- 关键匹配行。
+- 总命中数量。
+
+不保留：
+
+- 大量重复上下文行。
+
+### 3.5 新模块：`core/compression_estimator`
+
+职责：
+
+- 估算 canonical event/block size。
+- 估算 compressed summary size。
+- 提供 gate。
+
+第一阶段可以用：
+
+- UTF-8 byte count。
+- char count。
+- 简单 token estimate。
+
+第二阶段再接 provider tokenizer。
+
+### 3.6 新模块：`retrieval_bridge`
+
+职责：
+
+- 根据 `memorph-archive://...` 找 archive。
+- 返回原始 events。
+- 支持 CLI/API retrieval。
+- 未来支持 MCP retrieval。
+
+第一阶段先做 CLI/API 即可。
+
+---
+
+## 4. 主动压缩流程
+
+### 4.1 dry-run 流程
+
+```text
+read/import session
+-> canonical session
+-> planner scan
+-> produce candidates
+-> estimate before/after
+-> output report
+-> do not modify session
+```
+
+dry-run 输出必须告诉用户：
+
+- 哪些会压。
+- 为什么会压。
+- 哪些不会压。
+- 为什么不会压。
+- 预计节省多少。
+- 压缩后如何恢复。
+
+### 4.2 apply 流程
+
+```text
+read/import session
+-> canonical session
+-> planner scan or selected ranges
+-> strategy summarize
+-> validate size
+-> write archive
+-> replace events
+-> write/export session
+-> report archive refs
+```
+
+### 4.3 switch 集成流程
+
+```text
+source provider import
+-> canonical session
+-> active compression policy
+-> compressed canonical session
+-> prepare_session_for_target_provider
+-> target provider export
+```
+
+默认 policy 应该是保守的：
+
+- 如果 session 没超过阈值，不主动压。
+- 如果 target provider 原生支持 compressed block，可以更积极。
+- 如果 target provider 不支持 retrieval，只做 portable marker，不压太激进。
+
+---
+
+## 5. provider 差异设计
+
+### 5.1 provider capability registry
+
+需要有一个 registry 明确每个 provider 的能力。
+
+建议字段：
+
+```rust
+pub struct CompressionProviderCapability {
+    pub provider_id: &'static str,
+    pub detects_native_source: bool,
+    pub native_target_projection: bool,
+    pub portable_target_projection: bool,
+    pub retrieval_tool_support: RetrievalSupport,
+    pub default_projection: CompressionProjection,
+}
+```
+
+### 5.2 Codex
+
+当前已知：
+
+- Codex 原生 session rollout 有 `type: "compacted"`。
+- memorph 已经能导入 `compacted` 为 `EventBlock::Compressed`。
+- memorph 已经能导出 `EventBlock::Compressed` 为 `compacted`。
+
+目标：
+
+- active compression 产生的 compressed block 在 Codex 导出时必须继续变成 `type: "compacted"`。
+- `replacement_history` 里应该是 model-visible summary。
+- `payload.memorph` 里继续保留 archive_ref、source_event_ids、source_event_count。
+
+### 5.3 Opencode
+
+当前已知：
+
+- memorph 已有 opencode source compression normalize。
+- opencode 是 native source/target adapter 之一。
+
+目标：
+
+- active compression 不写 opencode 私有格式。
+- active compression 先写 canonical compressed block。
+- opencode adapter 再负责 native projection。
+
+### 5.4 Claude
+
+Claude 的 session 格式不是本阶段主动压缩的原生目标重点。
+
+目标：
+
+- 不要无条件 expand compressed segments。
+- 如果 Claude 没有可写 native compaction 格式，先用 portable marker。
+- 后续可研究 Claude Code 的 memory/MCP retrieval 接入。
+
+### 5.5 Kimi / DeepSeek TUI
+
+当前目标：
+
+- 先保证它们不会把其他 agent 压缩过的无意义 marker 当普通上下文长文本展开。
+- 能识别 canonical compressed block。
+- target 不支持 native compaction 时使用 portable projection。
+
+后续目标：
+
+- 继续研究各自原生压缩/上下文机制。
+- 如果有原生 compact marker，再新增 target projection。
+
+---
+
+## 6. 用户可选择压缩的设计
+
+### 6.1 CLI
+
+建议新增：
+
+```text
+memorph compression plan --session <id> --target codex
+memorph compression apply --session <id> --target codex --candidate <id>
+memorph compression apply --file session.morph --range <start..end>
+```
+
+必须支持：
+
+- dry-run。
+- apply。
+- list candidates。
+- include/exclude candidate。
+- 输出 archive refs。
+
+### 6.2 API
+
+建议新增：
+
+```text
+POST /api/v1/compression/plan
+POST /api/v1/compression/apply
+POST /api/v1/compression/retrieve
+```
+
+### 6.3 TUI
+
+建议后续做：
+
+- 在 session detail 中展示压缩候选。
+- 用户勾选 candidate。
+- 展示 before/after summary。
+- 确认 apply。
+
+---
+
+## 7. LLM 使用边界
+
+### 7.1 不能交给 LLM 的部分
+
+以下绝不能由 LLM 决定：
+
+- 原文是否保存。
+- archive id/ref。
+- source event ids。
+- provider native projection。
+- restore/expand。
+- token/size gate。
+- 是否删除原始 event。
+
+### 7.2 可以交给 LLM 的部分
+
+LLM 只适合做：
+
+- 压缩摘要。
+- 任务状态提炼。
+- 决策和待办提炼。
+- 面向不同 agent 的摘要风格调整。
+
+### 7.3 LLM summarizer 必须满足的标准
+
+LLM summarizer 输出必须有结构：
+
+```json
+{
+  "summary": "...",
+  "goals": [],
+  "decisions": [],
+  "completed_work": [],
+  "open_questions": [],
+  "files": [],
+  "risks": []
+}
+```
+
+必须有 deterministic fallback。
+
+LLM 输出必须通过：
+
+- 非空检查。
+- size gate。
+- 必要字段检查。
+- archive ref 附加。
+
+---
+
+## 8. 不允许的“没底线简化”
+
+不允许：
+
+- 只生成一段摘要，不保存原文。
+- 只按字符数截断。
+- 只保留最后几轮，把中间直接丢掉。
+- 压缩失败仍然删除原文。
+- 跨 agent 切换时把 compressed block 展开成巨大原文。
+- 把所有 provider 都输出成同一段普通文本。
+- 没有 dry-run、没有 report、用户不知道发生了什么。
+
+允许的阶段性简化：
+
+- 第一阶段不用 LLM。
+- 第一阶段不用 provider tokenizer。
+- 第一阶段不用 MCP retrieval。
+- 第一阶段不用 runtime proxy。
+- 第一阶段只实现 Codex native projection 验证，因为 Codex 已有基础。
+
+这些简化不伤害核心闭环。
+
+---
+
+## 9. 实施阶段
+
+### Phase 1：规格与现状确认
+
+目标：
+
+- 固化本文件。
+- 明确 Headroom 可学习内容。
+- 明确 memorph 不照搬内容。
+- 明确小环节提交纪律。
+
+验收：
+
+- 本文件存在。
+- 本文件包含目标、原则、架构、阶段、进展记录。
+- git commit 已提交本文件。
+
+### Phase 2：Active Compression 数据结构
+
+目标：
+
+- 新增主动压缩参数、报告、候选结构。
+- 不改现有 provider 行为。
+
+建议改动：
+
+- `rust/crates/memorph/src/core/active_compression.rs`
+- `rust/crates/memorph/src/core.rs` 或 `core/mod` 暴露模块。
+
+验收：
+
+- 能构造 dry-run report。
+- 不改变现有 switch/export 行为。
+- cargo test 通过。
+
+### Phase 3：Planner MVP
+
+目标：
+
+- 从 `CanonicalSession` 中找候选 event ranges。
+- 输出 selected/skipped reasons。
+
+默认规则：
+
+- 跳过 system/developer。
+- 跳过最近 N 个 message events。
+- 跳过已有 compressed block。
+- 小于阈值跳过。
+- 大 tool/log/search/conversation range 成为候选。
+
+验收：
+
+- 单元测试覆盖 selected/skipped。
+- dry-run 能解释原因。
+
+### Phase 4：Archive-backed apply
+
+目标：
+
+- 把 candidate 原始 events 写入 archive。
+- 用 compressed summary event 替换。
+- expand 能恢复。
+
+验收：
+
+- `compress -> expand` 后恢复原始 events。
+- archive_ref 存在并可加载。
+
+### Phase 5：Codex target 验证
+
+目标：
+
+- active compression 后导出 Codex。
+- 确认输出 `type: "compacted"`。
+- 确认 `payload.memorph.archive_ref` 存在。
+
+验收：
+
+- Codex export 测试通过。
+
+### Phase 6：CLI/API dry-run
+
+目标：
+
+- 用户能看见候选压缩计划。
+- 不需要先 apply。
+
+验收：
+
+- CLI/API 返回 candidates。
+- 每个 candidate 有 reason、estimated savings、risk。
+
+### Phase 7：CLI/API apply
+
+目标：
+
+- 用户可以选择 candidate apply。
+- 输出 archive refs 和报告。
+
+验收：
+
+- apply 产生变小 session。
+- expand 可恢复。
+
+### Phase 8：TUI 用户选择
+
+目标：
+
+- 在 TUI 展示候选。
+- 用户选择压缩。
+
+验收：
+
+- TUI 能预览并确认。
+
+### Phase 9：Retrieval bridge
+
+目标：
+
+- CLI/API 根据 archive_ref 找回原始内容。
+- 未来支持 MCP。
+
+验收：
+
+- `memorph-archive://...` 可解析并返回原始 events。
+
+### Phase 10：LLM summarizer 可选后端
+
+目标：
+
+- 在 deterministic summary 稳定后再加。
+- 不能破坏可逆性。
+
+验收：
+
+- LLM 失败 fallback。
+- LLM 输出过长会 reject。
+
+---
+
+## 10. 每次继续推进前的检查清单
+
+每次开始工作前检查：
+
+- [ ] 已阅读本文件。
+- [ ] 明确当前长期目标不是“简单总结”，而是完善压缩机制。
+- [ ] 明确本次要完成的小环节。
+- [ ] 明确不会提交无关用户改动。
+
+每次完成小环节后检查：
+
+- [ ] 更新本文件进展记录。
+- [ ] 运行必要测试或说明未运行原因。
+- [ ] git status 确认只提交相关文件。
+- [ ] git commit。
+
+---
+
+## 11. 进展记录
+
+### 2026-06-07：Phase 1 / 规格文件创建
+
+状态：完成。
+
+已完成：
+
+- 创建本文件。
+- 固化用户长期目标。
+- 梳理 Headroom 可学习内容。
+- 梳理 memorph 目标架构。
+- 梳理不允许的简化和允许的阶段性简化。
+- 梳理后续 Phase 2 到 Phase 10。
+
+提交范围：
+
+- 仅提交 `memorph基于headroom完善压缩机制。md`。
+- 不提交其他已有工作区改动或忽略文件。
+
+下一步：
+
+- 进入 Phase 2：实现 Active Compression 数据结构。
