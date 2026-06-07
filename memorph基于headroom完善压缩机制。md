@@ -1528,3 +1528,96 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 10：LLM summarizer 可选后端，在 deterministic summary 稳定闭环之上增加可选 LLM 摘要，并保持失败 fallback、size gate 和 archive 可逆性。
+
+### 2026-06-07：Phase 10 / 可选 LLM summarizer 接口与安全 gate
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 10 的目标是在 deterministic summary 稳定闭环之上增加可选 LLM summarizer。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已确认本阶段边界：只实现可注入 summarizer 接口、结构化 draft、验证 gate 和 fallback；不直接绑定具体外部模型 API，不引入网络调用，不改变默认 deterministic 行为。
+
+已完成：
+
+- 新增可注入 summarizer trait：
+  - `ActiveCompressionSummarizer`
+  - `summarize(&CompressionSummaryRequest) -> CompressionSummaryDraft`
+- 新增 summarizer 请求结构：
+  - `CompressionSummaryRequest`
+  - 包含 candidate、source events、archive ref。
+- 新增结构化 summarizer draft：
+  - `summary`
+  - `goals`
+  - `decisions`
+  - `completed_work`
+  - `open_questions`
+  - `files`
+  - `risks`
+- 新增 summary 来源记录：
+  - `CompressionSummarySource::Deterministic`
+  - `CompressionSummarySource::External`
+  - `CompressionSummarySource::DeterministicFallback`
+- 新增 summary 拒绝原因：
+  - `Empty`
+  - `TooLarge`
+  - `SummarizerError`
+- `CompressionCandidateReport` 现在会在 apply 后记录：
+  - `summary_source`
+  - `summary_rejection_reason`
+- apply 流程保持默认安全：
+  - 默认没有 summarizer 时仍使用 deterministic summary。
+  - summarizer 只通过显式注入入口启用。
+  - archive 写入仍先发生，原始 events 仍完整保存。
+  - final summary 中继续包含 `Archive: memorph-archive://...`。
+- 外部 summary 必须通过验证：
+  - 非空。
+  - 实际 summary bytes 小于原始 candidate bytes。
+  - 实际 summary bytes 不超过 planner 给出的 compressed budget。
+- 外部 summary 失败时自动 fallback：
+  - summarizer 报错 fallback deterministic。
+  - summarizer 输出过长 fallback deterministic。
+  - summarizer 输出空 fallback deterministic。
+  - fallback 不影响 archive 写入和 expand 恢复。
+
+明确未做：
+
+- 没有接入具体 LLM provider。
+- 没有新增 CLI/API 参数选择 LLM summarizer。
+- 没有做 provider-specific 摘要风格。
+- 没有做 async/network summarizer。
+- 没有改变 TUI 当前默认压缩行为。
+
+这些未做项是刻意保留的后续阶段，因为当前阶段的核心是先把可选 summarizer 后端插槽和安全 gate 做扎实，避免把 LLM 放到不可控的删除/归档路径里。
+
+测试：
+
+- `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression`：通过，12 passed。
+- `cargo check --manifest-path rust/Cargo.toml -p memorph-lib`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，126 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- 外部 summarizer 输出足够短时会被使用，`summary_source == External`。
+- 外部 summarizer 输出过长时会被拒绝，`summary_source == DeterministicFallback`，`summary_rejection_reason == TooLarge`。
+- 外部 summarizer 报错时会 fallback，`summary_rejection_reason == SummarizerError`。
+- 使用外部 summary 后，archive expand 仍能恢复原始 event。
+
+遇到的问题：
+
+- 初始测试用的外部 summary 包含过多结构化字段，超过候选压缩预算，被 gate 正确拒绝。
+- 处理方式：不放宽 gate，改测试为真正短的外部摘要，证明 gate 是有效边界而不是摆设。
+
+提交范围：
+
+- `rust/crates/memorph/src/core/active_compression.rs`
+- `rust/crates/memorph/src/tui/app.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 11：将 active compression 作为可选 switch policy 接入会话切换流程，但必须默认保守，且不能绕过 plan/apply/report/archive/retrieval 的安全闭环。
