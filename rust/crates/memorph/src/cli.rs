@@ -236,6 +236,39 @@ pub enum CompressionCommands {
         #[arg(long, value_name = "PERCENT")]
         min_savings_ratio_percent: Option<u8>,
     },
+    /// Apply active compression and write a compressed canonical export
+    Apply {
+        /// Source provider ID, or source provider hint when using --file
+        #[arg(value_name = "SOURCE")]
+        source_provider_id: String,
+        /// Target provider ID for projection-aware compression
+        #[arg(value_name = "TARGET")]
+        target_provider_id: String,
+        /// Source session ID to load from SOURCE
+        #[arg(short, long, value_name = "SESSION_ID", conflicts_with = "file")]
+        session_id: Option<String>,
+        /// Canonical export file to compress instead of provider storage
+        #[arg(long, value_name = "FILE", conflicts_with = "session_id")]
+        file: Option<String>,
+        /// Candidate ID to compress; repeat to select multiple. Empty selects all candidates.
+        #[arg(long = "candidate-id", value_name = "ID")]
+        candidate_ids: Vec<String>,
+        /// Output filename prefix (default: CANONICAL_ID_active_compressed)
+        #[arg(short, long, value_name = "PREFIX")]
+        output: Option<String>,
+        /// Output format: json, md, html, morph, both (default: json)
+        #[arg(short, long, value_name = "FORMAT", default_value = "json")]
+        format: String,
+        /// Number of latest message events to protect from compression
+        #[arg(long, value_name = "N")]
+        protect_recent_message_events: Option<usize>,
+        /// Minimum candidate size in bytes
+        #[arg(long, value_name = "BYTES")]
+        min_candidate_bytes: Option<usize>,
+        /// Minimum estimated savings ratio percentage
+        #[arg(long, value_name = "PERCENT")]
+        min_savings_ratio_percent: Option<u8>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -421,6 +454,55 @@ mod tests {
                 assert_eq!(protect_recent_message_events, Some(2));
                 assert_eq!(min_candidate_bytes, Some(128));
                 assert_eq!(min_savings_ratio_percent, Some(25));
+            }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn compression_apply_accepts_candidates_and_output_options() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "compression",
+            "apply",
+            "claude",
+            "codex",
+            "--file",
+            "session.json",
+            "--candidate-id",
+            "candidate-0001",
+            "--candidate-id",
+            "candidate-0002",
+            "--output",
+            "compressed/session",
+            "--format",
+            "both",
+        ]);
+
+        match cli.command {
+            Some(Commands::Compression {
+                command:
+                    CompressionCommands::Apply {
+                        source_provider_id,
+                        target_provider_id,
+                        session_id,
+                        file,
+                        candidate_ids,
+                        output,
+                        format,
+                        ..
+                    },
+            }) => {
+                assert_eq!(source_provider_id, "claude");
+                assert_eq!(target_provider_id, "codex");
+                assert_eq!(session_id, None);
+                assert_eq!(file.as_deref(), Some("session.json"));
+                assert_eq!(
+                    candidate_ids,
+                    vec!["candidate-0001".to_string(), "candidate-0002".to_string()]
+                );
+                assert_eq!(output.as_deref(), Some("compressed/session"));
+                assert_eq!(format, "both");
             }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }

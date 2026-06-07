@@ -1284,3 +1284,95 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 7：CLI/API apply，让用户可以选择 candidate_ids 执行主动压缩，并返回 archive refs 与压缩报告。
+
+### 2026-06-07：Phase 7 / CLI API apply
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 7 的目标是“用户可以选择 candidate apply，并输出 archive refs 和报告”。
+- 已确认本阶段边界：apply 写出压缩后的 canonical export，不直接修改 provider 原生会话仓库；provider 原生投影仍由后续 export/switch 流程负责。
+- 已检查工作区状态，当前相关变更集中在 core apply command、CLI、API、app dispatch。
+
+已完成：
+
+- 新增 core 公共 apply 入口：
+  - `ActiveCompressionApplyCommandParams`
+  - `ActiveCompressionApplyCommandResult`
+  - `active_compression_apply`
+- dry-run/apply 共用 source session loader：
+  - `session_id`：从 `source_provider_id` 对应 provider 原生会话加载。
+  - `file`：从 canonical export 文件加载。
+  - 同时传 `session_id` 和 `file` 会拒绝，避免来源歧义。
+- apply 支持用户选择：
+  - `candidate_ids` 为空时压缩全部当前候选。
+  - `candidate_ids` 非空时只压缩指定候选。
+- apply 输出：
+  - 压缩后的 canonical export 文件。
+  - `archive_refs`。
+  - 完整 `ActiveCompressionReport`。
+- 新增 CLI 命令：
+  - `memorph compression apply SOURCE TARGET --session-id SESSION_ID`
+  - `memorph compression apply SOURCE TARGET --file session.json`
+  - `--candidate-id ID` 可重复指定。
+  - `--output PREFIX` 指定输出前缀。
+  - `--format json|md|html|morph|both` 指定输出格式。
+  - 继续支持 dry-run 同款 policy knobs：最近消息保护、最小候选大小、最小节省率。
+- 新增 API 路由：
+  - `POST /api/v1/compression/apply`
+- API body 支持：
+  - `source_provider_id`
+  - `target_provider_id`
+  - `session_id`
+  - `file`
+  - `policy`
+  - `candidate_ids`
+  - `output_prefix`
+  - `format`
+- 新增测试覆盖：
+  - core apply 从 canonical file 写出压缩后的 canonical export。
+  - apply 写入 archive ref。
+  - 压缩后 session 中出现 `EventBlock::Compressed`。
+  - 被压缩的旧原文不再作为普通 `EventBlock::Text` 留在压缩后 session。
+  - expand 能通过 archive 恢复原始 event。
+  - CLI parser 接受 `compression apply` 的 candidate/output/format 参数。
+  - API route 对 `session_id` 与 `file` 同时传入的歧义来源返回错误，不写 archive。
+
+明确未做：
+
+- 没有直接修改 Codex/Claude/Kimi/DeepSeek 等 provider 的原生会话文件。
+- 没有把 apply 自动接入 session switch。
+- 没有 TUI 勾选候选界面。
+- 没有 MCP retrieval。
+- 没有 LLM summarizer。
+- 没有 provider-specific tokenizer。
+
+测试：
+
+- `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_apply_from_file_writes_archive_and_expandable_output`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_apply_accepts_candidates_and_output_options`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_apply_route_rejects_ambiguous_source_without_writing_archive`：通过，1 passed。
+- `cargo check --manifest-path rust/Cargo.toml -p memorph`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，118 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+遇到的问题：
+
+- core apply 测试最初不能简单断言压缩后 JSON 全文不包含旧关键词。
+- 原因：deterministic summary 会保留 preview，preview 中可能合法包含原文片段。
+- 处理方式：改为断言旧长文本不再作为普通 `EventBlock::Text` 保存；这更符合真实验收目标，即“原始大内容被压缩块替换，细节进入 archive，而不是直接丢失”。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `rust/crates/memorph/src/api.rs`
+- `rust/crates/memorph/src/cli.rs`
+- `rust/apps/memorph/src/main.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 8：TUI 用户选择，在界面中展示 candidates、skips、before/after 信息，并允许用户确认 apply。

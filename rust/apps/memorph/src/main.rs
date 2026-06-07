@@ -403,6 +403,48 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             })?;
             print_active_compression_report(&report);
         }
+        CompressionCommands::Apply {
+            source_provider_id,
+            target_provider_id,
+            session_id,
+            file,
+            candidate_ids,
+            output,
+            format,
+            protect_recent_message_events,
+            min_candidate_bytes,
+            min_savings_ratio_percent,
+        } => {
+            let mut policy = core::active_compression::ActiveCompressionPolicy::default();
+            policy.mode = core::active_compression::ActiveCompressionMode::Auto;
+            if let Some(value) = protect_recent_message_events {
+                policy.protect_recent_message_events = value;
+            }
+            if let Some(value) = min_candidate_bytes {
+                policy.min_candidate_bytes = value;
+            }
+            if let Some(value) = min_savings_ratio_percent {
+                policy.min_savings_ratio_percent = value;
+            }
+            let result =
+                core::active_compression_apply(&core::ActiveCompressionApplyCommandParams {
+                    source_provider_id,
+                    target_provider_id,
+                    session_id,
+                    file,
+                    policy,
+                    candidate_ids,
+                    output_prefix: output,
+                    format,
+                })?;
+            for file in &result.files {
+                println!("Wrote active compression session: {}", file);
+            }
+            for archive_ref in &result.archive_refs {
+                println!("Archive: {}", archive_ref);
+            }
+            print_active_compression_report(&result.report);
+        }
     }
     Ok(())
 }

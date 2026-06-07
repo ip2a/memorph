@@ -126,6 +126,7 @@ pub fn router() -> Router {
             post(expand_compression_session),
         )
         .route("/api/v1/compression/plan", post(plan_active_compression))
+        .route("/api/v1/compression/apply", post(apply_active_compression))
         .route("/api/v1/import", post(import_session))
         .route("/api/v1/switch", post(switch_session))
         .route("/api/v1/find", get(find_sessions))
@@ -1033,6 +1034,21 @@ struct ActiveCompressionPlanBody {
     policy: core::active_compression::ActiveCompressionPolicy,
 }
 
+#[derive(Deserialize)]
+struct ActiveCompressionApplyBody {
+    source_provider_id: String,
+    target_provider_id: String,
+    session_id: Option<String>,
+    file: Option<String>,
+    #[serde(default)]
+    policy: core::active_compression::ActiveCompressionPolicy,
+    #[serde(default)]
+    candidate_ids: Vec<String>,
+    output_prefix: Option<String>,
+    #[serde(default = "default_format")]
+    format: String,
+}
+
 async fn restore_compression_archive(
     Json(body): Json<RestoreCompressionArchiveBody>,
 ) -> impl IntoResponse {
@@ -1070,6 +1086,25 @@ async fn plan_active_compression(Json(body): Json<ActiveCompressionPlanBody>) ->
         policy: body.policy,
     };
     match core::active_compression_dry_run(&params) {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn apply_active_compression(
+    Json(body): Json<ActiveCompressionApplyBody>,
+) -> impl IntoResponse {
+    let params = core::ActiveCompressionApplyCommandParams {
+        source_provider_id: body.source_provider_id,
+        target_provider_id: body.target_provider_id,
+        session_id: body.session_id,
+        file: body.file,
+        policy: body.policy,
+        candidate_ids: body.candidate_ids,
+        output_prefix: body.output_prefix,
+        format: body.format,
+    };
+    match core::active_compression_apply(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -1480,6 +1515,34 @@ mod tests {
             .iter()
             .any(|skipped| skipped["event_id"] == "recent-user"
                 && skipped["reason"] == "protected_recent_message"));
+    }
+
+    #[tokio::test]
+    async fn compression_apply_route_rejects_ambiguous_source_without_writing_archive() {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/compression/apply")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "source_provider_id": "claude",
+                    "target_provider_id": "codex",
+                    "session_id": "s1",
+                    "file": "session.json",
+                    "format": "json"
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(value["ok"], false);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Use either session_id or file"));
     }
 
     #[tokio::test]
