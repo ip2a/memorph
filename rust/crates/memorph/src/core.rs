@@ -526,6 +526,97 @@ pub struct RetrievedCompressionArchiveMatch {
     pub snippets: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionRetrievalToolSpec {
+    pub name: String,
+    pub description: String,
+    pub archive_ref_scheme: String,
+    pub api: CompressionRetrievalToolApiSpec,
+    pub cli: CompressionRetrievalToolCliSpec,
+    pub input_schema: serde_json::Value,
+    pub output_contract: CompressionRetrievalToolOutputContract,
+    pub usage_rules: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionRetrievalToolApiSpec {
+    pub method: String,
+    pub path: String,
+    pub body_example: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionRetrievalToolCliSpec {
+    pub command: String,
+    pub query_command: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompressionRetrievalToolOutputContract {
+    pub full_retrieval: Vec<String>,
+    pub query_retrieval: Vec<String>,
+}
+
+pub fn compression_retrieval_tool_spec() -> CompressionRetrievalToolSpec {
+    CompressionRetrievalToolSpec {
+        name: "memorph_retrieve_compression_archive".to_string(),
+        description: "Retrieve original events from a durable memorph compression archive. Use query retrieval first when only specific details are needed.".to_string(),
+        archive_ref_scheme: "memorph-archive://".to_string(),
+        api: CompressionRetrievalToolApiSpec {
+            method: "POST".to_string(),
+            path: "/api/v1/compression/retrieve".to_string(),
+            body_example: serde_json::json!({
+                "archive_ref": "memorph-archive://canonical-id/archive.json.gz",
+                "query": "optional search terms",
+                "max_results": 5
+            }),
+        },
+        cli: CompressionRetrievalToolCliSpec {
+            command: "memorph compression retrieve <ARCHIVE_REF>".to_string(),
+            query_command:
+                "memorph compression retrieve <ARCHIVE_REF> --query <QUERY> --max-results 5"
+                    .to_string(),
+        },
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "archive_ref": {
+                    "type": "string",
+                    "description": "Durable archive reference from a compressed session block. Must start with memorph-archive://."
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional search query. When provided, retrieval returns only matching archived events and snippets."
+                },
+                "max_results": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Maximum matching events returned in query mode. Omit to use the default."
+                }
+            },
+            "required": ["archive_ref"]
+        }),
+        output_contract: CompressionRetrievalToolOutputContract {
+            full_retrieval: vec![
+                "events contains every original archived SessionEvent".to_string(),
+                "source_event_count equals the archive's full original event count".to_string(),
+                "returned_event_count equals events.length".to_string(),
+            ],
+            query_retrieval: vec![
+                "events contains only matching archived SessionEvent values".to_string(),
+                "matches contains event_id, event_index, score, and snippets for each returned event".to_string(),
+                "source_event_count still reports the archive's full original event count".to_string(),
+            ],
+        },
+        usage_rules: vec![
+            "Do not expand a compressed archive unconditionally when switching or continuing a session.".to_string(),
+            "Prefer query retrieval before full retrieval to avoid putting large archived history back into context.".to_string(),
+            "Use full retrieval only when the task explicitly requires the complete original segment.".to_string(),
+            "Archive retrieval is lossless; summaries are model-visible hints, not the source of truth.".to_string(),
+        ],
+    }
+}
+
 pub fn retrieve_compression_archive(
     params: &RetrieveCompressionArchiveParams,
 ) -> Result<RetrievedCompressionArchive> {
@@ -1379,6 +1470,29 @@ mod tests {
         );
         assert!(codex.detects_native_source);
         assert!(codex.native_target_projection);
+    }
+
+    #[test]
+    fn compression_retrieval_tool_spec_is_machine_readable_and_query_first() {
+        let spec = compression_retrieval_tool_spec();
+
+        assert_eq!(spec.name, "memorph_retrieve_compression_archive");
+        assert_eq!(spec.archive_ref_scheme, "memorph-archive://");
+        assert_eq!(spec.api.method, "POST");
+        assert_eq!(spec.api.path, "/api/v1/compression/retrieve");
+        assert_eq!(
+            spec.input_schema["required"],
+            serde_json::json!(["archive_ref"])
+        );
+        assert!(spec.input_schema["properties"].get("query").is_some());
+        assert!(spec
+            .usage_rules
+            .iter()
+            .any(|rule| rule.contains("Do not expand")));
+        assert!(spec
+            .usage_rules
+            .iter()
+            .any(|rule| rule.contains("Prefer query retrieval")));
     }
 
     #[test]

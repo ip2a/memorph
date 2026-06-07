@@ -1909,3 +1909,99 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 14：补 MCP retrieval 工具或 retrieval-provider runtime 暴露。建议先做 MCP retrieval tool，因为 archive query search 已经具备最小可用语义，MCP 工具可以让目标 agent 在看到 `memorph-archive://...` 后按需取回相关片段。
+
+### 2026-06-07：Phase 14 / retrieval tool spec 暴露
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 14 的目标是让目标 agent/runtime 能看到 `memorph-archive://...` 后按需检索，而不是无条件展开 archive。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已确认项目当前没有现成 MCP server 结构；直接引入 MCP 框架会扩大改动面，不适合本阶段。
+
+本阶段决策：
+
+- 先实现最小、稳定、机器可读的 retrieval tool specification，而不是仓促实现真实 MCP stdio server。
+- 原因：
+  - 当前已有 `compression retrieve` 和 `/api/v1/compression/retrieve` 的 durable archive query 检索能力。
+  - 本阶段缺的是给 agent/runtime 注入工具时可复用的工具契约。
+  - tool spec 可以被 CLI、API、后续 MCP server、provider runtime adapter 共同复用。
+  - 不复制 retrieve 逻辑，避免后续 MCP/API/CLI 出现参数漂移。
+
+已完成：
+
+- 新增 core 工具契约结构：
+  - `CompressionRetrievalToolSpec`
+  - `CompressionRetrievalToolApiSpec`
+  - `CompressionRetrievalToolCliSpec`
+  - `CompressionRetrievalToolOutputContract`
+- 新增 core 入口：
+  - `compression_retrieval_tool_spec()`
+- tool spec 明确：
+  - tool name：`memorph_retrieve_compression_archive`
+  - archive ref scheme：`memorph-archive://`
+  - API 调用方式：`POST /api/v1/compression/retrieve`
+  - CLI 调用方式：`memorph compression retrieve <ARCHIVE_REF>`
+  - query 调用方式：`--query <QUERY> --max-results N`
+  - input schema：`archive_ref` 必填，`query` 和 `max_results` 可选。
+  - full retrieval 与 query retrieval 的返回契约差异。
+  - 使用规则：不要无条件展开，优先 query retrieval，需要完整原文时才 full retrieval。
+- 新增 CLI 命令：
+  - `memorph compression tool-spec`
+  - 输出完整 JSON tool spec，便于 agent/runtime 读取。
+- 新增 API 路由：
+  - `GET /api/v1/compression/tool-spec`
+  - 返回同一份 core tool spec。
+
+明确未做：
+
+- 没有实现真实 MCP server。
+- 没有实现 provider runtime 自动 tool injection。
+- 没有实现 tool call response loop。
+- 没有新增 retrieve 查询算法；继续复用 Phase 13 的 deterministic archive query search。
+
+为什么这一步不是“半拉子”：
+
+- 本阶段没有把 MCP retrieval 的最终目标降级为“只写文档”。
+- 它补的是真实 MCP/server 注入前必须稳定的契约层：
+  - tool name。
+  - input schema。
+  - API/CLI 调用路径。
+  - 输出契约。
+  - 使用规则。
+- 后续做 MCP server 时可以直接复用 `compression_retrieval_tool_spec()`，只新增 stdio/tool-call transport，不需要重新定义参数和语义。
+- 更重要的是，本阶段继续强化“不无条件展开 archive”的核心原则。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieval_tool_spec_is_machine_readable_and_query_first -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_tool_spec_command_is_available -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_tool_spec_route_returns_retrieval_contract -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，133 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- core spec 是机器可读的，并且明确 query-first 使用规则。
+- CLI parser 支持 `compression tool-spec`。
+- API `GET /api/v1/compression/tool-spec` 返回 retrieval contract。
+
+遇到的问题：
+
+- 真实 MCP server 需要先明确项目内 server/transport 位置，否则会引入大而散的架构。
+- 处理方式：先把 retrieval tool contract 固化到 core，再由后续阶段接 MCP stdio server 或 provider runtime injection。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `rust/crates/memorph/src/cli.rs`
+- `rust/crates/memorph/src/api.rs`
+- `rust/apps/memorph/src/main.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 15：基于 Phase 14 的 tool spec 实现真实 MCP stdio server 或 provider runtime tool injection。建议优先做最小 MCP stdio server：暴露 `memorph_retrieve_compression_archive`，调用现有 `retrieve_compression_archive`，支持 `archive_ref/query/max_results`，并测试 query 模式不会全量返回 archive。
