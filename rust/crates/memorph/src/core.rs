@@ -492,11 +492,19 @@ pub fn restore_compression_archive(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrieveCompressionArchiveParams {
     pub archive_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievedCompressionArchive {
     pub archive_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub canonical_id: String,
     pub source_provider_id: String,
@@ -504,17 +512,25 @@ pub struct RetrievedCompressionArchive {
     pub summary_event_id: String,
     pub source_event_ids: Vec<String>,
     pub source_event_count: usize,
+    pub returned_event_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<RetrievedCompressionArchiveMatch>,
     pub events: Vec<SessionEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievedCompressionArchiveMatch {
+    pub event_id: String,
+    pub event_index: usize,
+    pub score: usize,
+    pub snippets: Vec<String>,
 }
 
 pub fn retrieve_compression_archive(
     params: &RetrieveCompressionArchiveParams,
 ) -> Result<RetrievedCompressionArchive> {
     let archive = compression::load_archive(&params.archive_ref)?;
-    Ok(retrieved_compression_archive(
-        params.archive_ref.clone(),
-        archive,
-    ))
+    Ok(retrieved_compression_archive(params, archive))
 }
 
 #[cfg(test)]
@@ -523,19 +539,30 @@ fn retrieve_compression_archive_in_dir(
     archive_dir: &std::path::Path,
 ) -> Result<RetrievedCompressionArchive> {
     let archive = compression::load_archive_from_dir(archive_dir, &params.archive_ref)?;
-    Ok(retrieved_compression_archive(
-        params.archive_ref.clone(),
-        archive,
-    ))
+    Ok(retrieved_compression_archive(params, archive))
 }
 
 fn retrieved_compression_archive(
-    archive_ref: String,
+    params: &RetrieveCompressionArchiveParams,
     archive: compression::CompressionArchive,
 ) -> RetrievedCompressionArchive {
     let source_event_count = archive.events.len();
+    let query = params
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|q| !q.is_empty());
+    let max_results = params.max_results;
+    let (events, matches) = if let Some(query) = query {
+        search_archive_events(&archive.events, query, max_results.unwrap_or(20))
+    } else {
+        (archive.events, Vec::new())
+    };
+    let returned_event_count = events.len();
     RetrievedCompressionArchive {
-        archive_ref,
+        archive_ref: params.archive_ref.clone(),
+        query: query.map(str::to_string),
+        max_results,
         created_at: archive.created_at,
         canonical_id: archive.canonical_id,
         source_provider_id: archive.source_provider_id,
@@ -543,8 +570,102 @@ fn retrieved_compression_archive(
         summary_event_id: archive.summary_event_id,
         source_event_ids: archive.source_event_ids,
         source_event_count,
-        events: archive.events,
+        returned_event_count,
+        matches,
+        events,
     }
+}
+
+fn search_archive_events(
+    events: &[SessionEvent],
+    query: &str,
+    max_results: usize,
+) -> (Vec<SessionEvent>, Vec<RetrievedCompressionArchiveMatch>) {
+    if max_results == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let query_lower = query.to_ascii_lowercase();
+    let terms = query_lower
+        .split_whitespace()
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return (events.to_vec(), Vec::new());
+    }
+
+    let mut ranked = events
+        .iter()
+        .enumerate()
+        .filter_map(|(event_index, event)| {
+            let text = provider::canonical_event_text(event);
+            let text_lower = text.to_ascii_lowercase();
+            let mut score = terms
+                .iter()
+                .map(|term| text_lower.matches(term).count())
+                .sum::<usize>();
+            if text_lower.contains(&query_lower) {
+                score += 5;
+            }
+            if score == 0 {
+                return None;
+            }
+            let snippets = archive_search_snippets(&text, &query_lower, &terms);
+            Some((
+                event_index,
+                score,
+                event.clone(),
+                RetrievedCompressionArchiveMatch {
+                    event_id: event.id.clone(),
+                    event_index,
+                    score,
+                    snippets,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    ranked.truncate(max_results);
+
+    let events = ranked
+        .iter()
+        .map(|(_, _, event, _)| event.clone())
+        .collect::<Vec<_>>();
+    let matches = ranked
+        .into_iter()
+        .map(|(_, _, _, search_match)| search_match)
+        .collect::<Vec<_>>();
+    (events, matches)
+}
+
+fn archive_search_snippets(text: &str, query_lower: &str, terms: &[&str]) -> Vec<String> {
+    let mut snippets = text
+        .lines()
+        .filter_map(|line| {
+            let line_lower = line.to_ascii_lowercase();
+            if line_lower.contains(query_lower)
+                || terms.iter().any(|term| line_lower.contains(term))
+            {
+                Some(truncate_search_snippet(line.trim(), 240))
+            } else {
+                None
+            }
+        })
+        .filter(|line| !line.is_empty())
+        .take(3)
+        .collect::<Vec<_>>();
+    if snippets.is_empty() {
+        snippets.push(truncate_search_snippet(text.trim(), 240));
+    }
+    snippets
+}
+
+fn truncate_search_snippet(value: &str, max_chars: usize) -> String {
+    let mut out = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
 }
 
 pub fn list_compression_archives() -> Result<Vec<compression::CompressionArchiveSummary>> {
@@ -1374,6 +1495,8 @@ mod tests {
         let retrieved = retrieve_compression_archive_in_dir(
             &RetrieveCompressionArchiveParams {
                 archive_ref: result.archive_refs[0].clone(),
+                query: None,
+                max_results: None,
             },
             archive_dir.path(),
         )
@@ -1382,7 +1505,42 @@ mod tests {
         assert_eq!(retrieved.target_provider_id, "codex");
         assert_eq!(retrieved.source_event_ids, vec!["old-user"]);
         assert_eq!(retrieved.source_event_count, 1);
+        assert_eq!(retrieved.returned_event_count, 1);
         assert!(retrieved.events.iter().any(|event| event.id == "old-user"));
+
+        let searched = retrieve_compression_archive_in_dir(
+            &RetrieveCompressionArchiveParams {
+                archive_ref: result.archive_refs[0].clone(),
+                query: Some("historical context".to_string()),
+                max_results: Some(5),
+            },
+            archive_dir.path(),
+        )
+        .unwrap();
+        assert_eq!(searched.query.as_deref(), Some("historical context"));
+        assert_eq!(searched.source_event_count, 1);
+        assert_eq!(searched.returned_event_count, 1);
+        assert_eq!(searched.events[0].id, "old-user");
+        assert_eq!(searched.matches.len(), 1);
+        assert_eq!(searched.matches[0].event_id, "old-user");
+        assert!(searched.matches[0]
+            .snippets
+            .iter()
+            .any(|snippet| snippet.contains("historical context")));
+
+        let no_match = retrieve_compression_archive_in_dir(
+            &RetrieveCompressionArchiveParams {
+                archive_ref: result.archive_refs[0].clone(),
+                query: Some("not present".to_string()),
+                max_results: Some(5),
+            },
+            archive_dir.path(),
+        )
+        .unwrap();
+        assert_eq!(no_match.source_event_count, 1);
+        assert_eq!(no_match.returned_event_count, 0);
+        assert!(no_match.events.is_empty());
+        assert!(no_match.matches.is_empty());
     }
 
     #[test]

@@ -384,10 +384,16 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
                 println!("Restored compression archive: {}", file);
             }
         }
-        CompressionCommands::Retrieve { archive_ref } => {
+        CompressionCommands::Retrieve {
+            archive_ref,
+            query,
+            max_results,
+        } => {
             let result =
                 core::retrieve_compression_archive(&core::RetrieveCompressionArchiveParams {
                     archive_ref,
+                    query,
+                    max_results,
                 })?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }

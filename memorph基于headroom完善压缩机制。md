@@ -1808,3 +1808,104 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 13：优先补 retrieval bridge 的 query/search 能力，向 Headroom CCR 的 `retrieve(hash, query=...)` 靠近。当前 retrieval 已能按 archive_ref 返回完整原始 events，但还不能只取相关片段；做 query/search 后，后续 MCP retrieval 才不会无条件把大 archive 展开回上下文。
+
+### 2026-06-07：Phase 13 / archive retrieval query search
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 13 的目标是补 retrieval bridge 的 query/search 能力。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已确认本阶段边界：只做 durable archive 内的本地检索，不做 MCP server，不做 LLM rerank，不接外部搜索/向量库。
+
+已完成：
+
+- `RetrieveCompressionArchiveParams` 新增：
+  - `query: Option<String>`
+  - `max_results: Option<usize>`
+- `RetrievedCompressionArchive` 新增：
+  - `query`
+  - `max_results`
+  - `returned_event_count`
+  - `matches`
+- 新增 `RetrievedCompressionArchiveMatch`：
+  - `event_id`
+  - `event_index`
+  - `score`
+  - `snippets`
+- retrieve 行为现在分两种：
+  - 不传 `query`：保持旧行为，返回 archive 内完整原始 `events`。
+  - 传 `query`：只返回命中的 `events`，并返回命中 match/snippet 信息。
+- query search 当前使用本地确定性文本检索：
+  - 基于 `canonical_event_text(event)`。
+  - query 按空白分词。
+  - term 命中计数作为基础 score。
+  - 完整 query phrase 命中加权。
+  - 结果按 score 降序、原始 event 顺序稳定排序。
+  - snippets 从命中行提取，最多 3 条，每条最多 240 chars。
+- `max_results` 控制 query 模式下最多返回的匹配 events。
+- CLI `memorph compression retrieve` 新增：
+  - `--query QUERY`
+  - `--max-results N`
+- API `POST /api/v1/compression/retrieve` body 新增：
+  - `query`
+  - `max_results`
+
+明确未做：
+
+- 没有实现 BM25。
+- 没有实现 embedding/vector search。
+- 没有实现跨 archive 搜索。
+- 没有实现 MCP retrieval tool。
+- 没有自动把 query retrieval 注入 provider runtime。
+
+为什么这一步重要：
+
+- 这是 Headroom CCR 的关键语义补齐：
+  - 压缩块里保留 archive ref。
+  - 模型或用户需要细节时，不必整段展开 archive。
+  - 可以按 query 取回相关片段。
+- 这一步避免未来 MCP retrieval 变成“又把大 archive 全量塞回上下文”的反模式。
+- 当前实现虽然是 deterministic local search，但已经建立了正确 API 形状；后续 BM25/embedding 只需要替换 scoring，不需要重写 archive/ref/report 结构。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_apply_from_file_writes_archive_and_expandable_output -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieve_accepts_archive_ref -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieve_route_rejects_invalid_archive_ref -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，130 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- 无 query retrieve 仍完整返回 archived source event。
+- query 命中时：
+  - `query` 字段回显。
+  - `source_event_count` 保持 archive 原始总数。
+  - `returned_event_count` 只统计返回的命中 events。
+  - `matches` 返回 event id 和 snippets。
+- query 不命中时：
+  - `source_event_count` 仍保留总数。
+  - `returned_event_count == 0`。
+  - `events` 和 `matches` 都为空。
+- CLI parser 验证 retrieve 支持 `--query` 和 `--max-results`。
+
+遇到的问题：
+
+- API success route 没有单独造真实 archive fixture，因为当前 archive 存储路径走全局 memorph dir，构造成功路径会引入额外测试环境耦合。
+- 处理方式：core 层用临时 archive dir 验证真实 query 行为；API 层保留现有 invalid-ref route 测试，新增字段是直接透传到同一 core params。后续如果补 API archive fixture，可进一步覆盖成功路由。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `rust/crates/memorph/src/cli.rs`
+- `rust/crates/memorph/src/api.rs`
+- `rust/apps/memorph/src/main.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 14：补 MCP retrieval 工具或 retrieval-provider runtime 暴露。建议先做 MCP retrieval tool，因为 archive query search 已经具备最小可用语义，MCP 工具可以让目标 agent 在看到 `memorph-archive://...` 后按需取回相关片段。
