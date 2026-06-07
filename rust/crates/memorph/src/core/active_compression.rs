@@ -1,6 +1,13 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
-use crate::canonical::{CanonicalSession, EventBlock, EventRole, SessionEvent, SessionEventKind};
+use crate::canonical::{
+    CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole, EventSource,
+    MappingDisposition, SessionEvent, SessionEventKind,
+};
+use crate::core::compression;
 use crate::provider::canonical_event_text;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -11,6 +18,22 @@ pub struct ActiveCompressionParams {
     pub policy: ActiveCompressionPolicy,
     #[serde(default)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveCompressionApplyParams {
+    pub source_provider_id: String,
+    pub target_provider_id: String,
+    #[serde(default)]
+    pub policy: ActiveCompressionPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveCompressionApplyResult {
+    pub session: CanonicalSession,
+    pub report: ActiveCompressionReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -140,8 +163,7 @@ pub enum CompressionRisk {
     High,
 }
 
-/// Phase 2 only builds a read-only dry-run report. Candidate selection,
-/// archive writing, and session mutation are introduced in later phases.
+/// Build a read-only report for active compression planning.
 pub fn build_dry_run_report(
     session: &CanonicalSession,
     params: ActiveCompressionParams,
@@ -302,6 +324,123 @@ pub fn plan_compression_candidates(
     (candidates, skipped)
 }
 
+pub fn apply_active_compression(
+    session: &CanonicalSession,
+    params: ActiveCompressionApplyParams,
+) -> Result<ActiveCompressionApplyResult> {
+    let archive_dir = crate::config::memorph_dir()?.join("compression_archives");
+    apply_active_compression_with_archive_dir(session, params, &archive_dir)
+}
+
+pub(crate) fn apply_active_compression_with_archive_dir(
+    session: &CanonicalSession,
+    params: ActiveCompressionApplyParams,
+    archive_dir: &Path,
+) -> Result<ActiveCompressionApplyResult> {
+    let mut report = build_dry_run_report(
+        session,
+        ActiveCompressionParams {
+            source_provider_id: params.source_provider_id.clone(),
+            target_provider_id: params.target_provider_id.clone(),
+            policy: params.policy,
+            dry_run: false,
+        },
+    );
+    report.dry_run = false;
+
+    let requested_ids = params.candidate_ids.iter().cloned().collect::<HashSet<_>>();
+    let selected = report
+        .candidates
+        .iter()
+        .filter(|candidate| requested_ids.is_empty() || requested_ids.contains(&candidate.id))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    report.candidates = selected.clone();
+    recompute_report_estimates(&mut report);
+
+    if selected.is_empty() {
+        return Ok(ActiveCompressionApplyResult {
+            session: session.clone(),
+            report,
+        });
+    }
+
+    let mut archive_refs = Vec::new();
+    let mut replacement_events = Vec::with_capacity(session.events.len());
+    let mut event_index = 0usize;
+    while event_index < session.events.len() {
+        let Some(candidate) = selected
+            .iter()
+            .find(|candidate| candidate.start_event_index == event_index)
+        else {
+            replacement_events.push(session.events[event_index].clone());
+            event_index += 1;
+            continue;
+        };
+
+        let source_events =
+            session.events[candidate.start_event_index..=candidate.end_event_index].to_vec();
+        let source_event_ids = source_events
+            .iter()
+            .map(|event| event.id.clone())
+            .collect::<Vec<_>>();
+        let summary_seed = build_deterministic_summary(candidate, &source_events, None);
+        let summary_event = active_summary_event(
+            candidate,
+            &source_events,
+            &params.source_provider_id,
+            summary_seed,
+            None,
+        );
+        let archive_ref = compression::write_active_compression_archive_in_dir(
+            archive_dir,
+            session,
+            &params.source_provider_id,
+            &params.target_provider_id,
+            &summary_event,
+            source_event_ids,
+            source_events.clone(),
+        )?;
+        let summary = build_deterministic_summary(candidate, &source_events, Some(&archive_ref));
+        replacement_events.push(active_summary_event(
+            candidate,
+            &source_events,
+            &params.source_provider_id,
+            summary,
+            Some(archive_ref.clone()),
+        ));
+        archive_refs.push(archive_ref);
+        event_index = candidate.end_event_index + 1;
+    }
+
+    let mut next = session.clone();
+    next.events = replacement_events;
+    for candidate in &mut report.candidates {
+        if let Some(archive_ref) = archive_refs
+            .iter()
+            .find(|archive_ref| archive_ref.contains(&candidate.id.replace('-', "_")))
+        {
+            candidate.archive_refs = vec![archive_ref.clone()];
+        }
+    }
+    if report
+        .candidates
+        .iter()
+        .any(|candidate| candidate.archive_refs.is_empty())
+    {
+        for (candidate, archive_ref) in report.candidates.iter_mut().zip(archive_refs.iter()) {
+            candidate.archive_refs = vec![archive_ref.clone()];
+        }
+    }
+    report.archive_refs = archive_refs;
+
+    Ok(ActiveCompressionApplyResult {
+        session: next,
+        report,
+    })
+}
+
 pub fn estimate_session_bytes(session: &CanonicalSession) -> usize {
     session.events.iter().map(estimate_event_bytes).sum()
 }
@@ -447,6 +586,123 @@ fn skip_report(
         estimated_bytes,
         estimated_tokens,
     }
+}
+
+fn recompute_report_estimates(report: &mut ActiveCompressionReport) {
+    report.estimated_bytes_saved = report
+        .candidates
+        .iter()
+        .map(|candidate| candidate.estimated_bytes_saved)
+        .sum();
+    report.estimated_tokens_saved = report
+        .candidates
+        .iter()
+        .map(|candidate| candidate.estimated_tokens_saved)
+        .sum();
+    report.compressed_estimated_bytes = report
+        .original_estimated_bytes
+        .saturating_sub(report.estimated_bytes_saved);
+    report.compressed_estimated_tokens = report
+        .original_estimated_tokens
+        .saturating_sub(report.estimated_tokens_saved);
+}
+
+fn active_summary_event(
+    candidate: &CompressionCandidateReport,
+    source_events: &[SessionEvent],
+    source_provider_id: &str,
+    summary: String,
+    archive_ref: Option<String>,
+) -> SessionEvent {
+    let source_event_ids = source_events
+        .iter()
+        .map(|event| event.id.clone())
+        .collect::<Vec<_>>();
+    let source_event_count = source_event_ids.len();
+    let timestamp = source_events
+        .last()
+        .map(|event| event.timestamp)
+        .unwrap_or_else(chrono::Utc::now);
+    let mut provider_ext = BTreeMap::new();
+    provider_ext.insert(
+        "memorph_compression".to_string(),
+        serde_json::json!({
+            "active": true,
+            "candidate_id": candidate.id,
+            "candidate_kind": candidate.kind,
+            "selection_reason": candidate.reason,
+            "source_event_count": source_event_count,
+            "archive_ref": archive_ref.clone(),
+        }),
+    );
+
+    SessionEvent {
+        id: format!("memorph-active-compressed-{}", candidate.id),
+        kind: SessionEventKind::Message,
+        role: EventRole::Assistant,
+        timestamp,
+        links: EventLinks::default(),
+        blocks: vec![EventBlock::Compressed {
+            source_provider_id: source_provider_id.to_string(),
+            summary,
+            source_event_ids,
+            source_event_count: Some(source_event_count),
+            archive_ref,
+        }],
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: "memorph".to_string(),
+                original_id: Some(candidate.id.clone()),
+                original_role: Some("assistant".to_string()),
+                phase: Some("active-compression".to_string()),
+            },
+            model: None,
+            usage: None,
+            fidelity: MappingDisposition::Normalized,
+            provider_ext,
+        },
+    }
+}
+
+fn build_deterministic_summary(
+    candidate: &CompressionCandidateReport,
+    source_events: &[SessionEvent],
+    archive_ref: Option<&str>,
+) -> String {
+    let mut lines = vec![
+        "[Active compressed session segment]".to_string(),
+        format!("Kind: {:?}", candidate.kind),
+        format!("Reason: {:?}", candidate.reason),
+        format!("Source event count: {}", source_events.len()),
+        format!("Source event ids: {}", candidate.event_ids.join(", ")),
+        format!(
+            "Original estimated bytes: {}",
+            candidate.original_estimated_bytes
+        ),
+        format!(
+            "Original estimated tokens: {}",
+            candidate.original_estimated_tokens
+        ),
+    ];
+    if let Some(first) = source_events.first() {
+        let preview = canonical_event_text(first);
+        let preview = preview.trim();
+        if !preview.is_empty() {
+            lines.push(format!("Preview: {}", truncate_preview(preview, 240)));
+        }
+    }
+    if let Some(archive_ref) = archive_ref {
+        lines.push(format!("Archive: {}", archive_ref));
+    }
+    lines.join("\n")
+}
+
+fn truncate_preview(value: &str, max_chars: usize) -> String {
+    let mut out = value.chars().take(max_chars).collect::<String>();
+    if value.chars().count() > max_chars {
+        out.push_str("...");
+    }
+    out
 }
 
 fn default_recent_message_protection() -> usize {
@@ -614,6 +870,106 @@ mod tests {
             &report,
             "old-user",
             CompressionSkipReason::InsufficientEstimatedSavings,
+        );
+    }
+
+    #[test]
+    fn apply_writes_archive_and_replaces_selected_candidate() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let mut session = planner_sample_session();
+        session.events.retain(|event| event.id != "compressed");
+        let result = apply_active_compression_with_archive_dir(
+            &session,
+            ActiveCompressionApplyParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 1,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: ActiveCompressionMode::Auto,
+                },
+                candidate_ids: vec!["candidate-0001".to_string()],
+            },
+            archive_dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(result.report.candidates.len(), 1);
+        assert_eq!(result.report.archive_refs.len(), 1);
+        assert!(result
+            .session
+            .events
+            .iter()
+            .all(|event| event.id != "old-user"));
+
+        let compressed_event = result
+            .session
+            .events
+            .iter()
+            .find(|event| event.id == "memorph-active-compressed-candidate-0001")
+            .expect("compressed replacement event");
+        let EventBlock::Compressed {
+            source_provider_id,
+            source_event_ids,
+            source_event_count,
+            archive_ref,
+            summary,
+        } = compressed_event.blocks.first().expect("compressed block")
+        else {
+            panic!("expected compressed block");
+        };
+        assert_eq!(source_provider_id, "claude");
+        assert_eq!(source_event_ids, &vec!["old-user".to_string()]);
+        assert_eq!(*source_event_count, Some(1));
+        assert_eq!(
+            archive_ref.as_deref(),
+            Some(result.report.archive_refs[0].as_str())
+        );
+        assert!(summary.contains("Archive: memorph-archive://"));
+
+        let (expanded, expand_report) = compression::expand_compressed_segments_in_dir(
+            &result.session,
+            "claude",
+            "codex",
+            archive_dir.path(),
+        )
+        .unwrap();
+        assert_eq!(expand_report.expanded_segments, 1);
+        assert_eq!(expand_report.restored_events, 1);
+        assert!(expanded.events.iter().any(|event| event.id == "old-user"));
+    }
+
+    #[test]
+    fn apply_without_candidates_returns_original_session() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let session = sample_session();
+        let result = apply_active_compression_with_archive_dir(
+            &session,
+            ActiveCompressionApplyParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy::default(),
+                candidate_ids: Vec::new(),
+            },
+            archive_dir.path(),
+        )
+        .unwrap();
+
+        assert!(result.report.candidates.is_empty());
+        assert!(result.report.archive_refs.is_empty());
+        assert_eq!(
+            result
+                .session
+                .events
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<Vec<_>>(),
+            session
+                .events
+                .iter()
+                .map(|event| event.id.clone())
+                .collect::<Vec<_>>()
         );
     }
 

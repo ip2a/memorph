@@ -1066,3 +1066,72 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 4：Archive-backed apply，把 selected candidate 的原始 events 写入 archive，并用 `EventBlock::Compressed` 替换。
+
+### 2026-06-07：Phase 4 / Archive-backed Apply
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认本阶段目标是“真实写 archive 并替换 session events”，不是只做 planner 或报告。
+- 已确认边界：不接入 CLI/API/TUI，不改变 provider switch/export 行为，不引入 LLM，不做多事件 range 合并。
+- 已检查工作区状态，当前相关变更只集中在 active compression 与 compression archive helper。
+
+已完成：
+
+- 新增主动压缩 apply 参数和结果结构：
+  - `ActiveCompressionApplyParams`
+  - `ActiveCompressionApplyResult`
+- 新增 apply 入口：
+  - `apply_active_compression`
+  - `apply_active_compression_with_archive_dir`
+- apply 流程已经形成最小闭环：
+  - 先复用 `build_dry_run_report` 得到候选。
+  - `candidate_ids` 为空时默认选择全部候选。
+  - `candidate_ids` 非空时只压缩指定候选。
+  - 每个 selected candidate 的原始 `SessionEvent` 先写入 compression archive。
+  - archive 写入成功后，才用 `EventBlock::Compressed` 替换原 event。
+  - compressed block 记录 `source_provider_id`、`source_event_ids`、`source_event_count`、`archive_ref`。
+  - deterministic summary 会包含 candidate kind、reason、source ids、估算大小、preview、archive ref。
+  - report 会回填 `archive_refs`。
+- 在 `core::compression` 中新增 archive 写入复用 helper：
+  - `write_active_compression_archive_in_dir`
+- 在测试范围内新增 archive 展开 helper：
+  - `expand_compressed_segments_in_dir`
+  - 该 helper 标记为 `#[cfg(test)]`，避免扩大生产 API 面和 dead code warning。
+- 添加测试覆盖：
+  - apply 会写 archive，并用 `EventBlock::Compressed` 替换指定 candidate。
+  - compressed block 的 `source_provider_id` 使用 apply 参数中的源 provider，例如 `claude`，不是硬编码 `memorph`。
+  - archive 可展开恢复原始 event。
+  - 无候选时 apply 返回原 session，不写 archive。
+
+明确未做：
+
+- 还没有 CLI/API/TUI 暴露。
+- 还没有接入 session switch 或 provider export 流程。
+- 还没有 LLM 摘要生成。
+- 还没有 Headroom 风格的内容专用压缩器。
+- 还没有多事件 range 合并。
+- 还没有用户选择 UI。
+
+测试：
+
+- `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression`：通过，6 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，111 passed。
+
+遇到的问题：
+
+- 完整测试首次通过时出现 `expand_compressed_segments_in_dir` dead code warning。
+- 原因：该 helper 只用于单元测试验证 archive 可恢复，不应该暴露为生产路径。
+- 处理方式：加 `#[cfg(test)]`，完整测试重新通过且无 warning。
+
+提交范围：
+
+- `rust/crates/memorph/src/core/active_compression.rs`
+- `rust/crates/memorph/src/core/compression.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 5：Codex target verification，验证主动压缩后的 canonical compressed block 在导出到 Codex 时会变成 Codex 原生 `compacted`，并且从 Codex 再导入时仍能映射回 canonical compressed block。

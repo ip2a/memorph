@@ -273,6 +273,37 @@ pub fn list_archives() -> Result<Vec<CompressionArchiveSummary>> {
     list_archives_in_dir(&archive_base_dir()?)
 }
 
+pub(crate) fn write_active_compression_archive_in_dir(
+    archive_dir: &Path,
+    session: &CanonicalSession,
+    source_provider_id: &str,
+    target_provider_id: &str,
+    summary_event: &SessionEvent,
+    source_event_ids: Vec<String>,
+    events: Vec<SessionEvent>,
+) -> Result<String> {
+    let policy = CompressionPolicy::preserve(source_provider_id, target_provider_id);
+    write_archive(
+        archive_dir,
+        session,
+        &policy,
+        summary_event,
+        source_event_ids,
+        events,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn expand_compressed_segments_in_dir(
+    session: &CanonicalSession,
+    source_provider_id: &str,
+    target_provider_id: &str,
+    archive_dir: &Path,
+) -> Result<(CanonicalSession, CompressionReport)> {
+    let policy = CompressionPolicy::expand(source_provider_id, target_provider_id);
+    expand_compressed_segments_with_archive(session, &policy, archive_dir)
+}
+
 fn prepare_for_export_with_archive_dir(
     session: &CanonicalSession,
     policy: &CompressionPolicy,
