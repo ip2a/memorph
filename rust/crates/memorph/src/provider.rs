@@ -362,11 +362,19 @@ pub fn canonical_block_text(block: &EventBlock) -> String {
             }
             if let Some(archive_ref) = archive_ref {
                 parts.push(format!("Archive: {}", archive_ref));
+                parts.push(compression_retrieval_hint(archive_ref));
             }
             parts.join("\n")
         }
         EventBlock::Unknown { raw } => format!("[Unknown]\n{}", raw),
     }
+}
+
+pub fn compression_retrieval_hint(archive_ref: &str) -> String {
+    format!(
+        "Retrieve specific details with: memorph compression retrieve {} --query <terms> --max-results 5",
+        archive_ref
+    )
 }
 
 #[cfg(test)]
@@ -400,6 +408,7 @@ mod tests {
         assert!(text.contains("compressed summary"));
         assert!(text.contains("Source event count: 20"));
         assert!(text.contains("memorph-archive://session/archive.json"));
+        assert!(text.contains("memorph compression retrieve memorph-archive://session/archive.json --query <terms> --max-results 5"));
         assert!(!text.contains("source-event-19"));
     }
 

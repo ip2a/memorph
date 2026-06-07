@@ -2005,3 +2005,87 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 15：基于 Phase 14 的 tool spec 实现真实 MCP stdio server 或 provider runtime tool injection。建议优先做最小 MCP stdio server：暴露 `memorph_retrieve_compression_archive`，调用现有 `retrieve_compression_archive`，支持 `archive_ref/query/max_results`，并测试 query 模式不会全量返回 archive。
+
+### 2026-06-07：Phase 15 / 非 MCP 的 query-first retrieval hint
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认长期目标仍是完善 memorph 压缩机制。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 用户明确要求：不需要实现 MCP 部分。
+
+本阶段决策：
+
+- 不实现 MCP stdio server。
+- Phase 15 改为非 MCP 的 provider runtime 暴露能力：让压缩块的 model-visible 文本明确告诉 agent 如何用 CLI 做 query-first retrieval。
+- 原因：
+  - Phase 13 已有真实 archive query retrieval。
+  - Phase 14 已有机器可读 tool spec。
+  - 在不做 MCP 的前提下，目标 agent 最需要的是在 compressed block 里看到可执行的恢复路径。
+  - 当前 compressed block 只显示 `Archive: memorph-archive://...`，没有说明“不要全量展开，先按 query 检索”。
+
+已完成：
+
+- 新增共享 helper：
+  - `provider::compression_retrieval_hint(archive_ref)`
+- portable compressed block projection 现在会在 archive ref 后追加简短提示：
+  - `Retrieve specific details with: memorph compression retrieve <ARCHIVE_REF> --query <terms> --max-results 5`
+- Codex native `type: "compacted"` model-visible history 同步使用同一条 retrieval hint。
+- 这样覆盖：
+  - Claude portable projection。
+  - Kimi portable projection。
+  - DeepSeek portable projection。
+  - Cursor/Kiro portable projection。
+  - Codex native compacted projection。
+  - 其他通过 `canonical_block_text` 输出 compressed block 的 provider。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有实现 provider 自动 tool injection。
+- 没有改变 archive/retrieve 数据结构。
+- 没有改变 active compression apply/switch 的选择和归档逻辑。
+- 没有全量展开 archive。
+
+为什么这一步重要：
+
+- 它补的是非 MCP 场景下的 runtime 可用性：
+  - agent 看到 compressed block 时，不再只有 archive ref。
+  - agent 会看到 query-first 的具体命令。
+  - 这减少把 archive 整段恢复进上下文的概率。
+- 它不破坏核心压缩闭环：
+  - 原文仍在 durable archive。
+  - compressed block 仍保持短摘要。
+  - retrieval 仍由 `memorph compression retrieve` 走 Phase 13 的 query search。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_block_text_keeps_provider_projection_concise -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_segment_exports_as_native_codex_compacted_rollout -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_export_round_trips_as_native_codex_compacted_rollout -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，133 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- portable compressed block 的可见文本包含 query-first retrieval command。
+- Codex native compacted projection 相关测试继续通过，证明新增 hint 没破坏 native compaction roundtrip。
+
+遇到的问题：
+
+- 原 Phase 15 计划偏向 MCP，但用户明确不需要 MCP。
+- 处理方式：停止 MCP 方向，改做非 MCP 的 retrieval hint，让现有 CLI/API retrieval 真正能被目标 agent 看到和使用。
+
+提交范围：
+
+- `rust/crates/memorph/src/provider.rs`
+- `rust/crates/memorph/src/providers/codex.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 16：继续增强非 MCP 的压缩恢复体验。建议补 API/CLI 的 compressed block retrieval examples 或 provider-specific resume instructions，让用户和 agent 能更容易从压缩块定位 archive_ref 并做 query retrieval；仍不做 MCP。
