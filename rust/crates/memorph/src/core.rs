@@ -1889,6 +1889,97 @@ mod tests {
             .any(|event| event.id == "recent-user"));
     }
 
+    #[test]
+    fn archive_query_search_ranks_phrase_and_term_frequency_deterministically() {
+        let events = vec![
+            archive_search_event(
+                "earlier-single",
+                "needle appears once in an earlier event",
+                EventRole::User,
+            ),
+            archive_search_event(
+                "phrase-match",
+                "the exact needle detail phrase should outrank scattered terms",
+                EventRole::Assistant,
+            ),
+            archive_search_event(
+                "term-frequency",
+                "needle detail needle detail needle detail",
+                EventRole::User,
+            ),
+        ];
+
+        let (events, matches) = search_archive_events(&events, "needle detail", 2);
+
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["term-frequency", "phrase-match"]
+        );
+        assert_eq!(
+            matches
+                .iter()
+                .map(|search_match| search_match.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["term-frequency", "phrase-match"]
+        );
+        assert!(matches[0].score > matches[1].score);
+        assert!(matches[1].score > 0);
+        assert!(matches[0]
+            .snippets
+            .iter()
+            .any(|snippet| snippet.contains("needle detail")));
+    }
+
+    #[test]
+    fn archive_query_search_keeps_source_order_for_equal_scores() {
+        let events = vec![
+            archive_search_event("first", "same needle evidence", EventRole::User),
+            archive_search_event("second", "same needle evidence", EventRole::Assistant),
+        ];
+
+        let (events, matches) = search_archive_events(&events, "needle", 10);
+
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
+        assert_eq!(matches[0].event_index, 0);
+        assert_eq!(matches[1].event_index, 1);
+        assert_eq!(matches[0].score, matches[1].score);
+    }
+
+    fn archive_search_event(id: &str, text: &str, role: EventRole) -> SessionEvent {
+        let now = Utc::now();
+        SessionEvent {
+            id: id.to_string(),
+            kind: SessionEventKind::Message,
+            role,
+            timestamp: now,
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::Text {
+                text: text.to_string(),
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "claude".to_string(),
+                    original_id: Some(id.to_string()),
+                    original_role: None,
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: BTreeMap::new(),
+            },
+        }
+    }
+
     fn active_compression_source_session() -> CanonicalSession {
         let now = Utc::now();
         CanonicalSession {
