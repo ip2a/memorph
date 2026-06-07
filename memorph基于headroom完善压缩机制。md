@@ -2876,3 +2876,105 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 25：建议检查压缩块投影到各 provider 时是否都能携带 query-first retrieval hint 和 archive_ref，尤其是非 native portable providers；仍然不做 MCP。
+
+### 2026-06-07：Phase 25 / provider projection retrieval hint 覆盖
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认本阶段目标是检查压缩块导出到各 provider 时是否保留 archive_ref 和 query-first retrieval hint。
+- 已检查当前工作区状态，Phase 24 已提交，开始时工作区干净。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+本阶段目标：
+
+- 确认 compressed block 投影到不同 agent/provider 时，不会丢失 `archive_ref`。
+- 确认 portable projection 的模型可见文本包含 query-first retrieve 命令。
+- 确认 native projection 至少有 machine-readable archive metadata；Codex native 还应在 replacement history 中携带 query-first hint。
+
+已完成：
+
+- 审计发现：
+  - 通用 `canonical_block_text(EventBlock::Compressed)` 已会输出：
+    - compressed marker。
+    - summary。
+    - source event count。
+    - archive ref。
+    - `memorph compression retrieve ... --query <terms> --max-results 5`。
+  - Claude/DeepSeek/Kimi/Kiro/Cursor/Codex fallback 都复用 portable text 路径，但测试此前没有显式锁定 query-first hint。
+  - Codex native compacted rollout 的 replacement history 已包含 query-first hint，但测试此前没有显式锁定。
+  - OpenCode native compaction part 已保留 `archiveRef`，但没有额外 `retrievalHint` metadata。
+- 为 OpenCode native compaction part 增加：
+  - `memorph.retrievalHint`
+  - 值为 query-first CLI hint。
+- 补充 provider projection 测试断言：
+  - Claude portable text block 包含 query-first retrieve command。
+  - DeepSeek portable message content 包含 query-first retrieve command。
+  - Kimi portable text part 包含 query-first retrieve command。
+  - Kiro portable history text 包含 query-first retrieve command。
+  - Cursor portable bubble text 包含 query-first retrieve command。
+  - Codex fallback portable content 包含 query-first retrieve command。
+  - Codex native compacted replacement history 包含 query-first retrieve command。
+  - Codex active compression native rollout 中真实生成的 archive_ref 也出现在 query-first retrieve command 中。
+  - OpenCode native compaction metadata 包含 `archiveRef` 和 `retrievalHint`。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有新增 MCP tool。
+- 没有自动展开 archive。
+- 没有改变 archive 格式。
+- 没有改变 CLI/API 参数。
+- 没有改变 retrieve response schema。
+- 没有把 old source event ids 泄漏进 portable text。
+
+为什么这一步重要：
+
+- 用户核心要求是“在 A 里压缩的内容，迁移到 B 时不能被 B 无条件展开，也不能被当成普通无意义上下文读进去”。
+- provider projection 是跨 agent 迁移时最后一道关口。
+- 如果 portable/native projection 丢失 archive_ref 或 query-first hint，目标 agent 就只能看到摘要，无法按需恢复；或者更糟，会把压缩块当作普通文本处理。
+- Phase 25 锁定了跨 provider 的最低契约：
+  - 看得到这是压缩块。
+  - 看得到 archive_ref。
+  - 知道应该 query-first retrieve。
+  - 不会默认携带完整旧事件。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_segment_exports_as_portable_claude_text_block -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_segment_exports_as_portable_deepseek_message_content -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_segment_exports_as_portable_kimi_text_part -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_segment_exports_as_portable_kiro_text -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_segment_exports_as_portable_cursor_bubble_text -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_segment_content_fallback_stays_portable_for_non_native_paths -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_segment_exports_as_native_codex_compacted_rollout -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_export_round_trips_as_native_codex_compacted_rollout -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compressed_segment_exports_as_native_opencode_compaction -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，142 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph`：通过，4 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- portable provider query-first hint。
+- Codex native query-first hint。
+- OpenCode native machine-readable retrieval hint。
+- active compression 真实 archive_ref 在 Codex native compacted history 中可被 query-first retrieve。
+
+遇到的问题：
+
+- OpenCode native 旧测试 fixture 使用 `archive://s1`，不适合验证 memorph retrieve CLI。
+- 本阶段将该测试 fixture 改为 `memorph-archive://s1/archive.json.gz`，更贴近 memorph 当前 archive 机制。
+
+提交范围：
+
+- `rust/crates/memorph/src/providers/*` 中受影响 provider 测试。
+- `rust/crates/memorph/src/providers/opencode.rs`：新增 native compaction `retrievalHint` metadata。
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 26：建议检查 portable compressed text 的 import/normalize 是否会保留 retrieval hint 之外的 archive_ref，同时不要把 hint 当成 summary 污染；仍然不做 MCP。
