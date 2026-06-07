@@ -2610,3 +2610,93 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 22：建议开始补 query retrieval 的排序/匹配质量测试，先把当前朴素 search 的行为边界固定下来，再决定是否引入 BM25/term scoring；仍然不做 MCP。
+
+### 2026-06-07：Phase 22 / query retrieval 排序边界测试
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认本阶段目标是固定 retrieve query search 的行为边界。
+- 已检查当前工作区状态，Phase 21 已提交，开始时工作区干净。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+本阶段目标：
+
+- 把当前 archive query search 的排序规则用测试固定下来。
+- 为后续是否引入 BM25/更强 term scoring 提供回归基线。
+- 不在没有必要时改算法，避免把检索质量问题和行为变更混在一个阶段。
+
+当前已固定的 search 行为：
+
+- query 会按 ASCII lowercase 做大小写无关匹配。
+- query 会按 whitespace 拆 term。
+- 每个 term 在 event 可见文本中的出现次数累加为基础 score。
+- 完整 query phrase 命中时额外加分。
+- score 为 0 的 event 不返回。
+- 返回结果按 score 降序。
+- 同分时按 source archive 中原始 event 顺序升序。
+- `max_results` 会截断返回的 events/matches。
+- snippets 优先返回包含 query phrase 或任意 term 的行。
+
+已完成：
+
+- 新增 core 测试：
+  - `archive_query_search_ranks_phrase_and_term_frequency_deterministically`
+  - 验证 term frequency 更高的 event 排在 phrase 命中 event 前面。
+  - 验证 `max_results` 截断低分 event。
+  - 验证返回 events 和 matches 顺序一致。
+  - 验证 snippet 包含命中的 query 内容。
+- 新增 core 测试：
+  - `archive_query_search_keeps_source_order_for_equal_scores`
+  - 验证相同 score 下保持原 source event 顺序。
+  - 验证 match 的 `event_index` 仍指向原 archive 位置。
+- 新增测试辅助：
+  - `archive_search_event(...)`
+  - 只用于构造 query search 单测事件。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有新增 MCP tool。
+- 没有改 query search 算法。
+- 没有引入 BM25。
+- 没有引入新依赖。
+- 没有改变 CLI/API/core 返回协议。
+
+为什么这一步重要：
+
+- 之前 retrieval query 可用，但排序规则没有专门被测试约束。
+- 后续如果引入 BM25、字段权重、role 权重或 snippet 改进，需要知道哪些语义是故意改变，哪些是不能破坏。
+- 对用户目标而言，跨 agent 压缩恢复不能只做到“能搜到”，还要做到“可预测、可解释、不会乱展开”。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib archive_query_search_ranks_phrase_and_term_frequency_deterministically -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib archive_query_search_keeps_source_order_for_equal_scores -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，141 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- query search score 排序。
+- phrase bonus 与 term frequency 的当前相对行为。
+- `max_results` 截断。
+- 同分稳定排序。
+- snippets 基本命中内容。
+
+遇到的问题：
+
+- 当前算法不是 BM25，只是 deterministic term-frequency + phrase bonus。
+- 本阶段刻意不改算法，因为没有先固定回归基线就直接换算法，后续很难判断检索行为变化是否合理。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 23：基于 Phase 22 的基线，评估是否做一个不引入依赖的轻量 scoring 改进，优先考虑“更明确的 phrase 优先/term 覆盖率/短噪声惩罚”，仍然不做 MCP。
