@@ -516,7 +516,9 @@ pub struct RetrievedCompressionArchive {
     pub summary_event_id: String,
     pub source_event_ids: Vec<String>,
     pub source_event_count: usize,
+    pub returned_event_ids: Vec<String>,
     pub returned_event_count: usize,
+    pub omitted_event_count: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub matches: Vec<RetrievedCompressionArchiveMatch>,
     pub events: Vec<SessionEvent>,
@@ -624,11 +626,15 @@ pub fn compression_retrieval_tool_spec() -> CompressionRetrievalToolSpec {
                 "retrieval_mode is full_archive".to_string(),
                 "events contains every original archived SessionEvent".to_string(),
                 "source_event_count equals the archive's full original event count".to_string(),
+                "returned_event_ids contains every returned event id".to_string(),
                 "returned_event_count equals events.length".to_string(),
+                "omitted_event_count is 0".to_string(),
             ],
             query_retrieval: vec![
                 "retrieval_mode is query_matches or query_no_matches".to_string(),
                 "events contains only matching archived SessionEvent values".to_string(),
+                "returned_event_ids contains only matching event ids".to_string(),
+                "omitted_event_count reports archived events not returned by the query".to_string(),
                 "matches contains event_id, event_index, score, and snippets for each returned event".to_string(),
                 "source_event_count still reports the archive's full original event count".to_string(),
             ],
@@ -708,6 +714,11 @@ fn retrieved_compression_archive(
         (archive.events, Vec::new())
     };
     let returned_event_count = events.len();
+    let returned_event_ids = events
+        .iter()
+        .map(|event| event.id.clone())
+        .collect::<Vec<_>>();
+    let omitted_event_count = source_event_count.saturating_sub(returned_event_count);
     let retrieval_mode = match (query, returned_event_count) {
         (Some(_), 0) => CompressionRetrievalMode::QueryNoMatches,
         (Some(_), _) => CompressionRetrievalMode::QueryMatches,
@@ -727,7 +738,9 @@ fn retrieved_compression_archive(
         summary_event_id: archive.summary_event_id,
         source_event_ids: archive.source_event_ids,
         source_event_count,
+        returned_event_ids,
         returned_event_count,
+        omitted_event_count,
         matches,
         events,
     }
@@ -1736,7 +1749,9 @@ mod tests {
         assert_eq!(retrieved.target_provider_id, "codex");
         assert_eq!(retrieved.source_event_ids, vec!["old-user"]);
         assert_eq!(retrieved.source_event_count, 1);
+        assert_eq!(retrieved.returned_event_ids, vec!["old-user"]);
         assert_eq!(retrieved.returned_event_count, 1);
+        assert_eq!(retrieved.omitted_event_count, 0);
         assert_eq!(
             retrieved.retrieval_mode,
             CompressionRetrievalMode::FullArchive
@@ -1757,7 +1772,9 @@ mod tests {
         .unwrap();
         assert_eq!(searched.query.as_deref(), Some("historical context"));
         assert_eq!(searched.source_event_count, 1);
+        assert_eq!(searched.returned_event_ids, vec!["old-user"]);
         assert_eq!(searched.returned_event_count, 1);
+        assert_eq!(searched.omitted_event_count, 0);
         assert_eq!(
             searched.retrieval_mode,
             CompressionRetrievalMode::QueryMatches
@@ -1783,7 +1800,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(no_match.source_event_count, 1);
+        assert!(no_match.returned_event_ids.is_empty());
         assert_eq!(no_match.returned_event_count, 0);
+        assert_eq!(no_match.omitted_event_count, 1);
         assert_eq!(
             no_match.retrieval_mode,
             CompressionRetrievalMode::QueryNoMatches

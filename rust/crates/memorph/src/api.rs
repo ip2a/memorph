@@ -1718,7 +1718,12 @@ mod tests {
             .unwrap()
             .contains("partial retrieval"));
         assert_eq!(value["data"]["source_event_count"], 2);
+        assert_eq!(
+            value["data"]["returned_event_ids"],
+            serde_json::json!(["needle-event"])
+        );
         assert_eq!(value["data"]["returned_event_count"], 1);
+        assert_eq!(value["data"]["omitted_event_count"], 1);
         assert_eq!(value["data"]["events"][0]["id"], "needle-event");
         assert_eq!(value["data"]["matches"][0]["event_id"], "needle-event");
         assert!(value["data"]["matches"][0]["snippets"][0]

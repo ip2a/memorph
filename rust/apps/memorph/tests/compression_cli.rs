@@ -122,7 +122,9 @@ fn compression_retrieve_cli_outputs_query_mode_json() {
         .unwrap()
         .contains("partial retrieval"));
     assert_eq!(value["source_event_count"], 2);
+    assert_eq!(value["returned_event_ids"], json!(["needle-event"]));
     assert_eq!(value["returned_event_count"], 1);
+    assert_eq!(value["omitted_event_count"], 1);
     assert_eq!(value["events"][0]["id"], "needle-event");
     assert_eq!(value["matches"][0]["event_id"], "needle-event");
 }
