@@ -1308,3 +1308,513 @@ memorph 当前已经沿这条路线推进，并且比 Headroom 更适合做“�
 - 用户可审计和可选择。
 
 这才是把 Headroom 的有效理念学到 memorph，而不是做一个半拉子的压缩功能。
+
+---
+
+## 19. 逐文件级源码索引：会话、压缩、恢复、provider 映射相关部分
+
+这一章是前面结论的证据索引。这里的“逐文件级”不是把 Headroom 的每个无关 UI、安装包装、图片、lockfile 都机械展开，而是覆盖与会话压缩、CCR、live-zone、proxy 请求改写、memory 注入、provider adapter、relevance 检索、缓存稳定、可观测性和相关测试直接相关的文件。MCP 文件只作为设计资料说明，不作为 memorph 当前实现目标。
+
+### 19.1 读源码的优先级
+
+如果只读最核心文件，顺序应该是：
+
+1. `crates/headroom-core/src/transforms/live_zone.rs`：新压缩核心，不压历史整段，只压 live-zone 候选。
+2. `crates/headroom-core/src/ccr/mod.rs`：压缩内容引用和恢复的核心抽象。
+3. `crates/headroom-core/src/transforms/content_detector.rs`：内容类型识别，决定不能用一个摘要策略处理所有内容。
+4. `crates/headroom-core/src/transforms/pipeline/orchestrator.rs`：压缩流水线编排。
+5. `crates/headroom-proxy/src/compression/live_zone_openai.rs`、`live_zone_anthropic.rs`、`live_zone_responses.rs`：把 core 压缩结果投影到不同 provider。
+6. `headroom/cache/compression_store.py`、`headroom/ccr/context_tracker.py`：旧 Python 体系中“原文存储/引用追踪”的参考。
+7. `headroom/memory/bridge_parsers.py`、`headroom/memory/sync_adapters/codex_agent.py`、`headroom/memory/sync_adapters/claude_code.py`：不同 agent 原生数据理解的参考。
+
+对 memorph 的判断：Headroom 是请求前压缩，memorph 应该是“会话中间态压缩 + 跨 agent projection”。两者学习的是机制，不是部署形态。
+
+### 19.2 `REALIGNMENT` 架构决策文件
+
+| 文件 | 内容定位 | 会话/压缩相关性 | memorph 应学什么 |
+| --- | --- | --- | --- |
+| `REALIGNMENT/INDEX.md` | realignment 文档目录。 | 说明 Headroom 已经把重构拆成阶段，不是在旧 Python proxy 上继续堆功能。 | memorph 的压缩模块也要阶段化：先 archive/ref/projection，再主动压缩，再 LLM。 |
+| `REALIGNMENT/00-overview.md` | 总体重构目标。 | 明确 Python proxy 路径混乱、压缩边界不稳、provider 兼容问题。 | 压缩必须成为独立模块，不能藏在某个 importer/exporter。 |
+| `REALIGNMENT/01-bug-list.md` | 已知 bug 清单。 | 记录 cache、compression、proxy 行为不一致。 | 跨 agent 压缩失败往往是边界状态、标记、缓存和 provider 映射失败，不只是算法失败。 |
+| `REALIGNMENT/02-architecture.md` | 新架构蓝图。 | 把 core、proxy、provider、observability 拆开。 | memorph 应保持 `canonical compression core -> provider projection -> runtime adapter`。 |
+| `REALIGNMENT/03-phase-A-lockdown.md` | 冻结和测试基线。 | 动压缩前先锁定行为。 | memorph 需要 fixture：Claude 压缩后迁移 Codex、Kimi 压缩后迁移 DeepSeek、Codex 中再次 compact。 |
+| `REALIGNMENT/04-phase-B-live-zone.md` | live-zone 压缩核心。 | 不压历史整段、不破坏 cache hot zone，只处理活跃区块。 | 这是 memorph 主动压缩的核心参考：压缩候选区和热区保护要分开。 |
+| `REALIGNMENT/05-phase-C-rust-proxy.md` | Rust proxy 接管请求路径。 | 压缩从 Python 运行时转到更稳定的请求代理层。 | memorph 不一定做 HTTP proxy，但需要稳定边界：导入、导出、压缩、恢复不能散落在 CLI glue。 |
+| `REALIGNMENT/06-phase-D-bedrock-vertex.md` | Bedrock/Vertex provider 扩展。 | 同一压缩 core 必须能投影到不同 provider envelope。 | Kimi、DeepSeek、Codex、Claude 的差异应在 adapter，不在 core compression。 |
+| `REALIGNMENT/07-phase-E-cache-stabilization.md` | cache 稳定化。 | 关注 prompt cache 不被压缩扰动。 | 当前工作区状态、当前 agent 必要元信息、热上下文要定义为不可压缩区。 |
+| `REALIGNMENT/08-phase-F-auth-mode.md` | 认证模式统一。 | 与压缩间接相关，影响 proxy 透明接入 provider。 | agent runtime concern 不应进入 compression core。 |
+| `REALIGNMENT/09-phase-G-rtk-observability.md` | 可观测性。 | 压缩率、cache hit、漂移、失败原因都要可观测。 | compression manifest 要记录 skipped/rejected/reason/ratio/retrieval id。 |
+| `REALIGNMENT/10-phase-H-python-retirement.md` | 旧 Python 退役计划。 | 旧 Python 模块不是最终形态。 | 不要照搬已被 Headroom 准备废弃的 Python `IntelligentContext/RollingWindow`。 |
+| `REALIGNMENT/11-phase-I-test-infra.md` | 测试设施。 | provider 请求、压缩、cache、streaming 做成可测试单元。 | memorph 需要专门 compression switch fixtures。 |
+| `REALIGNMENT/12-decisions-needed.md` | 未决决策。 | compression policy、cache 策略、provider 行为仍需取舍。 | 主动压缩是否启用、阈值、是否允许 LLM、是否保留原文要显式策略化。 |
+
+### 19.3 文档站文件：可靠输入和需要谨慎的旧描述
+
+| 文件 | 内容定位 | 会话/压缩相关性 | memorph 结论 |
+| --- | --- | --- | --- |
+| `docs/content/docs/ccr.mdx` | CCR 说明。 | 直接说明压缩内容引用、存储、恢复、tool 注入，并指出旧 message-level CCR 已 retired。 | 这是 `CompressedBlockRef + archive + retrieve` 的核心参考。 |
+| `docs/content/docs/how-compression-works.mdx` | 压缩工作流。 | 描述 Headroom 如何判断内容类型、压缩、校验 token 节省。 | 可参考“先估算、再压缩、再验证”。 |
+| `docs/content/docs/context-management.mdx` | 上下文管理。 | 包含旧 rolling context 思路，与 live-zone 新方向冲突。 | 只能作为反例，memorph 不应简单 drop 旧消息。 |
+| `docs/content/docs/architecture.mdx` | 组件架构。 | 展示 proxy、compression、memory、cache 的组合方式。 | 可参考分层，但 memorph 以 agent migration 为主，不以 HTTP proxy 为主。 |
+| `docs/content/docs/cache-optimization.mdx` | cache 优化。 | 解释缓存稳定、prefix、动态内容检测。 | 对 hot zone、workspace 一等能力有参考。 |
+| `docs/content/docs/code-compression.mdx` | 代码压缩。 | 代码类型内容的保真压缩规则。 | 用于工具输出、patch、diff 压缩候选，不用于用户意图摘要。 |
+| `docs/content/docs/text-and-logs.mdx` | 文本和日志压缩。 | 针对 log/search 输出的结构化压缩。 | 很适合 memorph 主动压缩旧工具输出。 |
+| `docs/content/docs/smart-crusher.mdx` | Smart Crusher。 | 介绍非 LLM 的结构化压缩器。 | “无需调 LLM 的压缩”关键参考，适合第一阶段实现。 |
+| `docs/content/docs/memory.mdx` | memory 功能。 | 长期记忆和上下文注入。 | 可参考检索，但不能混淆长期记忆和可逆会话压缩。 |
+| `docs/content/docs/shared-context.mdx` | 跨工具共享上下文。 | 多工具/agent 共享记忆。 | 对 workspace 一等能力有参考，但压缩块不能直接变成泛化 memory。 |
+| `docs/content/docs/proxy.mdx` | proxy 接入。 | 请求路径和 provider 代理。 | 即使 memorph 不做 HTTP proxy，也可学“请求前投影”的位置。 |
+| `docs/content/docs/openai-sdk.mdx` | OpenAI SDK 接入。 | provider envelope 示例。 | 用于理解 Codex/OpenAI 类投影差异。 |
+| `docs/content/docs/anthropic-sdk.mdx` | Anthropic SDK 接入。 | Anthropic cache control 和 message 格式。 | Claude 压缩迁移要保留原生 compact/cache 语义。 |
+| `docs/content/docs/litellm.mdx` | LiteLLM 接入。 | 多 provider 统一入口。 | 统一接口不等于统一压缩语义。 |
+| `docs/content/docs/mcp.mdx` | MCP 功能。 | Headroom 用 MCP 暴露 retrieve 等工具。 | 当前不实现 MCP，只借鉴 retrieve 协议形状。 |
+| `docs/content/docs/api-reference.mdx` | API 参考。 | 压缩、memory、proxy API 入口。 | 可作为 memorph CLI/API 设计对照。 |
+| `docs/content/docs/configuration.mdx` | 配置。 | 压缩阈值、provider、cache 等配置入口。 | compression policy 要显式配置化。 |
+| `docs/content/docs/metrics.mdx` | 指标。 | 压缩率、节省、cache 命中。 | manifest 应能生成同类指标。 |
+| `docs/content/docs/benchmarks.mdx` | benchmark。 | 评估压缩节省。 | memorph 应建立真实会话 fixture，而非只测合成文本。 |
+| `docs/content/docs/failure-learning.mdx` | 从失败中学习。 | 与 memory/learning 相关。 | 可参考失败事件结构化，不把压缩恢复当 memory 学习。 |
+| `docs/content/docs/filesystem-contract.mdx` | 文件系统约定。 | 存储路径和兼容性。 | archive/store 需要文件系统契约，特别是跨 workspace。 |
+| `docs/content/docs/limitations.mdx` | 限制。 | 说明不能压缩/不应压缩的边界。 | memorph 也要明确“不压当前任务状态、不丢原文、不无条件展开”。 |
+| `docs/content/docs/simulation.mdx` | 模拟/评估。 | 可用于压缩效果模拟。 | 可学习离线评估方法。 |
+| `docs/content/docs/errors.mdx` | 错误处理。 | 压缩失败、provider 错误、配置错误。 | 区分“压缩失败但可继续”和“会话不可恢复”。 |
+| `docs/content/docs/troubleshooting.mdx` | 排障。 | 用户可见行为说明。 | 最终要解释 compressed/retrieved/skipped。 |
+| `docs/content/docs/image-compression.mdx` | 图像压缩。 | 与文本会话压缩无直接关系。 | 当前不纳入核心。 |
+| `docs/content/docs/quickstart.mdx`、`installation.mdx`、`docker-install.mdx`、`persistent-installs.mdx` | 安装和入门。 | 与压缩语义弱。 | 不作为实现参考。 |
+| `docs/content/docs/agno.mdx`、`langchain.mdx`、`strands.mdx`、`vercel-ai-sdk.mdx` | 外部框架接入。 | 展示不同 envelope。 | 只作为 provider/framework 差异资料。 |
+| `docs/content/docs/community-savings.mdx`、`releases.mdx`、`index.mdx` | 统计、发布、首页。 | 与压缩核心弱。 | 辅助判断版本演进。 |
+
+### 19.4 Rust core：压缩、CCR、token、relevance 的真实核心
+
+#### 19.4.1 core 根模块和策略
+
+| 文件 | 角色 | 关键设计 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `crates/headroom-core/src/lib.rs` | Rust core 对外导出。 | 把 auth、cache_control、ccr、compression_policy、relevance、tokenizer、transforms 组合成稳定 API。 | 外部只应调用 `analyze -> compress -> project -> retrieve`，不要直接碰内部 detector。 |
+| `crates/headroom-core/src/compression_policy.rs` | 压缩策略定义。 | 控制什么时候压、压到什么程度、如何选择 transform。 | 主动压缩阈值、最小收益、热区、LLM 开关都放 policy。 |
+| `crates/headroom-core/src/cache_control.rs` | cache control 语义。 | 描述 provider cache 控制字段和稳定前缀。 | provider compact/cache 标记不能当普通文本。 |
+| `crates/headroom-core/src/auth_mode.rs` | auth mode。 | provider 接入 concern。 | 不学 auth 实现，只学运行时 concern 与 compression core 分离。 |
+
+#### 19.4.2 CCR core 和后端
+
+| 文件 | 角色 | 关键设计 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `crates/headroom-core/src/ccr/mod.rs` | CCR 类型和接口。 | 定义压缩引用、存储、恢复、backend trait。 | 压缩块必须是引用，不是不可追溯摘要。 |
+| `crates/headroom-core/src/ccr/backends/mod.rs` | CCR backend 聚合。 | 后端细节隐藏在统一接口后。 | archive 后端可替换，不影响 provider projection。 |
+| `crates/headroom-core/src/ccr/backends/in_memory.rs` | 内存 backend。 | 适合测试和短生命周期。 | 只适合单元测试，不适合作为真实 archive。 |
+| `crates/headroom-core/src/ccr/backends/sqlite.rs` | SQLite backend。 | 本地持久化。 | memorph 长期压缩 archive 更接近这个方向。 |
+| `crates/headroom-core/src/ccr/backends/redis.rs` | Redis backend。 | 共享/服务化场景。 | 当前不必实现，但说明 store 不应绑死文件结构。 |
+
+#### 19.4.3 tokenizer
+
+| 文件 | 角色 | 关键设计 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `crates/headroom-core/src/tokenizer/mod.rs` | tokenizer 抽象。 | 统一 token 估算接口。 | 压缩是否成功必须以目标 provider/model 估算为准。 |
+| `crates/headroom-core/src/tokenizer/estimator.rs` | fallback token 估算。 | 没有精确 tokenizer 时近似估算。 | manifest 要记录 estimator type，避免误判。 |
+| `crates/headroom-core/src/tokenizer/tiktoken_impl.rs` | tiktoken 实现。 | OpenAI/Codex 类模型估算。 | Codex projection 优先使用接近目标模型的 tokenizer。 |
+| `crates/headroom-core/src/tokenizer/hf_impl.rs` | HuggingFace tokenizer。 | 非 OpenAI 模型。 | Kimi/DeepSeek 可能需要独立 tokenizer 配置。 |
+| `crates/headroom-core/src/tokenizer/registry.rs` | tokenizer 注册表。 | 根据模型/provider 选 tokenizer。 | 需要 provider/model -> tokenizer registry。 |
+
+#### 19.4.4 transform 入口、检测和安全
+
+| 文件 | 角色 | 关键设计 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `crates/headroom-core/src/transforms/mod.rs` | transform 聚合。 | 统一导出 live_zone、detector、compressor、pipeline。 | compression transform 应独立成模块。 |
+| `crates/headroom-core/src/transforms/content_detector.rs` | 内容类型检测。 | 识别 log、search、diff、code、json。 | 主动压缩第一阶段应类型感知，而不是通用摘要。 |
+| `crates/headroom-core/src/transforms/detection.rs` | detection 通用类型。 | 提供检测结果结构。 | `content_type/confidence/evidence` 要写入 manifest。 |
+| `crates/headroom-core/src/transforms/magika_detector.rs` | Magika 检测集成。 | 外部 detector 提升类型识别。 | 当前不必依赖 Magika，但保留 detector adapter 思路。 |
+| `crates/headroom-core/src/transforms/unidiff_detector.rs` | unified diff 检测。 | 精确识别 diff。 | 对 patch/代码审查输出很关键。 |
+| `crates/headroom-core/src/transforms/tag_protector.rs` | 标签保护。 | 保护 XML/marker/tag 不被误压缩。 | 必须保护 provider 原生 compact/summary marker、tool call id、archive ref。 |
+| `crates/headroom-core/src/transforms/safety.rs` | 安全门。 | 防止危险或无效压缩。 | 不安全就 reject，不强压。 |
+| `crates/headroom-core/src/transforms/recommendations.rs` | 推荐/配置加载。 | 根据内容或模型给压缩建议。 | 可作为 compression candidate recommendation 参考。 |
+| `crates/headroom-core/src/transforms/adaptive_sizer.rs` | 自适应压缩大小。 | 根据预算选择压缩目标。 | 按目标 agent 上下文预算决定压缩强度。 |
+| `crates/headroom-core/src/transforms/anchor_selector.rs` | anchor 选择。 | 保留关键锚点。 | 任务目标、决策、文件路径、错误、命令、结果都应是 anchor。 |
+
+#### 19.4.5 live-zone 和专用压缩器
+
+| 文件 | 角色 | 关键设计 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `crates/headroom-core/src/transforms/live_zone.rs` | 新核心压缩策略。 | 不移动历史消息，不压 cache hot zone，只压 live-zone 中大型可压缩 block；生成 outcome/manifest；做 token validation。 | 跨 agent 切换时，应让目标 agent 看到压缩引用和必要摘要，不展开原文；只有 query 需要时 retrieve。 |
+| `crates/headroom-core/src/transforms/log_compressor.rs` | 日志压缩。 | 保留错误、异常、代表性行，去掉重复噪声。 | 主动压缩最适合从日志/命令输出开始。 |
+| `crates/headroom-core/src/transforms/search_compressor.rs` | 搜索结果压缩。 | 保留 query、命中路径、关键片段，减少重复结果。 | `rg/find/search` 结果可物理压小，同时保留 archive。 |
+| `crates/headroom-core/src/transforms/diff_compressor.rs` | diff 压缩。 | 保留文件、hunk、关键变更，去掉低价值上下文。 | patch 压缩不能丢改动语义。 |
+
+live-zone 到 memorph 的具体映射：
+
+| Headroom 概念 | memorph 映射 |
+| --- | --- |
+| hot zone | 当前任务目标、最新用户问题、最新 agent 计划、workspace state、最近工具结果、provider 必须标记 |
+| live-zone candidate | 旧日志、旧搜索结果、大段 diff、重复工具输出、旧压缩块的二次投影 |
+| CCR ref | `CompressedBlockRef` 或 archive id |
+| token validation | import/export 前后 token 估算 |
+| reject compression | 保留原文并记录 `skip_reason` |
+| content router | 按 event/tool/message 类型选择 compressor |
+
+#### 19.4.6 pipeline
+
+| 文件 | 角色 | 关键设计 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `transforms/pipeline/mod.rs` | pipeline 聚合。 | 组织 offload、reformat、orchestrator。 | 需要统一 `CompressionPipeline`。 |
+| `transforms/pipeline/config.rs` | pipeline 配置。 | 控制启用哪些阶段。 | 可配置“仅非 LLM 压缩/允许 LLM/仅用户选中候选”。 |
+| `transforms/pipeline/traits.rs` | pipeline trait。 | 定义 stage 输入输出。 | 分离 detector、compressor、validator、archiver。 |
+| `transforms/pipeline/orchestrator.rs` | 编排器。 | 决定走哪个 stage，收集结果。 | 核心落点：统一生成 manifest，不让 adapter 自己决定成败。 |
+| `transforms/pipeline/offloads/mod.rs` | offload 聚合。 | 将大块内容替换为引用或压缩 representation。 | “物理层面压缩”就是 canonical event 中替换为 archive ref。 |
+| `transforms/pipeline/offloads/diff_offload.rs` | diff offload。 | 大 diff 转外部引用。 | 大 diff 原文进 archive，中间态只留 summary/ref。 |
+| `transforms/pipeline/offloads/diff_noise.rs` | diff 噪声识别。 | 识别低价值 diff 上下文。 | 避免压掉真正有意义 hunk。 |
+| `transforms/pipeline/offloads/json_offload.rs` | JSON offload。 | 大 JSON 转引用或精简。 | 工具调用返回大 JSON 时很适合。 |
+| `transforms/pipeline/offloads/log_offload.rs` | log offload。 | 大日志转引用。 | 命令输出压缩可直接借鉴。 |
+| `transforms/pipeline/offloads/search_offload.rs` | search offload。 | 搜索结果转引用/摘要。 | 优先覆盖。 |
+| `transforms/pipeline/reformats/mod.rs` | reformat 聚合。 | 可逆或低风险格式压缩。 | 先 deterministic reformat，再考虑 LLM。 |
+| `transforms/pipeline/reformats/json_minifier.rs` | JSON minify。 | 删除空白但保留结构。 | 低风险无损物理压缩入口。 |
+| `transforms/pipeline/reformats/log_template.rs` | log 模板化。 | 将重复 log 行抽成模板。 | 对长日志收益大，比摘要更可审计。 |
+
+#### 19.4.7 Smart Crusher
+
+Smart Crusher 是 Headroom 中非 LLM 压缩理念最集中的部分。它不是“模型总结”，而是统计、分类、锚点、结构化压缩。
+
+| 文件 | 角色 | 关键设计 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `transforms/smart_crusher/mod.rs` | 模块聚合。 | 对外暴露 crusher。 | 可做 `smart_compressors` 子模块。 |
+| `transforms/smart_crusher/config.rs` | 配置。 | 控制阈值、预算、策略。 | 压缩强度必须配置化。 |
+| `transforms/smart_crusher/types.rs` | 类型定义。 | 定义 block、segment、result。 | 中间态需要压缩候选结构化类型。 |
+| `transforms/smart_crusher/traits.rs` | trait。 | 抽象 analyzer/crusher。 | 新增 agent 投影不改 core。 |
+| `transforms/smart_crusher/analyzer.rs` | 内容分析。 | 统计行、重复、重要性。 | 压缩前先分析，不直接摘要。 |
+| `transforms/smart_crusher/classifier.rs` | 内容分类。 | 判断内容形态。 | 与 content detector 配合。 |
+| `transforms/smart_crusher/crusher.rs` | 主压缩器。 | 执行压缩决策。 | 主动压缩执行器参考。 |
+| `transforms/smart_crusher/crushers.rs` | 多 crusher 集合。 | 不同内容类型对应不同 crusher。 | 不要一个 summary prompt 处理所有内容。 |
+| `transforms/smart_crusher/builder.rs` | builder。 | 构造 crusher 配置。 | 简化 policy 注入。 |
+| `transforms/smart_crusher/orchestration.rs` | 编排。 | 组合分析、计划、压缩。 | 和 pipeline orchestrator 共同形成完整流程。 |
+| `transforms/smart_crusher/planning.rs` | 压缩计划。 | 先计划再执行。 | 用户可选压缩候选时，需要展示 plan。 |
+| `transforms/smart_crusher/anchors.rs` | 锚点。 | 保留关键行/片段。 | 任务目标、错误、文件路径、命令、结论都应作为 anchor。 |
+| `transforms/smart_crusher/constraints.rs` | 约束。 | 防止违反保真边界。 | “不丢有意义上下文”要落成约束。 |
+| `transforms/smart_crusher/error_keywords.rs` | 错误关键词。 | 错误行提权。 | 命令输出压缩不能丢 error/warn/stacktrace。 |
+| `transforms/smart_crusher/field_detect.rs` | 字段检测。 | 识别结构化字段。 | 对 JSON/tool result 保留关键字段。 |
+| `transforms/smart_crusher/hashing.rs` | 哈希。 | 内容去重、引用稳定。 | archive id 应有稳定指纹。 |
+| `transforms/smart_crusher/observer.rs` | 观察/事件。 | 暴露压缩过程。 | 需要 compression trace。 |
+| `transforms/smart_crusher/outliers.rs` | 异常值。 | 找出少数重要行。 | 长日志里异常行通常比平均行重要。 |
+| `transforms/smart_crusher/statistics.rs` | 统计。 | 行频、长度、重复模式。 | 决定压缩候选的基础。 |
+| `transforms/smart_crusher/stats_math.rs` | 统计计算。 | 底层数学工具。 | 可借鉴，不必照搬。 |
+| `transforms/smart_crusher/compaction/mod.rs` | compaction 聚合。 | Smart Crusher 内部二级压缩。 | 后续可做二次压缩 lineage。 |
+| `transforms/smart_crusher/compaction/ir.rs` | 中间表示。 | 原文转成可压缩 IR。 | canonical event 本身应承担 IR 角色。 |
+| `transforms/smart_crusher/compaction/classifier.rs` | compaction 分类。 | 判断 IR 如何压缩。 | 与 event type mapping 一致。 |
+| `transforms/smart_crusher/compaction/compactor.rs` | compaction 执行。 | 执行压缩。 | 执行阶段参考。 |
+| `transforms/smart_crusher/compaction/formatter.rs` | 输出格式化。 | 生成模型可读压缩文本。 | provider projection 需要类似 formatter。 |
+| `transforms/smart_crusher/compaction/walker.rs` | IR walker。 | 遍历结构。 | 对嵌套 tool result/JSON 有用。 |
+
+#### 19.4.8 signals 和 relevance
+
+| 文件 | 角色 | 关键设计 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `signals/README.md` | signals 说明。 | 解释重要性信号。 | 压缩前先评估重要性。 |
+| `signals/mod.rs` | signals 聚合。 | 暴露 keyword、line importance、tiered。 | 重要性评估独立成模块。 |
+| `signals/keyword_detector.rs` | 关键词检测。 | 识别 error、todo、file path。 | 低成本重要性判断。 |
+| `signals/line_importance.rs` | 行重要度。 | 给长文本每行打分。 | 日志/搜索结果压缩必需。 |
+| `signals/tiered.rs` | 分层信号。 | 将内容分层保留。 | 可定义 must_keep/summary_only/archive_only。 |
+| `relevance/mod.rs` | relevance 聚合。 | 对外导出检索能力。 | archive retrieve 需要相关性排序。 |
+| `relevance/base.rs` | 基础接口。 | 定义 scorer/searcher。 | 不应直接把 archive 全展开。 |
+| `relevance/bm25.rs` | BM25。 | 无 embedding 的关键词检索。 | 第一阶段最适合，低依赖、可解释。 |
+| `relevance/embedding.rs` | embedding 检索。 | 语义检索。 | 后续可选，不应第一阶段硬依赖。 |
+| `relevance/hybrid.rs` | 混合检索。 | BM25 和 embedding 结合。 | 适合高质量恢复。 |
+
+### 19.5 Rust proxy：真实请求如何被压缩和投影
+
+| 文件 | 角色 | 会话/压缩相关性 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `crates/headroom-proxy/src/lib.rs` | proxy crate 导出。 | 组合 config、handlers、compression、observability。 | adapter 层只组合模块，不拥有压缩逻辑。 |
+| `crates/headroom-proxy/src/main.rs` | proxy 入口。 | 启动服务。 | 学启动时注入 policy/config，不学服务形态。 |
+| `crates/headroom-proxy/src/config.rs` | proxy 配置。 | provider、endpoint、compression 开关。 | agent profile 应包含 compression capability。 |
+| `crates/headroom-proxy/src/error.rs` | 错误类型。 | 区分 provider/proxy/compression 错误。 | 区分 import/export/compress/retrieve/project 错误。 |
+| `crates/headroom-proxy/src/proxy.rs` | 请求转发核心。 | 在请求进入 provider 前改写/压缩/记录。 | memorph 对应位置是“导出到目标 agent 前”。 |
+| `crates/headroom-proxy/src/headers.rs` | header 处理。 | 保留 provider request metadata。 | agent 原生元数据不能被压缩当文本。 |
+| `crates/headroom-proxy/src/responses_items.rs` | Responses item helpers。 | OpenAI Responses item 格式处理。 | provider projection 必须懂目标格式。 |
+| `crates/headroom-proxy/src/websocket.rs` | websocket。 | session/runtime 通道。 | 对实时 session registry 有参考。 |
+| `crates/headroom-proxy/src/health.rs` | 健康检查。 | 间接。 | 非核心。 |
+
+#### 19.5.1 compression 投影
+
+| 文件 | 角色 | 关键设计 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `compression/mod.rs` | compression 聚合。 | provider-specific compression 入口。 | 要有 projection 层，按 agent 输出压缩标记。 |
+| `compression/model_limits.rs` | 模型限制。 | 上下文窗口、阈值、预算。 | 切换到目标 agent 时使用目标预算。 |
+| `compression/anthropic.rs` | Anthropic 压缩。 | Anthropic message/cache control 格式。 | Claude 迁移时保留原生 compact/cache 语义。 |
+| `compression/live_zone_anthropic.rs` | Anthropic live-zone 投影。 | core live-zone 结果映射到 Anthropic 请求。 | Claude exporter 应投影为 Claude 能理解且不误读的结构。 |
+| `compression/live_zone_openai.rs` | OpenAI chat 投影。 | live-zone 结果映射到 Chat Completions。 | Codex/OpenAI 类 agent 要保留 compressed marker，不展开 archive。 |
+| `compression/live_zone_responses.rs` | OpenAI Responses 投影。 | 处理 Responses API item。 | Codex 如果接近 Responses/Chat，必须按目标数据格式投影。 |
+
+#### 19.5.2 handlers、cache、SSE、observability
+
+| 文件 | 角色 | memorph 学习点 |
+| --- | --- | --- |
+| `handlers/mod.rs` | handler 聚合。 | agent adapter 不应互相调用。 |
+| `handlers/chat_completions.rs` | OpenAI Chat handler。 | OpenAI/Codex projection 需要专门测试。 |
+| `handlers/responses.rs` | OpenAI Responses handler。 | 不同 API item 对压缩 marker 的位置不同。 |
+| `handlers/conversations.rs` | conversations handler。 | canonical session 可参考 conversation item 思路。 |
+| `cache_stabilization/mod.rs` | cache 稳定模块聚合。 | “不要破坏 agent 原生 cache/compact”是投影质量标准。 |
+| `cache_stabilization/anthropic_cache_control.rs` | Anthropic cache_control。 | Claude 压缩迁移时不能丢 cache control。 |
+| `cache_stabilization/openai_cache_key.rs` | OpenAI cache key。 | Codex/OpenAI 字段顺序和稳定内容会影响 cache。 |
+| `cache_stabilization/tool_def_normalize.rs` | tool 定义标准化。 | workspace/tool schema 不应每次切换都造成上下文抖动。 |
+| `cache_stabilization/volatile_detector.rs` | 动态内容检测。 | 压缩和 cache 都要避开 volatile 噪声。 |
+| `cache_stabilization/drift_detector.rs` | 漂移检测。 | 多次迁移/二次压缩需要检测语义漂移。 |
+| `sse/framing.rs` | SSE frame 处理。 | 协议内容不能误当会话正文。 |
+| `sse/openai_chat.rs` | OpenAI chat SSE。 | Codex/OpenAI streaming 解析参考。 |
+| `sse/openai_responses.rs` | Responses SSE。 | Responses 增量需要专门处理。 |
+| `sse/anthropic.rs` | Anthropic SSE。 | Claude streaming 解析参考。 |
+| `observability/compression_ratio.rs` | 压缩率指标。 | manifest 应计算 before/after token/bytes。 |
+| `observability/cache_hit_rate.rs` | cache 命中率。 | hot zone 稳定可以量化。 |
+| `observability/proxy_metrics.rs` | proxy metrics。 | 请求级 compression outcome 可聚合。 |
+| `observability/prometheus.rs`、`metric_names.rs` | Prometheus 指标。 | 当前不必实现，但指标命名要预留。 |
+
+#### 19.5.3 Bedrock/Vertex/provider envelope
+
+| 文件 | 角色 | memorph 相关性 |
+| --- | --- | --- |
+| `bedrock/mod.rs`、`vertex/mod.rs` | provider 模块聚合。 | provider envelope 应隔离在 adapter。 |
+| `bedrock/envelope.rs`、`vertex/envelope.rs` | 请求/响应 envelope。 | 同一压缩结果需要不同外壳。 |
+| `bedrock/invoke.rs`、`bedrock/invoke_streaming.rs` | Bedrock 调用。 | 压缩后请求仍需适配 provider 调用方式。 |
+| `bedrock/eventstream.rs`、`eventstream_to_sse.rs` | eventstream/SSE 转换。 | provider output 转换不能丢元信息。 |
+| `bedrock/sigv4.rs`、`auth_mode_layer.rs`、`vertex/adc.rs` | 认证。 | 非压缩核心，只证明 auth 与 compression 分层。 |
+| `vertex/raw_predict.rs`、`stream_raw_predict.rs` | Vertex 调用。 | provider-specific 请求投影位置参考。 |
+
+### 19.6 Python CCR/cache：旧实现中仍值得学习的部分
+
+| 文件 | 角色 | 会话/压缩相关性 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `headroom/ccr/tool_injection.py` | 将 retrieve 工具注入 agent。 | 让模型需要细节时主动取回。 | 当前不实现 MCP/tool injection，但学习“默认压缩、按需恢复”。 |
+| `headroom/ccr/response_handler.py` | 处理 retrieve 响应。 | 将外部存储内容恢复给模型。 | `retrieve archive block` 应有统一响应格式。 |
+| `headroom/ccr/context_tracker.py` | 跟踪上下文引用。 | 记录哪些内容被压缩、引用、恢复。 | 需要 archive lineage 和 session-level compression map。 |
+| `headroom/ccr/batch_store.py` | 批量存储。 | 多块压缩内容持久化。 | 一次压缩通常产生多个 block，需要 batch manifest。 |
+| `headroom/ccr/batch_processor.py` | 批量处理。 | 批量压缩/恢复处理。 | 主动压缩可先分析所有候选，再一次提交。 |
+| `headroom/ccr/mcp_server.py` | MCP server。 | 暴露 retrieve 等工具。 | 不实现 MCP，只保留接口思想。 |
+| `headroom/ccr/__init__.py` | 包导出。 | 旧 Python CCR 入口。 | 低价值。 |
+| `headroom/cache/compression_store.py` | 压缩内容存储。 | 最接近 memorph archive。 | 学习“原文独立 store”，但要做 durable archive，不能只是缓存。 |
+| `headroom/cache/compression_cache.py` | 压缩结果缓存。 | 避免重复压缩。 | 相同工具输出可复用压缩结果。 |
+| `headroom/cache/compression_feedback.py` | 压缩反馈。 | 记录压缩效果。 | manifest 应反馈 ratio、quality、reject reason。 |
+| `headroom/cache/dynamic_detector.py` | 动态内容检测。 | 识别 volatile 内容。 | 压缩候选和 cache key 都需要去噪。 |
+| `headroom/cache/prefix_tracker.py` | prefix 跟踪。 | 跟踪稳定前缀。 | hot zone/workspace state 需要稳定边界。 |
+| `headroom/cache/base.py`、`backends/base.py` | cache 基础接口。 | 定义 cache 后端。 | archive/cache 应分开：archive 是可恢复真源，cache 是加速。 |
+| `headroom/cache/backends/memory.py` | 内存 cache。 | 测试/短生命周期。 | 不能作为会话压缩持久层。 |
+| `headroom/cache/semantic.py` | semantic cache。 | 语义相似缓存。 | 后续可辅助 retrieve，不是第一阶段核心。 |
+| `headroom/cache/anthropic.py`、`openai.py`、`google.py` | provider cache。 | provider-specific cache。 | projection 要尊重 provider cache 差异。 |
+| `headroom/cache/registry.py` | cache registry。 | provider/cache 后端选择。 | 需要 agent capability registry。 |
+| `headroom/cache/__init__.py`、`backends/__init__.py` | 包导出。 | 低。 | 不重点学习。 |
+
+### 19.7 Python memory：长期记忆和会话压缩必须分清
+
+Headroom 的 memory 模块很多，但它和“可逆会话压缩”不是一回事。memorph 可以学习 storage、ranking、injection、writer，但不能把压缩 archive 直接降级成长记忆摘要。
+
+| 文件 | 角色 | 相关性 | memorph 取舍 |
+| --- | --- | --- | --- |
+| `headroom/memory/models.py` | memory 数据模型。 | 高。 | 可参考结构化 metadata，但 archive 要保存原文和 lineage。 |
+| `headroom/memory/core.py` | memory 核心服务。 | 高。 | 可参考 add/search/update/delete 边界。 |
+| `headroom/memory/storage_router.py` | 存储路由。 | 高。 | workspace/session/global 作用域路由有价值。 |
+| `headroom/memory/budget.py` | memory 注入预算。 | 高。 | retrieve 时不能无限塞回上下文，要有预算。 |
+| `headroom/memory/ports.py` | port/interface。 | 高。 | 应定义 archive/retrieval port。 |
+| `headroom/memory/sync.py` | 同步。 | 高。 | 对跨 agent/session 同步有参考。 |
+| `headroom/memory/bridge.py` | bridge。 | 高。 | 不同工具格式桥接，类似 agent migration。 |
+| `headroom/memory/bridge_parsers.py` | bridge parser。 | 高。 | 需要 agent 原生 compact/summary marker parser。 |
+| `headroom/memory/bridge_config.py` | bridge 配置。 | 中。 | provider bridge 配置参考。 |
+| `headroom/memory/config.py`、`factory.py` | 配置和 factory。 | 中。 | archive/retrieval 配置可独立。 |
+| `headroom/memory/extraction.py`、`inline_extractor.py` | 从文本抽取 memory。 | 中。 | 用于长期知识，不用于可逆压缩。 |
+| `headroom/memory/tracker.py` | memory 使用跟踪。 | 中。 | 可参考 archive block 使用计数。 |
+| `headroom/memory/system.py` | system memory。 | 中。 | 系统级背景和会话 archive 要分层。 |
+| `headroom/memory/tools.py`、`wrapper.py`、`wrapper_tools.py` | 工具/wrapper。 | 中。 | retrieve 接口形状参考，不照搬工具注入。 |
+| `headroom/memory/traffic_learner.py` | 从流量学习。 | 低到中。 | future，可从会话流量找压缩策略。 |
+| `headroom/memory/easy.py` | 简化入口。 | 低。 | 对压缩核心价值小。 |
+| `headroom/memory/qdrant_env.py` | Qdrant 环境。 | 低。 | 第一阶段不需要。 |
+| `headroom/memory/mcp_server.py` | memory MCP。 | 中。 | 不实现 MCP。 |
+
+#### 19.7.1 memory adapters/backends/writers
+
+| 文件 | 角色 | memorph 取舍 |
+| --- | --- | --- |
+| `memory/adapters/sqlite.py` | SQLite 基础存储。 | archive 第一阶段可选。 |
+| `memory/adapters/fts5.py` | SQLite FTS5。 | 非 embedding 检索非常适合 archive retrieve。 |
+| `memory/adapters/sqlite_vector.py`、`hnsw.py`、`embedders.py` | 向量和 embedding。 | 第二阶段可选，不作为硬依赖。 |
+| `memory/adapters/cache.py` | memory cache。 | 可加速 retrieve。 |
+| `memory/adapters/graph.py`、`graph_models.py`、`sqlite_graph.py` | graph。 | 未来 session lineage graph 可参考。 |
+| `memory/backends/local.py` | 本地 backend。 | archive 最现实的落点。 |
+| `memory/backends/mem0.py`、`direct_mem0.py`、`mem0_system_adapter.py` | mem0 后端。 | 不照搬，避免外部 memory 系统模糊 archive 边界。 |
+| `memory/sync_adapters/claude_code.py` | Claude Code memory 同步。 | Claude 原生文件/会话结构要专门理解。 |
+| `memory/sync_adapters/codex_agent.py` | Codex agent memory 同步。 | Codex 会话/记忆格式要单独 adapter。 |
+| `memory/writers/base.py` | writer 抽象。 | provider exporter 应有统一 writer。 |
+| `memory/writers/claude_writer.py` | Claude writer。 | Claude projection 参考。 |
+| `memory/writers/codex_writer.py` | Codex writer。 | Codex projection 参考。 |
+| `memory/writers/cursor_writer.py`、`generic_writer.py` | 其他 writer。 | 扩展参考。 |
+| `memory/adapters/__init__.py`、`backends/__init__.py`、`sync_adapters/__init__.py`、`writers/__init__.py` | 包导出。 | 低价值。 |
+
+### 19.8 Python proxy：旧请求路径中的策略碎片
+
+这些文件说明旧 Python 体系里 compression/memory/cache/provider 的很多策略分散在 proxy。memorph 不能复制这种散落方式，应把策略收回到独立 compression/session 模块。
+
+| 文件 | 角色 | 会话/压缩相关性 | memorph 取舍 |
+| --- | --- | --- | --- |
+| `headroom/proxy/server.py` | Python proxy server。 | 请求入口，串联 handler、compression、memory。 | 不照搬 server，但学习请求前统一处理位置。 |
+| `headroom/proxy/models.py` | proxy 模型。 | 请求/响应结构。 | provider projection 需要强类型模型。 |
+| `headroom/proxy/compression_decision.py` | 文本压缩决策。 | 判断是否压缩。 | 应保留独立 decision，但移到 core。 |
+| `headroom/proxy/image_compression_decision.py` | 图像压缩决策。 | 非文本。 | 当前不纳入。 |
+| `headroom/proxy/memory_decision.py` | memory 注入决策。 | 判断是否注入 memory。 | 与 archive retrieve 类似，但语义不同。 |
+| `headroom/proxy/memory_handler.py` | memory 处理。 | 执行检索/注入。 | 可学习 budgeted injection。 |
+| `headroom/proxy/memory_injection.py` | 注入格式。 | 将 memory 写入请求。 | projection 要定义压缩块怎样呈现给目标 agent。 |
+| `headroom/proxy/memory_query.py` | memory 查询。 | query 构造。 | archive retrieve 需要 query builder。 |
+| `headroom/proxy/memory_ranker.py` | memory 排序。 | 相关性排序。 | 压缩块恢复不能无条件全展开。 |
+| `headroom/proxy/memory_tool_adapter.py` | memory tool adapter。 | 工具化接口。 | 当前不实现 MCP/tool，但接口参考有价值。 |
+| `headroom/proxy/semantic_cache.py` | 语义 cache。 | 请求级缓存。 | 非压缩核心。 |
+| `headroom/proxy/savings_tracker.py` | 节省统计。 | token/cost savings。 | manifest/metrics 可学习。 |
+| `headroom/proxy/cost.py` | 成本估算。 | token/cost 转换。 | 可先只记录 token，不做价格。 |
+| `headroom/proxy/outcome.py` | outcome 类型。 | 记录处理结果。 | compression outcome 必须显式。 |
+| `headroom/proxy/debug_introspection.py` | debug introspection。 | 排查压缩/注入路径。 | 需要 `inspect compression` 能力。 |
+| `headroom/proxy/prometheus_metrics.py` | metrics。 | 观测。 | future。 |
+| `headroom/proxy/request_logger.py` | 请求日志。 | 审计。 | 压缩流程可审计，但注意隐私。 |
+| `headroom/proxy/stage_timer.py` | 阶段耗时。 | pipeline 性能。 | 主动压缩可记录耗时。 |
+| `headroom/proxy/rate_limiter.py` | 限流。 | LLM/remote provider 相关。 | 若引入 LLM 压缩才需要。 |
+| `headroom/proxy/ws_session_registry.py` | websocket session registry。 | 管理运行时 session。 | workspace/session 一等能力可参考。 |
+| `headroom/proxy/auth_mode.py`、`modes.py`、`extensions.py` | 模式和扩展。 | 行为切换。 | 可有 compression mode：off/passive/active/user-selected。 |
+| `headroom/proxy/loopback_guard.py`、`warmup.py`、`helpers.py` | 辅助。 | 低。 | 不重点学习。 |
+| `headroom/proxy/handlers/openai.py`、`anthropic.py`、`gemini.py` | provider handler。 | provider-specific 请求处理。 | Codex/Claude/Kimi/DeepSeek adapter 需要分别测试。 |
+| `headroom/proxy/handlers/batch.py` | batch handler。 | 批处理请求。 | 批量压缩候选参考。 |
+| `headroom/proxy/handlers/streaming.py` | streaming handler。 | 流式响应。 | 流式会话记录时要避免碎片化。 |
+| `headroom/proxy/interceptors/base.py`、`astgrep.py` | interceptor。 | 请求/内容拦截、代码结构识别。 | 可有 pre-project interceptor，但不要滥用。 |
+| `headroom/proxy/__init__.py`、`handlers/__init__.py`、`interceptors/__init__.py` | 包导出。 | 低。 | 不重点学习。 |
+
+### 19.9 Python providers、learn、relevance
+
+#### 19.9.1 providers
+
+| 文件 | 角色 | 会话/压缩相关性 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `headroom/providers/base.py` | provider 基类。 | provider 能力抽象。 | 需要 agent capability trait：支持 native compact、marker、archive ref。 |
+| `headroom/providers/registry.py` | provider registry。 | provider 查找。 | 新增 agent 不改 core。 |
+| `headroom/providers/proxy_routes.py` | provider 路由。 | endpoint 映射。 | importer/exporter 路由参考。 |
+| `headroom/providers/openai.py`、`openai_compatible.py` | OpenAI 类 provider。 | OpenAI envelope。 | DeepSeek 等即使兼容 API，compact 语义也未必兼容。 |
+| `headroom/providers/anthropic.py` | Anthropic provider。 | Claude envelope。 | Claude 原生压缩/缓存标记要单独处理。 |
+| `headroom/providers/google.py`、`cohere.py`、`litellm.py` | 其他 provider。 | 多 provider 差异。 | 统一 API 不代表统一压缩语义。 |
+| `headroom/providers/claude/runtime.py` | Claude runtime wrapper。 | agent runtime 接入。 | Claude 会话格式和 native compact 需要 adapter。 |
+| `headroom/providers/codex/runtime.py` | Codex runtime wrapper。 | Codex runtime 接入。 | 对 Codex 会话导出/识别最相关。 |
+| `headroom/providers/cursor/runtime.py`、`gemini/runtime.py`、`aider/runtime.py` | 其他 runtime。 | agent runtime 接入。 | 多 agent 扩展参考。 |
+| `headroom/providers/copilot/wrap.py`、`openclaw/wrap.py` | wrapper。 | agent 包装。 | wrapper 形态参考。 |
+| `headroom/providers/*/install.py`、`install_registry.py` | 安装。 | 与压缩语义弱。 | 不学压缩。 |
+| `headroom/providers/*/__init__.py` | 包导出。 | 低。 | 不重点学习。 |
+
+#### 19.9.2 learn
+
+| 文件 | 角色 | 会话/压缩相关性 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `headroom/learn/models.py` | 学习模型。 | 扫描/学习结果。 | 可参考 agent capability discovery 数据结构。 |
+| `headroom/learn/base.py` | plugin 基类。 | 不同 agent 学习插件。 | 新 agent 支持可走 plugin。 |
+| `headroom/learn/registry.py` | plugin registry。 | 注册 Claude/Codex/Gemini。 | 新增 agent 不改 core。 |
+| `headroom/learn/scanner.py` | 扫描器。 | 扫描本地 agent 配置/会话。 | 可扫描 agent 原生会话目录。 |
+| `headroom/learn/analyzer.py` | 分析器。 | 分析 agent 使用模式。 | 可识别压缩 marker 和 session 文件。 |
+| `headroom/learn/writer.py` | 写回学习结果。 | 写配置/结果。 | 可写 agent profile。 |
+| `headroom/learn/plugins/claude.py` | Claude 学习插件。 | 识别 Claude 环境。 | Claude adapter discovery 参考。 |
+| `headroom/learn/plugins/codex.py` | Codex 学习插件。 | 识别 Codex 环境。 | Codex 会话数据理解参考。 |
+| `headroom/learn/plugins/gemini.py` | Gemini 学习插件。 | 识别 Gemini 环境。 | 多 agent 扩展参考。 |
+| `headroom/learn/_shared.py`、`__init__.py`、`plugins/__init__.py` | 辅助/导出。 | 低。 | 不重点学习。 |
+
+#### 19.9.3 Python relevance
+
+| 文件 | 角色 | 会话/压缩相关性 | memorph 学习点 |
+| --- | --- | --- | --- |
+| `headroom/relevance/base.py` | relevance 接口。 | archive retrieve 的抽象基础。 | retrieve 不应写死 BM25 或 embedding。 |
+| `headroom/relevance/bm25.py` | BM25 检索。 | 无外部 LLM/embedding 的检索。 | 第一阶段推荐实现。 |
+| `headroom/relevance/embedding.py` | embedding 检索。 | 语义召回。 | 第二阶段可选。 |
+| `headroom/relevance/hybrid.py` | hybrid 检索。 | 混合排序。 | 适合质量提升。 |
+| `headroom/relevance/__init__.py` | 导出。 | 低。 | 不重点学习。 |
+
+### 19.10 Rust tests：Headroom 明确锁定的行为
+
+| 文件 | 测试目标 | memorph 应有对应测试 |
+| --- | --- | --- |
+| `crates/headroom-core/tests/ccr_roundtrip.rs` | CCR 存储和恢复 roundtrip。 | archive 原文保存、压缩引用、恢复内容一致。 |
+| `crates/headroom-core/tests/ccr_backends.rs` | 多 backend 行为一致。 | file/sqlite/in-memory archive 行为一致。 |
+| `crates/headroom-core/tests/live_zone_ccr.rs` | live-zone 与 CCR 联动。 | 压缩候选转 archive ref 后 provider projection 正确。 |
+| `crates/headroom-core/tests/live_zone_dispatch.rs` | live-zone dispatch。 | 不同 content type 走不同 compressor。 |
+| `crates/headroom-core/tests/live_zone_thresholds.rs` | 阈值控制。 | 小内容不压、收益不足不压、热区不压。 |
+| `crates/headroom-core/tests/live_zone_token_validation.rs` | token validation。 | 压缩后 token 不下降则 reject。 |
+| `crates/headroom-core/tests/tokenizer_proptest.rs` | tokenizer 性质测试。 | token 估算不崩、不负数、跨 provider 稳定。 |
+| `crates/headroom-core/tests/cache_control.rs` | cache control 行为。 | provider compact/cache marker 不丢。 |
+| `crates/headroom-core/tests/recommendations_loader.rs` | recommendation 加载。 | policy 配置加载测试。 |
+| `crates/headroom-core/tests/auth_mode.rs` | auth mode。 | memorph 不需要同类压缩测试。 |
+| `crates/headroom-proxy/tests/integration_compression.rs` | proxy compression 集成。 | canonical session -> target agent projection -> compressed marker。 |
+| `crates/headroom-proxy/tests/integration_cache_control.rs`、`integration_cache_drift.rs` | cache control 和漂移。 | 多次迁移/二次压缩不应语义漂移。 |
+| `crates/headroom-proxy/tests/integration_e3_anthropic_cache_control.rs` | Anthropic cache。 | Claude 兼容测试。 |
+| `crates/headroom-proxy/tests/integration_e4_openai_cache_key.rs` | OpenAI cache key。 | Codex/OpenAI 兼容测试。 |
+| `crates/headroom-proxy/tests/integration_chat_completions.rs`、`integration_responses.rs`、`integration_responses_streaming.rs` | OpenAI Chat/Responses。 | OpenAI/Codex 投影和 streaming 测试。 |
+| `crates/headroom-proxy/tests/integration_conversations.rs` | conversations。 | 多轮会话结构测试。 |
+| `crates/headroom-proxy/tests/integration_bedrock_*`、`integration_vertex_raw_predict.rs` | provider adapter。 | provider adapter 独立测试，不污染 core。 |
+| `crates/headroom-proxy/tests/integration_sse.rs`、`sse_openai_chat.rs`、`sse_openai_responses.rs`、`sse_anthropic.rs`、`sse_framing.rs` | SSE。 | 流式输出解析不应污染压缩。 |
+| `crates/headroom-proxy/tests/integration_schema_sort.rs`、`integration_tool_sort.rs` | schema/tool 稳定。 | workspace/tool definition 稳定性。 |
+| `crates/headroom-proxy/tests/integration_volatile_detector.rs` | volatile 检测。 | 压缩/cache 前去噪。 |
+| `crates/headroom-proxy/tests/integration_metrics.rs`、`integration_bedrock_metrics.rs` | metrics。 | compression manifest 可统计。 |
+| `crates/headroom-proxy/tests/integration_headers.rs`、`integration_request_id.rs` | metadata/trace。 | trace id/archive id 关联。 |
+| `crates/headroom-proxy/tests/integration_body.rs`、`integration_body_size.rs` | 请求体处理。 | 压缩前后大小约束。 |
+| `crates/headroom-proxy/tests/common/mod.rs` | 测试公共工具。 | 应建设 fixture helpers。 |
+| `crates/headroom-proxy/tests/e2e_real.rs` | 真实 e2e。 | 最终需要真实 agent fixture，但 CI 可分层。 |
+| `crates/headroom-proxy/tests/integration_http.rs`、`integration_health.rs`、`integration_ws.rs` | HTTP/health/ws。 | memorph 不需要 HTTP，但需要 pipeline smoke。 |
+
+### 19.11 从逐文件索引反推出 memorph 的模块边界
+
+| memorph 板块 | 对应 Headroom 文件群 | 职责 | 不应该做什么 |
+| --- | --- | --- | --- |
+| `compression-core` | `crates/headroom-core/src/transforms/*` | 类型检测、候选选择、压缩执行、token validation、manifest。 | 不知道 Claude/Codex/Kimi 的文件格式。 |
+| `compression-archive` | `ccr/*`、`cache/compression_store.py`、`ccr/backends/*` | 保存原文、压缩结果、lineage、retrieval index。 | 不把 archive 当临时 cache。 |
+| `compression-retrieval` | `relevance/*`、`memory_query.py`、`memory_ranker.py` | query-first retrieve。 | 不无条件展开所有压缩块。 |
+| `provider-projection` | `crates/headroom-proxy/src/compression/*`、`providers/*` | 把 canonical 压缩块映射成目标 agent 能理解的格式。 | 不重新决定压缩策略。 |
+| `agent-parser` | `learn/plugins/*`、`memory/bridge_parsers.py` | 识别源 agent 的原生 compact/summary/cache marker。 | 不把未知 marker 当普通文本。 |
+| `workspace/session-registry` | `ws_session_registry.py`、`memory/storage_router.py` | workspace 作用域、session 作用域、agent profile。 | 不把所有压缩块混到全局。 |
+| `observability` | `observability/*`、`savings_tracker.py`、`outcome.py` | 记录 ratio、reason、trace、失败。 | 不只在日志里打印一句 `compressed`。 |
+| `tests/fixtures` | `tests/live_zone_*`、`tests/integration_compression.rs` | 锁定跨 agent 压缩行为。 | 不只测 happy path。 |
+
+### 19.12 对 memorph 当前目标的直接落地清单
+
+| 能力 | 必要性 | Headroom 证据 | memorph 实现标准 |
+| --- | --- | --- | --- |
+| canonical compressed block | 必须 | `ccr/mod.rs`、`live_zone.rs` | 中间态有明确 `compressed_block` event，不是普通 assistant 文本。 |
+| durable archive | 必须 | `ccr/backends/sqlite.rs`、`compression_store.py` | 原文落盘，可按 archive id 恢复。 |
+| provider-native marker parser | 必须 | `memory/bridge_parsers.py`、`providers/codex/runtime.py`、`providers/claude/runtime.py` | Claude/Codex/Kimi/DeepSeek 的压缩标记要识别并映射。 |
+| provider projection | 必须 | `live_zone_anthropic.rs`、`live_zone_openai.rs`、`live_zone_responses.rs` | A 中压缩的内容到 B 中不能无条件展开，而要按 B 的压缩语义投影。 |
+| token validation | 必须 | `live_zone_token_validation.rs` | 压缩后目标上下文不变小则 reject。 |
+| hot zone protection | 必须 | `04-phase-B-live-zone.md`、`live_zone.rs` | 当前任务目标、最新问题、workspace state 不压。 |
+| type-aware non-LLM compression | 强烈建议 | `log_compressor.rs`、`search_compressor.rs`、`diff_compressor.rs`、`smart_crusher/*` | 先压日志/搜索/diff/JSON，不先做泛化模型摘要。 |
+| query-first retrieve | 必须 | `ccr/tool_injection.py`、`relevance/*` | 目标 agent 只在需要时取回片段。 |
+| manifest/outcome | 必须 | `outcome.py`、`observability/compression_ratio.rs` | 每次压缩记录候选、策略、ratio、skip reason、archive id。 |
+| user-selected compression | 建议 | `planning.rs`、`batch_processor.py` | 用户可选择候选；未选内容保留。 |
+| LLM compression | 后置 | Headroom 主线强调 deterministic/smart crusher | 只用于难以结构化压缩的自然语言长段，并且必须保留原文 archive。 |
+
+### 19.13 哪些 Headroom 文件不应该成为 memorph 的实现目标
+
+| 文件群 | 不纳入原因 |
+| --- | --- |
+| `headroom/ccr/mcp_server.py`、`headroom/memory/mcp_server.py`、`docs/content/docs/mcp.mdx` | 用户已明确不实现 MCP。只借鉴 retrieve 接口理念。 |
+| `headroom/memory/backends/mem0*.py` | 引入外部 memory 系统会模糊 archive 和 memory 边界。 |
+| `qdrant_env.py`、embedding/vector 相关复杂后端 | 第一阶段会增加部署复杂度，BM25/FTS 足够起步。 |
+| `image_compression_decision.py`、`image-compression.mdx` | 当前任务是会话文本压缩。 |
+| provider install 文件 | 安装包装与压缩语义无关。 |
+| Bedrock/Vertex 认证细节 | 证明 provider adapter 要隔离即可，不需要复制。 |
+| Python proxy server 整体 | Headroom 自己也在 realignment 中转向 Rust core/proxy，不应照搬旧散乱架构。 |
+
+### 19.14 最终文件级结论
+
+从文件级调研看，Headroom 对 memorph 最有价值的不是某一个 Python 类，也不是 MCP，而是下面这条完整链路：
+
+```text
+detect content type
+-> choose compression candidate
+-> protect hot zone and provider markers
+-> apply deterministic/type-aware compression first
+-> store original content in durable archive
+-> replace middle-state payload with compressed block ref
+-> validate token/byte savings
+-> record manifest/outcome
+-> project compressed semantics into target agent format
+-> retrieve by query only when needed
+```
+
+memorph 的关键优势是它已经处在“跨 agent 会话中间态”的位置，所以它比 Headroom 的 HTTP proxy 更适合做会话压缩管理。Headroom 是请求前压缩，memorph 应该是会话中间态压缩和跨 agent projection；两者理念相同，但落点不同。
+
+因此，后续 memorph 不应该做一个“模型总结按钮”，而应该做一个独立、可审计、可恢复、provider-aware 的 `SessionCompressionManager`。这个模块的验收标准不是“看起来短了”，而是：
+
+- 中间态物理变小。
+- 原文可按 archive id 恢复。
+- 目标 agent 不把已压缩垃圾当完整上下文读。
+- 不同 agent 的原生压缩标记能被解析和投影。
+- 压缩收益可量化。
+- 压缩失败可解释。
+- 当前任务目标和 workspace 状态不丢。
