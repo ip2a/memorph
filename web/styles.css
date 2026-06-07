@@ -1104,7 +1104,7 @@ button[disabled] {
 }
 
 .detail-layout {
-  grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.8fr);
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
   margin-top: 18px;
 }
 
@@ -1798,6 +1798,12 @@ button[disabled] {
     border-left: 0;
     padding-bottom: 12px;
     border-bottom: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 1100px) {
+  .detail-layout {
+    grid-template-columns: 1fr;
   }
 }
 
