@@ -2689,6 +2689,10 @@ fn get_git_branch(dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::active_compression::{
+        apply_active_compression_with_archive_dir, ActiveCompressionApplyParams,
+        ActiveCompressionMode, ActiveCompressionPolicy,
+    };
     use serde_json::json;
     use tempfile::{tempdir, NamedTempFile};
 
@@ -3340,6 +3344,192 @@ mod tests {
             line.get("type").and_then(Value::as_str) == Some("response_item")
                 && line.to_string().contains("latest request")
         }));
+    }
+
+    #[test]
+    fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
+        let temp = tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        let workspace = temp.path().join("repo");
+        let archive_dir = temp.path().join("archives");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            "model_provider = \"test-provider\"\n",
+        )
+        .unwrap();
+
+        let now = Utc::now();
+        let mut source_session = CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: "active-to-codex".to_string(),
+                source_title: Some("Active to Codex".to_string()),
+            },
+            provenance: SessionProvenance {
+                imported_at: now,
+                imported_by: None,
+                primary_source: ProviderSessionRef {
+                    provider_id: "claude".to_string(),
+                    session_id: "active-to-codex".to_string(),
+                    source_path: None,
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir: Some(workspace.to_string_lossy().to_string()),
+                created_at: None,
+                last_active_at: None,
+                tags: Vec::new(),
+            },
+            events: Vec::new(),
+            artifacts: Vec::new(),
+            extensions: BTreeMap::new(),
+        };
+        source_session.events.push(SessionEvent {
+            id: "old-user".to_string(),
+            kind: SessionEventKind::Message,
+            role: EventRole::User,
+            timestamp: now,
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::Text {
+                text: "historical context that should be archived ".repeat(80),
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "claude".to_string(),
+                    original_id: Some("old-user".to_string()),
+                    original_role: Some("user".to_string()),
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: BTreeMap::new(),
+            },
+        });
+        source_session.events.push(SessionEvent {
+            id: "recent-user".to_string(),
+            kind: SessionEventKind::Message,
+            role: EventRole::User,
+            timestamp: now,
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::Text {
+                text: "latest request".to_string(),
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "claude".to_string(),
+                    original_id: Some("recent-user".to_string()),
+                    original_role: Some("user".to_string()),
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: BTreeMap::new(),
+            },
+        });
+
+        let applied = apply_active_compression_with_archive_dir(
+            &source_session,
+            ActiveCompressionApplyParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 1,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: ActiveCompressionMode::Auto,
+                },
+                candidate_ids: Vec::new(),
+            },
+            &archive_dir,
+        )
+        .unwrap();
+        assert_eq!(applied.report.archive_refs.len(), 1);
+        let archive_ref = applied.report.archive_refs[0].clone();
+
+        let session_id =
+            export_canonical_session_in_codex_dir(&applied.session, &workspace, &codex_dir)
+                .unwrap();
+        let rollout_path = WalkDir::new(codex_dir.join("sessions"))
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.into_path())
+            .find(|path| {
+                path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+                    && path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|value| value.contains(&session_id))
+            })
+            .expect("exported rollout");
+        let lines = std::fs::read_to_string(&rollout_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+
+        let compacted = lines
+            .iter()
+            .find(|line| line.get("type").and_then(Value::as_str) == Some("compacted"))
+            .expect("native compacted line");
+        let payload = compacted.get("payload").expect("compacted payload");
+        assert_eq!(
+            payload
+                .pointer("/memorph/source_provider_id")
+                .and_then(Value::as_str),
+            Some("claude")
+        );
+        assert_eq!(
+            payload
+                .pointer("/memorph/source_event_ids/0")
+                .and_then(Value::as_str),
+            Some("old-user")
+        );
+        assert_eq!(
+            payload
+                .pointer("/memorph/archive_ref")
+                .and_then(Value::as_str),
+            Some(archive_ref.as_str())
+        );
+        let model_visible_text = payload
+            .pointer("/replacement_history/0/content/0/text")
+            .and_then(Value::as_str)
+            .expect("replacement history text");
+        assert!(model_visible_text.contains("[Compressed session segment from claude]"));
+        assert!(model_visible_text.contains(&format!("Archive: {archive_ref}")));
+
+        let old_source_response_item = lines.iter().any(|line| {
+            line.get("type").and_then(Value::as_str) == Some("response_item")
+                && line
+                    .to_string()
+                    .contains("historical context that should be archived")
+        });
+        assert!(!old_source_response_item);
+
+        let imported = import_canonical_session(&rollout_path).unwrap();
+        let imported_compressed = imported
+            .session
+            .events
+            .iter()
+            .find_map(|event| {
+                event.blocks.iter().find_map(|block| match block {
+                    EventBlock::Compressed {
+                        source_provider_id,
+                        source_event_ids,
+                        archive_ref,
+                        ..
+                    } => Some((source_provider_id, source_event_ids, archive_ref)),
+                    _ => None,
+                })
+            })
+            .expect("imported compressed block");
+        assert_eq!(imported_compressed.0, "claude");
+        assert_eq!(imported_compressed.1, &vec!["old-user".to_string()]);
+        assert_eq!(imported_compressed.2.as_deref(), Some(archive_ref.as_str()));
     }
 
     #[test]
