@@ -2790,3 +2790,89 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 24：建议补 retrieval query 的 field/source 可解释性，例如在 match 中增加命中的 snippet 已足够，但是否需要暴露 `score_reason` 要谨慎评估；优先不改 response schema，先看现有 UI/CLI 是否已经够用。
+
+### 2026-06-07：Phase 24 / query scoring guidance 暴露但不改 retrieve schema
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认本阶段目标是提升 query retrieval 的可解释性。
+- 已检查当前工作区状态，Phase 23 已提交，开始时工作区干净。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+本阶段判断：
+
+- 暂不在 retrieve response 中增加 `score_reason`。
+- 原因：
+  - 这会改变 retrieve response schema。
+  - 当前 `matches.score + snippets + retrieval_mode + returned_event_ids + omitted_event_count` 已经能支撑 agent 做 query-first 判断。
+  - 更低风险的做法是先把 scoring 语义放进现有 tool spec / instructions guidance。
+
+已完成：
+
+- 在 `compression_retrieval_tool_spec().usage_rules` 中新增 scoring 说明：
+  - query score 优先 exact phrase。
+  - 其次优先 distinct query terms coverage。
+  - repeated single-term hits 只是弱证据。
+- 在 `compression_retrieval_instructions(...).suggested_steps` 中新增使用建议：
+  - 多个 match 返回时优先高分。
+  - score 偏向 exact phrases 和 broader term coverage。
+  - 不要把 repeated single-term noise 当作强相关。
+- core tests 增加断言，确保 tool spec 和 instructions 不会丢失 scoring guidance。
+- API route tests 增加断言，确保 `/api/v1/compression/tool-spec` 和 `/api/v1/compression/instructions` 也暴露这条 guidance。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有新增 MCP tool。
+- 没有改变 retrieve response schema。
+- 没有新增 `score_reason` 字段。
+- 没有改变 archive 格式。
+- 没有改变 CLI/API 参数。
+- 没有调用 LLM。
+
+为什么这一步重要：
+
+- Phase 23 改进了 query scoring，但 agent 如果不知道 score 大致代表什么，仍可能误用结果。
+- Phase 24 让 agent 能正确理解：
+  - 高分通常意味着 phrase/coverage 更强。
+  - 重复单词不是强证据。
+  - query retrieval 仍然是局部恢复，不是完整展开。
+- 这符合用户的核心要求：
+  - 不无条件展开压缩内容。
+  - 不把无意义旧内容塞给目标 agent。
+  - 压缩和恢复有明确规则，而不是黑箱简化。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieval_tool_spec_is_machine_readable_and_query_first -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieval_instructions_are_archive_specific_and_query_first -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_tool_spec_route_returns_retrieval_contract -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_instructions_route_returns_archive_specific_examples -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，142 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- core tool spec scoring guidance。
+- core archive-specific instructions scoring guidance。
+- API tool spec route scoring guidance。
+- API instructions route scoring guidance。
+
+遇到的问题：
+
+- `score_reason` 可能有价值，但本阶段不做。
+- 如果后续 UI/agent 需要更强解释性，可以单独做 schema 变更，并同时补 CLI/API compatibility tests。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `rust/crates/memorph/src/api.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 25：建议检查压缩块投影到各 provider 时是否都能携带 query-first retrieval hint 和 archive_ref，尤其是非 native portable providers；仍然不做 MCP。

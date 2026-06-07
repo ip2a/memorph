@@ -1767,6 +1767,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|rule| rule.as_str().unwrap().contains("Prefer query retrieval")));
+        assert!(value["data"]["usage_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| rule.as_str().unwrap().contains("exact phrase matches")));
     }
 
     #[tokio::test]
@@ -1799,6 +1804,11 @@ mod tests {
             value["data"]["api_query_body"]["archive_ref"],
             "memorph-archive://group/archive.json.gz"
         );
+        assert!(value["data"]["suggested_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step.as_str().unwrap().contains("broader term coverage")));
     }
 
     #[tokio::test]
