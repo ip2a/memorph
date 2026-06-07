@@ -2186,3 +2186,89 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 17：增强 retrieval result 的上下文安全性。建议给 query retrieval 结果增加更明确的 `retrieval_mode` / `recommended_next_action` 字段，帮助 agent 区分 query 局部结果和 full archive 结果，避免把局部检索误判为完整历史。
+
+### 2026-06-07：Phase 17 / retrieval result 上下文安全标记
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认长期目标仍是完善 compression/retrieval 的安全闭环。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+本阶段目标：
+
+- 让 retrieval 结果自己说明“这是完整 archive 还是 query 局部结果”。
+- 避免 agent 把 query retrieval 的局部片段误判成完整历史。
+- 给每种 retrieval mode 返回下一步建议。
+
+已完成：
+
+- `RetrievedCompressionArchive` 新增字段：
+  - `retrieval_mode`
+  - `recommended_next_action`
+- 新增枚举：
+  - `CompressionRetrievalMode::FullArchive`
+  - `CompressionRetrievalMode::QueryMatches`
+  - `CompressionRetrievalMode::QueryNoMatches`
+- retrieve 行为现在明确标记：
+  - 无 query：`full_archive`
+  - query 有命中：`query_matches`
+  - query 无命中：`query_no_matches`
+- `recommended_next_action` 现在会根据 mode 返回：
+  - full archive：这是完整归档段，只把需要部分放回活跃上下文。
+  - query matches：这是 query-filtered partial retrieval，不是完整历史。
+  - query no matches：建议扩大 query，只有确实需要完整原始段时才 full retrieval。
+- `compression_retrieval_tool_spec()` 的 output contract 同步说明：
+  - full retrieval 的 `retrieval_mode` 是 `full_archive`。
+  - query retrieval 的 `retrieval_mode` 是 `query_matches` 或 `query_no_matches`。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有改变 retrieval 搜索算法。
+- 没有改变 archive 存储格式。
+- 没有改变 active compression apply/switch 流程。
+- 没有改变 CLI/API 参数形状；只是增强返回结果。
+
+为什么这一步重要：
+
+- Phase 13 让 archive 支持 query search。
+- Phase 15/16 让 agent/用户知道如何 query-first retrieval。
+- Phase 17 让 retrieval response 本身也带上下文安全语义：
+  - query 结果是局部，不是完整历史。
+  - no-match 不是 archive 空，只是 query 没命中。
+  - full archive 结果要谨慎使用，只取必要部分。
+- 这进一步贴近 Headroom CCR 的核心原则：retrieve 是按需恢复，不是把压缩内容重新整段塞回上下文。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_apply_from_file_writes_archive_and_expandable_output -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieval_tool_spec_is_machine_readable_and_query_first -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_tool_spec_route_returns_retrieval_contract -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，138 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- full retrieval 返回 `retrieval_mode == FullArchive`，并提示这是完整 archived segment。
+- query 命中返回 `retrieval_mode == QueryMatches`，并提示这是 partial retrieval。
+- query 不命中返回 `retrieval_mode == QueryNoMatches`，并提示扩大 query。
+- tool spec output contract 包含 retrieval mode 语义。
+
+遇到的问题：
+
+- 本阶段没有遇到实现阻塞。
+- 注意点：新增字段是返回结果增强，不会影响旧调用参数；旧客户端如果忽略未知 JSON 字段仍可兼容。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 18：补压缩 archive/retrieval 的 API 成功路径 fixture 或端到端 smoke，减少目前 API retrieve 成功路径主要靠 core 临时目录测试覆盖的间接性。

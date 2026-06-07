@@ -507,6 +507,8 @@ pub struct RetrievedCompressionArchive {
     pub query: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_results: Option<usize>,
+    pub retrieval_mode: CompressionRetrievalMode,
+    pub recommended_next_action: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub canonical_id: String,
     pub source_provider_id: String,
@@ -518,6 +520,14 @@ pub struct RetrievedCompressionArchive {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub matches: Vec<RetrievedCompressionArchiveMatch>,
     pub events: Vec<SessionEvent>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionRetrievalMode {
+    FullArchive,
+    QueryMatches,
+    QueryNoMatches,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,11 +621,13 @@ pub fn compression_retrieval_tool_spec() -> CompressionRetrievalToolSpec {
         }),
         output_contract: CompressionRetrievalToolOutputContract {
             full_retrieval: vec![
+                "retrieval_mode is full_archive".to_string(),
                 "events contains every original archived SessionEvent".to_string(),
                 "source_event_count equals the archive's full original event count".to_string(),
                 "returned_event_count equals events.length".to_string(),
             ],
             query_retrieval: vec![
+                "retrieval_mode is query_matches or query_no_matches".to_string(),
                 "events contains only matching archived SessionEvent values".to_string(),
                 "matches contains event_id, event_index, score, and snippets for each returned event".to_string(),
                 "source_event_count still reports the archive's full original event count".to_string(),
@@ -696,10 +708,18 @@ fn retrieved_compression_archive(
         (archive.events, Vec::new())
     };
     let returned_event_count = events.len();
+    let retrieval_mode = match (query, returned_event_count) {
+        (Some(_), 0) => CompressionRetrievalMode::QueryNoMatches,
+        (Some(_), _) => CompressionRetrievalMode::QueryMatches,
+        (None, _) => CompressionRetrievalMode::FullArchive,
+    };
+    let recommended_next_action = retrieval_next_action(retrieval_mode);
     RetrievedCompressionArchive {
         archive_ref: params.archive_ref.clone(),
         query: query.map(str::to_string),
         max_results,
+        retrieval_mode,
+        recommended_next_action,
         created_at: archive.created_at,
         canonical_id: archive.canonical_id,
         source_provider_id: archive.source_provider_id,
@@ -711,6 +731,21 @@ fn retrieved_compression_archive(
         matches,
         events,
     }
+}
+
+fn retrieval_next_action(mode: CompressionRetrievalMode) -> String {
+    match mode {
+        CompressionRetrievalMode::FullArchive => {
+            "This is the complete archived segment. Use only the needed parts in the active context."
+        }
+        CompressionRetrievalMode::QueryMatches => {
+            "This is a query-filtered partial retrieval. Treat it as relevant snippets/events, not the complete archived history."
+        }
+        CompressionRetrievalMode::QueryNoMatches => {
+            "No archived events matched this query. Try a broader query or use full retrieval only if the complete original segment is required."
+        }
+    }
+    .to_string()
 }
 
 fn search_archive_events(
@@ -1702,6 +1737,13 @@ mod tests {
         assert_eq!(retrieved.source_event_ids, vec!["old-user"]);
         assert_eq!(retrieved.source_event_count, 1);
         assert_eq!(retrieved.returned_event_count, 1);
+        assert_eq!(
+            retrieved.retrieval_mode,
+            CompressionRetrievalMode::FullArchive
+        );
+        assert!(retrieved
+            .recommended_next_action
+            .contains("complete archived segment"));
         assert!(retrieved.events.iter().any(|event| event.id == "old-user"));
 
         let searched = retrieve_compression_archive_in_dir(
@@ -1716,6 +1758,13 @@ mod tests {
         assert_eq!(searched.query.as_deref(), Some("historical context"));
         assert_eq!(searched.source_event_count, 1);
         assert_eq!(searched.returned_event_count, 1);
+        assert_eq!(
+            searched.retrieval_mode,
+            CompressionRetrievalMode::QueryMatches
+        );
+        assert!(searched
+            .recommended_next_action
+            .contains("query-filtered partial retrieval"));
         assert_eq!(searched.events[0].id, "old-user");
         assert_eq!(searched.matches.len(), 1);
         assert_eq!(searched.matches[0].event_id, "old-user");
@@ -1735,6 +1784,13 @@ mod tests {
         .unwrap();
         assert_eq!(no_match.source_event_count, 1);
         assert_eq!(no_match.returned_event_count, 0);
+        assert_eq!(
+            no_match.retrieval_mode,
+            CompressionRetrievalMode::QueryNoMatches
+        );
+        assert!(no_match
+            .recommended_next_action
+            .contains("Try a broader query"));
         assert!(no_match.events.is_empty());
         assert!(no_match.matches.is_empty());
     }
