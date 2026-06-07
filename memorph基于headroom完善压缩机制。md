@@ -1192,3 +1192,95 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 6：CLI/API dry-run，让用户能在不 apply 的情况下查看 active compression candidates、skips、estimated savings、risk。
+
+### 2026-06-07：Phase 6 / CLI API dry-run
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认 Phase 6 的目标是“用户能看见候选压缩计划，不需要先 apply”。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已确认本阶段不做 apply，不写 archive，不改 provider switch/export 行为。
+
+已完成：
+
+- 新增 core 公共入口：
+  - `ActiveCompressionDryRunParams`
+  - `active_compression_dry_run`
+- dry-run 输入支持两种来源：
+  - `session_id`：从 `source_provider_id` 对应 provider 原生会话加载。
+  - `file`：从 `.json/.md/.html/.morph` canonical export 文件加载。
+- dry-run 参数支持：
+  - `source_provider_id`
+  - `target_provider_id`
+  - `policy`
+  - `session_id`
+  - `file`
+- 新增 API 路由：
+  - `POST /api/v1/compression/plan`
+- API body 支持：
+  - `source_provider_id`
+  - `target_provider_id`
+  - `session_id`
+  - `file`
+  - `policy`
+- API 返回完整 `ActiveCompressionReport`，包含：
+  - `candidates`
+  - `skipped`
+  - `reason`
+  - `estimated_bytes_saved`
+  - `estimated_tokens_saved`
+  - `risk`
+- 新增 CLI 命令：
+  - `memorph compression plan SOURCE TARGET --session-id SESSION_ID`
+  - `memorph compression plan SOURCE TARGET --file session.json`
+- CLI policy 参数：
+  - `--protect-recent-message-events`
+  - `--min-candidate-bytes`
+  - `--min-savings-ratio-percent`
+- CLI dispatch 已接入 `rust/apps/memorph/src/main.rs`，会输出：
+  - 原始/压缩后估算大小。
+  - candidates 列表。
+  - skipped 列表。
+  - 每个 candidate 的 reason、risk、estimated savings。
+- 新增测试覆盖：
+  - core 从 canonical file dry-run 返回 candidates 和 skipped reason。
+  - API route 从 canonical file dry-run 返回 candidates、reason、risk、estimated savings。
+  - CLI parser 接受 `compression plan` 的 file 和 policy 参数。
+  - app package 编译通过，确认 CLI dispatch 可编译。
+
+明确未做：
+
+- 没有实现 CLI/API apply。
+- 没有写 archive。
+- 没有修改 session。
+- 没有接入 TUI。
+- 没有引入 LLM。
+- 没有 provider-specific tokenizer。
+
+测试：
+
+- `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_dry_run_from_file_returns_candidates_and_skips`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_plan_route_returns_candidates_from_file`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_plan_accepts_file_and_policy_options`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，115 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+
+遇到的问题：
+
+- `memorph-lib` crate 只定义 CLI schema，实际 CLI dispatch 在 `rust/apps/memorph/src/main.rs`。
+- 处理方式：同时更新 `cli.rs` 和 app dispatch，避免只做 parser 不做实际命令。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `rust/crates/memorph/src/api.rs`
+- `rust/crates/memorph/src/cli.rs`
+- `rust/apps/memorph/src/main.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 7：CLI/API apply，让用户可以选择 candidate_ids 执行主动压缩，并返回 archive refs 与压缩报告。

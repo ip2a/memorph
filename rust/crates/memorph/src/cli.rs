@@ -212,6 +212,30 @@ pub enum CompressionCommands {
         #[arg(short, long, value_name = "FORMAT", default_value = "json")]
         format: String,
     },
+    /// Dry-run active compression and show candidate ranges without applying
+    Plan {
+        /// Source provider ID, or source provider hint when using --file
+        #[arg(value_name = "SOURCE")]
+        source_provider_id: String,
+        /// Target provider ID for projection-aware planning
+        #[arg(value_name = "TARGET")]
+        target_provider_id: String,
+        /// Source session ID to load from SOURCE
+        #[arg(short, long, value_name = "SESSION_ID", conflicts_with = "file")]
+        session_id: Option<String>,
+        /// Canonical export file to plan from instead of provider storage
+        #[arg(long, value_name = "FILE", conflicts_with = "session_id")]
+        file: Option<String>,
+        /// Number of latest message events to protect from compression
+        #[arg(long, value_name = "N")]
+        protect_recent_message_events: Option<usize>,
+        /// Minimum candidate size in bytes
+        #[arg(long, value_name = "BYTES")]
+        min_candidate_bytes: Option<usize>,
+        /// Minimum estimated savings ratio percentage
+        #[arg(long, value_name = "PERCENT")]
+        min_savings_ratio_percent: Option<u8>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -354,6 +378,49 @@ mod tests {
                 assert_eq!(workspace.as_deref(), Some("/tmp/repo"));
                 assert_eq!(codex_home.as_deref(), Some("/tmp/.codex"));
                 assert_eq!(keep, 3);
+            }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn compression_plan_accepts_file_and_policy_options() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "compression",
+            "plan",
+            "claude",
+            "codex",
+            "--file",
+            "session.json",
+            "--protect-recent-message-events",
+            "2",
+            "--min-candidate-bytes",
+            "128",
+            "--min-savings-ratio-percent",
+            "25",
+        ]);
+
+        match cli.command {
+            Some(Commands::Compression {
+                command:
+                    CompressionCommands::Plan {
+                        source_provider_id,
+                        target_provider_id,
+                        session_id,
+                        file,
+                        protect_recent_message_events,
+                        min_candidate_bytes,
+                        min_savings_ratio_percent,
+                    },
+            }) => {
+                assert_eq!(source_provider_id, "claude");
+                assert_eq!(target_provider_id, "codex");
+                assert_eq!(session_id, None);
+                assert_eq!(file.as_deref(), Some("session.json"));
+                assert_eq!(protect_recent_message_events, Some(2));
+                assert_eq!(min_candidate_bytes, Some(128));
+                assert_eq!(min_savings_ratio_percent, Some(25));
             }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
