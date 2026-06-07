@@ -527,6 +527,9 @@ fn parse_portable_compressed_text(text: &str) -> Option<PortableCompressedText> 
             archive_ref = Some(value.trim().to_string()).filter(|value| !value.is_empty());
             continue;
         }
+        if is_portable_retrieval_hint_line(trimmed) {
+            continue;
+        }
         summary_lines.push(line);
     }
 
@@ -541,6 +544,10 @@ fn parse_portable_compressed_text(text: &str) -> Option<PortableCompressedText> 
         source_event_count,
         archive_ref,
     })
+}
+
+fn is_portable_retrieval_hint_line(line: &str) -> bool {
+    line.starts_with("Retrieve specific details with: memorph compression retrieve ")
 }
 
 fn trim_summary_lines(lines: &[&str]) -> String {
@@ -1179,7 +1186,7 @@ mod tests {
                     "codex",
                     "portable",
                     EventRole::Assistant,
-                    "[Compressed session segment from opencode]\nportable summary\nSource event count: 42\nArchive: memorph-archive://portable/a.json",
+                    "[Compressed session segment from opencode]\nportable summary\nSource event count: 42\nArchive: memorph-archive://portable/a.json\nRetrieve specific details with: memorph compression retrieve memorph-archive://portable/a.json --query <terms> --max-results 5",
                     false,
                 ),
                 provider_text_event("codex", "tail", EventRole::User, "new request", false),

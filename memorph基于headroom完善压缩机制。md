@@ -2978,3 +2978,88 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 26：建议检查 portable compressed text 的 import/normalize 是否会保留 retrieval hint 之外的 archive_ref，同时不要把 hint 当成 summary 污染；仍然不做 MCP。
+
+### 2026-06-07：Phase 26 / portable hint normalize 不污染 summary
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认本阶段目标是检查 portable compressed text 的 import/normalize 行为。
+- 已检查当前工作区状态，Phase 25 已提交，开始时工作区干净。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+发现的问题：
+
+- Phase 25 让 portable compressed text 明确携带 query-first retrieval hint。
+- 但 `parse_portable_compressed_text(...)` 旧逻辑只会跳过：
+  - `Source event count: ...`
+  - `Archive: ...`
+- 因此 portable text 从非 native provider 再 normalize 回 `EventBlock::Compressed` 时，`Retrieve specific details with: ...` 会被误当成 summary 的一部分。
+
+本阶段目标：
+
+- 保留 archive_ref。
+- 保留 source event count。
+- 保留真正的 summary。
+- 不把 retrieval hint 行写入 compressed summary。
+- 不改变 portable text 输出格式。
+
+已完成：
+
+- 新增内部 helper：
+  - `is_portable_retrieval_hint_line(...)`
+- `parse_portable_compressed_text(...)` 现在会跳过 memorph 生成的 retrieval hint 行：
+  - `Retrieve specific details with: memorph compression retrieve ...`
+- 更新测试 `preserve_recovers_portable_compressed_text_from_non_native_provider`：
+  - portable fixture 中加入 query-first retrieval hint。
+  - 断言 normalize 后的 `summary == "portable summary"`。
+  - 断言 `archive_ref == "memorph-archive://portable/a.json"`。
+  - 断言 source event count 仍为 42。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有新增 MCP tool。
+- 没有改变 archive 格式。
+- 没有改变 CLI/API 参数。
+- 没有改变 retrieve response schema。
+- 没有改变 provider portable text 输出格式。
+- 没有自动展开 archive。
+
+为什么这一步重要：
+
+- retrieval hint 是控制恢复方式的元信息，不是压缩摘要语义。
+- 如果 hint 混入 summary，跨 agent 再迁移时会出现摘要污染：
+  - 目标 agent 看到的 summary 更长。
+  - 压缩块可能重复携带恢复命令。
+  - 后续二次压缩/投影会把指导语当作原上下文内容。
+- Phase 26 确保 portable hint 能帮助恢复，但不会破坏 canonical compressed block 的语义边界。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib preserve_recovers_portable_compressed_text_from_non_native_provider -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，142 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- portable compressed text 带 retrieval hint 时 normalize 成 `EventBlock::Compressed`。
+- retrieval hint 不进入 summary。
+- archive_ref 和 source_event_count 不丢失。
+
+遇到的问题：
+
+- 本阶段实际修复了 Phase 25 后暴露出的 normalize 污染问题。
+- 这是预期内的后续收口，不影响 Phase 25 的 provider projection 契约。
+
+提交范围：
+
+- `rust/crates/memorph/src/core/compression.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 27：建议补 portable compressed text 多行 summary + metadata line 的解析边界测试，确保 summary trimming 和 metadata skipping 组合稳定；仍然不做 MCP。
