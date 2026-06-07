@@ -2089,3 +2089,100 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 16：继续增强非 MCP 的压缩恢复体验。建议补 API/CLI 的 compressed block retrieval examples 或 provider-specific resume instructions，让用户和 agent 能更容易从压缩块定位 archive_ref 并做 query retrieval；仍不做 MCP。
+
+### 2026-06-07：Phase 16 / archive_ref 专用恢复说明
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认当前目标仍是完善压缩机制和恢复体验。
+- 已检查当前工作区状态，开始时无未提交改动。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+本阶段目标：
+
+- 从 compressed block 中拿到 `memorph-archive://...` 后，用户或 agent 不需要猜怎么恢复。
+- 提供 archive_ref 专用的 query-first 恢复说明，包含 CLI 命令和 API body 示例。
+- 继续避免把 archive 全量展开回上下文。
+
+已完成：
+
+- 新增 core 结构：
+  - `CompressionRetrievalInstructions`
+- 新增 core 入口：
+  - `compression_retrieval_instructions(archive_ref)`
+- instructions 内容包括：
+  - `archive_ref`
+  - query-first CLI：
+    - `memorph compression retrieve <ARCHIVE_REF> --query <terms> --max-results 5`
+  - full retrieval CLI：
+    - `memorph compression retrieve <ARCHIVE_REF>`
+  - query retrieval API body：
+    - `{ "archive_ref": "...", "query": "<terms>", "max_results": 5 }`
+  - full retrieval API body：
+    - `{ "archive_ref": "..." }`
+  - suggested steps：
+    - 从 compressed block 提取 archive ref。
+    - 根据当前问题选窄 query。
+    - 优先使用 query retrieval。
+    - 只有 query 不够且明确需要完整原始段时才 full retrieval。
+- 新增 CLI 命令：
+  - `memorph compression instructions ARCHIVE_REF`
+  - 输出 JSON instructions，便于用户和 agent 读取。
+- 新增 API 路由：
+  - `POST /api/v1/compression/instructions`
+  - body：`{ "archive_ref": "memorph-archive://..." }`
+  - 返回同一份 archive-specific instructions。
+- 对无效 archive ref 做拒绝：
+  - 不以 `memorph-archive://` 开头会返回错误，避免生成误导说明。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有实现 provider 自动 tool injection。
+- 没有读取 archive。
+- 没有改变 retrieve 搜索算法。
+- 没有改变 compressed block、archive、apply、switch 的核心语义。
+
+为什么这一步重要：
+
+- Phase 15 让 agent 在 compressed block 中看到 query-first 命令。
+- Phase 16 让 CLI/API 能基于具体 archive ref 输出完整恢复说明。
+- 这补齐了非 MCP 场景下从“看到 archive ref”到“正确按 query 恢复”的操作链路。
+- 它继续保持 Headroom CCR 的核心原则：压缩是可逆的，但恢复应该按需、局部、可控。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieval_instructions -- --nocapture`：通过，2 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_instructions_accepts_archive_ref -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_instructions_route -- --nocapture`：通过，2 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，138 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- core instructions 是 archive-specific 的，并且 query-first。
+- core instructions 拒绝非法 archive ref。
+- CLI parser 支持 `compression instructions ARCHIVE_REF`。
+- API route 返回 archive-specific examples。
+- API route 拒绝非法 archive ref。
+
+遇到的问题：
+
+- 本阶段没有遇到实现阻塞。
+- 注意点：instructions 不读取 archive，只验证 scheme；这是有意设计，因为该能力是“恢复说明生成”，不是 retrieval 本身。真实 retrieval 仍由 Phase 13 的 retrieve API/CLI 执行。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `rust/crates/memorph/src/cli.rs`
+- `rust/crates/memorph/src/api.rs`
+- `rust/apps/memorph/src/main.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 17：增强 retrieval result 的上下文安全性。建议给 query retrieval 结果增加更明确的 `retrieval_mode` / `recommended_next_action` 字段，帮助 agent 区分 query 局部结果和 full archive 结果，避免把局部检索误判为完整历史。
