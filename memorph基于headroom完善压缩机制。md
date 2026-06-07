@@ -2450,3 +2450,94 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 20：评估是否需要补 retrieval archive fixture 的清理/隔离工具，或开始补更强的 query scoring/BM25。建议优先做轻量清理/隔离工具，保证持续测试不会污染用户 archive 目录。
+
+### 2026-06-07：Phase 20 / retrieve 结果覆盖范围显式化
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认本阶段仍属于 Headroom CCR 的 retrieve/restore 能力完善。
+- 已检查当前工作区状态，开始时只有 Phase 20 相关待收束改动。
+- 已继续遵守用户要求：不实现 MCP 部分。
+
+本阶段目标：
+
+- 让 retrieval response 显式说明本次到底返回了哪些 archived events。
+- 让 query retrieval 显式说明还有多少 archived events 没有被返回。
+- 避免 agent 把 query partial retrieval 误认为完整历史，从而错误恢复或污染目标 agent 上下文。
+
+已完成：
+
+- `RetrievedCompressionArchive` 新增：
+  - `returned_event_ids: Vec<String>`
+  - `omitted_event_count: usize`
+- full retrieval 行为：
+  - `returned_event_ids` 包含完整 archive events 的 id。
+  - `omitted_event_count == 0`。
+- query match 行为：
+  - `returned_event_ids` 只包含命中的 event id。
+  - `omitted_event_count` 表示 archive 中未被本次 query 返回的 event 数量。
+- query no-match 行为：
+  - `returned_event_ids` 为空。
+  - `omitted_event_count == source_event_count`。
+- retrieval tool spec 的 output contract 同步补充这两个字段语义。
+- API retrieve 成功路径测试同步验证两个字段。
+- CLI retrieve 端到端 JSON 输出测试同步验证两个字段。
+
+明确未做：
+
+- 没有实现 MCP。
+- 没有新增 MCP tool。
+- 没有改变 CLI/API 请求参数。
+- 没有改变 archive loader。
+- 没有改变 query search/scoring 算法。
+- 没有改变默认压缩策略或压缩阈值。
+- 没有自动展开更多历史；本阶段只是让返回结果更可审计。
+
+为什么这一步重要：
+
+- Phase 17 已经告诉 agent 当前是 `full_archive`、`query_matches` 还是 `query_no_matches`。
+- Phase 20 进一步告诉 agent：
+  - 当前拿到了哪些具体 source events。
+  - 还有多少 source events 没拿到。
+- 这符合用户要求的“不能把已经压缩过的无意义内容无条件展开到另一个 agent”：
+  - agent 可以优先用局部命中内容回答。
+  - 如果信息不足，可以根据 omitted count 决定是否扩大 query。
+  - 不需要默认把完整 archive 灌回上下文。
+- 这也贴近 Headroom CCR 的 retrieve discipline：retrieve 是按需恢复，不是无条件解压。
+
+测试：
+
+- `cargo fmt --all`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression_apply_from_file_writes_archive_and_expandable_output -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib compression_retrieve_route_returns_query_matches_from_archive -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph compression_retrieve_cli_outputs_query_mode_json -- --nocapture`：通过，1 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，139 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph`：通过，4 passed。
+- `cargo check --manifest-path rust/Cargo.toml`：通过。
+- `git diff --check`：通过。
+
+新增测试覆盖：
+
+- core full retrieval 的 `returned_event_ids` 和 `omitted_event_count`。
+- core query match 的 `returned_event_ids` 和 `omitted_event_count`。
+- core query no-match 的空 `returned_event_ids` 和完整 omitted count。
+- API retrieve route 的 query partial coverage metadata。
+- 真实 CLI binary 的 query partial coverage metadata。
+
+遇到的问题：
+
+- 本阶段没有遇到实现阻塞。
+- 注意点：这是返回 JSON 增强。旧客户端如果严格校验 response schema，可能需要同步接受新增字段；正常忽略未知字段的客户端不受影响。
+
+提交范围：
+
+- `rust/crates/memorph/src/core.rs`
+- `rust/crates/memorph/src/api.rs`
+- `rust/apps/memorph/tests/compression_cli.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 21：建议优先做 retrieval archive fixture 的共享隔离/清理工具，降低 API/CLI 测试重复和污染用户 archive 目录的风险；仍然不做 MCP。
