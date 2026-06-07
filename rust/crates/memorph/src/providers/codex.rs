@@ -3332,6 +3332,7 @@ mod tests {
         assert!(model_visible_text.contains("compressed summary"));
         assert!(model_visible_text.contains("Source event count: 3"));
         assert!(model_visible_text.contains("Archive: memorph-archive://s1/archive.json.gz"));
+        assert!(model_visible_text.contains("memorph compression retrieve memorph-archive://s1/archive.json.gz --query <terms> --max-results 5"));
         assert!(!model_visible_text.contains("old-event-1"));
 
         let compressed_response_item = lines.iter().any(|line| {
@@ -3502,6 +3503,9 @@ mod tests {
             .expect("replacement history text");
         assert!(model_visible_text.contains("[Compressed session segment from claude]"));
         assert!(model_visible_text.contains(&format!("Archive: {archive_ref}")));
+        assert!(model_visible_text.contains(&format!(
+            "memorph compression retrieve {archive_ref} --query <terms> --max-results 5"
+        )));
 
         let old_source_response_item = lines.iter().any(|line| {
             line.get("type").and_then(Value::as_str) == Some("response_item")
@@ -3581,6 +3585,7 @@ mod tests {
         assert!(text.contains("compressed summary"));
         assert!(text.contains("Source event count: 3"));
         assert!(text.contains("Archive: memorph-archive://s1/archive.json.gz"));
+        assert!(text.contains("memorph compression retrieve memorph-archive://s1/archive.json.gz --query <terms> --max-results 5"));
         assert!(!text.contains("old-event-1"));
         assert!(!text.contains("old-event-2"));
         assert!(!text.contains("old-event-3"));

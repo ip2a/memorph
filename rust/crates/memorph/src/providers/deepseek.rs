@@ -784,6 +784,7 @@ mod tests {
         assert!(content.contains("compressed summary"));
         assert!(content.contains("Source event count: 3"));
         assert!(content.contains("Archive: memorph-archive://s1/archive.json.gz"));
+        assert!(content.contains("memorph compression retrieve memorph-archive://s1/archive.json.gz --query <terms> --max-results 5"));
         assert!(!content.contains("old-event-1"));
         assert!(!content.contains("old-event-2"));
         assert!(!content.contains("old-event-3"));

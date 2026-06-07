@@ -8,8 +8,8 @@ use crate::core::compression::{
     self, CompressedSegment, CompressionProjection, NativeTargetProjection,
 };
 use crate::provider::{
-    canonical_block_text, canonical_export_result, canonical_session_title, Provider,
-    ProviderCapabilities, ProviderSessionSummary,
+    canonical_block_text, canonical_export_result, canonical_session_title,
+    compression_retrieval_hint, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -897,6 +897,7 @@ fn opencode_compaction_part(
     });
     if let Some(archive_ref) = archive_ref {
         part["memorph"]["archiveRef"] = Value::String(archive_ref.to_string());
+        part["memorph"]["retrievalHint"] = Value::String(compression_retrieval_hint(archive_ref));
     }
     part
 }
@@ -1616,7 +1617,7 @@ mod tests {
                 summary: "portable summary".to_string(),
                 source_event_ids: vec!["old-1".to_string(), "old-2".to_string()],
                 source_event_count: Some(2),
-                archive_ref: Some("archive://s1".to_string()),
+                archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
             }],
             timestamp: Utc
                 .timestamp_millis_opt(1_700_000_000_000)
@@ -1691,6 +1692,22 @@ mod tests {
                 .and_then(|value| value.get("sourceEventCount"))
                 .and_then(Value::as_u64),
             Some(2)
+        );
+        assert_eq!(
+            parts[0]
+                .3
+                .get("memorph")
+                .and_then(|value| value.get("archiveRef"))
+                .and_then(Value::as_str),
+            Some("memorph-archive://s1/archive.json.gz")
+        );
+        assert_eq!(
+            parts[0]
+                .3
+                .get("memorph")
+                .and_then(|value| value.get("retrievalHint"))
+                .and_then(Value::as_str),
+            Some("Retrieve specific details with: memorph compression retrieve memorph-archive://s1/archive.json.gz --query <terms> --max-results 5")
         );
         assert_eq!(
             messages[1].2.get("summary").and_then(Value::as_bool),
