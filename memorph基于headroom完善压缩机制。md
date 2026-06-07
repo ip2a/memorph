@@ -924,3 +924,70 @@ LLM 输出必须通过：
 下一步：
 
 - 进入 Phase 2：实现 Active Compression 数据结构。
+
+### 2026-06-07：Phase 2 / Active Compression 数据结构
+
+状态：完成。
+
+本次开始前已执行：
+
+- 已重新阅读本文件，确认长期目标是“基于 Headroom 完善 memorph 压缩机制”，不是只做文档总结。
+- 已确认本次小环节范围：只实现数据结构和 dry-run 报告构造，不接入 switch/export，不写 archive，不做 planner/apply。
+- 已检查工作区状态，避免提交无关改动。
+
+已完成：
+
+- 新增 `rust/crates/memorph/src/core/active_compression.rs`。
+- 在 `rust/crates/memorph/src/core.rs` 暴露 `active_compression` 模块。
+- 新增主动压缩参数结构：
+  - `ActiveCompressionParams`
+  - `ActiveCompressionPolicy`
+  - `ActiveCompressionMode`
+- 新增报告结构：
+  - `ActiveCompressionReport`
+  - `CompressionCandidateReport`
+  - `CompressionSkipReport`
+- 新增决策枚举：
+  - `CompressionCandidateKind`
+  - `CompressionSelectionReason`
+  - `CompressionSkipReason`
+  - `CompressionRisk`
+- 新增只读 dry-run 汇总函数：
+  - `build_dry_run_report`
+  - `estimate_session_bytes`
+  - `estimate_tokens_from_bytes`
+- 添加单元测试，确认：
+  - dry-run report 可构造。
+  - dry-run 不修改 session。
+  - policy 字段序列化稳定。
+  - 已有 compressed event 数量可统计。
+
+明确未做：
+
+- 未选择压缩 range。
+- 未写 archive。
+- 未替换 session events。
+- 未接入 switch/export。
+- 未引入 LLM。
+- 未改变任何 provider 行为。
+
+测试：
+
+- `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`：通过。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib active_compression`：通过，2 passed。
+- `cargo test --manifest-path rust/Cargo.toml -p memorph-lib`：通过，107 passed。
+
+遇到的问题：
+
+- `cargo fmt --manifest-path rust/Cargo.toml` 失败，原因是 workspace manifest 没有直接 target。
+- 处理方式：改用 crate manifest `cargo fmt --manifest-path rust/crates/memorph/Cargo.toml`，已通过。
+
+提交范围：
+
+- `rust/crates/memorph/src/core/active_compression.rs`
+- `rust/crates/memorph/src/core.rs`
+- `memorph基于headroom完善压缩机制。md`
+
+下一步：
+
+- 进入 Phase 3：Planner MVP，从 `CanonicalSession` 中找候选 event ranges，并输出 selected/skipped reasons。

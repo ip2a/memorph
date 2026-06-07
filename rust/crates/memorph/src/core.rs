@@ -9,6 +9,7 @@ use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state::{self, SessionStateStore};
 use crate::{provider, providers, utils};
 
+pub mod active_compression;
 pub mod compression;
 pub mod manager;
 pub mod session_management;
