@@ -36,6 +36,45 @@ pub struct ActiveCompressionApplyResult {
     pub report: ActiveCompressionReport,
 }
 
+pub trait ActiveCompressionSummarizer {
+    fn summarize(&self, request: &CompressionSummaryRequest<'_>)
+        -> Result<CompressionSummaryDraft>;
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressionSummaryRequest<'a> {
+    pub candidate: &'a CompressionCandidateReport,
+    pub source_events: &'a [SessionEvent],
+    pub archive_ref: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CompressionSummaryDraft {
+    pub summary: String,
+    pub goals: Vec<String>,
+    pub decisions: Vec<String>,
+    pub completed_work: Vec<String>,
+    pub open_questions: Vec<String>,
+    pub files: Vec<String>,
+    pub risks: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionSummarySource {
+    Deterministic,
+    External,
+    DeterministicFallback,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionSummaryRejectionReason {
+    Empty,
+    TooLarge,
+    SummarizerError,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveCompressionPolicy {
     #[serde(default = "default_recent_message_protection")]
@@ -113,6 +152,10 @@ pub struct CompressionCandidateReport {
     pub estimated_tokens_saved: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub archive_refs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_source: Option<CompressionSummarySource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_rejection_reason: Option<CompressionSummaryRejectionReason>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -318,6 +361,8 @@ pub fn plan_compression_candidates(
             estimated_bytes_saved,
             estimated_tokens_saved,
             archive_refs: Vec::new(),
+            summary_source: None,
+            summary_rejection_reason: None,
         });
     }
 
@@ -336,6 +381,15 @@ pub(crate) fn apply_active_compression_with_archive_dir(
     session: &CanonicalSession,
     params: ActiveCompressionApplyParams,
     archive_dir: &Path,
+) -> Result<ActiveCompressionApplyResult> {
+    apply_active_compression_with_archive_dir_and_summarizer(session, params, archive_dir, None)
+}
+
+pub(crate) fn apply_active_compression_with_archive_dir_and_summarizer(
+    session: &CanonicalSession,
+    params: ActiveCompressionApplyParams,
+    archive_dir: &Path,
+    summarizer: Option<&dyn ActiveCompressionSummarizer>,
 ) -> Result<ActiveCompressionApplyResult> {
     let mut report = build_dry_run_report(
         session,
@@ -367,6 +421,7 @@ pub(crate) fn apply_active_compression_with_archive_dir(
     }
 
     let mut archive_refs = Vec::new();
+    let mut summary_outcomes = Vec::new();
     let mut replacement_events = Vec::with_capacity(session.events.len());
     let mut event_index = 0usize;
     while event_index < session.events.len() {
@@ -402,14 +457,16 @@ pub(crate) fn apply_active_compression_with_archive_dir(
             source_event_ids,
             source_events.clone(),
         )?;
-        let summary = build_deterministic_summary(candidate, &source_events, Some(&archive_ref));
+        let summary_outcome =
+            build_summary(candidate, &source_events, Some(&archive_ref), summarizer);
         replacement_events.push(active_summary_event(
             candidate,
             &source_events,
             &params.source_provider_id,
-            summary,
+            summary_outcome.summary.clone(),
             Some(archive_ref.clone()),
         ));
+        summary_outcomes.push((candidate.id.clone(), summary_outcome));
         archive_refs.push(archive_ref);
         event_index = candidate.end_event_index + 1;
     }
@@ -431,6 +488,15 @@ pub(crate) fn apply_active_compression_with_archive_dir(
     {
         for (candidate, archive_ref) in report.candidates.iter_mut().zip(archive_refs.iter()) {
             candidate.archive_refs = vec![archive_ref.clone()];
+        }
+    }
+    for candidate in &mut report.candidates {
+        if let Some((_, outcome)) = summary_outcomes
+            .iter()
+            .find(|(candidate_id, _)| candidate_id == &candidate.id)
+        {
+            candidate.summary_source = Some(outcome.source);
+            candidate.summary_rejection_reason = outcome.rejection_reason;
         }
     }
     report.archive_refs = archive_refs;
@@ -661,6 +727,115 @@ fn active_summary_event(
             fidelity: MappingDisposition::Normalized,
             provider_ext,
         },
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CompressionSummaryOutcome {
+    summary: String,
+    source: CompressionSummarySource,
+    rejection_reason: Option<CompressionSummaryRejectionReason>,
+}
+
+fn build_summary(
+    candidate: &CompressionCandidateReport,
+    source_events: &[SessionEvent],
+    archive_ref: Option<&str>,
+    summarizer: Option<&dyn ActiveCompressionSummarizer>,
+) -> CompressionSummaryOutcome {
+    let Some(summarizer) = summarizer else {
+        return CompressionSummaryOutcome {
+            summary: build_deterministic_summary(candidate, source_events, archive_ref),
+            source: CompressionSummarySource::Deterministic,
+            rejection_reason: None,
+        };
+    };
+
+    let request = CompressionSummaryRequest {
+        candidate,
+        source_events,
+        archive_ref,
+    };
+    let draft = match summarizer.summarize(&request) {
+        Ok(draft) => draft,
+        Err(_) => {
+            return fallback_summary(
+                candidate,
+                source_events,
+                archive_ref,
+                CompressionSummaryRejectionReason::SummarizerError,
+            );
+        }
+    };
+    let summary = external_summary_text(draft, archive_ref);
+    match validate_external_summary(candidate, &summary) {
+        Ok(()) => CompressionSummaryOutcome {
+            summary,
+            source: CompressionSummarySource::External,
+            rejection_reason: None,
+        },
+        Err(reason) => fallback_summary(candidate, source_events, archive_ref, reason),
+    }
+}
+
+fn fallback_summary(
+    candidate: &CompressionCandidateReport,
+    source_events: &[SessionEvent],
+    archive_ref: Option<&str>,
+    reason: CompressionSummaryRejectionReason,
+) -> CompressionSummaryOutcome {
+    CompressionSummaryOutcome {
+        summary: build_deterministic_summary(candidate, source_events, archive_ref),
+        source: CompressionSummarySource::DeterministicFallback,
+        rejection_reason: Some(reason),
+    }
+}
+
+fn validate_external_summary(
+    candidate: &CompressionCandidateReport,
+    summary: &str,
+) -> std::result::Result<(), CompressionSummaryRejectionReason> {
+    if summary.trim().is_empty() {
+        return Err(CompressionSummaryRejectionReason::Empty);
+    }
+    let summary_bytes = summary.len();
+    if summary_bytes >= candidate.original_estimated_bytes
+        || summary_bytes > candidate.compressed_estimated_bytes
+    {
+        return Err(CompressionSummaryRejectionReason::TooLarge);
+    }
+    Ok(())
+}
+
+fn external_summary_text(draft: CompressionSummaryDraft, archive_ref: Option<&str>) -> String {
+    let mut lines = vec![
+        "[LLM compressed session segment]".to_string(),
+        format!("Summary: {}", draft.summary.trim()),
+    ];
+    push_summary_section(&mut lines, "Goals", draft.goals);
+    push_summary_section(&mut lines, "Decisions", draft.decisions);
+    push_summary_section(&mut lines, "Completed work", draft.completed_work);
+    push_summary_section(&mut lines, "Open questions", draft.open_questions);
+    push_summary_section(&mut lines, "Files", draft.files);
+    push_summary_section(&mut lines, "Risks", draft.risks);
+    if let Some(archive_ref) = archive_ref {
+        lines.push(format!("Archive: {}", archive_ref));
+    }
+    lines.join("\n")
+}
+
+fn push_summary_section(lines: &mut Vec<String>, title: &str, values: Vec<String>) {
+    let values = values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return;
+    }
+    lines.push(format!("{}:", title));
+    for value in values {
+        lines.push(format!("- {}", value));
     }
 }
 
@@ -941,6 +1116,142 @@ mod tests {
     }
 
     #[test]
+    fn apply_uses_external_summary_when_it_passes_size_gate() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let mut session = planner_sample_session();
+        session.events.retain(|event| event.id != "compressed");
+        let summarizer = FixedSummarizer {
+            draft: CompressionSummaryDraft {
+                summary: "LLM concise task state".to_string(),
+                goals: Vec::new(),
+                decisions: Vec::new(),
+                completed_work: Vec::new(),
+                open_questions: Vec::new(),
+                files: Vec::new(),
+                risks: Vec::new(),
+            },
+        };
+
+        let result = apply_active_compression_with_archive_dir_and_summarizer(
+            &session,
+            ActiveCompressionApplyParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 1,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: ActiveCompressionMode::Auto,
+                },
+                candidate_ids: vec!["candidate-0001".to_string()],
+            },
+            archive_dir.path(),
+            Some(&summarizer),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.report.candidates[0].summary_source,
+            Some(CompressionSummarySource::External)
+        );
+        assert_eq!(result.report.candidates[0].summary_rejection_reason, None);
+        let summary = compressed_summary(&result.session);
+        assert!(summary.contains("[LLM compressed session segment]"));
+        assert!(summary.contains("LLM concise task state"));
+        assert!(summary.contains("Archive: memorph-archive://"));
+
+        let (expanded, expand_report) = compression::expand_compressed_segments_in_dir(
+            &result.session,
+            "claude",
+            "codex",
+            archive_dir.path(),
+        )
+        .unwrap();
+        assert_eq!(expand_report.restored_events, 1);
+        assert!(expanded.events.iter().any(|event| event.id == "old-user"));
+    }
+
+    #[test]
+    fn apply_rejects_oversized_external_summary_and_falls_back() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let mut session = planner_sample_session();
+        session.events.retain(|event| event.id != "compressed");
+        let summarizer = FixedSummarizer {
+            draft: CompressionSummaryDraft {
+                summary: "oversized ".repeat(200),
+                ..CompressionSummaryDraft::default()
+            },
+        };
+
+        let result = apply_active_compression_with_archive_dir_and_summarizer(
+            &session,
+            ActiveCompressionApplyParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 1,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: ActiveCompressionMode::Auto,
+                },
+                candidate_ids: vec!["candidate-0001".to_string()],
+            },
+            archive_dir.path(),
+            Some(&summarizer),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.report.candidates[0].summary_source,
+            Some(CompressionSummarySource::DeterministicFallback)
+        );
+        assert_eq!(
+            result.report.candidates[0].summary_rejection_reason,
+            Some(CompressionSummaryRejectionReason::TooLarge)
+        );
+        let summary = compressed_summary(&result.session);
+        assert!(summary.contains("[Active compressed session segment]"));
+        assert!(!summary.contains(&"oversized ".repeat(50)));
+        assert!(summary.contains("Archive: memorph-archive://"));
+    }
+
+    #[test]
+    fn apply_falls_back_when_external_summarizer_errors() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let mut session = planner_sample_session();
+        session.events.retain(|event| event.id != "compressed");
+        let summarizer = ErrorSummarizer;
+
+        let result = apply_active_compression_with_archive_dir_and_summarizer(
+            &session,
+            ActiveCompressionApplyParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 1,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: ActiveCompressionMode::Auto,
+                },
+                candidate_ids: vec!["candidate-0001".to_string()],
+            },
+            archive_dir.path(),
+            Some(&summarizer),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.report.candidates[0].summary_source,
+            Some(CompressionSummarySource::DeterministicFallback)
+        );
+        assert_eq!(
+            result.report.candidates[0].summary_rejection_reason,
+            Some(CompressionSummaryRejectionReason::SummarizerError)
+        );
+        assert!(compressed_summary(&result.session).contains("[Active compressed session segment]"));
+    }
+
+    #[test]
     fn apply_without_candidates_returns_original_session() {
         let archive_dir = tempfile::tempdir().unwrap();
         let session = sample_session();
@@ -1116,6 +1427,42 @@ mod tests {
             usage: None,
             fidelity: MappingDisposition::Preserved,
             provider_ext: BTreeMap::new(),
+        }
+    }
+
+    fn compressed_summary(session: &CanonicalSession) -> String {
+        session
+            .events
+            .iter()
+            .flat_map(|event| event.blocks.iter())
+            .find_map(|block| match block {
+                EventBlock::Compressed { summary, .. } => Some(summary.clone()),
+                _ => None,
+            })
+            .expect("compressed summary")
+    }
+
+    struct FixedSummarizer {
+        draft: CompressionSummaryDraft,
+    }
+
+    impl ActiveCompressionSummarizer for FixedSummarizer {
+        fn summarize(
+            &self,
+            _request: &CompressionSummaryRequest<'_>,
+        ) -> Result<CompressionSummaryDraft> {
+            Ok(self.draft.clone())
+        }
+    }
+
+    struct ErrorSummarizer;
+
+    impl ActiveCompressionSummarizer for ErrorSummarizer {
+        fn summarize(
+            &self,
+            _request: &CompressionSummaryRequest<'_>,
+        ) -> Result<CompressionSummaryDraft> {
+            anyhow::bail!("summarizer failed")
         }
     }
 
