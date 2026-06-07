@@ -374,8 +374,85 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
                 println!("Expanded compression session: {}", file);
             }
         }
+        CompressionCommands::Plan {
+            source_provider_id,
+            target_provider_id,
+            session_id,
+            file,
+            protect_recent_message_events,
+            min_candidate_bytes,
+            min_savings_ratio_percent,
+        } => {
+            let mut policy = core::active_compression::ActiveCompressionPolicy::default();
+            policy.mode = core::active_compression::ActiveCompressionMode::PlanOnly;
+            if let Some(value) = protect_recent_message_events {
+                policy.protect_recent_message_events = value;
+            }
+            if let Some(value) = min_candidate_bytes {
+                policy.min_candidate_bytes = value;
+            }
+            if let Some(value) = min_savings_ratio_percent {
+                policy.min_savings_ratio_percent = value;
+            }
+            let report = core::active_compression_dry_run(&core::ActiveCompressionDryRunParams {
+                source_provider_id,
+                target_provider_id,
+                session_id,
+                file,
+                policy,
+            })?;
+            print_active_compression_report(&report);
+        }
     }
     Ok(())
+}
+
+fn print_active_compression_report(report: &core::active_compression::ActiveCompressionReport) {
+    println!(
+        "Active compression dry-run: {} -> {}",
+        report.source_provider_id, report.target_provider_id
+    );
+    println!(
+        "events={} messages={} already_compressed={}",
+        report.session_event_count, report.message_event_count, report.already_compressed_event_count
+    );
+    println!(
+        "estimated: {}B/{} tokens -> {}B/{} tokens, saved {}B/{} tokens",
+        report.original_estimated_bytes,
+        report.original_estimated_tokens,
+        report.compressed_estimated_bytes,
+        report.compressed_estimated_tokens,
+        report.estimated_bytes_saved,
+        report.estimated_tokens_saved
+    );
+
+    if report.candidates.is_empty() {
+        println!("No compression candidates.");
+    } else {
+        println!("Candidates:");
+        for candidate in &report.candidates {
+            println!(
+                "- {} {:?} events={:?} reason={:?} risk={:?} saved={}B/{} tokens",
+                candidate.id,
+                candidate.kind,
+                candidate.event_ids,
+                candidate.reason,
+                candidate.risk,
+                candidate.estimated_bytes_saved,
+                candidate.estimated_tokens_saved
+            );
+        }
+    }
+
+    if !report.skipped.is_empty() {
+        println!("Skipped:");
+        for skipped in &report.skipped {
+            println!(
+                "- {} reason={:?} size={}B/{} tokens",
+                skipped.event_id, skipped.reason, skipped.estimated_bytes, skipped.estimated_tokens
+            );
+        }
+    }
 }
 
 fn run_share_command(command: ShareCommands) -> Result<()> {

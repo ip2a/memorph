@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use crate::canonical::{
     CanonicalSession, ImportedSession, SessionArtifact, SessionEvent, SessionEventKind,
 };
+use crate::core::active_compression::{
+    ActiveCompressionParams, ActiveCompressionPolicy, ActiveCompressionReport,
+};
 use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state::{self, SessionStateStore};
 use crate::{provider, providers, utils};
@@ -494,6 +497,41 @@ pub fn list_compression_provider_support() -> Vec<compression::ProviderCompressi
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveCompressionDryRunParams {
+    pub source_provider_id: String,
+    pub target_provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub policy: ActiveCompressionPolicy,
+}
+
+pub fn active_compression_dry_run(
+    params: &ActiveCompressionDryRunParams,
+) -> Result<ActiveCompressionReport> {
+    let session = match (params.session_id.as_deref(), params.file.as_deref()) {
+        (Some(_), Some(_)) => anyhow::bail!("Use either session_id or file, not both"),
+        (Some(session_id), None) => {
+            get_canonical_session(&params.source_provider_id, session_id)?.session
+        }
+        (None, Some(file)) => session_management::read_session_export_file(file)?,
+        (None, None) => anyhow::bail!("Either session_id or file is required"),
+    };
+
+    Ok(active_compression::build_dry_run_report(
+        &session,
+        ActiveCompressionParams {
+            source_provider_id: params.source_provider_id.clone(),
+            target_provider_id: params.target_provider_id.clone(),
+            policy: params.policy.clone(),
+            dry_run: true,
+        },
+    ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportParams {
     pub provider: String,
     pub file_or_id: String,
@@ -763,6 +801,8 @@ mod tests {
     use crate::storage::session_state::SessionStateStore;
     use chrono::Utc;
     use std::collections::BTreeMap;
+    use std::io::Write;
+    use tempfile::Builder;
 
     struct FailingProvider;
 
@@ -1010,5 +1050,114 @@ mod tests {
         );
         assert!(codex.detects_native_source);
         assert!(codex.native_target_projection);
+    }
+
+    #[test]
+    fn active_compression_dry_run_from_file_returns_candidates_and_skips() {
+        let now = Utc::now();
+        let session = CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: "dry-run-file".to_string(),
+                source_title: Some("Dry Run File".to_string()),
+            },
+            provenance: SessionProvenance {
+                imported_at: now,
+                imported_by: None,
+                primary_source: ProviderSessionRef {
+                    provider_id: "claude".to_string(),
+                    session_id: "dry-run-file".to_string(),
+                    source_path: None,
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext::default(),
+            events: vec![
+                SessionEvent {
+                    id: "old-user".to_string(),
+                    kind: SessionEventKind::Message,
+                    role: EventRole::User,
+                    timestamp: now,
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Text {
+                        text: "historical context ".repeat(80),
+                    }],
+                    metadata: EventMetadata {
+                        source: EventSource {
+                            provider_id: "claude".to_string(),
+                            original_id: Some("old-user".to_string()),
+                            original_role: Some("user".to_string()),
+                            phase: None,
+                        },
+                        model: None,
+                        usage: None,
+                        fidelity: MappingDisposition::Preserved,
+                        provider_ext: BTreeMap::new(),
+                    },
+                },
+                SessionEvent {
+                    id: "recent-user".to_string(),
+                    kind: SessionEventKind::Message,
+                    role: EventRole::User,
+                    timestamp: now,
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Text {
+                        text: "latest active request".to_string(),
+                    }],
+                    metadata: EventMetadata {
+                        source: EventSource {
+                            provider_id: "claude".to_string(),
+                            original_id: Some("recent-user".to_string()),
+                            original_role: Some("user".to_string()),
+                            phase: None,
+                        },
+                        model: None,
+                        usage: None,
+                        fidelity: MappingDisposition::Preserved,
+                        provider_ext: BTreeMap::new(),
+                    },
+                },
+            ],
+            artifacts: Vec::new(),
+            extensions: BTreeMap::new(),
+        };
+        let mut file = Builder::new().suffix(".json").tempfile().unwrap();
+        write!(file, "{}", serde_json::to_string(&session).unwrap()).unwrap();
+
+        let report = active_compression_dry_run(&ActiveCompressionDryRunParams {
+            source_provider_id: "claude".to_string(),
+            target_provider_id: "codex".to_string(),
+            session_id: None,
+            file: Some(file.path().to_string_lossy().to_string()),
+            policy: active_compression::ActiveCompressionPolicy {
+                protect_recent_message_events: 1,
+                min_candidate_bytes: 16,
+                min_savings_ratio_percent: 20,
+                mode: active_compression::ActiveCompressionMode::PlanOnly,
+            },
+        })
+        .unwrap();
+
+        assert!(report.dry_run);
+        assert_eq!(report.source_provider_id, "claude");
+        assert_eq!(report.target_provider_id, "codex");
+        assert_eq!(report.candidates.len(), 1);
+        assert_eq!(report.candidates[0].event_ids, vec!["old-user"]);
+        assert!(report.candidates[0].estimated_bytes_saved > 0);
+        assert!(matches!(
+            report.candidates[0].reason,
+            active_compression::CompressionSelectionReason::HistoricalContext
+        ));
+        assert!(matches!(
+            report.candidates[0].risk,
+            active_compression::CompressionRisk::Medium
+        ));
+        assert!(report.skipped.iter().any(|skipped| {
+            skipped.event_id == "recent-user"
+                && matches!(
+                    skipped.reason,
+                    active_compression::CompressionSkipReason::ProtectedRecentMessage
+                )
+        }));
     }
 }

@@ -125,6 +125,7 @@ pub fn router() -> Router {
             "/api/v1/compression/expand",
             post(expand_compression_session),
         )
+        .route("/api/v1/compression/plan", post(plan_active_compression))
         .route("/api/v1/import", post(import_session))
         .route("/api/v1/switch", post(switch_session))
         .route("/api/v1/find", get(find_sessions))
@@ -1022,6 +1023,16 @@ struct ExpandCompressionSessionBody {
     format: String,
 }
 
+#[derive(Deserialize)]
+struct ActiveCompressionPlanBody {
+    source_provider_id: String,
+    target_provider_id: String,
+    session_id: Option<String>,
+    file: Option<String>,
+    #[serde(default)]
+    policy: core::active_compression::ActiveCompressionPolicy,
+}
+
 async fn restore_compression_archive(
     Json(body): Json<RestoreCompressionArchiveBody>,
 ) -> impl IntoResponse {
@@ -1045,6 +1056,20 @@ async fn expand_compression_session(
         format: body.format,
     };
     match core::expand_compression_session(&params) {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn plan_active_compression(Json(body): Json<ActiveCompressionPlanBody>) -> impl IntoResponse {
+    let params = core::ActiveCompressionDryRunParams {
+        source_provider_id: body.source_provider_id,
+        target_provider_id: body.target_provider_id,
+        session_id: body.session_id,
+        file: body.file,
+        policy: body.policy,
+    };
+    match core::active_compression_dry_run(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -1317,10 +1342,19 @@ async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canonical::{
+        CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
+        EventSource, MappingDisposition, ProviderSessionRef, SessionContext, SessionEvent,
+        SessionEventKind, SessionIdentity, SessionProvenance,
+    };
     use axum::{
         body::{to_bytes, Body},
         http::Request,
     };
+    use chrono::Utc;
+    use std::collections::BTreeMap;
+    use std::io::Write;
+    use tempfile::Builder;
     use tower::util::ServiceExt;
 
     async fn read_json(app: Router, request: Request<Body>) -> (StatusCode, serde_json::Value) {
@@ -1329,6 +1363,123 @@ mod tests {
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         (status, value)
+    }
+
+    #[tokio::test]
+    async fn compression_plan_route_returns_candidates_from_file() {
+        let now = Utc::now();
+        let session = CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: "api-dry-run-file".to_string(),
+                source_title: Some("API Dry Run File".to_string()),
+            },
+            provenance: SessionProvenance {
+                imported_at: now,
+                imported_by: None,
+                primary_source: ProviderSessionRef {
+                    provider_id: "claude".to_string(),
+                    session_id: "api-dry-run-file".to_string(),
+                    source_path: None,
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext::default(),
+            events: vec![
+                SessionEvent {
+                    id: "old-user".to_string(),
+                    kind: SessionEventKind::Message,
+                    role: EventRole::User,
+                    timestamp: now,
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Text {
+                        text: "historical context ".repeat(80),
+                    }],
+                    metadata: EventMetadata {
+                        source: EventSource {
+                            provider_id: "claude".to_string(),
+                            original_id: Some("old-user".to_string()),
+                            original_role: Some("user".to_string()),
+                            phase: None,
+                        },
+                        model: None,
+                        usage: None,
+                        fidelity: MappingDisposition::Preserved,
+                        provider_ext: BTreeMap::new(),
+                    },
+                },
+                SessionEvent {
+                    id: "recent-user".to_string(),
+                    kind: SessionEventKind::Message,
+                    role: EventRole::User,
+                    timestamp: now,
+                    links: EventLinks::default(),
+                    blocks: vec![EventBlock::Text {
+                        text: "latest active request".to_string(),
+                    }],
+                    metadata: EventMetadata {
+                        source: EventSource {
+                            provider_id: "claude".to_string(),
+                            original_id: Some("recent-user".to_string()),
+                            original_role: Some("user".to_string()),
+                            phase: None,
+                        },
+                        model: None,
+                        usage: None,
+                        fidelity: MappingDisposition::Preserved,
+                        provider_ext: BTreeMap::new(),
+                    },
+                },
+            ],
+            artifacts: Vec::new(),
+            extensions: BTreeMap::new(),
+        };
+        let mut file = Builder::new().suffix(".json").tempfile().unwrap();
+        write!(file, "{}", serde_json::to_string(&session).unwrap()).unwrap();
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/compression/plan")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "source_provider_id": "claude",
+                    "target_provider_id": "codex",
+                    "file": file.path().to_string_lossy(),
+                    "policy": {
+                        "protect_recent_message_events": 1,
+                        "min_candidate_bytes": 16,
+                        "min_savings_ratio_percent": 20,
+                        "mode": "plan_only"
+                    }
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["data"]["dry_run"], true);
+        assert_eq!(value["data"]["candidates"][0]["event_ids"][0], "old-user");
+        assert_eq!(
+            value["data"]["candidates"][0]["reason"],
+            "historical_context"
+        );
+        assert!(
+            value["data"]["candidates"][0]["estimated_bytes_saved"]
+                .as_u64()
+                .unwrap()
+                > 0
+        );
+        assert_eq!(value["data"]["candidates"][0]["risk"], "medium");
+        assert!(value["data"]["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|skipped| skipped["event_id"] == "recent-user"
+                && skipped["reason"] == "protected_recent_message"));
     }
 
     #[tokio::test]
