@@ -118,6 +118,8 @@ pub struct ActiveCompressionReport {
     pub target_provider_id: String,
     pub dry_run: bool,
     pub policy: ActiveCompressionPolicy,
+    #[serde(default)]
+    pub token_estimator: CompressionTokenEstimatorReport,
     pub session_event_count: usize,
     pub message_event_count: usize,
     pub already_compressed_event_count: usize,
@@ -133,6 +135,33 @@ pub struct ActiveCompressionReport {
     pub skipped: Vec<CompressionSkipReport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub archive_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CompressionTokenEstimatorReport {
+    pub strategy: CompressionTokenEstimatorStrategy,
+    pub source_provider_chars_per_token_x100: usize,
+    pub target_provider_chars_per_token_x100: usize,
+    pub effective_provider_id: String,
+    pub effective_chars_per_token_x100: usize,
+}
+
+impl Default for CompressionTokenEstimatorReport {
+    fn default() -> Self {
+        Self {
+            strategy: CompressionTokenEstimatorStrategy::ProviderHeuristic,
+            source_provider_chars_per_token_x100: default_chars_per_token_x100(),
+            target_provider_chars_per_token_x100: default_chars_per_token_x100(),
+            effective_provider_id: "unknown".to_string(),
+            effective_chars_per_token_x100: default_chars_per_token_x100(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionTokenEstimatorStrategy {
+    ProviderHeuristic,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -212,9 +241,13 @@ pub fn build_dry_run_report(
     params: ActiveCompressionParams,
 ) -> ActiveCompressionReport {
     let policy = params.policy;
+    let token_estimator =
+        build_token_estimator(&params.source_provider_id, &params.target_provider_id);
     let original_estimated_bytes = estimate_session_bytes(session);
-    let original_estimated_tokens = estimate_tokens_from_bytes(original_estimated_bytes);
-    let (candidates, skipped) = plan_compression_candidates(session, &policy);
+    let original_estimated_tokens =
+        estimate_tokens_from_bytes_with_estimator(original_estimated_bytes, &token_estimator);
+    let (candidates, skipped) =
+        plan_compression_candidates_with_estimator(session, &policy, &token_estimator);
     let estimated_bytes_saved = candidates
         .iter()
         .map(|candidate| candidate.estimated_bytes_saved)
@@ -231,6 +264,7 @@ pub fn build_dry_run_report(
         target_provider_id: params.target_provider_id,
         dry_run: true,
         policy,
+        token_estimator,
         session_event_count: session.events.len(),
         message_event_count: session
             .events
@@ -263,13 +297,26 @@ pub fn plan_compression_candidates(
     session: &CanonicalSession,
     policy: &ActiveCompressionPolicy,
 ) -> (Vec<CompressionCandidateReport>, Vec<CompressionSkipReport>) {
+    plan_compression_candidates_with_estimator(
+        session,
+        policy,
+        &CompressionTokenEstimatorReport::default(),
+    )
+}
+
+fn plan_compression_candidates_with_estimator(
+    session: &CanonicalSession,
+    policy: &ActiveCompressionPolicy,
+    token_estimator: &CompressionTokenEstimatorReport,
+) -> (Vec<CompressionCandidateReport>, Vec<CompressionSkipReport>) {
     let protected_message_indexes = protected_recent_message_indexes(session, policy);
     let mut candidates = Vec::new();
     let mut skipped = Vec::new();
 
     for (event_index, event) in session.events.iter().enumerate() {
         let estimated_bytes = estimate_event_bytes(event);
-        let estimated_tokens = estimate_tokens_from_bytes(estimated_bytes);
+        let estimated_tokens =
+            estimate_tokens_from_bytes_with_estimator(estimated_bytes, token_estimator);
 
         if matches!(event.role, EventRole::System | EventRole::Developer) {
             skipped.push(skip_report(
@@ -331,7 +378,8 @@ pub fn plan_compression_candidates(
         };
 
         let compressed_estimated_bytes = estimate_candidate_compressed_bytes(estimated_bytes, kind);
-        let compressed_estimated_tokens = estimate_tokens_from_bytes(compressed_estimated_bytes);
+        let compressed_estimated_tokens =
+            estimate_tokens_from_bytes_with_estimator(compressed_estimated_bytes, token_estimator);
         let estimated_bytes_saved = estimated_bytes.saturating_sub(compressed_estimated_bytes);
         let estimated_tokens_saved = estimated_tokens.saturating_sub(compressed_estimated_tokens);
         if estimated_bytes_saved.saturating_mul(100)
@@ -513,6 +561,44 @@ pub fn estimate_session_bytes(session: &CanonicalSession) -> usize {
 
 pub fn estimate_tokens_from_bytes(bytes: usize) -> usize {
     bytes.div_ceil(4)
+}
+
+fn estimate_tokens_from_bytes_with_estimator(
+    bytes: usize,
+    estimator: &CompressionTokenEstimatorReport,
+) -> usize {
+    let chars_per_token_x100 = estimator.effective_chars_per_token_x100.max(1);
+    bytes.saturating_mul(100).div_ceil(chars_per_token_x100)
+}
+
+fn build_token_estimator(
+    source_provider_id: &str,
+    target_provider_id: &str,
+) -> CompressionTokenEstimatorReport {
+    let source_provider_chars_per_token_x100 = provider_chars_per_token_x100(source_provider_id);
+    let target_provider_chars_per_token_x100 = provider_chars_per_token_x100(target_provider_id);
+    CompressionTokenEstimatorReport {
+        strategy: CompressionTokenEstimatorStrategy::ProviderHeuristic,
+        source_provider_chars_per_token_x100,
+        target_provider_chars_per_token_x100,
+        effective_provider_id: target_provider_id.to_string(),
+        effective_chars_per_token_x100: target_provider_chars_per_token_x100,
+    }
+}
+
+fn provider_chars_per_token_x100(provider_id: &str) -> usize {
+    match provider_id.trim().to_ascii_lowercase().as_str() {
+        "claude" | "anthropic" => 350,
+        "codex" | "openai" | "opencode" => 400,
+        "gemini" | "google" => 360,
+        "kimi" => 320,
+        "deepseek" => 330,
+        _ => default_chars_per_token_x100(),
+    }
+}
+
+fn default_chars_per_token_x100() -> usize {
+    400
 }
 
 fn protected_recent_message_indexes(
@@ -930,7 +1016,10 @@ mod tests {
         assert!(report.original_estimated_bytes > 0);
         assert_eq!(
             report.original_estimated_tokens,
-            estimate_tokens_from_bytes(report.original_estimated_bytes)
+            estimate_tokens_from_bytes_with_estimator(
+                report.original_estimated_bytes,
+                &report.token_estimator
+            )
         );
         assert_eq!(
             report.compressed_estimated_bytes,
@@ -963,6 +1052,62 @@ mod tests {
         assert_eq!(value["policy"]["min_candidate_bytes"], 4096);
         assert_eq!(value["policy"]["min_savings_ratio_percent"], 20);
         assert_eq!(value["policy"]["mode"], "plan_only");
+        assert_eq!(value["token_estimator"]["strategy"], "provider_heuristic");
+        assert_eq!(
+            value["token_estimator"]["effective_provider_id"],
+            "deepseek"
+        );
+        assert_eq!(
+            value["token_estimator"]["effective_chars_per_token_x100"],
+            330
+        );
+    }
+
+    #[test]
+    fn dry_run_uses_target_provider_token_estimator() {
+        let session = CanonicalSession {
+            events: vec![text_event("old-user", EventRole::User, &"x".repeat(400))],
+            ..sample_session()
+        };
+        let policy = ActiveCompressionPolicy {
+            protect_recent_message_events: 0,
+            min_candidate_bytes: 16,
+            min_savings_ratio_percent: 20,
+            mode: ActiveCompressionMode::PlanOnly,
+        };
+
+        let codex_report = build_dry_run_report(
+            &session,
+            ActiveCompressionParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: policy.clone(),
+                dry_run: true,
+            },
+        );
+        let kimi_report = build_dry_run_report(
+            &session,
+            ActiveCompressionParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "kimi".to_string(),
+                policy,
+                dry_run: true,
+            },
+        );
+
+        assert_eq!(
+            codex_report.token_estimator.effective_chars_per_token_x100,
+            400
+        );
+        assert_eq!(
+            kimi_report.token_estimator.effective_chars_per_token_x100,
+            320
+        );
+        assert!(kimi_report.original_estimated_tokens > codex_report.original_estimated_tokens);
+        assert!(
+            kimi_report.candidates[0].original_estimated_tokens
+                > codex_report.candidates[0].original_estimated_tokens
+        );
     }
 
     #[test]

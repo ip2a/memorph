@@ -2394,6 +2394,7 @@ mod tests {
             target_provider_id: "codex".to_string(),
             dry_run: true,
             policy: core::active_compression::ActiveCompressionPolicy::default(),
+            token_estimator: core::active_compression::CompressionTokenEstimatorReport::default(),
             session_event_count: 1,
             message_event_count: 1,
             already_compressed_event_count: 0,
