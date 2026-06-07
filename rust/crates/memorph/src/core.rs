@@ -6,7 +6,8 @@ use crate::canonical::{
     CanonicalSession, ImportedSession, SessionArtifact, SessionEvent, SessionEventKind,
 };
 use crate::core::active_compression::{
-    ActiveCompressionParams, ActiveCompressionPolicy, ActiveCompressionReport,
+    ActiveCompressionApplyParams, ActiveCompressionParams, ActiveCompressionPolicy,
+    ActiveCompressionReport,
 };
 use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state::{self, SessionStateStore};
@@ -511,14 +512,11 @@ pub struct ActiveCompressionDryRunParams {
 pub fn active_compression_dry_run(
     params: &ActiveCompressionDryRunParams,
 ) -> Result<ActiveCompressionReport> {
-    let session = match (params.session_id.as_deref(), params.file.as_deref()) {
-        (Some(_), Some(_)) => anyhow::bail!("Use either session_id or file, not both"),
-        (Some(session_id), None) => {
-            get_canonical_session(&params.source_provider_id, session_id)?.session
-        }
-        (None, Some(file)) => session_management::read_session_export_file(file)?,
-        (None, None) => anyhow::bail!("Either session_id or file is required"),
-    };
+    let session = load_active_compression_source_session(
+        &params.source_provider_id,
+        params.session_id.as_deref(),
+        params.file.as_deref(),
+    )?;
 
     Ok(active_compression::build_dry_run_report(
         &session,
@@ -529,6 +527,101 @@ pub fn active_compression_dry_run(
             dry_run: true,
         },
     ))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveCompressionApplyCommandParams {
+    pub source_provider_id: String,
+    pub target_provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub policy: ActiveCompressionPolicy,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidate_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_prefix: Option<String>,
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveCompressionApplyCommandResult {
+    pub files: Vec<String>,
+    pub archive_refs: Vec<String>,
+    pub report: ActiveCompressionReport,
+}
+
+pub fn active_compression_apply(
+    params: &ActiveCompressionApplyCommandParams,
+) -> Result<ActiveCompressionApplyCommandResult> {
+    let session = load_active_compression_source_session(
+        &params.source_provider_id,
+        params.session_id.as_deref(),
+        params.file.as_deref(),
+    )?;
+    active_compression_apply_session(params, &session, None)
+}
+
+fn active_compression_apply_session(
+    params: &ActiveCompressionApplyCommandParams,
+    session: &CanonicalSession,
+    archive_dir: Option<&std::path::Path>,
+) -> Result<ActiveCompressionApplyCommandResult> {
+    let apply_params = ActiveCompressionApplyParams {
+        source_provider_id: params.source_provider_id.clone(),
+        target_provider_id: params.target_provider_id.clone(),
+        policy: params.policy.clone(),
+        candidate_ids: params.candidate_ids.clone(),
+    };
+    let applied = if let Some(archive_dir) = archive_dir {
+        active_compression::apply_active_compression_with_archive_dir(
+            session,
+            apply_params,
+            archive_dir,
+        )?
+    } else {
+        active_compression::apply_active_compression(session, apply_params)?
+    };
+    let default_prefix = format!("{}_active_compressed", session.identity.canonical_id);
+    let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
+    let export =
+        session_management::write_session_export_files(&applied.session, prefix, &params.format)?;
+
+    Ok(ActiveCompressionApplyCommandResult {
+        files: export.files,
+        archive_refs: applied.report.archive_refs.clone(),
+        report: applied.report,
+    })
+}
+
+#[cfg(test)]
+fn active_compression_apply_with_archive_dir(
+    params: &ActiveCompressionApplyCommandParams,
+    archive_dir: &std::path::Path,
+) -> Result<ActiveCompressionApplyCommandResult> {
+    let session = load_active_compression_source_session(
+        &params.source_provider_id,
+        params.session_id.as_deref(),
+        params.file.as_deref(),
+    )?;
+    active_compression_apply_session(params, &session, Some(archive_dir))
+}
+
+fn load_active_compression_source_session(
+    source_provider_id: &str,
+    session_id: Option<&str>,
+    file: Option<&str>,
+) -> Result<CanonicalSession> {
+    match (session_id, file) {
+        (Some(_), Some(_)) => anyhow::bail!("Use either session_id or file, not both"),
+        (Some(session_id), None) => {
+            Ok(get_canonical_session(source_provider_id, session_id)?.session)
+        }
+        (None, Some(file)) => session_management::read_session_export_file(file),
+        (None, None) => anyhow::bail!("Either session_id or file is required"),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1054,8 +1147,119 @@ mod tests {
 
     #[test]
     fn active_compression_dry_run_from_file_returns_candidates_and_skips() {
+        let file = write_active_compression_source_file(&active_compression_source_session());
+
+        let report = active_compression_dry_run(&ActiveCompressionDryRunParams {
+            source_provider_id: "claude".to_string(),
+            target_provider_id: "codex".to_string(),
+            session_id: None,
+            file: Some(file.path().to_string_lossy().to_string()),
+            policy: active_compression::ActiveCompressionPolicy {
+                protect_recent_message_events: 1,
+                min_candidate_bytes: 16,
+                min_savings_ratio_percent: 20,
+                mode: active_compression::ActiveCompressionMode::PlanOnly,
+            },
+        })
+        .unwrap();
+
+        assert!(report.dry_run);
+        assert_eq!(report.source_provider_id, "claude");
+        assert_eq!(report.target_provider_id, "codex");
+        assert_eq!(report.candidates.len(), 1);
+        assert_eq!(report.candidates[0].event_ids, vec!["old-user"]);
+        assert!(report.candidates[0].estimated_bytes_saved > 0);
+        assert!(matches!(
+            report.candidates[0].reason,
+            active_compression::CompressionSelectionReason::HistoricalContext
+        ));
+        assert!(matches!(
+            report.candidates[0].risk,
+            active_compression::CompressionRisk::Medium
+        ));
+        assert!(report.skipped.iter().any(|skipped| {
+            skipped.event_id == "recent-user"
+                && matches!(
+                    skipped.reason,
+                    active_compression::CompressionSkipReason::ProtectedRecentMessage
+                )
+        }));
+    }
+
+    #[test]
+    fn active_compression_apply_from_file_writes_archive_and_expandable_output() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let output_dir = tempfile::tempdir().unwrap();
+        let source = active_compression_source_session();
+        let source_file = write_active_compression_source_file(&source);
+        let output_prefix = output_dir
+            .path()
+            .join("compressed")
+            .to_string_lossy()
+            .to_string();
+
+        let result = active_compression_apply_with_archive_dir(
+            &ActiveCompressionApplyCommandParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                session_id: None,
+                file: Some(source_file.path().to_string_lossy().to_string()),
+                policy: active_compression::ActiveCompressionPolicy {
+                    protect_recent_message_events: 1,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: active_compression::ActiveCompressionMode::Auto,
+                },
+                candidate_ids: vec!["candidate-0001".to_string()],
+                output_prefix: Some(output_prefix),
+                format: "json".to_string(),
+            },
+            archive_dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(result.files.len(), 1);
+        assert_eq!(result.archive_refs.len(), 1);
+        assert_eq!(result.report.candidates.len(), 1);
+        assert!(result.report.compressed_estimated_bytes < result.report.original_estimated_bytes);
+
+        let compressed = session_management::read_session_export_file(&result.files[0]).unwrap();
+        assert!(compressed.events.iter().any(|event| {
+            event.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    EventBlock::Compressed {
+                        archive_ref: Some(archive_ref),
+                        ..
+                    } if archive_ref == &result.archive_refs[0]
+                )
+            })
+        }));
+        assert!(!compressed.events.iter().any(|event| {
+            event.blocks.iter().any(|block| {
+                matches!(
+                    block,
+                    EventBlock::Text { text }
+                        if text.contains("historical context historical context historical context")
+                )
+            })
+        }));
+
+        let (expanded, expand_report) = compression::expand_compressed_segments_in_dir(
+            &compressed,
+            "claude",
+            "codex",
+            archive_dir.path(),
+        )
+        .unwrap();
+        assert_eq!(expand_report.expanded_segments, 1);
+        assert_eq!(expand_report.restored_events, 1);
+        assert!(expanded.events.iter().any(|event| event.id == "old-user"));
+    }
+
+    fn active_compression_source_session() -> CanonicalSession {
         let now = Utc::now();
-        let session = CanonicalSession {
+        CanonicalSession {
             schema: CanonicalSchema::default(),
             identity: SessionIdentity {
                 canonical_id: "dry-run-file".to_string(),
@@ -1120,44 +1324,12 @@ mod tests {
             ],
             artifacts: Vec::new(),
             extensions: BTreeMap::new(),
-        };
+        }
+    }
+
+    fn write_active_compression_source_file(session: &CanonicalSession) -> tempfile::NamedTempFile {
         let mut file = Builder::new().suffix(".json").tempfile().unwrap();
-        write!(file, "{}", serde_json::to_string(&session).unwrap()).unwrap();
-
-        let report = active_compression_dry_run(&ActiveCompressionDryRunParams {
-            source_provider_id: "claude".to_string(),
-            target_provider_id: "codex".to_string(),
-            session_id: None,
-            file: Some(file.path().to_string_lossy().to_string()),
-            policy: active_compression::ActiveCompressionPolicy {
-                protect_recent_message_events: 1,
-                min_candidate_bytes: 16,
-                min_savings_ratio_percent: 20,
-                mode: active_compression::ActiveCompressionMode::PlanOnly,
-            },
-        })
-        .unwrap();
-
-        assert!(report.dry_run);
-        assert_eq!(report.source_provider_id, "claude");
-        assert_eq!(report.target_provider_id, "codex");
-        assert_eq!(report.candidates.len(), 1);
-        assert_eq!(report.candidates[0].event_ids, vec!["old-user"]);
-        assert!(report.candidates[0].estimated_bytes_saved > 0);
-        assert!(matches!(
-            report.candidates[0].reason,
-            active_compression::CompressionSelectionReason::HistoricalContext
-        ));
-        assert!(matches!(
-            report.candidates[0].risk,
-            active_compression::CompressionRisk::Medium
-        ));
-        assert!(report.skipped.iter().any(|skipped| {
-            skipped.event_id == "recent-user"
-                && matches!(
-                    skipped.reason,
-                    active_compression::CompressionSkipReason::ProtectedRecentMessage
-                )
-        }));
+        write!(file, "{}", serde_json::to_string(session).unwrap()).unwrap();
+        file
     }
 }
