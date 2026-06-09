@@ -7,6 +7,31 @@ const ASCII = `███    ███   ███████   ███    █
 let I18N = { zh: {}, en: {} };
 const REPOSITORY_URL = "https://github.com/ip2a/memorph";
 const NPM_PACKAGE_URL = "https://www.npmjs.com/package/memorph";
+const CRATES_PACKAGE_URL = "https://crates.io/crates/memorph";
+const PYPI_PACKAGE_URL = "https://pypi.org/project/memorph/";
+const ABOUT_LINKS = [
+  {
+    label: "GitHub",
+    url: REPOSITORY_URL,
+    iconUrl: "https://github.com/favicon.ico",
+  },
+  {
+    label: "npm",
+    url: NPM_PACKAGE_URL,
+    iconUrl: "https://www.npmjs.com/favicon.ico",
+  },
+  {
+    label: "crates.io",
+    url: CRATES_PACKAGE_URL,
+    iconUrl: "https://crates.io/favicon.ico",
+  },
+  {
+    label: "PyPI",
+    url: PYPI_PACKAGE_URL,
+    iconUrl: "https://pypi.org/favicon.ico",
+  },
+];
+const ASCII_BANNER_COLORS = ["#7dd3fc", "#86efac", "#f0abfc", "#facc15", "#fb7185", "#c4b5fd"];
 
 const state = {
   meta: null,
@@ -15,6 +40,8 @@ const state = {
   loadingInfo: null,
   ui: {
     homeProviderVisibleCount: null,
+    asciiBannerColor: randomAsciiBannerColor(),
+    settingsSection: "general",
   },
   home: {
     workspace: "",
@@ -41,6 +68,7 @@ const state = {
     providers: [],
     selectedProvider: "",
     settingResults: {},
+    pendingSettings: {},
   },
   updateCheck: {
     checking: false,
@@ -108,6 +136,9 @@ document.addEventListener("change", (event) => {
   }
   if (target.dataset.role === "agent-setting-toggle") {
     void updateAgentSetting(target.dataset.provider, target.dataset.settingId, target.checked);
+  }
+  if (target.dataset.role === "manager-provider-toggle") {
+    void updateManagerProvider(target.value, target.checked, target);
   }
   if (target.dataset.role === "home-search") {
     state.home.search = target.value;
@@ -186,6 +217,9 @@ async function loadRoute() {
       );
     } else if (route.name === "manager") {
       state.home.sharedGroups = await api("/api/v1/share/status");
+      if (!state.manager.preview) {
+        await loadDefaultManagerPreview();
+      }
     } else if (route.name === "compression") {
       const [archives, providers] = await Promise.all([
         api("/api/v1/compression/archives"),
@@ -254,6 +288,12 @@ function refreshSettingsModalWithCurrentDraft() {
   openSettingsModal(readSettingsDraft());
 }
 
+function switchSettingsSection(section) {
+  if (!new Set(["general", "display", "order", "config", "about"]).has(section)) return;
+  state.ui.settingsSection = section;
+  openSettingsModal(readSettingsDraft());
+}
+
 async function runUpdateCheck() {
   state.updateCheck.checking = true;
   state.updateCheck.error = "";
@@ -269,6 +309,10 @@ async function runUpdateCheck() {
   }
 }
 
+function randomAsciiBannerColor() {
+  return ASCII_BANNER_COLORS[Math.floor(Math.random() * ASCII_BANNER_COLORS.length)];
+}
+
 function navigate(path) {
   const samePath = window.location.pathname === path;
   state.modal = null;
@@ -276,6 +320,9 @@ function navigate(path) {
     history.pushState({}, "", path);
   }
   state.route = parseRoute(path);
+  if (state.route.name === "home") {
+    state.ui.asciiBannerColor = randomAsciiBannerColor();
+  }
   void loadRoute();
 }
 
@@ -342,6 +389,34 @@ function toggleProvider(provider, checked) {
   void persistProvidersAndReload();
 }
 
+async function updateManagerProvider(provider, checked, trigger = null) {
+  const draft = state.manager.draft || defaultManagerDraft();
+  const next = new Set(draft.providers);
+  if (checked) next.add(provider);
+  else next.delete(provider);
+  state.manager.draft = {
+    ...draft,
+    providers: [...next],
+  };
+
+  const item = trigger?.closest?.(".manager-provider-item");
+  if (!item) {
+    render();
+  } else {
+    item.classList.toggle("is-active", checked);
+    const stateMarker = item.querySelector(".agent-provider-state");
+    if (stateMarker) {
+      stateMarker.classList.toggle("is-installed", checked);
+      stateMarker.classList.toggle("is-missing", !checked);
+      stateMarker.textContent = checked ? "●" : "○";
+    }
+  }
+
+  if (state.manager.preview?.default_preview) {
+    await loadDefaultManagerPreview();
+  }
+}
+
 async function persistProvidersAndReload() {
   if (!state.home.workspace) return;
   try {
@@ -370,6 +445,9 @@ async function handleAction(action, data, trigger = null) {
     case "open-settings":
       openSettingsModal();
       break;
+    case "switch-settings-section":
+      switchSettingsSection(data.section || "general");
+      break;
     case "open-agents":
       navigate("/agents");
       break;
@@ -389,6 +467,9 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "run-agent-setting":
       await runAgentSetting(data.provider, data.settingId);
+      break;
+    case "open-repaired-sessions":
+      openRepairedSessionsModal();
       break;
     case "open-compression-restore":
       openCompressionRestoreModal(data.archiveRef || "");
@@ -410,6 +491,9 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "open-import":
       openImportModal();
+      break;
+    case "open-manager-filter":
+      openManagerFilterModal();
       break;
     case "open-workspace-switch":
       openWorkspaceSwitchModal();
@@ -434,6 +518,15 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "open-delete":
       openDeleteModal(data.provider, data.sessionId);
+      break;
+    case "copy-detail-message":
+      await copyDetailMessage(Number(data.messageIndex));
+      break;
+    case "delete-detail-message":
+      toast(t("remove"), t("notImplemented"));
+      break;
+    case "toggle-detail-message":
+      toggleDetailMessage(trigger);
       break;
     case "open-share-create":
       openShareCreateModal(data.provider, data.sessionId, data.title || "");
@@ -1085,14 +1178,32 @@ function renderUpdateCheckSummary() {
     <span class="settings-update-command">${escapeHtml(commandText)}</span>`;
 }
 
+function renderAboutLinks() {
+  return ABOUT_LINKS.map(
+    (item) => `
+      <a class="settings-about-link" href="${escapeAttr(item.url)}" target="_blank" rel="noopener noreferrer" data-action="open-external" data-url="${escapeAttr(item.url)}">
+        <span class="settings-about-link-icon" aria-hidden="true">
+          <img src="${escapeAttr(item.iconUrl)}" alt="">
+        </span>
+        <span class="settings-about-link-copy">
+          <strong>${escapeHtml(item.label)}</strong>
+          <span>${escapeHtml(item.url)}</span>
+        </span>
+      </a>`
+  ).join("");
+}
+
 function openSettingsModal(draft = null) {
   const settings = draft || state.meta.settings;
+  const activeSection = state.ui.settingsSection || "general";
+  const settingsSectionClass = (section) => `settings-section ${activeSection === section ? "is-active" : "is-hidden"}`;
+  const settingsNavClass = (section) => `settings-nav-item ${activeSection === section ? "is-active" : ""}`;
   const items = [...settings.agent_order]
     .map((providerId, index) => {
       const info = state.meta.providers.find((item) => item.id === providerId);
       const primary = settings.primary_agents.includes(providerId);
       return `
-        <div class="settings-row">
+        <div class="settings-provider-row">
           <div class="settings-copy">
             <strong>${escapeHtml(info?.name || providerId)}</strong>
             <span>${escapeHtml(providerId)}</span>
@@ -1114,109 +1225,163 @@ function openSettingsModal(draft = null) {
     kind: "form",
     title: t("settingsTitle"),
     submit: "save-settings",
+    className: "settings-modal-card",
+    actionsInHead: true,
     body: `
-      <div class="settings-list">
-        <div class="settings-row">
-          <div class="settings-copy">
-            <strong>${t("language")}</strong>
-            <span>${t("settingsLanguageHint")}</span>
-          </div>
-          <select name="language">
-            <option value="zh" ${settings.language === "zh" ? "selected" : ""}>中文</option>
-            <option value="en" ${settings.language === "en" ? "selected" : ""}>English</option>
-          </select>
-        </div>
-        <div class="settings-row">
-          <div class="settings-copy">
-            <strong>${t("sessionsPerProvider")}</strong>
-            <span>${t("settingsSessionsHint")}</span>
-          </div>
-          <input type="number" min="1" max="200" name="sessions_per_provider" value="${settings.sessions_per_provider}">
-        </div>
-        <div class="settings-row">
-          <div class="settings-copy">
-            <strong>${t("defaultBackupDir")}</strong>
-            <span>${t("defaultBackupDirHint")}</span>
-          </div>
-          <div class="path-picker">
-            <input name="default_backup_dir" list="known-workspaces" value="${escapeAttr(
-              settings.default_backup_dir || "./backups"
-            )}" placeholder="./backups">
-            <button type="button" class="ghost" data-action="browse-folder" data-target-field="default_backup_dir">${t(
-              "browse"
-            )}</button>
-          </div>
-        </div>
-        <div class="settings-row">
-          <div class="settings-copy">
-            <strong>${t("logSettings")}</strong>
-            <span>${t("logSettingsHint")}</span>
-          </div>
-          <div class="settings-agent-list">
-            <label class="field compact-number-field">
-              <span>${t("logMaxSizeMb")}</span>
-              <input type="text" inputmode="decimal" name="log_max_size_mb" value="${escapeAttr(
-                String(((settings.logging?.max_size_bytes || 5 * 1024 * 1024) / 1024 / 1024).toFixed(1).replace(/\.0$/, ""))
-              )}">
-            </label>
-            <label class="field compact-number-field">
-              <span>${t("logRetentionDays")}</span>
-              <input type="text" inputmode="numeric" name="log_retention_days" value="${escapeAttr(
-                settings.logging?.retention_days == null ? "" : String(settings.logging.retention_days)
-              )}" placeholder="${escapeAttr(t("unlimited"))}">
-            </label>
-          </div>
-        </div>
-        <div class="settings-row">
-          <div class="settings-copy">
-            <strong>${t("homeButtons")}</strong>
-            <span>${t("settingsHomeButtonsHint")}</span>
-          </div>
-          <div class="settings-agent-list">
-            <label class="settings-check">
-              <input type="checkbox" name="home_button_view" value="true" ${settings.home_buttons.view ? "checked" : ""}>
-              <span>${t("showView")}</span>
-            </label>
-            <label class="settings-check">
-              <input type="checkbox" name="home_button_switch" value="true" ${settings.home_buttons.switch ? "checked" : ""}>
-              <span>${t("showSwitch")}</span>
-            </label>
-            <label class="settings-check">
-              <input type="checkbox" name="home_button_export" value="true" ${settings.home_buttons.export ? "checked" : ""}>
-              <span>${t("showExport")}</span>
-            </label>
-            <label class="settings-check">
-              <input type="checkbox" name="home_button_share" value="true" ${settings.home_buttons.share ? "checked" : ""}>
-              <span>${t("showShare")}</span>
-            </label>
-            <label class="settings-check">
-              <input type="checkbox" name="home_button_delete" value="true" ${settings.home_buttons.delete ? "checked" : ""}>
-              <span>${t("showDelete")}</span>
-            </label>
-          </div>
-        </div>
-        <div class="settings-row">
-          <div class="settings-copy">
-            <strong>${t("providers")}</strong>
-            <span>${t("settingsProvidersHint")}</span>
-          </div>
-          <div class="settings-provider-list">${items}</div>
-        </div>
-        <div class="settings-row">
-          <div class="settings-copy">
-            <strong>${t("version")}</strong>
-            <span>v${escapeHtml(state.meta?.version || "")}</span>
-            <a class="settings-inline-link" href="${escapeAttr(REPOSITORY_URL)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
-              REPOSITORY_URL
-            )}</a>
-            <a class="settings-inline-link" href="${escapeAttr(NPM_PACKAGE_URL)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
-              NPM_PACKAGE_URL
-            )}</a>
-            ${renderUpdateCheckSummary()}
-          </div>
-          <button type="button" data-action="check-update" ${state.updateCheck.checking ? "disabled" : ""}>
-            ${state.updateCheck.checking ? t("checkingUpdate") : t("checkUpdate")}
-          </button>
+      <div class="settings-layout">
+        <nav class="settings-sidebar" aria-label="${escapeAttr(t("settingsTitle"))}">
+          <button type="button" class="${settingsNavClass("general")}" data-action="switch-settings-section" data-section="general">${t("general")}</button>
+          <button type="button" class="${settingsNavClass("display")}" data-action="switch-settings-section" data-section="display">${t("display")}</button>
+          <button type="button" class="${settingsNavClass("order")}" data-action="switch-settings-section" data-section="order">${t("order")}</button>
+          <button type="button" class="${settingsNavClass("config")}" data-action="switch-settings-section" data-section="config">${t("configFile")}</button>
+          <button type="button" class="${settingsNavClass("about")}" data-action="switch-settings-section" data-section="about">${t("about")}</button>
+        </nav>
+        <div class="settings-content">
+          <section class="${settingsSectionClass("general")}" id="settings-general">
+            <div class="settings-section-head">
+              <h4>${t("general")}</h4>
+            </div>
+            <div class="settings-list">
+              <div class="settings-row">
+                <div class="settings-copy">
+                  <strong>${t("language")}</strong>
+                  <span>${t("settingsLanguageHint")}</span>
+                </div>
+                <select name="language">
+                  <option value="zh" ${settings.language === "zh" ? "selected" : ""}>中文</option>
+                  <option value="en" ${settings.language === "en" ? "selected" : ""}>English</option>
+                </select>
+              </div>
+              <div class="settings-row">
+                <div class="settings-copy">
+                  <strong>${t("defaultBackupDir")}</strong>
+                  <span>${t("defaultBackupDirHint")}</span>
+                </div>
+                <div class="path-picker">
+                  <input name="default_backup_dir" list="known-workspaces" value="${escapeAttr(
+                    settings.default_backup_dir || "./backups"
+                  )}" placeholder="./backups">
+                  <button type="button" class="ghost" data-action="browse-folder" data-target-field="default_backup_dir">${t(
+                    "browse"
+                  )}</button>
+                </div>
+              </div>
+              <div class="settings-row">
+                <div class="settings-copy">
+                  <strong>${t("logSettings")}</strong>
+                  <span>${t("logSettingsHint")}</span>
+                </div>
+                <div class="settings-agent-list">
+                  <label class="field compact-number-field">
+                    <span>${t("logMaxSizeMb")}</span>
+                    <input type="text" inputmode="decimal" name="log_max_size_mb" value="${escapeAttr(
+                      String(((settings.logging?.max_size_bytes || 5 * 1024 * 1024) / 1024 / 1024).toFixed(1).replace(/\.0$/, ""))
+                    )}">
+                  </label>
+                  <label class="field compact-number-field">
+                    <span>${t("logRetentionDays")}</span>
+                    <input type="text" inputmode="numeric" name="log_retention_days" value="${escapeAttr(
+                      settings.logging?.retention_days == null ? "" : String(settings.logging.retention_days)
+                    )}" placeholder="${escapeAttr(t("unlimited"))}">
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section class="${settingsSectionClass("display")}" id="settings-display">
+            <div class="settings-section-head">
+              <h4>${t("display")}</h4>
+            </div>
+            <div class="settings-list">
+              <div class="settings-row">
+                <div class="settings-copy">
+                  <strong>${t("sessionsPerProvider")}</strong>
+                  <span>${t("settingsSessionsHint")}</span>
+                </div>
+                <input type="number" min="1" max="200" name="sessions_per_provider" value="${settings.sessions_per_provider}">
+              </div>
+              <div class="settings-row">
+                <div class="settings-copy">
+                  <strong>${t("homeButtons")}</strong>
+                  <span>${t("settingsHomeButtonsHint")}</span>
+                </div>
+                <div class="settings-agent-list">
+                  <label class="settings-check">
+                    <input type="checkbox" name="home_button_view" value="true" ${settings.home_buttons.view ? "checked" : ""}>
+                    <span>${t("showView")}</span>
+                  </label>
+                  <label class="settings-check">
+                    <input type="checkbox" name="home_button_switch" value="true" ${settings.home_buttons.switch ? "checked" : ""}>
+                    <span>${t("showSwitch")}</span>
+                  </label>
+                  <label class="settings-check">
+                    <input type="checkbox" name="home_button_export" value="true" ${settings.home_buttons.export ? "checked" : ""}>
+                    <span>${t("showExport")}</span>
+                  </label>
+                  <label class="settings-check">
+                    <input type="checkbox" name="home_button_share" value="true" ${settings.home_buttons.share ? "checked" : ""}>
+                    <span>${t("showShare")}</span>
+                  </label>
+                  <label class="settings-check">
+                    <input type="checkbox" name="home_button_delete" value="true" ${settings.home_buttons.delete ? "checked" : ""}>
+                    <span>${t("showDelete")}</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+          </section>
+          <section class="${settingsSectionClass("order")}" id="settings-order">
+            <div class="settings-section-head">
+              <h4>${t("order")}</h4>
+            </div>
+            <div class="settings-list">
+              <div class="settings-row settings-row-stacked">
+                <div class="settings-copy">
+                  <strong>${t("providers")}</strong>
+                  <span>${t("settingsProvidersHint")}</span>
+                </div>
+                <div class="settings-provider-list settings-provider-list-vertical">${items}</div>
+              </div>
+            </div>
+          </section>
+          <section class="${settingsSectionClass("config")}" id="settings-config">
+            <div class="settings-section-head">
+              <h4>${t("configFile")}</h4>
+            </div>
+            <div class="settings-list">
+              <div class="settings-row settings-row-stacked">
+                <div class="settings-copy">
+                  <strong>${escapeHtml(state.meta?.config_file?.path || "")}</strong>
+                  <span>${escapeHtml(state.meta?.config_file?.format || "json")}</span>
+                </div>
+                <pre class="settings-config-content"><code>${escapeHtml(state.meta?.config_file?.content || "")}</code></pre>
+              </div>
+            </div>
+          </section>
+          <section class="${settingsSectionClass("about")}" id="settings-about">
+            <div class="settings-section-head">
+              <h4>${t("about")}</h4>
+            </div>
+            <div class="settings-list">
+              <div class="settings-row settings-row-stacked settings-about-row">
+                <div class="settings-about-head">
+                  <div class="settings-copy">
+                    <strong>${t("version")}</strong>
+                    <span>v${escapeHtml(state.meta?.version || "")}</span>
+                  </div>
+                  <button type="button" data-action="check-update" ${state.updateCheck.checking ? "disabled" : ""}>
+                    ${state.updateCheck.checking ? t("checkingUpdate") : t("checkUpdate")}
+                  </button>
+                </div>
+                <div class="settings-about-links">
+                  ${renderAboutLinks()}
+                </div>
+                <div class="settings-about-update">
+                  ${renderUpdateCheckSummary()}
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
       </div>`,
     submitLabel: t("save"),
@@ -1273,6 +1438,7 @@ function renderManagerPreview(preview, report = null) {
         </span>
       </div>
       <div class="manager-preview-actions">
+        <button type="button" class="invert" data-action="open-manager-filter">${t("filters")}</button>
         <button type="button" class="danger" data-action="open-manager-clean-confirm">${t("cleanSelected")}</button>
         <button type="button" data-action="open-manager-backup-confirm">${t("backupSelected")}</button>
         <label class="check-row">
@@ -1640,13 +1806,36 @@ async function runSaveSettings(formData) {
 }
 
 async function saveSettings(body) {
-  state.meta.settings = await api("/api/v1/settings", {
+  await api("/api/v1/settings", {
     method: "PUT",
     body,
   });
+  state.meta = await api("/api/v1/meta");
   setDocumentLanguage();
   state.home.visible = state.meta.settings.sessions_per_provider;
   toast(t("saved"), t("settingsTitle"));
+  render();
+}
+
+async function loadDefaultManagerPreview() {
+  const draft = {
+    ...(state.manager.draft || defaultManagerDraft()),
+    is_default_preview: true,
+  };
+  if (!draft.providers.length) {
+    const preview = emptyManagerPreview();
+    preview.default_preview = true;
+    state.manager = { draft, preview, report: null, pendingItems: [] };
+    render();
+    return;
+  }
+  const preview = await api("/api/v1/manager/preview", {
+    method: "POST",
+    body: managerPreviewBody(draft),
+  });
+  preview.output_dir = "";
+  preview.default_preview = true;
+  state.manager = { draft, preview, report: null, pendingItems: [] };
   render();
 }
 
@@ -1659,8 +1848,11 @@ async function runManagerPreview(formData) {
       method: "POST",
       body: managerPreviewBody(draft),
     });
+    applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
+    preview.default_preview = false;
     state.manager = { draft, preview, report: null, pendingItems: [] };
+    state.modal = null;
     if (state.route.name !== "manager") replacePath("/manager");
     render();
   } finally {
@@ -1684,7 +1876,9 @@ async function runManagerClean() {
       method: "POST",
       body: managerPreviewBody(draft),
     });
+    applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
+    preview.default_preview = Boolean(draft.is_default_preview);
     state.manager = { draft, preview, report: null, pendingItems: [] };
     openActionResultModal({
       title: t("cleanSelected"),
@@ -1718,7 +1912,9 @@ async function runManagerBackup() {
       method: "POST",
       body: managerPreviewBody(draft),
     });
+    applyManagerDraftFilters(preview, draft);
     preview.output_dir = outputDir;
+    preview.default_preview = Boolean(draft.is_default_preview);
     state.manager = { draft, preview, report: null, pendingItems: [] };
     openActionResultModal({
       title: t("backupSelected"),
@@ -1737,49 +1933,94 @@ function selectedManagerItems() {
 }
 
 function defaultManagerDraft() {
+  const selectedProviders = state.home.providers.length
+    ? state.home.providers
+    : state.meta
+      ? getOrderedProviders().map((item) => item.id)
+      : [];
   return {
     workspace: state.home.workspace || "",
-    older_than_days: "14",
+    older_than_days: "",
     older_than_unit: "days",
-    size_operator: "lt",
-    size_value: "1",
-    size_unit: "mb",
-    providers: state.meta ? getOrderedProviders().map((item) => item.id) : [],
+    size_min_value: "",
+    size_min_unit: "mb",
+    size_max_value: "",
+    size_max_unit: "mb",
+    title_contains: "",
+    title_excludes: "",
+    max_results: "10",
+    sort_order: "recent",
+    providers: selectedProviders,
+    is_default_preview: true,
   };
 }
 
 function managerDraftFromFormData(formData) {
+  const current = state.manager.draft || defaultManagerDraft();
   return {
     workspace: state.home.workspace || "",
     older_than_days: String(formData.get("older_than_days") || ""),
     older_than_unit: String(formData.get("older_than_unit") || "days"),
-    size_operator: String(formData.get("size_operator") || "gt"),
-    size_value: String(formData.get("size_value") || ""),
-    size_unit: String(formData.get("size_unit") || "mb"),
-    providers: formData.getAll("providers").map(String),
+    size_min_value: String(formData.get("size_min_value") || ""),
+    size_min_unit: String(formData.get("size_min_unit") || "mb"),
+    size_max_value: String(formData.get("size_max_value") || ""),
+    size_max_unit: String(formData.get("size_max_unit") || "mb"),
+    title_contains: String(formData.get("title_contains") || ""),
+    title_excludes: String(formData.get("title_excludes") || ""),
+    max_results: String(formData.get("max_results") || ""),
+    sort_order: String(formData.get("sort_order") || current.sort_order || "recent"),
+    providers: formData.getAll("providers").map(String).length
+      ? formData.getAll("providers").map(String)
+      : current.providers,
+    is_default_preview: false,
   };
 }
 
 function readManagerDraft() {
   const form = document.querySelector('form[data-submit="preview-manager"]');
-  if (!form) return defaultManagerDraft();
+  if (!form) return state.manager.draft || defaultManagerDraft();
   return managerDraftFromFormData(new FormData(form));
 }
 
 function managerPreviewBody(draft) {
-  const sizeBytes = managerSizeBytesValue(draft.size_value, draft.size_unit);
-  const sizeFilter =
-    sizeBytes === null
-      ? {}
-      : draft.size_operator === "lt"
-        ? { smaller_than_bytes: sizeBytes }
-        : { larger_than_bytes: sizeBytes };
+  const minSizeBytes = managerSizeBytesValue(draft.size_min_value, draft.size_min_unit);
+  const maxSizeBytes = managerSizeBytesValue(draft.size_max_value, draft.size_max_unit);
+  const olderThanMs = managerAgeMsValue(draft.older_than_days, draft.older_than_unit);
   return {
     workspace: emptyToNull(draft.workspace),
-    older_than_ms: managerAgeMsValue(draft.older_than_days, draft.older_than_unit),
-    ...sizeFilter,
+    older_than_ms: olderThanMs,
+    ...(minSizeBytes === null ? {} : { larger_than_bytes: minSizeBytes }),
+    ...(maxSizeBytes === null ? {} : { smaller_than_bytes: maxSizeBytes }),
+    sort: draft.sort_order || "recent",
+    limit: managerLimitValue(draft.max_results),
     providers: draft.providers,
   };
+}
+
+function applyManagerDraftFilters(preview, draft) {
+  const includes = normalizeSearchTerm(draft.title_contains);
+  const excludes = normalizeSearchTerm(draft.title_excludes);
+  if (!includes && !excludes) return preview;
+
+  preview.items = preview.items.filter((item) => {
+    const title = normalizeSearchTerm(item.title || item.session_id || "");
+    if (includes && !title.includes(includes)) return false;
+    if (excludes && title.includes(excludes)) return false;
+    return true;
+  });
+  preview.total_count = preview.items.length;
+  preview.total_size_bytes = preview.items.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0);
+  return preview;
+}
+
+function normalizeSearchTerm(value) {
+  return String(value || "").trim().toLocaleLowerCase();
+}
+
+function managerLimitValue(value) {
+  const amount = numberOrNull(value);
+  if (amount === null) return 10;
+  return Math.max(1, Math.floor(amount));
 }
 
 function managerAgeMsValue(value, unit) {
@@ -1888,12 +2129,9 @@ function render() {
         </div>
         <div class="top-actions">
           ${state.route.name === "home" ? "" : `<a class="button" href="/" data-nav="/">${t("openHome")}</a>`}
-          ${state.route.name === "shared-list" || state.route.name === "shared-detail" ? "" : `<a class="button" href="/shared" data-nav="/shared">${t("shared")}</a>`}
           <button type="button" data-action="open-workspace-switch">${t("switchWorkspace")}</button>
           ${state.route.name === "agents" ? "" : `<a class="button" href="/agents" data-nav="/agents">${t("agentManagement")}</a>`}
-          <button type="button" data-action="open-import">${t("import")}</button>
-          ${state.route.name === "compression" ? "" : `<a class="button" href="/compression" data-nav="/compression">${t("compression")}</a>`}
-          ${state.route.name === "manager" ? "" : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
+          ${state.route.name === "manager" ? `<button type="button" data-action="open-import">${t("importSession")}</button>` : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
           <button type="button" data-action="open-settings">${t("settings")}</button>
           <a class="icon-button" href="https://github.com/ip2a/memorph" target="_blank" rel="noopener noreferrer" data-action="open-external" data-url="https://github.com/ip2a/memorph" aria-label="GitHub repository" title="GitHub">
             ${githubIcon()}
@@ -2120,10 +2358,12 @@ function renderAgentToggleRow(provider, setting) {
 }
 
 function renderAgentActionRow(provider, setting) {
+  const pending = !!state.agents.pendingSettings[`${provider.provider_id}:${setting.id}`];
+  const label = agentSettingLabel(setting);
   return `
     <div class="settings-row">
       <div class="settings-copy settings-copy-inline">
-        <strong>${escapeHtml(agentSettingLabel(setting))}</strong>
+        <strong>${escapeHtml(label)}</strong>
         <span>${escapeHtml(setting.description || "")}</span>
       </div>
       <button
@@ -2132,7 +2372,8 @@ function renderAgentActionRow(provider, setting) {
         data-action="run-agent-setting"
         data-provider="${escapeAttr(provider.provider_id)}"
         data-setting-id="${escapeAttr(setting.id)}"
-      >${escapeHtml(agentSettingLabel(setting))}</button>
+        ${pending ? "disabled" : ""}
+      >${escapeHtml(pending ? t("running") : label)}</button>
     </div>`;
 }
 
@@ -2153,31 +2394,62 @@ function renderCodexRepairReport(result) {
   const touched = report.touched_sessions || [];
   return `
     <section class="manager-workspace-summary">
-      <div class="manager-summary-grid">
+      <div class="manager-summary-grid codex-repair-summary-grid">
         ${renderMetaLine(t("workspace"), report.workspace_dir)}
         ${renderMetaLine(t("currentProvider"), report.current_model_provider)}
         ${renderMetaLine(t("scanned"), String(report.scanned_rollouts))}
         ${renderMetaLine(t("workspaceSessions"), String(report.workspace_session_count))}
         ${renderMetaLine(t("hiddenSessions"), String(report.hidden_session_count))}
-        ${renderMetaLine(t("repairedSessions"), String(report.repaired_session_count))}
+        ${renderCodexRepairCountLine(report.repaired_session_count, touched.length)}
         ${renderMetaLine(t("reindexedSessions"), String(report.reindexed_session_count))}
         ${renderMetaLine(t("updatedSqliteRows"), String(report.sqlite_rows_updated || 0))}
-        ${report.backup_dir ? renderMetaLine(t("backupLocation"), report.backup_dir) : ""}
+        ${report.backup_dir ? renderWideMetaLine(t("backupLocation"), report.backup_dir) : ""}
         ${report.pruned_backup_count ? renderMetaLine(t("prunedBackups"), String(report.pruned_backup_count)) : ""}
         ${report.skipped_rollout_files?.length ? renderMetaLine(t("skippedRollouts"), String(report.skipped_rollout_files.length)) : ""}
       </div>
-      ${
-        touched.length
-          ? `<div class="session-list">
-              ${touched
-                .map(
-                  (item) => `
+      ${touched.length ? "" : `<div class="empty-state">${t("noRepairNeeded")}</div>`}
+    </section>`;
+}
+
+function renderCodexRepairCountLine(count, touchedCount) {
+  if (!touchedCount) {
+    return renderMetaLine(t("repairedSessions"), String(count || 0));
+  }
+  return `
+    <div class="stack">
+      <span class="eyebrow">${escapeHtml(t("repairedSessions"))}</span>
+      <button type="button" class="meta-link-button" data-action="open-repaired-sessions">
+        ${escapeHtml(String(count || 0))}
+      </button>
+    </div>`;
+}
+
+function renderWideMetaLine(label, value) {
+  if (value === null || value === undefined || value === "") return "";
+  return `<div class="stack meta-line-wide"><span class="eyebrow">${escapeHtml(label)}</span><div class="path-line">${escapeHtml(
+    formatValue(value)
+  )}</div></div>`;
+}
+
+function openRepairedSessionsModal() {
+  const result = state.agents.settingResults["codex:repair_workspace_sessions"];
+  const report = result?.type === "codex_workspace_repair" ? result.data : null;
+  const touched = report?.touched_sessions || [];
+  state.modal = {
+    kind: "info",
+    title: t("repairedSessions"),
+    subtitle: t("repairedSessionsHint"),
+    body: touched.length
+      ? `<div class="session-list repaired-session-list">
+          ${touched
+            .map(
+              (item) => `
                 <article class="session-row">
                   <div class="session-row-main">
                     <div class="session-info">
                       <div class="session-title-line">
                         <span class="session-title">${escapeHtml(item.title || item.session_id)}</span>
-                        <span class="session-workspace">${escapeHtml(item.current_model_provider)}</span>
+                        <span class="session-workspace">${escapeHtml(item.current_model_provider || "—")}</span>
                       </div>
                       <div class="session-meta-bar">
                         <span class="session-id-pill">${escapeHtml(item.session_id)}</span>
@@ -2191,12 +2463,12 @@ function renderCodexRepairReport(result) {
                     </div>
                   </div>
                 </article>`
-                )
-                .join("")}
-            </div>`
-          : `<div class="empty-state">${t("noRepairNeeded")}</div>`
-      }
-    </section>`;
+            )
+            .join("")}
+        </div>`
+      : `<div class="empty-state">${t("noRepairNeeded")}</div>`,
+  };
+  render();
 }
 
 function agentSettingLabel(setting) {
@@ -2259,19 +2531,36 @@ async function updateAgentSetting(providerId, settingId, value) {
 }
 
 async function runAgentSetting(providerId, settingId) {
-  const result = await api(`/api/v1/providers/${encodeURIComponent(providerId)}/settings/${encodeURIComponent(settingId)}`, {
-    method: "POST",
-    body: {
-      workspace: state.home.workspace || null,
-    },
+  const key = `${providerId}:${settingId}`;
+  if (state.agents.pendingSettings[key]) return;
+  state.agents.pendingSettings[key] = true;
+  setLoading(true, {
+    label: agentSettingLabel({ id: settingId, title: settingId }),
+    detail: state.home.workspace ? workspaceName(state.home.workspace) : "",
   });
-  state.agents.settingResults[`${providerId}:${settingId}`] = result;
-  await loadAgentManagement();
-  if (providerId === "codex" && settingId === "repair_workspace_sessions" && state.home.workspace) {
-    await loadHome();
+  try {
+    const result = await api(`/api/v1/providers/${encodeURIComponent(providerId)}/settings/${encodeURIComponent(settingId)}`, {
+      method: "POST",
+      body: {
+        workspace: state.home.workspace || null,
+      },
+    });
+    state.agents.settingResults[key] = result;
+    await loadAgentManagement();
+    if (providerId === "codex" && settingId === "repair_workspace_sessions" && state.home.workspace) {
+      updateLoading({ detail: t("refreshingSessions") });
+      await loadHome();
+    }
+    if (!(providerId === "codex" && settingId === "repair_workspace_sessions")) {
+      toast(t("done"), agentSettingLabel({ id: settingId, title: settingId }));
+    }
+  } catch (error) {
+    toast(t("error"), error.message, true);
+  } finally {
+    delete state.agents.pendingSettings[key];
+    setLoading(false);
+    render();
   }
-  toast(t("done"), agentSettingLabel({ id: settingId, title: settingId }));
-  render();
 }
 
 function renderHome() {
@@ -2281,7 +2570,7 @@ function renderHome() {
   return `
     <div class="page-home">
       <section class="home-hero">
-        <div class="ascii-banner"><pre>${escapeHtml(ASCII)}</pre></div>
+        <div class="ascii-banner" style="--ascii-banner-color: ${escapeAttr(state.ui.asciiBannerColor)}"><pre>${escapeHtml(ASCII)}</pre></div>
         <div class="workspace-hero">
           <p class="eyebrow">${t("workspace")}</p>
           <h1>${escapeHtml(workspaceName(state.home.workspace) || "memorph")}</h1>
@@ -2385,7 +2674,9 @@ function renderSessionRow(item) {
       <div class="session-row-main">
         <div class="session-info">
           <div class="session-title-line">
-            <span class="session-title">${escapeHtml(item.title || item.session_id)}</span>
+            <a class="session-title session-title-link" href="/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}" data-nav="/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}">
+              ${escapeHtml(item.title || item.session_id)}
+            </a>
             <span class="session-workspace">${escapeHtml(item.project_dir || "—")}</span>
           </div>
           <div class="session-meta-bar">
@@ -2435,6 +2726,8 @@ function renderSessionDetailView(detail, view) {
       </div>
       <div class="session-actions">
         <a class="button" href="/" data-nav="/">${t("back")}</a>
+        <a class="button" href="/shared" data-nav="/shared">${t("shared")}</a>
+        <a class="button" href="/compression" data-nav="/compression">${t("compression")}</a>
         ${sharedRef ? `<a class="button" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("openShared")}</a>` : ""}
         <button type="button" data-action="open-share-create" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("share")}</button>
         <button type="button" data-action="open-switch" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-workspace="${escapeAttr(workspace)}">${t("switch")}</button>
@@ -2446,36 +2739,29 @@ function renderSessionDetailView(detail, view) {
     <div class="detail-layout">
       <section>
         <div class="msg-list">
-          ${view.events.length ? view.events.map(renderDetailEvent).join("") : `<div class="empty-state">${t("noMessages")}</div>`}
+          ${view.events.length ? view.events.map((event, index) => renderDetailEvent(event, index)).join("") : `<div class="empty-state">${t("noMessages")}</div>`}
         </div>
       </section>
-      <aside class="detail-panel stack">
-        <div>
-          <h3>${t("details")}</h3>
-          <p class="muted">${t("overview")}</p>
-        </div>
-        ${renderMetaLine(t("provider"), view.provider_name || view.provider_id)}
-        ${renderMetaLine(t("sessionId"), view.session_id || state.route.sessionId)}
-        ${renderMetaLine(t("messageCount"), String(view.message_count))}
-        ${renderMetaLine(t("projectDir"), view.workspace_dir)}
-        ${renderMetaLine(t("createdAt"), view.created_at)}
-        ${renderMetaLine(t("lastActiveAt"), formatDate(view.last_active_at))}
-        ${renderMetaLine(t("sourcePath"), view.source_path)}
-        ${renderMetaLine(t("resumeCommand"), view.resume_command || "")}
-      </aside>
     </div>`;
 }
 
-function renderDetailEvent(event) {
+function renderDetailEvent(event, index) {
   const blocks = (event.blocks || []).map(renderDetailBlock).join("");
   const role = (event.role || "unknown").replaceAll("_", " ");
   const kind = (event.kind || "unknown").replaceAll("_", " ");
   return `
-    <article class="msg-item">
+    <article class="msg-item" data-message-index="${index}">
       <header class="msg-header">
-        <span class="msg-role">${escapeHtml(role)}</span>
-        <span>${escapeHtml(kind)}</span>
-        <span>${escapeHtml(formatDate(event.timestamp))}</span>
+        <span class="msg-header-main">
+          <span class="msg-role">${escapeHtml(role)}</span>
+          <span>${escapeHtml(kind)}</span>
+        </span>
+        <span class="msg-header-meta">
+          <a href="#" class="text-action" data-action="copy-detail-message" data-message-index="${index}">${t("copy")}</a>
+          <a href="#" class="text-action" data-action="delete-detail-message" data-message-index="${index}">${t("remove")}</a>
+          <a href="#" class="text-action" data-action="toggle-detail-message" data-message-index="${index}">${t("expand")}</a>
+          <span>${escapeHtml(formatDate(event.timestamp))}</span>
+        </span>
       </header>
       <div class="msg-body">${blocks || `<p class="muted">${t("noDetails")}</p>`}</div>
     </article>`;
@@ -2762,14 +3048,17 @@ function renderManagerForm(managerDraft) {
     .map((item) => {
       const checked = managerDraft.providers.includes(item.id);
       return `
-        <label class="agent-pill manager-agent-pill">
-          <input type="checkbox" name="providers" value="${escapeAttr(item.id)}" ${checked ? "checked" : ""}>
-          <span>${escapeHtml(item.name)}</span>
+        <label class="agent-provider-item manager-provider-item ${checked ? "is-active" : ""}">
+          <input data-role="manager-provider-toggle" type="checkbox" name="manager_provider" value="${escapeAttr(item.id)}" ${checked ? "checked" : ""}>
+          <span class="agent-provider-head">
+            <strong class="agent-provider-name">${escapeHtml(item.name)}</strong>
+            <span class="agent-provider-state ${checked ? "is-installed" : "is-missing"}" aria-hidden="true">${checked ? "●" : "○"}</span>
+          </span>
         </label>`;
     })
     .join("");
   return `
-    <form class="manager-filter-form" data-submit="preview-manager">
+    <div class="manager-control-content">
       <section class="manager-workspace-summary">
         <div>
           <span class="eyebrow">${t("workspace")}</span>
@@ -2777,50 +3066,102 @@ function renderManagerForm(managerDraft) {
           <p>${escapeHtml(state.home.workspace || "—")}</p>
         </div>
       </section>
-      <section class="manager-compact-filters">
-        <label class="field filter-line-field">
-          <span>${t("olderThanDays")}</span>
-          <div class="unit-field">
-            <input type="text" inputmode="decimal" name="older_than_days" placeholder="30" value="${escapeAttr(
-              managerDraft.older_than_days
-            )}">
-            <select name="older_than_unit">
-              ${unitOption("minutes", t("minutes"), managerDraft.older_than_unit)}
-              ${unitOption("hours", t("hours"), managerDraft.older_than_unit)}
-              ${unitOption("days", t("days"), managerDraft.older_than_unit)}
-              ${unitOption("weeks", t("weeks"), managerDraft.older_than_unit)}
-              ${unitOption("months", t("months"), managerDraft.older_than_unit)}
-            </select>
+      <section class="manager-control-bottom">
+        <section class="stack">
+          <div class="section-heading">
+            <div>
+              <strong>${t("providers")}</strong>
+            </div>
           </div>
-        </label>
-        <label class="field filter-line-field">
-          <span>${t("storageUsage")}</span>
-          <div class="size-filter-field">
-            <select name="size_operator">
-              ${unitOption("gt", t("greaterThanShort"), managerDraft.size_operator)}
-              ${unitOption("lt", t("lessThanShort"), managerDraft.size_operator)}
-            </select>
-            <input type="text" inputmode="decimal" name="size_value" placeholder="1" value="${escapeAttr(
-              managerDraft.size_value
-            )}">
-            <select name="size_unit">
-              ${unitOption("kb", "KB", managerDraft.size_unit)}
-              ${unitOption("mb", "MB", managerDraft.size_unit)}
-              ${unitOption("gb", "GB", managerDraft.size_unit)}
-            </select>
-          </div>
-        </label>
+          <div class="manager-list agent-provider-list manager-provider-list">${providerChecks}</div>
+        </section>
       </section>
-      <section class="stack">
-        <div class="section-heading">
-          <div>
-            <strong>${t("providers")}</strong>
+    </div>`;
+}
+
+function openManagerFilterModal() {
+  const draft = state.manager.draft || defaultManagerDraft();
+  const providerInputs = draft.providers
+    .map((provider) => `<input type="hidden" name="providers" value="${escapeAttr(provider)}">`)
+    .join("");
+  state.modal = {
+    kind: "form",
+    title: t("preview"),
+    submit: "preview-manager",
+    body: `
+      ${providerInputs}
+      <div class="stack">
+        <section class="manager-filter-grid">
+          <div class="filter-card filter-card-wide">
+            <span class="filter-label">${t("olderThanDays")}</span>
+            <div class="unit-field">
+              <input type="text" inputmode="decimal" name="older_than_days" placeholder="30" value="${escapeAttr(
+                draft.older_than_days
+              )}">
+              <select name="older_than_unit">
+                ${unitOption("minutes", t("minutes"), draft.older_than_unit)}
+                ${unitOption("hours", t("hours"), draft.older_than_unit)}
+                ${unitOption("days", t("days"), draft.older_than_unit)}
+                ${unitOption("weeks", t("weeks"), draft.older_than_unit)}
+                ${unitOption("months", t("months"), draft.older_than_unit)}
+              </select>
+            </div>
           </div>
-        </div>
-        <div class="manager-agent-grid">${providerChecks}</div>
-      </section>
-      <button class="invert" type="submit">${t("preview")}</button>
-    </form>`;
+          <div class="filter-card">
+            <span class="filter-label">${t("storageGreaterThan")}</span>
+            <div class="size-bound-field">
+              <input type="text" inputmode="decimal" name="size_min_value" placeholder="1" value="${escapeAttr(
+                draft.size_min_value
+              )}">
+              <select name="size_min_unit">
+                ${unitOption("kb", "KB", draft.size_min_unit)}
+                ${unitOption("mb", "MB", draft.size_min_unit)}
+                ${unitOption("gb", "GB", draft.size_min_unit)}
+              </select>
+            </div>
+          </div>
+          <div class="filter-card">
+            <span class="filter-label">${t("storageLessThan")}</span>
+            <div class="size-bound-field">
+              <input type="text" inputmode="decimal" name="size_max_value" placeholder="10" value="${escapeAttr(
+                draft.size_max_value
+              )}">
+              <select name="size_max_unit">
+                ${unitOption("kb", "KB", draft.size_max_unit)}
+                ${unitOption("mb", "MB", draft.size_max_unit)}
+                ${unitOption("gb", "GB", draft.size_max_unit)}
+              </select>
+            </div>
+          </div>
+        </section>
+        <section class="manager-keyword-grid">
+          <label class="field compact-keyword-field">
+            <span>${t("managerMaxResults")}</span>
+            <input type="text" inputmode="numeric" name="max_results" value="${escapeAttr(draft.max_results || "")}" placeholder="10">
+          </label>
+          <label class="field compact-keyword-field">
+            <span>${t("managerSortOrder")}</span>
+            <select name="sort_order">
+              ${unitOption("recent", t("managerSortRecentDesc"), draft.sort_order || "recent")}
+              ${unitOption("size", t("managerSortSizeDesc"), draft.sort_order || "recent")}
+            </select>
+          </label>
+        </section>
+        <section class="manager-keyword-grid">
+          <label class="field compact-keyword-field">
+            <span>${t("titleContains")}</span>
+            <input name="title_contains" value="${escapeAttr(draft.title_contains || "")}" placeholder="${escapeAttr(t("keywordPlaceholder"))}">
+          </label>
+          <label class="field compact-keyword-field">
+            <span>${t("titleExcludes")}</span>
+            <input name="title_excludes" value="${escapeAttr(draft.title_excludes || "")}" placeholder="${escapeAttr(t("keywordPlaceholder"))}">
+          </label>
+        </section>
+        <p class="muted">${t("managerFilterFutureHint")}</p>
+      </div>`,
+    submitLabel: t("preview"),
+  };
+  render();
 }
 
 function unitOption(value, label, selected) {
@@ -2910,25 +3251,39 @@ function renderModal() {
   }
   const modal = state.modal;
   const formOpen = modal.kind === "form";
+  const actionsInHead = formOpen && modal.actionsInHead;
   modalRoot.innerHTML = `
     <div class="overlay">
-      <div class="modal-card">
+      <div class="modal-card ${modal.className || ""}">
+        ${formOpen ? `<form data-submit="${escapeAttr(modal.submit)}" class="modal-stack">` : ""}
         <div class="modal-head">
           <div>
             <h3>${escapeHtml(modal.title)}</h3>
             ${modal.subtitle ? `<p class="muted">${escapeHtml(modal.subtitle)}</p>` : ""}
           </div>
-          <button type="button" class="text-close-button ghost" data-action="close-modal">${t("close")}</button>
+          ${
+            actionsInHead
+              ? `<div class="modal-head-actions">
+                  <button type="button" data-action="close-modal">${t("cancel")}</button>
+                  <button type="submit" class="${modal.submitClass || "invert"}">${escapeHtml(modal.submitLabel || t("save"))}</button>
+                </div>`
+              : `<button type="button" class="text-close-button ghost" data-action="close-modal">${t("close")}</button>`
+          }
         </div>
-        ${formOpen
-          ? `<form data-submit="${escapeAttr(modal.submit)}" class="modal-stack">
-              ${modal.body}
-              <div class="modal-actions">
-                <button type="button" data-action="close-modal">${t("cancel")}</button>
-                <button type="submit" class="${modal.submitClass || "invert"}">${escapeHtml(modal.submitLabel || t("save"))}</button>
-              </div>
+        ${
+          formOpen
+            ? `${modal.body}
+              ${
+                actionsInHead
+                  ? ""
+                  : `<div class="modal-actions">
+                      <button type="button" data-action="close-modal">${t("cancel")}</button>
+                      <button type="submit" class="${modal.submitClass || "invert"}">${escapeHtml(modal.submitLabel || t("save"))}</button>
+                    </div>`
+              }
             </form>`
-          : modal.body}
+            : modal.body
+        }
       </div>
     </div>`;
 }
@@ -2983,6 +3338,37 @@ function closeToast(index) {
 function closeModal() {
   state.modal = null;
   render();
+}
+
+async function copyDetailMessage(index) {
+  const event = state.session?.view?.events?.[index];
+  if (!event) return;
+  const text = detailEventToText(event);
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(t("copied"), t("copy"));
+  } catch (error) {
+    toast(t("error"), template(t("clipboardCopyFailed"), { error: error.message || String(error) }), true);
+  }
+}
+
+function toggleDetailMessage(trigger) {
+  const item = trigger?.closest?.(".msg-item");
+  if (!item) return;
+  item.classList.toggle("is-expanded");
+}
+
+function detailEventToText(event) {
+  return (event.blocks || [])
+    .map((block) => {
+      if (block.type === "text") return block.text || "";
+      if (block.type === "thinking") return block.text || "";
+      if (block.type === "tool_result") return block.content || "";
+      if (block.type === "file") return [block.path, block.content].filter(Boolean).join("\n");
+      return JSON.stringify(block.raw ?? block.payload ?? block, null, 2);
+    })
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function githubIcon() {
