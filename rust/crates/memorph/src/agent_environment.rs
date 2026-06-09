@@ -32,13 +32,20 @@ pub fn detect_provider_environment(provider_id: &str) -> AgentEnvironmentStatus 
 
 fn executable_candidates(provider_id: &str) -> &'static [&'static str] {
     match provider_id {
+        "antigravity" => &["antigravity"],
         "claude" => &["claude"],
         "codex" => &["codex"],
+        "copilot" => &["gh"],
         "cursor" => &["cursor-agent", "cursor"],
         "deepseek" => &["deepseek"],
+        "cidebuddy" | "codebuddy" => &["codebuddy", "cidebuddy"],
+        "gemini" => &["gemini"],
         "kiro" => &["kiro"],
         "kimi" => &["kimi"],
         "opencode" => &["opencode"],
+        "qoder" => &["qoder"],
+        "trae" => &["trae"],
+        "windsurf" => &["windsurf"],
         _ => &[],
     }
 }
@@ -71,13 +78,20 @@ fn executable_suffixes() -> Vec<&'static str> {
 
 fn provider_config_path(provider_id: &str) -> PathBuf {
     match provider_id {
+        "antigravity" => antigravity_config_dir(),
         "claude" => home_join(".claude"),
         "codex" => home_join(".codex"),
+        "copilot" => copilot_config_dir(),
         "cursor" => cursor_config_dir(),
         "deepseek" => home_join(".deepseek"),
+        "cidebuddy" | "codebuddy" => cidebuddy_config_dir(),
+        "gemini" => home_join(".gemini"),
         "kiro" => kiro_config_dir(),
         "kimi" => home_join(".kimi"),
         "opencode" => home_join(".local/share/opencode"),
+        "qoder" => qoder_config_dir(),
+        "trae" => trae_config_dir(),
+        "windsurf" => windsurf_config_dir(),
         _ => PathBuf::from(provider_id),
     }
 }
@@ -132,6 +146,57 @@ fn kiro_config_dir() -> PathBuf {
 
     #[allow(unreachable_code)]
     PathBuf::from("Kiro")
+}
+
+fn windsurf_config_dir() -> PathBuf {
+    app_config_dir("Windsurf", ".config/Windsurf")
+}
+
+fn antigravity_config_dir() -> PathBuf {
+    app_config_dir("Antigravity", ".config/Antigravity")
+}
+
+fn qoder_config_dir() -> PathBuf {
+    app_config_dir("Qoder", ".config/Qoder")
+}
+
+fn trae_config_dir() -> PathBuf {
+    app_config_dir("Trae", ".config/Trae")
+}
+
+fn cidebuddy_config_dir() -> PathBuf {
+    dirs::home_dir()
+        .map(|home| home.join(".codebuddy"))
+        .unwrap_or_else(|| PathBuf::from(".codebuddy"))
+}
+
+fn copilot_config_dir() -> PathBuf {
+    app_config_dir("Code", ".config/Code")
+        .join("User")
+        .join("globalStorage")
+}
+
+fn app_config_dir(macos_app: &str, _linux_relative: &str) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        return home_join(&format!("Library/Application Support/{macos_app}"));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = env::var("APPDATA") {
+            return PathBuf::from(appdata).join(macos_app);
+        }
+        return PathBuf::from(macos_app);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        return home_join(_linux_relative);
+    }
+
+    #[allow(unreachable_code)]
+    PathBuf::from(macos_app)
 }
 
 fn detect_install_method(executable_path: Option<&Path>) -> &'static str {
@@ -215,6 +280,7 @@ mod tests {
             provider_config_path("opencode"),
             home_join(".local/share/opencode")
         );
+        assert_eq!(provider_config_path("gemini"), home_join(".gemini"));
         assert_eq!(provider_config_path("kimi"), home_join(".kimi"));
     }
 

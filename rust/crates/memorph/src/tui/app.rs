@@ -2419,8 +2419,6 @@ mod tests {
                 estimated_bytes_saved: 500,
                 estimated_tokens_saved: 125,
                 archive_refs: Vec::new(),
-                summary_source: None,
-                summary_rejection_reason: None,
             }],
             skipped: Vec::new(),
             archive_refs: Vec::new(),

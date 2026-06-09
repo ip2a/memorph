@@ -413,9 +413,8 @@ fn load_canonical_session_from_meta(
         .as_deref()
         .context("Session has no source path")?;
     let mut imported = provider.import_session(source_path)?;
-    if imported.session.identity.source_title.is_none() {
-        imported.session.identity.source_title = meta.title.clone();
-    }
+    let display_title = resolved_display_title(provider_id, &meta);
+    apply_imported_session_title(&mut imported, &meta, display_title);
     if imported.session.context.workspace_dir.is_none() {
         imported.session.context.workspace_dir = meta.project_dir.clone();
     }
@@ -442,6 +441,34 @@ fn load_canonical_session_from_meta(
             });
     }
     Ok(imported)
+}
+
+fn apply_imported_session_title(
+    imported: &mut ImportedSession,
+    meta: &ProviderSessionSummary,
+    display_title: Option<String>,
+) {
+    imported.session.identity.source_title = display_title.or_else(|| {
+        imported
+            .session
+            .identity
+            .source_title
+            .clone()
+            .or(meta.title.clone())
+    });
+}
+
+fn resolved_display_title(provider_id: &str, meta: &ProviderSessionSummary) -> Option<String> {
+    let session_states = session_state::load_state_store().unwrap_or_default();
+    let workspace_dir =
+        session_management::normalized_workspace_key(provider_id, meta.project_dir.as_deref());
+    session_state::resolve_session_state(
+        &session_states,
+        provider_id,
+        &meta.session_id,
+        workspace_dir.as_deref(),
+    )
+    .display_title
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1407,6 +1434,53 @@ mod tests {
         assert_eq!(item.native_title.as_deref(), Some("Native"));
         assert_eq!(item.display_title.as_deref(), Some("Display"));
         assert_eq!(item.title.as_deref(), Some("Display"));
+    }
+
+    #[test]
+    fn imported_session_title_prefers_display_title_before_native_and_meta() {
+        let meta = ProviderSessionSummary {
+            session_id: "session-1".to_string(),
+            title: Some("Meta".to_string()),
+            project_dir: Some("/tmp/project".to_string()),
+            last_active_at: None,
+            source_path: Some("/tmp/session.jsonl".to_string()),
+        };
+        let mut imported = ImportedSession {
+            session: CanonicalSession {
+                schema: CanonicalSchema::default(),
+                identity: SessionIdentity {
+                    canonical_id: "canonical-1".to_string(),
+                    source_title: Some("Native".to_string()),
+                },
+                provenance: SessionProvenance {
+                    imported_at: Utc::now(),
+                    imported_by: None,
+                    primary_source: ProviderSessionRef {
+                        provider_id: "codex".to_string(),
+                        session_id: "session-1".to_string(),
+                        source_path: None,
+                    },
+                    aliases: Vec::new(),
+                },
+                context: SessionContext {
+                    workspace_dir: None,
+                    created_at: None,
+                    last_active_at: None,
+                    tags: Vec::new(),
+                },
+                events: Vec::new(),
+                artifacts: Vec::new(),
+                extensions: BTreeMap::new(),
+            },
+            report: MappingReport::new("codex", MappingDirection::Import),
+        };
+
+        apply_imported_session_title(&mut imported, &meta, Some("Display".to_string()));
+
+        assert_eq!(
+            imported.session.identity.source_title.as_deref(),
+            Some("Display")
+        );
     }
 
     #[test]

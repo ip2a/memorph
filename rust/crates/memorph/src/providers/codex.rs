@@ -11,12 +11,13 @@ use crate::provider::{
     canonical_block_text, canonical_event_text, canonical_export_result, canonical_session_title,
     compression_retrieval_hint, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
+use crate::storage::session_state;
 use crate::utils;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::Connection;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -170,8 +171,9 @@ impl Provider for CodexProvider {
             return Ok(Vec::new());
         }
 
-        // Build a lookup from id -> cwd from SQLite for fast access
-        let cwd_lookup = build_cwd_lookup().unwrap_or_default();
+        // Build a lookup from SQLite for fast access
+        let sqlite_lookup =
+            build_sqlite_thread_metadata_lookup(&get_codex_dir()).unwrap_or_default();
 
         let file = File::open(&index_path).with_context(|| {
             format!(
@@ -210,14 +212,20 @@ impl Provider for CodexProvider {
                 // Find the actual file path for this session
                 let source_path = find_session_file(&id);
                 // Get cwd from SQLite lookup, or fall back to scanning file
-                let project_dir = cwd_lookup
-                    .get(&id)
-                    .cloned()
+                let sqlite_meta = sqlite_lookup.get(&id);
+                let project_dir = sqlite_meta
+                    .and_then(|meta| clean_non_empty(meta.cwd.as_deref()))
+                    .map(str::to_string)
                     .or_else(|| extract_cwd_from_session_file(&id));
+                let title = select_codex_display_title(
+                    thread_name.as_deref(),
+                    sqlite_meta.and_then(|meta| meta.title.as_deref()),
+                    &id,
+                );
 
                 sessions.push(ProviderSessionSummary {
                     session_id: id.clone(),
-                    title: thread_name,
+                    title,
                     project_dir,
                     last_active_at: updated_at,
                     source_path: source_path.map(|p| p.to_string_lossy().to_string()),
@@ -227,7 +235,6 @@ impl Provider for CodexProvider {
 
         Ok(sessions)
     }
-
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         import_canonical_session(Path::new(source_path))
     }
@@ -421,6 +428,8 @@ fn sync_workspace_sessions_in_codex_home(
 
     let index_path = codex_dir.join("session_index.jsonl");
     let mut indexed_session_ids = load_session_index_ids(&index_path)?;
+    let sqlite_lookup = build_sqlite_thread_metadata_lookup(codex_dir)?;
+    let session_states = session_state::load_state_store().unwrap_or_default();
     let mut candidates = Vec::new();
 
     for dir_name in CODEX_SYNC_SESSION_DIRS {
@@ -518,12 +527,18 @@ fn sync_workspace_sessions_in_codex_home(
 
             let mut added_to_index = false;
             if !indexed_session_ids.contains(&session.session_id) {
+                let index_title = resolve_codex_reindex_title(
+                    &session,
+                    sqlite_lookup.get(&session.session_id),
+                    &session_states,
+                );
                 append_session_index_entry(
                     &index_path,
                     &session.session_id,
-                    session.title.as_deref().unwrap_or(&session.session_id),
+                    &index_title,
                     session.updated_at.as_deref(),
                 )?;
+                session.title = Some(index_title);
                 indexed_session_ids.insert(session.session_id.clone());
                 added_to_index = true;
                 report.reindexed_session_count += 1;
@@ -1753,25 +1768,97 @@ fn provider_payload_event(
     }
 }
 
-fn build_cwd_lookup() -> Result<std::collections::HashMap<String, String>> {
-    let sqlite_path = get_codex_dir().join("state_5.sqlite");
+#[derive(Debug, Clone, Default)]
+struct CodexSqliteThreadMetadata {
+    cwd: Option<String>,
+    title: Option<String>,
+}
+
+fn build_sqlite_thread_metadata_lookup(
+    codex_dir: &Path,
+) -> Result<HashMap<String, CodexSqliteThreadMetadata>> {
+    let sqlite_path = codex_dir.join(CODEX_SQLITE_FILE_BASENAME);
     if !sqlite_path.exists() {
-        return Ok(std::collections::HashMap::new());
+        return Ok(HashMap::new());
     }
     let conn = rusqlite::Connection::open(&sqlite_path)?;
-    let mut stmt = conn.prepare("SELECT id, cwd FROM threads")?;
+    if !has_table(&conn, "threads")? {
+        return Ok(HashMap::new());
+    }
+
+    let has_cwd = has_columns(&conn, "threads", &["cwd"])?;
+    let has_title = has_columns(&conn, "threads", &["title"])?;
+    if !has_cwd && !has_title {
+        return Ok(HashMap::new());
+    }
+
+    let mut map = HashMap::new();
+    let query = match (has_cwd, has_title) {
+        (true, true) => "SELECT id, cwd, title FROM threads",
+        (true, false) => "SELECT id, cwd, NULL AS title FROM threads",
+        (false, true) => "SELECT id, NULL AS cwd, title FROM threads",
+        (false, false) => unreachable!(),
+    };
+    let mut stmt = conn.prepare(query)?;
     let rows = stmt.query_map([], |row| {
-        let id: String = row.get(0)?;
-        let cwd: String = row.get(1)?;
-        Ok((id, cwd))
+        Ok((
+            row.get::<_, String>(0)?,
+            CodexSqliteThreadMetadata {
+                cwd: row.get::<_, Option<String>>(1)?,
+                title: row.get::<_, Option<String>>(2)?,
+            },
+        ))
     })?;
-    let mut map = std::collections::HashMap::new();
     for row in rows {
-        if let Ok((id, cwd)) = row {
-            map.insert(id, cwd);
+        if let Ok((id, metadata)) = row {
+            map.insert(id, metadata);
         }
     }
     Ok(map)
+}
+
+fn clean_non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn select_codex_display_title(
+    index_title: Option<&str>,
+    sqlite_title: Option<&str>,
+    session_id: &str,
+) -> Option<String> {
+    clean_non_empty(index_title)
+        .filter(|title| *title != session_id)
+        .or_else(|| clean_non_empty(sqlite_title).filter(|title| *title != session_id))
+        .or_else(|| clean_non_empty(index_title))
+        .map(str::to_string)
+}
+
+fn resolve_codex_reindex_title(
+    session: &CodexRolloutSummary,
+    sqlite_metadata: Option<&CodexSqliteThreadMetadata>,
+    session_states: &session_state::SessionStateStore,
+) -> String {
+    session_state::resolve_session_state(
+        session_states,
+        PROVIDER_ID,
+        &session.session_id,
+        session.workspace_dir.as_deref(),
+    )
+    .display_title
+    .as_deref()
+    .and_then(|title| clean_non_empty(Some(title)))
+    .filter(|title| *title != session.session_id)
+    .or_else(|| {
+        sqlite_metadata
+            .and_then(|metadata| clean_non_empty(metadata.title.as_deref()))
+            .filter(|title| *title != session.session_id)
+    })
+    .or_else(|| {
+        clean_non_empty(session.title.as_deref()).filter(|title| *title != session.session_id)
+    })
+    .or_else(|| clean_non_empty(session.title.as_deref()))
+    .unwrap_or(&session.session_id)
+    .to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -3814,6 +3901,94 @@ mod tests {
             .collect::<Vec<_>>();
         let canonical_workspace = workspace.canonicalize().unwrap();
         assert_eq!(saved, vec![canonical_workspace.to_string_lossy().as_ref()]);
+    }
+
+    #[test]
+    fn sync_workspace_sessions_reindexes_with_sqlite_title_when_rollout_has_none() {
+        let temp = tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        let workspace = temp.path().join("repo");
+        let sessions_dir = codex_dir.join("sessions/2026/05/27");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            "model_provider = \"custom-provider\"\n",
+        )
+        .unwrap();
+
+        let session_path =
+            sessions_dir.join("rollout-2026-05-27T12-00-00-sqlite-title-session.jsonl");
+        std::fs::write(
+            &session_path,
+            [
+                serde_json::to_string(&json!({
+                    "timestamp": "2026-05-27T12:00:00Z",
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "sqlite-title-session",
+                        "timestamp": "2026-05-27T12:00:00Z",
+                        "cwd": workspace.to_string_lossy(),
+                        "model_provider": "openai"
+                    }
+                }))
+                .unwrap(),
+                serde_json::to_string(&json!({
+                    "timestamp": "2026-05-27T12:05:00Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "user_message",
+                        "message": "hello"
+                    }
+                }))
+                .unwrap(),
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+
+        let sqlite_path = codex_dir.join(CODEX_SQLITE_FILE_BASENAME);
+        let conn = Connection::open(&sqlite_path).unwrap();
+        conn.execute(
+            "CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                model_provider TEXT,
+                cwd TEXT,
+                has_user_event INTEGER,
+                title TEXT
+            )",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (id, model_provider, cwd, has_user_event, title) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![
+                "sqlite-title-session",
+                "openai",
+                workspace.to_string_lossy().to_string(),
+                0,
+                "SQLite title"
+            ],
+        )
+        .unwrap();
+
+        let report = sync_workspace_sessions_in_codex_home(
+            &codex_dir,
+            Some(workspace.to_str().unwrap()),
+            DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT,
+        )
+        .unwrap();
+
+        assert_eq!(report.reindexed_session_count, 1);
+        assert_eq!(
+            report.touched_sessions[0].title.as_deref(),
+            Some("SQLite title")
+        );
+        let index = std::fs::read_to_string(codex_dir.join("session_index.jsonl")).unwrap();
+        assert!(index.contains("\"id\":\"sqlite-title-session\""));
+        assert!(index.contains("\"thread_name\":\"SQLite title\""));
+        assert!(!index.contains("\"thread_name\":\"sqlite-title-session\""));
     }
 
     #[test]

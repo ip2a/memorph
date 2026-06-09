@@ -14,6 +14,8 @@ pub struct ManagerFilter {
     pub larger_than_bytes: Option<u64>,
     pub smaller_than_bytes: Option<u64>,
     pub workspace: Option<String>,
+    pub sort: Option<String>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,7 +77,6 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
     let smaller_than_bytes = filter.smaller_than_bytes;
 
     let mut items = Vec::new();
-    let mut total_size_bytes: u64 = 0;
 
     for pid in &provider_ids {
         let provider = match providers::find_provider(pid) {
@@ -128,7 +129,6 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
                 }
             }
 
-            total_size_bytes += size_bytes;
             items.push(ManagerItem {
                 provider_id: pid.clone(),
                 provider_name: provider.name().to_string(),
@@ -142,11 +142,21 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
         }
     }
 
-    // Sort by size descending (largest first)
-    items.sort_by_key(|item| std::cmp::Reverse(item.size_bytes));
+    if filter.sort.as_deref() == Some("recent") {
+        items.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
+    } else {
+        items.sort_by_key(|item| std::cmp::Reverse(item.size_bytes));
+    }
+
+    if let Some(limit) = filter.limit {
+        items.truncate(limit);
+    }
+
+    let total_count = items.len();
+    let total_size_bytes = items.iter().map(|item| item.size_bytes).sum();
 
     Ok(ManagerPreviewResult {
-        total_count: items.len(),
+        total_count,
         total_size_bytes,
         items,
     })

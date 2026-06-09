@@ -228,12 +228,20 @@ struct SettingsPayload {
 }
 
 #[derive(Debug, Serialize)]
+struct ConfigFilePayload {
+    path: String,
+    format: &'static str,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
 struct MetaPayload {
     version: &'static str,
     providers: Vec<ProviderInfo>,
     selected_workspace: Option<String>,
     workspaces: Vec<config::WorkspaceEntry>,
     settings: SettingsPayload,
+    config_file: ConfigFilePayload,
 }
 
 #[derive(Debug, Serialize)]
@@ -601,23 +609,40 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
     })
 }
 
+fn config_file_payload() -> anyhow::Result<ConfigFilePayload> {
+    let path = config::config_path()?;
+    let content = if path.exists() {
+        std::fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read config file: {}", path.display()))?
+    } else {
+        serde_json::to_string_pretty(&config::MemorphConfig::default())?
+    };
+    Ok(ConfigFilePayload {
+        path: path.display().to_string(),
+        format: "json",
+        content,
+    })
+}
+
 async fn get_meta() -> impl IntoResponse {
     match (
         settings_payload(),
         config::selected_workspace(),
         config::known_workspaces(),
+        config_file_payload(),
     ) {
-        (Ok(settings), Ok(selected_workspace), Ok(workspaces)) => {
+        (Ok(settings), Ok(selected_workspace), Ok(workspaces), Ok(config_file)) => {
             ApiResponse::success(MetaPayload {
                 version: env!("CARGO_PKG_VERSION"),
                 providers: provider_info_list(),
                 selected_workspace,
                 workspaces,
                 settings,
+                config_file,
             })
             .into_response()
         }
-        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+        (Err(e), _, _, _) | (_, Err(e), _, _) | (_, _, Err(e), _) | (_, _, _, Err(e)) => {
             api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
         }
     }
@@ -1378,6 +1403,8 @@ struct ManagerPreviewBody {
     larger_than_bytes: Option<u64>,
     smaller_than_bytes: Option<u64>,
     workspace: Option<String>,
+    sort: Option<String>,
+    limit: Option<usize>,
 }
 
 async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
@@ -1389,6 +1416,8 @@ async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoRespo
         larger_than_bytes: body.larger_than_bytes,
         smaller_than_bytes: body.smaller_than_bytes,
         workspace: body.workspace,
+        sort: body.sort,
+        limit: body.limit,
     };
     match crate::core::manager::preview(&filter) {
         Ok(result) => ApiResponse::success(result).into_response(),

@@ -1,7 +1,7 @@
 {
   "$schema": "../.schema/tauri-config-schema.json",
   "productName": "memorph",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "identifier": "com.memorph.desktop",
   "app": {
     "windows": [],
