@@ -13,7 +13,7 @@ use crate::provider::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
@@ -72,6 +72,63 @@ impl Provider for OpenCodeProvider {
         }
 
         Ok(sessions)
+    }
+
+    fn get_session_meta(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderSessionSummary>> {
+        // 1. Try SQLite DB first
+        let db_path = get_db_path();
+        if db_path.exists() {
+            let conn = Connection::open(&db_path)?;
+            let meta = conn
+                .query_row(
+                    "SELECT id, project_id, directory, title, time_created, time_updated FROM session WHERE id = ?1 AND time_archived IS NULL",
+                    [session_id],
+                    |row| {
+                        let session_id: String = row.get(0)?;
+                        let _project_id: String = row.get(1)?;
+                        let directory: String = row.get(2)?;
+                        let title: String = row.get(3)?;
+                        let _created: i64 = row.get(4)?;
+                        let updated: i64 = row.get(5)?;
+                        Ok(ProviderSessionSummary {
+                            session_id: session_id.clone(),
+                            title: Some(title),
+                            project_dir: Some(directory),
+                            last_active_at: Some(updated),
+                            source_path: Some(session_id),
+                        })
+                    },
+                )
+                .optional()?;
+            if meta.is_some() {
+                return Ok(meta);
+            }
+        }
+
+        // 2. Fallback to filesystem scan
+        let storage_dir = get_opencode_dir().join("storage").join("session");
+        if storage_dir.exists() {
+            for entry in WalkDir::new(&storage_dir)
+                .max_depth(3)
+                .into_iter()
+                .filter_map(|e| e.ok())
+            {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                if let Some(meta) = parse_session_file(path) {
+                    if meta.session_id == session_id {
+                        return Ok(Some(meta));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
@@ -245,6 +302,10 @@ impl Provider for OpenCodeProvider {
             }
         }
         sizes
+    }
+
+    fn data_source_paths(&self) -> Vec<PathBuf> {
+        vec![get_db_path(), get_opencode_dir()]
     }
 }
 

@@ -221,20 +221,12 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Verify crates.io install
+      - name: Verify crates.io library dependency
         shell: bash
         run: |
-          cargo install memorph --version ${{ inputs.version }}
-          INSTALLED_VERSION=$(memorph --version)
-          echo "Installed version: ${INSTALLED_VERSION}"
-          if [[ "${INSTALLED_VERSION}" != *"${{ inputs.version }}"* ]]; then
-            echo "[error] Version mismatch: expected ${{ inputs.version }}, got ${INSTALLED_VERSION}"
-            exit 1
-          fi
-          ALIAS_VERSION=$(memo --version)
-          echo "Installed alias version: ${ALIAS_VERSION}"
-          if [[ "${ALIAS_VERSION}" != *"${{ inputs.version }}"* ]]; then
-            echo "[error] Alias version mismatch: expected ${{ inputs.version }}, got ${ALIAS_VERSION}"
-            exit 1
-          fi
-          echo "[ok] crates.io install verification passed"
+          tmpdir="$(mktemp -d)"
+          cd "${tmpdir}"
+          cargo init --lib --name memorph_crates_verify
+          cargo add memorph@${{ inputs.version }}
+          cargo check
+          echo "[ok] crates.io library dependency verification passed"

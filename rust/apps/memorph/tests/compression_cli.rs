@@ -1,4 +1,4 @@
-use memorph_lib::config;
+use memorph::config;
 use serde_json::json;
 use std::process::Command;
 

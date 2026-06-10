@@ -100,3 +100,7 @@
 !/python/packages/memorph/src/
 !/python/packages/memorph/src/memorph/
 !/python/packages/memorph/src/memorph/*.py
+
+# Research notes (not part of the project source).
+/headroom的调研报告.md
+/memorph基于headroom完善压缩机制。md

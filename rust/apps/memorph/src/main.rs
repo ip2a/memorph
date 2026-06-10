@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use memorph_lib::{
+use memorph::{
     cli::{
         Cli, Commands, CompressionCommands, LegacyCodexToolCommands, LegacyToolCommands,
         ShareCommands,
@@ -23,7 +23,7 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.version {
-        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        println!("memorph {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
@@ -760,7 +760,6 @@ enum InstallSource {
     PythonPip,
     PythonPipx,
     PythonUvTool,
-    Cargo,
 }
 
 impl InstallSource {
@@ -770,7 +769,6 @@ impl InstallSource {
             InstallSource::PythonPip => "PyPI/pip",
             InstallSource::PythonPipx => "PyPI/pipx",
             InstallSource::PythonUvTool => "PyPI/uv tool",
-            InstallSource::Cargo => "Cargo",
         }
     }
 }
@@ -806,8 +804,7 @@ fn current_update_plan() -> Result<UpdatePlan> {
          - npm install -g memorph@latest\n\
          - python -m pip install --upgrade memorph\n\
          - pipx upgrade memorph\n\
-         - uv tool upgrade memorph\n\
-         - cargo install memorph --force"
+         - uv tool upgrade memorph"
     })?;
 
     Ok(update_plan_for_source(
@@ -852,15 +849,6 @@ fn update_plan_for_source(source: InstallSource, python_executable: Option<Strin
                 "memorph".to_string(),
             ],
         },
-        InstallSource::Cargo => UpdatePlan {
-            source,
-            program: "cargo".to_string(),
-            args: vec![
-                "install".to_string(),
-                "memorph".to_string(),
-                "--force".to_string(),
-            ],
-        },
     }
 }
 
@@ -884,7 +872,6 @@ fn detect_install_source(
             }
             "pipx" => return Some(InstallSource::PythonPipx),
             "uv" | "uv-tool" | "uv_tool" => return Some(InstallSource::PythonUvTool),
-            "cargo" | "crates" | "crates.io" => return Some(InstallSource::Cargo),
             _ => {}
         }
     }
@@ -895,9 +882,6 @@ fn detect_install_source(
     }
     if path.contains("/site-packages/") && path.contains("memorph_bin") {
         return Some(InstallSource::PythonPip);
-    }
-    if path.contains("/.cargo/bin/") {
-        return Some(InstallSource::Cargo);
     }
     None
 }
@@ -957,6 +941,8 @@ fn print_session_list(all: bool, providers: Vec<String>) -> Result<()> {
         providers,
         cwd: Some(cwd_str.clone()),
         include_message_counts: true,
+        limit: None,
+        offset: None,
     })?;
     let total_shown: usize = groups.iter().map(|group| group.sessions.len()).sum();
 
@@ -1039,10 +1025,7 @@ mod tests {
             ),
             Some(InstallSource::PythonPipx)
         );
-        assert_eq!(
-            detect_install_source(Some("cargo"), None, None, None),
-            Some(InstallSource::Cargo)
-        );
+        assert_eq!(detect_install_source(Some("cargo"), None, None, None), None);
     }
 
     #[test]
@@ -1052,8 +1035,6 @@ mod tests {
         let pypi_path = PathBuf::from(
             "/venv/lib/python3.12/site-packages/memorph_bin_darwin_arm64/bin/memorph",
         );
-        let cargo_path = PathBuf::from("/Users/me/.cargo/bin/memo");
-
         assert_eq!(
             detect_install_source(None, Some(&npm_path), None, None),
             Some(InstallSource::Npm)
@@ -1062,10 +1043,8 @@ mod tests {
             detect_install_source(None, Some(&pypi_path), None, None),
             Some(InstallSource::PythonPip)
         );
-        assert_eq!(
-            detect_install_source(None, Some(&cargo_path), None, None),
-            Some(InstallSource::Cargo)
-        );
+        let cargo_path = PathBuf::from("/Users/me/.cargo/bin/memo");
+        assert_eq!(detect_install_source(None, Some(&cargo_path), None, None), None);
     }
 
     #[test]
@@ -1098,10 +1077,6 @@ mod tests {
                     "memorph".to_string()
                 ],
             }
-        );
-        assert_eq!(
-            update_plan_for_source(InstallSource::Cargo, None).display(),
-            "cargo install memorph --force"
         );
         assert_eq!(
             update_plan_for_source(InstallSource::PythonPipx, None).display(),

@@ -235,6 +235,74 @@ impl Provider for CodexProvider {
 
         Ok(sessions)
     }
+
+    fn get_session_meta(
+&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
+        let index_path = get_codex_dir().join("session_index.jsonl");
+        if !index_path.exists() {
+            return Ok(None);
+        }
+
+        let sqlite_lookup =
+            build_sqlite_thread_metadata_lookup(&get_codex_dir()).unwrap_or_default();
+
+        let file = File::open(&index_path).with_context(|| {
+            format!(
+                "Failed to open Codex session index: {}",
+                index_path.display()
+            )
+        })?;
+        let reader = BufReader::new(file);
+
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let id = value.get("id").and_then(|v| v.as_str());
+            if id != Some(session_id) {
+                continue;
+            }
+
+            let thread_name = value
+                .get("thread_name")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let updated_at = value
+                .get("updated_at")
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp_millis());
+
+            let source_path = find_session_file(session_id);
+            let sqlite_meta = sqlite_lookup.get(session_id);
+            let project_dir = sqlite_meta
+                .and_then(|meta| clean_non_empty(meta.cwd.as_deref()))
+                .map(str::to_string)
+                .or_else(|| extract_cwd_from_session_file(session_id));
+            let title = select_codex_display_title(
+                thread_name.as_deref(),
+                sqlite_meta.and_then(|meta| meta.title.as_deref()),
+                session_id,
+            );
+
+            return Ok(Some(ProviderSessionSummary {
+                session_id: session_id.to_string(),
+                title,
+                project_dir,
+                last_active_at: updated_at,
+                source_path: source_path.map(|p| p.to_string_lossy().to_string()),
+            }));
+        }
+
+        Ok(None)
+    }
+
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         import_canonical_session(Path::new(source_path))
     }
@@ -372,6 +440,10 @@ impl Provider for CodexProvider {
             }
         }
         Ok(0)
+    }
+
+    fn data_source_paths(&self) -> Vec<PathBuf> {
+        vec![get_codex_dir()]
     }
 }
 

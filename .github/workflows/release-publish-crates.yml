@@ -60,30 +60,22 @@ jobs:
         id: auth
         uses: rust-lang/crates-io-auth-action@v1
 
-      - name: Publish library to crates.io
+      - name: Publish crate to crates.io
         run: cargo publish --registry crates-io --manifest-path rust/crates/memorph/Cargo.toml --token "${{ steps.auth.outputs.token }}"
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
-      - name: Wait for library crate on crates.io
+      - name: Wait for crate on crates.io
         shell: bash
         run: |
           version="${{ steps.cargo_meta.outputs.version }}"
           for attempt in $(seq 1 20); do
-            if curl -fsSL "https://crates.io/api/v1/crates/memorph-lib/${version}" >/dev/null; then
-              echo "[ok] memorph-lib ${version} is visible on crates.io"
+            if curl -fsSL "https://crates.io/api/v1/crates/memorph/${version}" >/dev/null; then
+              echo "[ok] memorph ${version} is visible on crates.io"
               exit 0
             fi
-            echo "[info] Waiting for memorph-lib ${version} to appear on crates.io (attempt ${attempt}/20)"
+            echo "[info] Waiting for memorph ${version} to appear on crates.io (attempt ${attempt}/20)"
             sleep 15
           done
-          echo "[error] memorph-lib ${version} did not appear on crates.io in time"
+          echo "[error] memorph ${version} did not appear on crates.io in time"
           exit 1
-
-      - name: Dry-run publish binary
-        run: cargo publish --dry-run --registry crates-io --manifest-path rust/apps/memorph/Cargo.toml
-
-      - name: Publish binary to crates.io
-        run: cargo publish --registry crates-io --manifest-path rust/apps/memorph/Cargo.toml --token "${{ steps.auth.outputs.token }}"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

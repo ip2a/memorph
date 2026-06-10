@@ -107,8 +107,9 @@ pub fn rename_session(
         .with_context(|| format!("Unknown provider: {}", provider_id))?;
     let capabilities = prov.capabilities();
     if capabilities.scan {
-        let exists = prov
-            .scan_sessions()?
+        let cache = crate::cache::global_cache();
+        let exists = cache
+            .get_or_refresh(provider_id, || prov.scan_sessions())?
             .into_iter()
             .any(|session| session.session_id == session_id);
         if !exists {

@@ -471,6 +471,9 @@ async function handleAction(action, data, trigger = null) {
     case "open-repaired-sessions":
       openRepairedSessionsModal();
       break;
+    case "open-compression":
+      navigate("/compression");
+      break;
     case "open-compression-restore":
       openCompressionRestoreModal(data.archiveRef || "");
       break;
@@ -1201,11 +1204,16 @@ function openSettingsModal(draft = null) {
   const items = [...settings.agent_order]
     .map((providerId, index) => {
       const info = state.meta.providers.find((item) => item.id === providerId);
+      const agentEntry = state.agents.providers.find((item) => item.provider_id === providerId);
       const primary = settings.primary_agents.includes(providerId);
+      const installed = agentEntry?.installed ?? false;
       return `
         <div class="settings-provider-row">
           <div class="settings-copy">
-            <strong>${escapeHtml(info?.name || providerId)}</strong>
+            <div class="settings-provider-name">
+              <strong>${escapeHtml(info?.name || providerId)}</strong>
+              <span class="settings-provider-status ${installed ? "is-installed" : "is-missing"}">${installed ? t("installed") : t("notDetected")}</span>
+            </div>
             <span>${escapeHtml(providerId)}</span>
             <input type="hidden" name="agent_order" value="${escapeAttr(providerId)}">
           </div>
@@ -2128,10 +2136,10 @@ function render() {
           ${renderTopbarContext()}
         </div>
         <div class="top-actions">
-          ${state.route.name === "home" ? "" : `<a class="button" href="/" data-nav="/">${t("openHome")}</a>`}
+          ${state.route.name === "home" ? "" : `<a class="button" href="/" data-nav="/">${state.route.name === "session" ? t("back") : t("openHome")}</a>`}
           <button type="button" data-action="open-workspace-switch">${t("switchWorkspace")}</button>
           ${state.route.name === "agents" ? "" : `<a class="button" href="/agents" data-nav="/agents">${t("agentManagement")}</a>`}
-          ${state.route.name === "manager" ? `<button type="button" data-action="open-import">${t("importSession")}</button>` : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
+          ${state.route.name === "manager" ? `<button type="button" data-action="open-compression">${t("compressSessions")}</button><a class="button" href="/shared" data-nav="/shared">${t("sharedGroups")}</a><button type="button" data-action="open-import">${t("importSession")}</button>` : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
           <button type="button" data-action="open-settings">${t("settings")}</button>
           <a class="icon-button" href="https://github.com/ip2a/memorph" target="_blank" rel="noopener noreferrer" data-action="open-external" data-url="https://github.com/ip2a/memorph" aria-label="GitHub repository" title="GitHub">
             ${githubIcon()}
@@ -2712,6 +2720,10 @@ function renderSessionDetail() {
 function renderSessionDetailView(detail, view) {
   const sharedRef = findSharedRef(state.route.provider, state.route.sessionId);
   const workspace = view.workspace_dir || state.home.workspace || "";
+  const sessionMeta = (state.home?.sessions || []).find(
+    (s) => s.provider_id === state.route.provider && s.session_id === state.route.sessionId
+  );
+  const sizeBytes = sessionMeta?.size_bytes;
   return `
     <section class="session-header">
       <div>
@@ -2720,13 +2732,13 @@ function renderSessionDetailView(detail, view) {
         <div class="meta-line">
           <span>id=<code>${escapeHtml(view.session_id || state.route.sessionId)}</code></span>
           <span>${t("messageCount")}=${view.message_count}</span>
+          ${view.last_active_at ? `<span>${t("lastActiveAt")}=${escapeHtml(formatDate(view.last_active_at))}</span>` : ""}
+          ${sizeBytes != null ? `<span>${t("size")}=${escapeHtml(formatBytes(sizeBytes))}</span>` : ""}
           ${workspace ? `<span>${t("workspace")}=<code>${escapeHtml(workspace)}</code></span>` : ""}
           ${sharedRef ? `<a class="shared-badge" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("activeShared")}</a>` : ""}
         </div>
       </div>
       <div class="session-actions">
-        <a class="button" href="/" data-nav="/">${t("back")}</a>
-        <a class="button" href="/shared" data-nav="/shared">${t("shared")}</a>
         <a class="button" href="/compression" data-nav="/compression">${t("compression")}</a>
         ${sharedRef ? `<a class="button" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("openShared")}</a>` : ""}
         <button type="button" data-action="open-share-create" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("share")}</button>
@@ -2745,16 +2757,46 @@ function renderSessionDetailView(detail, view) {
     </div>`;
 }
 
+function getBlockLabel(block) {
+  switch (block.type) {
+    case "text": return "";
+    case "thinking": return t("thinking");
+    case "tool_call": return `${t("toolUse")}: ${block.name || ""}`.replace(/:\s$/, "");
+    case "tool_result": return t("toolResult");
+    case "patch": return "Patch";
+    case "command": return "Command";
+    case "command_result": return "Command Result";
+    case "file": return t("file");
+    case "image": return t("image");
+    case "provider_payload": return block.kind || "payload";
+    case "unknown": return t("details");
+    default: return "";
+  }
+}
+
+function getBlockLabels(blocks) {
+  return (blocks || []).map(getBlockLabel).filter(Boolean);
+}
+
+function countLines(text) {
+  if (!text) return 0;
+  return text.split('\n').length;
+}
+
 function renderDetailEvent(event, index) {
   const blocks = (event.blocks || []).map(renderDetailBlock).join("");
   const role = (event.role || "unknown").replaceAll("_", " ");
   const kind = (event.kind || "unknown").replaceAll("_", " ");
+  const blockLabels = getBlockLabels(event.blocks);
+  const labelPart = blockLabels.length
+    ? ` · ${blockLabels.map((l) => `<span class="msg-block-label">${escapeHtml(l)}</span>`).join(" · ")}`
+    : "";
   return `
-    <article class="msg-item" data-message-index="${index}">
+    <article class="msg-item" data-message-index="${index}" data-role="${escapeAttr(event.role || 'unknown')}">
       <header class="msg-header">
         <span class="msg-header-main">
           <span class="msg-role">${escapeHtml(role)}</span>
-          <span>${escapeHtml(kind)}</span>
+          <span>${escapeHtml(kind)}</span>${labelPart}
         </span>
         <span class="msg-header-meta">
           <a href="#" class="text-action" data-action="copy-detail-message" data-message-index="${index}">${t("copy")}</a>
@@ -2769,26 +2811,30 @@ function renderDetailEvent(event, index) {
 
 function renderDetailBlock(block) {
   switch (block.type) {
-    case "text":
-      return `<div>${markdown(block.text || "")}</div>`;
-    case "thinking":
-      return `<details class="thinking-block"><summary class="block-label">${t("thinking")}</summary><p>${escapeHtml(block.text || "")}</p></details>`;
+    case "text": {
+      const lines = countLines(block.text || "");
+      const clamp = lines > 3 ? "is-clamped" : "";
+      return `<div class="content-block content-text ${clamp}">${markdown(block.text || "")}</div>`;
+    }
+    case "thinking": {
+      const lines = countLines(block.text || "");
+      const clamp = lines > 3 ? "is-clamped" : "";
+      return `<div class="content-block content-thinking ${clamp}"><p>${escapeHtml(block.text || "")}</p></div>`;
+    }
     case "tool_call":
-      return `<details class="tool-block"><summary class="block-label">${escapeHtml(
-        `${t("toolUse")}: ${block.name || ""}`.replace(/:\s$/, "")
-      )}</summary><pre><code>${escapeHtml(
+      return `<div class="content-block content-tool"><pre><code>${escapeHtml(
         JSON.stringify(
           { tool_call_id: block.tool_call_id, name: block.name, input: block.input },
           null,
           2
         )
-      )}</code></pre></details>`;
+      )}</code></pre></div>`;
     case "tool_result":
-      return `<details class="tool-block"><summary class="block-label">${t("toolResult")}</summary><pre><code>${escapeHtml(
+      return `<div class="content-block content-tool"><pre><code>${escapeHtml(
         block.content || ""
-      )}</code></pre></details>`;
+      )}</code></pre></div>`;
     case "patch":
-      return `<details class="tool-block"><summary class="block-label">Patch</summary><pre><code>${escapeHtml(
+      return `<div class="content-block content-patch"><pre><code>${escapeHtml(
         block.diff_text ||
           JSON.stringify(
             {
@@ -2799,9 +2845,9 @@ function renderDetailBlock(block) {
             null,
             2
           )
-      )}</code></pre></details>`;
+      )}</code></pre></div>`;
     case "command":
-      return `<details class="tool-block"><summary class="block-label">Command</summary><pre><code>${escapeHtml(
+      return `<div class="content-block content-command"><pre><code>${escapeHtml(
         JSON.stringify(
           {
             command: block.command,
@@ -2811,9 +2857,9 @@ function renderDetailBlock(block) {
           null,
           2
         )
-      )}</code></pre></details>`;
+      )}</code></pre></div>`;
     case "command_result":
-      return `<details class="tool-block"><summary class="block-label">Command Result</summary><pre><code>${escapeHtml(
+      return `<div class="content-block content-command-result"><pre><code>${escapeHtml(
         JSON.stringify(
           {
             command: block.command,
@@ -2824,27 +2870,23 @@ function renderDetailBlock(block) {
           null,
           2
         )
-      )}</code></pre></details>`;
+      )}</code></pre></div>`;
     case "file":
-      return `<div class="tool-block"><span class="block-label">${t("file")}</span><code>${escapeHtml(block.path || "")}</code>${
-        block.content ? `<pre><code>${escapeHtml(block.content)}</code></pre>` : ""
-      }</div>`;
+      return `<div class="content-block content-file"><code>${escapeHtml(block.path || "")}</code>${block.content ? `<pre><code>${escapeHtml(block.content)}</code></pre>` : ""}</div>`;
     case "image":
-      return `<div class="tool-block"><span class="block-label">${t("image")}</span><code>${escapeHtml(
+      return `<div class="content-block content-image"><code>${escapeHtml(
         block.path || block.mime_type || ""
       )}</code></div>`;
     case "provider_payload":
-      return `<details class="tool-block"><summary class="block-label">${escapeHtml(
-        block.kind || "payload"
-      )}</summary><pre><code>${escapeHtml(
+      return `<div class="content-block content-provider-payload"><pre><code>${escapeHtml(
         JSON.stringify(block.payload ?? {}, null, 2)
-      )}</code></pre></details>`;
+      )}</code></pre></div>`;
     case "unknown":
-      return `<details class="tool-block"><summary class="block-label">${t("details")}</summary><pre><code>${escapeHtml(
+      return `<div class="content-block content-unknown"><pre><code>${escapeHtml(
         JSON.stringify(block.raw ?? block, null, 2)
-      )}</code></pre></details>`;
+      )}</code></pre></div>`;
     default:
-      return `<pre>${escapeHtml(JSON.stringify(block, null, 2))}</pre>`;
+      return `<div class="content-block content-unknown"><pre>${escapeHtml(JSON.stringify(block, null, 2))}</pre></div>`;
   }
 }
 

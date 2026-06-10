@@ -88,7 +88,7 @@ def build_readiness_report() -> dict[str, object]:
                 "repository": repository.removeprefix("https://github.com/"),
                 "workflow": ".github/workflows/release-publish-crates.yml",
                 "environment": "crates",
-                "packages": [cargo_name, binary_name],
+                "packages": [cargo_name],
             },
         },
         "local_checks": [

@@ -13,7 +13,7 @@ name = "memorph-tauri"
 path = "src/main.rs"
 
 [dependencies]
-memorph-lib = { path = "../../rust/crates/memorph" }
+memorph = { path = "../../rust/crates/memorph" }
 anyhow = "1.0"
 axum = "0.8"
 dirs = "6.0"

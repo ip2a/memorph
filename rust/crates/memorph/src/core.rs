@@ -26,6 +26,8 @@ pub struct SessionListParams {
     pub providers: Vec<String>,
     pub cwd: Option<String>,
     pub include_message_counts: bool,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,62 +139,99 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
     let provider_ids = resolve_providers(&params.providers);
     let explicit_provider_filter = !params.providers.is_empty();
     let session_states = session_state::load_state_store().unwrap_or_default();
-    let mut groups = Vec::new();
 
-    for pid in &provider_ids {
-        let prov = match providers::find_provider(pid) {
-            Some(p) => p,
-            None => continue,
-        };
-        let capabilities = prov.capabilities();
-        if !capabilities.scan {
-            continue;
-        }
-        let Some(sessions) = scan_sessions_for_aggregate(prov.as_ref(), explicit_provider_filter)?
-        else {
-            continue;
-        };
-        let filtered_summaries: Vec<&ProviderSessionSummary> = if params.all {
-            sessions.iter().collect()
-        } else {
-            let cwd = params.cwd.as_deref().unwrap_or("");
-            sessions
-                .iter()
-                .filter(|s| prov.workspace_matches(s.project_dir.as_deref(), Some(cwd)))
-                .collect()
-        };
-        let session_ids: Vec<&str> = filtered_summaries
-            .iter()
-            .map(|s| s.session_id.as_str())
-            .collect();
-        let sizes = prov.session_sizes(&session_ids);
-        let mut filtered: Vec<SessionItem> = filtered_summaries
-            .iter()
-            .map(|s| {
-                enrich_session_item(
-                    prov.as_ref(),
-                    capabilities,
-                    pid.as_str(),
-                    s,
-                    &session_states,
-                    &sizes,
-                    params.include_message_counts,
-                )
-            })
-            .collect();
-        filtered.sort_by_key(|s| {
-            (
-                std::cmp::Reverse(s.pinned),
-                std::cmp::Reverse(s.last_active_at),
-            )
-        });
+    let mut indexed_results: Vec<(usize, Option<Result<Option<SessionGroup>>>)> =
+        Vec::with_capacity(provider_ids.len());
 
-        if !filtered.is_empty() {
-            groups.push(SessionGroup {
-                provider_id: pid.clone(),
-                provider_name: prov.name().to_string(),
-                sessions: filtered,
+    std::thread::scope(|s| {
+        let mut handles = Vec::with_capacity(provider_ids.len());
+        for (index, pid) in provider_ids.iter().enumerate() {
+            let session_states = &session_states;
+            let params = params;
+            let handle = s.spawn(move || {
+                let prov = match providers::find_provider(pid) {
+                    Some(p) => p,
+                    None => return Ok(None),
+                };
+                let capabilities = prov.capabilities();
+                if !capabilities.scan {
+                    return Ok(None);
+                }
+                let Some(sessions) =
+                    scan_sessions_for_aggregate(prov.as_ref(), explicit_provider_filter)?
+                else {
+                    return Ok(None);
+                };
+                let filtered_summaries: Vec<&ProviderSessionSummary> = if params.all {
+                    sessions.iter().collect()
+                } else {
+                    let cwd = params.cwd.as_deref().unwrap_or("");
+                    sessions
+                        .iter()
+                        .filter(|s| prov.workspace_matches(s.project_dir.as_deref(), Some(cwd)))
+                        .collect()
+                };
+                let session_ids: Vec<&str> = filtered_summaries
+                    .iter()
+                    .map(|s| s.session_id.as_str())
+                    .collect();
+                let sizes = prov.session_sizes(&session_ids);
+                let mut filtered: Vec<SessionItem> = filtered_summaries
+                    .iter()
+                    .map(|s| {
+                        enrich_session_item(
+                            prov.as_ref(),
+                            capabilities,
+                            pid.as_str(),
+                            s,
+                            session_states,
+                            &sizes,
+                            params.include_message_counts,
+                        )
+                    })
+                    .collect();
+                filtered.sort_by_key(|s| {
+                    (
+                        std::cmp::Reverse(s.pinned),
+                        std::cmp::Reverse(s.last_active_at),
+                    )
+                });
+
+                let offset = params.offset.unwrap_or(0);
+                if offset > 0 {
+                    filtered = filtered.into_iter().skip(offset).collect();
+                }
+                if let Some(limit) = params.limit {
+                    filtered.truncate(limit);
+                }
+
+                if filtered.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(SessionGroup {
+                        provider_id: pid.clone(),
+                        provider_name: prov.name().to_string(),
+                        sessions: filtered,
+                    }))
+                }
             });
+            handles.push((index, handle));
+        }
+
+        for (index, handle) in handles {
+            indexed_results.push((index, Some(handle.join().unwrap())));
+        }
+    });
+
+    indexed_results.sort_by_key(|(index, _)| *index);
+
+    let mut groups = Vec::new();
+    for (_, result) in indexed_results {
+        match result {
+            Some(Ok(Some(group))) => groups.push(group),
+            Some(Ok(None)) => {}
+            Some(Err(e)) if explicit_provider_filter => return Err(e),
+            _ => {}
         }
     }
 
@@ -203,7 +242,9 @@ fn scan_sessions_for_aggregate(
     provider: &dyn provider::Provider,
     explicit_provider_filter: bool,
 ) -> Result<Option<Vec<ProviderSessionSummary>>> {
-    match provider.scan_sessions() {
+    let cache = crate::cache::global_cache();
+    let provider_id = provider.id();
+    match cache.get_or_refresh(provider_id, || provider.scan_sessions()) {
         Ok(sessions) => Ok(Some(sessions)),
         Err(err) if explicit_provider_filter => Err(err),
         Err(_) => Ok(None),
@@ -261,9 +302,7 @@ pub fn get_canonical_session(provider_id: &str, session_id: &str) -> Result<Impo
     }
 
     let meta = prov
-        .scan_sessions()?
-        .into_iter()
-        .find(|session| session.session_id == session_id)
+        .get_session_meta(session_id)?
         .with_context(|| format!("Session not found: {}", session_id))?;
 
     load_canonical_session_from_meta(prov.as_ref(), provider_id, meta)
@@ -281,9 +320,7 @@ pub fn get_session_detail_view(provider_id: &str, session_id: &str) -> Result<Se
     }
 
     let meta = prov
-        .scan_sessions()?
-        .into_iter()
-        .find(|session| session.session_id == session_id)
+        .get_session_meta(session_id)?
         .with_context(|| format!("Session not found: {}", session_id))?;
     let source_path = meta.source_path.clone();
     let workspace_dir = meta.project_dir.clone();
@@ -1121,9 +1158,8 @@ pub fn update_session_local_state(
     let capabilities = prov.capabilities();
     if capabilities.scan {
         let exists = prov
-            .scan_sessions()?
-            .into_iter()
-            .any(|session| session.session_id == session_id);
+            .get_session_meta(session_id)?
+            .is_some();
         if !exists {
             anyhow::bail!("Session not found: {}", session_id);
         }
@@ -1178,15 +1214,15 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
             params.from
         );
     }
-    let sessions = source_prov.scan_sessions()?;
     let cwd_str = cwd.to_string_lossy().to_string();
 
     let session_meta = if let Some(id) = &params.session_id {
-        sessions
-            .into_iter()
-            .find(|s| s.session_id == *id)
+        source_prov
+            .get_session_meta(id)?
             .with_context(|| format!("Session not found: {}", id))?
     } else {
+        let cache = crate::cache::global_cache();
+        let sessions = cache.get_or_refresh(&params.from, || source_prov.scan_sessions())?;
         let mut candidates: Vec<_> = sessions
             .into_iter()
             .filter(|s| source_prov.workspace_matches(s.project_dir.as_deref(), Some(&cwd_str)))

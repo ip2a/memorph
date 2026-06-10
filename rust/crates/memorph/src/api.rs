@@ -313,17 +313,6 @@ struct PypiProjectInfo {
 }
 
 #[derive(Debug, Deserialize)]
-struct CratesIoPayload {
-    #[serde(rename = "crate")]
-    crate_info: CratesIoCrateInfo,
-}
-
-#[derive(Debug, Deserialize)]
-struct CratesIoCrateInfo {
-    max_version: String,
-}
-
-#[derive(Debug, Deserialize)]
 struct GitHubReleasePayload {
     tag_name: String,
 }
@@ -354,7 +343,6 @@ enum InstallSource {
     PythonPip,
     PythonPipx,
     PythonUvTool,
-    Cargo,
     DesktopApp,
 }
 
@@ -365,7 +353,6 @@ impl InstallSource {
             InstallSource::PythonPip => "pip",
             InstallSource::PythonPipx => "pipx",
             InstallSource::PythonUvTool => "uv-tool",
-            InstallSource::Cargo => "cargo",
             InstallSource::DesktopApp => "desktop-app",
         }
     }
@@ -376,7 +363,6 @@ impl InstallSource {
             InstallSource::PythonPip => "PyPI/pip",
             InstallSource::PythonPipx => "PyPI/pipx",
             InstallSource::PythonUvTool => "PyPI/uv tool",
-            InstallSource::Cargo => "Cargo",
             InstallSource::DesktopApp => "GitHub Desktop App",
         }
     }
@@ -387,7 +373,6 @@ impl InstallSource {
             InstallSource::PythonPip | InstallSource::PythonPipx | InstallSource::PythonUvTool => {
                 "https://pypi.org/project/memorph/"
             }
-            InstallSource::Cargo => "https://crates.io/crates/memorph",
             InstallSource::DesktopApp => "https://github.com/ip2a/memorph/releases/latest",
         }
     }
@@ -401,7 +386,6 @@ impl InstallSource {
             ),
             InstallSource::PythonPipx => "pipx upgrade memorph".to_string(),
             InstallSource::PythonUvTool => "uv tool upgrade memorph".to_string(),
-            InstallSource::Cargo => "cargo install memorph --force".to_string(),
             InstallSource::DesktopApp => {
                 "Open the latest GitHub release and download the updated DMG.".to_string()
             }
@@ -449,7 +433,6 @@ fn detect_install_source(
             }
             "pipx" => return Some(InstallSource::PythonPipx),
             "uv" | "uv-tool" | "uv_tool" => return Some(InstallSource::PythonUvTool),
-            "cargo" | "crates" | "crates.io" => return Some(InstallSource::Cargo),
             "desktop" | "desktop-app" | "dmg" | "tauri" => return Some(InstallSource::DesktopApp),
             _ => {}
         }
@@ -464,12 +447,6 @@ fn detect_install_source(
     }
     if path.contains("/site-packages/") && path.contains("memorph_bin") {
         return Some(InstallSource::PythonPip);
-    }
-    if path.contains("/.cargo/bin/") {
-        return Some(InstallSource::Cargo);
-    }
-    if path.contains("/target/debug/") || path.contains("/target/release/") {
-        return Some(InstallSource::Cargo);
     }
     None
 }
@@ -535,16 +512,6 @@ async fn fetch_latest_version(source: InstallSource) -> anyhow::Result<String> {
                 .await?;
             Ok(payload.info.version)
         }
-        InstallSource::Cargo => {
-            let payload = client
-                .get("https://crates.io/api/v1/crates/memorph")
-                .send()
-                .await?
-                .error_for_status()?
-                .json::<CratesIoPayload>()
-                .await?;
-            Ok(payload.crate_info.max_version)
-        }
         InstallSource::DesktopApp => {
             let payload = client
                 .get("https://api.github.com/repos/ip2a/memorph/releases/latest")
@@ -574,7 +541,7 @@ async fn update_check_payload() -> anyhow::Result<UpdateCheckPayload> {
              - python -m pip install --upgrade memorph\n\
              - pipx upgrade memorph\n\
              - uv tool upgrade memorph\n\
-             - cargo install memorph --force"
+             - download the latest desktop app from GitHub Releases"
         )
     })?;
 
@@ -800,6 +767,8 @@ struct ListQuery {
     dir: Option<String>,
     workspace: Option<String>,
     details: Option<bool>,
+    limit: Option<usize>,
+    offset: Option<usize>,
 }
 
 async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
@@ -822,6 +791,8 @@ async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
         providers,
         cwd,
         include_message_counts: q.details.unwrap_or(true),
+        limit: q.limit,
+        offset: q.offset,
     };
     match core::list_sessions(&params) {
         Ok(groups) => ApiResponse::success(groups).into_response(),

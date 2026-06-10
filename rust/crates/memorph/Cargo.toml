@@ -1,5 +1,5 @@
 [package]
-name = "memorph-lib"
+name = "memorph"
 version = "0.1.16"
 edition = "2021"
 authors = ["memorph contributors"]
@@ -43,6 +43,7 @@ walkdir = "2.5"
 rand = "0.8"
 base64 = "0.22"
 md5 = "0.7"
+notify = "7"
 flate2 = "1.0"
 
 [dev-dependencies]

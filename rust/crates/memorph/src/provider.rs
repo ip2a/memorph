@@ -156,6 +156,18 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// Return paths that should be watched for cache invalidation.
+    fn data_source_paths(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
+    /// Get metadata for a single session by ID.
+    /// Default implementation falls back to scan_sessions; providers should override.
+    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
+        self.scan_sessions()
+            .map(|sessions| sessions.into_iter().find(|s| s.session_id == session_id))
+    }
+
     /// Estimate the storage size (in bytes) of a single session.
     /// Default returns 0 (unknown).
     fn session_size(&self, session_id: &str) -> Result<u64> {

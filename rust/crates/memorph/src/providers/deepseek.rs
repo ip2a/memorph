@@ -77,6 +77,49 @@ impl Provider for DeepseekProvider {
         Ok(sessions)
     }
 
+    fn get_session_meta(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderSessionSummary>> {
+        let db_path = get_state_db_path();
+        if !db_path.exists() {
+            return Ok(None);
+        }
+        let conn = Connection::open(&db_path).with_context(|| {
+            format!("failed to open DeepSeek state db at {}", db_path.display())
+        })?;
+
+        let meta = conn
+            .query_row(
+                "SELECT id, preview, cwd, title, updated_at FROM threads WHERE id = ?1 AND archived = 0",
+                [session_id],
+                |row| {
+                    let id: String = row.get(0)?;
+                    let preview: String = row.get(1)?;
+                    let cwd: String = row.get(2)?;
+                    let title: Option<String> = row.get(3)?;
+                    let updated: i64 = row.get(4)?;
+                    Ok(ProviderSessionSummary {
+                        session_id: id.clone(),
+                        title: title.or_else(|| {
+                            let p = preview.trim();
+                            if p.is_empty() {
+                                None
+                            } else {
+                                Some(p.to_string())
+                            }
+                        }),
+                        project_dir: Some(cwd),
+                        last_active_at: Some(updated),
+                        source_path: Some(id),
+                    })
+                },
+            )
+            .optional()?;
+
+        Ok(meta)
+    }
+
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         let db_path = get_state_db_path();
         let conn = Connection::open(&db_path).with_context(|| {
@@ -158,6 +201,10 @@ impl Provider for DeepseekProvider {
                     .map(|size| ((*session_id).to_string(), size))
             })
             .collect()
+    }
+
+    fn data_source_paths(&self) -> Vec<PathBuf> {
+        get_state_db_path().parent().map(PathBuf::from).into_iter().collect()
     }
 }
 

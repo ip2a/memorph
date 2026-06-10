@@ -2011,6 +2011,8 @@ fn build_session_load_payload(
                 providers: base_provider_ids.clone(),
                 cwd: workspace,
                 include_message_counts: false,
+                limit: None,
+                offset: None,
             };
             let mut session_groups = core::list_sessions(&params)?;
             apply_session_group_preferences(&mut session_groups, &prefs);
@@ -2048,6 +2050,8 @@ fn build_session_load_payload(
                 providers: selected_providers.clone(),
                 cwd: workspace,
                 include_message_counts: false,
+                limit: None,
+                offset: None,
             };
             let mut session_groups = core::list_sessions(&params)?;
             apply_session_group_preferences(&mut session_groups, &prefs);

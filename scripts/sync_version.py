@@ -97,16 +97,16 @@ def update_memorph_app_dependency_version(path: Path, version: str, check: bool)
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     replaced = False
     for idx, line in enumerate(lines):
-        if not line.lstrip().startswith("memorph-lib = {"):
+        if not line.lstrip().startswith("memorph = {"):
             continue
         if not re.search(r'version = "[^"]+"', line):
-            raise RuntimeError(f"Missing memorph-lib dependency version in file: {path}")
+            raise RuntimeError(f"Missing memorph dependency version in file: {path}")
         updated = re.sub(r'version = "[^"]+"', f'version = "{version}"', line, count=1)
         lines[idx] = updated
         replaced = True
         break
     if not replaced:
-        raise RuntimeError(f"Missing memorph-lib dependency in file: {path}")
+        raise RuntimeError(f"Missing memorph dependency in file: {path}")
     write_or_check(path, "".join(lines), check)
 
 

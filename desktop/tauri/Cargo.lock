@@ -2411,7 +2411,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "memorph-lib"
+name = "memorph"
 version = "0.1.16"
 dependencies = [
  "anyhow",
@@ -2445,7 +2445,7 @@ dependencies = [
  "anyhow",
  "axum",
  "dirs",
- "memorph-lib",
+ "memorph",
  "rfd",
  "tauri",
  "tauri-build",

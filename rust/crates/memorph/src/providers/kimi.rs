@@ -110,6 +110,50 @@ impl Provider for KimiProvider {
         Ok(sessions)
     }
 
+    fn get_session_meta(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderSessionSummary>> {
+        let dir = match find_session_dir(session_id) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let state_path = dir.join("state.json");
+        let (title, archived) = if state_path.exists() {
+            match read_state_json(&state_path) {
+                Ok(s) => (s.custom_title, s.archived),
+                Err(_) => (None, false),
+            }
+        } else {
+            (None, false)
+        };
+
+        if archived {
+            return Ok(None);
+        }
+
+        let project_hash = dir
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let dir_map = load_work_dir_map().unwrap_or_default();
+        let project_dir = dir_map.get(&project_hash).cloned();
+
+        let wire_path = dir.join("wire.jsonl");
+        let last_active_at = wire_last_timestamp(&wire_path);
+
+        Ok(Some(ProviderSessionSummary {
+            session_id: session_id.to_string(),
+            title: title.filter(|t| !t.is_empty()),
+            project_dir,
+            last_active_at,
+            source_path: Some(wire_path.to_string_lossy().to_string()),
+        }))
+    }
+
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         import_canonical_session_from_wire(Path::new(source_path))
     }
@@ -175,6 +219,10 @@ impl Provider for KimiProvider {
             }
         }
         Ok(total)
+    }
+
+    fn data_source_paths(&self) -> Vec<PathBuf> {
+        vec![get_kimi_sessions_dir()]
     }
 }
 

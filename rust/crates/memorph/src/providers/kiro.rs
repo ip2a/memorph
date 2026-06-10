@@ -50,6 +50,57 @@ impl Provider for KiroProvider {
         scan_sessions_in(&global_dir)
     }
 
+    fn get_session_meta(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderSessionSummary>> {
+        let global_dir = kiro_global_storage_dir()?;
+        if !global_dir.exists() {
+            return Ok(None);
+        }
+
+        for list_path in session_list_paths(&global_dir)? {
+            let Some(session_dir) = list_path.parent() else {
+                continue;
+            };
+            for entry in read_session_list(&list_path)? {
+                if entry.get("hidden").and_then(|v| v.as_bool()) == Some(true) {
+                    continue;
+                }
+                let Some(id) = entry.get("sessionId").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                if id != session_id {
+                    continue;
+                }
+
+                let session_path = session_dir.join(format!("{}.json", session_id));
+                let title = entry
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_string);
+                let project_dir = entry
+                    .get("workspaceDirectory")
+                    .and_then(|v| v.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_string);
+                let last_active_at = path_mtime_ms(&session_path)
+                    .or_else(|| entry.get("dateCreated").and_then(parse_ms));
+
+                return Ok(Some(ProviderSessionSummary {
+                    session_id: session_id.to_string(),
+                    title,
+                    project_dir,
+                    last_active_at,
+                    source_path: Some(session_path.to_string_lossy().to_string()),
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         import_canonical_session_from_path(Path::new(source_path))
     }
@@ -90,6 +141,10 @@ impl Provider for KiroProvider {
             }
         }
         Ok(0)
+    }
+
+    fn data_source_paths(&self) -> Vec<PathBuf> {
+        kiro_global_storage_dir().ok().into_iter().collect()
     }
 }
 

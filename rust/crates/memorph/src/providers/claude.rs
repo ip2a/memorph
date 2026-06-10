@@ -72,6 +72,37 @@ impl Provider for ClaudeProvider {
         Ok(sessions)
     }
 
+    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
+        let root = get_claude_config_dir().join("projects");
+        if !root.exists() {
+            return Ok(None);
+        }
+
+        for entry in WalkDir::new(&root)
+            .max_depth(3)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("agent-"))
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if path.file_stem().and_then(|s| s.to_str()) == Some(session_id) {
+                return Ok(parse_session(path));
+            }
+        }
+
+        Ok(None)
+    }
+
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         import_canonical_session(Path::new(source_path))
     }
@@ -219,6 +250,10 @@ impl Provider for ClaudeProvider {
         } else {
             Ok(0)
         }
+    }
+
+    fn data_source_paths(&self) -> Vec<PathBuf> {
+        vec![get_claude_config_dir()]
     }
 }
 

@@ -84,7 +84,8 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
             None => continue,
         };
 
-        let sessions = match provider.scan_sessions() {
+        let cache = crate::cache::global_cache();
+        let sessions = match cache.get_or_refresh(pid, || provider.scan_sessions()) {
             Ok(s) => s,
             Err(_) => continue,
         };

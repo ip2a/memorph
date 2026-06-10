@@ -1,5 +1,5 @@
 use anyhow::Result;
-use memorph_lib::{api, server};
+use memorph::{api, server};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -66,7 +66,7 @@ fn logical_monitor_size(monitor: &tauri::Monitor) -> (f64, f64) {
     )
 }
 
-fn default_window_state(monitor: Option<&tauri::Monitor>) -> memorph_lib::config::DesktopWindowState {
+fn default_window_state(monitor: Option<&tauri::Monitor>) -> memorph::config::DesktopWindowState {
     let (screen_width, screen_height) = monitor.map(logical_monitor_size).unwrap_or((
         DEFAULT_BASELINE_SCREEN_WIDTH,
         DEFAULT_BASELINE_SCREEN_HEIGHT,
@@ -78,33 +78,33 @@ fn default_window_state(monitor: Option<&tauri::Monitor>) -> memorph_lib::config
     let width = screen_width * DEFAULT_SCREEN_WIDTH_RATIO;
     let height = screen_height * DEFAULT_SCREEN_HEIGHT_RATIO;
 
-    memorph_lib::config::DesktopWindowState {
+    memorph::config::DesktopWindowState {
         width: clamp_dimension(width, MIN_INNER_WIDTH, max_width).round() as u32,
         height: clamp_dimension(height, MIN_INNER_HEIGHT, max_height).round() as u32,
     }
 }
 
 fn clamp_window_state(
-    state: memorph_lib::config::DesktopWindowState,
+    state: memorph::config::DesktopWindowState,
     monitor: Option<&tauri::Monitor>,
-) -> memorph_lib::config::DesktopWindowState {
+) -> memorph::config::DesktopWindowState {
     if let Some(monitor) = monitor {
         let (max_width, max_height) = logical_work_area(monitor);
-        memorph_lib::config::DesktopWindowState {
+        memorph::config::DesktopWindowState {
             width: clamp_dimension(state.width as f64, MIN_INNER_WIDTH, max_width).round() as u32,
             height: clamp_dimension(state.height as f64, MIN_INNER_HEIGHT, max_height).round()
                 as u32,
         }
     } else {
-        memorph_lib::config::DesktopWindowState {
+        memorph::config::DesktopWindowState {
             width: state.width.max(MIN_INNER_WIDTH as u32),
             height: state.height.max(MIN_INNER_HEIGHT as u32),
         }
     }
 }
 
-fn initial_window_state(monitor: Option<&tauri::Monitor>) -> memorph_lib::config::DesktopWindowState {
-    let stored = memorph_lib::config::desktop_window_state().ok().flatten();
+fn initial_window_state(monitor: Option<&tauri::Monitor>) -> memorph::config::DesktopWindowState {
+    let stored = memorph::config::desktop_window_state().ok().flatten();
     match stored {
         Some(state) => clamp_window_state(state, monitor),
         None => default_window_state(monitor),
@@ -114,19 +114,19 @@ fn initial_window_state(monitor: Option<&tauri::Monitor>) -> memorph_lib::config
 fn logical_state_from_physical(
     size: PhysicalSize<u32>,
     scale_factor: f64,
-) -> memorph_lib::config::DesktopWindowState {
-    memorph_lib::config::DesktopWindowState {
+) -> memorph::config::DesktopWindowState {
+    memorph::config::DesktopWindowState {
         width: ((size.width as f64) / scale_factor).round().max(1.0) as u32,
         height: ((size.height as f64) / scale_factor).round().max(1.0) as u32,
     }
 }
 
-fn persist_window_state(window_state: &Arc<Mutex<memorph_lib::config::DesktopWindowState>>) {
+fn persist_window_state(window_state: &Arc<Mutex<memorph::config::DesktopWindowState>>) {
     let state = match window_state.lock() {
         Ok(state) => *state,
         Err(_) => return,
     };
-    if let Err(error) = memorph_lib::config::set_desktop_window_state(state) {
+    if let Err(error) = memorph::config::set_desktop_window_state(state) {
         eprintln!("Failed to persist memorph desktop window size: {error}");
     }
 }

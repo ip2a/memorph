@@ -3,10 +3,13 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 use crate::canonical::{LocalSessionState, SessionLocator, WorkspaceSessionState};
 
 use super::{atomic_write, session_overrides};
+
+static STATE_CACHE: RwLock<Option<SessionStateStore>> = RwLock::new(None);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionStateStore {
@@ -82,17 +85,37 @@ pub fn session_state_path() -> Result<PathBuf> {
 }
 
 pub fn load_state_store() -> Result<SessionStateStore> {
+    {
+        let cache = STATE_CACHE.read().unwrap();
+        if let Some(store) = cache.as_ref() {
+            return Ok(store.clone());
+        }
+    }
+
     let state_path = session_state_path()?;
     let legacy_path = session_overrides::overrides_path()?;
     let (store, migrated) = load_state_store_from_paths(&state_path, Some(&legacy_path))?;
     if migrated {
         save_state_store_to_path(&state_path, &store)?;
     }
+
+    let mut cache = STATE_CACHE.write().unwrap();
+    *cache = Some(store.clone());
+
     Ok(store)
 }
 
 pub fn save_state_store(store: &SessionStateStore) -> Result<()> {
-    save_state_store_to_path(&session_state_path()?, store)
+    save_state_store_to_path(&session_state_path()?, store)?;
+    let mut cache = STATE_CACHE.write().unwrap();
+    *cache = Some(store.clone());
+    Ok(())
+}
+
+/// Force-clear the in-process session-state cache.
+pub fn clear_state_cache() {
+    let mut cache = STATE_CACHE.write().unwrap();
+    *cache = None;
 }
 
 pub fn get_session_state<'a>(

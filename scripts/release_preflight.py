@@ -24,11 +24,29 @@ def read_required_string(data: dict[str, object], key: str) -> str:
 
 
 def validate_cargo_metadata(cargo_package: dict[str, object]) -> None:
-    read_required_string(cargo_package, "name")
+    package_name = read_required_string(cargo_package, "name")
+    if package_name != "memorph":
+        raise SystemExit(f"[error] Crates.io package name must be memorph, got {package_name}")
     read_required_string(cargo_package, "version")
     read_required_string(cargo_package, "repository")
     read_required_string(cargo_package, "readme")
     print("[ok] Cargo package metadata is complete for release")
+
+
+def validate_rust_app_package(version: str) -> None:
+    app_cargo_path = ROOT / "rust" / "apps" / "memorph" / "Cargo.toml"
+    app_cargo = tomllib.loads(app_cargo_path.read_text(encoding="utf-8"))
+    app_package = app_cargo["package"]
+    if app_package.get("name") != "memorph-bin":
+        raise SystemExit(f"[error] Binary package name mismatch in {app_cargo_path}")
+    if app_package.get("publish") is not False:
+        raise SystemExit(f"[error] Binary package must set publish = false in {app_cargo_path}")
+    if app_package.get("version") != version:
+        raise SystemExit(f"[error] Binary package version mismatch in {app_cargo_path}")
+    dependency = app_cargo["dependencies"].get("memorph")
+    if not isinstance(dependency, dict) or dependency.get("version") != version:
+        raise SystemExit(f"[error] Binary package memorph dependency version mismatch in {app_cargo_path}")
+    print("[ok] Rust binary package is private and depends on the release crate")
 
 
 def load_platform_config() -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, object]]]:
@@ -259,6 +277,7 @@ def main() -> None:
     version = read_required_string(cargo_package, "version")
     repository_url = read_required_string(cargo_package, "repository")
     validate_cargo_metadata(cargo_package)
+    validate_rust_app_package(version)
     meta, platforms, desktop_targets = load_platform_config()
     if meta.get("version_source") != "Cargo.toml":
         raise SystemExit("[error] platforms.toml meta.version_source must be Cargo.toml")

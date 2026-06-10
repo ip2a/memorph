@@ -9,7 +9,7 @@ use crate::provider::{
 };
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct CursorProvider;
 
@@ -74,5 +74,9 @@ impl Provider for CursorProvider {
 
     fn session_sizes(&self, session_ids: &[&str]) -> HashMap<String, u64> {
         db::composer_sizes(session_ids).unwrap_or_default()
+    }
+
+    fn data_source_paths(&self) -> Vec<PathBuf> {
+        db::global_state_db_path().ok().into_iter().collect()
     }
 }

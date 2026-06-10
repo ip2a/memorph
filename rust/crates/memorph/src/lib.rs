@@ -3,6 +3,7 @@
 pub mod agent_environment;
 pub mod agent_management;
 pub mod api;
+pub mod cache;
 pub mod canonical;
 pub mod cli;
 pub mod config;
