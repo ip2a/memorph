@@ -2199,7 +2199,7 @@ function renderPage() {
     case "session":
       return `<div class="page-scroll">${renderSessionDetail()}</div>`;
     case "shared-list":
-      return `<div class="page-scroll">${renderSharedList()}</div>`;
+      return `<div class="page-scroll manager-page-scroll">${renderSharedList()}</div>`;
     case "shared-detail":
       return `<div class="page-scroll">${renderSharedDetail()}</div>`;
     case "manager":
@@ -2810,83 +2810,82 @@ function renderDetailEvent(event, index) {
 }
 
 function renderDetailBlock(block) {
+  const clampIf = (text, limit = 3) => {
+    const lines = countLines(text || "");
+    return lines > limit ? "is-clamped" : "";
+  };
+
   switch (block.type) {
     case "text": {
-      const lines = countLines(block.text || "");
-      const clamp = lines > 3 ? "is-clamped" : "";
+      const clamp = clampIf(block.text, 3);
       return `<div class="content-block content-text ${clamp}">${markdown(block.text || "")}</div>`;
     }
     case "thinking": {
-      const lines = countLines(block.text || "");
-      const clamp = lines > 3 ? "is-clamped" : "";
+      const clamp = clampIf(block.text, 3);
       return `<div class="content-block content-thinking ${clamp}"><p>${escapeHtml(block.text || "")}</p></div>`;
     }
-    case "tool_call":
-      return `<div class="content-block content-tool"><pre><code>${escapeHtml(
-        JSON.stringify(
-          { tool_call_id: block.tool_call_id, name: block.name, input: block.input },
-          null,
-          2
-        )
-      )}</code></pre></div>`;
-    case "tool_result":
-      return `<div class="content-block content-tool"><pre><code>${escapeHtml(
-        block.content || ""
-      )}</code></pre></div>`;
-    case "patch":
-      return `<div class="content-block content-patch"><pre><code>${escapeHtml(
-        block.diff_text ||
-          JSON.stringify(
-            {
-              summary: block.summary,
-              files: block.files,
-              hash: block.hash,
-            },
-            null,
-            2
-          )
-      )}</code></pre></div>`;
-    case "command":
-      return `<div class="content-block content-command"><pre><code>${escapeHtml(
-        JSON.stringify(
-          {
-            command: block.command,
-            argv: block.argv,
-            cwd: block.cwd,
-          },
-          null,
-          2
-        )
-      )}</code></pre></div>`;
-    case "command_result":
-      return `<div class="content-block content-command-result"><pre><code>${escapeHtml(
-        JSON.stringify(
-          {
-            command: block.command,
-            exit_code: block.exit_code,
-            stdout: block.stdout,
-            stderr: block.stderr,
-          },
-          null,
-          2
-        )
-      )}</code></pre></div>`;
-    case "file":
-      return `<div class="content-block content-file"><code>${escapeHtml(block.path || "")}</code>${block.content ? `<pre><code>${escapeHtml(block.content)}</code></pre>` : ""}</div>`;
+    case "tool_call": {
+      const text = JSON.stringify(
+        { tool_call_id: block.tool_call_id, name: block.name, input: block.input },
+        null,
+        2
+      );
+      const clamp = clampIf(text);
+      return `<div class="content-block content-tool ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+    }
+    case "tool_result": {
+      const text = block.content || "";
+      const clamp = clampIf(text);
+      return `<div class="content-block content-tool ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+    }
+    case "patch": {
+      const text = block.diff_text || JSON.stringify(
+        { summary: block.summary, files: block.files, hash: block.hash },
+        null,
+        2
+      );
+      const clamp = clampIf(text);
+      return `<div class="content-block content-patch ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+    }
+    case "command": {
+      const text = JSON.stringify(
+        { command: block.command, argv: block.argv, cwd: block.cwd },
+        null,
+        2
+      );
+      const clamp = clampIf(text);
+      return `<div class="content-block content-command ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+    }
+    case "command_result": {
+      const text = JSON.stringify(
+        { command: block.command, exit_code: block.exit_code, stdout: block.stdout, stderr: block.stderr },
+        null,
+        2
+      );
+      const clamp = clampIf(text);
+      return `<div class="content-block content-command-result ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+    }
+    case "file": {
+      const clamp = block.content ? clampIf(block.content) : "";
+      return `<div class="content-block content-file ${clamp}"><code>${escapeHtml(block.path || "")}</code>${block.content ? `<pre><code>${escapeHtml(block.content)}</code></pre>` : ""}</div>`;
+    }
     case "image":
-      return `<div class="content-block content-image"><code>${escapeHtml(
-        block.path || block.mime_type || ""
-      )}</code></div>`;
-    case "provider_payload":
-      return `<div class="content-block content-provider-payload"><pre><code>${escapeHtml(
-        JSON.stringify(block.payload ?? {}, null, 2)
-      )}</code></pre></div>`;
-    case "unknown":
-      return `<div class="content-block content-unknown"><pre><code>${escapeHtml(
-        JSON.stringify(block.raw ?? block, null, 2)
-      )}</code></pre></div>`;
-    default:
-      return `<div class="content-block content-unknown"><pre>${escapeHtml(JSON.stringify(block, null, 2))}</pre></div>`;
+      return `<div class="content-block content-image"><code>${escapeHtml(block.path || block.mime_type || "")}</code></div>`;
+    case "provider_payload": {
+      const text = JSON.stringify(block.payload ?? {}, null, 2);
+      const clamp = clampIf(text);
+      return `<div class="content-block content-provider-payload ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+    }
+    case "unknown": {
+      const text = JSON.stringify(block.raw ?? block, null, 2);
+      const clamp = clampIf(text);
+      return `<div class="content-block content-unknown ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+    }
+    default: {
+      const text = JSON.stringify(block, null, 2);
+      const clamp = clampIf(text);
+      return `<div class="content-block content-unknown ${clamp}"><pre>${escapeHtml(text)}</pre></div>`;
+    }
   }
 }
 
@@ -2935,44 +2934,60 @@ function renderSharedList() {
   const groups = state.home.sharedGroups || [];
   const totalHoldings = groups.reduce((sum, group) => sum + (group.holdings?.length || 0), 0);
   return `
-    <section class="session-header">
-      <div>
-        <p class="eyebrow">${t("sharedTitle")}</p>
-        <h1>${t("sharedTitle")}</h1>
-        <div class="meta-line">
-          <span>${t("sessionsStat")}=${groups.length}</span>
-          <span>${t("holdings")}=${totalHoldings}</span>
+    <div class="manager-page-layout">
+      <section class="section-panel manager-control-panel">
+        <div class="manager-control-content">
+          <section class="manager-workspace-summary">
+            <div>
+              <span class="eyebrow">${t("sharedTitle")}</span>
+              <strong>${t("sharedGroups")}</strong>
+              <p>${t("sharedOverview")}</p>
+            </div>
+          </section>
+          <section class="manager-control-bottom">
+            <div class="stack">
+              <div class="manager-summary-grid">
+                ${renderMetaLine(t("sessionsStat"), String(groups.length))}
+                ${renderMetaLine(t("holdings"), String(totalHoldings))}
+              </div>
+            </div>
+          </section>
         </div>
-      </div>
-      <div class="session-actions">
-        <a class="button" href="/" data-nav="/">${t("back")}</a>
-      </div>
-    </section>
-    ${groups.length ? `<div class="shared-list">${groups.map(renderSharedRow).join("")}</div>` : `<div class="empty-state">${t("noSharedGroups")}</div>`}`;
+      </section>
+      <section class="section-panel manager-result-panel">
+        <div class="section-heading manager-section-head">
+          <div>
+            <strong>${t("sharedGroups")}</strong>
+            <span>${groups.length}</span>
+          </div>
+        </div>
+        <div class="manager-list">
+          ${groups.length ? groups.map(renderSharedRow).join("") : `<div class="empty-state">${t("noSharedGroups")}</div>`}
+        </div>
+      </section>
+    </div>`;
 }
 
 function renderSharedRow(group) {
   const sourceProvider = getOrderedProviders().find((item) => item.id === group.source_provider);
-  const bindingStrip = (group.holdings || [])
-    .map((holding) => {
-      const provider = getOrderedProviders().find((item) => item.id === holding.provider);
-      return `<span class="status-pill">${escapeHtml(provider?.name || holding.provider)}:${escapeHtml(shortId(holding.session_id))}</span>`;
-    })
-    .join("");
+  const href = `/shared/${encodeURIComponent(group.id)}`;
   return `
-    <article class="shared-row">
-      <span class="session-id">${escapeHtml(group.id)}</span>
-      <span class="session-title">${escapeHtml(group.title || group.id)}</span>
-      <div class="session-meta">
-        <span>${t("holdings")}=${group.holdings.length}</span>
-        <span>${t("updatedAt")}=${escapeHtml(formatDate(group.updated_at))}</span>
-      </div>
-      <div class="binding-strip">${bindingStrip || `<span class="status-pill">${escapeHtml(sourceProvider?.name || group.source_provider || "—")}</span>`}</div>
-      <div class="row-actions">
-        <a class="button" href="/shared/${encodeURIComponent(group.id)}" data-nav="/shared/${encodeURIComponent(group.id)}">${t("view")}</a>
-        <button type="button" data-action="run-sync-latest" data-group-id="${escapeAttr(group.id)}">${t("syncLatest")}</button>
-        <button type="button" data-action="open-shared-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
-        <button type="button" class="danger" data-action="open-shared-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
+    <article class="manager-row">
+      <div class="manager-row-head">
+        <div class="manager-row-copy">
+          <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(group.title || group.id)}</a>
+          <div class="manager-meta">
+            <span>${escapeHtml(sourceProvider?.name || group.source_provider || "—")}</span>
+            <span>${t("holdings")}=${group.holdings.length}</span>
+            <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(group.updated_at)))}</span>
+          </div>
+        </div>
+        <div class="row-actions">
+          <a class="button" href="${href}" data-nav="${href}">${t("view")}</a>
+          <button type="button" data-action="run-sync-latest" data-group-id="${escapeAttr(group.id)}">${t("syncLatest")}</button>
+          <button type="button" data-action="open-shared-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
+          <button type="button" class="danger" data-action="open-shared-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
+        </div>
       </div>
     </article>`;
 }
@@ -3023,16 +3038,16 @@ function renderCompressionPage() {
 
   return `
     <div class="manager-page-layout">
-      <section class="section-panel manager-control-panel">
-        <div class="stack">
-          <section class="manager-workspace-summary">
-            <div>
-              <span class="eyebrow">${t("compression")}</span>
-              <strong>${t("compressionTitle")}</strong>
-              <p>${t("compressionHint")}</p>
-            </div>
-          </section>
-          ${renderCompressionProviderSupport(providers)}
+      <section class="section-panel manager-control-panel agent-provider-panel">
+        <section class="manager-workspace-summary">
+          <div>
+            <span class="eyebrow">${t("compression")}</span>
+            <strong>${t("compressionTitle")}</strong>
+            <p>${t("compressionHint")}</p>
+          </div>
+        </section>
+        ${renderCompressionProviderSupport(providers)}
+        <div class="manager-control-actions">
           <button type="button" data-action="open-compression-expand">${t("expand")}</button>
           <button class="invert" type="button" data-action="refresh-compression">${t("refresh")}</button>
         </div>
@@ -3050,31 +3065,24 @@ function renderCompressionPage() {
 }
 
 function renderCompressionProviderSupport(providers) {
-  const rows = providers
-    .map((provider) => {
-      const source = provider.detects_native_source ? t("native") : t("portable");
-      const target = provider.native_target_projection ? t("native") : t("portable");
-      const defaultProjection = provider.default_projection || "portable";
-      return `
-        <article class="manager-row">
-          <div class="manager-row-head">
-            <div class="manager-row-copy">
-              <div class="session-title">${escapeHtml(provider.provider_id || "—")}</div>
-              <div class="manager-meta">
-                <span>${t("source")}=${escapeHtml(source)}</span>
-                <span>${t("target")}=${escapeHtml(target)}</span>
-                <span>${t("defaultProjection")}=${escapeHtml(defaultProjection)}</span>
-              </div>
-            </div>
-          </div>
-        </article>`;
-    })
-    .join("");
+  if (!providers.length) {
+    return `<div class="manager-list agent-provider-list"><div class="empty-state">${t("noProviders")}</div></div>`;
+  }
   return `
-    <section class="verify-block">
-      <span class="block-label">${t("providerCompressionSupport")}</span>
-      <div class="manager-list">${rows || `<div class="empty-state">${t("noProviders")}</div>`}</div>
-    </section>`;
+    <div class="manager-list agent-provider-list">
+      ${providers
+        .map((provider) => {
+          const defaultProjection = provider.default_projection || "portable";
+          return `
+            <div class="agent-provider-item">
+              <span class="agent-provider-head">
+                <strong class="agent-provider-name">${escapeHtml(provider.provider_id || "—")}</strong>
+                <span class="pill">${escapeHtml(defaultProjection)}</span>
+              </span>
+            </div>`;
+        })
+        .join("")}
+    </div>`;
 }
 
 function emptyManagerPreview() {
@@ -3215,25 +3223,6 @@ function renderSharedDetail() {
   const group = state.sharedDetail;
   const sourceProvider = getOrderedProviders().find((item) => item.id === group.source_provider);
   return `
-    <section class="session-header">
-      <div>
-        <p class="eyebrow">${t("details")}</p>
-        <h1>${escapeHtml(group.title || group.id)}</h1>
-        <div class="meta-line">
-          <span>id=<code>${escapeHtml(group.id)}</code></span>
-          <span>${t("holdings")}=${group.holdings.length}</span>
-          <span>${t("createdAt")}=${escapeHtml(formatDate(group.created_at))}</span>
-          <span>${t("updatedAt")}=${escapeHtml(formatDate(group.updated_at))}</span>
-        </div>
-      </div>
-      <div class="session-actions">
-        <a class="button" href="/shared" data-nav="/shared">${t("back")}</a>
-        <button type="button" data-action="open-shared-bind" data-group-id="${escapeAttr(group.id)}">${t("addHolding")}</button>
-        <button type="button" data-action="run-sync-latest" data-group-id="${escapeAttr(group.id)}">${t("syncLatest")}</button>
-        <button type="button" data-action="open-shared-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
-        <button type="button" class="danger" data-action="open-shared-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
-      </div>
-    </section>
     <div class="shared-layout">
       <section class="section-panel stack">
         <div class="section-heading">
@@ -3246,12 +3235,39 @@ function renderSharedDetail() {
           ${group.holdings.map((holding) => renderHoldingCard(group, holding)).join("")}
         </div>
       </section>
-      <aside class="detail-panel stack">
-        ${renderMetaLine(t("provider"), sourceProvider?.name || group.source_provider)}
-        ${renderMetaLine(t("sharedTitle"), group.title)}
-        ${renderMetaLine(t("holdings"), String(group.holdings.length))}
-        ${renderMetaLine(t("createdAt"), formatDate(group.created_at))}
-        ${renderMetaLine(t("updatedAt"), formatDate(group.updated_at))}
+      <aside class="shared-detail-right">
+        <article class="manager-row">
+          <div class="manager-row-head">
+            <div class="manager-row-copy">
+              <span class="manager-title-link">${escapeHtml(group.title || group.id)}</span>
+              <div class="manager-meta">
+                <span>${escapeHtml(sourceProvider?.name || group.source_provider || "—")}</span>
+                <span>${t("holdings")}=${group.holdings.length}</span>
+                <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(group.updated_at)))}</span>
+              </div>
+            </div>
+          </div>
+        </article>
+        <section class="section-panel stack">
+          <div class="section-heading">
+            <div>
+              <strong>${t("status")}</strong>
+            </div>
+          </div>
+          <div class="stack">
+            ${renderMetaLine(t("provider"), sourceProvider?.name || group.source_provider)}
+            ${renderMetaLine(t("sharedTitle"), group.title)}
+            ${renderMetaLine(t("holdings"), String(group.holdings.length))}
+            ${renderMetaLine(t("createdAt"), formatDate(group.created_at))}
+            ${renderMetaLine(t("updatedAt"), formatDate(group.updated_at))}
+            <div class="row-actions">
+              <button type="button" class="invert" data-action="run-sync-latest" data-group-id="${escapeAttr(group.id)}">${t("startExecution")}</button>
+              <button type="button" data-action="open-shared-bind" data-group-id="${escapeAttr(group.id)}">${t("addHolding")}</button>
+              <button type="button" data-action="open-shared-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
+              <button type="button" class="danger" data-action="open-shared-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
+            </div>
+          </div>
+        </section>
       </aside>
     </div>`;
 }

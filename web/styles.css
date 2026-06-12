@@ -959,19 +959,25 @@ button[disabled] {
 .msg-body .content-block.is-clamped {
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
+}
+
+.msg-body .content-block.is-clamped:has(pre) {
+  display: block;
+  -webkit-line-clamp: unset;
+  max-height: calc(3 * 1.45em);
+  overflow: hidden;
+  box-shadow: inset 0 -12px 10px -10px rgba(0, 0, 0, 0.06);
 }
 
 .msg-body .content-tool {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
+  background: #eef4fb;
+  border-radius: 2px;
 }
 
 .msg-body .content-tool pre {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre;
+  overflow: auto;
   margin: 0;
 }
 
@@ -979,6 +985,7 @@ button[disabled] {
   display: block;
   max-height: none;
   -webkit-line-clamp: unset;
+  box-shadow: none;
 }
 
 .msg-item.is-expanded .msg-body .content-tool pre {
@@ -1247,6 +1254,14 @@ button[disabled] {
   margin-top: 18px;
 }
 
+.shared-detail-right {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .manager-layout {
   grid-template-columns: 1fr;
 }
@@ -1381,7 +1396,8 @@ button[disabled] {
 }
 
 .settings-content {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 18px;
   min-width: 0;
   min-height: 0;
@@ -1484,6 +1500,27 @@ button[disabled] {
 
 .settings-row-stacked .settings-provider-list {
   width: 100%;
+}
+
+#settings-config {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+#settings-config .settings-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+#settings-config .settings-row-stacked {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .settings-copy {
@@ -1690,7 +1727,9 @@ button[disabled] {
 }
 
 .settings-config-content {
-  max-height: min(48vh, 420px);
+  flex: 1;
+  min-height: 0;
+  max-height: none;
   margin: 0;
   padding: 12px;
   overflow: auto;
@@ -1880,8 +1919,8 @@ button[disabled] {
 }
 
 .manager-result-panel {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   height: 100%;
@@ -1889,12 +1928,12 @@ button[disabled] {
 }
 
 .manager-result-panel .success-callout {
-  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .manager-result-panel .manager-list {
-  flex: 1 1 auto;
   min-height: 0;
+  height: 100%;
   max-height: none;
   align-content: start;
   overflow: auto;

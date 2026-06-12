@@ -29,7 +29,7 @@ pub fn build_api_router() -> Router {
 }
 
 pub async fn run(port: u16, no_open: bool) -> Result<()> {
-    crate::cache::init_watcher().unwrap();
+    crate::cache::init_watcher();
 
     let app = build_router();
     let addr = format!("127.0.0.1:{}", port);
@@ -49,7 +49,7 @@ pub async fn run(port: u16, no_open: bool) -> Result<()> {
 }
 
 pub async fn run_api(port: u16) -> Result<()> {
-    crate::cache::init_watcher().unwrap();
+    crate::cache::init_watcher();
 
     let app = build_api_router();
     let addr = format!("127.0.0.1:{}", port);

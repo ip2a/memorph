@@ -153,11 +153,15 @@ pub fn build_path_registry() -> HashMap<PathBuf, String> {
     map
 }
 
-/// Initialize the global cache watcher. Leaks the watcher so it lives for the process duration.
-pub fn init_watcher() -> Result<()> {
-    let cache = global_cache();
-    let registry = build_path_registry();
-    let watcher = CacheWatcher::new(cache, registry)?;
-    let _ = Box::leak(Box::new(watcher));
-    Ok(())
+static WATCHER_INIT: std::sync::Once = std::sync::Once::new();
+
+/// Initialize the global cache watcher exactly once per process.
+pub fn init_watcher() {
+    WATCHER_INIT.call_once(|| {
+        let cache = global_cache();
+        let registry = build_path_registry();
+        let watcher = CacheWatcher::new(cache, registry)
+            .expect("Failed to initialize cache watcher");
+        let _ = Box::leak(Box::new(watcher));
+    });
 }
