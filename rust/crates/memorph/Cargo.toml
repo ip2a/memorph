@@ -9,6 +9,7 @@ repository = "https://github.com/ip2a/memorph"
 readme = "../../../README.md"
 keywords = ["cli", "ai", "claude", "codex", "opencode"]
 categories = ["command-line-utilities"]
+default-run = "memorph"
 exclude = [
   ".github",
   ".gitignore",
@@ -48,3 +49,11 @@ flate2 = "1.0"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+[[bin]]
+name = "memorph"
+path = "src/bin/memorph.rs"
+
+[[bin]]
+name = "memo"
+path = "src/bin/memo.rs"

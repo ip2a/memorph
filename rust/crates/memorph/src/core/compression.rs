@@ -27,13 +27,6 @@ pub enum CompressionMode {
     Expand,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CompressionProjection {
-    Native,
-    Portable,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompressedSegment<'a> {
     pub source_provider_id: &'a str,
@@ -43,12 +36,6 @@ pub struct CompressedSegment<'a> {
     pub archive_ref: Option<&'a str>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeTargetProjection<'a> {
-    OpencodeCompaction(CompressedSegment<'a>),
-    CodexCompaction(CompressedSegment<'a>),
-}
-
 type NormalizeSourceFn = fn(
     &CanonicalSession,
     &CompressionPolicy,
@@ -56,86 +43,27 @@ type NormalizeSourceFn = fn(
     CompressionReport,
 ) -> Result<(CanonicalSession, CompressionReport)>;
 
-type ProjectNativeTargetFn = for<'a> fn(&'a SessionEvent) -> Option<NativeTargetProjection<'a>>;
-
 struct CompressionSourceAdapter {
-    detects_native: bool,
     normalize: Option<NormalizeSourceFn>,
-}
-
-struct CompressionTargetAdapter {
-    projection: CompressionProjection,
-    project_native: Option<ProjectNativeTargetFn>,
 }
 
 struct CompressionProviderAdapter {
     provider_id: &'static str,
     source: CompressionSourceAdapter,
-    target: CompressionTargetAdapter,
 }
 
-const COMPRESSION_PROVIDER_ADAPTERS: &[CompressionProviderAdapter] = &[
-    CompressionProviderAdapter {
+const COMPRESSION_PROVIDER_ADAPTERS: &[CompressionProviderAdapter] =
+    &[CompressionProviderAdapter {
         provider_id: "opencode",
         source: CompressionSourceAdapter {
-            detects_native: true,
             normalize: Some(normalize_opencode_source_compression),
         },
-        target: CompressionTargetAdapter {
-            projection: CompressionProjection::Native,
-            project_native: Some(project_opencode_native_target),
-        },
-    },
-    CompressionProviderAdapter {
-        provider_id: "codex",
-        source: CompressionSourceAdapter {
-            detects_native: true,
-            normalize: None,
-        },
-        target: CompressionTargetAdapter {
-            projection: CompressionProjection::Native,
-            project_native: Some(project_codex_native_target),
-        },
-    },
-];
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProviderCompressionSupport {
-    pub provider_id: String,
-    pub detects_native_source: bool,
-    pub native_target_projection: bool,
-    pub default_projection: CompressionProjection,
-}
-
-pub fn provider_support(provider_id: &str) -> ProviderCompressionSupport {
-    let adapter = provider_adapter(provider_id);
-    let native_target_projection = adapter
-        .map(|adapter| adapter.target.projection == CompressionProjection::Native)
-        .unwrap_or(false);
-    ProviderCompressionSupport {
-        provider_id: provider_id.to_string(),
-        detects_native_source: adapter
-            .map(|adapter| adapter.source.detects_native)
-            .unwrap_or(false),
-        native_target_projection,
-        default_projection: if native_target_projection {
-            CompressionProjection::Native
-        } else {
-            CompressionProjection::Portable
-        },
-    }
-}
+    }];
 
 fn provider_adapter(provider_id: &str) -> Option<&'static CompressionProviderAdapter> {
     COMPRESSION_PROVIDER_ADAPTERS
         .iter()
         .find(|adapter| adapter.provider_id == provider_id)
-}
-
-pub fn target_projection(provider_id: &str) -> CompressionProjection {
-    provider_adapter(provider_id)
-        .map(|adapter| adapter.target.projection)
-        .unwrap_or(CompressionProjection::Portable)
 }
 
 pub fn compressed_segment(event: &SessionEvent) -> Option<CompressedSegment<'_>> {
@@ -159,15 +87,6 @@ pub fn compressed_segment(event: &SessionEvent) -> Option<CompressedSegment<'_>>
             None
         }
     })
-}
-
-pub fn native_target_projection_for_event<'a>(
-    provider_id: &str,
-    event: &'a SessionEvent,
-) -> Option<NativeTargetProjection<'a>> {
-    let adapter = provider_adapter(provider_id)?;
-    let project_native = adapter.target.project_native?;
-    project_native(event)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -337,10 +256,6 @@ fn preserve_compressed_segments_with_archive(
 ) -> Result<(CanonicalSession, CompressionReport)> {
     let (portable_session, portable_report) =
         normalize_portable_compressed_segments(session, policy);
-
-    if !provider_support(&policy.source_provider_id).detects_native_source {
-        return Ok((portable_session, portable_report));
-    }
 
     normalize_native_source_compression(&portable_session, policy, archive_dir, portable_report)
 }
@@ -996,14 +911,6 @@ fn is_opencode_summary_event(event: &SessionEvent) -> bool {
         .unwrap_or(false)
 }
 
-fn project_opencode_native_target(event: &SessionEvent) -> Option<NativeTargetProjection<'_>> {
-    compressed_segment(event).map(NativeTargetProjection::OpencodeCompaction)
-}
-
-fn project_codex_native_target(event: &SessionEvent) -> Option<NativeTargetProjection<'_>> {
-    compressed_segment(event).map(NativeTargetProjection::CodexCompaction)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1287,7 +1194,7 @@ mod tests {
     }
 
     #[test]
-    fn native_target_projection_exposes_opencode_compaction_view() {
+    fn compressed_segment_exposes_canonical_compression_contract() {
         let event = SessionEvent {
             id: "compressed-source".to_string(),
             kind: SessionEventKind::Message,
@@ -1315,11 +1222,7 @@ mod tests {
             },
         };
 
-        let projection =
-            native_target_projection_for_event("opencode", &event).expect("native projection");
-        let NativeTargetProjection::OpencodeCompaction(segment) = projection else {
-            panic!("expected opencode compaction projection");
-        };
+        let segment = compressed_segment(&event).expect("canonical compressed segment");
         assert_eq!(segment.source_provider_id, "deepseek");
         assert_eq!(segment.summary, "compressed summary");
         assert_eq!(segment.source_event_ids, ["old-1".to_string()]);
@@ -1328,15 +1231,6 @@ mod tests {
             segment.archive_ref,
             Some("memorph-archive://x/archive.json.gz")
         );
-
-        let codex_projection =
-            native_target_projection_for_event("codex", &event).expect("codex native projection");
-        let NativeTargetProjection::CodexCompaction(codex_segment) = codex_projection else {
-            panic!("expected codex compaction projection");
-        };
-        assert_eq!(codex_segment.source_provider_id, "deepseek");
-        assert_eq!(codex_segment.summary, "compressed summary");
-        assert_eq!(codex_segment.source_event_count, Some(9));
     }
 
     #[test]
@@ -1394,42 +1288,13 @@ mod tests {
     }
 
     #[test]
-    fn provider_support_identifies_native_and_portable_projection() {
-        assert_eq!(
-            provider_support("opencode").default_projection,
-            CompressionProjection::Native
-        );
-        assert!(provider_support("opencode").detects_native_source);
-        assert!(provider_support("opencode").native_target_projection);
+    fn source_adapter_registry_only_handles_source_normalization() {
+        let opencode = provider_adapter("opencode").expect("opencode source adapter");
+        assert_eq!(opencode.provider_id, "opencode");
+        assert!(opencode.source.normalize.is_some());
 
-        let closed = provider_support("closed-provider");
-        assert_eq!(closed.default_projection, CompressionProjection::Portable);
-        assert!(!closed.detects_native_source);
-        assert!(!closed.native_target_projection);
-    }
-
-    #[test]
-    fn native_adapter_registry_keeps_known_and_unknown_providers_separate() {
-        for provider_id in ["opencode", "codex"] {
-            let adapter =
-                provider_adapter(provider_id).expect("native adapter should be registered");
-            assert_eq!(adapter.provider_id, provider_id);
-            assert!(adapter.source.detects_native);
-            assert_eq!(adapter.target.projection, CompressionProjection::Native);
-            assert!(adapter.target.project_native.is_some());
-        }
-
+        assert!(provider_adapter("codex").is_none());
         assert!(provider_adapter("closed-provider").is_none());
-    }
-
-    #[test]
-    fn target_projection_uses_native_only_when_target_supports_it() {
-        assert_eq!(target_projection("opencode"), CompressionProjection::Native);
-        assert_eq!(target_projection("codex"), CompressionProjection::Native);
-        assert_eq!(
-            target_projection("closed-provider"),
-            CompressionProjection::Portable
-        );
     }
 
     fn write_test_archive(

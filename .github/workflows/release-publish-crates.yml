@@ -47,13 +47,15 @@ jobs:
           )"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
-      - name: Verify library package assets
+      - name: Verify crate package assets
         shell: bash
         run: |
           cargo package --list --allow-dirty --manifest-path rust/crates/memorph/Cargo.toml > cargo-package-files.txt
           grep -Fx "assets/i18n.json" cargo-package-files.txt
+          grep -Fx "src/bin/memorph.rs" cargo-package-files.txt
+          grep -Fx "src/bin/memo.rs" cargo-package-files.txt
 
-      - name: Dry-run publish library
+      - name: Dry-run publish crate
         run: cargo publish --dry-run --allow-dirty --registry crates-io --manifest-path rust/crates/memorph/Cargo.toml
 
       - name: Authenticate with crates.io

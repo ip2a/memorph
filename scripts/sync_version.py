@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import shutil
 import subprocess
 import tomllib
@@ -90,23 +89,6 @@ def update_toml_package_version(path: Path, version: str, check: bool) -> None:
             replaced = True
     if not replaced:
         raise RuntimeError(f"Missing [package].version in file: {path}")
-    write_or_check(path, "".join(lines), check)
-
-
-def update_memorph_app_dependency_version(path: Path, version: str, check: bool) -> None:
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    replaced = False
-    for idx, line in enumerate(lines):
-        if not line.lstrip().startswith("memorph = {"):
-            continue
-        if not re.search(r'version = "[^"]+"', line):
-            raise RuntimeError(f"Missing memorph dependency version in file: {path}")
-        updated = re.sub(r'version = "[^"]+"', f'version = "{version}"', line, count=1)
-        lines[idx] = updated
-        replaced = True
-        break
-    if not replaced:
-        raise RuntimeError(f"Missing memorph dependency in file: {path}")
     write_or_check(path, "".join(lines), check)
 
 
@@ -228,12 +210,6 @@ def main() -> None:
     desktop_cargo = ROOT / "desktop" / "tauri" / "Cargo.toml"
     update_toml_package_version(desktop_cargo, version, args.check)
     print(f"[ok] Version aligned: {desktop_cargo.relative_to(ROOT)}")
-
-    app_cargo = ROOT / "rust" / "apps" / "memorph" / "Cargo.toml"
-    update_toml_package_version(app_cargo, version, args.check)
-    print(f"[ok] Version aligned: {app_cargo.relative_to(ROOT)}")
-    update_memorph_app_dependency_version(app_cargo, version, args.check)
-    print(f"[ok] App crate dependency aligned: {app_cargo.relative_to(ROOT)}")
 
     tauri_config = ROOT / "desktop" / "tauri" / "tauri.conf.json"
     update_tauri_config_version(tauri_config, version, args.check)

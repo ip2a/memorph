@@ -944,7 +944,7 @@ pub fn list_compression_archives() -> Result<Vec<compression::CompressionArchive
     session_management::list_compression_archives()
 }
 
-pub fn list_compression_provider_support() -> Vec<compression::ProviderCompressionSupport> {
+pub fn list_compression_provider_support() -> Vec<crate::provider::ProviderCompressionSupport> {
     session_management::list_compression_provider_support()
 }
 
@@ -1705,7 +1705,7 @@ mod tests {
             .expect("opencode support profile");
         assert_eq!(
             opencode.default_projection,
-            compression::CompressionProjection::Native
+            crate::provider::CompressionProjection::Native
         );
         assert!(opencode.detects_native_source);
         assert!(opencode.native_target_projection);
@@ -1716,7 +1716,7 @@ mod tests {
             .expect("codex support profile");
         assert_eq!(
             codex.default_projection,
-            compression::CompressionProjection::Native
+            crate::provider::CompressionProjection::Native
         );
         assert!(codex.detects_native_source);
         assert!(codex.native_target_projection);

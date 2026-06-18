@@ -201,10 +201,20 @@ pub fn list_compression_archives() -> Result<Vec<compression::CompressionArchive
     compression::list_archives()
 }
 
-pub fn list_compression_provider_support() -> Vec<compression::ProviderCompressionSupport> {
+pub fn list_compression_provider_support() -> Vec<crate::provider::ProviderCompressionSupport> {
     providers::all_provider_ids()
         .iter()
-        .map(|provider_id| compression::provider_support(provider_id))
+        .filter_map(|provider_id| {
+            let provider = providers::find_provider(provider_id)?;
+            let default_projection = provider.compression_projection();
+            Some(crate::provider::ProviderCompressionSupport {
+                provider_id: (*provider_id).to_string(),
+                detects_native_source: provider.detects_native_compression_source(),
+                native_target_projection: default_projection
+                    == crate::provider::CompressionProjection::Native,
+                default_projection,
+            })
+        })
         .collect()
 }
 

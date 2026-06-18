@@ -33,20 +33,28 @@ def validate_cargo_metadata(cargo_package: dict[str, object]) -> None:
     print("[ok] Cargo package metadata is complete for release")
 
 
-def validate_rust_app_package(version: str) -> None:
-    app_cargo_path = ROOT / "rust" / "apps" / "memorph" / "Cargo.toml"
-    app_cargo = tomllib.loads(app_cargo_path.read_text(encoding="utf-8"))
-    app_package = app_cargo["package"]
-    if app_package.get("name") != "memorph-bin":
-        raise SystemExit(f"[error] Binary package name mismatch in {app_cargo_path}")
-    if app_package.get("publish") is not False:
-        raise SystemExit(f"[error] Binary package must set publish = false in {app_cargo_path}")
-    if app_package.get("version") != version:
-        raise SystemExit(f"[error] Binary package version mismatch in {app_cargo_path}")
-    dependency = app_cargo["dependencies"].get("memorph")
-    if not isinstance(dependency, dict) or dependency.get("version") != version:
-        raise SystemExit(f"[error] Binary package memorph dependency version mismatch in {app_cargo_path}")
-    print("[ok] Rust binary package is private and depends on the release crate")
+def validate_cargo_targets() -> None:
+    cargo_path = ROOT / "rust" / "crates" / "memorph" / "Cargo.toml"
+    cargo = tomllib.loads(cargo_path.read_text(encoding="utf-8"))
+    bin_targets = {
+        item.get("name"): item.get("path")
+        for item in cargo.get("bin", [])
+        if isinstance(item, dict)
+    }
+    expected = {
+        "memorph": "src/bin/memorph.rs",
+        "memo": "src/bin/memo.rs",
+    }
+    if bin_targets != expected:
+        raise SystemExit(
+            f"[error] Cargo binary targets mismatch in {cargo_path}; expected={expected} actual={bin_targets}"
+        )
+    for path in expected.values():
+        if not (cargo_path.parent / path).exists():
+            raise SystemExit(f"[error] Missing Cargo binary source: {cargo_path.parent / path}")
+    if cargo["package"].get("default-run") != "memorph":
+        raise SystemExit(f"[error] Cargo package.default-run must be memorph in {cargo_path}")
+    print("[ok] Crates.io package exposes library and CLI binaries")
 
 
 def load_platform_config() -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, object]]]:
@@ -277,7 +285,7 @@ def main() -> None:
     version = read_required_string(cargo_package, "version")
     repository_url = read_required_string(cargo_package, "repository")
     validate_cargo_metadata(cargo_package)
-    validate_rust_app_package(version)
+    validate_cargo_targets()
     meta, platforms, desktop_targets = load_platform_config()
     if meta.get("version_source") != "Cargo.toml":
         raise SystemExit("[error] platforms.toml meta.version_source must be Cargo.toml")

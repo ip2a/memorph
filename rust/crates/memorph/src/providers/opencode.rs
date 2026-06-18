@@ -4,13 +4,12 @@ use crate::canonical::{
     MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionArtifact,
     SessionContext, SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
 };
-use crate::core::compression::{
-    self, CompressedSegment, CompressionProjection, NativeTargetProjection,
-};
+use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
     canonical_event_is_visible_message, canonical_event_visible_message_role,
     canonical_export_result, canonical_session_title, canonical_visible_block_text,
-    compression_retrieval_hint, Provider, ProviderCapabilities, ProviderSessionSummary,
+    compression_retrieval_hint, CompressionProjection, Provider, ProviderCapabilities,
+    ProviderSessionSummary,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -38,6 +37,14 @@ impl Provider for OpenCodeProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::full_session_management()
+    }
+
+    fn detects_native_compression_source(&self) -> bool {
+        true
+    }
+
+    fn compression_projection(&self) -> CompressionProjection {
+        CompressionProjection::Native
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
@@ -777,25 +784,19 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     let mut oc_messages: Vec<(String, i64, Value)> = Vec::new();
     let mut oc_parts: Vec<(String, String, i64, Value)> = Vec::new();
     let mut last_user_msg_id: Option<String> = None;
-    let native_compression_target =
-        compression::target_projection(PROVIDER_ID) == CompressionProjection::Native;
 
     for event in &session.events {
-        if native_compression_target {
-            if let Some(NativeTargetProjection::OpencodeCompaction(segment)) =
-                compression::native_target_projection_for_event(PROVIDER_ID, event)
-            {
-                append_compressed_opencode_segment(
-                    &session_id,
-                    event,
-                    segment,
-                    &target_dir_str,
-                    &mut last_user_msg_id,
-                    &mut oc_messages,
-                    &mut oc_parts,
-                );
-                continue;
-            }
+        if let Some(segment) = compression::compressed_segment(event) {
+            append_compressed_opencode_segment(
+                &session_id,
+                event,
+                segment,
+                &target_dir_str,
+                &mut last_user_msg_id,
+                &mut oc_messages,
+                &mut oc_parts,
+            );
+            continue;
         }
 
         let Some(visible_role) = canonical_event_visible_message_role(event) else {
@@ -1726,11 +1727,8 @@ mod tests {
         let mut last_user_msg_id = None;
         let mut messages = Vec::new();
         let mut parts = Vec::new();
-        let projection = compression::native_target_projection_for_event(PROVIDER_ID, &event)
-            .expect("native opencode projection");
-        let NativeTargetProjection::OpencodeCompaction(segment) = projection else {
-            panic!("expected opencode compaction projection");
-        };
+        let segment =
+            compression::compressed_segment(&event).expect("canonical compressed segment");
 
         append_compressed_opencode_segment(
             "ses_test",

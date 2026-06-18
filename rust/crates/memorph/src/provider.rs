@@ -3,6 +3,7 @@ use crate::canonical::{
     MappingDisposition, MappingReport, SessionEvent, SessionEventKind,
 };
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,21 @@ pub struct ProviderCapabilities {
     pub delete: bool,
     pub rename: bool,
     pub resume: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompressionProjection {
+    Native,
+    Portable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderCompressionSupport {
+    pub provider_id: String,
+    pub detects_native_source: bool,
+    pub native_target_projection: bool,
+    pub default_projection: CompressionProjection,
 }
 
 impl ProviderCapabilities {
@@ -82,6 +98,16 @@ pub trait Provider: Send + Sync {
     fn name(&self) -> &'static str;
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::default()
+    }
+
+    /// Whether this provider importer can recognize provider-native compressed session data.
+    fn detects_native_compression_source(&self) -> bool {
+        false
+    }
+
+    /// How this provider exporter maps canonical compressed segments by default.
+    fn compression_projection(&self) -> CompressionProjection {
+        CompressionProjection::Portable
     }
 
     /// Normalize a workspace identifier into the provider's canonical scope key.

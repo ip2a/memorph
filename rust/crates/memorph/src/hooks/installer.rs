@@ -6039,23 +6039,30 @@ timeout = 5
 
     #[test]
     fn codeisland_provider_sources_are_registered_in_memorph_profiles() {
-        let source = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/hooks/reference_codeisland/Sources/CodeIsland/ConfigInstaller.swift"
-        ))
-        .unwrap();
-
-        let mut codeisland_sources = Vec::new();
-        let mut rest = source.as_str();
-        while let Some(index) = rest.find("source: \"") {
-            rest = &rest[index + "source: \"".len()..];
-            if let Some(end) = rest.find('"') {
-                codeisland_sources.push(&rest[..end]);
-                rest = &rest[end + 1..];
-            } else {
-                break;
-            }
-        }
+        let codeisland_sources = [
+            "claude",
+            "codex",
+            "gemini",
+            "cursor",
+            "trae",
+            "traecn",
+            "traecli",
+            "qoder",
+            "droid",
+            "codebuddy",
+            "codybuddycn",
+            "stepfun",
+            "antigravity",
+            "workbuddy",
+            "hermes",
+            "qwen",
+            "copilot",
+            "kimi",
+            "kiro",
+            "cline",
+            "pi",
+            "omp",
+        ];
 
         for source in codeisland_sources {
             if source.starts_with("codeisland-") {

@@ -4,15 +4,13 @@ use crate::canonical::{
     MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
-use crate::core::compression::{
-    self, CompressedSegment, CompressionProjection, NativeTargetProjection,
-};
+use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
     canonical_event_visible_text, canonical_export_result,
     canonical_session_instruction_context_text, canonical_session_title,
-    canonical_visible_block_text, compression_retrieval_hint, Provider, ProviderCapabilities,
-    ProviderSessionSummary,
+    canonical_visible_block_text, compression_retrieval_hint, CompressionProjection, Provider,
+    ProviderCapabilities, ProviderSessionSummary,
 };
 use crate::storage::session_state;
 use crate::utils;
@@ -169,6 +167,14 @@ impl Provider for CodexProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities::full_session_management()
+    }
+
+    fn detects_native_compression_source(&self) -> bool {
+        true
+    }
+
+    fn compression_projection(&self) -> CompressionProjection {
+        CompressionProjection::Native
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
@@ -2271,19 +2277,13 @@ fn export_canonical_session_in_codex_dir(
 
     let mut wrote_user_event = false;
     let mut last_agent_message = String::new();
-    let native_compression_target =
-        compression::target_projection(PROVIDER_ID) == CompressionProjection::Native;
     for event in &session.events {
-        if native_compression_target {
-            if let Some(NativeTargetProjection::CodexCompaction(segment)) =
-                compression::native_target_projection_for_event(PROVIDER_ID, event)
-            {
-                write_codex_compacted_rollout_item(&mut file, event, segment)?;
-                if event.role == EventRole::Assistant {
-                    last_agent_message = segment.summary.to_string();
-                }
-                continue;
+        if let Some(segment) = compression::compressed_segment(event) {
+            write_codex_compacted_rollout_item(&mut file, event, segment)?;
+            if event.role == EventRole::Assistant {
+                last_agent_message = segment.summary.to_string();
             }
+            continue;
         }
         let Some(visible_role) = canonical_event_visible_message_role(event) else {
             continue;
