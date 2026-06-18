@@ -143,6 +143,12 @@ struct CodexWorkspaceSyncCandidate {
     session: CodexRolloutSummary,
 }
 
+#[derive(Debug, Clone)]
+struct CodexSessionFileMeta {
+    path: PathBuf,
+    size_bytes: u64,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct CodexSyncBackupMetadata {
     version: u8,
@@ -178,14 +184,14 @@ impl Provider for CodexProvider {
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
-        let index_path = get_codex_dir().join("session_index.jsonl");
+        let codex_dir = get_codex_dir();
+        let index_path = codex_dir.join("session_index.jsonl");
         if !index_path.exists() {
             return Ok(Vec::new());
         }
 
         // Build a lookup from SQLite for fast access
-        let sqlite_lookup =
-            build_sqlite_thread_metadata_lookup(&get_codex_dir()).unwrap_or_default();
+        let sqlite_lookup = build_sqlite_thread_metadata_lookup(&codex_dir).unwrap_or_default();
 
         let file = File::open(&index_path).with_context(|| {
             format!(
@@ -194,7 +200,7 @@ impl Provider for CodexProvider {
             )
         })?;
         let reader = BufReader::new(file);
-        let mut sessions = Vec::new();
+        let mut index_entries = Vec::new();
 
         for line in reader.lines() {
             let line = line?;
@@ -221,28 +227,45 @@ impl Provider for CodexProvider {
                 .map(|dt| dt.timestamp_millis());
 
             if let Some(id) = id {
-                // Find the actual file path for this session
-                let source_path = find_session_file(&id);
-                // Get cwd from SQLite lookup, or fall back to scanning file
-                let sqlite_meta = sqlite_lookup.get(&id);
-                let project_dir = sqlite_meta
-                    .and_then(|meta| clean_non_empty(meta.cwd.as_deref()))
-                    .map(str::to_string)
-                    .or_else(|| extract_cwd_from_session_file(&id));
-                let title = select_codex_display_title(
-                    thread_name.as_deref(),
-                    sqlite_meta.and_then(|meta| meta.title.as_deref()),
-                    &id,
-                );
-
-                sessions.push(ProviderSessionSummary {
-                    session_id: id.clone(),
-                    title,
-                    project_dir,
-                    last_active_at: updated_at,
-                    source_path: source_path.map(|p| p.to_string_lossy().to_string()),
-                });
+                index_entries.push((id, thread_name, updated_at));
             }
+        }
+
+        let missing_file_ids: Vec<String> = index_entries
+            .iter()
+            .filter(|(id, _, _)| {
+                sqlite_lookup
+                    .get(id)
+                    .and_then(|meta| meta.rollout_path.as_deref())
+                    .is_none()
+            })
+            .map(|(id, _, _)| id.clone())
+            .collect();
+        let file_lookup = build_session_file_lookup(&codex_dir, &missing_file_ids);
+        let mut sessions = Vec::with_capacity(index_entries.len());
+
+        for (id, thread_name, updated_at) in index_entries {
+            let file_meta = file_lookup.get(&id);
+            let sqlite_meta = sqlite_lookup.get(&id);
+            let project_dir = sqlite_meta
+                .and_then(|meta| clean_non_empty(meta.cwd.as_deref()))
+                .map(str::to_string)
+                .or_else(|| file_meta.and_then(|meta| extract_cwd_from_session_path(&meta.path)));
+            let title = select_codex_display_title(
+                thread_name.as_deref(),
+                sqlite_meta.and_then(|meta| meta.title.as_deref()),
+                &id,
+            );
+
+            sessions.push(ProviderSessionSummary {
+                session_id: id,
+                title,
+                project_dir,
+                last_active_at: updated_at,
+                source_path: sqlite_meta
+                    .and_then(|meta| meta.rollout_path.clone())
+                    .or_else(|| file_meta.map(|meta| meta.path.to_string_lossy().to_string())),
+            });
         }
 
         Ok(sessions)
@@ -451,6 +474,43 @@ impl Provider for CodexProvider {
             }
         }
         Ok(0)
+    }
+
+    fn session_sizes(&self, session_ids: &[&str]) -> HashMap<String, u64> {
+        let sqlite_lookup =
+            build_sqlite_thread_metadata_lookup(&get_codex_dir()).unwrap_or_default();
+        let mut sizes = HashMap::new();
+        let mut missing_ids = Vec::new();
+
+        for session_id in session_ids {
+            let Some(path) = sqlite_lookup
+                .get(*session_id)
+                .and_then(|meta| meta.rollout_path.as_deref())
+            else {
+                missing_ids.push((*session_id).to_string());
+                continue;
+            };
+            match std::fs::metadata(path) {
+                Ok(metadata) if metadata.is_file() && metadata.len() > 0 => {
+                    sizes.insert((*session_id).to_string(), metadata.len());
+                }
+                _ => missing_ids.push((*session_id).to_string()),
+            }
+        }
+
+        if missing_ids.is_empty() {
+            return sizes;
+        }
+
+        let ids: Vec<String> = session_ids.iter().map(|id| (*id).to_string()).collect();
+        build_session_file_lookup(&get_codex_dir(), &ids)
+            .into_iter()
+            .filter(|(id, _)| missing_ids.contains(id))
+            .filter_map(|(id, meta)| (meta.size_bytes > 0).then_some((id, meta.size_bytes)))
+            .for_each(|(id, size)| {
+                sizes.insert(id, size);
+            });
+        sizes
     }
 
     fn data_source_paths(&self) -> Vec<PathBuf> {
@@ -1857,6 +1917,7 @@ fn provider_payload_event(
 struct CodexSqliteThreadMetadata {
     cwd: Option<String>,
     title: Option<String>,
+    rollout_path: Option<String>,
 }
 
 fn build_sqlite_thread_metadata_lookup(
@@ -1873,16 +1934,21 @@ fn build_sqlite_thread_metadata_lookup(
 
     let has_cwd = has_columns(&conn, "threads", &["cwd"])?;
     let has_title = has_columns(&conn, "threads", &["title"])?;
-    if !has_cwd && !has_title {
+    let has_rollout_path = has_columns(&conn, "threads", &["rollout_path"])?;
+    if !has_cwd && !has_title && !has_rollout_path {
         return Ok(HashMap::new());
     }
 
     let mut map = HashMap::new();
-    let query = match (has_cwd, has_title) {
-        (true, true) => "SELECT id, cwd, title FROM threads",
-        (true, false) => "SELECT id, cwd, NULL AS title FROM threads",
-        (false, true) => "SELECT id, NULL AS cwd, title FROM threads",
-        (false, false) => unreachable!(),
+    let query = match (has_cwd, has_title, has_rollout_path) {
+        (true, true, true) => "SELECT id, cwd, title, rollout_path FROM threads",
+        (true, true, false) => "SELECT id, cwd, title, NULL AS rollout_path FROM threads",
+        (true, false, true) => "SELECT id, cwd, NULL AS title, rollout_path FROM threads",
+        (true, false, false) => "SELECT id, cwd, NULL AS title, NULL AS rollout_path FROM threads",
+        (false, true, true) => "SELECT id, NULL AS cwd, title, rollout_path FROM threads",
+        (false, true, false) => "SELECT id, NULL AS cwd, title, NULL AS rollout_path FROM threads",
+        (false, false, true) => "SELECT id, NULL AS cwd, NULL AS title, rollout_path FROM threads",
+        (false, false, false) => unreachable!(),
     };
     let mut stmt = conn.prepare(query)?;
     let rows = stmt.query_map([], |row| {
@@ -1891,6 +1957,7 @@ fn build_sqlite_thread_metadata_lookup(
             CodexSqliteThreadMetadata {
                 cwd: row.get::<_, Option<String>>(1)?,
                 title: row.get::<_, Option<String>>(2)?,
+                rollout_path: row.get::<_, Option<String>>(3)?,
             },
         ))
     })?;
@@ -2160,6 +2227,10 @@ fn rewrite_rollout_model_provider(path: &Path, model_provider: &str) -> Result<(
 
 fn extract_cwd_from_session_file(id: &str) -> Option<String> {
     let path = find_session_file(id)?;
+    extract_cwd_from_session_path(&path)
+}
+
+fn extract_cwd_from_session_path(path: &Path) -> Option<String> {
     let file = File::open(&path).ok()?;
     let reader = BufReader::new(file);
     for line in reader.lines().take(5) {
@@ -2525,6 +2596,63 @@ fn find_session_file(id: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+fn build_session_file_lookup(
+    codex_dir: &Path,
+    session_ids: &[String],
+) -> HashMap<String, CodexSessionFileMeta> {
+    let mut lookup = HashMap::new();
+    if session_ids.is_empty() {
+        return lookup;
+    }
+
+    let mut remaining: HashSet<String> = session_ids.iter().cloned().collect();
+    let dirs = [
+        codex_dir.join("sessions"),
+        codex_dir.join("archived_sessions"),
+    ];
+
+    for dir in &dirs {
+        if !dir.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(dir)
+            .max_depth(5)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            if remaining.is_empty() {
+                return lookup;
+            }
+
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(session_id) = remaining
+                .iter()
+                .find(|id| file_name.contains(id.as_str()))
+                .cloned()
+            else {
+                continue;
+            };
+            let size_bytes = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+            lookup.insert(
+                session_id.clone(),
+                CodexSessionFileMeta {
+                    path: path.to_path_buf(),
+                    size_bytes,
+                },
+            );
+            remaining.remove(&session_id);
+        }
+    }
+
+    lookup
 }
 
 #[derive(Default)]

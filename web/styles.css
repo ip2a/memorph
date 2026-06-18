@@ -219,6 +219,12 @@ button[disabled] {
   gap: 10px;
 }
 
+.section-actions {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0 4px;
+}
+
 .brand {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-weight: 700;

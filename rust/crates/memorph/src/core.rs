@@ -160,21 +160,60 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
                 else {
                     return Ok(None);
                 };
-                let filtered_summaries: Vec<&ProviderSessionSummary> = if params.all {
+                let mut workspace_key_cache: HashMap<String, Option<String>> = HashMap::new();
+                let requested_workspace_key = if params.all {
+                    None
+                } else {
+                    prov.normalized_workspace_key(params.cwd.as_deref())
+                };
+                let mut filtered_summaries: Vec<&ProviderSessionSummary> = if params.all {
                     sessions.iter().collect()
                 } else {
-                    let cwd = params.cwd.as_deref().unwrap_or("");
                     sessions
                         .iter()
-                        .filter(|s| prov.workspace_matches(s.project_dir.as_deref(), Some(cwd)))
+                        .filter(|s| {
+                            let session_workspace_key = cached_normalized_workspace_key(
+                                prov.as_ref(),
+                                &mut workspace_key_cache,
+                                s.project_dir.as_deref(),
+                            );
+                            session_workspace_key.as_deref() == requested_workspace_key.as_deref()
+                        })
                         .collect()
                 };
-                let session_ids: Vec<&str> = filtered_summaries
+
+                filtered_summaries.sort_by_key(|s| {
+                    let workspace_key = cached_normalized_workspace_key(
+                        prov.as_ref(),
+                        &mut workspace_key_cache,
+                        s.project_dir.as_deref(),
+                    );
+                    let state = resolve_session_state_with_workspace_key(
+                        pid.as_str(),
+                        &s.session_id,
+                        s.title.clone(),
+                        workspace_key.as_deref(),
+                        session_states,
+                    );
+                    (
+                        std::cmp::Reverse(state.local.pinned),
+                        std::cmp::Reverse(s.last_active_at),
+                    )
+                });
+
+                let offset = params.offset.unwrap_or(0);
+                let limited_summaries: Vec<&ProviderSessionSummary> = filtered_summaries
+                    .into_iter()
+                    .skip(offset)
+                    .take(params.limit.unwrap_or(usize::MAX))
+                    .collect();
+
+                let session_ids: Vec<&str> = limited_summaries
                     .iter()
                     .map(|s| s.session_id.as_str())
                     .collect();
                 let sizes = prov.session_sizes(&session_ids);
-                let mut filtered: Vec<SessionItem> = filtered_summaries
+                let filtered: Vec<SessionItem> = limited_summaries
                     .iter()
                     .map(|s| {
                         enrich_session_item(
@@ -188,20 +227,6 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
                         )
                     })
                     .collect();
-                filtered.sort_by_key(|s| {
-                    (
-                        std::cmp::Reverse(s.pinned),
-                        std::cmp::Reverse(s.last_active_at),
-                    )
-                });
-
-                let offset = params.offset.unwrap_or(0);
-                if offset > 0 {
-                    filtered = filtered.into_iter().skip(offset).collect();
-                }
-                if let Some(limit) = params.limit {
-                    filtered.truncate(limit);
-                }
 
                 if filtered.is_empty() {
                     Ok(None)
@@ -419,6 +444,38 @@ fn resolve_session_state(
             workspace_dir.as_deref(),
         ),
     }
+}
+
+fn resolve_session_state_with_workspace_key(
+    provider_id: &str,
+    session_id: &str,
+    native_title: Option<String>,
+    workspace_key: Option<&str>,
+    session_states: &SessionStateStore,
+) -> ResolvedSessionState {
+    ResolvedSessionState {
+        native_title,
+        local: session_state::resolve_session_state(
+            session_states,
+            provider_id,
+            session_id,
+            workspace_key,
+        ),
+    }
+}
+
+fn cached_normalized_workspace_key(
+    provider: &dyn provider::Provider,
+    cache: &mut HashMap<String, Option<String>>,
+    workspace: Option<&str>,
+) -> Option<String> {
+    let workspace = workspace.map(str::trim).filter(|value| !value.is_empty())?;
+    if let Some(cached) = cache.get(workspace) {
+        return cached.clone();
+    }
+    let normalized = provider.normalized_workspace_key(Some(workspace));
+    cache.insert(workspace.to_string(), normalized.clone());
+    normalized
 }
 
 fn apply_session_item_state(item: &mut SessionItem, state: &ResolvedSessionState) {

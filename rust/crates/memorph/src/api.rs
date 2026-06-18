@@ -248,6 +248,10 @@ struct MetaPayload {
 #[derive(Debug, Serialize)]
 struct SessionDetailPayload {
     view: core::SessionDetailView,
+    events_offset: usize,
+    events_limit: Option<usize>,
+    returned_event_count: usize,
+    has_more_events: bool,
 }
 
 #[derive(Deserialize)]
@@ -772,6 +776,12 @@ struct ListQuery {
     offset: Option<usize>,
 }
 
+#[derive(Deserialize)]
+struct SessionDetailQuery {
+    event_limit: Option<usize>,
+    event_offset: Option<usize>,
+}
+
 async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
     let providers: Vec<String> = q
         .provider
@@ -848,13 +858,37 @@ async fn update_workspace_providers(Json(body): Json<WorkspaceProvidersBody>) ->
     }
 }
 
-async fn get_session(Path((provider, session_id)): Path<(String, String)>) -> impl IntoResponse {
+async fn get_session(
+    Path((provider, session_id)): Path<(String, String)>,
+    Query(q): Query<SessionDetailQuery>,
+) -> impl IntoResponse {
     match core::get_session_detail_view(&provider, &session_id) {
-        Ok(view) => {
+        Ok(mut view) => {
             if let Some(project_dir) = view.workspace_dir.as_deref() {
                 let _ = config::remember_workspace(std::path::Path::new(project_dir));
             }
-            ApiResponse::success(SessionDetailPayload { view }).into_response()
+            let events_offset = q.event_offset.unwrap_or(0).min(view.events.len());
+            let events_limit = q.event_limit;
+            if let Some(limit) = events_limit {
+                view.events = view
+                    .events
+                    .into_iter()
+                    .skip(events_offset)
+                    .take(limit)
+                    .collect();
+            } else if events_offset > 0 {
+                view.events = view.events.into_iter().skip(events_offset).collect();
+            }
+            let returned_event_count = view.events.len();
+            let has_more_events = events_offset + returned_event_count < view.event_count;
+            ApiResponse::success(SessionDetailPayload {
+                view,
+                events_offset,
+                events_limit,
+                returned_event_count,
+                has_more_events,
+            })
+            .into_response()
         }
         Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
     }

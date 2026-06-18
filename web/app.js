@@ -32,6 +32,7 @@ const ABOUT_LINKS = [
   },
 ];
 const ASCII_BANNER_COLORS = ["#7dd3fc", "#86efac", "#f0abfc", "#facc15", "#fb7185", "#c4b5fd"];
+const DETAIL_EVENT_PAGE_SIZE = 100;
 
 const state = {
   meta: null,
@@ -202,8 +203,12 @@ async function loadRoute() {
     if (route.name === "home") {
       await loadHome();
     } else if (route.name === "session") {
+      const detailParams = new URLSearchParams({
+        event_offset: "0",
+        event_limit: String(DETAIL_EVENT_PAGE_SIZE),
+      });
       const detail = await api(
-        `/api/v1/sessions/${encodeURIComponent(route.provider)}/${encodeURIComponent(route.sessionId)}`
+        `/api/v1/sessions/${encodeURIComponent(route.provider)}/${encodeURIComponent(route.sessionId)}?${detailParams.toString()}`
       );
       const hookRuntimeSessions = await loadRuntimeSessionsForDetail(detail.view);
       state.session = { ...detail, hook_runtime_sessions: hookRuntimeSessions };
@@ -241,7 +246,6 @@ async function loadRoute() {
     toast(t("error"), error.message, true);
   } finally {
     setLoading(false);
-    render();
   }
 }
 
@@ -256,9 +260,40 @@ async function loadHome() {
     all: "false",
     provider: state.home.providers.join(","),
     details: "false",
+    limit: String(Math.max(1, Number(state.home.visible || 12))),
   });
   state.home.groups = await api(`/api/v1/sessions?${params.toString()}`);
   state.home.sharedGroups = await api("/api/v1/share/status");
+}
+
+async function loadMoreSessionEvents() {
+  const current = state.session;
+  const view = current?.view;
+  if (!view || !current.has_more_events) return;
+
+  const params = new URLSearchParams({
+    event_offset: String(view.events.length),
+    event_limit: String(DETAIL_EVENT_PAGE_SIZE),
+  });
+  setLoading(true);
+  try {
+    const next = await api(
+      `/api/v1/sessions/${encodeURIComponent(state.route.provider)}/${encodeURIComponent(state.route.sessionId)}?${params.toString()}`
+    );
+    state.session = {
+      ...current,
+      ...next,
+      hook_runtime_sessions: current.hook_runtime_sessions || [],
+      view: {
+        ...view,
+        ...next.view,
+        events: [...view.events, ...(next.view?.events || [])],
+      },
+    };
+  } finally {
+    setLoading(false);
+    render();
+  }
 }
 
 async function loadAgentManagement() {
@@ -595,6 +630,9 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "run-agent-setting":
       await runAgentSetting(data.provider, data.settingId);
+      break;
+    case "load-more-session-events":
+      await loadMoreSessionEvents();
       break;
     case "open-repaired-sessions":
       openRepairedSessionsModal();
@@ -3211,6 +3249,11 @@ function renderSessionDetailView(detail, view) {
         <div class="msg-list">
           ${view.events.length ? view.events.map((event, index) => renderDetailEvent(event, index)).join("") : `<div class="empty-state">${t("noMessages")}</div>`}
         </div>
+        ${
+          detail.has_more_events
+            ? `<div class="section-actions"><button type="button" data-action="load-more-session-events">${t("more")} (${view.events.length}/${view.event_count})</button></div>`
+            : ""
+        }
       </section>
     </div>`;
 }
