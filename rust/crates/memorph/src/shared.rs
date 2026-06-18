@@ -412,7 +412,9 @@ pub fn refresh_active_times(group: &mut SharedGroup) -> Result<()> {
         if let Some(provider) = providers::find_provider(&holding.provider) {
             if provider.capabilities().scan {
                 let cache = crate::cache::global_cache();
-                if let Ok(sessions) = cache.get_or_refresh(&holding.provider, || provider.scan_sessions()) {
+                if let Ok(sessions) =
+                    cache.get_or_refresh(&holding.provider, || provider.scan_sessions())
+                {
                     if let Some(meta) = sessions
                         .into_iter()
                         .find(|s| s.session_id == holding.session_id)

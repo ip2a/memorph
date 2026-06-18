@@ -69,6 +69,12 @@ const state = {
     selectedProvider: "",
     settingResults: {},
     pendingSettings: {},
+    hookDiagnostics: null,
+    hookRuntimeSessions: [],
+    hookPendingRequests: [],
+    hookPolicy: null,
+    hookDoctorReport: null,
+    hookCleanupReport: null,
   },
   updateCheck: {
     checking: false,
@@ -199,7 +205,8 @@ async function loadRoute() {
       const detail = await api(
         `/api/v1/sessions/${encodeURIComponent(route.provider)}/${encodeURIComponent(route.sessionId)}`
       );
-      state.session = detail;
+      const hookRuntimeSessions = await loadRuntimeSessionsForDetail(detail.view);
+      state.session = { ...detail, hook_runtime_sessions: hookRuntimeSessions };
       const detailWorkspace = detail.view?.workspace_dir;
       if (detailWorkspace && detailWorkspace !== state.home.workspace) {
         state.home.workspace = detailWorkspace;
@@ -255,14 +262,57 @@ async function loadHome() {
 }
 
 async function loadAgentManagement() {
-  const payload = await api("/api/v1/agents");
+  const [payload, runtimeSessions, pendingRequests, hookPolicy] = await Promise.all([
+    api("/api/v1/agents"),
+    api("/api/v1/hooks/runtime-sessions").catch(() => []),
+    api("/api/v1/hooks/pending").catch(() => []),
+    api("/api/v1/hooks/policy").catch(() => null),
+  ]);
   state.agents.providers = payload.providers || [];
+  state.agents.hookRuntimeSessions = runtimeSessions || [];
+  state.agents.hookPendingRequests = pendingRequests || [];
+  state.agents.hookPolicy = hookPolicy;
   if (
     !state.agents.selectedProvider ||
     !state.agents.providers.some((item) => item.provider_id === state.agents.selectedProvider)
   ) {
     state.agents.selectedProvider = state.agents.providers[0]?.provider_id || "";
   }
+}
+
+async function loadRuntimeSessionsForDetail(view) {
+  const provider = view?.provider_id || state.route.provider;
+  const sessionId = view?.session_id || state.route.sessionId;
+  const exactParams = new URLSearchParams({ provider, session_id: sessionId });
+  try {
+    let sessions = await api(`/api/v1/hooks/runtime-sessions?${exactParams.toString()}`);
+    if (sessions.length) return sessions;
+
+    const providerParams = new URLSearchParams({ provider });
+    sessions = await api(`/api/v1/hooks/runtime-sessions?${providerParams.toString()}`);
+    const workspace = view?.workspace_dir || "";
+    return sessions.filter((session) => runtimeSessionMatchesDetail(session, provider, sessionId, workspace));
+  } catch {
+    return [];
+  }
+}
+
+function runtimeSessionMatchesDetail(session, provider, sessionId, workspace) {
+  if (!session || session.provider !== provider) return false;
+  const providerSessionId = session.provider_session_id || "";
+  if (
+    providerSessionId === sessionId ||
+    providerSessionId === `${provider}-${sessionId}` ||
+    providerSessionId.endsWith(`-${sessionId}`)
+  ) {
+    return true;
+  }
+  const cwd = session.cwd || "";
+  return !!workspace && !!cwd && normalizePathForCompare(cwd) === normalizePathForCompare(workspace);
+}
+
+function normalizePathForCompare(value) {
+  return String(value || "").replace(/\\/g, "/").replace(/\/+$/, "");
 }
 
 async function detectAgentProvider(providerId) {
@@ -277,6 +327,69 @@ async function detectAgentProvider(providerId) {
     state.agents.providers.push(provider);
   }
   state.agents.selectedProvider = provider.provider_id;
+  render();
+}
+
+async function loadHookDiagnostics() {
+  const [diagnostics, pendingRequests, policy] = await Promise.all([
+    api("/api/v1/hooks/diagnostics?event_limit=25&error_limit=25"),
+    api("/api/v1/hooks/pending").catch(() => []),
+    api("/api/v1/hooks/policy").catch(() => null),
+  ]);
+  state.agents.hookDiagnostics = diagnostics;
+  state.agents.hookPendingRequests = pendingRequests || [];
+  state.agents.hookPolicy = policy;
+  render();
+}
+
+async function runHookDoctor(repair = false) {
+  const report = await api("/api/v1/hooks/doctor", {
+    method: "POST",
+    body: { repair },
+  });
+  state.agents.hookDoctorReport = report;
+  await loadHookDiagnostics();
+  toast(t("saved"), repair ? "Hook doctor repair completed" : "Hook doctor check completed");
+  render();
+}
+
+async function cleanupHookRuntimeSessions() {
+  const report = await api("/api/v1/hooks/cleanup", { method: "POST" });
+  state.agents.hookCleanupReport = report;
+  const [runtimeSessions, diagnostics] = await Promise.all([
+    api("/api/v1/hooks/runtime-sessions").catch(() => []),
+    api("/api/v1/hooks/diagnostics?event_limit=25&error_limit=25").catch(() => state.agents.hookDiagnostics),
+  ]);
+  state.agents.hookRuntimeSessions = runtimeSessions || [];
+  state.agents.hookDiagnostics = diagnostics;
+  toast(t("saved"), `Hook cleanup: idle ${report.idle || 0}, orphaned ${report.orphaned || 0}`);
+  render();
+}
+
+async function setHookPolicyMode(mode) {
+  const current = state.agents.hookPolicy || { version: 1, global: "record_only", providers: {}, tool_rules: [] };
+  const next = { ...current, global: mode };
+  state.agents.hookPolicy = await api("/api/v1/hooks/policy", {
+    method: "PUT",
+    body: next,
+  });
+  toast(t("saved"), `Hook policy: ${mode}`);
+  render();
+}
+
+async function resolveHookPendingRequest(id, decision) {
+  if (!id || !decision) return;
+  await api(`/api/v1/hooks/pending/${encodeURIComponent(id)}/decision`, {
+    method: "POST",
+    body: { decision },
+  });
+  const [runtimeSessions, pendingRequests] = await Promise.all([
+    api("/api/v1/hooks/runtime-sessions").catch(() => []),
+    api("/api/v1/hooks/pending").catch(() => []),
+  ]);
+  state.agents.hookRuntimeSessions = runtimeSessions || [];
+  state.agents.hookPendingRequests = pendingRequests || [];
+  toast(t("saved"), `Hook request ${decision}`);
   render();
 }
 
@@ -461,6 +574,21 @@ async function handleAction(action, data, trigger = null) {
       await loadAgentManagement();
       render();
       break;
+    case "load-hook-diagnostics":
+      await loadHookDiagnostics();
+      break;
+    case "run-hook-doctor":
+      await runHookDoctor(data.repair === "true" || data.repair === true);
+      break;
+    case "cleanup-hook-runtime":
+      await cleanupHookRuntimeSessions();
+      break;
+    case "set-hook-policy-mode":
+      await setHookPolicyMode(data.mode || "record_only");
+      break;
+    case "resolve-hook-pending":
+      await resolveHookPendingRequest(data.pendingId, data.decision);
+      break;
     case "select-agent-provider":
       state.agents.selectedProvider = data.provider || "";
       render();
@@ -511,7 +639,7 @@ async function handleAction(action, data, trigger = null) {
       openWorkspaceHistoryModal();
       break;
     case "open-switch":
-      openSwitchModal(data.provider, data.sessionId, data.workspace || state.home.workspace);
+      openSwitchModal(data.provider, data.sessionId, data.workspace || state.home.workspace, data.title || "");
       break;
     case "open-export":
       openExportModal(data.provider, data.sessionId);
@@ -825,24 +953,40 @@ function openAgentFilterModal() {
   render();
 }
 
-function openSwitchModal(provider, sessionId, workspace) {
+function openSwitchModal(provider, sessionId, workspace, currentTitle = "") {
   const defaultTarget = getDefaultSwitchTarget(provider);
+  const initialTitle = (currentTitle || "").trim();
   state.modal = {
     kind: "form",
-    title: t("switch"),
+    title: t("copy"),
     submit: "switch-session",
     body: `
-      <div class="stack">
+      <div class="copy-modal-grid">
         <input type="hidden" name="from" value="${escapeAttr(provider)}">
         <input type="hidden" name="session_id" value="${escapeAttr(sessionId)}">
-        <label class="field">
+        <label class="field copy-modal-target">
           <span>${t("targetProvider")}</span>
           <select name="to">${providerOptions(provider, defaultTarget)}</select>
         </label>
-        ${renderPathField("to_dir", t("targetDir"), workspace || "", t("targetWorkspaceHint"))}
+        <label class="field copy-modal-title">
+          <span>${t("copySessionTitleLabel")}</span>
+          <input name="target_title" value="${escapeAttr(initialTitle)}" placeholder="${escapeAttr(initialTitle)}">
+        </label>
+        <div class="copy-modal-dir">
+          ${renderPathField("to_dir", t("targetDir"), workspace || "", t("targetWorkspaceHint"))}
+          <small class="muted copy-modal-remove-hint">${t("copySessionTitleHint")}</small>
+        </div>
       </div>
       ${renderWorkspaceDatalist()}`,
-    submitLabel: t("switch"),
+    submitLabel: t("copyAction"),
+    extraActions: [
+      {
+        label: t("moveAction"),
+        submit: "switch-session",
+        action: "move",
+        className: "danger invert",
+      },
+    ],
   };
   render();
 }
@@ -1549,27 +1693,44 @@ async function runImport(formData) {
 }
 
 async function runSwitch(formData) {
-  const result = await api("/api/v1/switch", {
-    method: "POST",
-    body: {
-      from: String(formData.get("from")),
-      to: String(formData.get("to")),
-      session_id: emptyToNull(formData.get("session_id")),
-      to_dir: emptyToNull(formData.get("to_dir")),
-    },
+  const fromProvider = String(formData.get("from"));
+  const toProvider = String(formData.get("to"));
+  const explicitAction = String(formData.get("action") || "").toLowerCase();
+  const moveOriginal = explicitAction === "move";
+  const targetTitle = String(formData.get("target_title") || "").trim();
+  setLoading(true, {
+    label: moveOriginal ? t("moveAction") : t("copyAction"),
+    detail: t("targetProvider"),
   });
-  await loadHome();
-  closeModal();
-  openActionResultModal({
-    title: t("switched"),
-    summary: `${result.from_name} → ${result.to_name}`,
-    lines: [
-      `${t("source")}: ${result.from_name} / ${result.source_session_id}`,
-      `${t("target")}: ${result.to_name} / ${result.target_session_id}`,
-      ...(result.resume_command ? [`${t("resumeCommand")}: ${result.resume_command}`] : []),
-    ],
-    navPath: `/sessions/${encodeURIComponent(String(formData.get("to")))}/${encodeURIComponent(result.target_session_id)}`,
-  });
+  try {
+    const result = await api("/api/v1/switch", {
+      method: "POST",
+      body: {
+        from: fromProvider,
+        to: toProvider,
+        session_id: emptyToNull(formData.get("session_id")),
+        to_dir: emptyToNull(formData.get("to_dir")),
+        target_title: emptyToNull(targetTitle),
+        move_original: moveOriginal,
+      },
+    });
+    await loadHome();
+    closeModal();
+    openActionResultModal({
+      title: moveOriginal ? t("moveAction") : t("copyAction"),
+      summary: `${result.from_name} → ${result.to_name}`,
+      lines: [
+        `${t("source")}: ${result.from_name} / ${result.source_session_id}`,
+        `${t("target")}: ${result.to_name} / ${result.target_session_id}`,
+        ...(targetTitle ? [`${t("title")}: ${targetTitle}`] : []),
+        ...(moveOriginal ? [t("removeOriginalSession")] : []),
+        ...(result.resume_command ? [`${t("resumeCommand")}: ${result.resume_command}`] : []),
+      ],
+      navPath: `/sessions/${encodeURIComponent(toProvider)}/${encodeURIComponent(result.target_session_id)}`,
+    });
+  } finally {
+    setLoading(false);
+  }
 }
 
 async function runExport(formData) {
@@ -2230,6 +2391,202 @@ function renderAgentManagementPage() {
       <section class="section-panel manager-result-panel agent-provider-detail-panel">
         ${selected ? renderAgentProviderDetail(selected) : `<div class="empty-state">${t("noProviders")}</div>`}
       </section>
+      ${renderHookPendingPanel()}
+      ${renderHookPolicyPanel()}
+      ${renderHookDiagnosticsPanel()}
+    </div>`;
+}
+
+function renderHookPendingPanel() {
+  const pending = state.agents.hookPendingRequests || [];
+  return `
+    <section class="section-panel manager-result-panel agent-provider-detail-panel">
+      <div class="section-heading">
+        <div>
+          <strong>Pending Hook Requests</strong>
+          <small>Blocking permission/question requests waiting for a memorph decision.</small>
+        </div>
+      </div>
+      ${
+        pending.length
+          ? `<div class="settings-list agent-environment-paths">${pending.map(renderHookPendingRow).join("")}</div>`
+          : `<div class="empty-state">No pending hook requests.</div>`
+      }
+    </section>`;
+}
+
+function renderHookPendingRow(request) {
+  const title = `${request.provider || "hook"} · ${request.kind || "request"}`;
+  const tool = request.tool?.name ? `${request.tool.name}${formatToolInputHint(request.tool.input)}` : "";
+  const detail = request.prompt || tool || request.provider_session_id || request.runtime_id || request.id || "—";
+  return `
+    <div class="settings-row agent-detail-row">
+      <div class="settings-copy settings-copy-inline">
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(detail)}</span>
+        <small>${escapeHtml(request.created_at ? `created ${formatDate(request.created_at)}` : request.id || "")}</small>
+      </div>
+      <div class="pill-row">
+        <button
+          type="button"
+          data-action="resolve-hook-pending"
+          data-pending-id="${escapeAttr(request.id)}"
+          data-decision="allow"
+        >Allow</button>
+        <button
+          type="button"
+          class="invert"
+          data-action="resolve-hook-pending"
+          data-pending-id="${escapeAttr(request.id)}"
+          data-decision="deny"
+        >Deny</button>
+      </div>
+    </div>`;
+}
+
+function renderHookPolicyPanel() {
+  const policy = state.agents.hookPolicy || { global: "record_only", providers: {}, tool_rules: [] };
+  const modes = ["record_only", "allow", "deny", "ask_user", "ignore", "provider_default"];
+  return `
+    <section class="section-panel manager-result-panel agent-provider-detail-panel">
+      <div class="section-heading">
+        <div>
+          <strong>Hook Policy</strong>
+          <small>Decision policy for blocking hook events. Default record-only keeps provider native permission UI in control.</small>
+        </div>
+      </div>
+      <div class="manager-summary-grid agent-environment-grid">
+        ${renderMetaLine("Global mode", policy.global || "record_only")}
+        ${renderMetaLine("Provider overrides", String(Object.keys(policy.providers || {}).length))}
+        ${renderMetaLine("Tool rules", String((policy.tool_rules || []).length))}
+      </div>
+      <div class="pill-row">
+        ${modes
+          .map(
+            (mode) => `
+              <button
+                type="button"
+                class="${(policy.global || "record_only") === mode ? "" : "invert"}"
+                data-action="set-hook-policy-mode"
+                data-mode="${escapeAttr(mode)}"
+              >${escapeHtml(mode)}</button>`
+          )
+          .join("")}
+      </div>
+      <div class="empty-state">Use allow/deny only when you want memorph to answer provider blocking hooks. record_only is the safe default.</div>
+    </section>`;
+}
+
+function renderHookDiagnosticsPanel() {
+  const report = state.agents.hookDiagnostics;
+  return `
+    <section class="section-panel manager-result-panel agent-provider-detail-panel">
+      <div class="section-heading">
+        <div>
+          <strong>Hook Diagnostics</strong>
+          <small>Read-only support snapshot for hook runtime, provider installs, events, and errors.</small>
+        </div>
+        <div class="pill-row">
+          <button type="button" class="invert" data-action="load-hook-diagnostics">Refresh diagnostics</button>
+          <button type="button" class="invert" data-action="run-hook-doctor" data-repair="false">Doctor check</button>
+          <button type="button" data-action="run-hook-doctor" data-repair="true">Doctor repair</button>
+          <button type="button" class="invert" data-action="cleanup-hook-runtime">Cleanup runtime</button>
+        </div>
+      </div>
+      ${
+        report
+          ? renderHookDiagnosticsReport(report)
+          : `<div class="empty-state">No diagnostics loaded yet.</div>`
+      }
+    </section>`;
+}
+
+function renderHookDiagnosticsReport(report) {
+  const counts = report.counts || {};
+  const server = report.server || {};
+  const policy = report.policy || state.agents.hookPolicy || {};
+  const providers = report.providers || [];
+  const errors = report.recent_errors || [];
+  return `
+    <div class="stack">
+      <div class="manager-summary-grid agent-environment-grid">
+        ${renderMetaLine("Generated", report.generated_at ? formatDate(report.generated_at) : "—")}
+        ${renderMetaLine("Server", server.endpoint || "not running")}
+        ${renderMetaLine("Runtime sessions", String(counts.runtime_sessions || 0))}
+        ${renderMetaLine("Active runtime sessions", String(counts.active_runtime_sessions || 0))}
+        ${renderMetaLine("Pending requests", String(counts.pending_requests || 0))}
+        ${renderMetaLine("Recent events", String(counts.recent_events || 0))}
+        ${renderMetaLine("Recent errors", String(counts.recent_errors || 0))}
+        ${renderMetaLine("Policy", policy.global || "record_only")}
+        ${report.store?.root ? renderWideMetaLine("Hook store", report.store.root) : ""}
+      </div>
+      ${renderHookDoctorReport(state.agents.hookDoctorReport)}
+      ${renderHookCleanupReport(state.agents.hookCleanupReport)}
+      <div class="settings-list">
+        ${providers
+          .map((provider) =>
+            renderAgentDetailRow(
+              `${agentProviderDisplayName({ provider_id: provider.provider })} hook`,
+              provider.status || "unknown",
+              `${provider.message || provider.config_path || "—"} · installed ${provider.installed_version || "—"} / current ${
+                provider.current_version || "—"
+              }`
+            )
+          )
+          .join("")}
+      </div>
+      ${
+        errors.length
+          ? `<pre class="code-block">${escapeHtml(
+              JSON.stringify(
+                errors.map((error) => ({
+                  timestamp: error.timestamp,
+                  scope: error.scope,
+                  message: error.message,
+                })),
+                null,
+                2
+              )
+            )}</pre>`
+          : `<div class="empty-state">No recent hook errors.</div>`
+      }
+    </div>`;
+}
+
+function renderHookDoctorReport(report) {
+  if (!report) return "";
+  const results = report.results || [];
+  return `
+    <div class="stack">
+      <div class="manager-summary-grid agent-environment-grid">
+        ${renderMetaLine("Doctor checked", String(report.checked || 0))}
+        ${renderMetaLine("Doctor repaired", String(report.repaired || 0))}
+        ${renderMetaLine("Doctor failed", String(report.failed || 0))}
+      </div>
+      ${
+        results.length
+          ? `<div class="settings-list agent-environment-paths">${results
+              .map((item) => {
+                const after = item.after?.status ? ` → ${item.after.status}` : "";
+                const error = item.error ? ` · ${item.error}` : "";
+                return renderAgentDetailRow(
+                  `${agentProviderDisplayName({ provider_id: item.provider })} doctor`,
+                  `${item.before?.status || "unknown"}${after}`,
+                  `${item.operation?.message || item.before?.message || "—"}${error}`
+                );
+              })
+              .join("")}</div>`
+          : ""
+      }
+    </div>`;
+}
+
+function renderHookCleanupReport(report) {
+  if (!report) return "";
+  return `
+    <div class="manager-summary-grid agent-environment-grid">
+      ${renderMetaLine("Cleanup idle", String(report.idle || 0))}
+      ${renderMetaLine("Cleanup orphaned", String(report.orphaned || 0))}
     </div>`;
 }
 
@@ -2311,6 +2668,8 @@ function renderAgentProviderDetail(provider) {
         ${renderAgentDetailRow(t("agentConfigPath"), environment.config_path || "—", t("agentConfigPathHint"))}
       </div>
     </div>
+    ${renderAgentHookStatus(provider)}
+    ${renderAgentRuntimeSessions(provider)}
     <div class="stack">
       <div class="section-heading">
         <div>
@@ -2331,6 +2690,80 @@ function renderAgentProviderDetail(provider) {
       }
       ${actionItems.map((setting) => renderAgentSettingResult(provider.provider_id, setting.id)).join("")}
     </div>
+    </div>`;
+}
+
+function renderAgentRuntimeSessions(provider) {
+  const sessions = (state.agents.hookRuntimeSessions || []).filter(
+    (session) => session.provider === provider.provider_id && !["completed", "failed"].includes(session.status)
+  );
+  return `
+    <div class="stack">
+      <div class="section-heading">
+        <div>
+          <strong>Active Hook Runtime Sessions</strong>
+          <small>Live sessions observed through provider hooks.</small>
+        </div>
+      </div>
+      ${
+        sessions.length
+          ? `<div class="settings-list agent-environment-paths">${sessions.map(renderRuntimeSessionRow).join("")}</div>`
+          : `<div class="empty-state">No active hook runtime sessions.</div>`
+      }
+    </div>`;
+}
+
+
+function renderAgentHookStatus(provider) {
+  const hook = provider.hook || {};
+  const profile = provider.hook_profile || null;
+  const events = Array.isArray(profile?.events) ? profile.events : [];
+  const blockingCount = events.filter((event) => event.blocking).length;
+  const status = hook.status || "unsupported";
+  const lastEvent = hook.last_event_at ? formatDate(hook.last_event_at) : "—";
+  return `
+    <div class="stack">
+      <div class="section-heading">
+        <div>
+          <strong>Hook Integration</strong>
+          <small>Optional runtime session enhancement for this Agent.</small>
+        </div>
+      </div>
+      <div class="manager-summary-grid agent-environment-grid">
+        ${renderMetaLine("Hook status", status)}
+        ${renderMetaLine("Hook format", profile ? hookFormatLabel(profile.format) : "—")}
+        ${renderMetaLine("Events", events.length ? `${events.length} total / ${blockingCount} blocking` : "—")}
+        ${renderMetaLine("Installed version", hook.installed_version || "—")}
+        ${renderMetaLine("Current version", hook.current_version || "—")}
+        ${renderMetaLine("Last event", lastEvent)}
+      </div>
+      <div class="settings-list agent-environment-paths">
+        ${renderAgentDetailRow("Hook config", hook.config_path || profile?.config_hint || "—", hook.message || "No hook status message.")}
+        ${profile ? renderAgentDetailRow("Hook config hint", profile.config_hint || "—", "Expected provider hook location learned from the hook profile.") : ""}
+        ${events.length ? renderHookEventProfileRow(events) : ""}
+      </div>
+    </div>`;
+}
+
+function hookFormatLabel(format) {
+  return String(format || "unknown")
+    .split("_")
+    .map((part) => part ? part[0].toUpperCase() + part.slice(1) : part)
+    .join(" ");
+}
+
+function renderHookEventProfileRow(events) {
+  return `
+    <div class="settings-row agent-detail-row">
+      <div class="settings-copy settings-copy-inline">
+        <strong>Hook events</strong>
+        <span>Provider events memorph can capture. Blocking events may require a policy decision.</span>
+      </div>
+      <div class="pill-row hook-event-pill-row">
+        ${events
+          .map((event) => `<span class="pill" title="${escapeAttr(event.blocking ? "blocking" : "record-only")}">${escapeHtml(event.name)}${event.blocking ? " *" : ""}</span>`)
+          .join("")}
+      </div>
     </div>`;
 }
 
@@ -2391,7 +2824,31 @@ function renderAgentSettingResult(providerId, settingId) {
   if (settingId === "repair_workspace_sessions") {
     return renderCodexRepairReport(result);
   }
+  if (result.type === "hook_operation") {
+    return renderHookOperationReport(result);
+  }
   return `<pre class="code-block">${escapeHtml(JSON.stringify(result, null, 2))}</pre>`;
+}
+
+function renderHookOperationReport(result) {
+  const report = result?.type === "hook_operation" ? result.data : null;
+  if (!report) return "";
+  const status = report.status || {};
+  return `
+    <section class="manager-workspace-summary">
+      <div class="manager-summary-grid agent-environment-grid">
+        ${renderMetaLine("Provider", report.provider)}
+        ${renderMetaLine("Operation", report.operation)}
+        ${renderMetaLine("Changed", report.changed ? "yes" : "no")}
+        ${renderMetaLine("Status", status.status || "unknown")}
+        ${renderMetaLine("Installed version", status.installed_version || "—")}
+        ${renderMetaLine("Current version", status.current_version || "—")}
+        ${renderMetaLine("Last event", status.last_event_at ? formatDate(status.last_event_at) : "—")}
+        ${status.config_path ? renderWideMetaLine("Hook config", status.config_path) : ""}
+        ${report.backup_path ? renderWideMetaLine("Backup", report.backup_path) : ""}
+      </div>
+      ${report.message || status.message ? `<div class="empty-state">${escapeHtml(report.message || status.message)}</div>` : ""}
+    </section>`;
 }
 
 function renderCodexRepairReport(result) {
@@ -2700,7 +3157,7 @@ function renderSessionRow(item) {
         </div>
         <div class="row-actions">
         ${buttons.view ? `<a class="button" href="/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}" data-nav="/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}">${t("view")}</a>` : ""}
-        ${buttons.switch ? `<button type="button" data-action="open-switch" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}" data-workspace="${escapeAttr(item.project_dir || state.home.workspace)}">${t("switch")}</button>` : ""}
+        ${buttons.switch ? `<button type="button" data-action="open-switch" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}" data-workspace="${escapeAttr(item.project_dir || state.home.workspace)}" data-title="${escapeAttr(item.title || item.session_id)}">${t("switch")}</button>` : ""}
         ${buttons.export ? `<button type="button" data-action="open-export" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}">${t("export")}</button>` : ""}
         ${buttons.share ? shareAction : ""}
         <button type="button" data-action="open-rename" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}" data-title="${escapeAttr(item.title || "")}">${t("rename")}</button>
@@ -2742,12 +3199,13 @@ function renderSessionDetailView(detail, view) {
         <a class="button" href="/compression" data-nav="/compression">${t("compression")}</a>
         ${sharedRef ? `<a class="button" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("openShared")}</a>` : ""}
         <button type="button" data-action="open-share-create" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("share")}</button>
-        <button type="button" data-action="open-switch" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-workspace="${escapeAttr(workspace)}">${t("switch")}</button>
+        <button type="button" data-action="open-switch" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-workspace="${escapeAttr(workspace)}" data-title="${escapeAttr(view.title || "")}">${t("switch")}</button>
         <button type="button" data-action="open-export" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${t("export")}</button>
         <button type="button" data-action="open-rename" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("rename")}</button>
         <button type="button" class="danger" data-action="open-delete" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${t("remove")}</button>
       </div>
     </section>
+    ${renderSessionHookRuntimeBlock(detail.hook_runtime_sessions || [])}
     <div class="detail-layout">
       <section>
         <div class="msg-list">
@@ -2755,6 +3213,50 @@ function renderSessionDetailView(detail, view) {
         </div>
       </section>
     </div>`;
+}
+
+function renderSessionHookRuntimeBlock(runtimeSessions) {
+  if (!runtimeSessions.length) {
+    return `
+      <section class="manager-workspace-summary">
+        <div>
+          <span class="eyebrow">Hook Runtime</span>
+          <strong>No linked runtime session</strong>
+          <p>Install/enable hooks to see live tool, permission, and question state for this session.</p>
+        </div>
+      </section>`;
+  }
+  return `
+    <section class="manager-workspace-summary">
+      <div>
+        <span class="eyebrow">Hook Runtime</span>
+        <strong>${escapeHtml(runtimeSessions.length === 1 ? "Linked runtime session" : `${runtimeSessions.length} linked runtime sessions`)}</strong>
+        <p>Live hook state captured from the provider runtime.</p>
+      </div>
+      <div class="settings-list agent-environment-paths">
+        ${runtimeSessions.map(renderRuntimeSessionRow).join("")}
+      </div>
+    </section>`;
+}
+
+function renderRuntimeSessionRow(session) {
+  const tool = session.current_tool;
+  const permission = session.pending_permission;
+  const question = session.pending_question;
+  const detail = question?.prompt || permission?.prompt || tool?.name || session.cwd || session.provider_session_id || session.runtime_id?.[0] || "—";
+  return renderAgentDetailRow(
+    `${session.provider || "hook"} · ${session.status || "unknown"}`,
+    tool ? `${tool.name}${formatToolInputHint(tool.input)}` : detail,
+    `last event ${session.last_event_at ? formatDate(session.last_event_at) : "—"} · updated ${
+      session.updated_at ? formatDate(session.updated_at) : "—"
+    }`
+  );
+}
+
+function formatToolInputHint(input) {
+  if (!input || typeof input !== "object") return "";
+  const command = input.command || input.file_path || input.path;
+  return command ? ` — ${String(command).slice(0, 120)}` : "";
 }
 
 function getBlockLabel(block) {
@@ -3310,6 +3812,12 @@ function renderModal() {
   const modal = state.modal;
   const formOpen = modal.kind === "form";
   const actionsInHead = formOpen && modal.actionsInHead;
+  const extraActionButtons = (modal.extraActions || [])
+    .map(
+      (item) =>
+        `<button type="submit" name="action" value="${escapeAttr(item.action || item.label)}" class="${escapeAttr(item.className || "invert")}">${escapeHtml(item.label)}</button>`
+    )
+    .join("");
   modalRoot.innerHTML = `
     <div class="overlay">
       <div class="modal-card ${modal.className || ""}">
@@ -3336,7 +3844,8 @@ function renderModal() {
                   ? ""
                   : `<div class="modal-actions">
                       <button type="button" data-action="close-modal">${t("cancel")}</button>
-                      <button type="submit" class="${modal.submitClass || "invert"}">${escapeHtml(modal.submitLabel || t("save"))}</button>
+                      <button type="submit" name="action" value="copy" class="${modal.submitClass || "invert"}">${escapeHtml(modal.submitLabel || t("save"))}</button>
+                      ${extraActionButtons}
                     </div>`
               }
             </form>`

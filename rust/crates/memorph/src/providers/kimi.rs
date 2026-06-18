@@ -5,8 +5,9 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
 use crate::provider::{
-    canonical_event_visible_text, canonical_export_result, canonical_session_title,
-    canonical_visible_block_text, Provider, ProviderCapabilities, ProviderSessionSummary,
+    canonical_event_visible_message_role, canonical_event_visible_message_text,
+    canonical_export_result, canonical_session_title, canonical_visible_block_text, Provider,
+    ProviderCapabilities, ProviderSessionSummary,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -110,10 +111,7 @@ impl Provider for KimiProvider {
         Ok(sessions)
     }
 
-    fn get_session_meta(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         let dir = match find_session_dir(session_id) {
             Some(d) => d,
             None => return Ok(None),
@@ -346,9 +344,15 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     )?;
 
     for event in &session.events {
+        let Some(visible_role) = canonical_event_visible_message_role(event) else {
+            continue;
+        };
         let ts = event.timestamp.timestamp_millis() as f64 / 1000.0;
-        match event.role {
+        match visible_role {
             EventRole::Assistant => {
+                let Some(text) = canonical_event_visible_message_text(event) else {
+                    continue;
+                };
                 for block in &event.blocks {
                     if let Some(payload) = canonical_block_to_kimi_content_part(block) {
                         writeln!(
@@ -369,15 +373,14 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
                     "{}",
                     serde_json::json!({
                         "role": "assistant",
-                        "content": canonical_event_visible_text(event)
+                        "content": text
                     })
                 )?;
             }
             _ => {
-                let text = canonical_event_visible_text(event);
-                if text.trim().is_empty() {
+                let Some(text) = canonical_event_visible_message_text(event) else {
                     continue;
-                }
+                };
                 writeln!(
                     wire_file,
                     "{}",

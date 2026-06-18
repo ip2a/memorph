@@ -2,9 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::canonical::{
-    CanonicalSession, ImportedSession, SessionArtifact, SessionEvent, SessionEventKind,
-};
+use crate::canonical::{CanonicalSession, ImportedSession, SessionArtifact, SessionEvent};
 use crate::core::active_compression::{
     ActiveCompressionApplyParams, ActiveCompressionMode, ActiveCompressionParams,
     ActiveCompressionPolicy, ActiveCompressionReport,
@@ -436,7 +434,7 @@ fn session_message_count(session: &CanonicalSession) -> usize {
     session
         .events
         .iter()
-        .filter(|event| !matches!(event.kind, SessionEventKind::Lifecycle))
+        .filter(|event| provider::canonical_event_is_visible_message(event))
         .count()
 }
 
@@ -1157,9 +1155,7 @@ pub fn update_session_local_state(
         .with_context(|| format!("Unknown provider: {}", provider_id))?;
     let capabilities = prov.capabilities();
     if capabilities.scan {
-        let exists = prov
-            .get_session_meta(session_id)?
-            .is_some();
+        let exists = prov.get_session_meta(session_id)?.is_some();
         if !exists {
             anyhow::bail!("Session not found: {}", session_id);
         }
@@ -1188,6 +1184,10 @@ pub struct SwitchParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub to_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_title: Option<String>,
+    #[serde(default)]
+    pub move_original: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_compression: Option<ActiveCompressionPolicy>,
 }
 
@@ -1198,6 +1198,8 @@ pub struct SwitchResult {
     pub source_session_id: String,
     pub target_session_id: String,
     pub resume_command: Option<String>,
+    #[serde(default)]
+    pub removed_original: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_compression_report: Option<ActiveCompressionReport>,
 }
@@ -1257,9 +1259,27 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
         &params.to,
         params.active_compression.clone(),
     )?;
-    let (session, _) =
+    let (mut session, _) =
         session_management::prepare_session_for_export(&source_session, &params.from, &params.to)?;
+    if let Some(raw_title) = params.target_title.as_ref() {
+        let trimmed = raw_title.trim();
+        if !trimmed.is_empty() {
+            session.identity.source_title = Some(trimmed.to_string());
+        }
+    }
     let exported = target_prov.export_session(&session, &target_dir)?;
+
+    let mut removed_original = false;
+    if params.move_original {
+        if !source_capabilities.delete {
+            anyhow::bail!(
+                "Source provider does not support deleting sessions: {}",
+                params.from
+            );
+        }
+        source_prov.delete_session(&source_session_id)?;
+        removed_original = true;
+    }
 
     Ok(SwitchResult {
         from_name: source_prov.name().to_string(),
@@ -1267,6 +1287,7 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
         source_session_id,
         target_session_id: exported.session_id,
         resume_command: exported.resume_command,
+        removed_original,
         active_compression_report,
     })
 }
@@ -1964,6 +1985,8 @@ mod tests {
             to: "codex".to_string(),
             session_id: None,
             to_dir: None,
+            target_title: None,
+            move_original: false,
             active_compression: None,
         };
 

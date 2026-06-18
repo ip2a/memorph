@@ -1,6 +1,6 @@
 use crate::canonical::{
     CanonicalSession, EventBlock, EventRole, ExportedSession, ImportedSession, MappingDirection,
-    MappingDisposition, MappingReport, SessionEvent,
+    MappingDisposition, MappingReport, SessionEvent, SessionEventKind,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -224,12 +224,66 @@ pub fn canonical_session_title(session: &CanonicalSession) -> String {
         .events
         .iter()
         .find_map(|event| {
-            canonical_event_text(event)
+            if !matches!(
+                canonical_event_visible_message_role(event),
+                Some(EventRole::User | EventRole::Assistant)
+            ) {
+                return None;
+            }
+            canonical_event_visible_message_text(event)?
                 .lines()
                 .find(|line| !line.trim().is_empty())
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "Imported session".to_string())
+}
+
+pub fn canonical_event_visible_message_role(event: &SessionEvent) -> Option<EventRole> {
+    if matches!(
+        event.kind,
+        SessionEventKind::Lifecycle | SessionEventKind::Unknown
+    ) {
+        return None;
+    }
+    match event.role {
+        EventRole::User | EventRole::Assistant | EventRole::Tool => Some(event.role),
+        EventRole::System | EventRole::Developer | EventRole::Unknown => None,
+    }
+}
+
+pub fn canonical_event_is_visible_message(event: &SessionEvent) -> bool {
+    canonical_event_visible_message_role(event).is_some()
+        && !canonical_event_visible_text(event).trim().is_empty()
+}
+
+pub fn canonical_event_visible_message_text(event: &SessionEvent) -> Option<String> {
+    canonical_event_visible_message_role(event)?;
+    let text = canonical_event_visible_text(event);
+    (!text.trim().is_empty()).then_some(text)
+}
+
+pub fn canonical_event_instruction_context_text(event: &SessionEvent) -> Option<String> {
+    if matches!(
+        event.kind,
+        SessionEventKind::Lifecycle | SessionEventKind::Unknown
+    ) {
+        return None;
+    }
+    if !matches!(event.role, EventRole::System | EventRole::Developer) {
+        return None;
+    }
+    let text = canonical_event_visible_text(event);
+    (!text.trim().is_empty()).then_some(text)
+}
+
+pub fn canonical_session_instruction_context_text(session: &CanonicalSession) -> Option<String> {
+    let text = session
+        .events
+        .iter()
+        .filter_map(canonical_event_instruction_context_text)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    (!text.trim().is_empty()).then_some(text)
 }
 
 pub fn canonical_event_text(event: &SessionEvent) -> String {
@@ -472,6 +526,210 @@ mod tests {
         };
 
         assert_eq!(canonical_event_visible_text(&event), "hello");
+    }
+
+    #[test]
+    fn canonical_visible_message_role_excludes_internal_events() {
+        let lifecycle = test_event(
+            "lifecycle",
+            crate::canonical::SessionEventKind::Lifecycle,
+            EventRole::System,
+            vec![EventBlock::Text {
+                text: "internal".to_string(),
+            }],
+        );
+        let developer = test_event(
+            "developer",
+            crate::canonical::SessionEventKind::Message,
+            EventRole::Developer,
+            vec![EventBlock::Text {
+                text: "developer".to_string(),
+            }],
+        );
+        let unknown = test_event(
+            "unknown",
+            crate::canonical::SessionEventKind::Unknown,
+            EventRole::User,
+            vec![EventBlock::Text {
+                text: "unknown".to_string(),
+            }],
+        );
+        let user = test_event(
+            "user",
+            crate::canonical::SessionEventKind::Message,
+            EventRole::User,
+            vec![EventBlock::Text {
+                text: "hello".to_string(),
+            }],
+        );
+
+        assert_eq!(canonical_event_visible_message_role(&lifecycle), None);
+        assert_eq!(canonical_event_visible_message_role(&developer), None);
+        assert_eq!(canonical_event_visible_message_role(&unknown), None);
+        assert_eq!(
+            canonical_event_visible_message_role(&user),
+            Some(EventRole::User)
+        );
+        assert_eq!(
+            canonical_event_visible_message_text(&user).as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn canonical_session_title_uses_visible_user_or_assistant_message() {
+        let session = CanonicalSession {
+            schema: crate::canonical::CanonicalSchema {
+                name: crate::canonical::CANONICAL_SCHEMA_NAME.to_string(),
+                version: 1,
+            },
+            identity: crate::canonical::SessionIdentity {
+                canonical_id: "canonical-1".to_string(),
+                source_title: None,
+            },
+            provenance: crate::canonical::SessionProvenance {
+                imported_at: chrono::Utc::now(),
+                imported_by: None,
+                primary_source: crate::canonical::ProviderSessionRef {
+                    provider_id: "test".to_string(),
+                    session_id: "session-1".to_string(),
+                    source_path: None,
+                },
+                aliases: Vec::new(),
+            },
+            context: crate::canonical::SessionContext {
+                workspace_dir: None,
+                created_at: None,
+                last_active_at: None,
+                tags: Vec::new(),
+            },
+            events: vec![
+                test_event(
+                    "internal",
+                    crate::canonical::SessionEventKind::Lifecycle,
+                    EventRole::System,
+                    vec![EventBlock::ProviderPayload {
+                        kind: "internal".to_string(),
+                        payload: serde_json::json!({"id": "should-not-title"}),
+                    }],
+                ),
+                test_event(
+                    "prompt",
+                    crate::canonical::SessionEventKind::Message,
+                    EventRole::User,
+                    vec![EventBlock::Text {
+                        text: "real prompt".to_string(),
+                    }],
+                ),
+            ],
+            artifacts: Vec::new(),
+            extensions: std::collections::BTreeMap::new(),
+        };
+
+        assert_eq!(canonical_session_title(&session), "real prompt");
+    }
+
+    #[test]
+    fn canonical_instruction_context_uses_only_system_or_developer_messages() {
+        let session = CanonicalSession {
+            schema: crate::canonical::CanonicalSchema {
+                name: crate::canonical::CANONICAL_SCHEMA_NAME.to_string(),
+                version: 1,
+            },
+            identity: crate::canonical::SessionIdentity {
+                canonical_id: "canonical-1".to_string(),
+                source_title: None,
+            },
+            provenance: crate::canonical::SessionProvenance {
+                imported_at: chrono::Utc::now(),
+                imported_by: None,
+                primary_source: crate::canonical::ProviderSessionRef {
+                    provider_id: "test".to_string(),
+                    session_id: "session-1".to_string(),
+                    source_path: None,
+                },
+                aliases: Vec::new(),
+            },
+            context: crate::canonical::SessionContext::default(),
+            events: vec![
+                test_event(
+                    "system",
+                    crate::canonical::SessionEventKind::Message,
+                    EventRole::System,
+                    vec![EventBlock::Text {
+                        text: "system instructions".to_string(),
+                    }],
+                ),
+                test_event(
+                    "developer",
+                    crate::canonical::SessionEventKind::Message,
+                    EventRole::Developer,
+                    vec![EventBlock::Text {
+                        text: "developer instructions".to_string(),
+                    }],
+                ),
+                test_event(
+                    "internal",
+                    crate::canonical::SessionEventKind::Lifecycle,
+                    EventRole::System,
+                    vec![EventBlock::Text {
+                        text: "runtime context".to_string(),
+                    }],
+                ),
+                test_event(
+                    "payload",
+                    crate::canonical::SessionEventKind::Message,
+                    EventRole::System,
+                    vec![EventBlock::ProviderPayload {
+                        kind: "internal".to_string(),
+                        payload: serde_json::json!({"text": "provider payload"}),
+                    }],
+                ),
+                test_event(
+                    "user",
+                    crate::canonical::SessionEventKind::Message,
+                    EventRole::User,
+                    vec![EventBlock::Text {
+                        text: "user prompt".to_string(),
+                    }],
+                ),
+            ],
+            artifacts: Vec::new(),
+            extensions: std::collections::BTreeMap::new(),
+        };
+
+        assert_eq!(
+            canonical_session_instruction_context_text(&session).as_deref(),
+            Some("system instructions\n\ndeveloper instructions")
+        );
+    }
+
+    fn test_event(
+        id: &str,
+        kind: crate::canonical::SessionEventKind,
+        role: EventRole,
+        blocks: Vec<EventBlock>,
+    ) -> SessionEvent {
+        SessionEvent {
+            id: id.to_string(),
+            kind,
+            role,
+            timestamp: chrono::Utc::now(),
+            links: crate::canonical::EventLinks::default(),
+            blocks,
+            metadata: crate::canonical::EventMetadata {
+                source: crate::canonical::EventSource {
+                    provider_id: "test".to_string(),
+                    original_id: None,
+                    original_role: None,
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: std::collections::BTreeMap::new(),
+            },
+        }
     }
 }
 

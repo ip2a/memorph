@@ -8,7 +8,8 @@ use crate::core::compression::{
     self, CompressedSegment, CompressionProjection, NativeTargetProjection,
 };
 use crate::provider::{
-    canonical_block_text, canonical_export_result, canonical_session_title,
+    canonical_event_is_visible_message, canonical_event_visible_message_role,
+    canonical_export_result, canonical_session_title, canonical_visible_block_text,
     compression_retrieval_hint, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use anyhow::{Context, Result};
@@ -74,10 +75,7 @@ impl Provider for OpenCodeProvider {
         Ok(sessions)
     }
 
-    fn get_session_meta(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         // 1. Try SQLite DB first
         let db_path = get_db_path();
         if db_path.exists() {
@@ -800,9 +798,15 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
             }
         }
 
+        let Some(visible_role) = canonical_event_visible_message_role(event) else {
+            continue;
+        };
+        if !canonical_event_is_visible_message(event) {
+            continue;
+        }
         let msg_id = generate_opencode_id("msg");
         let msg_created = event.timestamp.timestamp_millis();
-        let (role, parent_id) = match event.role {
+        let (role, parent_id) = match visible_role {
             EventRole::Assistant => ("assistant", last_user_msg_id.clone()),
             EventRole::User => {
                 last_user_msg_id = Some(msg_id.clone());
@@ -827,13 +831,15 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
         for block in &event.blocks {
             let part_id = generate_opencode_id("prt");
             let part_created = msg_created + 1;
-            let part_json = canonical_block_to_opencode_part(
+            let Some(part_json) = canonical_block_to_opencode_part(
                 &session_id,
                 &msg_id,
                 &part_id,
                 block,
                 part_created,
-            );
+            ) else {
+                continue;
+            };
             oc_parts.push((part_id, msg_id.clone(), part_created, part_json));
         }
     }
@@ -1029,27 +1035,27 @@ fn canonical_block_to_opencode_part(
     part_id: &str,
     block: &EventBlock,
     part_created: i64,
-) -> Value {
+) -> Option<Value> {
     match block {
-        EventBlock::Text { text } => serde_json::json!({
+        EventBlock::Text { text } => Some(serde_json::json!({
             "id": part_id,
             "sessionID": session_id,
             "messageID": msg_id,
             "type": "text",
             "text": text,
-        }),
-        EventBlock::Thinking { text, .. } => serde_json::json!({
+        })),
+        EventBlock::Thinking { text, .. } => Some(serde_json::json!({
             "id": part_id,
             "sessionID": session_id,
             "messageID": msg_id,
             "type": "reasoning",
             "text": text,
-        }),
+        })),
         EventBlock::ToolResult {
             tool_call_id,
             content,
             is_error,
-        } => serde_json::json!({
+        } => Some(serde_json::json!({
             "id": part_id,
             "sessionID": session_id,
             "messageID": msg_id,
@@ -1067,10 +1073,10 @@ fn canonical_block_to_opencode_part(
                     "end": part_created
                 }
             }
-        }),
+        })),
         EventBlock::Image {
             mime_type, data, ..
-        } => serde_json::json!({
+        } => Some(serde_json::json!({
             "id": part_id,
             "sessionID": session_id,
             "messageID": msg_id,
@@ -1078,8 +1084,8 @@ fn canonical_block_to_opencode_part(
             "mime": mime_type,
             "filename": "image.png",
             "url": data.as_deref().unwrap_or(""),
-        }),
-        EventBlock::File { path, content, .. } => serde_json::json!({
+        })),
+        EventBlock::File { path, content, .. } => Some(serde_json::json!({
             "id": part_id,
             "sessionID": session_id,
             "messageID": msg_id,
@@ -1087,13 +1093,15 @@ fn canonical_block_to_opencode_part(
             "mime": "text/plain",
             "filename": path,
             "url": content.as_deref().unwrap_or(""),
-        }),
-        _ => serde_json::json!({
-            "id": part_id,
-            "sessionID": session_id,
-            "messageID": msg_id,
-            "type": "text",
-            "text": canonical_block_text(block),
+        })),
+        _ => canonical_visible_block_text(block).map(|text| {
+            serde_json::json!({
+                "id": part_id,
+                "sessionID": session_id,
+                "messageID": msg_id,
+                "type": "text",
+                "text": text,
+            })
         }),
     }
 }
@@ -1665,6 +1673,23 @@ mod tests {
         assert_eq!(obj.get("agent").and_then(Value::as_str), Some("build"));
         assert!(obj.get("path").is_some());
         assert!(obj.get("tokens").is_some());
+    }
+
+    #[test]
+    fn provider_payload_block_is_skipped_in_opencode_part_export() {
+        let block = EventBlock::ProviderPayload {
+            kind: "internal".to_string(),
+            payload: serde_json::json!({"id": "hidden"}),
+        };
+
+        assert!(canonical_block_to_opencode_part(
+            "ses_test",
+            "msg_test",
+            "prt_test",
+            &block,
+            1_700_000_000_001,
+        )
+        .is_none());
     }
 
     #[test]

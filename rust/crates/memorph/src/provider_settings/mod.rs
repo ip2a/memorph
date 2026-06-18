@@ -1,5 +1,26 @@
+mod antigravity;
+mod claude;
+mod cline;
+mod codebuddy;
 mod codex;
+mod codybuddycn;
+mod copilot;
+mod cursor;
+mod droid;
+mod gemini;
+mod hermes;
+mod kimi;
+mod kiro;
+mod omp;
 mod opencode;
+mod pi;
+mod qoder;
+mod qwen;
+mod stepfun;
+mod trae;
+mod trae_gui;
+mod traecn;
+mod workbuddy;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -14,6 +35,7 @@ pub struct ProviderSettingContext {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ProviderSettingOutput {
     CodexWorkspaceRepair(crate::providers::codex::CodexWorkspaceRepairReport),
+    HookOperation(crate::hooks::installer::HookOperationReport),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -74,8 +96,29 @@ struct ProviderSettingRegistry;
 impl ProviderSettingRegistry {
     fn find(provider_id: &str) -> Option<&'static dyn ProviderSettingModule> {
         match provider_id {
+            "claude" => Some(&claude::ClaudeSettingModule),
+            "cline" => Some(&cline::ClineSettingModule),
             "codex" => Some(&codex::CodexSettingModule),
+            "copilot" => Some(&copilot::CopilotSettingModule),
+            "cursor" => Some(&cursor::CursorSettingModule),
+            "gemini" => Some(&gemini::GeminiSettingModule),
+            "kimi" => Some(&kimi::KimiSettingModule),
+            "kiro" => Some(&kiro::KiroSettingModule),
             "opencode" => Some(&opencode::OpenCodeSettingModule),
+            "pi" => Some(&pi::PiSettingModule),
+            "omp" => Some(&omp::OmpSettingModule),
+            "qwen" => Some(&qwen::QwenSettingModule),
+            "qoder" => Some(&qoder::QoderSettingModule),
+            "droid" | "factory" => Some(&droid::DroidSettingModule),
+            "codebuddy" => Some(&codebuddy::CodeBuddySettingModule),
+            "codybuddycn" => Some(&codybuddycn::CodyBuddyCnSettingModule),
+            "stepfun" => Some(&stepfun::StepFunSettingModule),
+            "antigravity" => Some(&antigravity::AntiGravitySettingModule),
+            "workbuddy" => Some(&workbuddy::WorkBuddySettingModule),
+            "hermes" => Some(&hermes::HermesSettingModule),
+            "trae_gui" => Some(&trae_gui::TraeGuiSettingModule),
+            "traecn" => Some(&traecn::TraeCnSettingModule),
+            "trae" => Some(&trae::TraeSettingModule),
             _ => None,
         }
     }
@@ -217,11 +260,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn provider_settings_expose_claude_hook_actions() {
+        let settings = list_provider_settings("claude").unwrap();
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
+    }
+
+    #[test]
     fn provider_settings_expose_opencode_toggle() {
         let settings = list_provider_settings("opencode").unwrap();
         assert!(settings
             .iter()
             .any(|setting| setting.id == "show_subagents"));
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
+    }
+
+    #[test]
+    fn provider_settings_expose_cline_hook_actions() {
+        let settings = list_provider_settings("cline").unwrap();
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
     }
 
     #[test]
@@ -233,5 +304,114 @@ mod tests {
             .expect("missing codex repair setting");
         assert_eq!(setting.kind, SettingKind::Action);
         assert_eq!(setting.scope, SettingScope::Workspace);
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
+    }
+
+    #[test]
+    fn provider_settings_expose_cursor_hook_actions() {
+        let settings = list_provider_settings("cursor").unwrap();
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
+    }
+
+    #[test]
+    fn provider_settings_expose_gemini_hook_actions() {
+        let settings = list_provider_settings("gemini").unwrap();
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
+    }
+
+    #[test]
+    fn provider_settings_expose_kimi_hook_actions() {
+        let settings = list_provider_settings("kimi").unwrap();
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
+    }
+
+    #[test]
+    fn provider_settings_expose_kiro_hook_actions() {
+        let settings = list_provider_settings("kiro").unwrap();
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
+    }
+
+    #[test]
+    fn provider_settings_expose_copilot_hook_actions() {
+        let settings = list_provider_settings("copilot").unwrap();
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
+    }
+
+    #[test]
+    fn provider_settings_expose_qwen_hook_actions() {
+        let settings = list_provider_settings("qwen").unwrap();
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
+    }
+
+    #[test]
+    fn provider_settings_expose_codeisland_gap_hook_actions() {
+        for provider in [
+            "qoder",
+            "droid",
+            "codebuddy",
+            "codybuddycn",
+            "stepfun",
+            "antigravity",
+            "workbuddy",
+            "hermes",
+            "trae_gui",
+            "traecn",
+            "pi",
+            "omp",
+        ] {
+            let settings = list_provider_settings(provider).unwrap();
+            assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+            assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+            assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+            assert!(settings
+                .iter()
+                .any(|setting| setting.id == "uninstall_hook"));
+        }
+    }
+
+    #[test]
+    fn provider_settings_expose_trae_hook_actions() {
+        let settings = list_provider_settings("trae").unwrap();
+        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
+        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
+        assert!(settings
+            .iter()
+            .any(|setting| setting.id == "uninstall_hook"));
     }
 }

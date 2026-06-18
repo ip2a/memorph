@@ -1225,6 +1225,24 @@ button[disabled] {
   padding: 18px;
 }
 
+.copy-modal-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px 16px;
+  align-items: start;
+}
+
+.copy-modal-target,
+.copy-modal-title {
+  min-width: 0;
+}
+
+.copy-modal-dir {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 6px;
+}
+
 .session-results {
   min-height: 0;
   overflow-y: auto;
@@ -1502,21 +1520,21 @@ button[disabled] {
   width: 100%;
 }
 
-#settings-config {
+#settings-config:not(.is-hidden) {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
 }
 
-#settings-config .settings-list {
+#settings-config:not(.is-hidden) .settings-list {
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
 }
 
-#settings-config .settings-row-stacked {
+#settings-config:not(.is-hidden) .settings-row-stacked {
   display: flex;
   flex-direction: column;
   flex: 1;

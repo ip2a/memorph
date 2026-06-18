@@ -51,6 +51,20 @@ json_read_provider!(
     None::<&'static str>
 );
 json_read_provider!(
+    DroidProvider,
+    "droid",
+    "Factory",
+    droid_roots,
+    None::<&'static str>
+);
+json_read_provider!(
+    ClineProvider,
+    "cline",
+    "Cline",
+    cline_roots,
+    None::<&'static str>
+);
+json_read_provider!(
     CopilotProvider,
     "copilot",
     "GitHub Copilot",
@@ -72,6 +86,20 @@ json_read_provider!(
     None::<&'static str>
 );
 json_read_provider!(
+    CodeBuddyProvider,
+    "codebuddy",
+    "CodeBuddy",
+    codebuddy_roots,
+    None::<&'static str>
+);
+json_read_provider!(
+    CodyBuddyCnProvider,
+    "codybuddycn",
+    "CodyBuddyCN",
+    codybuddycn_roots,
+    None::<&'static str>
+);
+json_read_provider!(
     QoderProvider,
     "qoder",
     "Qoder",
@@ -79,10 +107,60 @@ json_read_provider!(
     None::<&'static str>
 );
 json_read_provider!(
+    QwenProvider,
+    "qwen",
+    "Qwen Code",
+    qwen_roots,
+    None::<&'static str>
+);
+json_read_provider!(
+    StepFunProvider,
+    "stepfun",
+    "StepFun",
+    stepfun_roots,
+    None::<&'static str>
+);
+json_read_provider!(
+    WorkBuddyProvider,
+    "workbuddy",
+    "WorkBuddy",
+    workbuddy_roots,
+    None::<&'static str>
+);
+json_read_provider!(
+    HermesProvider,
+    "hermes",
+    "Hermes",
+    hermes_roots,
+    None::<&'static str>
+);
+json_read_provider!(PiProvider, "pi", "pi", pi_roots, None::<&'static str>);
+json_read_provider!(
+    OmpProvider,
+    "omp",
+    "Oh My Pi",
+    omp_roots,
+    None::<&'static str>
+);
+json_read_provider!(
     TraeProvider,
     "trae",
+    "TraeCli",
+    trae_roots,
+    None::<&'static str>
+);
+json_read_provider!(
+    TraeGuiProvider,
+    "trae_gui",
     "Trae",
     trae_roots,
+    None::<&'static str>
+);
+json_read_provider!(
+    TraeCnProvider,
+    "traecn",
+    "Trae CN",
+    traecn_roots,
     None::<&'static str>
 );
 
@@ -136,6 +214,25 @@ fn antigravity_roots() -> Vec<PathBuf> {
     roots
 }
 
+fn droid_roots() -> Vec<PathBuf> {
+    let mut roots = vscode_global_storage("Factory");
+    roots.extend(vscode_global_storage("Droid"));
+    if let Some(root) = home_join(".factory") {
+        roots.push(root);
+    }
+    roots
+}
+
+fn cline_roots() -> Vec<PathBuf> {
+    let mut roots = vscode_global_storage("Code");
+    roots.extend(vscode_global_storage("Code - Insiders"));
+    roots.extend(vscode_global_storage("VSCodium"));
+    if let Some(root) = home_join("Documents/Cline") {
+        roots.push(root);
+    }
+    roots
+}
+
 fn copilot_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     for app in ["Code", "Code - Insiders", "VSCodium"] {
@@ -170,6 +267,22 @@ fn cidebuddy_roots() -> Vec<PathBuf> {
     roots
 }
 
+fn codebuddy_roots() -> Vec<PathBuf> {
+    let mut roots = vscode_global_storage("CodeBuddy");
+    if let Some(root) = home_join(".codebuddy") {
+        roots.push(root);
+    }
+    roots
+}
+
+fn codybuddycn_roots() -> Vec<PathBuf> {
+    let mut roots = vscode_global_storage("CodyBuddyCN");
+    if let Some(root) = home_join(".codybuddycn") {
+        roots.push(root);
+    }
+    roots
+}
+
 fn qoder_roots() -> Vec<PathBuf> {
     let mut roots = vscode_global_storage("Qoder");
     if let Some(root) = home_join(".qoder") {
@@ -178,10 +291,65 @@ fn qoder_roots() -> Vec<PathBuf> {
     roots
 }
 
+fn qwen_roots() -> Vec<PathBuf> {
+    let mut roots = vscode_global_storage("Qwen");
+    if let Some(root) = home_join(".qwen") {
+        roots.push(root);
+    }
+    roots
+}
+
+fn stepfun_roots() -> Vec<PathBuf> {
+    let mut roots = vscode_global_storage("StepFun");
+    if let Some(root) = home_join(".stepfun") {
+        roots.push(root);
+    }
+    roots
+}
+
+fn workbuddy_roots() -> Vec<PathBuf> {
+    let mut roots = vscode_global_storage("WorkBuddy");
+    if let Some(root) = home_join(".workbuddy") {
+        roots.push(root);
+    }
+    roots
+}
+
+fn hermes_roots() -> Vec<PathBuf> {
+    let mut roots = vscode_global_storage("Hermes");
+    if let Some(root) = home_join(".hermes") {
+        roots.push(root);
+    }
+    roots
+}
+
+fn pi_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(root) = home_join(".pi/agent") {
+        roots.push(root);
+    }
+    roots
+}
+
+fn omp_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(root) = home_join(".omp/agent") {
+        roots.push(root);
+    }
+    roots
+}
+
 fn trae_roots() -> Vec<PathBuf> {
     let mut roots = vscode_global_storage("Trae");
-    roots.extend(vscode_global_storage("Trae CN"));
     if let Some(root) = home_join(".trae") {
+        roots.push(root);
+    }
+    roots
+}
+
+fn traecn_roots() -> Vec<PathBuf> {
+    let mut roots = vscode_global_storage("Trae CN");
+    if let Some(root) = home_join(".trae-cn") {
         roots.push(root);
     }
     roots

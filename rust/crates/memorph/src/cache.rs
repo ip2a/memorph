@@ -70,7 +70,10 @@ impl SessionCache {
             sessions,
             refreshed_at: Instant::now(),
         };
-        self.data.write().unwrap().insert(provider_id.to_string(), cached);
+        self.data
+            .write()
+            .unwrap()
+            .insert(provider_id.to_string(), cached);
     }
 
     pub fn invalidate(&self, provider_id: &str) {
@@ -102,7 +105,10 @@ pub struct CacheWatcher {
 }
 
 impl CacheWatcher {
-    pub fn new(cache: Arc<SessionCache>, path_to_provider: HashMap<PathBuf, String>) -> Result<Self> {
+    pub fn new(
+        cache: Arc<SessionCache>,
+        path_to_provider: HashMap<PathBuf, String>,
+    ) -> Result<Self> {
         let cache_clone = cache.clone();
         let p2p = Arc::new(path_to_provider);
         let p2p_clone = p2p.clone();
@@ -112,7 +118,9 @@ impl CacheWatcher {
                 if let Ok(event) = res {
                     for changed_path in &event.paths {
                         for (watched_path, provider_id) in p2p_clone.iter() {
-                            if changed_path == watched_path || changed_path.starts_with(watched_path) {
+                            if changed_path == watched_path
+                                || changed_path.starts_with(watched_path)
+                            {
                                 cache_clone.invalidate(provider_id);
                                 break;
                             }
@@ -142,7 +150,9 @@ impl CacheWatcher {
 pub fn build_path_registry() -> HashMap<PathBuf, String> {
     let mut map = HashMap::new();
     for id in crate::providers::all_provider_ids() {
-        let Some(prov) = crate::providers::find_provider(id) else { continue };
+        let Some(prov) = crate::providers::find_provider(id) else {
+            continue;
+        };
         let pid = prov.id().to_string();
         for path in prov.data_source_paths() {
             if path.exists() {
@@ -160,8 +170,8 @@ pub fn init_watcher() {
     WATCHER_INIT.call_once(|| {
         let cache = global_cache();
         let registry = build_path_registry();
-        let watcher = CacheWatcher::new(cache, registry)
-            .expect("Failed to initialize cache watcher");
+        let watcher =
+            CacheWatcher::new(cache, registry).expect("Failed to initialize cache watcher");
         let _ = Box::leak(Box::new(watcher));
     });
 }

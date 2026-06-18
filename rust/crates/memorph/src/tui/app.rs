@@ -718,6 +718,36 @@ impl App {
                         workspace: self.workspace.clone(),
                     },
                 ) {
+                    Ok(provider_settings::ProviderSettingOutput::HookOperation(report)) => {
+                        let mut lines = vec![
+                            format!("Provider: {}", report.provider),
+                            format!("Operation: {}", report.operation),
+                            format!("Changed: {}", report.changed),
+                            format!("Status: {:?}", report.status.status),
+                        ];
+                        if let Some(message) = report.message {
+                            lines.push(format!("Message: {}", message));
+                        }
+                        if let Some(config_path) = report.status.config_path {
+                            lines.push(format!("Config: {}", config_path));
+                        }
+                        if let Some(backup_path) = report.backup_path {
+                            lines.push(format!("Backup: {}", backup_path));
+                        }
+                        if let Ok(entries) =
+                            crate::agent_management::list_agent_management_entries()
+                        {
+                            self.agent_management_entries = entries;
+                            self.agent_management_index = self
+                                .agent_management_index
+                                .min(self.agent_management_entries.len().saturating_sub(1));
+                        }
+                        ActionResult {
+                            title: self.t("agents").to_string(),
+                            lines,
+                            is_error: false,
+                        }
+                    }
                     Ok(provider_settings::ProviderSettingOutput::CodexWorkspaceRepair(report)) => {
                         let mut lines = vec![
                             format!("Workspace: {}", report.workspace_dir),
@@ -1625,6 +1655,8 @@ impl App {
             to: target.to_string(),
             session_id: Some(selected.session_id.clone()),
             to_dir: self.selected_target_workspace(),
+            target_title: None,
+            move_original: false,
             active_compression: None,
         };
 

@@ -5,8 +5,9 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
 use crate::provider::{
-    canonical_event_role_label, canonical_event_visible_text, canonical_export_result,
-    canonical_session_title, Provider, ProviderCapabilities, ProviderSessionSummary,
+    canonical_event_role_label, canonical_event_visible_message_role,
+    canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
+    Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -77,10 +78,7 @@ impl Provider for DeepseekProvider {
         Ok(sessions)
     }
 
-    fn get_session_meta(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         let db_path = get_state_db_path();
         if !db_path.exists() {
             return Ok(None);
@@ -204,7 +202,11 @@ impl Provider for DeepseekProvider {
     }
 
     fn data_source_paths(&self) -> Vec<PathBuf> {
-        get_state_db_path().parent().map(PathBuf::from).into_iter().collect()
+        get_state_db_path()
+            .parent()
+            .map(PathBuf::from)
+            .into_iter()
+            .collect()
     }
 }
 
@@ -275,16 +277,17 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     .context("failed to insert thread")?;
 
     for event in &session.events {
-        let content = deepseek_message_content(event);
-        if content.trim().is_empty() {
+        let Some(visible_role) = canonical_event_visible_message_role(event) else {
             continue;
-        }
-        let role = match event.role {
+        };
+        let Some(content) = deepseek_message_content(event) else {
+            continue;
+        };
+        let role = match visible_role {
             EventRole::Assistant => "assistant",
             EventRole::Tool => "tool",
-            EventRole::System => "system",
-            EventRole::Developer => "developer",
-            EventRole::User | EventRole::Unknown => "user",
+            EventRole::User => "user",
+            EventRole::System | EventRole::Developer | EventRole::Unknown => continue,
         };
         let item_json = serde_json::json!({
             "source": "memorph-canonical",
@@ -312,8 +315,8 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     Ok(thread_id)
 }
 
-fn deepseek_message_content(event: &SessionEvent) -> String {
-    canonical_event_visible_text(event)
+fn deepseek_message_content(event: &SessionEvent) -> Option<String> {
+    canonical_event_visible_message_text(event)
 }
 
 #[derive(Debug)]
@@ -825,7 +828,7 @@ mod tests {
             },
         };
 
-        let content = deepseek_message_content(&event);
+        let content = deepseek_message_content(&event).expect("visible compressed content");
 
         assert!(content.contains("[Compressed session segment from opencode]"));
         assert!(content.contains("compressed summary"));
@@ -835,5 +838,33 @@ mod tests {
         assert!(!content.contains("old-event-1"));
         assert!(!content.contains("old-event-2"));
         assert!(!content.contains("old-event-3"));
+    }
+
+    #[test]
+    fn internal_events_do_not_export_as_deepseek_message_content() {
+        let event = SessionEvent {
+            id: "internal".to_string(),
+            kind: SessionEventKind::Lifecycle,
+            role: EventRole::System,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::Text {
+                text: "internal context".to_string(),
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "codex".to_string(),
+                    original_id: None,
+                    original_role: Some("user".to_string()),
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Normalized,
+                provider_ext: BTreeMap::new(),
+            },
+        };
+
+        assert!(deepseek_message_content(&event).is_none());
     }
 }

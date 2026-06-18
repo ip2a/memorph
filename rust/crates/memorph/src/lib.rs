@@ -9,6 +9,7 @@ pub mod cli;
 pub mod config;
 pub mod core;
 pub mod format;
+pub mod hooks;
 pub mod i18n;
 pub mod logging;
 pub mod provider;

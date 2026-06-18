@@ -8,8 +8,11 @@ use crate::core::compression::{
     self, CompressedSegment, CompressionProjection, NativeTargetProjection,
 };
 use crate::provider::{
-    canonical_block_text, canonical_event_text, canonical_export_result, canonical_session_title,
-    compression_retrieval_hint, Provider, ProviderCapabilities, ProviderSessionSummary,
+    canonical_event_visible_message_role, canonical_event_visible_message_text,
+    canonical_event_visible_text, canonical_export_result,
+    canonical_session_instruction_context_text, canonical_session_title,
+    canonical_visible_block_text, compression_retrieval_hint, Provider, ProviderCapabilities,
+    ProviderSessionSummary,
 };
 use crate::storage::session_state;
 use crate::utils;
@@ -40,7 +43,10 @@ const CODEX_INTERNAL_DEVELOPER_TAGS: &[&str] = &[
     "<skills_instructions>",
     "<personality_spec>",
 ];
-const CODEX_INTERNAL_USER_CONTEXT_TAGS: &[&str] = &["<environment_context>"];
+const CODEX_INTERNAL_USER_CONTEXT_TAGS: &[(&str, &str)] = &[
+    ("<environment_context>", "</environment_context>"),
+    ("<codex_internal_context", "</codex_internal_context>"),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CodexInternalMessageKind {
@@ -236,8 +242,7 @@ impl Provider for CodexProvider {
         Ok(sessions)
     }
 
-    fn get_session_meta(
-&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
+    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         let index_path = get_codex_dir().join("session_index.jsonl");
         if !index_path.exists() {
             return Ok(None);
@@ -1706,7 +1711,9 @@ fn codex_is_internal_user_context_text(text: &str) -> bool {
     let trimmed = text.trim_start();
     CODEX_INTERNAL_USER_CONTEXT_TAGS
         .iter()
-        .any(|tag| trimmed.starts_with(tag) && text.trim_end().ends_with("</environment_context>"))
+        .any(|(start_tag, end_tag)| {
+            trimmed.starts_with(start_tag) && text.trim_end().ends_with(end_tag)
+        })
         || codex_is_agents_instructions_text(trimmed)
 }
 
@@ -2199,12 +2206,7 @@ fn export_canonical_session_in_codex_dir(
     let title = canonical_session_title(session);
     let first_user_message = first_user_message(session);
     let has_user_event = has_user_event(session);
-    let base_instructions = session
-        .events
-        .iter()
-        .find(|event| matches!(event.role, EventRole::System | EventRole::Developer))
-        .map(canonical_event_text)
-        .filter(|text| !text.trim().is_empty());
+    let base_instructions = canonical_session_instruction_context_text(session);
 
     writeln!(
         file,
@@ -2272,9 +2274,6 @@ fn export_canonical_session_in_codex_dir(
     let native_compression_target =
         compression::target_projection(PROVIDER_ID) == CompressionProjection::Native;
     for event in &session.events {
-        if event.role == EventRole::System {
-            continue;
-        }
         if native_compression_target {
             if let Some(NativeTargetProjection::CodexCompaction(segment)) =
                 compression::native_target_projection_for_event(PROVIDER_ID, event)
@@ -2286,11 +2285,13 @@ fn export_canonical_session_in_codex_dir(
                 continue;
             }
         }
-        let role = match event.role {
+        let Some(visible_role) = canonical_event_visible_message_role(event) else {
+            continue;
+        };
+        let role = match visible_role {
             EventRole::Assistant => "assistant",
-            EventRole::Developer => "developer",
-            EventRole::User | EventRole::Tool | EventRole::Unknown => "user",
-            EventRole::System => continue,
+            EventRole::User | EventRole::Tool => "user",
+            EventRole::System | EventRole::Developer | EventRole::Unknown => continue,
         };
         let content = canonical_event_to_codex_content(event);
         if content.is_empty() {
@@ -2303,7 +2304,7 @@ fn export_canonical_session_in_codex_dir(
         });
         if event.role == EventRole::Assistant {
             payload["phase"] = Value::String("final_answer".to_string());
-            last_agent_message = canonical_event_text(event);
+            last_agent_message = canonical_event_visible_text(event);
             writeln!(
                 file,
                 "{}",
@@ -2328,8 +2329,8 @@ fn export_canonical_session_in_codex_dir(
                 "payload": payload,
             }))?
         )?;
-        if event.role == EventRole::User && !wrote_user_event {
-            let user_text = canonical_event_text(event);
+        if visible_role == EventRole::User && !wrote_user_event {
+            let user_text = canonical_event_visible_text(event);
             writeln!(
                 file,
                 "{}",
@@ -2482,7 +2483,7 @@ fn canonical_event_to_codex_content(event: &SessionEvent) -> Vec<Value> {
             }
             EventBlock::ProviderPayload { .. } => None,
             _ => {
-                let text = canonical_block_text(block);
+                let text = canonical_visible_block_text(block)?;
                 (!text.trim().is_empty()).then(|| serde_json::json!({
                     "type": if event.role == EventRole::Assistant { "output_text" } else { "input_text" },
                     "text": text,
@@ -2572,9 +2573,9 @@ fn first_user_message(session: &CanonicalSession) -> Option<String> {
     session
         .events
         .iter()
-        .filter(|event| event.role == EventRole::User)
+        .filter(|event| canonical_event_visible_message_role(event) == Some(EventRole::User))
         .find_map(|event| {
-            let text = canonical_event_text(event);
+            let text = canonical_event_visible_message_text(event)?;
             let trimmed = text.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         })
@@ -2584,7 +2585,7 @@ fn has_user_event(session: &CanonicalSession) -> bool {
     session
         .events
         .iter()
-        .any(|event| event.role == EventRole::User)
+        .any(|event| canonical_event_visible_message_role(event) == Some(EventRole::User))
 }
 
 fn update_codex_sqlite(
@@ -3080,6 +3081,25 @@ mod tests {
             file,
             "{}",
             json!({
+                "timestamp": "2026-05-21T10:00:00.750Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "<codex_internal_context source=\"goal\">\nContinue working toward the active thread goal.\n</codex_internal_context>"
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
                 "timestamp": "2026-05-21T10:00:01Z",
                 "type": "response_item",
                 "payload": {
@@ -3153,7 +3173,7 @@ mod tests {
         assert!(!events.iter().any(|event| {
             event.role == EventRole::User
                 && event.blocks.iter().any(|block| {
-                    matches!(block, EventBlock::Text { text } if text.contains("<environment_context>") || text.contains("# AGENTS.md instructions"))
+                    matches!(block, EventBlock::Text { text } if text.contains("<environment_context>") || text.contains("# AGENTS.md instructions") || text.contains("<codex_internal_context"))
                 })
         }));
         assert!(events.iter().any(|event| {
@@ -4452,5 +4472,145 @@ mod tests {
             content[0].get("text").and_then(Value::as_str),
             Some("Hello")
         );
+    }
+
+    #[test]
+    fn codex_base_instructions_use_instruction_context_not_lifecycle() {
+        let temp = tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        let workspace = temp.path().join("repo");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(codex_dir.join("config.toml"), "model_provider = \"test\"\n").unwrap();
+
+        let session = CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: "session-base-instructions".to_string(),
+                source_title: Some("Base Instructions".to_string()),
+            },
+            provenance: SessionProvenance {
+                imported_at: Utc::now(),
+                imported_by: None,
+                primary_source: ProviderSessionRef {
+                    provider_id: "claude".to_string(),
+                    session_id: "session-base-instructions".to_string(),
+                    source_path: None,
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir: Some(workspace.to_string_lossy().to_string()),
+                created_at: None,
+                last_active_at: None,
+                tags: Vec::new(),
+            },
+            events: vec![
+                codex_test_event(
+                    "system",
+                    SessionEventKind::Message,
+                    EventRole::System,
+                    vec![EventBlock::Text {
+                        text: "system instructions".to_string(),
+                    }],
+                ),
+                codex_test_event(
+                    "runtime",
+                    SessionEventKind::Lifecycle,
+                    EventRole::System,
+                    vec![EventBlock::Text {
+                        text: "runtime context".to_string(),
+                    }],
+                ),
+                codex_test_event(
+                    "developer",
+                    SessionEventKind::Message,
+                    EventRole::Developer,
+                    vec![EventBlock::Text {
+                        text: "developer instructions".to_string(),
+                    }],
+                ),
+                codex_test_event(
+                    "payload",
+                    SessionEventKind::Message,
+                    EventRole::System,
+                    vec![EventBlock::ProviderPayload {
+                        kind: "internal".to_string(),
+                        payload: serde_json::json!({"text": "provider payload"}),
+                    }],
+                ),
+                codex_test_event(
+                    "user",
+                    SessionEventKind::Message,
+                    EventRole::User,
+                    vec![EventBlock::Text {
+                        text: "real prompt".to_string(),
+                    }],
+                ),
+            ],
+            artifacts: Vec::new(),
+            extensions: BTreeMap::new(),
+        };
+
+        let session_id =
+            export_canonical_session_in_codex_dir(&session, &workspace, &codex_dir).unwrap();
+        let rollout_path = WalkDir::new(codex_dir.join("sessions"))
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.into_path())
+            .find(|path| {
+                path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+                    && path
+                        .file_name()
+                        .and_then(|value| value.to_str())
+                        .is_some_and(|value| value.contains(&session_id))
+            })
+            .expect("exported rollout");
+        let session_meta = std::fs::read_to_string(&rollout_path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|line| line.get("type").and_then(Value::as_str) == Some("session_meta"))
+            .expect("session_meta line");
+        let instructions = session_meta
+            .pointer("/payload/base_instructions/text")
+            .and_then(Value::as_str)
+            .expect("base instructions");
+
+        assert_eq!(
+            instructions,
+            "system instructions\n\ndeveloper instructions"
+        );
+        assert!(!instructions.contains("runtime context"));
+        assert!(!instructions.contains("provider payload"));
+        assert!(!instructions.contains("real prompt"));
+    }
+
+    fn codex_test_event(
+        id: &str,
+        kind: SessionEventKind,
+        role: EventRole,
+        blocks: Vec<EventBlock>,
+    ) -> SessionEvent {
+        SessionEvent {
+            id: id.to_string(),
+            kind,
+            role,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks,
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: PROVIDER_ID.to_string(),
+                    original_id: None,
+                    original_role: None,
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: BTreeMap::new(),
+            },
+        }
     }
 }

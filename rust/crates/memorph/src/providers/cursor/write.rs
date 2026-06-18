@@ -1,5 +1,8 @@
 use crate::canonical::{CanonicalSession, EventRole, SessionEvent};
-use crate::provider::{canonical_event_visible_text, canonical_session_title};
+use crate::provider::{
+    canonical_event_visible_message_role, canonical_event_visible_message_text,
+    canonical_session_title,
+};
 use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
 use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
@@ -431,13 +434,11 @@ pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<S
         .events
         .iter()
         .filter_map(|event| {
-            let text = cursor_bubble_text(event);
-            if text.trim().is_empty() {
-                return None;
-            }
+            let role = canonical_event_visible_message_role(event)?;
+            let text = cursor_bubble_text(event)?;
             Some(BubbleMeta {
                 id: Uuid::new_v4().to_string(),
-                bubble_type: if event.role == EventRole::User { 1 } else { 2 },
+                bubble_type: if role == EventRole::User { 1 } else { 2 },
                 text,
                 timestamp: event.timestamp,
             })
@@ -601,8 +602,8 @@ pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<S
     Ok(composer_id)
 }
 
-fn cursor_bubble_text(event: &SessionEvent) -> String {
-    canonical_event_visible_text(event)
+fn cursor_bubble_text(event: &SessionEvent) -> Option<String> {
+    canonical_event_visible_message_text(event)
 }
 
 #[cfg(test)]
@@ -647,7 +648,7 @@ mod tests {
             },
         };
 
-        let text = cursor_bubble_text(&event);
+        let text = cursor_bubble_text(&event).expect("visible compressed bubble text");
 
         assert!(text.contains("[Compressed session segment from opencode]"));
         assert!(text.contains("compressed summary"));
@@ -657,5 +658,33 @@ mod tests {
         assert!(!text.contains("old-event-1"));
         assert!(!text.contains("old-event-2"));
         assert!(!text.contains("old-event-3"));
+    }
+
+    #[test]
+    fn internal_events_do_not_export_as_cursor_bubble_text() {
+        let event = SessionEvent {
+            id: "internal".to_string(),
+            kind: SessionEventKind::Lifecycle,
+            role: EventRole::System,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::Text {
+                text: "internal context".to_string(),
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "codex".to_string(),
+                    original_id: None,
+                    original_role: Some("user".to_string()),
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Normalized,
+                provider_ext: BTreeMap::new(),
+            },
+        };
+
+        assert!(cursor_bubble_text(&event).is_none());
     }
 }

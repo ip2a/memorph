@@ -7,6 +7,8 @@ pub struct AgentManagementEntry {
     pub provider_id: String,
     pub name: String,
     pub environment: crate::agent_environment::AgentEnvironmentStatus,
+    pub hook: crate::hooks::model::HookInstallStatus,
+    pub hook_profile: Option<crate::hooks::profiles::HookProviderProfile>,
     pub settings: Vec<crate::provider_settings::ProviderSettingItem>,
 }
 
@@ -15,10 +17,12 @@ impl Serialize for AgentManagementEntry {
     where
         S: Serializer,
     {
-        let mut state = serializer.serialize_struct("AgentManagementEntry", 9)?;
+        let mut state = serializer.serialize_struct("AgentManagementEntry", 11)?;
         state.serialize_field("provider_id", &self.provider_id)?;
         state.serialize_field("name", &self.name)?;
         state.serialize_field("environment", &self.environment)?;
+        state.serialize_field("hook", &self.hook)?;
+        state.serialize_field("hook_profile", &self.hook_profile)?;
         state.serialize_field("installed", &self.environment.installed)?;
         if let Some(path) = &self.environment.executable_path {
             state.serialize_field("executable_path", path)?;
@@ -57,6 +61,8 @@ fn build_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntr
         provider_id: provider_id.to_string(),
         name: provider.name().to_string(),
         environment: crate::agent_environment::detect_provider_environment(provider_id),
+        hook: crate::hooks::health::status(provider_id)?,
+        hook_profile: crate::hooks::profiles::find(provider_id).copied(),
         settings,
     })
 }
@@ -64,6 +70,12 @@ fn build_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_management_entry_exposes_hook_status() {
+        let claude = build_agent_management_entry("claude").unwrap();
+        assert_eq!(claude.hook.provider, "claude");
+    }
 
     #[test]
     fn agent_management_entry_exposes_settings() {
@@ -78,6 +90,36 @@ mod tests {
             .settings
             .iter()
             .any(|setting| setting.id == "show_subagents"));
+    }
+    #[test]
+    fn agent_management_exposes_every_hook_profile_provider() {
+        let entries = list_agent_management_entries().unwrap();
+        for profile in crate::hooks::profiles::all() {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.provider_id == profile.provider)
+                .unwrap_or_else(|| {
+                    panic!("missing agent management entry for {}", profile.provider)
+                });
+            assert_eq!(entry.hook.provider, profile.provider);
+            assert_eq!(
+                entry.hook_profile.as_ref().map(|profile| profile.provider),
+                Some(profile.provider)
+            );
+            assert!(
+                entry
+                    .settings
+                    .iter()
+                    .any(|setting| setting.id == "install_hook"),
+                "missing install_hook action for {}",
+                profile.provider
+            );
+            assert!(
+                !entry.environment.config_path.trim().is_empty(),
+                "missing environment config path for {}",
+                profile.provider
+            );
+        }
     }
 
     #[test]
@@ -95,6 +137,8 @@ mod tests {
 
         assert_eq!(value["provider_id"], "codex");
         assert!(value["environment"].is_object());
+        assert!(value["hook"].is_object());
+        assert!(value["hook_profile"].is_object());
         assert_eq!(value["environment"]["config_path"], value["config_path"]);
         assert_eq!(
             value["environment"]["install_method"],

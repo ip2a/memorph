@@ -5,8 +5,8 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
 use crate::provider::{
-    canonical_block_text, canonical_export_result, canonical_session_title, Provider,
-    ProviderCapabilities, ProviderSessionSummary,
+    canonical_event_visible_message_role, canonical_export_result, canonical_session_title,
+    canonical_visible_block_text, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use crate::utils::truncate_summary;
 use anyhow::{Context, Result};
@@ -50,10 +50,7 @@ impl Provider for KiroProvider {
         scan_sessions_in(&global_dir)
     }
 
-    fn get_session_meta(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         let global_dir = kiro_global_storage_dir()?;
         if !global_dir.exists() {
             return Ok(None);
@@ -534,11 +531,12 @@ fn export_canonical_session_in(
 }
 
 fn canonical_event_to_kiro_history_item(event: &SessionEvent) -> Option<Value> {
+    let visible_role = canonical_event_visible_message_role(event)?;
     let content = canonical_event_kiro_content(event);
     if content.is_empty() {
         return None;
     }
-    let role = match event.role {
+    let role = match visible_role {
         EventRole::Assistant => "assistant",
         _ => "user",
     };
@@ -567,7 +565,7 @@ fn canonical_event_kiro_content(event: &SessionEvent) -> Vec<Value> {
                 "thinking": text
             })),
             _ => {
-                let text = canonical_block_text(block);
+                let text = canonical_visible_block_text(block)?;
                 (!text.trim().is_empty()).then(|| {
                     json!({
                         "type": "text",
@@ -897,6 +895,34 @@ mod tests {
         assert!(!text.contains("old-event-1"));
         assert!(!text.contains("old-event-2"));
         assert!(!text.contains("old-event-3"));
+    }
+
+    #[test]
+    fn internal_events_do_not_export_as_kiro_history_items() {
+        let event = SessionEvent {
+            id: "internal".to_string(),
+            kind: SessionEventKind::Lifecycle,
+            role: EventRole::System,
+            timestamp: Utc::now(),
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::Text {
+                text: "internal context".to_string(),
+            }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: "codex".to_string(),
+                    original_id: None,
+                    original_role: Some("user".to_string()),
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Normalized,
+                provider_ext: BTreeMap::new(),
+            },
+        };
+
+        assert!(canonical_event_to_kiro_history_item(&event).is_none());
     }
 
     #[test]

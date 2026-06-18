@@ -14,6 +14,7 @@ use crate::provider::Provider;
 const PROVIDER_IDS: &[&str] = &[
     "claude",
     "codex",
+    "cline",
     "cursor",
     "opencode",
     "kiro",
@@ -24,8 +25,19 @@ const PROVIDER_IDS: &[&str] = &[
     "copilot",
     "windsurf",
     "cidebuddy",
+    "codebuddy",
     "qoder",
+    "qwen",
     "trae",
+    "trae_gui",
+    "traecn",
+    "droid",
+    "codybuddycn",
+    "stepfun",
+    "workbuddy",
+    "hermes",
+    "pi",
+    "omp",
 ];
 
 pub struct ProviderRegistry;
@@ -39,14 +51,30 @@ impl ProviderRegistry {
         match id {
             "claude" => Some(Box::new(claude::ClaudeProvider)),
             "codex" => Some(Box::new(codex::CodexProvider)),
+            "cline" => Some(Box::new(emerging::ClineProvider)),
             "cursor" => Some(Box::new(cursor::CursorProvider)),
             "deepseek" => Some(Box::new(deepseek::DeepseekProvider)),
             "antigravity" => Some(Box::new(emerging::AntigravityProvider)),
             "copilot" => Some(Box::new(emerging::CopilotProvider)),
             "windsurf" => Some(Box::new(emerging::WindsurfProvider)),
-            "cidebuddy" | "codebuddy" => Some(Box::new(emerging::CideBuddyProvider)),
+            "cidebuddy" => Some(Box::new(emerging::CideBuddyProvider)),
+            "codebuddy" => Some(Box::new(emerging::CodeBuddyProvider)),
             "qoder" => Some(Box::new(emerging::QoderProvider)),
+            "qwen" => Some(Box::new(emerging::QwenProvider)),
             "trae" => Some(Box::new(emerging::TraeProvider)),
+            "trae_gui" | "trae-gui" => Some(Box::new(emerging::TraeGuiProvider)),
+            "traecn" | "trae-cn" | "trae_cn" => Some(Box::new(emerging::TraeCnProvider)),
+            "droid" | "factory" => Some(Box::new(emerging::DroidProvider)),
+            "codybuddycn" | "codybuddy-cn" | "codybuddy_cn" => {
+                Some(Box::new(emerging::CodyBuddyCnProvider))
+            }
+            "stepfun" | "step-fun" | "step_fun" => Some(Box::new(emerging::StepFunProvider)),
+            "workbuddy" | "work-buddy" | "work_buddy" => {
+                Some(Box::new(emerging::WorkBuddyProvider))
+            }
+            "hermes" => Some(Box::new(emerging::HermesProvider)),
+            "pi" => Some(Box::new(emerging::PiProvider)),
+            "omp" | "oh-my-pi" | "oh_my_pi" => Some(Box::new(emerging::OmpProvider)),
             "gemini" => Some(Box::new(gemini::GeminiProvider)),
             "kiro" => Some(Box::new(kiro::KiroProvider)),
             "kimi" => Some(Box::new(kimi::KimiProvider)),
@@ -87,11 +115,23 @@ mod tests {
         for id in [
             "gemini",
             "antigravity",
+            "cline",
             "copilot",
             "windsurf",
             "cidebuddy",
+            "codebuddy",
             "qoder",
+            "qwen",
             "trae",
+            "trae_gui",
+            "traecn",
+            "droid",
+            "codybuddycn",
+            "stepfun",
+            "workbuddy",
+            "hermes",
+            "pi",
+            "omp",
         ] {
             assert!(
                 all_provider_ids().iter().any(|known| *known == id),
@@ -102,8 +142,16 @@ mod tests {
     }
 
     #[test]
-    fn codebuddy_alias_resolves_to_cidebuddy_provider() {
-        let provider = find_provider("codebuddy").expect("codebuddy alias");
-        assert_eq!(provider.id(), "cidebuddy");
+    fn traecli_and_trae_gui_have_distinct_display_names() {
+        let traecli = find_provider("trae").expect("trae provider");
+        let trae_gui = find_provider("trae_gui").expect("trae gui provider");
+        assert_eq!(traecli.name(), "TraeCli");
+        assert_eq!(trae_gui.name(), "Trae");
+    }
+
+    #[test]
+    fn factory_alias_resolves_to_droid_provider() {
+        let provider = find_provider("factory").expect("factory alias");
+        assert_eq!(provider.id(), "droid");
     }
 }

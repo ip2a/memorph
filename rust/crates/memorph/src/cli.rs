@@ -173,6 +173,18 @@ pub enum Commands {
     },
     /// Update memorph using the detected install source
     Update,
+    #[command(name = "__hook-bridge", hide = true)]
+    /// Internal hook bridge entrypoint used by installed provider hooks
+    HookBridge {
+        #[arg(long, value_name = "VERSION")]
+        managed_version: Option<String>,
+        #[arg(long, value_name = "PROVIDER")]
+        provider: String,
+        #[arg(long, value_name = "EVENT")]
+        event: String,
+        #[arg(long)]
+        blocking: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -572,6 +584,36 @@ mod tests {
                 );
                 assert_eq!(output.as_deref(), Some("compressed/session"));
                 assert_eq!(format, "both");
+            }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn hook_bridge_command_accepts_provider_event_and_blocking() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "__hook-bridge",
+            "--managed-version",
+            "hook-v1",
+            "--provider",
+            "claude",
+            "--event",
+            "PreToolUse",
+            "--blocking",
+        ]);
+
+        match cli.command {
+            Some(Commands::HookBridge {
+                managed_version,
+                provider,
+                event,
+                blocking,
+            }) => {
+                assert_eq!(managed_version.as_deref(), Some("hook-v1"));
+                assert_eq!(provider, "claude");
+                assert_eq!(event, "PreToolUse");
+                assert!(blocking);
             }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }

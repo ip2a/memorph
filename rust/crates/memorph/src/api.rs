@@ -13,7 +13,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::{
-    agent_management, config, core, logging, provider_features, provider_settings, shared,
+    agent_management, config, core, hooks, logging, provider_features, provider_settings, shared,
 };
 
 type FolderPicker =
@@ -169,6 +169,7 @@ pub fn router() -> Router {
         .route("/api/v1/manager/preview", post(manager_preview))
         .route("/api/v1/manager/clean", post(manager_clean))
         .route("/api/v1/manager/backup", post(manager_backup))
+        .merge(hooks::server::router())
 }
 
 pub fn register_folder_picker<F>(picker: F) -> bool
@@ -1182,6 +1183,9 @@ struct SwitchBody {
     to: String,
     session_id: Option<String>,
     to_dir: Option<String>,
+    target_title: Option<String>,
+    #[serde(default)]
+    move_original: bool,
     active_compression: Option<core::active_compression::ActiveCompressionPolicy>,
 }
 
@@ -1191,6 +1195,8 @@ async fn switch_session(Json(body): Json<SwitchBody>) -> impl IntoResponse {
         to: body.to,
         session_id: body.session_id,
         to_dir: body.to_dir,
+        target_title: body.target_title,
+        move_original: body.move_original,
         active_compression: body.active_compression,
     };
     match core::switch_session(&params) {
@@ -1851,6 +1857,30 @@ mod tests {
             .iter()
             .any(|setting| setting["id"] == "repair_workspace_sessions"));
     }
+    #[tokio::test]
+    async fn settings_route_lists_codeisland_gap_provider_hook_actions() {
+        let request = Request::builder()
+            .uri("/api/v1/providers/qoder/settings")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+
+        let settings = value["data"]["settings"].as_array().unwrap();
+        for action in [
+            "install_hook",
+            "verify_hook",
+            "repair_hook",
+            "uninstall_hook",
+        ] {
+            assert!(
+                settings.iter().any(|setting| setting["id"] == action),
+                "missing {action}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn agents_route_exposes_settings_field() {
@@ -1871,6 +1901,31 @@ mod tests {
         assert!(codex.get("settings").is_some());
         assert!(codex.get("environment").is_some());
         assert!(codex.get("features").is_none());
+    }
+    #[tokio::test]
+    async fn agents_route_exposes_all_hook_profile_providers() {
+        let request = Request::builder()
+            .uri("/api/v1/agents")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let providers = value["data"]["providers"].as_array().unwrap();
+        for profile in crate::hooks::profiles::all() {
+            let entry = providers
+                .iter()
+                .find(|provider| provider["provider_id"] == profile.provider)
+                .unwrap_or_else(|| panic!("missing agent entry for {}", profile.provider));
+            assert_eq!(entry["hook"]["provider"], profile.provider);
+            assert_eq!(entry["hook_profile"]["provider"], profile.provider);
+            assert!(entry["hook_profile"]["events"].as_array().unwrap().len() > 0);
+            assert!(entry["settings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|setting| setting["id"] == "install_hook"));
+        }
     }
 
     #[tokio::test]

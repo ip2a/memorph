@@ -136,6 +136,8 @@ fn run_command(command: Commands) -> Result<()> {
                 to,
                 session_id,
                 to_dir,
+                target_title: None,
+                move_original: false,
                 active_compression,
             })?;
 
@@ -224,6 +226,19 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::Update => {
             update_memorph()?;
         }
+
+        Commands::HookBridge {
+            managed_version: _,
+            provider,
+            event,
+            blocking,
+        } => {
+            memorph::hooks::bridge::run_blocking(memorph::hooks::bridge::BridgeRunOptions {
+                provider,
+                event,
+                blocking,
+            })?;
+        }
     }
 
     Ok(())
@@ -241,6 +256,15 @@ fn run_legacy_tool_command(command: LegacyToolCommands) -> Result<()> {
                 match output {
                     provider_features::ProviderFeatureOutput::CodexWorkspaceRepair(report) => {
                         print_codex_repair_report(report)
+                    }
+                    provider_features::ProviderFeatureOutput::HookOperation(report) => {
+                        println!(
+                            "{} {}: {:?}",
+                            report.provider, report.operation, report.status.status
+                        );
+                        if let Some(message) = report.message {
+                            println!("{}", message);
+                        }
                     }
                 }
             }
@@ -1044,7 +1068,10 @@ mod tests {
             Some(InstallSource::PythonPip)
         );
         let cargo_path = PathBuf::from("/Users/me/.cargo/bin/memo");
-        assert_eq!(detect_install_source(None, Some(&cargo_path), None, None), None);
+        assert_eq!(
+            detect_install_source(None, Some(&cargo_path), None, None),
+            None
+        );
     }
 
     #[test]

@@ -22,6 +22,8 @@ fn start_local_server() -> Result<String> {
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let addr = std_listener.local_addr()?;
     std_listener.set_nonblocking(true)?;
+    let url = format!("http://{}", addr);
+    let _ = memorph::hooks::server::publish_runtime_endpoint(&url);
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -37,7 +39,7 @@ fn start_local_server() -> Result<String> {
         });
     });
 
-    Ok(format!("http://{}", addr))
+    Ok(url)
 }
 
 fn clamp_dimension(target: f64, min: f64, max: f64) -> f64 {
@@ -149,7 +151,12 @@ fn read_login_shell_path() -> Option<String> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "/bin/sh".to_string());
-    let mut candidates = vec![shell, "/bin/zsh".to_string(), "/bin/bash".to_string(), "/bin/sh".to_string()];
+    let mut candidates = vec![
+        shell,
+        "/bin/zsh".to_string(),
+        "/bin/bash".to_string(),
+        "/bin/sh".to_string(),
+    ];
     candidates.dedup();
 
     for program in candidates {
@@ -175,7 +182,10 @@ fn merge_path_values(preferred: &str, current: Option<OsString>) -> Option<OsStr
     let mut merged = Vec::new();
     let mut seen = HashSet::new();
 
-    for value in [Some(OsString::from(preferred)), current].into_iter().flatten() {
+    for value in [Some(OsString::from(preferred)), current]
+        .into_iter()
+        .flatten()
+    {
         for path in std::env::split_paths(&value) {
             if path.as_os_str().is_empty() {
                 continue;
