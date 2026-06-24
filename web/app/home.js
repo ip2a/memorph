@@ -37,8 +37,6 @@ export function createHomeModule({
 
   function renderHomeHero(filteredGroups, totalSessions, shownSessions) {
     const collapsed = isHomeHeroCollapsed();
-    const toggleMode = collapsed ? "expanded" : "collapsed";
-    const toggleLabel = collapsed ? t("expand") : t("collapse");
     const title = escapeHtml(workspaceName(state.home.workspace) || "memorph");
     const path = escapeHtml(state.home.workspace || "—");
     const pathTitle = escapeAttr(state.home.workspace || "");
@@ -46,22 +44,21 @@ export function createHomeModule({
     if (collapsed) {
       return `
         <section class="home-hero home-hero-collapsed">
-          <div class="home-hero-compact">
+          <div class="home-hero-compact home-hero-compact-action" data-action="set-home-hero-mode" data-mode="expanded" role="button" tabindex="0" title="${escapeAttr(t("expand"))}">
             <div class="home-hero-compact-main">
               <span class="eyebrow">${t("workspace")}</span>
               <strong>${title}</strong>
-              <button type="button" class="workspace-path" data-action="open-workspace-switch" title="${pathTitle}">${path}</button>
+              <span class="workspace-path home-hero-compact-path" title="${pathTitle}">${path}</span>
             </div>
             ${renderHomeHeroMeta(filteredGroups, totalSessions, shownSessions)}
-            <button type="button" class="ghost home-hero-toggle" data-action="set-home-hero-mode" data-mode="${toggleMode}">${toggleLabel}</button>
+            <span class="home-hero-affordance">${t("expand")}</span>
           </div>
         </section>`;
     }
 
     return `
       <section class="home-hero">
-        <button type="button" class="ghost home-hero-toggle" data-action="set-home-hero-mode" data-mode="${toggleMode}">${toggleLabel}</button>
-        <div class="ascii-banner" style="--ascii-banner-color: ${escapeAttr(state.ui.asciiBannerColor)}"><pre>${escapeHtml(ascii)}</pre></div>
+        <div class="ascii-banner ascii-banner-action" data-action="set-home-hero-mode" data-mode="collapsed" title="${escapeAttr(t("collapse"))}" style="--ascii-banner-color: ${escapeAttr(state.ui.asciiBannerColor)}"><pre>${escapeHtml(ascii)}</pre></div>
         <div class="workspace-hero">
           <p class="eyebrow">${t("workspace")}</p>
           <h1>${title}</h1>

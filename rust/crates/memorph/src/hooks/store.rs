@@ -12,8 +12,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::{OnceLock, RwLock};
 
-use crate::hooks::model::{HookEvent, PendingHookRequest, RuntimeSession};
-use crate::hooks::policy::HookPolicy;
+use crate::hooks::model::{HookEvent, RuntimeSession};
 use crate::hooks::protocol::HookRuntimeEndpoint;
 use crate::storage::atomic_write;
 
@@ -22,8 +21,6 @@ const EVENTS_FILE: &str = "events.jsonl";
 const ERRORS_FILE: &str = "errors.jsonl";
 const RUNTIME_SESSIONS_FILE: &str = "runtime_sessions.json";
 const SERVER_RUNTIME_FILE: &str = "server_runtime.json";
-const POLICY_FILE: &str = "policy.json";
-const PENDING_REQUESTS_FILE: &str = "pending_requests.json";
 
 #[cfg(test)]
 static TEST_STORE_ROOT: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
@@ -35,8 +32,6 @@ pub struct HookStorePaths {
     pub errors: PathBuf,
     pub runtime_sessions: PathBuf,
     pub server_runtime: PathBuf,
-    pub policy: PathBuf,
-    pub pending_requests: PathBuf,
 }
 
 impl HookStorePaths {
@@ -46,8 +41,6 @@ impl HookStorePaths {
             errors: root.join(ERRORS_FILE),
             runtime_sessions: root.join(RUNTIME_SESSIONS_FILE),
             server_runtime: root.join(SERVER_RUNTIME_FILE),
-            policy: root.join(POLICY_FILE),
-            pending_requests: root.join(PENDING_REQUESTS_FILE),
             root,
         }
     }
@@ -59,14 +52,6 @@ pub struct RuntimeSessionStore {
     pub version: u32,
     #[serde(default)]
     pub sessions: Vec<RuntimeSession>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-pub struct PendingHookRequestStore {
-    #[serde(default = "current_version")]
-    pub version: u32,
-    #[serde(default)]
-    pub requests: Vec<PendingHookRequest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -286,82 +271,6 @@ pub fn load_server_runtime_from_path(path: &Path) -> Result<Option<HookRuntimeEn
     })
 }
 
-pub fn save_policy(policy: &HookPolicy) -> Result<()> {
-    let paths = hook_store_paths()?;
-    save_policy_to_path(&paths.policy, policy)
-}
-
-pub fn save_policy_to_path(path: &Path, policy: &HookPolicy) -> Result<()> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("Path has no parent directory: {}", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "Failed to create hook store directory: {}",
-            parent.display()
-        )
-    })?;
-    let raw = serde_json::to_string_pretty(policy)?;
-    atomic_write::write_string_atomic(path, &raw)
-}
-
-pub fn load_policy() -> Result<HookPolicy> {
-    let paths = hook_store_paths()?;
-    load_policy_from_path(&paths.policy)
-}
-
-pub fn load_policy_from_path(path: &Path) -> Result<HookPolicy> {
-    if !path.exists() {
-        return Ok(HookPolicy::default());
-    }
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read hook policy file: {}", path.display()))?;
-    serde_json::from_str(&raw)
-        .with_context(|| format!("Failed to parse hook policy file: {}", path.display()))
-}
-
-pub fn save_pending_requests(store: &PendingHookRequestStore) -> Result<()> {
-    let paths = hook_store_paths()?;
-    save_pending_requests_to_path(&paths.pending_requests, store)
-}
-
-pub fn save_pending_requests_to_path(path: &Path, store: &PendingHookRequestStore) -> Result<()> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("Path has no parent directory: {}", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "Failed to create hook store directory: {}",
-            parent.display()
-        )
-    })?;
-    let raw = serde_json::to_string_pretty(store)?;
-    atomic_write::write_string_atomic(path, &raw)
-}
-
-pub fn load_pending_requests() -> Result<PendingHookRequestStore> {
-    let paths = hook_store_paths()?;
-    load_pending_requests_from_path(&paths.pending_requests)
-}
-
-pub fn load_pending_requests_from_path(path: &Path) -> Result<PendingHookRequestStore> {
-    if !path.exists() {
-        return Ok(PendingHookRequestStore::default());
-    }
-    let raw = fs::read_to_string(path).with_context(|| {
-        format!(
-            "Failed to read pending hook requests file: {}",
-            path.display()
-        )
-    })?;
-    serde_json::from_str(&raw).with_context(|| {
-        format!(
-            "Failed to parse pending hook requests file: {}",
-            path.display()
-        )
-    })
-}
-
 fn append_json_line<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     let parent = path
         .parent()
@@ -392,8 +301,7 @@ fn append_json_line<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 mod tests {
     use super::*;
     use crate::hooks::model::{
-        HookEvent, HookEventType, PendingHookRequest, PendingHookRequestKind,
-        PendingHookRequestStatus, RuntimeSessionId, RuntimeSessionStatus,
+        HookEvent, HookEventType, RuntimeSessionId, RuntimeSessionStatus,
     };
     use serde_json::Value;
 
@@ -510,83 +418,4 @@ mod tests {
         assert_eq!(loaded.sessions[0].tool_call_count, 0);
     }
 
-    #[test]
-    fn saves_and_loads_policy() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("policy.json");
-        let policy = HookPolicy {
-            global: crate::hooks::policy::HookPolicyMode::Allow,
-            ..HookPolicy::default()
-        };
-        save_policy_to_path(&path, &policy).unwrap();
-        let loaded = load_policy_from_path(&path).unwrap();
-        assert_eq!(loaded.global, crate::hooks::policy::HookPolicyMode::Allow);
-    }
-
-    #[test]
-    fn saves_and_loads_pending_requests() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("pending_requests.json");
-        let now = chrono::Utc::now();
-        let store = PendingHookRequestStore {
-            version: 1,
-            requests: vec![PendingHookRequest {
-                id: "pending-1".to_string(),
-                kind: PendingHookRequestKind::Permission,
-                status: PendingHookRequestStatus::Pending,
-                provider: "sample".to_string(),
-                runtime_id: RuntimeSessionId::new("sample:session:s1"),
-                event_id: "event-1".to_string(),
-                hook_request_id: "hook-request-1".to_string(),
-                provider_request_id: Some("provider-request-1".to_string()),
-                provider_session_id: Some("s1".to_string()),
-                tool: None,
-                prompt: Some("Allow?".to_string()),
-                blocking: true,
-                created_at: now,
-                updated_at: now,
-                resolved_at: None,
-                decision: None,
-                response_text: None,
-                note: None,
-            }],
-        };
-        save_pending_requests_to_path(&path, &store).unwrap();
-        let loaded = load_pending_requests_from_path(&path).unwrap();
-        assert_eq!(loaded.requests.len(), 1);
-        assert_eq!(loaded.requests[0].id, "pending-1");
-    }
-
-    #[test]
-    fn loads_pending_requests_written_before_provider_request_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("pending_requests.json");
-        let now = chrono::Utc::now().to_rfc3339();
-        std::fs::write(
-            &path,
-            serde_json::json!({
-                "version": 1,
-                "requests": [{
-                    "id": "pending-old",
-                    "kind": "permission",
-                    "status": "pending",
-                    "provider": "sample",
-                    "runtime_id": "sample:session:s1",
-                    "event_id": "event-1",
-                    "hook_request_id": "hook-request-1",
-                    "provider_session_id": "s1",
-                    "blocking": true,
-                    "created_at": now,
-                    "updated_at": now
-                }]
-            })
-            .to_string(),
-        )
-        .unwrap();
-
-        let loaded = load_pending_requests_from_path(&path).unwrap();
-        assert_eq!(loaded.requests.len(), 1);
-        assert_eq!(loaded.requests[0].id, "pending-old");
-        assert_eq!(loaded.requests[0].provider_request_id, None);
-    }
 }

@@ -226,18 +226,6 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /\b(chmod|chown)\b.*777/i,
 ];
 
-function isDangerous(command: string): boolean {{
-  return DANGEROUS_PATTERNS.some((pattern) => pattern.test(command));
-}}
-
-function collectEnv(): Record<string, string> {{
-  const env: Record<string, string> = {{}};
-  for (const key of ENV_KEYS) {{
-    if (process.env[key]) env[key] = process.env[key]!;
-  }}
-  return env;
-}}
-
 function detectTty(): string | null {{
   try {{
     let pid = process.pid;
@@ -262,8 +250,7 @@ function detectTty(): string | null {{
 function sendToMemorph(
   eventName: string,
   payload: Record<string, unknown>,
-  blocking = false,
-  timeoutMs = 30_000,
+  timeoutMs = 5_000,
 ): Promise<Record<string, unknown> | null> {{
   return new Promise((resolve) => {{
     const args = [
@@ -275,7 +262,6 @@ function sendToMemorph(
       "--event",
       eventName,
     ];
-    if (blocking) args.push("--blocking");
     try {{
       const child = execFile(
         MEMORPH_EXE,
@@ -348,7 +334,6 @@ export default function memorphExtension(pi: ExtensionAPI) {{
   void MARKER;
   void VERSION;
   const tty = detectTty();
-  const pendingPermissionSessions = new Set<string>();
 
   pi.on("session_start", async (_event, ctx) => {{
     const sessionId = ctx.sessionManager.getSessionId();
@@ -369,8 +354,6 @@ export default function memorphExtension(pi: ExtensionAPI) {{
 
   pi.on("before_agent_start", async (event, ctx) => {{
     const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `${{SESSION_PREFIX}}-${{sessionId}}`;
-    if (pendingPermissionSessions.has(sid)) return;
     await sendToMemorph(
       "UserPromptSubmit",
       base(sessionId, ctx.cwd, {{
@@ -382,8 +365,6 @@ export default function memorphExtension(pi: ExtensionAPI) {{
 
   pi.on("agent_end", async (event, ctx) => {{
     const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `${{SESSION_PREFIX}}-${{sessionId}}`;
-    if (pendingPermissionSessions.has(sid)) return;
     const sessionName = typeof pi.getSessionName === "function" ? pi.getSessionName() : undefined;
     await sendToMemorph(
       "Stop",
@@ -397,7 +378,6 @@ export default function memorphExtension(pi: ExtensionAPI) {{
 
   pi.on("tool_call", async (event, ctx) => {{
     const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `${{SESSION_PREFIX}}-${{sessionId}}`;
     const toolName = displayToolName(event.toolName);
     const toolInput: Record<string, unknown> = {{ ...event.input }};
     if (event.toolName === "bash") {{
@@ -409,49 +389,21 @@ export default function memorphExtension(pi: ExtensionAPI) {{
       if (path) toolInput.file_path = path;
     }}
 
-    if (
-      event.toolName === "bash" &&
-      typeof event.input.command === "string" &&
-      isDangerous(event.input.command)
-    ) {{
-      pendingPermissionSessions.add(sid);
-      let response: Record<string, unknown> | null = null;
-      try {{
-        response = await sendToMemorph(
-          "PermissionRequest",
-          base(sessionId, ctx.cwd, {{
-            hook_event_name: "PermissionRequest",
-            tool_name: toolName,
-            tool_input: toolInput,
-            tool_use_id: event.toolCallId,
-          }}, tty),
-          true,
-        );
-      }} finally {{
-        pendingPermissionSessions.delete(sid);
-      }}
-      if (response?.decision === "deny") {{
-        return {{ block: true, reason: "Blocked by memorph" }};
-      }}
-    }}
 
-    if (!pendingPermissionSessions.has(sid)) {{
-      await sendToMemorph(
-        "PreToolUse",
-        base(sessionId, ctx.cwd, {{
-          hook_event_name: "PreToolUse",
-          tool_name: toolName,
-          tool_input: toolInput,
-        }}, tty),
-      );
-    }}
+
+    await sendToMemorph(
+      "PreToolUse",
+      base(sessionId, ctx.cwd, {{
+        hook_event_name: "PreToolUse",
+        tool_name: toolName,
+        tool_input: toolInput,
+      }}, tty),
+    );
     return undefined;
   }});
 
   pi.on("tool_result", async (_event, ctx) => {{
     const sessionId = ctx.sessionManager.getSessionId();
-    const sid = `${{SESSION_PREFIX}}-${{sessionId}}`;
-    if (pendingPermissionSessions.has(sid)) return;
     await sendToMemorph("PostToolUse", base(sessionId, ctx.cwd, {{ hook_event_name: "PostToolUse" }}, tty));
   }});
 

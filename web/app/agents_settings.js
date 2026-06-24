@@ -272,86 +272,6 @@ export function createAgentsSettingsModule({
       </div>`;
   }
 
-  function renderHookPendingPanel() {
-    const pending = state.agents.hookPendingRequests || [];
-    return `
-      <section class="section-panel manager-result-panel agent-provider-detail-panel">
-        <div class="section-heading">
-          <div>
-            <strong>Pending Hook Requests</strong>
-            <small>Blocking permission/question requests waiting for a memorph decision.</small>
-          </div>
-        </div>
-        ${
-          pending.length
-            ? `<div class="settings-list agent-environment-paths">${pending.map(renderHookPendingRow).join("")}</div>`
-            : `<div class="empty-state">No pending hook requests.</div>`
-        }
-      </section>`;
-  }
-
-  function renderHookPendingRow(request) {
-    const title = `${request.provider || "hook"} · ${request.kind || "request"}`;
-    const tool = request.tool?.name ? `${request.tool.name}${formatToolInputHint(request.tool.input)}` : "";
-    const detail = request.prompt || tool || request.provider_session_id || request.runtime_id || request.id || "—";
-    return `
-      <div class="settings-row agent-detail-row">
-        <div class="settings-copy settings-copy-inline">
-          <strong>${escapeHtml(title)}</strong>
-          <span>${escapeHtml(detail)}</span>
-          <small>${escapeHtml(request.created_at ? `created ${formatDate(request.created_at)}` : request.id || "")}</small>
-        </div>
-        <div class="pill-row">
-          <button
-            type="button"
-            data-action="resolve-hook-pending"
-            data-pending-id="${escapeAttr(request.id)}"
-            data-decision="allow"
-          >Allow</button>
-          <button
-            type="button"
-            class="invert"
-            data-action="resolve-hook-pending"
-            data-pending-id="${escapeAttr(request.id)}"
-            data-decision="deny"
-          >Deny</button>
-        </div>
-      </div>`;
-  }
-
-  function renderHookPolicyPanel() {
-    const policy = state.agents.hookPolicy || { global: "record_only", providers: {}, tool_rules: [] };
-    const modes = ["record_only", "allow", "deny", "ask_user", "ignore", "provider_default"];
-    return `
-      <section class="section-panel manager-result-panel agent-provider-detail-panel">
-        <div class="section-heading">
-          <div>
-            <strong>Hook Policy</strong>
-            <small>Decision policy for blocking hook events. Default record-only keeps provider native permission UI in control.</small>
-          </div>
-        </div>
-        <div class="manager-summary-grid agent-environment-grid">
-          ${renderMetaLine("Global mode", policy.global || "record_only")}
-          ${renderMetaLine("Provider overrides", String(Object.keys(policy.providers || {}).length))}
-          ${renderMetaLine("Tool rules", String((policy.tool_rules || []).length))}
-        </div>
-        <div class="pill-row">
-          ${modes
-            .map(
-              (mode) => `
-                <button
-                  type="button"
-                  class="${(policy.global || "record_only") === mode ? "" : "invert"}"
-                  data-action="set-hook-policy-mode"
-                  data-mode="${escapeAttr(mode)}"
-                >${escapeHtml(mode)}</button>`
-            )
-            .join("")}
-        </div>
-        <div class="empty-state">Use allow/deny only when you want memorph to answer provider blocking hooks. record_only is the safe default.</div>
-      </section>`;
-  }
-
   function renderHookDiagnosticsPanel() {
     const report = state.agents.hookDiagnostics;
     return `
@@ -379,7 +299,6 @@ export function createAgentsSettingsModule({
   function renderHookDiagnosticsReport(report) {
     const counts = report.counts || {};
     const server = report.server || {};
-    const policy = report.policy || state.agents.hookPolicy || {};
     const providers = report.providers || [];
     const errors = report.recent_errors || [];
     return `
@@ -389,10 +308,8 @@ export function createAgentsSettingsModule({
           ${renderMetaLine("Server", server.endpoint || "not running")}
           ${renderMetaLine("Runtime sessions", String(counts.runtime_sessions || 0))}
           ${renderMetaLine("Active runtime sessions", String(counts.active_runtime_sessions || 0))}
-          ${renderMetaLine("Pending requests", String(counts.pending_requests || 0))}
           ${renderMetaLine("Recent events", String(counts.recent_events || 0))}
           ${renderMetaLine("Recent errors", String(counts.recent_errors || 0))}
-          ${renderMetaLine("Policy", policy.global || "record_only")}
           ${report.store?.root ? renderWideMetaLine("Hook store", report.store.root) : ""}
         </div>
         ${renderHookDoctorReport(state.agents.hookDoctorReport)}

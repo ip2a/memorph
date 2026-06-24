@@ -13,8 +13,6 @@ use crate::hooks::protocol::HookProcessInfo;
 pub struct RuntimeCleanupOptions {
     pub idle_after_seconds: i64,
     pub orphan_after_seconds: i64,
-    pub pending_request_timeout_seconds: i64,
-    pub resolved_pending_after_seconds: i64,
 }
 
 impl Default for RuntimeCleanupOptions {
@@ -22,8 +20,6 @@ impl Default for RuntimeCleanupOptions {
         Self {
             idle_after_seconds: 30 * 60,
             orphan_after_seconds: 60 * 60,
-            pending_request_timeout_seconds: 5 * 60,
-            resolved_pending_after_seconds: 24 * 60 * 60,
         }
     }
 }
@@ -37,13 +33,9 @@ impl RuntimeCleanupOptions {
         Duration::seconds(self.orphan_after_seconds.max(1))
     }
 
-    pub fn resolved_pending_after(&self) -> Duration {
-        Duration::seconds(self.resolved_pending_after_seconds.max(1))
-    }
 
-    pub fn pending_request_timeout(&self) -> Duration {
-        Duration::seconds(self.pending_request_timeout_seconds.max(1))
-    }
+
+
 }
 
 pub fn pid_is_alive(pid: u32) -> bool {
@@ -228,6 +220,5 @@ mod tests {
         let options = RuntimeCleanupOptions::default();
         assert!(options.idle_after_seconds > 0);
         assert!(options.orphan_after_seconds > options.idle_after_seconds);
-        assert!(options.pending_request_timeout_seconds > 0);
     }
 }

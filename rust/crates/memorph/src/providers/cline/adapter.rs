@@ -6,12 +6,12 @@
 
 use anyhow::Result;
 use chrono::{DateTime, TimeZone, Utc};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::path::PathBuf;
 
 use crate::hooks::contract::HookAdapter;
 use crate::hooks::model::{HookEvent, HookEventType, HookMessage, HookToolCall, PermissionRequest};
-use crate::hooks::protocol::{HookDecision, HookIngestRequest, HookIngestResponse};
+use crate::hooks::protocol::HookIngestRequest;
 
 pub struct ClineHookAdapter;
 
@@ -20,27 +20,6 @@ impl HookAdapter for ClineHookAdapter {
         "cline"
     }
 
-    fn blocking_response_json(
-        &self,
-        _event_name: &str,
-        response: &HookIngestResponse,
-    ) -> Option<Value> {
-        let decision = response.decision.as_ref()?;
-        let cancel = matches!(decision, HookDecision::Deny);
-        let mut value = json!({"cancel": cancel});
-        if let Some(text) = response
-            .response_text
-            .as_deref()
-            .filter(|text| !text.trim().is_empty())
-        {
-            if cancel {
-                value["errorMessage"] = json!(text);
-            } else {
-                value["contextModification"] = json!(text);
-            }
-        }
-        Some(value)
-    }
 
     fn normalize(&self, request: &HookIngestRequest) -> Result<Vec<HookEvent>> {
         let raw = request.raw.clone();
@@ -275,24 +254,9 @@ fn normalize_name(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::protocol::{HookDecision, HookIngestRequest, HookIngestResponse};
+    use crate::hooks::protocol::HookIngestRequest;
     use serde_json::json;
 
-    #[test]
-    fn blocking_response_uses_cancel_shape() {
-        let response = HookIngestResponse {
-            accepted: true,
-            event_ids: vec!["e1".to_string()],
-            decision: Some(HookDecision::Deny),
-            pending_request_id: None,
-            response_text: Some("blocked".to_string()),
-            message: None,
-        };
-        let value = ClineHookAdapter
-            .blocking_response_json("PreToolUse", &response)
-            .unwrap();
-        assert_eq!(value, json!({"cancel": true, "errorMessage": "blocked"}));
-    }
 
     #[test]
     fn maps_cline_pre_tool_use() {

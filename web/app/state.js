@@ -47,8 +47,6 @@ export function createState() {
       pendingSettings: {},
       hookDiagnostics: null,
       hookRuntimeSessions: [],
-      hookPendingRequests: [],
-      hookPolicy: null,
       hookDoctorReport: null,
       hookCleanupReport: null,
     },

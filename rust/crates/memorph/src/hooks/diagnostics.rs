@@ -9,8 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::hooks::capabilities::HookProviderCapabilities;
-use crate::hooks::model::{HookEvent, HookInstallStatus, PendingHookRequest, RuntimeSession};
-use crate::hooks::policy::HookPolicy;
+use crate::hooks::model::{HookEvent, HookInstallStatus, RuntimeSession};
 use crate::hooks::protocol::HookRuntimeEndpoint;
 use crate::hooks::store::{self, HookErrorRecord};
 use crate::hooks::strategies::HookConfigStrategyKind;
@@ -24,8 +23,6 @@ pub struct HookDiagnosticsReport {
     pub server: Option<HookDiagnosticsServer>,
     pub providers: Vec<HookDiagnosticsProvider>,
     pub runtime_sessions: Vec<RuntimeSession>,
-    pub pending_requests: Vec<PendingHookRequest>,
-    pub policy: HookPolicy,
     pub recent_events: Vec<HookEvent>,
     pub recent_errors: Vec<HookErrorRecord>,
     pub counts: HookDiagnosticsCounts,
@@ -38,7 +35,6 @@ pub struct HookDiagnosticsStorePaths {
     pub errors: String,
     pub runtime_sessions: String,
     pub server_runtime: String,
-    pub pending_requests: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -62,7 +58,6 @@ pub struct HookDiagnosticsCounts {
     pub providers: usize,
     pub runtime_sessions: usize,
     pub active_runtime_sessions: usize,
-    pub pending_requests: usize,
     pub recent_events: usize,
     pub recent_errors: usize,
 }
@@ -97,8 +92,6 @@ pub fn collect(options: HookDiagnosticsOptions) -> Result<HookDiagnosticsReport>
         })
         .collect::<Result<Vec<_>>>()?;
     let runtime_store = store::load_runtime_sessions()?;
-    let pending_store = store::load_pending_requests()?;
-    let policy = store::load_policy()?;
     let recent_events = store::load_recent_events(options.event_limit.min(1000))?;
     let recent_errors = store::load_recent_errors(options.error_limit.min(1000))?;
     let active_runtime_sessions = runtime_store
@@ -121,21 +114,17 @@ pub fn collect(options: HookDiagnosticsOptions) -> Result<HookDiagnosticsReport>
             errors: paths.errors.display().to_string(),
             runtime_sessions: paths.runtime_sessions.display().to_string(),
             server_runtime: paths.server_runtime.display().to_string(),
-            pending_requests: paths.pending_requests.display().to_string(),
         },
         server: crate::hooks::server::current_runtime_endpoint().map(redact_endpoint),
         counts: HookDiagnosticsCounts {
             providers: providers.len(),
             runtime_sessions: runtime_store.sessions.len(),
             active_runtime_sessions,
-            pending_requests: pending_store.requests.len(),
             recent_events: recent_events.len(),
             recent_errors: recent_errors.len(),
         },
         providers,
         runtime_sessions: runtime_store.sessions,
-        pending_requests: pending_store.requests,
-        policy,
         recent_events,
         recent_errors,
     })

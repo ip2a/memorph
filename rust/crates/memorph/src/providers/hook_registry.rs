@@ -112,7 +112,7 @@ pub fn find_hook_adapter(provider: &str) -> Option<&'static dyn HookAdapter> {
 mod tests {
     use super::*;
     use crate::hooks::model::{HookEventType, HookHealthStatus};
-    use crate::hooks::protocol::{HookDecision, HookIngestRequest, HookIngestResponse};
+    use crate::hooks::protocol::HookIngestRequest;
     use crate::hooks::test_support::TestHookHomeGuard;
     use serde_json::{Value, json};
 
@@ -209,37 +209,6 @@ mod tests {
                 HookEventType::ToolStarted,
                 "unexpected event type for {provider}"
             );
-        }
-    }
-
-    #[test]
-    fn claude_like_adapters_use_hook_specific_output() {
-        let response = HookIngestResponse {
-            accepted: true,
-            event_ids: vec!["e1".to_string()],
-            decision: Some(HookDecision::Deny),
-            pending_request_id: None,
-            response_text: Some("blocked".to_string()),
-            message: None,
-        };
-        for provider in [
-            "qwen",
-            "qoder",
-            "droid",
-            "codebuddy",
-            "codybuddycn",
-            "stepfun",
-            "antigravity",
-            "workbuddy",
-            "hermes",
-        ] {
-            let value = find_hook_adapter(provider)
-                .unwrap()
-                .blocking_response_json("PreToolUse", &response)
-                .unwrap();
-            assert_eq!(value["hookSpecificOutput"]["hookEventName"], "PreToolUse");
-            assert_eq!(value["hookSpecificOutput"]["decision"]["behavior"], "deny");
-            assert_eq!(value["hookSpecificOutput"]["response"], "blocked");
         }
     }
 

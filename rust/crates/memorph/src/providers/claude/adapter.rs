@@ -385,28 +385,8 @@ fn unix_timestamp(value: i64) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::protocol::{HookBridgeEnvironment, HookDecision, HookIngestResponse};
+    use crate::hooks::protocol::HookBridgeEnvironment;
     use serde_json::json;
-
-    #[test]
-    fn blocking_response_uses_hook_specific_output() {
-        let response = HookIngestResponse {
-            accepted: true,
-            event_ids: vec!["e1".to_string()],
-            decision: Some(HookDecision::Allow),
-            pending_request_id: None,
-            response_text: None,
-            message: None,
-        };
-        let value = ClaudeHookAdapter
-            .blocking_response_json("PermissionRequest", &response)
-            .unwrap();
-        assert_eq!(
-            value["hookSpecificOutput"]["hookEventName"],
-            "PermissionRequest"
-        );
-        assert_eq!(value["hookSpecificOutput"]["decision"]["behavior"], "allow");
-    }
 
     #[test]
     fn maps_pre_tool_use_with_direct_claude_fields() {

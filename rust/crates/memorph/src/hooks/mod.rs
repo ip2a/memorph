@@ -1,8 +1,8 @@
 //! Runtime hook integration for memorph.
 //!
 //! Hook ingestion, provider event normalization, runtime session tracking, hook
-//! installation, health checks, policy decisions, pending user decisions, and
-//! diagnostics live behind this boundary and are wired into the existing
+//! installation, health checks, and diagnostics live behind this boundary and
+//! are wired into the existing
 //! CLI/TUI/Web/Desktop entry points.
 
 pub mod adapters;
@@ -23,7 +23,6 @@ pub mod lifecycle;
 pub mod model;
 pub mod normalizer;
 pub mod operations;
-pub mod policy;
 pub mod profiles;
 pub mod protocol;
 pub mod registry;
@@ -32,7 +31,6 @@ pub mod server;
 pub mod shared;
 pub mod store;
 pub mod strategies;
-pub mod visibility;
 
 #[cfg(test)]
 pub(crate) mod test_support;

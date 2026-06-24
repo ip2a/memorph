@@ -2341,6 +2341,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_settings_route_accepts_provider_aliases() {
+        let canonical_request = Request::builder()
+            .uri("/api/v1/providers/droid/settings")
+            .body(Body::empty())
+            .unwrap();
+        let alias_request = Request::builder()
+            .uri("/api/v1/providers/factory/settings")
+            .body(Body::empty())
+            .unwrap();
+
+        let (canonical_status, canonical_value) = read_json(router(), canonical_request).await;
+        let (alias_status, alias_value) = read_json(router(), alias_request).await;
+
+        assert_eq!(canonical_status, StatusCode::OK);
+        assert_eq!(alias_status, StatusCode::OK);
+        assert_eq!(
+            canonical_value["data"]["settings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|setting| setting["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            alias_value["data"]["settings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|setting| setting["id"].as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
     async fn provider_setting_update_syncs_legacy_settings_payload() {
         let dir = tempfile::tempdir().unwrap();
         let _home = ConfigTestHome::new(dir.path());

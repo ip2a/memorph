@@ -319,20 +319,6 @@ button[disabled] {
   min-width: 0;
 }
 
-.home-hero-toggle {
-  justify-self: end;
-  height: 28px;
-  padding: 0 10px;
-  font-size: 12px;
-}
-
-.home-hero > .home-hero-toggle {
-  position: absolute;
-  top: 10px;
-  right: 0;
-  z-index: 1;
-}
-
 .home-hero-collapsed {
   display: block;
   padding: 8px 0;
@@ -343,6 +329,40 @@ button[disabled] {
   grid-template-columns: minmax(180px, 1fr) auto auto;
   gap: 12px;
   align-items: center;
+}
+
+.home-hero-compact-action,
+.ascii-banner-action {
+  cursor: pointer;
+}
+
+.home-hero-compact-action {
+  margin: -4px 0;
+  padding: 4px 8px;
+  border-radius: 10px;
+  transition: background 120ms ease;
+}
+
+.home-hero-compact-action:hover,
+.home-hero-compact-action:focus-visible {
+  background: var(--mist);
+  outline: none;
+}
+
+.home-hero-affordance {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.home-hero-compact-action:hover .home-hero-affordance,
+.home-hero-compact-action:focus-visible .home-hero-affordance,
+.ascii-banner-action:hover pre {
+  color: var(--ink);
+}
+
+.home-hero-compact-path {
+  pointer-events: none;
 }
 
 .home-hero-compact-main {
@@ -2504,7 +2524,7 @@ button[disabled] {
   }
 
   .home-hero-compact {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr;
   }
 
   .home-hero-compact-main {

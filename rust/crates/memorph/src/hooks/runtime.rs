@@ -38,8 +38,6 @@ pub enum RuntimeEffect {
 pub struct RuntimeCleanupReport {
     pub idle: usize,
     pub orphaned: usize,
-    pub expired_pending: usize,
-    pub resolved_pending_removed: usize,
 }
 
 impl RuntimeState {

@@ -69,34 +69,11 @@ impl HookIngestRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum HookDecision {
-    Allow,
-    Deny,
-    AskUser,
-    Ignore,
-    RecordOnly,
-    ProviderDefault,
-}
-
-impl Default for HookDecision {
-    fn default() -> Self {
-        Self::RecordOnly
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HookIngestResponse {
     pub accepted: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_ids: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub decision: Option<HookDecision>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_request_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
@@ -106,34 +83,11 @@ impl HookIngestResponse {
         Self {
             accepted: true,
             event_ids,
-            decision: None,
-            pending_request_id: None,
-            response_text: None,
             message: None,
         }
     }
 
-    pub fn with_decision(event_ids: Vec<String>, decision: HookDecision) -> Self {
-        Self {
-            accepted: true,
-            event_ids,
-            decision: Some(decision),
-            pending_request_id: None,
-            response_text: None,
-            message: None,
-        }
-    }
 
-    pub fn waiting_for_user(event_ids: Vec<String>, pending_request_id: String) -> Self {
-        Self {
-            accepted: true,
-            event_ids,
-            decision: Some(HookDecision::AskUser),
-            pending_request_id: Some(pending_request_id),
-            response_text: None,
-            message: Some("Waiting for memorph user decision".to_string()),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

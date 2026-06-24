@@ -7,9 +7,9 @@
 use anyhow::Result;
 
 use crate::hooks::model::{HookEvent, HookInstallStatus, HookOperationReport};
-use crate::hooks::protocol::{HookDecision, HookIngestRequest, HookIngestResponse};
+use crate::hooks::protocol::{HookIngestRequest, HookIngestResponse};
 use crate::hooks::registry::HookProviderDescriptor;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 pub trait ProviderHook: Send + Sync {
     fn provider_id(&self) -> &'static str;
@@ -33,55 +33,27 @@ pub trait HookAdapter: Send + Sync {
     fn provider_id(&self) -> &'static str;
     fn normalize(&self, request: &HookIngestRequest) -> Result<Vec<HookEvent>>;
 
-    /// Render the provider-compatible stdout response for blocking hooks.
+    /// Render provider stdout for blocking hooks.
     ///
-    /// Most providers accept the generic `{ "decision": ... }` shape. Providers
-    /// with custom hook response protocols override this in their adapter.
+    /// memorph observes hook events only. It does not approve, deny, ask users,
+    /// or otherwise influence provider decisions, so the default response is no
+    /// provider-specific output.
     fn blocking_response_json(
         &self,
         _event_name: &str,
-        response: &HookIngestResponse,
+        _response: &HookIngestResponse,
     ) -> Option<Value> {
-        generic_blocking_response_json(response)
+        None
     }
 }
 
-pub fn generic_blocking_response_json(response: &HookIngestResponse) -> Option<Value> {
-    let decision = response.decision.as_ref()?;
-    let behavior = decision_behavior(decision)?;
-    let mut value = json!({"decision": behavior});
-    if let Some(text) = response.response_text.as_deref() {
-        value["response"] = json!(text);
-    }
-    Some(value)
+pub fn generic_blocking_response_json(_response: &HookIngestResponse) -> Option<Value> {
+    None
 }
 
 pub fn hook_specific_output_response_json(
-    event_name: &str,
-    response: &HookIngestResponse,
+    _event_name: &str,
+    _response: &HookIngestResponse,
 ) -> Option<Value> {
-    let decision = response.decision.as_ref()?;
-    let behavior = decision_behavior(decision)?;
-    let mut value = json!({
-        "hookSpecificOutput": {
-            "hookEventName": event_name,
-            "decision": {
-                "behavior": behavior
-            }
-        }
-    });
-    if let Some(text) = response.response_text.as_deref() {
-        value["hookSpecificOutput"]["response"] = json!(text);
-    }
-    Some(value)
-}
-
-fn decision_behavior(decision: &HookDecision) -> Option<&'static str> {
-    match decision {
-        HookDecision::Allow => Some("allow"),
-        HookDecision::Deny => Some("deny"),
-        HookDecision::AskUser => Some("ask_user"),
-        HookDecision::Ignore => Some("ignore"),
-        HookDecision::RecordOnly | HookDecision::ProviderDefault => None,
-    }
+    None
 }

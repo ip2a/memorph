@@ -178,6 +178,14 @@ document.addEventListener("submit", (event) => {
   void handleSubmit(form.dataset.submit, new FormData(form));
 });
 
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const action = event.target.closest('[role="button"][data-action]');
+  if (!action) return;
+  event.preventDefault();
+  void handleAction(action.dataset.action, action.dataset, action);
+});
+
 document.addEventListener("change", (event) => {
   const target = event.target;
   if (!(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
@@ -489,14 +497,7 @@ async function detectAgentProvider(providerId) {
 }
 
 async function loadHookDiagnostics() {
-  const [diagnostics, pendingRequests, policy] = await Promise.all([
-    api("/api/v1/hooks/diagnostics?event_limit=25&error_limit=25"),
-    api("/api/v1/hooks/pending").catch(() => []),
-    api("/api/v1/hooks/policy").catch(() => null),
-  ]);
-  state.agents.hookDiagnostics = diagnostics;
-  state.agents.hookPendingRequests = pendingRequests || [];
-  state.agents.hookPolicy = policy;
+  state.agents.hookDiagnostics = await api("/api/v1/hooks/diagnostics?event_limit=25&error_limit=25");
   render();
 }
 
@@ -528,33 +529,6 @@ async function cleanupHookRuntimeSessions() {
     await loadHooksCenter();
   }
   toast(t("saved"), `Hook cleanup: idle ${report.idle || 0}, orphaned ${report.orphaned || 0}`);
-  render();
-}
-
-async function setHookPolicyMode(mode) {
-  const current = state.agents.hookPolicy || { version: 1, global: "record_only", providers: {}, tool_rules: [] };
-  const next = { ...current, global: mode };
-  state.agents.hookPolicy = await api("/api/v1/hooks/policy", {
-    method: "PUT",
-    body: next,
-  });
-  toast(t("saved"), `Hook policy: ${mode}`);
-  render();
-}
-
-async function resolveHookPendingRequest(id, decision) {
-  if (!id || !decision) return;
-  await api(`/api/v1/hooks/pending/${encodeURIComponent(id)}/decision`, {
-    method: "POST",
-    body: { decision },
-  });
-  const [runtimeSessions, pendingRequests] = await Promise.all([
-    api("/api/v1/hooks/runtime-sessions").catch(() => []),
-    api("/api/v1/hooks/pending").catch(() => []),
-  ]);
-  state.agents.hookRuntimeSessions = runtimeSessions || [];
-  state.agents.hookPendingRequests = pendingRequests || [];
-  toast(t("saved"), `Hook request ${decision}`);
   render();
 }
 
@@ -764,12 +738,6 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "cleanup-hook-runtime":
       await cleanupHookRuntimeSessions();
-      break;
-    case "set-hook-policy-mode":
-      await setHookPolicyMode(data.mode || "record_only");
-      break;
-    case "resolve-hook-pending":
-      await resolveHookPendingRequest(data.pendingId, data.decision);
       break;
     case "select-agent-provider":
       state.agents.selectedProvider = data.provider || "";

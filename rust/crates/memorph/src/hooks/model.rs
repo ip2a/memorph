@@ -2,7 +2,7 @@
 //!
 //! These types are provider-neutral. Provider-specific adapters should preserve
 //! raw payloads while mapping the stable fields memorph needs for runtime
-//! session correlation, diagnostics, and future permission policy decisions.
+//! session correlation, diagnostics, and runtime observation.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::hooks::protocol::{HookDecision, HookProcessInfo};
+use crate::hooks::protocol::HookProcessInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -361,61 +361,6 @@ pub struct RuntimeSession {
 
 fn is_zero_u32(value: &u32) -> bool {
     *value == 0
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingHookRequestKind {
-    Permission,
-    Question,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PendingHookRequestStatus {
-    Pending,
-    Resolved,
-    Expired,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PendingHookRequest {
-    pub id: String,
-    pub kind: PendingHookRequestKind,
-    pub status: PendingHookRequestStatus,
-    pub provider: String,
-    pub runtime_id: RuntimeSessionId,
-    pub event_id: String,
-    pub hook_request_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(default)]
-    pub provider_request_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool: Option<HookToolCall>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<String>,
-    pub blocking: bool,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resolved_at: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub decision: Option<HookDecision>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PendingHookDecision {
-    pub decision: HookDecision,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub response_text: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

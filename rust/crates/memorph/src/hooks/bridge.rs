@@ -2,25 +2,20 @@
 //!
 //! This is an internal execution path invoked by provider hook configuration.
 //! It reads provider stdin JSON, enriches it with local context, forwards it to
-//! the currently running memorph API endpoint, and prints provider-compatible
-//! response JSON for blocking hooks.
+//! the currently running memorph API endpoint, and emits no provider decision
+//! output. Hook failures are fail-open by design.
 
 use anyhow::{Context, Result};
-use chrono::Utc;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::hooks::model::{PendingHookDecision, PendingHookRequest, PendingHookRequestStatus};
-use crate::hooks::protocol::{
-    HookBridgeEnvironment, HookDecision, HookIngestRequest, HookIngestResponse,
-};
+use crate::hooks::protocol::{HookBridgeEnvironment, HookIngestRequest, HookIngestResponse};
 use crate::hooks::store;
 
-const PENDING_DECISION_TIMEOUT: Duration = Duration::from_secs(300);
-const PENDING_DECISION_POLL_INTERVAL: Duration = Duration::from_millis(500);
+const HOOK_BRIDGE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BridgeRunOptions {
@@ -47,9 +42,6 @@ pub fn run_blocking(options: BridgeRunOptions) -> Result<()> {
                 &HookIngestResponse {
                     accepted: false,
                     event_ids: Vec::new(),
-                    decision: Some(HookDecision::ProviderDefault),
-                    pending_request_id: None,
-                    response_text: None,
                     message: Some(error.to_string()),
                 },
             );
@@ -166,7 +158,10 @@ async fn send_request(request: &HookIngestRequest) -> Result<HookIngestResponse>
         "{}/api/v1/hooks/ingest",
         endpoint.endpoint.trim_end_matches('/')
     );
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(HOOK_BRIDGE_TIMEOUT)
+        .build()
+        .context("Failed to build hook bridge HTTP client")?;
     let response = client
         .post(url)
         .header("x-memorph-hook-token", &endpoint.token)
@@ -186,148 +181,7 @@ async fn send_request(request: &HookIngestRequest) -> Result<HookIngestResponse>
         .get("data")
         .cloned()
         .context("memorph hook response did not include data")?;
-    let response: HookIngestResponse =
-        serde_json::from_value(data).context("Failed to decode memorph hook ingest response")?;
-    if response.decision == Some(HookDecision::AskUser) {
-        if let Some(pending_id) = response.pending_request_id.clone() {
-            return wait_for_pending_decision(&client, &endpoint, &pending_id, response).await;
-        }
-    }
-    Ok(response)
-}
-
-async fn wait_for_pending_decision(
-    client: &reqwest::Client,
-    endpoint: &crate::hooks::protocol::HookRuntimeEndpoint,
-    pending_id: &str,
-    original: HookIngestResponse,
-) -> Result<HookIngestResponse> {
-    let deadline = Utc::now()
-        + chrono::Duration::from_std(PENDING_DECISION_TIMEOUT)
-            .expect("pending decision timeout fits chrono duration");
-    loop {
-        let pending = fetch_pending_request(client, endpoint, pending_id).await?;
-        if pending.status == PendingHookRequestStatus::Resolved {
-            return Ok(pending_final_response(original.event_ids, pending));
-        }
-        if pending.status == PendingHookRequestStatus::Expired {
-            return Ok(pending_final_response(original.event_ids, pending));
-        }
-        if Utc::now() >= deadline {
-            match finalize_timed_out_pending_request(client, endpoint, pending_id).await {
-                Ok(pending) => return Ok(pending_final_response(original.event_ids, pending)),
-                Err(error) => {
-                    let _ = store::append_error("hook_bridge_timeout_finalize", error.to_string());
-                    return Ok(pending_timeout_response(original.event_ids, pending_id));
-                }
-            }
-        }
-        tokio::time::sleep(PENDING_DECISION_POLL_INTERVAL).await;
-    }
-}
-
-async fn finalize_timed_out_pending_request(
-    client: &reqwest::Client,
-    endpoint: &crate::hooks::protocol::HookRuntimeEndpoint,
-    pending_id: &str,
-) -> Result<PendingHookRequest> {
-    let url = format!(
-        "{}/api/v1/hooks/pending/{}/decision",
-        endpoint.endpoint.trim_end_matches('/'),
-        pending_id
-    );
-    let response = client
-        .post(url)
-        .header("x-memorph-hook-token", &endpoint.token)
-        .json(&pending_timeout_decision())
-        .send()
-        .await
-        .context("Failed to finalize timed-out pending hook request")?;
-    let status = response.status();
-    let value: Value = response
-        .json()
-        .await
-        .context("Failed to parse pending hook finalization response")?;
-    if !status.is_success() {
-        anyhow::bail!(
-            "memorph pending hook request finalization failed: {} {}",
-            status,
-            value
-        );
-    }
-    let data = value
-        .get("data")
-        .cloned()
-        .context("memorph pending hook finalization response did not include data")?;
-    serde_json::from_value(data).context("Failed to decode finalized pending hook request")
-}
-
-fn pending_timeout_decision() -> PendingHookDecision {
-    PendingHookDecision {
-        decision: HookDecision::ProviderDefault,
-        response_text: None,
-        note: Some("Timed out waiting for memorph user decision".to_string()),
-    }
-}
-
-fn pending_timeout_response(event_ids: Vec<String>, pending_id: &str) -> HookIngestResponse {
-    let mut response = HookIngestResponse::with_decision(event_ids, HookDecision::ProviderDefault);
-    response.pending_request_id = Some(pending_id.to_string());
-    response.message = Some("Timed out waiting for memorph user decision".to_string());
-    response
-}
-
-fn pending_final_response(
-    event_ids: Vec<String>,
-    pending: PendingHookRequest,
-) -> HookIngestResponse {
-    let decision = pending.decision.unwrap_or(HookDecision::ProviderDefault);
-    let mut response = HookIngestResponse::with_decision(event_ids, decision);
-    response.pending_request_id = Some(pending.id);
-    response.response_text = pending.response_text;
-    response.message = pending.note.or_else(|| {
-        if pending.status == PendingHookRequestStatus::Expired {
-            Some("Timed out waiting for memorph user decision".to_string())
-        } else {
-            None
-        }
-    });
-    response
-}
-
-async fn fetch_pending_request(
-    client: &reqwest::Client,
-    endpoint: &crate::hooks::protocol::HookRuntimeEndpoint,
-    pending_id: &str,
-) -> Result<PendingHookRequest> {
-    let url = format!(
-        "{}/api/v1/hooks/pending/{}",
-        endpoint.endpoint.trim_end_matches('/'),
-        pending_id
-    );
-    let response = client
-        .get(url)
-        .header("x-memorph-hook-token", &endpoint.token)
-        .send()
-        .await
-        .context("Failed to poll memorph pending hook request")?;
-    let status = response.status();
-    let value: Value = response
-        .json()
-        .await
-        .context("Failed to parse pending hook request response")?;
-    if !status.is_success() {
-        anyhow::bail!(
-            "memorph pending hook request poll failed: {} {}",
-            status,
-            value
-        );
-    }
-    let data = value
-        .get("data")
-        .cloned()
-        .context("memorph pending hook response did not include data")?;
-    serde_json::from_value(data).context("Failed to decode pending hook request")
+    serde_json::from_value(data).context("Failed to decode memorph hook ingest response")
 }
 
 fn print_response(provider: &str, event_name: &str, response: &HookIngestResponse) {
@@ -413,85 +267,14 @@ mod tests {
     }
 
     #[test]
-    fn generic_response_uses_default_decision_shape() {
+    fn provider_response_does_not_emit_decision_output() {
         let response = HookIngestResponse {
             accepted: true,
             event_ids: vec!["e1".to_string()],
-            decision: Some(HookDecision::Allow),
-            pending_request_id: None,
-            response_text: Some("ok".to_string()),
-            message: None,
-        };
-        let value = provider_response_json("generic", "PreToolUse", &response).unwrap();
-        assert_eq!(value, json!({"decision": "allow", "response": "ok"}));
-    }
-
-    #[test]
-    fn expired_pending_request_returns_provider_default_without_waiting() {
-        let now = Utc::now();
-        let response = pending_final_response(
-            vec!["e1".to_string()],
-            PendingHookRequest {
-                id: "pending-1".to_string(),
-                kind: crate::hooks::model::PendingHookRequestKind::Permission,
-                status: PendingHookRequestStatus::Expired,
-                provider: "sample".to_string(),
-                runtime_id: crate::hooks::model::RuntimeSessionId::new("sample:session:s1"),
-                event_id: "e1".to_string(),
-                hook_request_id: "hook-request-1".to_string(),
-                provider_request_id: Some("provider-request-1".to_string()),
-                provider_session_id: Some("s1".to_string()),
-                tool: None,
-                prompt: Some("Allow?".to_string()),
-                blocking: true,
-                created_at: now,
-                updated_at: now,
-                resolved_at: Some(now),
-                decision: None,
-                response_text: None,
-                note: None,
-            },
-        );
-
-        assert_eq!(response.decision, Some(HookDecision::ProviderDefault));
-        assert_eq!(response.pending_request_id.as_deref(), Some("pending-1"));
-        assert_eq!(
-            response.message.as_deref(),
-            Some("Timed out waiting for memorph user decision")
-        );
-    }
-
-    #[test]
-    fn timeout_finalization_uses_provider_default_decision_payload() {
-        let decision = pending_timeout_decision();
-        assert_eq!(decision.decision, HookDecision::ProviderDefault);
-        assert_eq!(
-            decision.note.as_deref(),
-            Some("Timed out waiting for memorph user decision")
-        );
-
-        let response = pending_timeout_response(vec!["e1".to_string()], "pending-timeout");
-        assert_eq!(response.decision, Some(HookDecision::ProviderDefault));
-        assert_eq!(
-            response.pending_request_id.as_deref(),
-            Some("pending-timeout")
-        );
-        assert_eq!(
-            response.message.as_deref(),
-            Some("Timed out waiting for memorph user decision")
-        );
-    }
-
-    #[test]
-    fn record_only_does_not_emit_provider_decision() {
-        let response = HookIngestResponse {
-            accepted: true,
-            event_ids: vec!["e1".to_string()],
-            decision: Some(HookDecision::RecordOnly),
-            pending_request_id: None,
-            response_text: None,
             message: None,
         };
         assert!(provider_response_json("generic", "PreToolUse", &response).is_none());
+        assert!(provider_response_json("claude", "PermissionRequest", &response).is_none());
     }
+
 }

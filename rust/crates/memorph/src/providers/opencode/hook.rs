@@ -303,13 +303,10 @@ fn opencode_plugin_source() -> Result<String> {
 import {{ execFile }} from "child_process";
 
 const MEMORPH = __MEMORPH_EXE_JSON__;
-const pending = new Set();
-
-function send(mapped, blocking = false) {{
+function send(mapped) {{
   return new Promise((resolve) => {{
     const args = ["__hook-bridge", "--provider", "opencode", "--event", mapped.hook_event_name || "Event"];
-    if (blocking) args.push("--blocking");
-    const child = execFile(MEMORPH, args, {{ timeout: blocking ? 300000 : 5000, maxBuffer: 1024 * 1024 }}, (error, stdout) => {{
+    const child = execFile(MEMORPH, args, {{ timeout: 5000, maxBuffer: 1024 * 1024 }}, (error, stdout) => {{
       if (error || !stdout) {{ resolve(null); return; }}
       try {{ resolve(JSON.parse(stdout)); }} catch {{ resolve(null); }}
     }});
@@ -336,23 +333,6 @@ export default {{
     const lastAssistant = new Map();
     const api = client?._client;
     const port = serverUrl ? parseInt(serverUrl.port) || 4096 : 4096;
-
-    async function replyPermission(id, decision) {{
-      const behavior = decision?.hookSpecificOutput?.decision?.behavior || decision?.decision;
-      if (!behavior) return;
-      const reply = behavior === "allow" || behavior === "always" ? "once" : "reject";
-      try {{
-        if (typeof api?.request === "function") {{
-          await api.request({{ method: "POST", url: "/permission/{{requestID}}/reply", path: {{ requestID: id }}, body: {{ reply }} }});
-          return;
-        }}
-      }} catch {{}}
-      try {{
-        await fetch(`http://localhost:${{port}}/permission/${{id}}/reply`, {{
-          method: "POST", headers: {{ "Content-Type": "application/json" }}, body: JSON.stringify({{ reply }})
-        }});
-      }} catch {{}}
-    }}
 
     function mapEvent(event) {{
       const t = event.type;
@@ -431,24 +411,7 @@ export default {{
       event: async ({{ event }}) => {{
         const mapped = mapEvent(event);
         if (!mapped) return;
-        // memorph currently records OpenCode permissions/questions without
-        // taking over OpenCode's native permission UI. Do not block here unless
-        // a future policy layer returns explicit decisions.
-        const blocking = false;
-        if (blocking) {{
-          pending.add(mapped.session_id);
-          try {{
-            const response = await send(mapped, true);
-            if (mapped.tool_name !== "AskUserQuestion" && mapped._opencode_request_id) {{
-              await replyPermission(mapped._opencode_request_id, response);
-            }}
-          }} finally {{
-            pending.delete(mapped.session_id);
-          }}
-          return;
-        }}
-        if (pending.has(mapped.session_id) && mapped.hook_event_name !== "SessionEnd") return;
-        await send(mapped, false);
+        await send(mapped);
       }}
     }};
   }}
