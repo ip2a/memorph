@@ -20,8 +20,11 @@ use crate::{
 
 type FolderPicker =
     dyn Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static;
+type FilePicker =
+    dyn Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static;
 
 static FOLDER_PICKER: OnceLock<Arc<FolderPicker>> = OnceLock::new();
+static FILE_PICKER: OnceLock<Arc<FilePicker>> = OnceLock::new();
 
 #[derive(Serialize)]
 struct ApiResponse<T: Serialize> {
@@ -105,6 +108,7 @@ pub fn router() -> Router {
         )
         .route("/api/v1/settings", get(get_settings).put(update_settings))
         .route("/api/v1/system/select-folder", post(select_folder))
+        .route("/api/v1/system/select-file", post(select_file))
         .route("/api/v1/system/open-external", post(open_external))
         .route("/api/v1/sessions", get(list_sessions))
         .route("/api/v1/sessions/{provider}/{session_id}", get(get_session))
@@ -173,8 +177,11 @@ pub fn router() -> Router {
             delete(remove_sync_group).patch(rename_sync_group),
         )
         .route("/api/v1/manager/preview", post(manager_preview))
+        .route("/api/v1/manager/workspaces", post(manager_workspaces))
         .route("/api/v1/manager/clean", post(manager_clean))
+        .route("/api/v1/manager/clean-workspace", post(manager_clean_workspace))
         .route("/api/v1/manager/backup", post(manager_backup))
+        .route("/api/v1/manager/backup-workspace", post(manager_backup_workspace))
         .merge(hooks::server::router())
 }
 
@@ -183,6 +190,13 @@ where
     F: Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static,
 {
     FOLDER_PICKER.set(Arc::new(picker)).is_ok()
+}
+
+pub fn register_file_picker<F>(picker: F) -> bool
+where
+    F: Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static,
+{
+    FILE_PICKER.set(Arc::new(picker)).is_ok()
 }
 
 #[derive(Debug, Serialize)]
@@ -322,6 +336,16 @@ struct SelectFolderPayload {
 }
 
 #[derive(Deserialize)]
+struct SelectFileBody {
+    start_path: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SelectFilePayload {
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct OpenExternalBody {
     url: String,
 }
@@ -403,53 +427,110 @@ fn scan_provider_sessions(
         .collect())
 }
 
-fn provider_session_signals(provider_id: &str, workspace: Option<&str>) -> (bool, i64, i64) {
-    let all_sessions = scan_provider_sessions(provider_id, None).unwrap_or_default();
-    let workspace_sessions: Vec<_> = match workspace.filter(|value| !value.is_empty()) {
-        Some(value) => all_sessions
-            .iter()
-            .filter(|session| {
-                crate::provider::default_workspace_matches(
-                    session.project_dir.as_deref(),
-                    Some(value),
-                )
-            })
-            .cloned()
-            .collect(),
-        None => all_sessions.clone(),
+fn filter_sessions_by_workspace(
+    sessions: &[crate::provider::ProviderSessionSummary],
+    workspace: Option<&str>,
+) -> Vec<crate::provider::ProviderSessionSummary> {
+    let Some(workspace) = workspace.filter(|value| !value.is_empty()) else {
+        return sessions.to_vec();
     };
-
-    let global_last_active = all_sessions
+    sessions
         .iter()
-        .filter_map(|session| session.last_active_at)
-        .max()
-        .unwrap_or(0);
-    let workspace_last_active = workspace_sessions
-        .iter()
-        .filter_map(|session| session.last_active_at)
-        .max()
-        .unwrap_or(0);
-    let has_sessions = !workspace_sessions.is_empty();
-
-    (has_sessions, global_last_active, workspace_last_active)
+        .filter(|session| {
+            crate::provider::default_workspace_matches(
+                session.project_dir.as_deref(),
+                Some(workspace),
+            )
+        })
+        .cloned()
+        .collect()
 }
 
-fn build_provider_catalog(workspace: Option<&str>) -> anyhow::Result<ProviderCatalog> {
+async fn build_provider_catalog(workspace: Option<&str>) -> anyhow::Result<ProviderCatalog> {
     let prefs = config::web_preferences()?;
     let ordered_ids = config::ordered_provider_ids(&prefs);
     let hidden_global = config::global_hidden_provider_ids(&prefs);
     let hidden_workspace = config::workspace_hidden_provider_ids(workspace);
     let workspace_order = config::workspace_ordered_provider_ids(workspace);
 
+    // Scan sessions concurrently; each scan is synchronous I/O.
+    let mut scan_handles = Vec::new();
+    for id in &ordered_ids {
+        let id = id.clone();
+        scan_handles.push(tokio::task::spawn_blocking(move || {
+            (id.clone(), scan_provider_sessions(&id, None).unwrap_or_default())
+        }));
+    }
+    let mut sessions_by_provider: std::collections::HashMap<String, Vec<crate::provider::ProviderSessionSummary>> =
+        std::collections::HashMap::new();
+    for handle in scan_handles {
+        if let Ok((id, sessions)) = handle.await {
+            sessions_by_provider.insert(id, sessions);
+        }
+    }
+
+    // Detect environment concurrently.
+    let mut env_handles = Vec::new();
+    for id in &ordered_ids {
+        let id = id.clone();
+        env_handles.push(tokio::task::spawn_blocking(move || {
+            (
+                id.clone(),
+                crate::agent_environment::detect_provider_environment(&id),
+            )
+        }));
+    }
+    let mut env_by_provider: std::collections::HashMap<String, crate::agent_environment::AgentEnvironmentStatus> =
+        std::collections::HashMap::new();
+    for handle in env_handles {
+        if let Ok((id, env)) = handle.await {
+            env_by_provider.insert(id, env);
+        }
+    }
+
+    let workspace_opt = workspace.filter(|value| !value.is_empty());
+
     let mut catalog = build_catalog(CatalogInput {
         ordered_ids: &ordered_ids,
         hidden_global: &hidden_global,
         hidden_workspace: &hidden_workspace,
-        has_sessions: &|id| provider_session_signals(id, workspace).0,
-        environment: &|id| crate::agent_environment::detect_provider_environment(id),
+        has_sessions: &|id| {
+            sessions_by_provider
+                .get(id)
+                .map(|sessions| {
+                    !filter_sessions_by_workspace(sessions, workspace_opt).is_empty()
+                })
+                .unwrap_or(false)
+        },
+        environment: &|id| {
+            env_by_provider.get(id).cloned().unwrap_or_else(|| {
+                crate::agent_environment::AgentEnvironmentStatus {
+                    installed: false,
+                    executable_path: None,
+                    executable_dir: None,
+                    config_path: String::new(),
+                    install_method: String::new(),
+                }
+            })
+        },
         active_time: &|id| {
-            let (_, global, workspace_active) = provider_session_signals(id, workspace);
-            (global, workspace_active)
+            sessions_by_provider
+                .get(id)
+                .map(|sessions| {
+                    let workspace_sessions = filter_sessions_by_workspace(sessions, workspace_opt);
+                    let global_last_active = sessions
+                        .iter()
+                        .filter_map(|session| session.last_active_at)
+                        .max()
+                        .unwrap_or(0);
+                    let workspace_last_active = workspace_sessions
+                        .iter()
+                        .filter_map(|session| session.last_active_at)
+                        .max()
+                        .unwrap_or(0);
+                    (global_last_active, workspace_last_active)
+                })
+                .unwrap_or((0, 0))
         },
     });
 
@@ -739,12 +820,13 @@ fn config_file_payload() -> anyhow::Result<ConfigFilePayload> {
 
 async fn get_meta() -> impl IntoResponse {
     let selected_workspace = config::selected_workspace().unwrap_or(None);
+    let catalog = build_provider_catalog(selected_workspace.as_deref()).await;
     match (
         settings_payload(),
         Ok(selected_workspace.clone()),
         config::known_workspaces(),
         config_file_payload(),
-        build_provider_catalog(selected_workspace.as_deref()),
+        catalog,
     ) {
         (Ok(settings), Ok(selected_workspace), Ok(workspaces), Ok(config_file), Ok(catalog)) => {
             ApiResponse::success(MetaPayload {
@@ -815,7 +897,7 @@ struct UpdateCatalogBody {
 }
 
 async fn get_provider_catalog(Query(q): Query<CatalogQuery>) -> impl IntoResponse {
-    match build_provider_catalog(q.workspace.as_deref()) {
+    match build_provider_catalog(q.workspace.as_deref()).await {
         Ok(catalog) => ApiResponse::success(catalog).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -842,7 +924,7 @@ async fn update_provider_catalog(Json(body): Json<UpdateCatalogBody>) -> impl In
     };
 
     match result {
-        Ok(()) => match build_provider_catalog(body.workspace.as_deref()) {
+        Ok(()) => match build_provider_catalog(body.workspace.as_deref()).await {
             Ok(catalog) => ApiResponse::success(catalog).into_response(),
             Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
         },
@@ -921,6 +1003,21 @@ async fn select_folder(Json(body): Json<SelectFolderBody>) -> impl IntoResponse 
 
     match picker(body.start_path) {
         Ok(path) => ApiResponse::success(SelectFolderPayload { path }).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn select_file(Json(body): Json<SelectFileBody>) -> impl IntoResponse {
+    let Some(picker) = FILE_PICKER.get() else {
+        return api_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "File picker is only available in the desktop app.",
+        )
+        .into_response();
+    };
+
+    match picker(body.start_path) {
+        Ok(path) => ApiResponse::success(SelectFilePayload { path }).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -1787,6 +1884,57 @@ async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse
     ApiResponse::success(result).into_response()
 }
 
+async fn manager_workspaces(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
+    let filter = crate::core::manager::ManagerFilter {
+        providers: body.providers,
+        older_than_days: body.older_than_days,
+        older_than_ms: body.older_than_ms,
+        larger_than_mb: body.larger_than_mb,
+        larger_than_bytes: body.larger_than_bytes,
+        smaller_than_bytes: body.smaller_than_bytes,
+        workspace: None,
+        sort: body.sort,
+        limit: body.limit,
+    };
+    match crate::core::manager::workspaces(&filter) {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ManagerWorkspaceBody {
+    provider_id: String,
+    workspace: String,
+    output_dir: Option<String>,
+}
+
+async fn manager_clean_workspace(Json(body): Json<ManagerWorkspaceBody>) -> impl IntoResponse {
+    let result = crate::core::manager::clean_workspace(&body.provider_id, &body.workspace);
+    logging::info(
+        "manager_clean_workspace",
+        format!(
+            "provider={} workspace={} success={} failed={} freed_bytes={}",
+            body.provider_id, body.workspace, result.success, result.failed, result.freed_bytes
+        ),
+    );
+    ApiResponse::success(result).into_response()
+}
+
+async fn manager_backup_workspace(Json(body): Json<ManagerWorkspaceBody>) -> impl IntoResponse {
+    let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
+    let result =
+        crate::core::manager::backup_workspace(&body.provider_id, &body.workspace, std::path::Path::new(&output_dir));
+    logging::info(
+        "manager_backup_workspace",
+        format!(
+            "provider={} workspace={} success={} failed={} output_dir={}",
+            body.provider_id, body.workspace, result.success, result.failed, output_dir
+        ),
+    );
+    ApiResponse::success(result).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2147,6 +2295,7 @@ mod tests {
                 last_active_at: None,
                 source_path: None,
                 resume_command: None,
+                compressed_archive_refs: Vec::new(),
                 local_state: ResolvedLocalSessionState::default(),
                 event_count: 0,
                 message_count: 0,
