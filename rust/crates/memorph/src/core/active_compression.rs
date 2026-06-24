@@ -10,6 +10,13 @@ use crate::canonical::{
 use crate::core::compression;
 use crate::provider::canonical_event_text;
 
+mod adaptive;
+mod content;
+mod planner;
+mod reducer;
+
+use reducer::reduce_candidate_to_summary;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActiveCompressionParams {
     pub source_provider_id: String,
@@ -159,6 +166,7 @@ pub enum CompressionCandidateKind {
     HistoricalConversationRange,
     LargeToolOutput,
     LargeLogOutput,
+    LargeDiffOutput,
     SearchResults,
     ProviderPayloadText,
 }
@@ -169,6 +177,7 @@ pub enum CompressionSelectionReason {
     HistoricalContext,
     LargeToolOutput,
     LargeCommandOutput,
+    LargeDiffOutput,
     LargeSearchResult,
     ManualSelection,
 }
@@ -204,7 +213,7 @@ pub fn build_dry_run_report(
     let original_estimated_tokens =
         estimate_tokens_from_bytes_with_estimator(original_estimated_bytes, &token_estimator);
     let (candidates, skipped) =
-        plan_compression_candidates_with_estimator(session, &policy, &token_estimator);
+        planner::plan_compression_candidates_with_estimator(session, &policy, &token_estimator);
     let estimated_bytes_saved = candidates
         .iter()
         .map(|candidate| candidate.estimated_bytes_saved)
@@ -254,122 +263,11 @@ pub fn plan_compression_candidates(
     session: &CanonicalSession,
     policy: &ActiveCompressionPolicy,
 ) -> (Vec<CompressionCandidateReport>, Vec<CompressionSkipReport>) {
-    plan_compression_candidates_with_estimator(
+    planner::plan_compression_candidates_with_estimator(
         session,
         policy,
         &CompressionTokenEstimatorReport::default(),
     )
-}
-
-fn plan_compression_candidates_with_estimator(
-    session: &CanonicalSession,
-    policy: &ActiveCompressionPolicy,
-    token_estimator: &CompressionTokenEstimatorReport,
-) -> (Vec<CompressionCandidateReport>, Vec<CompressionSkipReport>) {
-    let protected_message_indexes = protected_recent_message_indexes(session, policy);
-    let mut candidates = Vec::new();
-    let mut skipped = Vec::new();
-
-    for (event_index, event) in session.events.iter().enumerate() {
-        let estimated_bytes = estimate_event_bytes(event);
-        let estimated_tokens =
-            estimate_tokens_from_bytes_with_estimator(estimated_bytes, token_estimator);
-
-        if matches!(event.role, EventRole::System | EventRole::Developer) {
-            skipped.push(skip_report(
-                event,
-                event_index,
-                CompressionSkipReason::SystemOrDeveloperInstruction,
-                estimated_bytes,
-                estimated_tokens,
-            ));
-            continue;
-        }
-
-        if event
-            .blocks
-            .iter()
-            .any(|block| matches!(block, EventBlock::Compressed { .. }))
-        {
-            skipped.push(skip_report(
-                event,
-                event_index,
-                CompressionSkipReason::AlreadyCompressed,
-                estimated_bytes,
-                estimated_tokens,
-            ));
-            continue;
-        }
-
-        if protected_message_indexes.contains(&event_index) {
-            skipped.push(skip_report(
-                event,
-                event_index,
-                CompressionSkipReason::ProtectedRecentMessage,
-                estimated_bytes,
-                estimated_tokens,
-            ));
-            continue;
-        }
-
-        if estimated_bytes < policy.min_candidate_bytes {
-            skipped.push(skip_report(
-                event,
-                event_index,
-                CompressionSkipReason::BelowByteThreshold,
-                estimated_bytes,
-                estimated_tokens,
-            ));
-            continue;
-        }
-
-        let Some((kind, reason, risk)) = classify_candidate(event) else {
-            skipped.push(skip_report(
-                event,
-                event_index,
-                CompressionSkipReason::UnsupportedEventShape,
-                estimated_bytes,
-                estimated_tokens,
-            ));
-            continue;
-        };
-
-        let compressed_estimated_bytes = estimate_candidate_compressed_bytes(estimated_bytes, kind);
-        let compressed_estimated_tokens =
-            estimate_tokens_from_bytes_with_estimator(compressed_estimated_bytes, token_estimator);
-        let estimated_bytes_saved = estimated_bytes.saturating_sub(compressed_estimated_bytes);
-        let estimated_tokens_saved = estimated_tokens.saturating_sub(compressed_estimated_tokens);
-        if estimated_bytes_saved.saturating_mul(100)
-            < estimated_bytes.saturating_mul(policy.min_savings_ratio_percent as usize)
-        {
-            skipped.push(skip_report(
-                event,
-                event_index,
-                CompressionSkipReason::InsufficientEstimatedSavings,
-                estimated_bytes,
-                estimated_tokens,
-            ));
-            continue;
-        }
-        candidates.push(CompressionCandidateReport {
-            id: format!("candidate-{:04}", candidates.len() + 1),
-            kind,
-            event_ids: vec![event.id.clone()],
-            start_event_index: event_index,
-            end_event_index: event_index,
-            reason,
-            risk,
-            original_estimated_bytes: estimated_bytes,
-            original_estimated_tokens: estimated_tokens,
-            compressed_estimated_bytes,
-            compressed_estimated_tokens,
-            estimated_bytes_saved,
-            estimated_tokens_saved,
-            archive_refs: Vec::new(),
-        });
-    }
-
-    (candidates, skipped)
 }
 
 pub fn apply_active_compression(
@@ -433,7 +331,7 @@ pub(crate) fn apply_active_compression_with_archive_dir(
             .iter()
             .map(|event| event.id.clone())
             .collect::<Vec<_>>();
-        let summary_seed = build_deterministic_summary(candidate, &source_events, None);
+        let summary_seed = reduce_candidate_to_summary(candidate, &source_events, None);
         let summary_event = active_summary_event(
             candidate,
             &source_events,
@@ -450,7 +348,7 @@ pub(crate) fn apply_active_compression_with_archive_dir(
             source_event_ids,
             source_events.clone(),
         )?;
-        let summary = build_deterministic_summary(candidate, &source_events, Some(&archive_ref));
+        let summary = reduce_candidate_to_summary(candidate, &source_events, Some(&archive_ref));
         replacement_events.push(active_summary_event(
             candidate,
             &source_events,
@@ -554,126 +452,6 @@ fn estimate_event_bytes(event: &SessionEvent) -> usize {
     canonical_event_text(event).len()
 }
 
-fn classify_candidate(
-    event: &SessionEvent,
-) -> Option<(
-    CompressionCandidateKind,
-    CompressionSelectionReason,
-    CompressionRisk,
-)> {
-    if event
-        .blocks
-        .iter()
-        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
-    {
-        return Some((
-            CompressionCandidateKind::LargeToolOutput,
-            CompressionSelectionReason::LargeToolOutput,
-            CompressionRisk::Low,
-        ));
-    }
-
-    if event
-        .blocks
-        .iter()
-        .any(|block| matches!(block, EventBlock::CommandResult { .. }))
-    {
-        return Some((
-            CompressionCandidateKind::LargeLogOutput,
-            CompressionSelectionReason::LargeCommandOutput,
-            CompressionRisk::Low,
-        ));
-    }
-
-    let text = canonical_event_text(event);
-    if looks_like_search_results(&text) {
-        return Some((
-            CompressionCandidateKind::SearchResults,
-            CompressionSelectionReason::LargeSearchResult,
-            CompressionRisk::Low,
-        ));
-    }
-
-    if event
-        .blocks
-        .iter()
-        .any(|block| matches!(block, EventBlock::ProviderPayload { .. }))
-    {
-        return Some((
-            CompressionCandidateKind::ProviderPayloadText,
-            CompressionSelectionReason::HistoricalContext,
-            CompressionRisk::High,
-        ));
-    }
-
-    if event.kind == SessionEventKind::Message
-        && matches!(
-            event.role,
-            EventRole::User | EventRole::Assistant | EventRole::Tool
-        )
-        && !text.trim().is_empty()
-    {
-        return Some((
-            CompressionCandidateKind::HistoricalConversationRange,
-            CompressionSelectionReason::HistoricalContext,
-            CompressionRisk::Medium,
-        ));
-    }
-
-    None
-}
-
-fn looks_like_search_results(text: &str) -> bool {
-    let matching_lines = text
-        .lines()
-        .filter(|line| {
-            let mut parts = line.splitn(3, ':');
-            let Some(path) = parts.next() else {
-                return false;
-            };
-            let Some(line_number) = parts.next() else {
-                return false;
-            };
-            parts.next().is_some()
-                && (path.contains('/') || path.contains('.'))
-                && line_number.parse::<usize>().is_ok()
-        })
-        .take(3)
-        .count();
-    matching_lines >= 2
-}
-
-fn estimate_candidate_compressed_bytes(
-    original_bytes: usize,
-    kind: CompressionCandidateKind,
-) -> usize {
-    let ratio = match kind {
-        CompressionCandidateKind::LargeToolOutput => 20,
-        CompressionCandidateKind::LargeLogOutput => 20,
-        CompressionCandidateKind::SearchResults => 30,
-        CompressionCandidateKind::HistoricalConversationRange => 35,
-        CompressionCandidateKind::ProviderPayloadText => 50,
-    };
-    let estimated = original_bytes.saturating_mul(ratio) / 100;
-    estimated.max(128).min(original_bytes)
-}
-
-fn skip_report(
-    event: &SessionEvent,
-    event_index: usize,
-    reason: CompressionSkipReason,
-    estimated_bytes: usize,
-    estimated_tokens: usize,
-) -> CompressionSkipReport {
-    CompressionSkipReport {
-        event_id: event.id.clone(),
-        event_index,
-        reason,
-        estimated_bytes,
-        estimated_tokens,
-    }
-}
-
 fn recompute_report_estimates(report: &mut ActiveCompressionReport) {
     report.estimated_bytes_saved = report
         .candidates
@@ -748,47 +526,6 @@ fn active_summary_event(
             provider_ext,
         },
     }
-}
-
-fn build_deterministic_summary(
-    candidate: &CompressionCandidateReport,
-    source_events: &[SessionEvent],
-    archive_ref: Option<&str>,
-) -> String {
-    let mut lines = vec![
-        "[Active compressed session segment]".to_string(),
-        format!("Kind: {:?}", candidate.kind),
-        format!("Reason: {:?}", candidate.reason),
-        format!("Source event count: {}", source_events.len()),
-        format!("Source event ids: {}", candidate.event_ids.join(", ")),
-        format!(
-            "Original estimated bytes: {}",
-            candidate.original_estimated_bytes
-        ),
-        format!(
-            "Original estimated tokens: {}",
-            candidate.original_estimated_tokens
-        ),
-    ];
-    if let Some(first) = source_events.first() {
-        let preview = canonical_event_text(first);
-        let preview = preview.trim();
-        if !preview.is_empty() {
-            lines.push(format!("Preview: {}", truncate_preview(preview, 240)));
-        }
-    }
-    if let Some(archive_ref) = archive_ref {
-        lines.push(format!("Archive: {}", archive_ref));
-    }
-    lines.join("\n")
-}
-
-fn truncate_preview(value: &str, max_chars: usize) -> String {
-    let mut out = value.chars().take(max_chars).collect::<String>();
-    if value.chars().count() > max_chars {
-        out.push_str("...");
-    }
-    out
 }
 
 fn default_recent_message_protection() -> usize {
@@ -1071,7 +808,10 @@ mod tests {
             archive_ref.as_deref(),
             Some(result.report.archive_refs[0].as_str())
         );
-        assert!(summary.contains("Archive: memorph-archive://"));
+        assert!(summary.contains("Recovery archive: memorph-archive://"));
+        assert!(summary.contains("Retained signals:"));
+        assert!(summary.contains("Rule strategy: conversation-range reducer"));
+        assert!(summary.contains("Content profile: kind=conversation_text"));
 
         let (expanded, expand_report) = compression::expand_compressed_segments_in_dir(
             &result.session,
@@ -1116,6 +856,254 @@ mod tests {
                 .map(|event| event.id.clone())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn planner_groups_contiguous_historical_messages() {
+        let mut session = sample_session();
+        session.events = vec![
+            text_event(
+                "old-user",
+                EventRole::User,
+                &"user goal mentions src/core.rs ".repeat(8),
+            ),
+            text_event(
+                "old-assistant",
+                EventRole::Assistant,
+                &"assistant decision mentions rust/crates/memorph/src/core.rs ".repeat(8),
+            ),
+            command_result_event(
+                "command-output",
+                &"warning: later command output\n".repeat(8),
+            ),
+            text_event("recent", EventRole::User, &"latest request ".repeat(8)),
+        ];
+
+        let report = build_dry_run_report(
+            &session,
+            ActiveCompressionParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 1,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: ActiveCompressionMode::PlanOnly,
+                },
+                dry_run: true,
+            },
+        );
+
+        assert_eq!(
+            report.candidates[0].kind,
+            CompressionCandidateKind::HistoricalConversationRange
+        );
+        assert_eq!(
+            report.candidates[0].event_ids,
+            vec!["old-user".to_string(), "old-assistant".to_string()]
+        );
+        assert_eq!(report.candidates[0].start_event_index, 0);
+        assert_eq!(report.candidates[0].end_event_index, 1);
+    }
+
+    #[test]
+    fn planner_routes_tool_result_by_detected_content() {
+        let search_event = tool_result_event(
+            "tool-search",
+            &[
+                "src/lib.rs:10:first match",
+                "src/core.rs:22:second match",
+                "src/api.rs:33:third match",
+            ]
+            .join("\n"),
+        );
+        let log_event = tool_result_event(
+            "tool-log",
+            "Compiling memorph\nwarning: unused import\nerror: build failed\n",
+        );
+        let diff_event = tool_result_event(
+            "tool-diff",
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n-old\n+new\n",
+        );
+        let generic_event = tool_result_event("tool-generic", &"plain tool output ".repeat(16));
+
+        assert_eq!(
+            planner::classify_candidate(&search_event).map(|(kind, _, _)| kind),
+            Some(CompressionCandidateKind::SearchResults)
+        );
+        assert_eq!(
+            planner::classify_candidate(&log_event).map(|(kind, _, _)| kind),
+            Some(CompressionCandidateKind::LargeLogOutput)
+        );
+        assert_eq!(
+            planner::classify_candidate(&diff_event).map(|(kind, _, _)| kind),
+            Some(CompressionCandidateKind::LargeDiffOutput)
+        );
+        assert_eq!(
+            planner::classify_candidate(&generic_event).map(|(kind, _, _)| kind),
+            Some(CompressionCandidateKind::LargeToolOutput)
+        );
+    }
+
+    #[test]
+    fn apply_reduces_diff_output_with_structural_signals() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let mut session = sample_session();
+        session.events = vec![tool_result_event(
+            "tool-diff",
+            &[
+                "diff --git a/src/lib.rs b/src/lib.rs",
+                "--- a/src/lib.rs",
+                "+++ b/src/lib.rs",
+                "@@ -1,3 +1,3 @@",
+                "-old behavior",
+                "+new behavior",
+            ]
+            .join("\n")
+            .repeat(12),
+        )];
+
+        let result = apply_active_compression_with_archive_dir(
+            &session,
+            ActiveCompressionApplyParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 0,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: ActiveCompressionMode::Auto,
+                },
+                candidate_ids: Vec::new(),
+            },
+            archive_dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.report.candidates[0].kind,
+            CompressionCandidateKind::LargeDiffOutput
+        );
+        let compressed_event = result
+            .session
+            .events
+            .iter()
+            .find(|event| event.id == "memorph-active-compressed-candidate-0001")
+            .expect("compressed diff replacement event");
+        let EventBlock::Compressed { summary, .. } =
+            compressed_event.blocks.first().expect("compressed block")
+        else {
+            panic!("expected compressed block");
+        };
+        assert!(summary.contains("Rule strategy: diff reducer"));
+        assert!(summary.contains("Content profile: kind=diff"));
+        assert!(summary.contains("Changed files: src/lib.rs"));
+        assert!(summary.contains("Diff scale:"));
+        assert!(summary.contains("Representative change: src/lib.rs"));
+        assert!(summary.contains("Recovery archive: memorph-archive://"));
+    }
+
+    #[test]
+    fn apply_reduces_search_results_with_grouped_matches_and_omissions() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let mut session = sample_session();
+        let mut lines = Vec::new();
+        for index in 1..=16 {
+            lines.push(format!(
+                "src/search.rs:{}:fn repeated_match_{}() {{}}",
+                index * 2,
+                index
+            ));
+        }
+        lines.push("src/error.rs:91:error: important failure anchor".to_string());
+        lines.push("src/error.rs:120:warning: important warning anchor".to_string());
+        session.events = vec![tool_result_event("tool-search", &lines.join("\n"))];
+
+        let result = apply_active_compression_with_archive_dir(
+            &session,
+            ActiveCompressionApplyParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 0,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: ActiveCompressionMode::Auto,
+                },
+                candidate_ids: Vec::new(),
+            },
+            archive_dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.report.candidates[0].kind,
+            CompressionCandidateKind::SearchResults
+        );
+        let summary = compressed_summary(&result.session, "candidate-0001");
+        assert!(summary.contains("Rule strategy: search-results reducer"));
+        assert!(summary.contains("Search matches: total=18"));
+        assert!(summary.contains("Matched files:"));
+        assert!(summary.contains("src/error.rs"));
+        assert!(summary.contains("Match: src/error.rs:91 error: important failure anchor"));
+        assert!(summary.contains("Omitted search matches:"));
+    }
+
+    #[test]
+    fn apply_reduces_log_output_with_errors_warnings_stack_and_tail() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let mut session = sample_session();
+        let stdout = [
+            "Compiling memorph",
+            "debug: low signal line 1",
+            "debug: low signal line 2",
+            "warning: unused import in src/core.rs",
+            "thread 'main' panicked at src/main.rs:42",
+            "stack backtrace:",
+            "at memorph::core::run",
+            "error: build failed",
+            "test result: FAILED. 1 passed; 1 failed",
+            "tail context one",
+            "tail context two",
+            "tail context three",
+        ]
+        .join("\n");
+        session.events = vec![command_result_event_with_status(
+            "command-output",
+            Some("cargo test -p memorph".to_string()),
+            Some(101),
+            &stdout,
+        )];
+
+        let result = apply_active_compression_with_archive_dir(
+            &session,
+            ActiveCompressionApplyParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                policy: ActiveCompressionPolicy {
+                    protect_recent_message_events: 0,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: ActiveCompressionMode::Auto,
+                },
+                candidate_ids: Vec::new(),
+            },
+            archive_dir.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.report.candidates[0].kind,
+            CompressionCandidateKind::LargeLogOutput
+        );
+        let summary = compressed_summary(&result.session, "candidate-0001");
+        assert!(summary.contains("Rule strategy: log reducer"));
+        assert!(summary.contains("Commands: cargo test -p memorph"));
+        assert!(summary.contains("Exit codes: 101"));
+        assert!(summary.contains("Log lines: total=12"));
+        assert!(summary.contains("warning: unused import in src/core.rs"));
+        assert!(summary.contains("error: build failed"));
+        assert!(summary.contains("tail context three"));
     }
 
     fn sample_session() -> CanonicalSession {
@@ -1233,6 +1221,15 @@ mod tests {
     }
 
     fn command_result_event(id: &str, stdout: &str) -> SessionEvent {
+        command_result_event_with_status(id, Some("cargo check".to_string()), Some(0), stdout)
+    }
+
+    fn command_result_event_with_status(
+        id: &str,
+        command: Option<String>,
+        exit_code: Option<i32>,
+        stdout: &str,
+    ) -> SessionEvent {
         SessionEvent {
             id: id.to_string(),
             kind: SessionEventKind::CommandResult,
@@ -1240,8 +1237,8 @@ mod tests {
             timestamp: Utc::now(),
             links: EventLinks::default(),
             blocks: vec![EventBlock::CommandResult {
-                command: Some("cargo check".to_string()),
-                exit_code: Some(0),
+                command,
+                exit_code,
                 stdout: Some(stdout.to_string()),
                 stderr: None,
             }],
@@ -1279,5 +1276,20 @@ mod tests {
             event_id,
             report.skipped
         );
+    }
+
+    fn compressed_summary(session: &CanonicalSession, candidate_id: &str) -> String {
+        let event_id = format!("memorph-active-compressed-{}", candidate_id);
+        let event = session
+            .events
+            .iter()
+            .find(|event| event.id == event_id)
+            .expect("compressed replacement event");
+        let EventBlock::Compressed { summary, .. } =
+            event.blocks.first().expect("compressed block")
+        else {
+            panic!("expected compressed block");
+        };
+        summary.clone()
     }
 }

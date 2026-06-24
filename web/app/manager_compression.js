@@ -1,5 +1,6 @@
 export function createManagerCompressionModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -19,6 +20,13 @@ export function createManagerCompressionModule({
       .replace("{size}", formatBytes(bytes));
   }
 
+  function managerWorkspaceSelectionSummary(total, selected, bytes) {
+    return t("managerWorkspaceSelectionSummary")
+      .replace("{count}", String(total))
+      .replace("{selected}", String(selected))
+      .replace("{size}", formatBytes(bytes));
+  }
+
   function renderManagerPreview(preview, report = null) {
     const rows = preview.items
       .map((item) => {
@@ -30,7 +38,7 @@ export function createManagerCompressionModule({
               <div class="manager-row-copy">
                 <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(item.title || item.session_id)}</a>
                 <div class="manager-meta">
-                  <span>${escapeHtml(item.provider_name)}</span>
+                  <span>${escapeHtml(providers.displayName(item.provider_id))}</span>
                   <span>${escapeHtml(formatBytes(item.size_bytes))}</span>
                   <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(item.last_active_at)))}</span>
                 </div>
@@ -80,18 +88,79 @@ export function createManagerCompressionModule({
       <div class="manager-list">${rows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>`;
   }
 
+  function renderManagerWorkspacePreview(preview) {
+    const rows = (preview.items || [])
+      .map((item) => {
+        const encoded = escapeAttr(encodeURIComponent(JSON.stringify(item)));
+        const href = `/manager?provider=${encodeURIComponent(item.provider_id)}&workspace=${encodeURIComponent(item.workspace)}`;
+        return `
+          <article class="manager-row">
+            <div class="manager-row-head">
+              <div class="manager-row-copy">
+                <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(workspaceName(item.workspace) || item.workspace)}</a>
+                <div class="manager-meta">
+                  <span>${escapeHtml(providers.displayName(item.provider_id))}</span>
+                  <span>${escapeHtml(t("workspaceSessionCount").replace("{count}", String(item.session_count || 0)))}</span>
+                  <span>${escapeHtml(formatBytes(item.total_size_bytes))}</span>
+                  <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(item.last_active_at)))}</span>
+                </div>
+                <div class="path-line">${escapeHtml(item.workspace)}</div>
+              </div>
+              <label class="manager-select">
+                <input type="checkbox" name="manager_workspace_item" value="${encoded}">
+              </label>
+            </div>
+          </article>`;
+      })
+      .join("");
+    const summary = managerWorkspaceSelectionSummary(preview.total_count || preview.items?.length || 0, 0, 0);
+    return `
+      <div class="section-heading manager-section-head">
+        <div>
+          <strong>${t("managerWorkspacePreview")}</strong>
+          <span class="manager-selection-summary" data-role="manager-workspace-selection-summary">${summary}</span>
+        </div>
+        <div class="manager-preview-actions">
+          <button type="button" class="invert" data-action="open-manager-filter">${t("filters")}</button>
+          <button type="button" class="danger" data-action="open-manager-clean-workspace-confirm">${t("cleanSelected")}</button>
+          <button type="button" data-action="open-manager-backup-workspace-confirm">${t("backupSelected")}</button>
+          <label class="check-row">
+            <input type="checkbox" data-role="select-all-manager-workspace">
+            <span>${t("selectAll")}</span>
+          </label>
+        </div>
+      </div>
+      <div class="manager-list">${rows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>`;
+  }
+
   function updateManagerSelectionStats() {
     const preview = state.manager.preview;
     const summary = document.querySelector('[data-role="manager-selection-summary"]');
-    if (!preview || !summary) return;
-    const selected = selectedManagerItems();
-    const bytes = selected.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0);
-    summary.textContent = managerSelectionSummary(preview.total_count, selected.length, bytes);
-    const all = [...document.querySelectorAll('input[name="manager_item"]')];
-    const selectAll = document.querySelector('input[data-role="select-all-manager"]');
-    if (selectAll) {
-      selectAll.checked = all.length > 0 && selected.length === all.length;
-      selectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+    if (preview && summary) {
+      const selected = typeof selectedManagerItems === "function" ? selectedManagerItems() : [];
+      const bytes = selected.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0);
+      summary.textContent = managerSelectionSummary(preview.total_count, selected.length, bytes);
+      const all = [...document.querySelectorAll('input[name="manager_item"]')];
+      const selectAll = document.querySelector('input[data-role="select-all-manager"]');
+      if (selectAll) {
+        selectAll.checked = all.length > 0 && selected.length === all.length;
+        selectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+      }
+    }
+
+    const workspacePreview = state.manager.workspacePreview;
+    const workspaceSummary = document.querySelector('[data-role="manager-workspace-selection-summary"]');
+    if (workspacePreview && workspaceSummary) {
+      const selected = selectedManagerWorkspaceItems();
+      const bytes = selected.reduce((sum, item) => sum + Number(item.total_size_bytes || 0), 0);
+      const total = workspacePreview.total_count || workspacePreview.items?.length || 0;
+      workspaceSummary.textContent = managerWorkspaceSelectionSummary(total, selected.length, bytes);
+      const all = [...document.querySelectorAll('input[name="manager_workspace_item"]')];
+      const selectAll = document.querySelector('input[data-role="select-all-manager-workspace"]');
+      if (selectAll) {
+        selectAll.checked = all.length > 0 && selected.length === all.length;
+        selectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+      }
     }
   }
 
@@ -106,12 +175,12 @@ export function createManagerCompressionModule({
   function renderManagerForm(managerDraft) {
     const providerChecks = getOrderedProviders()
       .map((item) => {
-        const checked = managerDraft.providers.includes(item.id);
+        const checked = managerDraft.providers.includes(item.provider_id);
         return `
           <label class="agent-provider-item manager-provider-item ${checked ? "is-active" : ""}">
-            <input data-role="manager-provider-toggle" type="checkbox" name="manager_provider" value="${escapeAttr(item.id)}" ${checked ? "checked" : ""}>
+            <input data-role="manager-provider-toggle" type="checkbox" name="manager_provider" value="${escapeAttr(item.provider_id)}" ${checked ? "checked" : ""}>
             <span class="agent-provider-head">
-              <strong class="agent-provider-name">${escapeHtml(item.name)}</strong>
+              <strong class="agent-provider-name">${escapeHtml(item.display_name)}</strong>
               <span class="agent-provider-state ${checked ? "is-installed" : "is-missing"}" aria-hidden="true">${checked ? "●" : "○"}</span>
             </span>
           </label>`;
@@ -142,14 +211,24 @@ export function createManagerCompressionModule({
   function renderManagerPage() {
     const draft = state.manager.draft || defaultManagerDraft();
     const preview = state.manager.preview;
+    const workspacePreview = state.manager.workspacePreview;
     const report = state.manager.report;
+    const viewMode = state.manager.viewMode || "sessions";
+    const viewTabs = `
+      <div class="manager-view-tabs">
+        <button type="button" class="${viewMode === "sessions" ? "is-active" : ""}" data-action="set-manager-view" data-view="sessions">${t("managerViewSessions")}</button>
+        <button type="button" class="${viewMode === "workspaces" ? "is-active" : ""}" data-action="set-manager-view" data-view="workspaces">${t("managerViewWorkspaces")}</button>
+      </div>`;
     return `
       <div class="manager-page-layout">
         <section class="section-panel manager-control-panel">
           ${renderManagerForm(draft)}
         </section>
         <section class="section-panel manager-result-panel">
-          ${renderManagerPreview(preview || emptyManagerPreview(), report)}
+          ${viewTabs}
+          ${viewMode === "workspaces"
+            ? renderManagerWorkspacePreview(workspacePreview || emptyManagerPreview())
+            : renderManagerPreview(preview || emptyManagerPreview(), report)}
         </section>
       </div>`;
   }
@@ -166,7 +245,7 @@ export function createManagerCompressionModule({
             return `
               <div class="agent-provider-item">
                 <span class="agent-provider-head">
-                  <strong class="agent-provider-name">${escapeHtml(provider.provider_id || "—")}</strong>
+                  <strong class="agent-provider-name">${escapeHtml(providers.displayName(provider.provider_id))}</strong>
                   <span class="pill">${escapeHtml(defaultProjection)}</span>
                 </span>
               </div>`;
@@ -241,5 +320,12 @@ export function createManagerCompressionModule({
     renderManagerPage,
     unitOption,
     updateManagerSelectionStats,
+    selectedManagerWorkspaceItems,
   };
+}
+
+function selectedManagerWorkspaceItems() {
+  return [...document.querySelectorAll('input[name="manager_workspace_item"]:checked')].map((el) =>
+    JSON.parse(decodeURIComponent(el.value))
+  );
 }

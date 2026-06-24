@@ -54,7 +54,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn looks_up_translations_from_shared_catalog() {
+    fn looks_up_translations_from_sync_catalog() {
         assert_eq!(text(UiLanguage::Zh, "settings"), "设置");
         assert_eq!(text(UiLanguage::En, "settings"), "Settings");
     }

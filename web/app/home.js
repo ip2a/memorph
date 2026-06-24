@@ -1,5 +1,6 @@
 export function createHomeModule({
   state,
+  providers,
   ascii,
   t,
   escapeHtml,
@@ -51,7 +52,6 @@ export function createHomeModule({
               <span class="workspace-path home-hero-compact-path" title="${pathTitle}">${path}</span>
             </div>
             ${renderHomeHeroMeta(filteredGroups, totalSessions, shownSessions)}
-            <span class="home-hero-affordance">${t("expand")}</span>
           </div>
         </section>`;
     }
@@ -70,8 +70,8 @@ export function createHomeModule({
       </section>`;
   }
 
-  function findSharedRef(providerId, sessionId) {
-    const groups = state.home.sharedGroups || [];
+  function findSyncRef(providerId, sessionId) {
+    const groups = state.home.syncGroups || [];
     const match = groups.find((group) =>
       (group.holdings || []).some((holding) => holding.provider === providerId && holding.session_id === sessionId)
     );
@@ -84,26 +84,19 @@ export function createHomeModule({
   }
 
   function getOrderedProviders() {
-    const order = state.meta.settings.agent_order || [];
-    const providers = [...state.meta.providers];
-    const indexMap = new Map(order.map((id, index) => [id, index]));
-    providers.sort((left, right) => {
-      const leftIndex = indexMap.has(left.id) ? indexMap.get(left.id) : Number.MAX_SAFE_INTEGER;
-      const rightIndex = indexMap.has(right.id) ? indexMap.get(right.id) : Number.MAX_SAFE_INTEGER;
-      if (leftIndex !== rightIndex) return leftIndex - rightIndex;
-      return left.name.localeCompare(right.name);
-    });
-    return providers;
+    return providers.all();
   }
 
   function getToolbarProviderCandidates() {
-    const ordered = getOrderedProviders();
-    const selected = ordered.filter((item) => state.home.providers.includes(item.id));
-    if (selected.length) return selected;
+    const visible = providers
+      .visible()
+      .filter((item) => providers.hasFilter(item, "is_installed"));
+    if (visible.length) return visible;
 
+    const ordered = getOrderedProviders();
     const fallbackIds = ["claude", "codex"];
     const fallback = fallbackIds
-      .map((id) => ordered.find((item) => item.id === id))
+      .map((id) => ordered.find((item) => item.provider_id === id))
       .filter(Boolean);
     return fallback.length ? fallback : ordered.slice(0, 2);
   }
@@ -141,7 +134,7 @@ export function createHomeModule({
     let used = moreWidth;
     let visible = 0;
     for (const item of candidates) {
-      const pillWidth = measureToolbarControlWidth(item.name, false);
+      const pillWidth = measureToolbarControlWidth(item.display_name, false);
       const nextUsed = used + (visible ? 8 : 0) + pillWidth;
       if (nextUsed <= available || visible < minVisible) {
         used = nextUsed;
@@ -181,38 +174,31 @@ export function createHomeModule({
   }
 
   function getPrimaryProviders() {
-    const ordered = getOrderedProviders();
-    const primaryIds = state.meta.settings.primary_agents || [];
-    const preferred = primaryIds.length
-      ? ordered.filter((item) => primaryIds.includes(item.id))
-      : ordered;
-    return preferred.slice(0, 3);
+    return providers.visible().slice(0, 3);
   }
 
   function getFoldedProviders() {
-    const ordered = getOrderedProviders();
-    const visiblePrimary = new Set(getPrimaryProviders().map((item) => item.id));
-    return ordered.filter((item) => !visiblePrimary.has(item.id));
+    return providers.visible().slice(3);
   }
 
   function getDefaultSwitchTarget(sourceId) {
-    const ordered = getOrderedProviders().filter((item) => item.id !== sourceId);
+    const ordered = getOrderedProviders().filter((item) => item.provider_id !== sourceId);
     if (!ordered.length) return "";
     if (sourceId === "codex") {
-      const claude = ordered.find((item) => item.id === "claude");
+      const claude = ordered.find((item) => item.provider_id === "claude");
       if (claude) return claude.id;
     }
     return ordered[0].id;
   }
 
   function sortSessionGroupsByDisplay(groups) {
-    const order = getOrderedProviders().map((item) => item.id);
+    const order = getOrderedProviders().map((item) => item.provider_id);
     const indexMap = new Map(order.map((id, index) => [id, index]));
     return [...groups].sort((left, right) => {
       const leftIndex = indexMap.has(left.provider_id) ? indexMap.get(left.provider_id) : Number.MAX_SAFE_INTEGER;
       const rightIndex = indexMap.has(right.provider_id) ? indexMap.get(right.provider_id) : Number.MAX_SAFE_INTEGER;
       if (leftIndex !== rightIndex) return leftIndex - rightIndex;
-      return left.provider_name.localeCompare(right.provider_name);
+      return providers.displayName(left.provider_id).localeCompare(providers.displayName(right.provider_id));
     });
   }
 
@@ -316,11 +302,11 @@ export function createHomeModule({
   }
 
   function renderSessionRow(item) {
-    const sharedRef = findSharedRef(item.provider_id, item.session_id);
+    const syncRef = findSyncRef(item.provider_id, item.session_id);
     const buttons = state.meta.settings.home_buttons;
-    const shareAction = sharedRef
-      ? `<a class="button" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("openShared")}</a>`
-      : `<button type="button" data-action="open-share-create" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}" data-title="${escapeAttr(item.title || "")}">${t("share")}</button>`;
+    const syncAction = syncRef
+      ? `<a class="button" href="/sync/${syncRef}" data-nav="/sync/${syncRef}">${t("openSync")}</a>`
+      : `<button type="button" data-action="open-sync-create" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}" data-title="${escapeAttr(item.title || "")}">${t("syncAction")}</button>`;
     const hookRuntime = renderHookRuntimeBadge(item.hook_runtime_summary, item.hook_diagnosis);
     return `
       <article class="session-row">
@@ -334,7 +320,7 @@ export function createHomeModule({
             </div>
             <div class="session-meta-bar">
               <span class="session-id-pill">${escapeHtml(item.session_id)}</span>
-              ${sharedRef ? `<a class="shared-badge" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("activeShared")}</a>` : ""}
+              ${syncRef ? `<a class="sync-badge" href="/sync/${syncRef}" data-nav="/sync/${syncRef}">${t("activeSync")}</a>` : ""}
               ${hookRuntime}
               <span class="meta-dot">·</span>
               <span class="meta-item" title="${escapeAttr(t("lastActiveAt"))}">${escapeHtml(formatDate(item.last_active_at))}</span>
@@ -348,7 +334,7 @@ export function createHomeModule({
           ${buttons.view ? `<a class="button" href="/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}" data-nav="/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}">${t("view")}</a>` : ""}
           ${buttons.switch ? `<button type="button" data-action="open-switch" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}" data-workspace="${escapeAttr(item.project_dir || state.home.workspace)}" data-title="${escapeAttr(item.title || item.session_id)}">${t("switch")}</button>` : ""}
           ${buttons.export ? `<button type="button" data-action="open-export" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}">${t("export")}</button>` : ""}
-          ${buttons.share ? shareAction : ""}
+          ${buttons.sync ? syncAction : ""}
           <button type="button" data-action="open-rename" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}" data-title="${escapeAttr(item.title || "")}">${t("rename")}</button>
           ${buttons.delete ? `<button type="button" class="danger" data-action="open-delete" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}">${t("remove")}</button>` : ""}
           </div>
@@ -414,7 +400,7 @@ export function createHomeModule({
           (group) => `
         <details class="provider-section" open>
           <summary>
-            <span>${escapeHtml(group.provider_name)}</span>
+            <span>${escapeHtml(providers.displayName(group.provider_id))}</span>
             <span>${group.shown_sessions || group.sessions.length}/${group.total_sessions || group.sessions.length}</span>
           </summary>
           <div class="session-list">
@@ -429,11 +415,11 @@ export function createHomeModule({
     const primary = getVisibleToolbarProviders();
     const primaryMarkup = primary
       .map((item) => {
-        const checked = state.home.providers.includes(item.id);
+        const checked = state.home.providers.includes(item.provider_id);
         return `
           <label class="agent-pill">
-            <input data-role="provider-toggle" type="checkbox" value="${escapeAttr(item.id)}" ${checked ? "checked" : ""}>
-            <span>${escapeHtml(item.name)}</span>
+            <input data-role="provider-toggle" type="checkbox" value="${escapeAttr(item.provider_id)}" ${checked ? "checked" : ""}>
+            <span>${escapeHtml(item.display_name)}</span>
           </label>`;
       })
       .join("");
@@ -492,17 +478,17 @@ export function createHomeModule({
 
   function providerOptions(skipId = "", selectedId = "") {
     return getOrderedProviders()
-      .filter((item) => item.id !== skipId)
+      .filter((item) => item.provider_id !== skipId)
       .map(
         (item) =>
-          `<option value="${escapeAttr(item.id)}"${item.id === selectedId ? " selected" : ""}>${escapeHtml(item.name)}</option>`
+          `<option value="${escapeAttr(item.provider_id)}"${item.provider_id === selectedId ? " selected" : ""}>${escapeHtml(item.display_name)}</option>`
       )
       .join("");
   }
 
   return {
     filterAndSortGroups,
-    findSharedRef,
+    findSyncRef,
     getDefaultSwitchTarget,
     getFoldedProviders,
     getOrderedProviders,

@@ -1,5 +1,6 @@
 export function createModalModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -18,14 +19,17 @@ export function createModalModule({
       title: t("import"),
       submit: "import-session",
       body: `
-        <div class="stack">
-          <label class="field">
+        <div class="import-modal-grid">
+          <label class="field import-provider-field">
             <span>${t("targetProvider")}</span>
             <select name="provider">${homeProviderOptions()}</select>
           </label>
           <label class="field">
             <span>${t("fileOrId")}</span>
-            <input name="file_or_id" required placeholder="${escapeAttr(t("fileOrIdPlaceholder"))}">
+            <div class="path-picker">
+              <input name="file_or_id" required placeholder="${escapeAttr(t("fileOrIdPlaceholder"))}">
+              <button type="button" class="ghost" data-action="browse-file" data-target-field="file_or_id">${t("browse")}</button>
+            </div>
           </label>
           ${renderPathField("to_dir", t("targetDir"), state.home.workspace, t("workspaceFieldHint"), state.home.workspace)}
         </div>
@@ -143,11 +147,11 @@ export function createModalModule({
   function openAgentFilterModal() {
     const items = getOrderedProviders()
       .map((item) => {
-        const checked = state.home.providers.includes(item.id);
+        const checked = state.home.providers.includes(item.provider_id);
         return `
           <label class="agent-pill">
-            <input data-role="provider-toggle" type="checkbox" value="${escapeAttr(item.id)}" ${checked ? "checked" : ""}>
-            <span>${escapeHtml(item.name)}</span>
+            <input data-role="provider-toggle" type="checkbox" value="${escapeAttr(item.provider_id)}" ${checked ? "checked" : ""}>
+            <span>${escapeHtml(item.display_name)}</span>
           </label>`;
       })
       .join("");
@@ -269,6 +273,23 @@ export function createModalModule({
     render();
   }
 
+  function openCompressSessionModal(provider, sessionId, title = "") {
+    state.modal = {
+      kind: "form",
+      title: t("compressSession"),
+      submit: "compress-session",
+      body: `
+        <input type="hidden" name="provider" value="${escapeAttr(provider)}">
+        <input type="hidden" name="session_id" value="${escapeAttr(sessionId)}">
+        <div class="stack">
+          <p>${t("compressSessionConfirmHint")}</p>
+          <div class="path-line">${escapeHtml(provider)} / ${escapeHtml(sessionId)}</div>
+        </div>`,
+      submitLabel: t("confirm"),
+    };
+    render();
+  }
+
   function openCompressionExpandModal() {
     state.modal = {
       kind: "form",
@@ -332,27 +353,29 @@ export function createModalModule({
     render();
   }
 
-  function openShareCreateModal(provider, sessionId, title) {
-    const targetProviders = getOrderedProviders().filter((item) => item.id !== provider && item.export);
+  function openSyncCreateModal(provider, sessionId, title) {
+    const targetProviders = getOrderedProviders().filter(
+      (item) => item.provider_id !== provider && providers.capabilitySet(item).export
+    );
     const preferredTarget = getDefaultSwitchTarget(provider);
-    const defaultTarget = targetProviders.some((item) => item.id === preferredTarget)
+    const defaultTarget = targetProviders.some((item) => item.provider_id === preferredTarget)
       ? preferredTarget
-      : targetProviders[0]?.id || "";
+      : targetProviders[0]?.provider_id || "";
     const options = targetProviders
       .map(
         (item) => `
         <label class="check-row">
-          <input type="checkbox" name="targets" value="${escapeAttr(item.id)}"${
-            item.id === defaultTarget ? " checked" : ""
+          <input type="checkbox" name="targets" value="${escapeAttr(item.provider_id)}"${
+            item.provider_id === defaultTarget ? " checked" : ""
           }>
-          <span>${escapeHtml(item.name)}</span>
+          <span>${escapeHtml(item.display_name)}</span>
         </label>`
       )
       .join("");
     state.modal = {
       kind: "form",
-      title: t("createShared"),
-      submit: "create-shared",
+      title: t("createSync"),
+      submit: "create-sync",
       body: `
         <input type="hidden" name="provider" value="${escapeAttr(provider)}">
         <input type="hidden" name="session_id" value="${escapeAttr(sessionId)}">
@@ -373,11 +396,11 @@ export function createModalModule({
     render();
   }
 
-  function openSharedRenameModal(groupId, title) {
+  function openSyncRenameModal(groupId, title) {
     state.modal = {
       kind: "form",
       title: t("rename"),
-      submit: "rename-shared",
+      submit: "rename-sync",
       body: `
         <input type="hidden" name="group_id" value="${escapeAttr(groupId)}">
         <label class="field">
@@ -389,14 +412,14 @@ export function createModalModule({
     render();
   }
 
-  function openSharedRemoveModal(groupId) {
+  function openSyncRemoveModal(groupId) {
     state.modal = {
       kind: "form",
       title: t("remove"),
-      submit: "remove-shared",
+      submit: "remove-sync",
       body: `
         <input type="hidden" name="group_id" value="${escapeAttr(groupId)}">
-        <p>${t("removeSharedConfirm")}</p>
+        <p>${t("removeSyncConfirm")}</p>
         <label class="check-row">
           <input type="checkbox" name="delete_provider_sessions" value="true">
           <span>${t("deleteProviderSessions")}</span>
@@ -407,11 +430,11 @@ export function createModalModule({
     render();
   }
 
-  function openSharedBindModal(groupId) {
+  function openSyncBindModal(groupId) {
     state.modal = {
       kind: "form",
       title: t("addHolding"),
-      submit: "bind-shared",
+      submit: "bind-sync",
       body: `
         <input type="hidden" name="group_id" value="${escapeAttr(groupId)}">
         <div class="stack">
@@ -435,7 +458,7 @@ export function createModalModule({
     state.modal = {
       kind: "form",
       title: t("pushSyncTitle"),
-      submit: "sync-from-shared",
+      submit: "sync-from-sync",
       body: `
         <input type="hidden" name="group_id" value="${escapeAttr(groupId)}">
         <input type="hidden" name="holding_id" value="${escapeAttr(holdingId)}">
@@ -453,7 +476,7 @@ export function createModalModule({
     state.modal = {
       kind: "form",
       title: t("unbind"),
-      submit: "unbind-shared",
+      submit: "unbind-sync",
       body: `
         <input type="hidden" name="group_id" value="${escapeAttr(groupId)}">
         <input type="hidden" name="holding_id" value="${escapeAttr(holdingId)}">
@@ -527,6 +550,7 @@ export function createModalModule({
   return {
     openActionResultModal,
     openAgentFilterModal,
+    openCompressSessionModal,
     openCompressionExpandModal,
     openCompressionRestoreModal,
     openDeleteModal,
@@ -534,10 +558,10 @@ export function createModalModule({
     openImportModal,
     openPushSyncModal,
     openRenameModal,
-    openShareCreateModal,
-    openSharedBindModal,
-    openSharedRemoveModal,
-    openSharedRenameModal,
+    openSyncCreateModal,
+    openSyncBindModal,
+    openSyncRemoveModal,
+    openSyncRenameModal,
     openSortOptionsModal,
     openSwitchModal,
     openSyncResultModal,

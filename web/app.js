@@ -18,14 +18,16 @@ import { createHomeModule } from "./app/home.js";
 import { createHooksCenterModule } from "./app/hooks_center.js";
 import { createManagerCompressionModule } from "./app/manager_compression.js";
 import { createModalModule } from "./app/modals.js";
-import { createSessionSharedModule } from "./app/session_shared.js";
+import { createSessionSyncModule } from "./app/session_sync.js";
 import { createFormatHelpers } from "./app/helpers.js";
 import { api } from "./app/http.js";
 import { createI18n } from "./app/i18n.js";
+import { createProviders } from "./app/providers.js";
 import { parseRoute } from "./app/router.js";
 import { createState, randomAsciiBannerColor } from "./app/state.js";
 
 const state = createState();
+const providers = createProviders(state);
 const HOME_HERO_MODE_STORAGE_KEY = "memorph.homeHeroMode";
 restoreHomeHeroMode();
 const { lang, t, loadI18n, setDocumentLanguage } = createI18n(
@@ -45,7 +47,7 @@ const {
   escapeAttr,
 } = createFormatHelpers(lang);
 const {
-  findSharedRef,
+  findSyncRef,
   getDefaultSwitchTarget,
   getFoldedProviders,
   getOrderedProviders,
@@ -55,6 +57,7 @@ const {
   scheduleHomeProviderLayout,
 } = createHomeModule({
   state,
+  providers,
   ascii: ASCII,
   t,
   escapeHtml,
@@ -78,6 +81,7 @@ const {
   renderAgentManagementPage,
 } = createAgentsSettingsModule({
   state,
+  providers,
   aboutLinks: ABOUT_LINKS,
   t,
   escapeHtml,
@@ -91,10 +95,11 @@ const {
 const {
   detailEventToText,
   renderSessionDetail,
-  renderSharedDetail,
-  renderSharedList,
-} = createSessionSharedModule({
+  renderSyncDetail,
+  renderSyncList,
+} = createSessionSyncModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -103,16 +108,17 @@ const {
   markdown,
   renderAgentDetailRow,
   renderMetaLine,
-  getOrderedProviders,
-  findSharedRef,
+  findSyncRef,
 });
 const {
   renderCompressionPage,
   renderManagerPage,
   unitOption,
   updateManagerSelectionStats,
+  selectedManagerWorkspaceItems,
 } = createManagerCompressionModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -127,6 +133,7 @@ const {
 });
 const { renderHooksCenterPage } = createHooksCenterModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -139,7 +146,7 @@ const appEl = document.getElementById("app");
 const modalRoot = document.getElementById("modal-root");
 
 window.addEventListener("popstate", () => {
-  state.route = parseRoute(window.location.pathname);
+  state.route = parseRoute(window.location.pathname, new URLSearchParams(window.location.search));
   void loadRoute();
 });
 
@@ -215,7 +222,13 @@ document.addEventListener("change", (event) => {
       .forEach((el) => (el.checked = target.checked));
     updateManagerSelectionStats();
   }
-  if (target.name === "manager_item") {
+  if (target.dataset.role === "select-all-manager-workspace") {
+    document
+      .querySelectorAll('input[name="manager_workspace_item"]')
+      .forEach((el) => (el.checked = target.checked));
+    updateManagerSelectionStats();
+  }
+  if (target.name === "manager_item" || target.name === "manager_workspace_item") {
     updateManagerSelectionStats();
   }
 });
@@ -233,10 +246,13 @@ function restoreHomeHeroMode() {
   }
 }
 
-function setHomeHeroMode(mode) {
+function setHomeHeroMode(mode, refreshBanner = false) {
   if (!["auto", "expanded", "collapsed"].includes(mode)) return;
   state.ui.homeHeroMode = mode;
   state.ui.homeHeroTransientCollapsed = false;
+  if (refreshBanner) {
+    state.ui.asciiBannerColor = randomAsciiBannerColor();
+  }
   try {
     window.localStorage?.setItem(HOME_HERO_MODE_STORAGE_KEY, mode);
   } catch {
@@ -250,6 +266,18 @@ function autoCollapseHomeHero() {
   state.ui.homeHeroTransientCollapsed = true;
 }
 
+async function refreshCatalog(workspace = state.home.workspace) {
+  const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+  state.catalog = await api(`/api/v1/providers/catalog${query}`);
+}
+
+function defaultHomeProviders() {
+  return providers
+    .visible()
+    .filter((item) => providers.hasFilter(item, "is_installed"))
+    .map((item) => item.provider_id);
+}
+
 async function bootstrap() {
   setLoading(true, { label: t("loadingWorkspace"), detail: workspaceName(state.home.workspace) });
   try {
@@ -261,15 +289,8 @@ async function bootstrap() {
       state.home.workspace =
         state.meta.selected_workspace || state.meta.workspaces[0]?.path || "";
     }
-    if (state.home.workspace) {
-      state.home.providers = await api(
-        `/api/v1/workspaces/providers?workspace=${encodeURIComponent(state.home.workspace)}`
-      );
-    } else {
-      state.home.providers = state.meta.settings.primary_agents.length
-        ? [...state.meta.settings.primary_agents]
-        : state.meta.providers.map((item) => item.id);
-    }
+    await refreshCatalog(state.home.workspace);
+    state.home.providers = defaultHomeProviders();
     await loadRoute();
   } catch (error) {
     fatal(error);
@@ -303,20 +324,20 @@ async function loadRoute() {
       const detailWorkspace = detail.view?.workspace_dir;
       if (detailWorkspace && detailWorkspace !== state.home.workspace) {
         state.home.workspace = detailWorkspace;
-        state.home.providers = await api(
-          `/api/v1/workspaces/providers?workspace=${encodeURIComponent(detailWorkspace)}`
-        );
+        await refreshCatalog(detailWorkspace);
+        state.home.providers = defaultHomeProviders();
       }
-      state.home.sharedGroups = await api("/api/v1/share/status");
-    } else if (route.name === "shared-list") {
-      state.home.sharedGroups = await api("/api/v1/share/status");
-    } else if (route.name === "shared-detail") {
-      state.home.sharedGroups = await api("/api/v1/share/status");
-      state.sharedDetail = await api(
-        `/api/v1/share/status?group_id=${encodeURIComponent(route.groupId)}`
+      state.home.syncGroups = await api("/api/v1/sync/status");
+    } else if (route.name === "sync-list") {
+      state.home.syncGroups = await api("/api/v1/sync/status");
+    } else if (route.name === "sync-detail") {
+      state.home.syncGroups = await api("/api/v1/sync/status");
+      state.syncDetail = await api(
+        `/api/v1/sync/status?group_id=${encodeURIComponent(route.groupId)}`
       );
     } else if (route.name === "manager") {
-      state.home.sharedGroups = await api("/api/v1/share/status");
+      state.home.syncGroups = await api("/api/v1/sync/status");
+      state.manager.viewMode = route.view === "workspaces" ? "workspaces" : "sessions";
       if (!state.manager.preview) {
         await loadDefaultManagerPreview();
       }
@@ -342,7 +363,7 @@ async function loadRoute() {
 async function loadHome() {
   if (!state.home.workspace) {
     state.home.groups = [];
-    state.home.sharedGroups = await api("/api/v1/share/status");
+    state.home.syncGroups = await api("/api/v1/sync/status");
     return;
   }
   const params = new URLSearchParams({
@@ -355,7 +376,7 @@ async function loadHome() {
     hook_filter: state.home.hookFilter,
   });
   state.home.groups = await api(`/api/v1/sessions?${params.toString()}`);
-  state.home.sharedGroups = await api("/api/v1/share/status");
+  state.home.syncGroups = await api("/api/v1/sync/status");
 }
 
 async function refreshHomeSessions(options = {}) {
@@ -562,12 +583,13 @@ async function runUpdateCheck() {
 }
 
 function navigate(path) {
-  const samePath = window.location.pathname === path;
+  const url = new URL(path, window.location.href);
+  const samePath = window.location.pathname === url.pathname;
   state.modal = null;
   if (!samePath) {
     history.pushState({}, "", path);
   }
-  state.route = parseRoute(path);
+  state.route = parseRoute(url.pathname, url.searchParams);
   if (state.route.name === "home") {
     state.ui.asciiBannerColor = randomAsciiBannerColor();
   }
@@ -575,8 +597,9 @@ function navigate(path) {
 }
 
 function replacePath(path) {
+  const url = new URL(path, window.location.href);
   history.replaceState({}, "", path);
-  state.route = parseRoute(path);
+  state.route = parseRoute(url.pathname, url.searchParams);
 }
 
 async function updateLanguage(language) {
@@ -596,7 +619,7 @@ async function setWorkspace(workspace) {
   state.home.workspace = workspace;
   try {
     if (state.route.name === "manager") {
-      state.manager = { draft: defaultManagerDraft(), preview: null, report: null, pendingItems: [] };
+      state.manager = { draft: defaultManagerDraft(), preview: null, workspacePreview: null, report: null, pendingItems: [], viewMode: state.manager.viewMode || "sessions" };
     }
     if (!workspace) {
       state.home.providers = [];
@@ -605,9 +628,8 @@ async function setWorkspace(workspace) {
       render();
       return;
     }
-    state.home.providers = await api(
-      `/api/v1/workspaces/providers?workspace=${encodeURIComponent(workspace)}`
-    );
+    await refreshCatalog(workspace);
+    state.home.providers = defaultHomeProviders();
     await loadHome();
     if (state.route.name === "agents") {
       await loadAgentManagement();
@@ -671,13 +693,21 @@ async function updateManagerProvider(provider, checked, trigger = null) {
 async function persistProvidersAndReload() {
   if (!state.home.workspace) return;
   try {
-    await api("/api/v1/workspaces/providers", {
+    const visibleIds = providers
+      .visible()
+      .map((item) => item.provider_id);
+    const hiddenWorkspace = visibleIds.filter(
+      (id) => !state.home.providers.includes(id)
+    );
+    await api("/api/v1/providers/catalog", {
       method: "PUT",
       body: {
+        sort_order: { global: [], workspace: [] },
+        hidden_state: { global: [], workspace: hiddenWorkspace },
         workspace: state.home.workspace,
-        providers: state.home.providers,
       },
     });
+    await refreshCatalog(state.home.workspace);
     await loadHome();
     render();
   } catch (error) {
@@ -761,6 +791,9 @@ async function handleAction(action, data, trigger = null) {
     case "open-compression":
       navigate("/compression");
       break;
+    case "compress-session":
+      openCompressSessionModal(data.provider || "", data.sessionId || "");
+      break;
     case "open-compression-restore":
       openCompressionRestoreModal(data.archiveRef || "");
       break;
@@ -780,7 +813,7 @@ async function handleAction(action, data, trigger = null) {
       render();
       break;
     case "set-home-hero-mode":
-      setHomeHeroMode(data.mode || "auto");
+      setHomeHeroMode(data.mode || "auto", true);
       break;
     case "open-import":
       openImportModal();
@@ -817,26 +850,26 @@ async function handleAction(action, data, trigger = null) {
     case "copy-detail-message":
       await copyDetailMessage(Number(data.messageIndex));
       break;
-    case "delete-detail-message":
-      toast(t("remove"), t("notImplemented"));
-      break;
     case "toggle-detail-message":
       toggleDetailMessage(trigger);
       break;
-    case "open-share-create":
-      openShareCreateModal(data.provider, data.sessionId, data.title || "");
+    case "scroll-to-message":
+      scrollToDetailMessage(Number(data.messageIndex));
       break;
-    case "open-shared-rename":
-      openSharedRenameModal(data.groupId, data.title || "");
+    case "open-sync-create":
+      openSyncCreateModal(data.provider, data.sessionId, data.title || "");
       break;
-    case "open-shared-remove":
-      openSharedRemoveModal(data.groupId);
+    case "open-sync-rename":
+      openSyncRenameModal(data.groupId, data.title || "");
       break;
-    case "open-shared-bind":
-      openSharedBindModal(data.groupId);
+    case "open-sync-remove":
+      openSyncRemoveModal(data.groupId);
+      break;
+    case "open-sync-bind":
+      openSyncBindModal(data.groupId);
       break;
     case "run-sync-latest":
-      await runSharedSync(data.groupId);
+      await runSyncGroup(data.groupId);
       break;
     case "open-sync-from":
       openPushSyncModal(data.groupId, data.holdingId, data.provider || "", data.sessionId || "");
@@ -849,6 +882,37 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "open-manager-backup-confirm":
       openManagerBackupConfirmModal();
+      break;
+    case "open-manager-clean-workspace-confirm":
+      openManagerCleanWorkspaceConfirmModal();
+      break;
+    case "open-manager-backup-workspace-confirm":
+      openManagerBackupWorkspaceConfirmModal();
+      break;
+    case "set-manager-view":
+      {
+        const view = data.view === "workspaces" ? "workspaces" : "sessions";
+        state.manager.viewMode = view;
+        const params = new URLSearchParams(window.location.search);
+        if (view === "workspaces") {
+          params.set("view", "workspaces");
+        } else {
+          params.delete("view");
+        }
+        replacePath(`/manager?${params.toString()}`);
+        if (view === "workspaces" && !state.manager.workspacePreview) {
+          const draft = state.manager.draft || defaultManagerDraft();
+          if (draft.providers.length) {
+            api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) })
+              .then((workspacePreview) => {
+                state.manager.workspacePreview = workspacePreview;
+                render();
+              })
+              .catch((error) => toast(t("error"), error.message, true));
+          }
+        }
+        render();
+      }
       break;
     case "go-home":
       navigate("/");
@@ -865,6 +929,9 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "browse-folder":
       await browseFolderForField(trigger);
+      break;
+    case "browse-file":
+      await browseFileForField(trigger);
       break;
     case "close-modal":
       closeModal();
@@ -933,22 +1000,22 @@ async function handleSubmit(kind, formData) {
       case "delete-session":
         await runDelete(formData);
         break;
-      case "create-shared":
-        await runShareCreate(formData);
+      case "create-sync":
+        await runSyncCreate(formData);
         break;
-      case "rename-shared":
-        await runSharedRename(formData);
+      case "rename-sync":
+        await runSyncRename(formData);
         break;
-      case "remove-shared":
-        await runSharedRemove(formData);
+      case "remove-sync":
+        await runSyncRemove(formData);
         break;
-      case "bind-shared":
-        await runSharedBind(formData);
+      case "bind-sync":
+        await runSyncBind(formData);
         break;
-      case "sync-from-shared":
-        await runSharedSync(String(formData.get("group_id")), String(formData.get("holding_id")));
+      case "sync-from-sync":
+        await runSyncGroup(String(formData.get("group_id")), String(formData.get("holding_id")));
         break;
-      case "unbind-shared":
+      case "unbind-sync":
         await runUnbind(String(formData.get("group_id")), String(formData.get("holding_id")));
         break;
       case "save-settings":
@@ -963,11 +1030,20 @@ async function handleSubmit(kind, formData) {
       case "backup-manager":
         await runManagerBackup();
         break;
+      case "clean-manager-workspace":
+        await runManagerWorkspaceClean();
+        break;
+      case "backup-manager-workspace":
+        await runManagerWorkspaceBackup();
+        break;
       case "restore-compression":
         await runCompressionRestore(formData);
         break;
       case "expand-compression":
         await runCompressionExpand(formData);
+        break;
+      case "compress-session":
+        await runCompressSession(formData);
         break;
       default:
         break;
@@ -1034,6 +1110,55 @@ function openManagerBackupConfirmModal() {
   render();
 }
 
+function openManagerCleanWorkspaceConfirmModal() {
+  const items = selectedManagerWorkspaceItems();
+  if (!items.length) {
+    toast(t("error"), t("noSelection"), true);
+    return;
+  }
+  state.manager.pendingItems = items;
+  const totalSessions = items.reduce((sum, item) => sum + Number(item.session_count || 0), 0);
+  state.modal = {
+    kind: "form",
+    title: t("cleanWorkspaceSelected"),
+    submit: "clean-manager-workspace",
+    submitClass: "danger",
+    submitLabel: t("confirm"),
+    body: `
+      <div class="stack">
+        <p>${t("cleanWorkspaceConfirm")}</p>
+        <div class="path-line">${t("workspaceStat")}: ${items.length}</div>
+        <div class="path-line">${t("sessionsStat")}: ${totalSessions}</div>
+      </div>`,
+  };
+  render();
+}
+
+function openManagerBackupWorkspaceConfirmModal() {
+  const items = selectedManagerWorkspaceItems();
+  if (!items.length) {
+    toast(t("error"), t("noSelection"), true);
+    return;
+  }
+  state.manager.pendingItems = items;
+  const outputDir = state.meta.settings.default_backup_dir || "./backups";
+  const totalSessions = items.reduce((sum, item) => sum + Number(item.session_count || 0), 0);
+  state.modal = {
+    kind: "form",
+    title: t("backupWorkspaceSelected"),
+    submit: "backup-manager-workspace",
+    submitLabel: t("confirm"),
+    body: `
+      <div class="stack">
+        <p>${t("backupWorkspaceConfirm")}</p>
+        <div class="path-line">${t("workspaceStat")}: ${items.length}</div>
+        <div class="path-line">${t("sessionsStat")}: ${totalSessions}</div>
+        <div class="path-line">${t("backupDir")}: ${escapeHtml(outputDir)}</div>
+      </div>`,
+  };
+  render();
+}
+
 async function runImport(formData) {
   const result = await api("/api/v1/import", {
     method: "POST",
@@ -1045,15 +1170,16 @@ async function runImport(formData) {
   });
   await loadHome();
   closeModal();
+  const importedProviderId = String(formData.get("provider"));
   openActionResultModal({
     title: t("imported"),
-    summary: result.provider_name,
+    summary: providers.displayName(importedProviderId),
     lines: [
-      `${t("target")}: ${result.provider_name}`,
+      `${t("target")}: ${providers.displayName(importedProviderId)}`,
       `${t("sessionId")}: ${result.new_session_id}`,
       ...(result.resume_command ? [`${t("resumeCommand")}: ${result.resume_command}`] : []),
     ],
-    navPath: `/sessions/${encodeURIComponent(String(formData.get("provider")))}/${encodeURIComponent(result.new_session_id)}`,
+    navPath: `/sessions/${encodeURIComponent(importedProviderId)}/${encodeURIComponent(result.new_session_id)}`,
   });
 }
 
@@ -1149,6 +1275,44 @@ async function runCompressionExpand(formData) {
   });
 }
 
+async function runCompressSession(formData) {
+  const provider = String(formData.get("provider") || "");
+  const sessionId = String(formData.get("session_id") || "");
+  if (!provider || !sessionId) throw new Error(t("missingSessionInfo"));
+  closeModal();
+  setLoading(true, { label: t("compressSession"), detail: `${provider} / ${sessionId}` });
+  try {
+    const result = await api("/api/v1/compression/apply", {
+      method: "POST",
+      body: {
+        source_provider_id: provider,
+        target_provider_id: provider,
+        session_id: sessionId,
+        policy: {
+          protect_recent_message_events: 6,
+          min_candidate_bytes: 4096,
+          min_savings_ratio_percent: 20,
+          mode: "auto",
+        },
+      },
+    });
+    await loadRoute();
+    const report = result.report || {};
+    const archiveRefs = result.archive_refs || [];
+    const candidates = report.candidates || [];
+    const saved = report.estimated_bytes_saved || 0;
+    openActionResultModal({
+      title: t("compressSessionComplete") || t("compressionTitle"),
+      summary: `${candidates.length} ${t("segments")}, ${formatBytes(saved)} ${t("saved")}`,
+      lines: archiveRefs.length ? archiveRefs : result.files || [],
+      navPath: `/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}`,
+      navLabel: t("openDetail"),
+    });
+  } finally {
+    setLoading(false);
+  }
+}
+
 async function runRename(formData) {
   const provider = String(formData.get("provider"));
   const sessionId = String(formData.get("session_id"));
@@ -1194,14 +1358,14 @@ async function runDelete(formData) {
   });
 }
 
-async function runShareCreate(formData) {
+async function runSyncCreate(formData) {
   const provider = String(formData.get("provider"));
   const targets = [...new Set(formData.getAll("targets").map(String).filter((target) => target && target !== provider))];
   if (!targets.length) {
     toast(t("error"), t("noSyncTargets"), true);
     return;
   }
-  const result = await api("/api/v1/share", {
+  const result = await api("/api/v1/sync", {
     method: "POST",
     body: {
       provider,
@@ -1214,21 +1378,21 @@ async function runShareCreate(formData) {
   await loadHome();
   closeModal();
   openActionResultModal({
-    title: t("sharedCreated"),
+    title: t("syncCreated"),
     summary: result.id,
     lines: [
       `${t("sessionId")}: ${result.id}`,
       `${t("holdings")}: ${result.holdings.length}`,
     ],
-    navPath: `/shared/${encodeURIComponent(result.id)}`,
+    navPath: `/sync/${encodeURIComponent(result.id)}`,
     navLabel: t("openDetail"),
   });
 }
 
-async function runSharedRename(formData) {
+async function runSyncRename(formData) {
   const groupId = String(formData.get("group_id"));
   const title = String(formData.get("title"));
-  await api(`/api/v1/share/${encodeURIComponent(groupId)}`, {
+  await api(`/api/v1/sync/${encodeURIComponent(groupId)}`, {
     method: "PATCH",
     body: { title },
   });
@@ -1236,47 +1400,47 @@ async function runSharedRename(formData) {
   closeModal();
   openActionResultModal({
     title: t("rename"),
-    summary: t("sharedTitle"),
+    summary: t("syncTitle"),
     lines: [
       `${t("sessionId")}: ${groupId}`,
       `${t("title")}: ${title}`,
     ],
-    navPath: `/shared/${encodeURIComponent(groupId)}`,
+    navPath: `/sync/${encodeURIComponent(groupId)}`,
     navLabel: t("openDetail"),
   });
 }
 
-async function runSharedRemove(formData) {
+async function runSyncRemove(formData) {
   const groupId = String(formData.get("group_id"));
-  const removeUrl = new URL(`/api/v1/share/${encodeURIComponent(groupId)}`, window.location.origin);
+  const removeUrl = new URL(`/api/v1/sync/${encodeURIComponent(groupId)}`, window.location.origin);
   removeUrl.searchParams.set("delete_provider_sessions", formData.get("delete_provider_sessions") ? "true" : "false");
   await api(removeUrl.pathname + removeUrl.search, { method: "DELETE" });
-  state.home.sharedGroups = (state.home.sharedGroups || []).filter((group) => group.id !== groupId);
-  if (state.route.name === "shared-detail" && state.route.groupId === groupId) {
-    replacePath("/shared");
-    state.sharedDetail = null;
+  state.home.syncGroups = (state.home.syncGroups || []).filter((group) => group.id !== groupId);
+  if (state.route.name === "sync-detail" && state.route.groupId === groupId) {
+    replacePath("/sync");
+    state.syncDetail = null;
   }
   closeModal();
   openActionResultModal({
     title: t("deleted"),
     lines: [
       `${t("sessionId")}: ${groupId}`,
-      `${t("sharedTitle")}: ${groupId}`,
+      `${t("syncTitle")}: ${groupId}`,
     ],
-    navPath: "/shared",
-    navLabel: t("sharedGroups"),
+    navPath: "/sync",
+    navLabel: t("syncGroups"),
   });
 }
 
-async function runSharedBind(formData) {
+async function runSyncBind(formData) {
   const provider = String(formData.get("provider"));
   const sessionId = emptyToNull(formData.get("session_id"));
-  if (!sessionId && !getOrderedProviders().some((item) => item.id === provider && item.export)) {
+  if (!sessionId && !providers.capabilitySet(provider).export) {
     toast(t("error"), t("noSyncTargets"), true);
     return;
   }
 
-  const result = await api("/api/v1/share/bind", {
+  const result = await api("/api/v1/sync/bind", {
     method: "POST",
     body: {
       group_id: String(formData.get("group_id")),
@@ -1299,8 +1463,8 @@ async function runSharedBind(formData) {
   });
 }
 
-async function runSharedSync(groupId, sourceHoldingId = null) {
-  const result = await api("/api/v1/share/sync", {
+async function runSyncGroup(groupId, sourceHoldingId = null) {
+  const result = await api("/api/v1/sync/sync", {
     method: "POST",
     body: {
       group_id: groupId,
@@ -1313,7 +1477,7 @@ async function runSharedSync(groupId, sourceHoldingId = null) {
 }
 
 async function runUnbind(groupId, holdingId) {
-  await api(`/api/v1/share/holdings/${encodeURIComponent(groupId)}/${encodeURIComponent(holdingId)}`, {
+  await api(`/api/v1/sync/holdings/${encodeURIComponent(groupId)}/${encodeURIComponent(holdingId)}`, {
     method: "DELETE",
   });
   await loadRoute();
@@ -1323,9 +1487,9 @@ async function runUnbind(groupId, holdingId) {
     summary: t("deleted"),
     lines: [
       `${t("sessionId")}: ${holdingId}`,
-      `${t("sharedTitle")}: ${groupId}`,
+      `${t("syncTitle")}: ${groupId}`,
     ],
-    navPath: `/shared/${encodeURIComponent(groupId)}`,
+    navPath: `/sync/${encodeURIComponent(groupId)}`,
     navLabel: t("openDetail"),
   });
 }
@@ -1341,11 +1505,12 @@ async function runSaveSettings(formData) {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
       export: formData.get("home_button_export") === "true",
-      share: formData.get("home_button_share") === "true",
+      sync: formData.get("home_button_sync") === "true",
       delete: formData.get("home_button_delete") === "true",
     },
     agent_order: formData.getAll("agent_order").map(String),
-    primary_agents: formData.getAll("primary_agents").map(String),
+    primary_agents: [],
+    hidden_agents: formData.getAll("hidden_agents").map(String),
   };
   await saveSettings(body);
   closeModal();
@@ -1356,7 +1521,15 @@ async function saveSettings(body) {
     method: "PUT",
     body,
   });
+  await api("/api/v1/providers/catalog", {
+    method: "PUT",
+    body: {
+      sort_order: { global: body.agent_order, workspace: [] },
+      hidden_state: { global: body.hidden_agents, workspace: [] },
+    },
+  });
   state.meta = await api("/api/v1/meta");
+  await refreshCatalog(state.home.workspace);
   setDocumentLanguage();
   state.home.visible = state.meta.settings.sessions_per_provider;
   toast(t("saved"), t("settingsTitle"));
@@ -1371,17 +1544,17 @@ async function loadDefaultManagerPreview() {
   if (!draft.providers.length) {
     const preview = emptyManagerPreview();
     preview.default_preview = true;
-    state.manager = { draft, preview, report: null, pendingItems: [] };
+    state.manager = { draft, preview, workspacePreview: null, report: null, pendingItems: [], viewMode: "sessions" };
     render();
     return;
   }
-  const preview = await api("/api/v1/manager/preview", {
-    method: "POST",
-    body: managerPreviewBody(draft),
-  });
+  const [preview, workspacePreview] = await Promise.all([
+    api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+    api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+  ]);
   preview.output_dir = "";
   preview.default_preview = true;
-  state.manager = { draft, preview, report: null, pendingItems: [] };
+  state.manager = { draft, preview, workspacePreview, report: null, pendingItems: [], viewMode: state.manager.viewMode || "sessions" };
   render();
 }
 
@@ -1390,14 +1563,14 @@ async function runManagerPreview(formData) {
   if (!draft.providers.length) throw new Error(t("noTargetAgentSelected"));
   setLoading(true, { label: t("managerPreview"), detail: t("scanningSessions") });
   try {
-    const preview = await api("/api/v1/manager/preview", {
-      method: "POST",
-      body: managerPreviewBody(draft),
-    });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
     preview.default_preview = false;
-    state.manager = { draft, preview, report: null, pendingItems: [] };
+    state.manager = { draft, preview, workspacePreview, report: null, pendingItems: [], viewMode: state.manager.viewMode || "sessions" };
     state.modal = null;
     if (state.route.name !== "manager") replacePath("/manager");
     render();
@@ -1418,14 +1591,14 @@ async function runManagerClean() {
       body: { items },
     });
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const preview = await api("/api/v1/manager/preview", {
-      method: "POST",
-      body: managerPreviewBody(draft),
-    });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
     preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = { draft, preview, report: null, pendingItems: [] };
+    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
     openActionResultModal({
       title: t("cleanSelected"),
       summary: `${result.success} ${t("managerCleaned")}, ${result.failed} ${t("managerFailed")}, ${formatBytes(
@@ -1454,14 +1627,14 @@ async function runManagerBackup() {
       },
     });
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const preview = await api("/api/v1/manager/preview", {
-      method: "POST",
-      body: managerPreviewBody(draft),
-    });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = outputDir;
     preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = { draft, preview, report: null, pendingItems: [] };
+    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
     openActionResultModal({
       title: t("backupSelected"),
       summary: `${result.success} ${t("managerExported")}, ${result.failed} ${t("managerFailed")}`,
@@ -1478,12 +1651,95 @@ function selectedManagerItems() {
   );
 }
 
+async function runManagerWorkspaceClean() {
+  const draft = readManagerDraft();
+  const items = state.manager.pendingItems.length ? state.manager.pendingItems : selectedManagerWorkspaceItems();
+  if (!items.length) throw new Error(t("noSelection"));
+  closeModal();
+  setLoading(true, { label: t("cleanWorkspaceSelected"), detail: `${items.length} ${t("workspaceStat")}`, progress: 0.12 });
+  try {
+    const results = [];
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    let totalFreed = 0;
+    let errors = [];
+    for (const item of items) {
+      const result = await api("/api/v1/manager/clean-workspace", {
+        method: "POST",
+        body: { provider_id: item.provider_id, workspace: item.workspace },
+      });
+      totalSuccess += result.success;
+      totalFailed += result.failed;
+      totalFreed += result.freed_bytes;
+      errors = errors.concat(result.errors || []);
+      results.push(`${item.provider_id} / ${workspaceName(item.workspace) || item.workspace}: ${result.success}/${result.failed}`);
+    }
+    updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
+    applyManagerDraftFilters(preview, draft);
+    preview.output_dir = "";
+    preview.default_preview = Boolean(draft.is_default_preview);
+    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
+    openActionResultModal({
+      title: t("cleanWorkspaceSelected"),
+      summary: `${totalSuccess} ${t("managerCleaned")}, ${totalFailed} ${t("managerFailed")}, ${formatBytes(totalFreed)} ${t("managerFreed")}`,
+      lines: [...results, ...errors],
+    });
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function runManagerWorkspaceBackup() {
+  const draft = readManagerDraft();
+  const items = state.manager.pendingItems.length ? state.manager.pendingItems : selectedManagerWorkspaceItems();
+  if (!items.length) throw new Error(t("noSelection"));
+  const outputDir = state.meta.settings.default_backup_dir || "./backups";
+  closeModal();
+  setLoading(true, { label: t("backupWorkspaceSelected"), detail: `${items.length} ${t("workspaceStat")}`, progress: 0.12 });
+  try {
+    const results = [];
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    let files = [];
+    let errors = [];
+    for (const item of items) {
+      const result = await api("/api/v1/manager/backup-workspace", {
+        method: "POST",
+        body: { provider_id: item.provider_id, workspace: item.workspace, output_dir: outputDir },
+      });
+      totalSuccess += result.success;
+      totalFailed += result.failed;
+      files = files.concat(result.files || []);
+      errors = errors.concat(result.errors || []);
+      results.push(`${item.provider_id} / ${workspaceName(item.workspace) || item.workspace}: ${result.success}/${result.failed}`);
+    }
+    updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
+    applyManagerDraftFilters(preview, draft);
+    preview.output_dir = outputDir;
+    preview.default_preview = Boolean(draft.is_default_preview);
+    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
+    openActionResultModal({
+      title: t("backupWorkspaceSelected"),
+      summary: `${totalSuccess} ${t("managerExported")}, ${totalFailed} ${t("managerFailed")}`,
+      lines: [...files, ...results, ...errors],
+    });
+  } finally {
+    setLoading(false);
+  }
+}
+
 function defaultManagerDraft() {
   const selectedProviders = state.home.providers.length
     ? state.home.providers
-    : state.meta
-      ? getOrderedProviders().map((item) => item.id)
-      : [];
+    : getOrderedProviders().map((item) => item.provider_id);
   return {
     workspace: state.home.workspace || "",
     older_than_days: "",
@@ -1616,11 +1872,12 @@ function readSettingsDraft() {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
       export: formData.get("home_button_export") === "true",
-      share: formData.get("home_button_share") === "true",
+      sync: formData.get("home_button_sync") === "true",
       delete: formData.get("home_button_delete") === "true",
     },
     agent_order: formData.getAll("agent_order").map(String),
-    primary_agents: formData.getAll("primary_agents").map(String),
+    primary_agents: [],
+    hidden_agents: formData.getAll("hidden_agents").map(String),
   };
 }
 
@@ -1649,7 +1906,7 @@ function render() {
 }
 
 function renderTopbarContext() {
-  return renderTopbarContextMarkup(state, t, escapeHtml);
+  return renderTopbarContextMarkup(state, providers, t, escapeHtml);
 }
 
 function bindLocalButtons() {
@@ -1668,10 +1925,10 @@ function renderPage() {
       return renderHome();
     case "session":
       return `<div class="page-scroll">${renderSessionDetail()}</div>`;
-    case "shared-list":
-      return `<div class="page-scroll manager-page-scroll">${renderSharedList()}</div>`;
-    case "shared-detail":
-      return `<div class="page-scroll">${renderSharedDetail()}</div>`;
+    case "sync-list":
+      return `<div class="page-scroll manager-page-scroll">${renderSyncList()}</div>`;
+    case "sync-detail":
+      return `<div class="page-scroll">${renderSyncDetail()}</div>`;
     case "manager":
       return `<div class="page-scroll manager-page-scroll">${renderManagerPage()}</div>`;
     case "compression":
@@ -1708,7 +1965,7 @@ function openHookOperationConfirm(providerId, settingId) {
   );
   const hook = provider?.hook || {};
   const profile = provider?.hook_profile || {};
-  const providerName = provider?.name || providerId;
+  const providerName = providers.displayName(providerId);
   const configPath = hook.config_path || profile.config_hint || "—";
   const operationLabel = hookOperationLabel(settingId);
   const isUninstall = settingId === "uninstall_hook";
@@ -1963,6 +2220,14 @@ function toggleDetailMessage(trigger) {
   item.classList.toggle("is-expanded");
 }
 
+function scrollToDetailMessage(index) {
+  const item = document.querySelector(`.msg-item[data-message-index="${index}"]`);
+  if (!item) return;
+  item.scrollIntoView({ behavior: "smooth", block: "start" });
+  item.classList.add("is-highlighted");
+  window.setTimeout(() => item.classList.remove("is-highlighted"), 1200);
+}
+
 function isExternalHttpUrl(url) {
   if (!url) return false;
   try {
@@ -2034,6 +2299,7 @@ function renderWorkspaceDatalist() {
 const {
   openActionResultModal,
   openAgentFilterModal,
+  openCompressSessionModal,
   openCompressionExpandModal,
   openCompressionRestoreModal,
   openDeleteModal,
@@ -2041,10 +2307,10 @@ const {
   openImportModal,
   openPushSyncModal,
   openRenameModal,
-  openShareCreateModal,
-  openSharedBindModal,
-  openSharedRemoveModal,
-  openSharedRenameModal,
+  openSyncCreateModal,
+  openSyncBindModal,
+  openSyncRemoveModal,
+  openSyncRenameModal,
   openSortOptionsModal,
   openSwitchModal,
   openSyncResultModal,
@@ -2053,6 +2319,7 @@ const {
   openWorkspaceSwitchModal,
 } = createModalModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -2088,6 +2355,33 @@ async function browseFolderForField(trigger) {
   } catch (error) {
     const message = /only available in the desktop app/i.test(error.message)
       ? t("folderPickerUnavailable")
+      : error.message;
+    toast(t("error"), message, true);
+  }
+}
+
+async function browseFileForField(trigger) {
+  const fieldName = trigger?.dataset?.targetField;
+  if (!fieldName) return;
+
+  const scope = trigger.closest("form, .workspace-panel, .modal-card") || document;
+  const selector = `[name="${fieldName}"]`;
+  const input = scope.querySelector(selector) || document.querySelector(selector);
+  if (!(input instanceof HTMLInputElement)) return;
+
+  try {
+    const result = await api("/api/v1/system/select-file", {
+      method: "POST",
+      body: {
+        start_path: emptyToNull(input.value) || state.home.workspace || null,
+      },
+    });
+    if (result.path) {
+      input.value = result.path;
+    }
+  } catch (error) {
+    const message = /only available in the desktop app/i.test(error.message)
+      ? t("filePickerUnavailable")
       : error.message;
     toast(t("error"), message, true);
   }

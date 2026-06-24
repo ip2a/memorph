@@ -86,18 +86,6 @@ pub enum Commands {
         /// Target project directory (default: current directory)
         #[arg(short, long, value_name = "DIR")]
         to_dir: Option<String>,
-        /// Apply archive-backed active compression before exporting to target provider
-        #[arg(long)]
-        active_compression: bool,
-        /// Protect the most recent message events from active compression
-        #[arg(long, value_name = "N", requires = "active_compression")]
-        protect_recent_message_events: Option<usize>,
-        /// Minimum event size in bytes before active compression can select it
-        #[arg(long, value_name = "BYTES", requires = "active_compression")]
-        min_candidate_bytes: Option<usize>,
-        /// Minimum estimated savings percentage required to apply active compression
-        #[arg(long, value_name = "PERCENT", requires = "active_compression")]
-        min_savings_ratio_percent: Option<u8>,
     },
     /// Find sessions by directory, title, or ID pattern
     Find {
@@ -111,10 +99,11 @@ pub enum Commands {
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Vec<String>,
     },
-    /// Manage shared multi-provider sessions
-    Share {
+    /// Manage synchronized multi-provider sessions
+    #[command(name = "sync")]
+    Sync {
         #[command(subcommand)]
-        command: ShareCommands,
+        command: SyncCommands,
     },
     /// Manage compressed session archives
     Compression {
@@ -316,7 +305,7 @@ pub enum CompressionCommands {
 }
 
 #[derive(Subcommand)]
-pub enum ShareCommands {
+pub enum SyncCommands {
     /// Create a sync group from an existing provider session
     Create {
         /// Source provider ID
@@ -355,7 +344,7 @@ pub enum ShareCommands {
         /// Sync group ID
         #[arg(value_name = "GROUP_ID")]
         group_id: String,
-        /// Holding ID from `share list` or `share status`
+        /// Holding ID from `sync list` or `sync status`
         #[arg(value_name = "HOLDING_ID")]
         holding_id: String,
     },
@@ -495,43 +484,6 @@ mod tests {
                 assert_eq!(target_provider_id, "codex");
                 assert_eq!(session_id, None);
                 assert_eq!(file.as_deref(), Some("session.json"));
-                assert_eq!(protect_recent_message_events, Some(2));
-                assert_eq!(min_candidate_bytes, Some(128));
-                assert_eq!(min_savings_ratio_percent, Some(25));
-            }
-            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
-        }
-    }
-
-    #[test]
-    fn switch_accepts_active_compression_policy_options() {
-        let cli = Cli::parse_from([
-            "memorph",
-            "switch",
-            "claude",
-            "codex",
-            "--active-compression",
-            "--protect-recent-message-events",
-            "2",
-            "--min-candidate-bytes",
-            "128",
-            "--min-savings-ratio-percent",
-            "25",
-        ]);
-
-        match cli.command {
-            Some(Commands::Switch {
-                from,
-                to,
-                active_compression,
-                protect_recent_message_events,
-                min_candidate_bytes,
-                min_savings_ratio_percent,
-                ..
-            }) => {
-                assert_eq!(from, "claude");
-                assert_eq!(to, "codex");
-                assert!(active_compression);
                 assert_eq!(protect_recent_message_events, Some(2));
                 assert_eq!(min_candidate_bytes, Some(128));
                 assert_eq!(min_savings_ratio_percent, Some(25));

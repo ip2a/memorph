@@ -1,5 +1,6 @@
-export function createSessionSharedModule({
+export function createSessionSyncModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -8,8 +9,7 @@ export function createSessionSharedModule({
   markdown,
   renderAgentDetailRow,
   renderMetaLine,
-  getOrderedProviders,
-  findSharedRef,
+  findSyncRef,
 }) {
   function formatToolInputHint(input) {
     if (!input || typeof input !== "object") return "";
@@ -149,6 +149,34 @@ export function createSessionSharedModule({
       </article>`;
   }
 
+  function estimateEventSize(event) {
+    if (event.metadata?.size_bytes != null) return Number(event.metadata.size_bytes) || 0;
+    return (event.blocks || []).reduce((sum, block) => {
+      if (block == null) return sum;
+      if (block.text != null) return sum + String(block.text).length;
+      if (block.content != null) return sum + String(block.content).length;
+      if (block.diff_text != null) return sum + String(block.diff_text).length;
+      if (block.payload != null) return sum + JSON.stringify(block.payload).length;
+      if (block.raw != null) return sum + JSON.stringify(block.raw).length;
+      return sum + JSON.stringify(block).length;
+    }, 0);
+  }
+
+  function renderDetailTimeline(events) {
+    const sizes = (events || []).map(estimateEventSize);
+    const total = sizes.reduce((sum, size) => sum + size, 0) || 1;
+    const max = Math.max(1, ...sizes);
+    return `
+      <aside class="detail-timeline" aria-label="${escapeAttr(t("timeline") || "Timeline")}">
+        ${sizes.map((size, index) => {
+          const ratio = size / total;
+          const intensity = max ? size / max : 0;
+          const depth = Math.max(0.08, Math.min(0.85, 0.12 + intensity * 0.7));
+          return `<button type="button" class="timeline-segment" data-action="scroll-to-message" data-message-index="${index}" title="${escapeAttr(formatBytes(size))}" style="--timeline-flex: ${Math.max(0.02, ratio)}; --timeline-depth: ${depth.toFixed(3)};"></button>`;
+        }).join("")}
+      </aside>`;
+  }
+
   function renderRuntimeSessionRow(session) {
     const tool = session.current_tool;
     const permission = session.pending_permission;
@@ -251,17 +279,40 @@ export function createSessionSharedModule({
       </section>`;
   }
 
+  function collectCompressedArchiveRefs(view) {
+    const refs = new Set((view.compressed_archive_refs || []).slice());
+    (view.events || []).forEach((event) => {
+      (event.blocks || []).forEach((block) => {
+        if (block.type === "compressed" && block.archive_ref) {
+          refs.add(block.archive_ref);
+        }
+      });
+    });
+    return refs;
+  }
+
+  function hasCompressedEvents(view) {
+    return collectCompressedArchiveRefs(view).size > 0;
+  }
+
+  function renderCompressionArchiveRef(view) {
+    const refs = collectCompressedArchiveRefs(view);
+    if (!refs.size) return "";
+    return `<a class="button" href="/compression" data-nav="/compression">${t("viewCompression")}</a>`;
+  }
+
   function renderSessionDetailView(detail, view) {
-    const sharedRef = findSharedRef(state.route.provider, state.route.sessionId);
+    const syncRef = findSyncRef(state.route.provider, state.route.sessionId);
     const workspace = view.workspace_dir || state.home.workspace || "";
     const sessionMeta = (state.home?.sessions || []).find(
       (session) => session.provider_id === state.route.provider && session.session_id === state.route.sessionId
     );
     const sizeBytes = sessionMeta?.size_bytes;
+    const compressed = hasCompressedEvents(view);
     return `
       <section class="session-header">
         <div>
-          <p class="eyebrow">${escapeHtml(view.provider_name || view.provider_id)}</p>
+          <p class="eyebrow">${escapeHtml(providers.displayName(view.provider_id))}</p>
           <h1>${escapeHtml(view.title || view.session_id || state.route.sessionId)}</h1>
           <div class="meta-line">
             <span>id=<code>${escapeHtml(view.session_id || state.route.sessionId)}</code></span>
@@ -269,13 +320,14 @@ export function createSessionSharedModule({
             ${view.last_active_at ? `<span>${t("lastActiveAt")}=${escapeHtml(formatDate(view.last_active_at))}</span>` : ""}
             ${sizeBytes != null ? `<span>${t("size")}=${escapeHtml(formatBytes(sizeBytes))}</span>` : ""}
             ${workspace ? `<span>${t("workspace")}=<code>${escapeHtml(workspace)}</code></span>` : ""}
-            ${sharedRef ? `<a class="shared-badge" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("activeShared")}</a>` : ""}
+            ${syncRef ? `<a class="sync-badge" href="/sync/${syncRef}" data-nav="/sync/${syncRef}">${t("activeSync")}</a>` : ""}
           </div>
         </div>
         <div class="session-actions">
-          <a class="button" href="/compression" data-nav="/compression">${t("compression")}</a>
-          ${sharedRef ? `<a class="button" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("openShared")}</a>` : ""}
-          <button type="button" data-action="open-share-create" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("share")}</button>
+          ${compressed ? renderCompressionArchiveRef(view) : ""}
+          <button type="button" data-action="compress-session" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${compressed ? t("compressAgain") : t("compression")}</button>
+          ${syncRef ? `<a class="button" href="/sync/${syncRef}" data-nav="/sync/${syncRef}">${t("openSync")}</a>` : ""}
+          <button type="button" data-action="open-sync-create" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("syncAction")}</button>
           <button type="button" data-action="open-switch" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-workspace="${escapeAttr(workspace)}" data-title="${escapeAttr(view.title || "")}">${t("switch")}</button>
           <button type="button" data-action="open-export" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${t("export")}</button>
           <button type="button" data-action="open-rename" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("rename")}</button>
@@ -289,6 +341,7 @@ export function createSessionSharedModule({
         view.hook_diagnosis
       )}
       <div class="detail-layout">
+        ${renderDetailTimeline(view.events)}
         <section>
           <div class="msg-list">
             ${view.events.length ? view.events.map((event, index) => renderDetailEvent(event, index)).join("") : `<div class="empty-state">${t("noMessages")}</div>`}
@@ -309,16 +362,16 @@ export function createSessionSharedModule({
     return renderSessionDetailView(detail, detail.view);
   }
 
-  function renderSharedRow(group) {
-    const sourceProvider = getOrderedProviders().find((item) => item.id === group.source_provider);
-    const href = `/shared/${encodeURIComponent(group.id)}`;
+  function renderSyncRow(group) {
+    const sourceProvider = providers.get(group.source_provider);
+    const href = `/sync/${encodeURIComponent(group.id)}`;
     return `
       <article class="manager-row">
         <div class="manager-row-head">
           <div class="manager-row-copy">
             <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(group.title || group.id)}</a>
             <div class="manager-meta">
-              <span>${escapeHtml(sourceProvider?.name || group.source_provider || "—")}</span>
+              <span>${escapeHtml(providers.displayName(group.source_provider) || "—")}</span>
               <span>${t("holdings")}=${group.holdings.length}</span>
               <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(group.updated_at)))}</span>
             </div>
@@ -326,15 +379,15 @@ export function createSessionSharedModule({
           <div class="row-actions">
             <a class="button" href="${href}" data-nav="${href}">${t("view")}</a>
             <button type="button" data-action="run-sync-latest" data-group-id="${escapeAttr(group.id)}">${t("syncLatest")}</button>
-            <button type="button" data-action="open-shared-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
-            <button type="button" class="danger" data-action="open-shared-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
+            <button type="button" data-action="open-sync-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
+            <button type="button" class="danger" data-action="open-sync-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
           </div>
         </div>
       </article>`;
   }
 
-  function renderSharedList() {
-    const groups = state.home.sharedGroups || [];
+  function renderSyncList() {
+    const groups = state.home.syncGroups || [];
     const totalHoldings = groups.reduce((sum, group) => sum + (group.holdings?.length || 0), 0);
     return `
       <div class="manager-page-layout">
@@ -342,9 +395,9 @@ export function createSessionSharedModule({
           <div class="manager-control-content">
             <section class="manager-workspace-summary">
               <div>
-                <span class="eyebrow">${t("sharedTitle")}</span>
-                <strong>${t("sharedGroups")}</strong>
-                <p>${t("sharedOverview")}</p>
+                <span class="eyebrow">${t("syncTitle")}</span>
+                <strong>${t("syncGroups")}</strong>
+                <p>${t("syncOverview")}</p>
               </div>
             </section>
             <section class="manager-control-bottom">
@@ -360,19 +413,19 @@ export function createSessionSharedModule({
         <section class="section-panel manager-result-panel">
           <div class="section-heading manager-section-head">
             <div>
-              <strong>${t("sharedGroups")}</strong>
+              <strong>${t("syncGroups")}</strong>
               <span>${groups.length}</span>
             </div>
           </div>
           <div class="manager-list">
-            ${groups.length ? groups.map(renderSharedRow).join("") : `<div class="empty-state">${t("noSharedGroups")}</div>`}
+            ${groups.length ? groups.map(renderSyncRow).join("") : `<div class="empty-state">${t("noSyncGroups")}</div>`}
           </div>
         </section>
       </div>`;
   }
 
   function renderHoldingCard(group, holding) {
-    const provider = getOrderedProviders().find((item) => item.id === holding.provider);
+    const provider = providers.get(holding.provider);
     const sessionHref = `/sessions/${encodeURIComponent(holding.provider)}/${encodeURIComponent(holding.session_id)}`;
     const hookRuntimeSessions = holding.hook_runtime_sessions || [];
     const hookRuntimeBadge = renderHookRuntimeBadge(holding.hook_runtime_summary);
@@ -386,7 +439,7 @@ export function createSessionSharedModule({
       <article class="binding-card">
         <header>
           <div>
-            <strong>${escapeHtml(provider?.name || holding.provider)}</strong>
+            <strong>${escapeHtml(providers.displayName(holding.provider))}</strong>
             <p class="modal-subtitle">${escapeHtml(holding.session_id)}</p>
             ${hookRuntimeBadge}
           </div>
@@ -402,21 +455,21 @@ export function createSessionSharedModule({
         <footer class="row-actions">
           <a class="button" href="${sessionHref}" data-nav="${sessionHref}">${t("openSession")}</a>
           <button type="button" data-action="open-sync-from" data-group-id="${escapeAttr(group.id)}" data-holding-id="${escapeAttr(holding.id)}" data-provider="${escapeAttr(
-            provider?.name || holding.provider
+            providers.displayName(holding.provider)
           )}" data-session-id="${escapeAttr(holding.session_id)}">${t("syncFromThis")}</button>
           <button type="button" class="danger" data-action="open-unbind" data-group-id="${escapeAttr(group.id)}" data-holding-id="${escapeAttr(holding.id)}" data-provider="${escapeAttr(
-            provider?.name || holding.provider
+            providers.displayName(holding.provider)
           )}" data-session-id="${escapeAttr(holding.session_id)}">${t("unbind")}</button>
         </footer>
       </article>`;
   }
 
-  function renderSharedDetail() {
-    if (!state.sharedDetail) return `<div class="empty-state">${t("loading")}</div>`;
-    const group = state.sharedDetail;
-    const sourceProvider = getOrderedProviders().find((item) => item.id === group.source_provider);
+  function renderSyncDetail() {
+    if (!state.syncDetail) return `<div class="empty-state">${t("loading")}</div>`;
+    const group = state.syncDetail;
+    const sourceProvider = providers.get(group.source_provider);
     return `
-      <div class="shared-layout">
+      <div class="sync-layout">
         <section class="section-panel stack">
           <div class="section-heading">
             <div>
@@ -424,17 +477,17 @@ export function createSessionSharedModule({
               <small>${group.holdings.length}</small>
             </div>
           </div>
-          <div class="shared-grid">
+          <div class="sync-grid">
             ${group.holdings.map((holding) => renderHoldingCard(group, holding)).join("")}
           </div>
         </section>
-        <aside class="shared-detail-right">
+        <aside class="sync-detail-right">
           <article class="manager-row">
             <div class="manager-row-head">
               <div class="manager-row-copy">
                 <span class="manager-title-link">${escapeHtml(group.title || group.id)}</span>
                 <div class="manager-meta">
-                  <span>${escapeHtml(sourceProvider?.name || group.source_provider || "—")}</span>
+                  <span>${escapeHtml(providers.displayName(group.source_provider) || "—")}</span>
                   <span>${t("holdings")}=${group.holdings.length}</span>
                   <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(group.updated_at)))}</span>
                 </div>
@@ -448,16 +501,16 @@ export function createSessionSharedModule({
               </div>
             </div>
             <div class="stack">
-              ${renderMetaLine(t("provider"), sourceProvider?.name || group.source_provider)}
-              ${renderMetaLine(t("sharedTitle"), group.title)}
+              ${renderMetaLine(t("provider"), providers.displayName(group.source_provider))}
+              ${renderMetaLine(t("syncTitle"), group.title)}
               ${renderMetaLine(t("holdings"), String(group.holdings.length))}
               ${renderMetaLine(t("createdAt"), formatDate(group.created_at))}
               ${renderMetaLine(t("updatedAt"), formatDate(group.updated_at))}
               <div class="row-actions">
                 <button type="button" class="invert" data-action="run-sync-latest" data-group-id="${escapeAttr(group.id)}">${t("startExecution")}</button>
-                <button type="button" data-action="open-shared-bind" data-group-id="${escapeAttr(group.id)}">${t("addHolding")}</button>
-                <button type="button" data-action="open-shared-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
-                <button type="button" class="danger" data-action="open-shared-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
+                <button type="button" data-action="open-sync-bind" data-group-id="${escapeAttr(group.id)}">${t("addHolding")}</button>
+                <button type="button" data-action="open-sync-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
+                <button type="button" class="danger" data-action="open-sync-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
               </div>
             </div>
           </section>
@@ -481,7 +534,7 @@ export function createSessionSharedModule({
   return {
     detailEventToText,
     renderSessionDetail,
-    renderSharedDetail,
-    renderSharedList,
+    renderSyncDetail,
+    renderSyncList,
   };
 }

@@ -23,7 +23,7 @@ pub struct ProviderSessionImportPage {
     pub message_count: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ProviderCapabilities {
     pub scan: bool,
     pub import: bool,

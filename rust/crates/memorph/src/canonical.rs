@@ -292,6 +292,8 @@ pub struct LocalSessionState {
     pub preferred_targets: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_overrides: Vec<WorkspaceSessionState>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compressed_archive_refs: Vec<String>,
     pub updated_at: DateTime<Utc>,
 }
 
