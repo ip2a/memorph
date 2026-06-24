@@ -952,6 +952,9 @@ async function handleAction(action, data, trigger = null) {
     case "browse-folder":
       await browseFolderForField(trigger);
       break;
+    case "browse-file":
+      await browseFileForField(trigger);
+      break;
     case "close-modal":
       closeModal();
       break;
@@ -1758,8 +1761,7 @@ async function runManagerWorkspaceBackup() {
 function defaultManagerDraft() {
   const selectedProviders = state.home.providers.length
     ? state.home.providers
-    : state.meta
-      : getOrderedProviders().map((item) => item.provider_id);
+    : getOrderedProviders().map((item) => item.provider_id);
   return {
     workspace: state.home.workspace || "",
     older_than_days: "",
@@ -2375,6 +2377,33 @@ async function browseFolderForField(trigger) {
   } catch (error) {
     const message = /only available in the desktop app/i.test(error.message)
       ? t("folderPickerUnavailable")
+      : error.message;
+    toast(t("error"), message, true);
+  }
+}
+
+async function browseFileForField(trigger) {
+  const fieldName = trigger?.dataset?.targetField;
+  if (!fieldName) return;
+
+  const scope = trigger.closest("form, .workspace-panel, .modal-card") || document;
+  const selector = `[name="${fieldName}"]`;
+  const input = scope.querySelector(selector) || document.querySelector(selector);
+  if (!(input instanceof HTMLInputElement)) return;
+
+  try {
+    const result = await api("/api/v1/system/select-file", {
+      method: "POST",
+      body: {
+        start_path: emptyToNull(input.value) || state.home.workspace || null,
+      },
+    });
+    if (result.path) {
+      input.value = result.path;
+    }
+  } catch (error) {
+    const message = /only available in the desktop app/i.test(error.message)
+      ? t("filePickerUnavailable")
       : error.message;
     toast(t("error"), message, true);
   }
