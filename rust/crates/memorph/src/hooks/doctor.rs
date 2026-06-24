@@ -34,7 +34,7 @@ pub struct HookDoctorProviderResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub after: Option<HookInstallStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub operation: Option<crate::hooks::installer::HookOperationReport>,
+    pub operation: Option<crate::hooks::model::HookOperationReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -46,7 +46,7 @@ pub fn run(request: HookDoctorRequest) -> HookDoctorReport {
     let mut failed = 0;
 
     for provider in providers {
-        let before = match crate::hooks::health::status(provider.id) {
+        let before = match crate::hooks::operations::status(provider.id) {
             Ok(status) => status,
             Err(error) => {
                 failed += 1;
@@ -62,7 +62,10 @@ pub fn run(request: HookDoctorRequest) -> HookDoctorReport {
         };
 
         if request.repair && should_repair(provider, &before.status) {
-            match crate::hooks::installer::repair(provider.id) {
+            match crate::hooks::operations::run_operation(
+                provider.id,
+                crate::hooks::strategies::HookConfigOperation::Repair,
+            ) {
                 Ok(operation) => {
                     repaired += usize::from(operation.changed);
                     results.push(HookDoctorProviderResult {
@@ -105,9 +108,10 @@ pub fn run(request: HookDoctorRequest) -> HookDoctorReport {
 
 fn selected_providers(requested: &[String]) -> Vec<SelectedProvider> {
     if requested.is_empty() {
-        return crate::hooks::profiles::provider_ids()
-            .map(|id| SelectedProvider {
-                id,
+        return crate::hooks::registry::all()
+            .into_iter()
+            .map(|descriptor| SelectedProvider {
+                id: descriptor.provider(),
                 explicitly_requested: false,
             })
             .collect();
@@ -115,8 +119,8 @@ fn selected_providers(requested: &[String]) -> Vec<SelectedProvider> {
     requested
         .iter()
         .filter_map(|provider| {
-            crate::hooks::profiles::find(provider).map(|profile| SelectedProvider {
-                id: profile.provider,
+            crate::hooks::registry::find(provider).map(|descriptor| SelectedProvider {
+                id: descriptor.provider(),
                 explicitly_requested: true,
             })
         })
@@ -161,18 +165,22 @@ mod tests {
     #[test]
     fn doctor_defaults_to_all_profiled_providers() {
         let report = run(HookDoctorRequest::default());
-        assert_eq!(report.checked, crate::hooks::profiles::all().len());
+        assert_eq!(report.checked, crate::hooks::registry::all().len());
         assert_eq!(report.results.len(), report.checked);
     }
 
     #[test]
     fn doctor_filters_requested_providers_through_profiles() {
+        let provider = crate::hooks::registry::all()
+            .first()
+            .expect("at least one hook provider")
+            .provider();
         let report = run(HookDoctorRequest {
             repair: false,
-            providers: vec!["claude".to_string(), "missing".to_string()],
+            providers: vec![provider.to_string(), "missing".to_string()],
         });
         assert_eq!(report.checked, 1);
-        assert_eq!(report.results[0].provider, "claude");
+        assert_eq!(report.results[0].provider, provider);
     }
 
     #[test]

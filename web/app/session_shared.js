@@ -1,0 +1,487 @@
+export function createSessionSharedModule({
+  state,
+  t,
+  escapeHtml,
+  escapeAttr,
+  formatDate,
+  formatBytes,
+  markdown,
+  renderAgentDetailRow,
+  renderMetaLine,
+  getOrderedProviders,
+  findSharedRef,
+}) {
+  function formatToolInputHint(input) {
+    if (!input || typeof input !== "object") return "";
+    const command = input.command || input.file_path || input.path;
+    return command ? ` — ${String(command).slice(0, 120)}` : "";
+  }
+
+  function getBlockLabel(block) {
+    switch (block.type) {
+      case "text": return "";
+      case "thinking": return t("thinking");
+      case "tool_call": return `${t("toolUse")}: ${block.name || ""}`.replace(/:\s$/, "");
+      case "tool_result": return t("toolResult");
+      case "patch": return "Patch";
+      case "command": return "Command";
+      case "command_result": return "Command Result";
+      case "file": return t("file");
+      case "image": return t("image");
+      case "provider_payload": return block.kind || "payload";
+      case "unknown": return t("details");
+      default: return "";
+    }
+  }
+
+  function getBlockLabels(blocks) {
+    return (blocks || []).map(getBlockLabel).filter(Boolean);
+  }
+
+  function countLines(text) {
+    if (!text) return 0;
+    return text.split("\n").length;
+  }
+
+  function renderDetailBlock(block) {
+    const clampIf = (text, limit = 3) => {
+      const lines = countLines(text || "");
+      return lines > limit ? "is-clamped" : "";
+    };
+
+    switch (block.type) {
+      case "text": {
+        const clamp = clampIf(block.text, 3);
+        return `<div class="content-block content-text ${clamp}">${markdown(block.text || "")}</div>`;
+      }
+      case "thinking": {
+        const clamp = clampIf(block.text, 3);
+        return `<div class="content-block content-thinking ${clamp}"><p>${escapeHtml(block.text || "")}</p></div>`;
+      }
+      case "tool_call": {
+        const text = JSON.stringify(
+          { tool_call_id: block.tool_call_id, name: block.name, input: block.input },
+          null,
+          2
+        );
+        const clamp = clampIf(text);
+        return `<div class="content-block content-tool ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+      }
+      case "tool_result": {
+        const text = block.content || "";
+        const clamp = clampIf(text);
+        return `<div class="content-block content-tool ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+      }
+      case "patch": {
+        const text = block.diff_text || JSON.stringify(
+          { summary: block.summary, files: block.files, hash: block.hash },
+          null,
+          2
+        );
+        const clamp = clampIf(text);
+        return `<div class="content-block content-patch ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+      }
+      case "command": {
+        const text = JSON.stringify(
+          { command: block.command, argv: block.argv, cwd: block.cwd },
+          null,
+          2
+        );
+        const clamp = clampIf(text);
+        return `<div class="content-block content-command ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+      }
+      case "command_result": {
+        const text = JSON.stringify(
+          { command: block.command, exit_code: block.exit_code, stdout: block.stdout, stderr: block.stderr },
+          null,
+          2
+        );
+        const clamp = clampIf(text);
+        return `<div class="content-block content-command-result ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+      }
+      case "file": {
+        const clamp = block.content ? clampIf(block.content) : "";
+        return `<div class="content-block content-file ${clamp}"><code>${escapeHtml(block.path || "")}</code>${block.content ? `<pre><code>${escapeHtml(block.content)}</code></pre>` : ""}</div>`;
+      }
+      case "image":
+        return `<div class="content-block content-image"><code>${escapeHtml(block.path || block.mime_type || "")}</code></div>`;
+      case "provider_payload": {
+        const text = JSON.stringify(block.payload ?? {}, null, 2);
+        const clamp = clampIf(text);
+        return `<div class="content-block content-provider-payload ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+      }
+      case "unknown": {
+        const text = JSON.stringify(block.raw ?? block, null, 2);
+        const clamp = clampIf(text);
+        return `<div class="content-block content-unknown ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+      }
+      default: {
+        const text = JSON.stringify(block, null, 2);
+        const clamp = clampIf(text);
+        return `<div class="content-block content-unknown ${clamp}"><pre>${escapeHtml(text)}</pre></div>`;
+      }
+    }
+  }
+
+  function renderDetailEvent(event, index) {
+    const blocks = (event.blocks || []).map(renderDetailBlock).join("");
+    const role = (event.role || "unknown").replaceAll("_", " ");
+    const kind = (event.kind || "unknown").replaceAll("_", " ");
+    const blockLabels = getBlockLabels(event.blocks);
+    const labelPart = blockLabels.length
+      ? ` · ${blockLabels.map((label) => `<span class="msg-block-label">${escapeHtml(label)}</span>`).join(" · ")}`
+      : "";
+    return `
+      <article class="msg-item" data-message-index="${index}" data-role="${escapeAttr(event.role || "unknown")}">
+        <header class="msg-header">
+          <span class="msg-header-main">
+            <span class="msg-role">${escapeHtml(role)}</span>
+            <span>${escapeHtml(kind)}</span>${labelPart}
+          </span>
+          <span class="msg-header-meta">
+            <a href="#" class="text-action" data-action="copy-detail-message" data-message-index="${index}">${t("copy")}</a>
+            <a href="#" class="text-action" data-action="delete-detail-message" data-message-index="${index}">${t("remove")}</a>
+            <a href="#" class="text-action" data-action="toggle-detail-message" data-message-index="${index}">${t("expand")}</a>
+            <span>${escapeHtml(formatDate(event.timestamp))}</span>
+          </span>
+        </header>
+        <div class="msg-body">${blocks || `<p class="muted">${t("noDetails")}</p>`}</div>
+      </article>`;
+  }
+
+  function renderRuntimeSessionRow(session) {
+    const tool = session.current_tool;
+    const permission = session.pending_permission;
+    const question = session.pending_question;
+    const detail = question?.prompt || permission?.prompt || tool?.name || session.cwd || session.provider_session_id || session.runtime_id?.[0] || "—";
+    return renderAgentDetailRow(
+      `${session.provider || "hook"} · ${session.status || "unknown"}`,
+      tool ? `${tool.name}${formatToolInputHint(tool.input)}` : detail,
+      `last event ${session.last_event_at ? formatDate(session.last_event_at) : "—"} · updated ${
+        session.updated_at ? formatDate(session.updated_at) : "—"
+      }`
+    );
+  }
+
+  function renderHookRuntimeBadge(summary) {
+    if (!summary) return "";
+    const stateLabel = summary.has_pending_permission
+      ? "perm"
+      : summary.has_pending_question
+        ? "question"
+        : summary.current_tool_name || summary.status || "hook";
+    const linked = Number(summary.linked_sessions || 0);
+    const waiting = Number(summary.waiting_sessions || 0);
+    const title = [
+      `hook=${stateLabel}`,
+      linked > 1 ? `linked=${linked}` : "",
+      waiting > 0 ? `waiting=${waiting}` : "",
+      summary.matched_by ? `matched_by=${summary.matched_by}` : "",
+      summary.confidence ? `confidence=${summary.confidence}` : "",
+      summary.last_event_at ? `last=${formatDate(summary.last_event_at)}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const prefix = linked > 1 ? `${linked} ` : "";
+    return `<span class="status-pill" title="${escapeAttr(title)}">${escapeHtml(`${prefix}${stateLabel}`)}</span>`;
+  }
+
+  function renderHookDiagnosisActions(provider, diagnosis) {
+    const actions = diagnosis?.actions || [];
+    if (!actions.length) return "";
+    return `
+      <div class="pill-row">
+        ${actions.map((action) => {
+          const key = `${provider}:${action.setting_id}`;
+          const pending = !!state.agents.pendingSettings[key];
+          return `
+            <button
+              type="button"
+              class="button button-small"
+              title="${escapeAttr(action.reason || "")}"
+              data-action="run-agent-setting"
+              data-provider="${escapeAttr(provider)}"
+              data-setting-id="${escapeAttr(action.setting_id)}"
+              ${pending ? "disabled" : ""}
+            >${escapeHtml(pending ? t("running") : action.label)}</button>`;
+        }).join("")}
+      </div>`;
+  }
+
+  function renderSessionHookRuntimeBlock(provider, runtimeSessions, summary, diagnosis) {
+    if (!runtimeSessions.length) {
+      const diagnosisMarkup = diagnosis
+        ? `
+          <p>${escapeHtml(diagnosis.message || "No linked runtime session.")}</p>
+          <div class="pill-row">
+            <span class="pill">${escapeHtml(diagnosis.kind || "unknown")}</span>
+            <span class="pill">${escapeHtml(diagnosis.provider_status || "unknown")}</span>
+            ${diagnosis.provider_runtime_sessions ? `<span class="pill">${escapeHtml(`provider_rt=${diagnosis.provider_runtime_sessions}`)}</span>` : ""}
+          </div>
+          ${renderHookDiagnosisActions(provider, diagnosis)}`
+        : `<p>Install/enable hooks to see live tool, permission, and question state for this session.</p>`;
+      return `
+        <section class="manager-workspace-summary">
+          <div>
+            <span class="eyebrow">Hook Runtime</span>
+            <strong>No linked runtime session</strong>
+            ${diagnosisMarkup}
+          </div>
+        </section>`;
+    }
+    const summaryMarkup = summary
+      ? `<div class="pill-row">
+          ${summary.matched_by ? `<span class="pill">${escapeHtml(summary.matched_by)}</span>` : ""}
+          ${summary.confidence ? `<span class="pill">${escapeHtml(summary.confidence)}</span>` : ""}
+        </div>`
+      : "";
+    const actionMarkup = renderHookDiagnosisActions(provider, diagnosis);
+    return `
+      <section class="manager-workspace-summary">
+        <div>
+          <span class="eyebrow">Hook Runtime</span>
+          <strong>${escapeHtml(runtimeSessions.length === 1 ? "Linked runtime session" : `${runtimeSessions.length} linked runtime sessions`)}</strong>
+          <p>Live hook state captured from the provider runtime.</p>
+          ${summaryMarkup}
+          ${actionMarkup}
+        </div>
+        <div class="settings-list agent-environment-paths">
+          ${runtimeSessions.map(renderRuntimeSessionRow).join("")}
+        </div>
+      </section>`;
+  }
+
+  function renderSessionDetailView(detail, view) {
+    const sharedRef = findSharedRef(state.route.provider, state.route.sessionId);
+    const workspace = view.workspace_dir || state.home.workspace || "";
+    const sessionMeta = (state.home?.sessions || []).find(
+      (session) => session.provider_id === state.route.provider && session.session_id === state.route.sessionId
+    );
+    const sizeBytes = sessionMeta?.size_bytes;
+    return `
+      <section class="session-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(view.provider_name || view.provider_id)}</p>
+          <h1>${escapeHtml(view.title || view.session_id || state.route.sessionId)}</h1>
+          <div class="meta-line">
+            <span>id=<code>${escapeHtml(view.session_id || state.route.sessionId)}</code></span>
+            <span>${t("messageCount")}=${view.message_count}</span>
+            ${view.last_active_at ? `<span>${t("lastActiveAt")}=${escapeHtml(formatDate(view.last_active_at))}</span>` : ""}
+            ${sizeBytes != null ? `<span>${t("size")}=${escapeHtml(formatBytes(sizeBytes))}</span>` : ""}
+            ${workspace ? `<span>${t("workspace")}=<code>${escapeHtml(workspace)}</code></span>` : ""}
+            ${sharedRef ? `<a class="shared-badge" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("activeShared")}</a>` : ""}
+          </div>
+        </div>
+        <div class="session-actions">
+          <a class="button" href="/compression" data-nav="/compression">${t("compression")}</a>
+          ${sharedRef ? `<a class="button" href="/shared/${sharedRef}" data-nav="/shared/${sharedRef}">${t("openShared")}</a>` : ""}
+          <button type="button" data-action="open-share-create" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("share")}</button>
+          <button type="button" data-action="open-switch" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-workspace="${escapeAttr(workspace)}" data-title="${escapeAttr(view.title || "")}">${t("switch")}</button>
+          <button type="button" data-action="open-export" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${t("export")}</button>
+          <button type="button" data-action="open-rename" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("rename")}</button>
+          <button type="button" class="danger" data-action="open-delete" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${t("remove")}</button>
+        </div>
+      </section>
+      ${renderSessionHookRuntimeBlock(
+        state.route.provider,
+        detail.hook_runtime_sessions || [],
+        view.hook_runtime_summary,
+        view.hook_diagnosis
+      )}
+      <div class="detail-layout">
+        <section>
+          <div class="msg-list">
+            ${view.events.length ? view.events.map((event, index) => renderDetailEvent(event, index)).join("") : `<div class="empty-state">${t("noMessages")}</div>`}
+          </div>
+          ${
+            detail.has_more_events
+              ? `<div class="section-actions"><button type="button" data-action="load-more-session-events">${t("more")} (${view.events.length}/${view.event_count})</button></div>`
+              : ""
+          }
+        </section>
+      </div>`;
+  }
+
+  function renderSessionDetail() {
+    if (!state.session) return `<div class="empty-state">${t("loading")}</div>`;
+    const detail = state.session;
+    if (!detail.view) return `<div class="empty-state">${t("loading")}</div>`;
+    return renderSessionDetailView(detail, detail.view);
+  }
+
+  function renderSharedRow(group) {
+    const sourceProvider = getOrderedProviders().find((item) => item.id === group.source_provider);
+    const href = `/shared/${encodeURIComponent(group.id)}`;
+    return `
+      <article class="manager-row">
+        <div class="manager-row-head">
+          <div class="manager-row-copy">
+            <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(group.title || group.id)}</a>
+            <div class="manager-meta">
+              <span>${escapeHtml(sourceProvider?.name || group.source_provider || "—")}</span>
+              <span>${t("holdings")}=${group.holdings.length}</span>
+              <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(group.updated_at)))}</span>
+            </div>
+          </div>
+          <div class="row-actions">
+            <a class="button" href="${href}" data-nav="${href}">${t("view")}</a>
+            <button type="button" data-action="run-sync-latest" data-group-id="${escapeAttr(group.id)}">${t("syncLatest")}</button>
+            <button type="button" data-action="open-shared-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
+            <button type="button" class="danger" data-action="open-shared-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
+          </div>
+        </div>
+      </article>`;
+  }
+
+  function renderSharedList() {
+    const groups = state.home.sharedGroups || [];
+    const totalHoldings = groups.reduce((sum, group) => sum + (group.holdings?.length || 0), 0);
+    return `
+      <div class="manager-page-layout">
+        <section class="section-panel manager-control-panel">
+          <div class="manager-control-content">
+            <section class="manager-workspace-summary">
+              <div>
+                <span class="eyebrow">${t("sharedTitle")}</span>
+                <strong>${t("sharedGroups")}</strong>
+                <p>${t("sharedOverview")}</p>
+              </div>
+            </section>
+            <section class="manager-control-bottom">
+              <div class="stack">
+                <div class="manager-summary-grid">
+                  ${renderMetaLine(t("sessionsStat"), String(groups.length))}
+                  ${renderMetaLine(t("holdings"), String(totalHoldings))}
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section class="section-panel manager-result-panel">
+          <div class="section-heading manager-section-head">
+            <div>
+              <strong>${t("sharedGroups")}</strong>
+              <span>${groups.length}</span>
+            </div>
+          </div>
+          <div class="manager-list">
+            ${groups.length ? groups.map(renderSharedRow).join("") : `<div class="empty-state">${t("noSharedGroups")}</div>`}
+          </div>
+        </section>
+      </div>`;
+  }
+
+  function renderHoldingCard(group, holding) {
+    const provider = getOrderedProviders().find((item) => item.id === holding.provider);
+    const sessionHref = `/sessions/${encodeURIComponent(holding.provider)}/${encodeURIComponent(holding.session_id)}`;
+    const hookRuntimeSessions = holding.hook_runtime_sessions || [];
+    const hookRuntimeBadge = renderHookRuntimeBadge(holding.hook_runtime_summary);
+    const hookRuntimeBlock = renderSessionHookRuntimeBlock(
+      holding.provider,
+      hookRuntimeSessions,
+      holding.hook_runtime_summary,
+      holding.hook_diagnosis
+    );
+    return `
+      <article class="binding-card">
+        <header>
+          <div>
+            <strong>${escapeHtml(provider?.name || holding.provider)}</strong>
+            <p class="modal-subtitle">${escapeHtml(holding.session_id)}</p>
+            ${hookRuntimeBadge}
+          </div>
+        </header>
+        <div class="stack">
+          ${renderMetaLine(t("workspace"), holding.target_dir)}
+          ${renderMetaLine(t("lastActiveAt"), formatDate(holding.last_active_at))}
+          ${renderMetaLine(t("lastSync"), formatDate(holding.last_sync_at))}
+          ${renderMetaLine(t("syncFrom"), holding.last_sync_from)}
+          ${renderMetaLine(t("error"), holding.last_error)}
+          ${hookRuntimeBlock}
+        </div>
+        <footer class="row-actions">
+          <a class="button" href="${sessionHref}" data-nav="${sessionHref}">${t("openSession")}</a>
+          <button type="button" data-action="open-sync-from" data-group-id="${escapeAttr(group.id)}" data-holding-id="${escapeAttr(holding.id)}" data-provider="${escapeAttr(
+            provider?.name || holding.provider
+          )}" data-session-id="${escapeAttr(holding.session_id)}">${t("syncFromThis")}</button>
+          <button type="button" class="danger" data-action="open-unbind" data-group-id="${escapeAttr(group.id)}" data-holding-id="${escapeAttr(holding.id)}" data-provider="${escapeAttr(
+            provider?.name || holding.provider
+          )}" data-session-id="${escapeAttr(holding.session_id)}">${t("unbind")}</button>
+        </footer>
+      </article>`;
+  }
+
+  function renderSharedDetail() {
+    if (!state.sharedDetail) return `<div class="empty-state">${t("loading")}</div>`;
+    const group = state.sharedDetail;
+    const sourceProvider = getOrderedProviders().find((item) => item.id === group.source_provider);
+    return `
+      <div class="shared-layout">
+        <section class="section-panel stack">
+          <div class="section-heading">
+            <div>
+              <strong>${t("holdings")}</strong>
+              <small>${group.holdings.length}</small>
+            </div>
+          </div>
+          <div class="shared-grid">
+            ${group.holdings.map((holding) => renderHoldingCard(group, holding)).join("")}
+          </div>
+        </section>
+        <aside class="shared-detail-right">
+          <article class="manager-row">
+            <div class="manager-row-head">
+              <div class="manager-row-copy">
+                <span class="manager-title-link">${escapeHtml(group.title || group.id)}</span>
+                <div class="manager-meta">
+                  <span>${escapeHtml(sourceProvider?.name || group.source_provider || "—")}</span>
+                  <span>${t("holdings")}=${group.holdings.length}</span>
+                  <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(group.updated_at)))}</span>
+                </div>
+              </div>
+            </div>
+          </article>
+          <section class="section-panel stack">
+            <div class="section-heading">
+              <div>
+                <strong>${t("status")}</strong>
+              </div>
+            </div>
+            <div class="stack">
+              ${renderMetaLine(t("provider"), sourceProvider?.name || group.source_provider)}
+              ${renderMetaLine(t("sharedTitle"), group.title)}
+              ${renderMetaLine(t("holdings"), String(group.holdings.length))}
+              ${renderMetaLine(t("createdAt"), formatDate(group.created_at))}
+              ${renderMetaLine(t("updatedAt"), formatDate(group.updated_at))}
+              <div class="row-actions">
+                <button type="button" class="invert" data-action="run-sync-latest" data-group-id="${escapeAttr(group.id)}">${t("startExecution")}</button>
+                <button type="button" data-action="open-shared-bind" data-group-id="${escapeAttr(group.id)}">${t("addHolding")}</button>
+                <button type="button" data-action="open-shared-rename" data-group-id="${escapeAttr(group.id)}" data-title="${escapeAttr(group.title || "")}">${t("rename")}</button>
+                <button type="button" class="danger" data-action="open-shared-remove" data-group-id="${escapeAttr(group.id)}">${t("remove")}</button>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </div>`;
+  }
+
+  function detailEventToText(event) {
+    return (event.blocks || [])
+      .map((block) => {
+        if (block.type === "text") return block.text || "";
+        if (block.type === "thinking") return block.text || "";
+        if (block.type === "tool_result") return block.content || "";
+        if (block.type === "file") return [block.path, block.content].filter(Boolean).join("\n");
+        return JSON.stringify(block.raw ?? block.payload ?? block, null, 2);
+      })
+      .filter(Boolean)
+      .join("\n\n");
+  }
+
+  return {
+    detailEventToText,
+    renderSessionDetail,
+    renderSharedDetail,
+    renderSharedList,
+  };
+}

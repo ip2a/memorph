@@ -71,9 +71,10 @@ fn draw_session_table(frame: &mut Frame, app: &mut App, area: Rect, theme: &Them
     );
     let widths = [
         Constraint::Length(11),
-        Constraint::Percentage(28),
+        Constraint::Percentage(24),
         Constraint::Length(14),
-        Constraint::Percentage(36),
+        Constraint::Percentage(32),
+        Constraint::Length(14),
         Constraint::Length(12),
     ];
 
@@ -82,6 +83,7 @@ fn draw_session_table(frame: &mut Frame, app: &mut App, area: Rect, theme: &Them
         Cell::from("Title"),
         Cell::from("Session"),
         Cell::from("Workspace"),
+        Cell::from("Hook"),
         Cell::from("Active"),
     ])
     .style(
@@ -118,6 +120,7 @@ fn build_table_rows(
             let title = session.title.as_deref().unwrap_or("(untitled)");
             let dir = session.project_dir.as_deref().unwrap_or("(no dir)");
             let time_str = theme::format_relative_time(session.last_active_at, language);
+            let hook_str = session_hook_runtime_label(session);
             let provider = provider_label(&session.provider_id);
             let selected = selected_row == Some(row_index);
             let value_style = if selected {
@@ -148,6 +151,7 @@ fn build_table_rows(
                     theme,
                 ),
                 table_cell(theme::truncate(dir, 56), muted_style, 32, theme),
+                table_cell(theme::truncate(&hook_str, 12), muted_style, 12, theme),
                 table_cell(time_str, muted_style, 10, theme),
             ]));
             row_index += 1;
@@ -170,6 +174,65 @@ fn table_cell(
             Style::default().fg(theme.border).bg(theme.background),
         )),
     ]))
+}
+
+fn session_hook_runtime_label(session: &SessionItem) -> String {
+    let Some(summary) = &session.hook_runtime_summary else {
+        return session
+            .hook_diagnosis
+            .as_ref()
+            .map(session_hook_diagnosis_short_label)
+            .unwrap_or_else(|| "—".to_string());
+    };
+
+    let base = if summary.has_pending_permission {
+        "perm".to_string()
+    } else if summary.has_pending_question {
+        "question".to_string()
+    } else if let Some(tool_name) = summary.current_tool_name.as_deref() {
+        tool_name.to_string()
+    } else {
+        match summary.status {
+            crate::hooks::model::RuntimeSessionStatus::Running => "running".to_string(),
+            crate::hooks::model::RuntimeSessionStatus::WaitingPermission => "wait-perm".to_string(),
+            crate::hooks::model::RuntimeSessionStatus::WaitingUser => "wait-user".to_string(),
+            crate::hooks::model::RuntimeSessionStatus::Completed => "done".to_string(),
+            crate::hooks::model::RuntimeSessionStatus::Failed => "failed".to_string(),
+            crate::hooks::model::RuntimeSessionStatus::Orphaned => "orphaned".to_string(),
+            crate::hooks::model::RuntimeSessionStatus::Idle => "idle".to_string(),
+        }
+    };
+
+    if summary.linked_sessions > 1 {
+        format!("{} {}", summary.linked_sessions, base)
+    } else {
+        base
+    }
+}
+
+fn session_hook_diagnosis_short_label(
+    diagnosis: &crate::hooks::augmentation::SessionHookDiagnosis,
+) -> String {
+    match diagnosis.kind {
+        crate::hooks::augmentation::SessionHookDiagnosisKind::HookNotInstalled => {
+            "no-hook".to_string()
+        }
+        crate::hooks::augmentation::SessionHookDiagnosisKind::HookNeedsAttention => {
+            "repair".to_string()
+        }
+        crate::hooks::augmentation::SessionHookDiagnosisKind::NoEventsYet => {
+            "no-events".to_string()
+        }
+        crate::hooks::augmentation::SessionHookDiagnosisKind::NoActiveRuntime => {
+            "offline".to_string()
+        }
+        crate::hooks::augmentation::SessionHookDiagnosisKind::NoSessionMatch => {
+            "no-match".to_string()
+        }
+        crate::hooks::augmentation::SessionHookDiagnosisKind::WeaklyLinked => "weak".to_string(),
+        crate::hooks::augmentation::SessionHookDiagnosisKind::HookUnsupported => "n/a".to_string(),
+        crate::hooks::augmentation::SessionHookDiagnosisKind::Linked => "linked".to_string(),
+    }
 }
 
 fn draw_chip_row<T: AsRef<str>>(
@@ -231,7 +294,7 @@ fn draw_action_modal(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         .selected_session
         .as_ref()
         .or_else(|| app.get_selected_session());
-    draw_session_summary(frame, selected, chunks[0], theme);
+    draw_session_summary(frame, app, selected, chunks[0], theme);
     draw_action_tabs(frame, app, chunks[1], theme);
 
     if let Some(result) = &app.action_result {
@@ -657,7 +720,7 @@ fn draw_detail_modal(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         .split(inner);
 
     let selected = app.selected_session.as_ref();
-    draw_session_summary(frame, selected, chunks[0], theme);
+    draw_session_summary(frame, app, selected, chunks[0], theme);
     draw_detail_metadata(frame, app, chunks[1], theme);
     draw_detail_messages(frame, app, chunks[2], theme);
 
@@ -800,12 +863,13 @@ fn draw_workspace_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &Theme
 
 fn draw_session_summary(
     frame: &mut Frame,
+    app: &App,
     selected: Option<&SessionItem>,
     area: Rect,
     theme: &Theme,
 ) {
     let text = if let Some(session) = selected {
-        Text::from(vec![
+        let mut lines = vec![
             Line::from(vec![
                 Span::styled(
                     provider_label(&session.provider_id),
@@ -830,7 +894,18 @@ fn draw_session_summary(
                     session.project_dir.as_deref().unwrap_or("(no dir)")
                 )),
             ]),
-        ])
+        ];
+
+        if let Some(detail) = app.loaded_session.as_ref() {
+            if !detail.hook_runtime_sessions.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("Hook Runtime", Style::default().fg(theme.text_dim)),
+                    Span::raw(format!("  {} linked", detail.hook_runtime_sessions.len())),
+                ]));
+            }
+        }
+
+        Text::from(lines)
     } else {
         Text::from(Line::from("No session selected."))
     };
@@ -860,7 +935,7 @@ fn draw_detail_metadata(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
         .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_else(|| "-".to_string());
 
-    let text = Text::from(vec![
+    let mut lines = vec![
         Line::from(vec![
             Span::styled("Created", Style::default().fg(theme.text_dim)),
             Span::raw(format!("  {}", created)),
@@ -875,13 +950,151 @@ fn draw_detail_metadata(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
             Span::styled("Source", Style::default().fg(theme.text_dim)),
             Span::raw(format!("  {}", session.provider_name)),
         ]),
-    ]);
+    ];
+
+    if !session.hook_runtime_sessions.is_empty() {
+        let waiting = session
+            .hook_runtime_sessions
+            .iter()
+            .filter(|runtime| {
+                matches!(
+                    runtime.status,
+                    crate::hooks::model::RuntimeSessionStatus::WaitingPermission
+                        | crate::hooks::model::RuntimeSessionStatus::WaitingUser
+                )
+            })
+            .count();
+        let current = session
+            .hook_runtime_sessions
+            .iter()
+            .find_map(|runtime| runtime.current_tool.as_ref().map(|tool| tool.name.clone()))
+            .or_else(|| {
+                session.hook_runtime_sessions.iter().find_map(|runtime| {
+                    runtime
+                        .pending_question
+                        .as_ref()
+                        .map(|_| "question".to_string())
+                })
+            })
+            .unwrap_or_else(|| "idle".to_string());
+        let pending_permission = session
+            .hook_runtime_sessions
+            .iter()
+            .find_map(|runtime| runtime.pending_permission.as_ref());
+        let pending_question = session
+            .hook_runtime_sessions
+            .iter()
+            .find_map(|runtime| runtime.pending_question.as_ref());
+
+        lines.push(Line::from(vec![
+            Span::styled("Hook Runtime", Style::default().fg(theme.text_dim)),
+            Span::raw(format!("  {} linked", session.hook_runtime_sessions.len())),
+            Span::raw("    "),
+            Span::styled("Waiting", Style::default().fg(theme.text_dim)),
+            Span::raw(format!("  {}", waiting)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Hook State", Style::default().fg(theme.text_dim)),
+            Span::raw(format!("  {}", current)),
+        ]));
+        if let Some(summary) = session.hook_runtime_summary.as_ref() {
+            let matched_by = summary.matched_by.as_deref().unwrap_or("unknown");
+            let confidence = summary
+                .confidence
+                .as_ref()
+                .map(|value| format!("{value:?}").to_ascii_lowercase())
+                .unwrap_or_else(|| "unknown".to_string());
+            lines.push(Line::from(vec![
+                Span::styled("Hook Link", Style::default().fg(theme.text_dim)),
+                Span::raw(format!("  {}", matched_by)),
+                Span::raw("    "),
+                Span::styled("Confidence", Style::default().fg(theme.text_dim)),
+                Span::raw(format!("  {}", confidence)),
+            ]));
+        }
+        if let Some(permission) = pending_permission {
+            let prompt = permission
+                .prompt
+                .as_deref()
+                .or_else(|| permission.tool.as_ref().map(|tool| tool.name.as_str()))
+                .unwrap_or("pending permission");
+            lines.push(Line::from(vec![
+                Span::styled("Permission", Style::default().fg(theme.text_dim)),
+                Span::raw(format!("  {}", theme::truncate(prompt, 48))),
+            ]));
+        }
+        if let Some(question) = pending_question {
+            lines.push(Line::from(vec![
+                Span::styled("Question", Style::default().fg(theme.text_dim)),
+                Span::raw(format!("  {}", theme::truncate(&question.prompt, 48))),
+            ]));
+        }
+    } else if let Some(diagnosis) = session.hook_diagnosis.as_ref() {
+        lines.push(Line::from(vec![
+            Span::styled("Hook Diagnosis", Style::default().fg(theme.text_dim)),
+            Span::raw(format!(
+                "  {}",
+                session_hook_diagnosis_kind_label(&diagnosis.kind)
+            )),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Hook Status", Style::default().fg(theme.text_dim)),
+            Span::raw(format!(
+                "  {}",
+                session_hook_health_status_label(&diagnosis.provider_status)
+            )),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Hook Note", Style::default().fg(theme.text_dim)),
+            Span::raw(format!("  {}", theme::truncate(&diagnosis.message, 64))),
+        ]));
+    }
+
+    let text = Text::from(lines);
 
     let block = Paragraph::new(text)
         .block(section_block("Metadata", false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(block, area);
+}
+
+fn session_hook_diagnosis_kind_label(
+    kind: &crate::hooks::augmentation::SessionHookDiagnosisKind,
+) -> &'static str {
+    match kind {
+        crate::hooks::augmentation::SessionHookDiagnosisKind::Linked => "linked",
+        crate::hooks::augmentation::SessionHookDiagnosisKind::WeaklyLinked => "weakly_linked",
+        crate::hooks::augmentation::SessionHookDiagnosisKind::HookUnsupported => "hook_unsupported",
+        crate::hooks::augmentation::SessionHookDiagnosisKind::HookNotInstalled => {
+            "hook_not_installed"
+        }
+        crate::hooks::augmentation::SessionHookDiagnosisKind::HookNeedsAttention => {
+            "hook_needs_attention"
+        }
+        crate::hooks::augmentation::SessionHookDiagnosisKind::NoEventsYet => "no_events_yet",
+        crate::hooks::augmentation::SessionHookDiagnosisKind::NoActiveRuntime => {
+            "no_active_runtime"
+        }
+        crate::hooks::augmentation::SessionHookDiagnosisKind::NoSessionMatch => "no_session_match",
+    }
+}
+
+fn session_hook_health_status_label(
+    status: &crate::hooks::model::HookHealthStatus,
+) -> &'static str {
+    match status {
+        crate::hooks::model::HookHealthStatus::Unsupported => "unsupported",
+        crate::hooks::model::HookHealthStatus::NotInstalled => "not_installed",
+        crate::hooks::model::HookHealthStatus::InstalledDisabled => "installed_disabled",
+        crate::hooks::model::HookHealthStatus::InstalledOk => "installed_ok",
+        crate::hooks::model::HookHealthStatus::InstalledStaleBinary => "installed_stale_binary",
+        crate::hooks::model::HookHealthStatus::InstalledStaleEndpoint => "installed_stale_endpoint",
+        crate::hooks::model::HookHealthStatus::InstalledBrokenConfig => "installed_broken_config",
+        crate::hooks::model::HookHealthStatus::InstalledConflict => "installed_conflict",
+        crate::hooks::model::HookHealthStatus::Repairable => "repairable",
+        crate::hooks::model::HookHealthStatus::NeedsUserAction => "needs_user_action",
+    }
 }
 
 fn draw_detail_messages(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {

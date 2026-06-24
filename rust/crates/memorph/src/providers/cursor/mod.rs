@@ -1,11 +1,13 @@
+pub mod adapter;
 mod db;
+pub mod hook;
 mod load;
 mod scan;
 mod write;
 
 use crate::canonical::{CanonicalSession, ExportedSession, ImportedSession};
 use crate::provider::{
-    canonical_export_result, Provider, ProviderCapabilities, ProviderSessionSummary,
+    Provider, ProviderCapabilities, ProviderSessionSummary, canonical_export_result,
 };
 use anyhow::Result;
 use std::collections::HashMap;

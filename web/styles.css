@@ -64,6 +64,12 @@ button,
   transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
 }
 
+.button-small {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
 button:hover,
 .button:hover {
   background: var(--mist);
@@ -297,6 +303,7 @@ button[disabled] {
 }
 
 .home-hero {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 7fr) minmax(220px, 3fr);
   gap: 14px;
@@ -309,6 +316,56 @@ button[disabled] {
 }
 
 .home-hero > * {
+  min-width: 0;
+}
+
+.home-hero-toggle {
+  justify-self: end;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.home-hero > .home-hero-toggle {
+  position: absolute;
+  top: 10px;
+  right: 0;
+  z-index: 1;
+}
+
+.home-hero-collapsed {
+  display: block;
+  padding: 8px 0;
+}
+
+.home-hero-compact {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+}
+
+.home-hero-compact-main {
+  display: grid;
+  grid-template-columns: auto minmax(80px, auto) minmax(120px, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.home-hero-compact-main strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-hero-compact .meta-line {
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.home-hero-compact .workspace-path {
   min-width: 0;
 }
 
@@ -1309,6 +1366,25 @@ button[disabled] {
   padding: 4px 9px;
   border: 1px solid var(--line);
   border-radius: 999px;
+}
+
+.hook-provider-main {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  min-width: 280px;
+}
+
+.hook-provider-main .pill-row {
+  justify-content: flex-end;
+}
+
+.hook-provider-row.is-active {
+  background: var(--panel-soft);
+}
+
+.hook-provider-detail-block {
+  margin-top: 16px;
 }
 
 .workspace-list,
@@ -2427,6 +2503,21 @@ button[disabled] {
     justify-content: start;
   }
 
+  .home-hero-compact {
+    grid-template-columns: 1fr auto;
+  }
+
+  .home-hero-compact-main {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .home-hero-compact .meta-line {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
   .workspace-combo,
   .path-picker,
   .session-row-main,
@@ -2453,6 +2544,15 @@ button[disabled] {
   .settings-row {
     grid-template-columns: 1fr;
     align-items: start;
+  }
+
+  .hook-provider-main {
+    justify-items: start;
+    min-width: 0;
+  }
+
+  .hook-provider-main .pill-row {
+    justify-content: flex-start;
   }
 
   .settings-agent-list {

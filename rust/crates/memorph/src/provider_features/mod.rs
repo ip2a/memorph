@@ -81,7 +81,7 @@ impl From<ProviderFeatureContext> for crate::provider_settings::ProviderSettingC
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ProviderFeatureOutput {
     CodexWorkspaceRepair(crate::providers::codex::CodexWorkspaceRepairReport),
-    HookOperation(crate::hooks::installer::HookOperationReport),
+    HookOperation(crate::hooks::model::HookOperationReport),
 }
 
 impl From<crate::provider_settings::ProviderSettingOutput> for ProviderFeatureOutput {

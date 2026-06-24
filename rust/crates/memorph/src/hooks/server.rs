@@ -74,6 +74,41 @@ struct HookServerStatus {
     started_at: Option<chrono::DateTime<Utc>>,
 }
 
+#[derive(Debug, Serialize)]
+struct HookOverviewPayload {
+    generated_at: chrono::DateTime<Utc>,
+    summary: HookOverviewSummary,
+    server: HookServerStatus,
+    providers: Vec<crate::agent_management::AgentManagementEntry>,
+    runtime_sessions: Vec<RuntimeSession>,
+    recent_errors: Vec<store::HookErrorRecord>,
+    recent_events: Vec<HookEvent>,
+}
+
+#[derive(Debug, Serialize)]
+struct HookOverviewSummary {
+    providers: usize,
+    supported_providers: usize,
+    installed_ok: usize,
+    not_installed: usize,
+    needs_attention: usize,
+    active_runtime_sessions: usize,
+    linked_sessions: usize,
+    weakly_linked_sessions: usize,
+    no_session_match: usize,
+    observed_blocking_requests: usize,
+    recent_errors: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct HookProviderOverviewPayload {
+    generated_at: chrono::DateTime<Utc>,
+    provider: crate::agent_management::AgentManagementEntry,
+    runtime_sessions: Vec<RuntimeSession>,
+    recent_events: Vec<HookEvent>,
+    recent_errors: Vec<store::HookErrorRecord>,
+}
+
 #[derive(Debug, Deserialize)]
 struct EventsQuery {
     limit: Option<usize>,
@@ -106,8 +141,21 @@ struct CleanupQuery {
     resolved_pending_after_seconds: Option<i64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SessionDiagnosisQuery {
+    provider: Option<String>,
+    hook_filter: Option<crate::core::SessionHookFilter>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
 pub fn router() -> Router {
     Router::new()
+        .route("/api/v1/hooks/overview", get(get_overview))
+        .route(
+            "/api/v1/hooks/session-diagnosis",
+            get(list_session_diagnosis),
+        )
         .route("/api/v1/hooks/status", get(get_status))
         .route("/api/v1/hooks/ingest", post(ingest_event))
         .route("/api/v1/hooks/events", get(list_events))
@@ -127,9 +175,218 @@ pub fn router() -> Router {
         .route("/api/v1/hooks/cleanup", post(cleanup_runtime_sessions))
         .route("/api/v1/hooks/policy", get(get_policy).put(update_policy))
         .route(
+            "/api/v1/hooks/providers/{provider}/overview",
+            get(provider_overview),
+        )
+        .route(
+            "/api/v1/hooks/providers/{provider}/operations/{operation}",
+            post(run_provider_hook_operation),
+        )
+        .route(
             "/api/v1/hooks/providers/{provider}/status",
             get(provider_status),
         )
+}
+
+async fn list_session_diagnosis(Query(query): Query<SessionDiagnosisQuery>) -> impl IntoResponse {
+    let providers: Vec<String> = query
+        .provider
+        .map(|providers| {
+            providers
+                .split(',')
+                .map(str::trim)
+                .filter(|provider| !provider.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let hook_filter = query
+        .hook_filter
+        .unwrap_or(crate::core::SessionHookFilter::Attention);
+    let params = crate::core::SessionListParams {
+        all: true,
+        providers,
+        cwd: None,
+        include_message_counts: false,
+        limit: Some(query.limit.unwrap_or(8).clamp(1, 100)),
+        offset: query.offset,
+        sort: crate::core::SessionListSort::HookAttention,
+        hook_filter,
+    };
+
+    match crate::core::list_sessions(&params) {
+        Ok(groups) => HookApiResponse::success(groups).into_response(),
+        Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn get_overview() -> impl IntoResponse {
+    match build_overview() {
+        Ok(payload) => HookApiResponse::success(payload).into_response(),
+        Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn provider_overview(Path(provider): Path<String>) -> impl IntoResponse {
+    match build_provider_overview(&provider) {
+        Ok(payload) => HookApiResponse::success(payload).into_response(),
+        Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn run_provider_hook_operation(
+    Path((provider, operation)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match run_hook_operation(&provider, &operation) {
+        Ok(report) => HookApiResponse::success(report).into_response(),
+        Err(error) => hook_error(StatusCode::BAD_REQUEST, error).into_response(),
+    }
+}
+
+fn run_hook_operation(
+    provider: &str,
+    operation: &str,
+) -> Result<crate::hooks::model::HookOperationReport> {
+    let operation = normalize_hook_operation(operation)?;
+    if !crate::hooks::capabilities::supports_setting(provider, operation.setting_id()) {
+        anyhow::bail!(
+            "Hook operation is not supported for provider: {}.{}",
+            provider,
+            operation.setting_id()
+        );
+    }
+    crate::hooks::operations::run_operation(provider, operation)
+}
+
+fn normalize_hook_operation(
+    operation: &str,
+) -> Result<crate::hooks::strategies::HookConfigOperation> {
+    crate::hooks::strategies::HookConfigOperation::from_setting_id(operation.trim())
+        .ok_or_else(|| anyhow::anyhow!("Unknown hook operation: {operation}"))
+}
+
+fn build_provider_overview(provider: &str) -> Result<HookProviderOverviewPayload> {
+    let provider_entry = crate::agent_management::get_agent_management_entry(provider)
+        .with_context(|| format!("Failed to collect hook overview for provider: {provider}"))?;
+    let runtime_sessions: Vec<RuntimeSession> = runtime_sessions_snapshot()
+        .into_iter()
+        .filter(|session| session.provider == provider)
+        .collect();
+    let recent_events: Vec<HookEvent> = store::load_recent_events(100)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|event| event.provider == provider)
+        .take(20)
+        .collect();
+    let recent_errors: Vec<store::HookErrorRecord> = store::load_recent_errors(100)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|error| hook_error_mentions_provider(error, provider))
+        .take(20)
+        .collect();
+
+    Ok(HookProviderOverviewPayload {
+        generated_at: Utc::now(),
+        provider: provider_entry,
+        runtime_sessions,
+        recent_events,
+        recent_errors,
+    })
+}
+
+fn hook_error_mentions_provider(error: &store::HookErrorRecord, provider: &str) -> bool {
+    error.scope.contains(provider) || error.message.contains(provider)
+}
+
+fn build_overview() -> Result<HookOverviewPayload> {
+    let providers = crate::agent_management::list_agent_management_entries()
+        .context("Failed to collect hook provider management entries")?;
+    let runtime_sessions = runtime_sessions_snapshot();
+    let pending_store = store::load_pending_requests().unwrap_or_default();
+    let recent_errors = store::load_recent_errors(10).unwrap_or_default();
+    let recent_events = store::load_recent_events(20).unwrap_or_default();
+
+    let supported_providers = providers
+        .iter()
+        .filter(|provider| provider.hook_profile.is_some())
+        .count();
+    let installed_ok = providers
+        .iter()
+        .filter(|provider| {
+            provider.hook.status == crate::hooks::model::HookHealthStatus::InstalledOk
+        })
+        .count();
+    let not_installed = providers
+        .iter()
+        .filter(|provider| {
+            provider.hook.status == crate::hooks::model::HookHealthStatus::NotInstalled
+        })
+        .count();
+    let needs_attention = providers
+        .iter()
+        .filter(|provider| hook_status_needs_attention(&provider.hook.status))
+        .count();
+    let active_runtime_sessions = runtime_sessions
+        .iter()
+        .filter(|session| {
+            !matches!(
+                session.status,
+                RuntimeSessionStatus::Completed | RuntimeSessionStatus::Failed
+            )
+        })
+        .count();
+    let linked_sessions = providers
+        .iter()
+        .map(|provider| provider.hook_diagnosis.linked)
+        .sum();
+    let weakly_linked_sessions = providers
+        .iter()
+        .map(|provider| provider.hook_diagnosis.weakly_linked)
+        .sum();
+    let no_session_match = providers
+        .iter()
+        .map(|provider| provider.hook_diagnosis.no_session_match)
+        .sum();
+    let observed_blocking_requests = pending_store
+        .requests
+        .iter()
+        .filter(|request| request.blocking)
+        .count();
+
+    Ok(HookOverviewPayload {
+        generated_at: Utc::now(),
+        summary: HookOverviewSummary {
+            providers: providers.len(),
+            supported_providers,
+            installed_ok,
+            not_installed,
+            needs_attention,
+            active_runtime_sessions,
+            linked_sessions,
+            weakly_linked_sessions,
+            no_session_match,
+            observed_blocking_requests,
+            recent_errors: recent_errors.len(),
+        },
+        server: current_hook_server_status(),
+        providers,
+        runtime_sessions,
+        recent_errors,
+        recent_events,
+    })
+}
+
+fn hook_status_needs_attention(status: &crate::hooks::model::HookHealthStatus) -> bool {
+    matches!(
+        status,
+        crate::hooks::model::HookHealthStatus::InstalledDisabled
+            | crate::hooks::model::HookHealthStatus::InstalledStaleBinary
+            | crate::hooks::model::HookHealthStatus::InstalledStaleEndpoint
+            | crate::hooks::model::HookHealthStatus::InstalledBrokenConfig
+            | crate::hooks::model::HookHealthStatus::InstalledConflict
+            | crate::hooks::model::HookHealthStatus::Repairable
+            | crate::hooks::model::HookHealthStatus::NeedsUserAction
+    )
 }
 
 pub fn publish_runtime_endpoint(endpoint: &str) -> Result<HookRuntimeEndpoint> {
@@ -154,11 +411,129 @@ pub fn current_runtime_endpoint() -> Option<HookRuntimeEndpoint> {
     runtime_endpoint_cell().read().unwrap().clone()
 }
 
+pub fn linked_runtime_sessions(
+    provider: &str,
+    session_id: &str,
+    workspace_dir: Option<&str>,
+) -> Vec<RuntimeSession> {
+    let snapshot = runtime_sessions_snapshot();
+    linked_runtime_sessions_from_snapshot(&snapshot, provider, session_id, workspace_dir)
+}
+
+pub fn runtime_sessions_snapshot() -> Vec<RuntimeSession> {
+    let _ = cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
+    let state = runtime_state().read().unwrap();
+    state.sessions.values().cloned().collect()
+}
+
+pub fn linked_runtime_sessions_from_snapshot(
+    snapshot: &[RuntimeSession],
+    provider: &str,
+    session_id: &str,
+    workspace_dir: Option<&str>,
+) -> Vec<RuntimeSession> {
+    let mut sessions: Vec<RuntimeSession> = snapshot
+        .iter()
+        .filter(|session| {
+            runtime_session_matches_session(session, provider, session_id, workspace_dir)
+        })
+        .cloned()
+        .collect();
+    sessions.sort_by(|left, right| right.last_event_at.cmp(&left.last_event_at));
+    sessions
+}
+
 fn current_or_new_token() -> String {
     current_runtime_endpoint()
         .map(|endpoint| endpoint.token)
         .filter(|token| !token.trim().is_empty())
         .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
+#[cfg(test)]
+fn linked_runtime_sessions_from_state(
+    state: &RuntimeState,
+    provider: &str,
+    session_id: &str,
+    workspace_dir: Option<&str>,
+) -> Vec<RuntimeSession> {
+    let mut sessions: Vec<RuntimeSession> = state
+        .sessions
+        .values()
+        .filter(|session| {
+            runtime_session_matches_session(session, provider, session_id, workspace_dir)
+        })
+        .cloned()
+        .collect();
+    sessions.sort_by(|left, right| right.last_event_at.cmp(&left.last_event_at));
+    sessions
+}
+
+fn runtime_session_matches_session(
+    session: &RuntimeSession,
+    provider: &str,
+    session_id: &str,
+    workspace_dir: Option<&str>,
+) -> bool {
+    if session.provider != provider {
+        return false;
+    }
+
+    if runtime_session_matches_provider_session_id(session, provider, session_id) {
+        return true;
+    }
+
+    if session
+        .correlation
+        .as_ref()
+        .map(|correlation| correlation.session_id == session_id)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    runtime_session_matches_workspace(session, provider, workspace_dir)
+}
+
+fn runtime_session_matches_provider_session_id(
+    session: &RuntimeSession,
+    provider: &str,
+    session_id: &str,
+) -> bool {
+    let Some(provider_session_id) = session
+        .provider_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+
+    provider_session_id == session_id
+        || provider_session_id == format!("{provider}-{session_id}")
+        || provider_session_id.ends_with(&format!("-{session_id}"))
+}
+
+fn runtime_session_matches_workspace(
+    session: &RuntimeSession,
+    provider: &str,
+    workspace_dir: Option<&str>,
+) -> bool {
+    let Some(workspace_dir) = workspace_dir.filter(|value| !value.trim().is_empty()) else {
+        return false;
+    };
+
+    let session_workspace = session
+        .correlation
+        .as_ref()
+        .and_then(|correlation| correlation.project_dir.as_deref())
+        .or_else(|| session.cwd.as_deref().and_then(|cwd| cwd.to_str()));
+
+    crate::core::session_management::workspace_matches(
+        provider,
+        session_workspace,
+        Some(workspace_dir),
+    )
 }
 
 fn runtime_state() -> &'static RwLock<RuntimeState> {
@@ -199,14 +574,8 @@ async fn get_status() -> impl IntoResponse {
     let _ = cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
     let state = runtime_state().read().unwrap();
     let pending = pending_state().read().unwrap();
-    let endpoint = current_runtime_endpoint();
     HookApiResponse::success(HookStatusPayload {
-        server: HookServerStatus {
-            running: endpoint.is_some(),
-            endpoint: endpoint.as_ref().map(|value| value.endpoint.clone()),
-            pid: endpoint.as_ref().map(|value| value.pid),
-            started_at: endpoint.as_ref().map(|value| value.started_at),
-        },
+        server: current_hook_server_status(),
         runtime_sessions: state.sessions.len(),
         active_sessions: state.active_sessions().len(),
         pending_requests: pending
@@ -214,9 +583,19 @@ async fn get_status() -> impl IntoResponse {
             .iter()
             .filter(|request| request.status == PendingHookRequestStatus::Pending)
             .count(),
-        providers: crate::hooks::profiles::all().to_vec(),
+        providers: crate::hooks::registry::profiles(),
     })
     .into_response()
+}
+
+fn current_hook_server_status() -> HookServerStatus {
+    let endpoint = current_runtime_endpoint();
+    HookServerStatus {
+        running: endpoint.is_some(),
+        endpoint: endpoint.as_ref().map(|value| value.endpoint.clone()),
+        pid: endpoint.as_ref().map(|value| value.pid),
+        started_at: endpoint.as_ref().map(|value| value.started_at),
+    }
 }
 
 async fn ingest_event(
@@ -321,11 +700,8 @@ async fn list_events(Query(query): Query<EventsQuery>) -> impl IntoResponse {
 }
 
 async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> impl IntoResponse {
-    let _ = cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
-    let state = runtime_state().read().unwrap();
-    let sessions: Vec<RuntimeSession> = state
-        .sessions
-        .values()
+    let sessions: Vec<RuntimeSession> = runtime_sessions_snapshot()
+        .into_iter()
         .filter(|session| {
             query
                 .provider
@@ -340,7 +716,6 @@ async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> imp
                 .map(|session_id| session.provider_session_id.as_deref() == Some(session_id))
                 .unwrap_or(true)
         })
-        .cloned()
         .collect();
     HookApiResponse::success(sessions).into_response()
 }
@@ -443,7 +818,7 @@ async fn resolve_pending_request(
 }
 
 async fn provider_status(Path(provider): Path<String>) -> impl IntoResponse {
-    match crate::hooks::health::status(&provider) {
+    match crate::hooks::operations::status(&provider) {
         Ok(status) => HookApiResponse::success(status).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -831,9 +1206,12 @@ pub(crate) fn set_runtime_endpoint_for_tests(endpoint: HookRuntimeEndpoint) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hooks::model::RuntimeSessionCorrelation;
     use axum::{body::to_bytes, body::Body, http::Request};
     use chrono::Utc;
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
     use std::sync::{Mutex, OnceLock};
     use tower::util::ServiceExt;
 
@@ -849,6 +1227,108 @@ mod tests {
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         (status, value)
+    }
+
+    fn runtime_session(
+        runtime_id: &str,
+        provider: &str,
+        provider_session_id: Option<&str>,
+    ) -> RuntimeSession {
+        RuntimeSession {
+            runtime_id: RuntimeSessionId::new(runtime_id),
+            provider: provider.to_string(),
+            provider_session_id: provider_session_id.map(str::to_string),
+            run_id: None,
+            cwd: None,
+            pid: None,
+            parent_pid: None,
+            pid_start_time: None,
+            tty: None,
+            terminal_vars: BTreeMap::new(),
+            process_ancestry: Vec::new(),
+            correlation: None,
+            model: None,
+            session_title: None,
+            transcript_path: None,
+            workspace_roots: Vec::new(),
+            last_user_prompt: None,
+            last_assistant_message: None,
+            last_tool_result: None,
+            last_error: None,
+            stop_reason: None,
+            compact_count: 0,
+            tool_call_count: 0,
+            failed_tool_count: 0,
+            permission_request_count: 0,
+            question_count: 0,
+            status: RuntimeSessionStatus::Running,
+            current_tool: None,
+            pending_permission: None,
+            pending_question: None,
+            recent_activity: Vec::new(),
+            subagents: BTreeMap::new(),
+            last_event_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn linked_runtime_sessions_match_provider_session_id() {
+        let mut state = RuntimeState::default();
+        state.sessions.insert(
+            RuntimeSessionId::new("sample:session:s1"),
+            runtime_session("sample:session:s1", "sample", Some("s1")),
+        );
+
+        let sessions = linked_runtime_sessions_from_state(&state, "sample", "s1", None);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].provider_session_id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn linked_runtime_sessions_match_correlation_session_id() {
+        let mut state = RuntimeState::default();
+        let mut session = runtime_session("sample:fp:abc", "sample", None);
+        session.correlation = Some(RuntimeSessionCorrelation {
+            provider: "sample".to_string(),
+            session_id: "session-from-correlation".to_string(),
+            title: None,
+            project_dir: None,
+            source_path: None,
+            matched_by: Some("workspace".to_string()),
+        });
+        state.sessions.insert(session.runtime_id.clone(), session);
+
+        let sessions =
+            linked_runtime_sessions_from_state(&state, "sample", "session-from-correlation", None);
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0]
+                .correlation
+                .as_ref()
+                .map(|value| value.session_id.as_str()),
+            Some("session-from-correlation")
+        );
+    }
+
+    #[test]
+    fn linked_runtime_sessions_fall_back_to_workspace_match() {
+        let mut state = RuntimeState::default();
+        let mut session = runtime_session("sample:fp:workspace", "sample", None);
+        session.cwd = Some(PathBuf::from("/tmp/project"));
+        state.sessions.insert(session.runtime_id.clone(), session);
+
+        let sessions = linked_runtime_sessions_from_state(
+            &state,
+            "sample",
+            "missing-session-id",
+            Some("/tmp/project"),
+        );
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(
+            sessions[0].cwd.as_deref().and_then(|path| path.to_str()),
+            Some("/tmp/project")
+        );
     }
 
     #[tokio::test]
@@ -869,12 +1349,148 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         let providers = value["data"]["providers"].as_array().unwrap();
-        let qoder = providers
+        let descriptor = crate::hooks::registry::all()
+            .first()
+            .copied()
+            .expect("at least one hook provider");
+        let provider = providers
             .iter()
-            .find(|provider| provider["provider"] == "qoder")
-            .expect("missing qoder hook profile");
-        assert_eq!(qoder["format"], "qoder_claude_json");
-        assert!(qoder["events"].as_array().unwrap().len() > 0);
+            .find(|provider| provider["provider"] == descriptor.provider())
+            .unwrap_or_else(|| panic!("missing hook profile for {}", descriptor.provider()));
+        assert!(provider["events"].as_array().unwrap().len() > 0);
+    }
+
+    #[tokio::test]
+    async fn overview_route_exposes_hook_center_payload() {
+        let _guard = test_guard();
+        let dir = tempfile::tempdir().unwrap();
+        store::set_test_store_root(dir.path().to_path_buf());
+        reset_for_tests();
+
+        let (status, value) = read_json(
+            router(),
+            Request::builder()
+                .uri("/api/v1/hooks/overview")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let data = &value["data"];
+        assert!(data["summary"]["providers"].as_u64().unwrap() > 0);
+        assert!(data["providers"].as_array().unwrap().len() > 0);
+        assert!(data["runtime_sessions"].as_array().is_some());
+        assert_eq!(data["server"]["running"], false);
+    }
+
+    #[tokio::test]
+    async fn provider_overview_route_exposes_provider_hook_detail() {
+        let _guard = test_guard();
+        let dir = tempfile::tempdir().unwrap();
+        store::set_test_store_root(dir.path().to_path_buf());
+        reset_for_tests();
+        let provider = crate::hooks::registry::all()
+            .first()
+            .copied()
+            .expect("at least one hook provider")
+            .provider();
+
+        let (status, value) = read_json(
+            router(),
+            Request::builder()
+                .uri(format!("/api/v1/hooks/providers/{provider}/overview"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let data = &value["data"];
+        assert_eq!(data["provider"]["provider_id"], provider);
+        assert!(data["runtime_sessions"].as_array().is_some());
+        assert!(data["recent_events"].as_array().is_some());
+        assert!(data["recent_errors"].as_array().is_some());
+    }
+
+    #[test]
+    fn hook_operation_normalizes_setting_and_short_names() {
+        use crate::hooks::strategies::HookConfigOperation;
+
+        assert_eq!(
+            normalize_hook_operation("install").unwrap(),
+            HookConfigOperation::Install
+        );
+        assert_eq!(
+            normalize_hook_operation("verify_hook").unwrap(),
+            HookConfigOperation::Verify
+        );
+        assert_eq!(
+            normalize_hook_operation("repair").unwrap(),
+            HookConfigOperation::Repair
+        );
+        assert!(normalize_hook_operation("approve").is_err());
+    }
+
+    #[tokio::test]
+    async fn hook_operation_route_rejects_unknown_operation() {
+        let _guard = test_guard();
+        let dir = tempfile::tempdir().unwrap();
+        store::set_test_store_root(dir.path().to_path_buf());
+        reset_for_tests();
+
+        let (status, value) = read_json(
+            router(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/hooks/providers/claude/operations/approve")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(value["ok"], false);
+    }
+
+    #[tokio::test]
+    async fn session_diagnosis_route_exposes_session_groups() {
+        let _guard = test_guard();
+        let dir = tempfile::tempdir().unwrap();
+        store::set_test_store_root(dir.path().to_path_buf());
+        reset_for_tests();
+
+        let (status, value) = read_json(
+            router(),
+            Request::builder()
+                .uri("/api/v1/hooks/session-diagnosis?hook_filter=attention&limit=2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(value["data"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn session_diagnosis_route_accepts_non_default_hook_filter() {
+        let _guard = test_guard();
+        let dir = tempfile::tempdir().unwrap();
+        store::set_test_store_root(dir.path().to_path_buf());
+        reset_for_tests();
+
+        let (status, value) = read_json(
+            router(),
+            Request::builder()
+                .uri("/api/v1/hooks/session-diagnosis?hook_filter=weak&limit=2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(value["data"].as_array().is_some());
     }
 
     #[tokio::test]
@@ -1053,10 +1669,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
         reset_for_tests();
+        let provider = crate::hooks::registry::all()
+            .first()
+            .copied()
+            .expect("at least one hook provider")
+            .provider();
 
         let request = crate::hooks::doctor::HookDoctorRequest {
             repair: false,
-            providers: vec!["claude".to_string(), "missing".to_string()],
+            providers: vec![provider.to_string(), "missing".to_string()],
         };
         let (status, value) = read_json(
             router(),
@@ -1070,7 +1691,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value["data"]["checked"], 1);
-        assert_eq!(value["data"]["results"][0]["provider"], "claude");
+        assert_eq!(value["data"]["results"][0]["provider"], provider);
     }
 
     #[tokio::test]

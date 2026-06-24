@@ -151,8 +151,8 @@ mod tests {
 
     #[test]
     fn request_constructor_sets_required_fields() {
-        let request = HookIngestRequest::new("claude", "pre_tool_use", json!({"tool": "Bash"}));
-        assert_eq!(request.provider, "claude");
+        let request = HookIngestRequest::new("sample", "pre_tool_use", json!({"tool": "Bash"}));
+        assert_eq!(request.provider, "sample");
         assert_eq!(request.event_name, "pre_tool_use");
         assert!(!request.blocking);
         assert!(!request.request_id.is_empty());

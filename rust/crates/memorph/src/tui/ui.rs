@@ -448,7 +448,56 @@ fn draw_agents_modal(frame: &mut Frame, app: &App, theme: &Theme) {
                 app.t("agentExecutablePath"),
                 entry.environment.executable_path.as_deref().unwrap_or("—")
             )),
+            Line::from(format!(
+                "Hook status: {}",
+                serde_json::to_string(&entry.hook.status)
+                    .unwrap_or_else(|_| "\"unknown\"".to_string())
+                    .trim_matches('"')
+            )),
+            Line::from(format!(
+                "Hook version: {} / {}",
+                entry.hook.installed_version.as_deref().unwrap_or("—"),
+                entry.hook.current_version.as_deref().unwrap_or("—")
+            )),
+            Line::from(format!(
+                "Hook diagnosis: sessions={} linked={} weak={} attention={}",
+                entry.hook_diagnosis.total_sessions,
+                entry.hook_diagnosis.linked,
+                entry.hook_diagnosis.weakly_linked,
+                entry.hook_diagnosis.hook_needs_attention
+                    + entry.hook_diagnosis.no_session_match
+                    + entry.hook_diagnosis.no_active_runtime
+                    + entry.hook_diagnosis.no_events_yet
+                    + entry.hook_diagnosis.hook_not_installed
+            )),
+            Line::from(format!(
+                "Hook runtime: active={} no-match={}",
+                entry.hook_diagnosis.active_runtime_sessions, entry.hook_diagnosis.no_session_match
+            )),
         ];
+        if let Some(message) = entry
+            .hook
+            .message
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(Line::from(format!(
+                "Hook note: {}",
+                theme::truncate(message, 64)
+            )));
+        }
+        if !entry.hook_diagnosis.recommended_actions.is_empty() {
+            lines.push(Line::from(format!(
+                "Hook actions: {}",
+                entry
+                    .hook_diagnosis
+                    .recommended_actions
+                    .iter()
+                    .map(|action| action.setting_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
         if entry.provider_id == "opencode" {
             lines.push(Line::from(format!(
                 "{}: {}",

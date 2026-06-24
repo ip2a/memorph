@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn default_policy_records_blocking_events_only() {
-        let event = HookEvent::new("claude", HookEventType::PermissionRequested, Value::Null);
+        let event = HookEvent::new("sample", HookEventType::PermissionRequested, Value::Null);
         let eval = evaluate(&HookPolicy::default(), &event, true);
         assert_eq!(eval.decision, HookDecision::RecordOnly);
         assert_eq!(eval.source, HookPolicySource::GlobalDefault);
@@ -207,16 +207,16 @@ mod tests {
     fn tool_rule_overrides_provider_and_global() {
         let mut policy = HookPolicy {
             global: HookPolicyMode::RecordOnly,
-            providers: BTreeMap::from([("claude".to_string(), HookPolicyMode::Allow)]),
+            providers: BTreeMap::from([("sample".to_string(), HookPolicyMode::Allow)]),
             ..HookPolicy::default()
         };
         policy.tool_rules.push(HookToolPolicyRule {
-            provider: Some("claude".to_string()),
+            provider: Some("sample".to_string()),
             tool_name: Some("Bash".to_string()),
             event_type: Some(HookEventType::PermissionRequested),
             mode: HookPolicyMode::Deny,
         });
-        let mut event = HookEvent::new("claude", HookEventType::PermissionRequested, Value::Null);
+        let mut event = HookEvent::new("sample", HookEventType::PermissionRequested, Value::Null);
         event.tool = Some(HookToolCall {
             id: None,
             name: "bash".to_string(),

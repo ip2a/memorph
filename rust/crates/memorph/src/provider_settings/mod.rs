@@ -4,6 +4,7 @@ mod cline;
 mod codebuddy;
 mod codex;
 mod codybuddycn;
+mod common_hooks;
 mod copilot;
 mod cursor;
 mod droid;
@@ -16,6 +17,7 @@ mod opencode;
 mod pi;
 mod qoder;
 mod qwen;
+mod registry;
 mod stepfun;
 mod trae;
 mod trae_gui;
@@ -35,7 +37,7 @@ pub struct ProviderSettingContext {
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum ProviderSettingOutput {
     CodexWorkspaceRepair(crate::providers::codex::CodexWorkspaceRepairReport),
-    HookOperation(crate::hooks::installer::HookOperationReport),
+    HookOperation(crate::hooks::model::HookOperationReport),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -91,48 +93,14 @@ trait ProviderSettingModule: Send + Sync {
     }
 }
 
-struct ProviderSettingRegistry;
-
-impl ProviderSettingRegistry {
-    fn find(provider_id: &str) -> Option<&'static dyn ProviderSettingModule> {
-        match provider_id {
-            "claude" => Some(&claude::ClaudeSettingModule),
-            "cline" => Some(&cline::ClineSettingModule),
-            "codex" => Some(&codex::CodexSettingModule),
-            "copilot" => Some(&copilot::CopilotSettingModule),
-            "cursor" => Some(&cursor::CursorSettingModule),
-            "gemini" => Some(&gemini::GeminiSettingModule),
-            "kimi" => Some(&kimi::KimiSettingModule),
-            "kiro" => Some(&kiro::KiroSettingModule),
-            "opencode" => Some(&opencode::OpenCodeSettingModule),
-            "pi" => Some(&pi::PiSettingModule),
-            "omp" => Some(&omp::OmpSettingModule),
-            "qwen" => Some(&qwen::QwenSettingModule),
-            "qoder" => Some(&qoder::QoderSettingModule),
-            "droid" | "factory" => Some(&droid::DroidSettingModule),
-            "codebuddy" => Some(&codebuddy::CodeBuddySettingModule),
-            "codybuddycn" => Some(&codybuddycn::CodyBuddyCnSettingModule),
-            "stepfun" => Some(&stepfun::StepFunSettingModule),
-            "antigravity" => Some(&antigravity::AntiGravitySettingModule),
-            "workbuddy" => Some(&workbuddy::WorkBuddySettingModule),
-            "hermes" => Some(&hermes::HermesSettingModule),
-            "trae_gui" => Some(&trae_gui::TraeGuiSettingModule),
-            "traecn" => Some(&traecn::TraeCnSettingModule),
-            "trae" => Some(&trae::TraeSettingModule),
-            _ => None,
-        }
-    }
-}
-
 pub fn list_provider_settings(provider_id: &str) -> Result<Vec<ProviderSettingItem>> {
     ensure_known_provider(provider_id)?;
     let prefs = crate::config::web_preferences()?;
-    let Some(module) = ProviderSettingRegistry::find(provider_id) else {
+    let Some(module) = registry::find_provider_setting_module(provider_id) else {
         return Ok(Vec::new());
     };
 
-    Ok(module
-        .settings()
+    Ok(provider_setting_definitions(module, provider_id)
         .into_iter()
         .map(|setting| ProviderSettingItem {
             id: setting.id.to_string(),
@@ -215,20 +183,46 @@ pub fn run_provider_setting(
         );
     }
 
-    let module = ProviderSettingRegistry::find(provider_id)
+    if common_hooks::is_common_hook_setting(setting_id) {
+        return common_hooks::run(provider_id, setting_id);
+    }
+
+    let module = registry::find_provider_setting_module(provider_id)
         .with_context(|| format!("Provider has no registered settings: {}", provider_id))?;
     module.run(setting_id, context)
 }
 
 fn setting(provider_id: &str, setting_id: &str) -> Result<&'static SettingDefinition> {
     ensure_known_provider(provider_id)?;
-    let module = ProviderSettingRegistry::find(provider_id)
+    let module = registry::find_provider_setting_module(provider_id)
         .with_context(|| format!("Provider has no registered settings: {}", provider_id))?;
-    module
-        .settings()
-        .iter()
+    provider_setting_definitions(module, provider_id)
+        .into_iter()
         .find(|setting| setting.id == setting_id)
         .with_context(|| format!("Unknown provider setting: {}.{}", provider_id, setting_id))
+}
+
+fn provider_setting_definitions(
+    module: &'static dyn ProviderSettingModule,
+    provider_id: &str,
+) -> Vec<&'static SettingDefinition> {
+    let mut settings = Vec::new();
+    for setting in module.settings() {
+        push_unique_setting(&mut settings, setting);
+    }
+    for setting in common_hooks::definitions_for(provider_id) {
+        push_unique_setting(&mut settings, setting);
+    }
+    settings
+}
+
+fn push_unique_setting(
+    settings: &mut Vec<&'static SettingDefinition>,
+    setting: &'static SettingDefinition,
+) {
+    if !settings.iter().any(|current| current.id == setting.id) {
+        settings.push(setting);
+    }
 }
 
 fn setting_value(
@@ -245,10 +239,7 @@ fn setting_value(
 }
 
 fn ensure_known_provider(provider_id: &str) -> Result<()> {
-    if crate::providers::all_provider_ids()
-        .iter()
-        .any(|known| *known == provider_id)
-    {
+    if crate::providers::find_provider(provider_id).is_some() {
         return Ok(());
     }
 
@@ -260,158 +251,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn provider_settings_expose_claude_hook_actions() {
-        let settings = list_provider_settings("claude").unwrap();
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_opencode_toggle() {
-        let settings = list_provider_settings("opencode").unwrap();
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "show_subagents"));
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_cline_hook_actions() {
-        let settings = list_provider_settings("cline").unwrap();
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_codex_action() {
-        let settings = list_provider_settings("codex").unwrap();
-        let setting = settings
-            .iter()
-            .find(|setting| setting.id == "repair_workspace_sessions")
-            .expect("missing codex repair setting");
-        assert_eq!(setting.kind, SettingKind::Action);
-        assert_eq!(setting.scope, SettingScope::Workspace);
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_cursor_hook_actions() {
-        let settings = list_provider_settings("cursor").unwrap();
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_gemini_hook_actions() {
-        let settings = list_provider_settings("gemini").unwrap();
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_kimi_hook_actions() {
-        let settings = list_provider_settings("kimi").unwrap();
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_kiro_hook_actions() {
-        let settings = list_provider_settings("kiro").unwrap();
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_copilot_hook_actions() {
-        let settings = list_provider_settings("copilot").unwrap();
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_qwen_hook_actions() {
-        let settings = list_provider_settings("qwen").unwrap();
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
-            .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
-    }
-
-    #[test]
-    fn provider_settings_expose_codeisland_gap_hook_actions() {
-        for provider in [
-            "qoder",
-            "droid",
-            "codebuddy",
-            "codybuddycn",
-            "stepfun",
-            "antigravity",
-            "workbuddy",
-            "hermes",
-            "trae_gui",
-            "traecn",
-            "pi",
-            "omp",
-        ] {
-            let settings = list_provider_settings(provider).unwrap();
-            assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-            assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-            assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-            assert!(settings
-                .iter()
-                .any(|setting| setting.id == "uninstall_hook"));
+    fn provider_settings_generate_common_hook_actions_for_every_hook_descriptor() {
+        for descriptor in crate::hooks::registry::all() {
+            let settings = list_provider_settings(descriptor.provider()).unwrap();
+            for common in common_hooks::definitions_for(descriptor.provider()) {
+                let matches: Vec<_> = settings
+                    .iter()
+                    .filter(|setting| setting.id == common.id)
+                    .collect();
+                assert_eq!(
+                    matches.len(),
+                    1,
+                    "expected one {} setting for {}",
+                    common.id,
+                    descriptor.provider()
+                );
+                assert_eq!(matches[0].kind, SettingKind::Action);
+                assert_eq!(matches[0].scope, SettingScope::Global);
+            }
         }
     }
 
     #[test]
-    fn provider_settings_expose_trae_hook_actions() {
-        let settings = list_provider_settings("trae").unwrap();
-        assert!(settings.iter().any(|setting| setting.id == "install_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "verify_hook"));
-        assert!(settings.iter().any(|setting| setting.id == "repair_hook"));
-        assert!(settings
+    fn provider_specific_settings_are_preserved() {
+        let codex = list_provider_settings("codex").unwrap();
+        let repair = codex
             .iter()
-            .any(|setting| setting.id == "uninstall_hook"));
+            .find(|setting| setting.id == "repair_workspace_sessions")
+            .expect("missing codex repair setting");
+        assert_eq!(repair.kind, SettingKind::Action);
+        assert_eq!(repair.scope, SettingScope::Workspace);
+
+        let opencode = list_provider_settings("opencode").unwrap();
+        let show_subagents = opencode
+            .iter()
+            .find(|setting| setting.id == "show_subagents")
+            .expect("missing opencode show_subagents setting");
+        assert_eq!(show_subagents.kind, SettingKind::Toggle);
+        assert_eq!(show_subagents.scope, SettingScope::Global);
+    }
+
+    #[test]
+    fn generated_common_hook_action_resolves_through_setting_lookup() {
+        let setting = setting("claude", "verify_hook").unwrap();
+        assert_eq!(setting.id, "verify_hook");
+        assert_eq!(setting.kind, SettingKind::Action);
+    }
+
+    #[test]
+    fn alias_lists_same_provider_specific_settings_as_canonical_id() {
+        let canonical = list_provider_settings("droid").unwrap();
+        let alias = list_provider_settings("factory").unwrap();
+
+        assert_eq!(alias.len(), canonical.len());
+        assert_eq!(
+            alias
+                .iter()
+                .map(|setting| setting.id.as_str())
+                .collect::<Vec<_>>(),
+            canonical
+                .iter()
+                .map(|setting| setting.id.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 }

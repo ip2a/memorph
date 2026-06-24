@@ -8,10 +8,12 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::hooks::capabilities::HookProviderCapabilities;
 use crate::hooks::model::{HookEvent, HookInstallStatus, PendingHookRequest, RuntimeSession};
 use crate::hooks::policy::HookPolicy;
 use crate::hooks::protocol::HookRuntimeEndpoint;
 use crate::hooks::store::{self, HookErrorRecord};
+use crate::hooks::strategies::HookConfigStrategyKind;
 
 const DEFAULT_EVENT_LIMIT: usize = 100;
 const DEFAULT_ERROR_LIMIT: usize = 50;
@@ -20,7 +22,7 @@ pub struct HookDiagnosticsReport {
     pub generated_at: DateTime<Utc>,
     pub store: HookDiagnosticsStorePaths,
     pub server: Option<HookDiagnosticsServer>,
-    pub providers: Vec<HookInstallStatus>,
+    pub providers: Vec<HookDiagnosticsProvider>,
     pub runtime_sessions: Vec<RuntimeSession>,
     pub pending_requests: Vec<PendingHookRequest>,
     pub policy: HookPolicy,
@@ -45,6 +47,14 @@ pub struct HookDiagnosticsServer {
     pub pid: u32,
     pub started_at: DateTime<Utc>,
     pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HookDiagnosticsProvider {
+    #[serde(flatten)]
+    pub status: HookInstallStatus,
+    pub strategy_kind: HookConfigStrategyKind,
+    pub capabilities: HookProviderCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -74,8 +84,17 @@ impl Default for HookDiagnosticsOptions {
 
 pub fn collect(options: HookDiagnosticsOptions) -> Result<HookDiagnosticsReport> {
     let paths = store::hook_store_paths()?;
-    let providers = crate::hooks::profiles::provider_ids()
-        .map(crate::hooks::health::status)
+    let providers = crate::hooks::registry::all()
+        .into_iter()
+        .map(|descriptor| {
+            crate::hooks::operations::status(descriptor.provider()).map(|status| {
+                HookDiagnosticsProvider {
+                    status,
+                    strategy_kind: descriptor.strategy_kind,
+                    capabilities: descriptor.capabilities,
+                }
+            })
+        })
         .collect::<Result<Vec<_>>>()?;
     let runtime_store = store::load_runtime_sessions()?;
     let pending_store = store::load_pending_requests()?;

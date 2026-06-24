@@ -1,5 +1,5 @@
 use anyhow::Result;
-use base64::{engine::general_purpose, Engine as _};
+use base64::{Engine as _, engine::general_purpose};
 use crossterm::event::KeyEvent;
 use ratatui::widgets::TableState;
 use serde_json::Value;
@@ -556,17 +556,7 @@ impl App {
 
     pub fn open_settings_modal(&mut self) {
         match config::web_preferences() {
-            Ok(prefs) => {
-                self.settings_language = prefs.language;
-                self.settings_sessions_per_provider = prefs.sessions_per_provider;
-                self.settings_sort_providers_by_session_count =
-                    prefs.sort_providers_by_session_count;
-                self.settings_agent_order = config::ordered_provider_ids(&prefs);
-                self.settings_primary_agents = config::primary_provider_ids(&prefs);
-                self.settings_agent_index = self
-                    .settings_agent_index
-                    .min(self.settings_agent_order.len().saturating_sub(1));
-            }
+            Ok(prefs) => self.reload_settings_preferences(&prefs),
             Err(e) => self.show_error(e.to_string()),
         }
         self.settings_selection = 0;
@@ -581,7 +571,7 @@ impl App {
 
     pub fn open_agents_modal(&mut self) {
         if let Ok(prefs) = config::web_preferences() {
-            self.settings_show_opencode_subagents = prefs.show_opencode_subagents;
+            self.reload_settings_preferences(&prefs);
         }
         self.agent_management_result = None;
         self.agent_management_focus = AgentManagementFocus::Providers;
@@ -823,8 +813,8 @@ impl App {
                     Some(Value::Bool(next)),
                 ) {
                     Ok(_) => {
-                        if provider_id == "opencode" && action.id == "show_subagents" {
-                            self.settings_show_opencode_subagents = next;
+                        if let Ok(prefs) = config::web_preferences() {
+                            self.reload_settings_preferences(&prefs);
                         }
                         self.start_load_sessions("failedRefreshSessions");
                         if let Ok(entries) =
@@ -1082,6 +1072,18 @@ impl App {
             }
             Err(e) => self.show_error(e.to_string()),
         }
+    }
+
+    fn reload_settings_preferences(&mut self, prefs: &config::WebPreferences) {
+        self.settings_language = prefs.language;
+        self.settings_sessions_per_provider = prefs.sessions_per_provider;
+        self.settings_show_opencode_subagents = prefs.show_opencode_subagents;
+        self.settings_sort_providers_by_session_count = prefs.sort_providers_by_session_count;
+        self.settings_agent_order = config::ordered_provider_ids(prefs);
+        self.settings_primary_agents = config::primary_provider_ids(prefs);
+        self.settings_agent_index = self
+            .settings_agent_index
+            .min(self.settings_agent_order.len().saturating_sub(1));
     }
 
     pub fn filtered_main_workspace_options(&self) -> Vec<String> {
@@ -2045,6 +2047,8 @@ fn build_session_load_payload(
                 include_message_counts: false,
                 limit: None,
                 offset: None,
+                sort: core::SessionListSort::Recent,
+                hook_filter: core::SessionHookFilter::All,
             };
             let mut session_groups = core::list_sessions(&params)?;
             apply_session_group_preferences(&mut session_groups, &prefs);
@@ -2084,6 +2088,8 @@ fn build_session_load_payload(
                 include_message_counts: false,
                 limit: None,
                 offset: None,
+                sort: core::SessionListSort::Recent,
+                hook_filter: core::SessionHookFilter::All,
             };
             let mut session_groups = core::list_sessions(&params)?;
             apply_session_group_preferences(&mut session_groups, &prefs);

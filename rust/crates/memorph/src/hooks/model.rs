@@ -449,6 +449,18 @@ pub struct HookInstallStatus {
     pub last_event_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HookOperationReport {
+    pub provider: String,
+    pub operation: String,
+    pub changed: bool,
+    pub status: HookInstallStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,11 +483,11 @@ mod tests {
 
     #[test]
     fn event_builds_fingerprint() {
-        let mut event = HookEvent::new("claude", HookEventType::ToolStarted, Value::Null);
+        let mut event = HookEvent::new("sample", HookEventType::ToolStarted, Value::Null);
         event.provider_session_id = Some("abc".to_string());
         event.pid = Some(42);
         let fingerprint = event.fingerprint();
-        assert_eq!(fingerprint.provider, "claude");
+        assert_eq!(fingerprint.provider, "sample");
         assert_eq!(fingerprint.provider_session_id.as_deref(), Some("abc"));
         assert_eq!(fingerprint.pid, Some(42));
     }

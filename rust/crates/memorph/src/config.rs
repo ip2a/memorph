@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -64,7 +66,7 @@ fn default_sessions_per_provider() -> usize {
 }
 
 fn default_show_opencode_subagents() -> bool {
-    false
+    crate::providers::legacy_web_preference_default_bool("show_opencode_subagents").unwrap_or(false)
 }
 
 fn default_sort_providers_by_session_count() -> bool {
@@ -170,14 +172,38 @@ pub struct WorkspaceEntry {
     pub providers: Vec<String>,
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_HOME_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+fn home_dir() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_HOME_DIR.with(|cell| cell.borrow().clone()) {
+        return Ok(path);
+    }
+
+    dirs::home_dir().context("Unable to locate user home directory")
+}
+
 pub fn config_path() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Unable to locate user home directory")?;
+    let home = home_dir()?;
     Ok(home.join(".memorph").join("config.json"))
 }
 
 pub fn memorph_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Unable to locate user home directory")?;
+    let home = home_dir()?;
     Ok(home.join(".memorph"))
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_home_dir(path: PathBuf) {
+    TEST_HOME_DIR.with(|cell| *cell.borrow_mut() = Some(path));
+}
+
+#[cfg(test)]
+pub(crate) fn reset_test_home_dir() {
+    TEST_HOME_DIR.with(|cell| *cell.borrow_mut() = None);
 }
 
 pub fn load_config() -> Result<MemorphConfig> {
@@ -304,13 +330,16 @@ pub fn update_web_preferences(
         config.web.language = value;
     }
     if let Some(value) = show_opencode_subagents {
-        config.web.show_opencode_subagents = value;
-        set_provider_preference_in_prefs(
+        let handled = crate::providers::apply_legacy_web_preference(
             &mut config.web,
-            "opencode",
-            "show_subagents",
-            Some(Value::Bool(value)),
+            "show_opencode_subagents",
+            &Value::Bool(value),
         )?;
+        if !handled {
+            anyhow::bail!(
+                "Missing provider compatibility handler for legacy setting: show_opencode_subagents"
+            );
+        }
     }
     if let Some(value) = sort_providers_by_session_count {
         config.web.sort_providers_by_session_count = value;
@@ -338,13 +367,12 @@ pub fn provider_preference(provider_id: &str, key: &str) -> Result<Option<Value>
 pub fn set_provider_preference(provider_id: &str, key: &str, value: Option<Value>) -> Result<()> {
     let mut config = load_config()?;
     set_provider_preference_in_prefs(&mut config.web, provider_id, key, value.clone())?;
-
-    if provider_id == "opencode" && key == "show_subagents" {
-        config.web.show_opencode_subagents = value
-            .as_ref()
-            .and_then(Value::as_bool)
-            .unwrap_or_else(default_show_opencode_subagents);
-    }
+    crate::providers::sync_legacy_field_from_provider_preference(
+        &mut config.web,
+        provider_id,
+        key,
+        value.as_ref(),
+    );
 
     save_config(&config)
 }
@@ -418,16 +446,16 @@ pub fn sort_provider_ids_by_display(
 pub fn normalize_provider_ids(provider_ids: Vec<String>) -> Vec<String> {
     let mut normalized = Vec::new();
     for provider_id in provider_ids {
-        let provider_id = provider_id.trim();
+        let provider_id = crate::providers::canonical_provider_id(&provider_id);
         if provider_id.is_empty()
             || !crate::providers::all_provider_ids()
                 .iter()
                 .any(|known| *known == provider_id)
-            || normalized.iter().any(|existing| existing == provider_id)
+            || normalized.iter().any(|existing| existing == &provider_id)
         {
             continue;
         }
-        normalized.push(provider_id.to_string());
+        normalized.push(provider_id);
     }
     normalized
 }
@@ -437,26 +465,20 @@ pub(crate) fn provider_preference_from_prefs<'a>(
     provider_id: &str,
     key: &str,
 ) -> Option<&'a Value> {
-    prefs.provider_prefs.get(provider_id)?.as_object()?.get(key)
+    let provider_id = crate::providers::canonical_provider_id(provider_id);
+    prefs
+        .provider_prefs
+        .get(&provider_id)?
+        .as_object()?
+        .get(key)
 }
 
 fn hydrate_legacy_provider_preferences(prefs: &mut WebPreferences) {
-    if provider_preference_from_prefs(prefs, "opencode", "show_subagents").is_none() {
-        let _ = set_provider_preference_in_prefs(
-            prefs,
-            "opencode",
-            "show_subagents",
-            Some(Value::Bool(prefs.show_opencode_subagents)),
-        );
-    }
-
-    prefs.show_opencode_subagents =
-        provider_preference_from_prefs(prefs, "opencode", "show_subagents")
-            .and_then(Value::as_bool)
-            .unwrap_or_else(default_show_opencode_subagents);
+    crate::providers::hydrate_legacy_preferences(prefs);
 }
 
 fn ensure_known_provider(provider_id: &str) -> Result<()> {
+    let provider_id = crate::providers::canonical_provider_id(provider_id);
     if crate::providers::all_provider_ids()
         .iter()
         .any(|known| *known == provider_id)
@@ -467,7 +489,7 @@ fn ensure_known_provider(provider_id: &str) -> Result<()> {
     anyhow::bail!("Unknown provider: {}", provider_id);
 }
 
-fn set_provider_preference_in_prefs(
+pub(crate) fn set_provider_preference_in_prefs(
     prefs: &mut WebPreferences,
     provider_id: &str,
     key: &str,
@@ -475,7 +497,7 @@ fn set_provider_preference_in_prefs(
 ) -> Result<()> {
     ensure_known_provider(provider_id)?;
 
-    let provider_id = provider_id.trim();
+    let provider_id = crate::providers::canonical_provider_id(provider_id);
     let key = key.trim();
     if key.is_empty() {
         anyhow::bail!("Provider preference key cannot be empty");
@@ -485,7 +507,7 @@ fn set_provider_preference_in_prefs(
         Some(value) => {
             let entry = prefs
                 .provider_prefs
-                .entry(provider_id.to_string())
+                .entry(provider_id.clone())
                 .or_insert_with(|| Value::Object(Map::new()));
             let object = entry.as_object_mut().with_context(|| {
                 format!("Provider preferences are not an object: {}", provider_id)
@@ -493,7 +515,7 @@ fn set_provider_preference_in_prefs(
             object.insert(key.to_string(), value);
         }
         None => {
-            let remove_provider = if let Some(entry) = prefs.provider_prefs.get_mut(provider_id) {
+            let remove_provider = if let Some(entry) = prefs.provider_prefs.get_mut(&provider_id) {
                 let object = entry.as_object_mut().with_context(|| {
                     format!("Provider preferences are not an object: {}", provider_id)
                 })?;
@@ -503,7 +525,7 @@ fn set_provider_preference_in_prefs(
                 false
             };
             if remove_provider {
-                prefs.provider_prefs.remove(provider_id);
+                prefs.provider_prefs.remove(&provider_id);
             }
         }
     }
@@ -602,32 +624,31 @@ mod tests {
     }
 
     #[test]
-    fn hydrates_legacy_opencode_setting_into_provider_prefs() {
-        let mut prefs = WebPreferences::default();
-        prefs.show_opencode_subagents = true;
-
-        hydrate_legacy_provider_preferences(&mut prefs);
-
-        assert_eq!(
-            provider_preference_from_prefs(&prefs, "opencode", "show_subagents")
-                .and_then(Value::as_bool),
-            Some(true)
-        );
-    }
-
-    #[test]
     fn provider_preference_updates_remove_empty_provider_bucket() {
         let mut prefs = WebPreferences::default();
 
         set_provider_preference_in_prefs(
             &mut prefs,
-            "opencode",
-            "show_subagents",
+            "codex",
+            "sample_toggle",
             Some(Value::Bool(true)),
         )
         .unwrap();
-        set_provider_preference_in_prefs(&mut prefs, "opencode", "show_subagents", None).unwrap();
+        set_provider_preference_in_prefs(&mut prefs, "codex", "sample_toggle", None).unwrap();
 
-        assert!(!prefs.provider_prefs.contains_key("opencode"));
+        assert!(!prefs.provider_prefs.contains_key("codex"));
+    }
+
+    #[test]
+    fn normalize_provider_ids_canonicalizes_aliases() {
+        assert_eq!(
+            normalize_provider_ids(vec![
+                "factory".to_string(),
+                "droid".to_string(),
+                "oh-my-pi".to_string(),
+                "omp".to_string(),
+            ]),
+            vec!["droid".to_string(), "omp".to_string()]
+        );
     }
 }

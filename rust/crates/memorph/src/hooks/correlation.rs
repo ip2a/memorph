@@ -88,13 +88,13 @@ mod tests {
 
     #[test]
     fn event_without_provider_session_or_cwd_has_no_correlation() {
-        let event = HookEvent::new("claude", HookEventType::Heartbeat, Value::Null);
+        let event = HookEvent::new("sample", HookEventType::Heartbeat, Value::Null);
         assert!(try_correlate_event(&event).unwrap().is_none());
     }
 
     #[test]
     fn event_with_missing_workspace_does_not_fail() {
-        let mut event = HookEvent::new("claude", HookEventType::Heartbeat, Value::Null);
+        let mut event = HookEvent::new("sample", HookEventType::Heartbeat, Value::Null);
         event.cwd = Some(PathBuf::from("/path/that/does/not/exist"));
         let _ = try_correlate_event(&event);
     }

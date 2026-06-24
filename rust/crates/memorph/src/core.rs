@@ -26,6 +26,32 @@ pub struct SessionListParams {
     pub include_message_counts: bool,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    #[serde(default)]
+    pub sort: SessionListSort,
+    #[serde(default)]
+    pub hook_filter: SessionHookFilter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionListSort {
+    #[default]
+    Recent,
+    Title,
+    HookAttention,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionHookFilter {
+    #[default]
+    All,
+    Attention,
+    Weak,
+    Runtime,
+    NoHook,
+    NoMatch,
+    Linked,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +81,10 @@ pub struct SessionItem {
     pub provider_id: String,
     pub message_count: Option<usize>,
     pub size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_runtime_summary: Option<crate::hooks::augmentation::HookRuntimeSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_diagnosis: Option<crate::hooks::augmentation::SessionHookDiagnosis>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +113,12 @@ pub struct SessionDetailView {
     pub event_count: usize,
     pub message_count: usize,
     pub artifact_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_runtime_summary: Option<crate::hooks::augmentation::HookRuntimeSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_diagnosis: Option<crate::hooks::augmentation::SessionHookDiagnosis>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hook_runtime_sessions: Vec<crate::hooks::model::RuntimeSession>,
     pub events: Vec<SessionEvent>,
     pub artifacts: Vec<SessionArtifact>,
 }
@@ -118,6 +154,8 @@ impl From<(&ProviderSessionSummary, &str)> for SessionItem {
             provider_id: provider_id.to_string(),
             message_count: None,
             size_bytes: None,
+            hook_runtime_summary: None,
+            hook_diagnosis: None,
         }
     }
 }
@@ -137,11 +175,13 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
     let provider_ids = resolve_providers(&params.providers);
     let explicit_provider_filter = !params.providers.is_empty();
     let session_states = session_state::load_state_store().unwrap_or_default();
+    let hook_runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
 
     let mut indexed_results: Vec<(usize, Option<Result<Option<SessionGroup>>>)> =
         Vec::with_capacity(provider_ids.len());
 
     std::thread::scope(|s| {
+        let hook_runtime_snapshot = &hook_runtime_snapshot;
         let mut handles = Vec::with_capacity(provider_ids.len());
         for (index, pid) in provider_ids.iter().enumerate() {
             let session_states = &session_states;
@@ -202,18 +242,38 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
                 });
 
                 let offset = params.offset.unwrap_or(0);
-                let limited_summaries: Vec<&ProviderSessionSummary> = filtered_summaries
-                    .into_iter()
-                    .skip(offset)
-                    .take(params.limit.unwrap_or(usize::MAX))
-                    .collect();
+                let needs_full_item_ranking = params.sort != SessionListSort::Recent
+                    || params.hook_filter != SessionHookFilter::All;
+                let candidate_summaries: Vec<&ProviderSessionSummary> = if needs_full_item_ranking {
+                    filtered_summaries
+                } else {
+                    filtered_summaries
+                        .into_iter()
+                        .skip(offset)
+                        .take(params.limit.unwrap_or(usize::MAX))
+                        .collect()
+                };
 
-                let session_ids: Vec<&str> = limited_summaries
+                let session_ids: Vec<&str> = candidate_summaries
                     .iter()
                     .map(|s| s.session_id.as_str())
                     .collect();
                 let sizes = prov.session_sizes(&session_ids);
-                let filtered: Vec<SessionItem> = limited_summaries
+                let hook_status = crate::hooks::operations::status(pid.as_str()).unwrap_or(
+                    crate::hooks::model::HookInstallStatus {
+                        provider: pid.clone(),
+                        status: crate::hooks::model::HookHealthStatus::InstalledBrokenConfig,
+                        config_path: None,
+                        installed_version: None,
+                        current_version: None,
+                        message: Some(
+                            "Failed to inspect hook status while building session list."
+                                .to_string(),
+                        ),
+                        last_event_at: None,
+                    },
+                );
+                let mut filtered: Vec<SessionItem> = candidate_summaries
                     .iter()
                     .map(|s| {
                         enrich_session_item(
@@ -224,9 +284,21 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
                             session_states,
                             &sizes,
                             params.include_message_counts,
+                            &hook_runtime_snapshot,
+                            &hook_status,
                         )
                     })
                     .collect();
+
+                if needs_full_item_ranking {
+                    filtered.retain(|item| session_matches_hook_filter(item, &params.hook_filter));
+                    sort_session_items(&mut filtered, &params.sort);
+                    filtered = filtered
+                        .into_iter()
+                        .skip(offset)
+                        .take(params.limit.unwrap_or(usize::MAX))
+                        .collect();
+                }
 
                 if filtered.is_empty() {
                     Ok(None)
@@ -282,6 +354,8 @@ fn enrich_session_item(
     session_states: &SessionStateStore,
     sizes: &HashMap<String, u64>,
     include_message_count: bool,
+    hook_runtime_snapshot: &[crate::hooks::model::RuntimeSession],
+    hook_status: &crate::hooks::model::HookInstallStatus,
 ) -> SessionItem {
     let mut item = SessionItem::from((meta, provider_id));
     let state = resolve_session_state(
@@ -310,7 +384,258 @@ fn enrich_session_item(
         }
     }
 
+    let hook_augmentation = crate::hooks::augmentation::augment_session_from_snapshot_with_status(
+        hook_runtime_snapshot,
+        hook_status.clone(),
+        provider_id,
+        &meta.session_id,
+        meta.project_dir.as_deref(),
+    );
+    item.hook_runtime_summary = hook_augmentation.runtime_summary;
+    item.hook_diagnosis = hook_augmentation.diagnosis;
+
     item
+}
+
+fn session_matches_hook_filter(item: &SessionItem, hook_filter: &SessionHookFilter) -> bool {
+    use crate::hooks::augmentation::SessionHookDiagnosisKind;
+
+    match hook_filter {
+        SessionHookFilter::All => true,
+        SessionHookFilter::Attention => item
+            .hook_diagnosis
+            .as_ref()
+            .map(|diagnosis| {
+                matches!(
+                    diagnosis.kind,
+                    SessionHookDiagnosisKind::HookNotInstalled
+                        | SessionHookDiagnosisKind::HookNeedsAttention
+                        | SessionHookDiagnosisKind::NoEventsYet
+                        | SessionHookDiagnosisKind::NoActiveRuntime
+                        | SessionHookDiagnosisKind::NoSessionMatch
+                )
+            })
+            .unwrap_or(false),
+        SessionHookFilter::Weak => item
+            .hook_diagnosis
+            .as_ref()
+            .map(|diagnosis| diagnosis.kind == SessionHookDiagnosisKind::WeaklyLinked)
+            .unwrap_or(false),
+        SessionHookFilter::Runtime => item.hook_runtime_summary.is_some(),
+        SessionHookFilter::NoHook => item
+            .hook_diagnosis
+            .as_ref()
+            .map(|diagnosis| {
+                matches!(
+                    diagnosis.kind,
+                    SessionHookDiagnosisKind::HookNotInstalled
+                        | SessionHookDiagnosisKind::HookUnsupported
+                )
+            })
+            .unwrap_or(false),
+        SessionHookFilter::NoMatch => item
+            .hook_diagnosis
+            .as_ref()
+            .map(|diagnosis| diagnosis.kind == SessionHookDiagnosisKind::NoSessionMatch)
+            .unwrap_or(false),
+        SessionHookFilter::Linked => item
+            .hook_diagnosis
+            .as_ref()
+            .map(|diagnosis| diagnosis.kind == SessionHookDiagnosisKind::Linked)
+            .unwrap_or(false),
+    }
+}
+
+fn sort_session_items(items: &mut [SessionItem], sort: &SessionListSort) {
+    items.sort_by(|left, right| compare_session_items(left, right, sort));
+}
+
+fn compare_session_items(
+    left: &SessionItem,
+    right: &SessionItem,
+    sort: &SessionListSort,
+) -> std::cmp::Ordering {
+    let pin_order = right.pinned.cmp(&left.pinned);
+    if pin_order != std::cmp::Ordering::Equal {
+        return pin_order;
+    }
+
+    match sort {
+        SessionListSort::Recent => compare_recent_then_title(left, right),
+        SessionListSort::Title => compare_title_then_recent(left, right),
+        SessionListSort::HookAttention => {
+            let severity_order = hook_attention_priority(left).cmp(&hook_attention_priority(right));
+            if severity_order != std::cmp::Ordering::Equal {
+                return severity_order;
+            }
+            compare_recent_then_title(left, right)
+        }
+    }
+}
+
+fn compare_recent_then_title(left: &SessionItem, right: &SessionItem) -> std::cmp::Ordering {
+    right
+        .last_active_at
+        .cmp(&left.last_active_at)
+        .then_with(|| session_display_key(left).cmp(&session_display_key(right)))
+}
+
+fn compare_title_then_recent(left: &SessionItem, right: &SessionItem) -> std::cmp::Ordering {
+    session_display_key(left)
+        .cmp(&session_display_key(right))
+        .then_with(|| right.last_active_at.cmp(&left.last_active_at))
+}
+
+fn session_display_key(item: &SessionItem) -> String {
+    item.display_title
+        .as_deref()
+        .or(item.title.as_deref())
+        .unwrap_or(&item.session_id)
+        .to_ascii_lowercase()
+}
+
+fn hook_attention_priority(item: &SessionItem) -> usize {
+    use crate::hooks::augmentation::SessionHookDiagnosisKind;
+
+    match item
+        .hook_diagnosis
+        .as_ref()
+        .map(|diagnosis| &diagnosis.kind)
+    {
+        Some(SessionHookDiagnosisKind::HookNeedsAttention) => 0,
+        Some(SessionHookDiagnosisKind::NoSessionMatch) => 1,
+        Some(SessionHookDiagnosisKind::HookNotInstalled) => 2,
+        Some(SessionHookDiagnosisKind::NoActiveRuntime) => 3,
+        Some(SessionHookDiagnosisKind::NoEventsYet) => 4,
+        Some(SessionHookDiagnosisKind::WeaklyLinked) => 5,
+        Some(SessionHookDiagnosisKind::Linked) => 6,
+        Some(SessionHookDiagnosisKind::HookUnsupported) => 7,
+        None => 8,
+    }
+}
+
+#[cfg(test)]
+mod session_list_hook_tests {
+    use super::*;
+    use crate::hooks::augmentation::{SessionHookDiagnosis, SessionHookDiagnosisKind};
+    use crate::hooks::model::HookHealthStatus;
+
+    fn session_item(
+        session_id: &str,
+        last_active_at: Option<i64>,
+        diagnosis: Option<SessionHookDiagnosisKind>,
+        has_runtime: bool,
+    ) -> SessionItem {
+        SessionItem {
+            session_id: session_id.to_string(),
+            title: Some(session_id.to_string()),
+            native_title: Some(session_id.to_string()),
+            display_title: None,
+            hidden: false,
+            pinned: false,
+            preferred_targets: Vec::new(),
+            project_dir: Some("/tmp/project".to_string()),
+            last_active_at,
+            source_path: None,
+            provider_id: "claude".to_string(),
+            message_count: None,
+            size_bytes: None,
+            hook_runtime_summary: has_runtime.then(|| {
+                crate::hooks::augmentation::HookRuntimeSummary {
+                    linked_sessions: 1,
+                    waiting_sessions: 0,
+                    status: crate::hooks::model::RuntimeSessionStatus::Running,
+                    current_tool_name: None,
+                    has_pending_permission: false,
+                    has_pending_question: false,
+                    last_event_at: None,
+                    matched_by: None,
+                    confidence: None,
+                }
+            }),
+            hook_diagnosis: diagnosis.map(|kind| SessionHookDiagnosis {
+                kind,
+                provider_status: HookHealthStatus::InstalledOk,
+                linked_runtime_sessions: usize::from(has_runtime),
+                provider_runtime_sessions: usize::from(has_runtime),
+                matched_by: None,
+                confidence: None,
+                last_event_at: None,
+                message: String::new(),
+                actions: Vec::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn session_matches_attention_hook_filter() {
+        let attention = session_item(
+            "session-attention",
+            Some(20),
+            Some(SessionHookDiagnosisKind::HookNeedsAttention),
+            false,
+        );
+        let linked = session_item(
+            "session-linked",
+            Some(10),
+            Some(SessionHookDiagnosisKind::Linked),
+            true,
+        );
+
+        assert!(session_matches_hook_filter(
+            &attention,
+            &SessionHookFilter::Attention
+        ));
+        assert!(!session_matches_hook_filter(
+            &linked,
+            &SessionHookFilter::Attention
+        ));
+    }
+
+    #[test]
+    fn session_matches_runtime_hook_filter() {
+        let runtime = session_item("session-runtime", Some(20), None, true);
+        let offline = session_item("session-offline", Some(10), None, false);
+
+        assert!(session_matches_hook_filter(
+            &runtime,
+            &SessionHookFilter::Runtime
+        ));
+        assert!(!session_matches_hook_filter(
+            &offline,
+            &SessionHookFilter::Runtime
+        ));
+    }
+
+    #[test]
+    fn hook_attention_sort_prioritizes_diagnosis_before_recency() {
+        let mut items = vec![
+            session_item(
+                "linked-newer",
+                Some(300),
+                Some(SessionHookDiagnosisKind::Linked),
+                true,
+            ),
+            session_item(
+                "attention-older",
+                Some(100),
+                Some(SessionHookDiagnosisKind::HookNeedsAttention),
+                false,
+            ),
+            session_item(
+                "weak-middle",
+                Some(200),
+                Some(SessionHookDiagnosisKind::WeaklyLinked),
+                true,
+            ),
+        ];
+
+        sort_session_items(&mut items, &SessionListSort::HookAttention);
+
+        assert_eq!(items[0].session_id, "attention-older");
+        assert_eq!(items[1].session_id, "weak-middle");
+        assert_eq!(items[2].session_id, "linked-newer");
+    }
 }
 
 pub fn get_canonical_session(provider_id: &str, session_id: &str) -> Result<ImportedSession> {
@@ -364,6 +689,50 @@ pub fn get_session_detail_view(provider_id: &str, session_id: &str) -> Result<Se
     ))
 }
 
+pub fn get_session_detail_view_page(
+    provider_id: &str,
+    session_id: &str,
+    event_offset: usize,
+    event_limit: Option<usize>,
+) -> Result<SessionDetailView> {
+    let prov = providers::find_provider(provider_id)
+        .with_context(|| format!("Unknown provider: {}", provider_id))?;
+    let capabilities = prov.capabilities();
+    if !capabilities.scan || !capabilities.import {
+        anyhow::bail!(
+            "Provider does not support loading sessions: {}",
+            provider_id
+        );
+    }
+
+    let meta = prov
+        .get_session_meta(session_id)?
+        .with_context(|| format!("Session not found: {}", session_id))?;
+    let source_path = meta
+        .source_path
+        .clone()
+        .context("Session has no source path")?;
+    let workspace_dir = meta.project_dir.clone();
+    let native_title = meta.title.clone();
+    let mut page = prov.import_session_page(&source_path, event_offset, event_limit)?;
+    enrich_imported_session_from_meta(&mut page.imported, provider_id, &meta);
+    let local_state =
+        get_resolved_local_session_state(provider_id, session_id, workspace_dir.as_deref());
+    let mut view = build_session_detail_view(
+        provider_id,
+        prov.name(),
+        session_id,
+        Some(source_path),
+        prov.resume_command(session_id),
+        native_title,
+        local_state,
+        page.imported,
+    );
+    view.event_count = page.event_count;
+    view.message_count = page.message_count;
+    Ok(view)
+}
+
 pub fn get_resolved_local_session_state(
     provider_id: &str,
     session_id: &str,
@@ -396,10 +765,16 @@ fn build_session_detail_view(
         .or_else(|| native_title.clone())
         .or_else(|| session.identity.source_title.clone());
     let message_count = session_message_count(&session);
+    let raw_workspace_dir = session.context.workspace_dir.clone();
     let source_path = source_path
         .or_else(|| session.provenance.primary_source.source_path.clone())
         .as_deref()
         .map(utils::user_visible_path);
+    let hook_augmentation = crate::hooks::augmentation::augment_session(
+        provider_id,
+        session_id,
+        raw_workspace_dir.as_deref(),
+    );
 
     SessionDetailView {
         provider_id: provider_id.to_string(),
@@ -422,6 +797,9 @@ fn build_session_detail_view(
         event_count: session.events.len(),
         message_count,
         artifact_count: session.artifacts.len(),
+        hook_runtime_summary: hook_augmentation.runtime_summary,
+        hook_diagnosis: hook_augmentation.diagnosis,
+        hook_runtime_sessions: hook_augmentation.runtime_sessions,
         events: session.events,
         artifacts: session.artifacts,
     }
@@ -505,8 +883,17 @@ fn load_canonical_session_from_meta(
         .as_deref()
         .context("Session has no source path")?;
     let mut imported = provider.import_session(source_path)?;
-    let display_title = resolved_display_title(provider_id, &meta);
-    apply_imported_session_title(&mut imported, &meta, display_title);
+    enrich_imported_session_from_meta(&mut imported, provider_id, &meta);
+    Ok(imported)
+}
+
+fn enrich_imported_session_from_meta(
+    imported: &mut ImportedSession,
+    provider_id: &str,
+    meta: &ProviderSessionSummary,
+) {
+    let display_title = resolved_display_title(provider_id, meta);
+    apply_imported_session_title(imported, meta, display_title);
     if imported.session.context.workspace_dir.is_none() {
         imported.session.context.workspace_dir = meta.project_dir.clone();
     }
@@ -528,11 +915,10 @@ fn load_canonical_session_from_meta(
             .aliases
             .push(crate::canonical::ProviderSessionRef {
                 provider_id: provider_id.to_string(),
-                session_id: meta.session_id,
-                source_path: meta.source_path,
+                session_id: meta.session_id.clone(),
+                source_path: meta.source_path.clone(),
             });
     }
-    Ok(imported)
 }
 
 fn apply_imported_session_title(
@@ -1407,6 +1793,7 @@ pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
     let provider_ids = resolve_providers(&params.providers);
     let explicit_provider_filter = !params.providers.is_empty();
     let session_states = session_state::load_state_store().unwrap_or_default();
+    let hook_runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
     let mut groups = Vec::new();
 
     for pid in &provider_ids {
@@ -1422,6 +1809,17 @@ pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
         else {
             continue;
         };
+        let hook_status = crate::hooks::operations::status(pid).unwrap_or(
+            crate::hooks::model::HookInstallStatus {
+                provider: pid.clone(),
+                status: crate::hooks::model::HookHealthStatus::InstalledBrokenConfig,
+                config_path: None,
+                installed_version: None,
+                current_version: None,
+                message: Some("Failed to inspect hook status while finding sessions.".to_string()),
+                last_event_at: None,
+            },
+        );
         let filtered: Vec<SessionItem> = sessions
             .iter()
             .map(|s| {
@@ -1434,6 +1832,16 @@ pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
                     &session_states,
                 );
                 apply_session_item_state(&mut item, &state);
+                let hook_augmentation =
+                    crate::hooks::augmentation::augment_session_from_snapshot_with_status(
+                        &hook_runtime_snapshot,
+                        hook_status.clone(),
+                        pid,
+                        &s.session_id,
+                        s.project_dir.as_deref(),
+                    );
+                item.hook_runtime_summary = hook_augmentation.runtime_summary;
+                item.hook_diagnosis = hook_augmentation.diagnosis;
                 item
             })
             .filter(|s| {
@@ -1477,6 +1885,10 @@ mod tests {
         CanonicalSchema, EventBlock, EventLinks, EventMetadata, EventRole, EventSource,
         MappingDirection, MappingDisposition, MappingReport, ProviderSessionRef, SessionContext,
         SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
+    };
+    use crate::hooks::model::{
+        HookToolCall, PermissionRequest, QuestionRequest, RuntimeSession, RuntimeSessionId,
+        RuntimeSessionStatus,
     };
     use crate::storage::session_state::SessionStateStore;
     use chrono::Utc;
@@ -1548,6 +1960,90 @@ mod tests {
         assert_eq!(item.native_title.as_deref(), Some("Native"));
         assert_eq!(item.display_title.as_deref(), Some("Display"));
         assert_eq!(item.title.as_deref(), Some("Display"));
+    }
+
+    #[test]
+    fn hook_runtime_summary_prefers_pending_states_and_latest_status() {
+        let mut latest =
+            runtime_session_fixture("runtime-1", RuntimeSessionStatus::WaitingPermission);
+        latest.current_tool = Some(HookToolCall {
+            id: None,
+            name: "Bash".to_string(),
+            input: serde_json::json!({"command": "cargo check"}),
+        });
+        latest.pending_permission = Some(PermissionRequest {
+            request_id: Some("perm-1".to_string()),
+            tool: None,
+            prompt: Some("Allow Bash?".to_string()),
+        });
+
+        let mut older = runtime_session_fixture("runtime-2", RuntimeSessionStatus::WaitingUser);
+        older.pending_question = Some(QuestionRequest {
+            request_id: Some("question-1".to_string()),
+            prompt: "Continue?".to_string(),
+        });
+        older.last_event_at = Utc::now() - chrono::TimeDelta::seconds(30);
+
+        let summary = crate::hooks::augmentation::summarize_runtime_sessions(
+            &[latest.clone(), older.clone()],
+            "claude",
+            "session-1",
+            Some("/tmp/project"),
+        )
+        .unwrap();
+
+        assert_eq!(summary.linked_sessions, 2);
+        assert_eq!(summary.waiting_sessions, 2);
+        assert_eq!(summary.status, RuntimeSessionStatus::WaitingPermission);
+        assert_eq!(summary.current_tool_name.as_deref(), Some("Bash"));
+        assert!(summary.has_pending_permission);
+        assert!(summary.has_pending_question);
+        assert_eq!(summary.last_event_at, Some(latest.last_event_at));
+        assert_eq!(summary.matched_by.as_deref(), Some("provider_session_id"));
+        assert_eq!(
+            summary.confidence,
+            Some(crate::hooks::augmentation::HookLinkConfidence::High)
+        );
+    }
+
+    fn runtime_session_fixture(id: &str, status: RuntimeSessionStatus) -> RuntimeSession {
+        let now = Utc::now();
+        RuntimeSession {
+            runtime_id: RuntimeSessionId::new(id),
+            provider: "claude".to_string(),
+            provider_session_id: Some("session-1".to_string()),
+            run_id: None,
+            cwd: None,
+            pid: None,
+            parent_pid: None,
+            pid_start_time: None,
+            tty: None,
+            terminal_vars: BTreeMap::new(),
+            process_ancestry: Vec::new(),
+            correlation: None,
+            model: None,
+            session_title: None,
+            transcript_path: None,
+            workspace_roots: Vec::new(),
+            last_user_prompt: None,
+            last_assistant_message: None,
+            last_tool_result: None,
+            last_error: None,
+            stop_reason: None,
+            compact_count: 0,
+            tool_call_count: 0,
+            failed_tool_count: 0,
+            permission_request_count: 0,
+            question_count: 0,
+            status,
+            current_tool: None,
+            pending_permission: None,
+            pending_question: None,
+            recent_activity: Vec::new(),
+            subagents: BTreeMap::new(),
+            last_event_at: now,
+            updated_at: now,
+        }
     }
 
     #[test]

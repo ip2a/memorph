@@ -9,10 +9,10 @@ use chrono::{DateTime, TimeZone, Utc};
 use serde_json::Value;
 use std::path::PathBuf;
 
+use crate::hooks::contract::HookAdapter;
 use crate::hooks::model::{
     HookEvent, HookEventType, HookMessage, HookToolCall, PermissionRequest, QuestionRequest,
 };
-use crate::hooks::normalizer::HookAdapter;
 use crate::hooks::protocol::HookIngestRequest;
 
 pub struct GenericHookAdapter;

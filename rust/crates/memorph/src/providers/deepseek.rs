@@ -5,9 +5,9 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
 use crate::provider::{
-    canonical_event_role_label, canonical_event_visible_message_role,
-    canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
-    Provider, ProviderCapabilities, ProviderSessionSummary,
+    Provider, ProviderCapabilities, ProviderSessionSummary, canonical_event_role_label,
+    canonical_event_visible_message_role, canonical_event_visible_message_text,
+    canonical_export_result, canonical_session_title,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;

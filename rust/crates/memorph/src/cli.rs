@@ -317,7 +317,7 @@ pub enum CompressionCommands {
 
 #[derive(Subcommand)]
 pub enum ShareCommands {
-    /// Create a shared session from an existing provider session
+    /// Create a sync group from an existing provider session
     Create {
         /// Source provider ID
         #[arg(value_name = "PROVIDER")]
@@ -331,13 +331,13 @@ pub enum ShareCommands {
         /// Target project directory for newly created provider sessions
         #[arg(short, long, value_name = "DIR")]
         to_dir: Option<String>,
-        /// Shared session title
+        /// Sync group title
         #[arg(long, value_name = "TITLE")]
         title: Option<String>,
     },
-    /// Add a provider holding to an existing shared group
+    /// Add a provider holding to an existing sync group
     Bind {
-        /// Shared group ID
+        /// Sync group ID
         #[arg(value_name = "GROUP_ID")]
         group_id: String,
         /// Provider ID to bind
@@ -350,44 +350,44 @@ pub enum ShareCommands {
         #[arg(short, long, value_name = "DIR")]
         to_dir: Option<String>,
     },
-    /// Remove a holding from a shared group
+    /// Remove a holding from a sync group
     Unbind {
-        /// Shared group ID
+        /// Sync group ID
         #[arg(value_name = "GROUP_ID")]
         group_id: String,
         /// Holding ID from `share list` or `share status`
         #[arg(value_name = "HOLDING_ID")]
         holding_id: String,
     },
-    /// Remove a shared session record
+    /// Remove a sync group record
     Remove {
-        /// Shared group ID
+        /// Sync group ID
         #[arg(value_name = "GROUP_ID")]
         group_id: String,
         /// Also delete provider sessions when the provider supports deletion
         #[arg(long)]
         delete_provider_sessions: bool,
     },
-    /// Rename a shared session title
+    /// Rename a sync group title
     Rename {
-        /// Shared group ID
+        /// Sync group ID
         #[arg(value_name = "GROUP_ID")]
         group_id: String,
         /// New title
         #[arg(value_name = "TITLE")]
         title: String,
     },
-    /// List shared sessions and their holdings
+    /// List sync groups and their holdings
     List,
-    /// Show detailed shared-session status
+    /// Show detailed sync group status
     Status {
-        /// Optional shared group ID
+        /// Optional sync group ID
         #[arg(value_name = "GROUP_ID")]
         group_id: Option<String>,
     },
     /// Push sync from a specific holding to all others, or auto-sync from latest
     Sync {
-        /// Shared group ID
+        /// Sync group ID
         #[arg(value_name = "GROUP_ID")]
         group_id: String,
         /// Holding ID to push from; omitted triggers auto-sync from latest
@@ -396,7 +396,7 @@ pub enum ShareCommands {
     },
     /// Push sync from a specific holding to all others
     Push {
-        /// Shared group ID
+        /// Sync group ID
         #[arg(value_name = "GROUP_ID")]
         group_id: String,
         /// Holding ID to push from

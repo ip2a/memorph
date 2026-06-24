@@ -16,6 +16,13 @@ pub struct ProviderSessionSummary {
     pub source_path: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProviderSessionImportPage {
+    pub imported: ImportedSession,
+    pub event_count: usize,
+    pub message_count: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderCapabilities {
     pub scan: bool,
@@ -140,6 +147,45 @@ pub trait Provider: Send + Sync {
 
     /// Load a high-fidelity canonical session plus a mapping report.
     fn import_session(&self, source_path: &str) -> Result<ImportedSession>;
+
+    /// Load a page of canonical events while preserving total event/message counts.
+    ///
+    /// Providers with native append-only or indexed storage should override this.
+    /// The default path imports the full session and slices in memory.
+    fn import_session_page(
+        &self,
+        source_path: &str,
+        event_offset: usize,
+        event_limit: Option<usize>,
+    ) -> Result<ProviderSessionImportPage> {
+        let mut imported = self.import_session(source_path)?;
+        let event_count = imported.session.events.len();
+        let message_count = imported
+            .session
+            .events
+            .iter()
+            .filter(|event| canonical_event_is_visible_message(event))
+            .count();
+        let offset = event_offset.min(imported.session.events.len());
+
+        if let Some(limit) = event_limit {
+            imported.session.events = imported
+                .session
+                .events
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .collect();
+        } else if offset > 0 {
+            imported.session.events = imported.session.events.into_iter().skip(offset).collect();
+        }
+
+        Ok(ProviderSessionImportPage {
+            imported,
+            event_count,
+            message_count,
+        })
+    }
 
     /// Write a canonical session into the target tool and return the mapping report.
     fn export_session(

@@ -1,13 +1,35 @@
+mod aliases;
+pub mod antigravity;
 pub mod claude;
+pub mod cline;
+pub mod codebuddy;
 pub mod codex;
+pub mod codybuddycn;
+pub mod copilot;
 pub mod cursor;
 pub mod deepseek;
+pub mod droid;
 pub mod emerging;
+pub(crate) mod environment_profiles;
 pub mod gemini;
 mod generic_json;
+pub mod hermes;
 pub mod kimi;
 pub mod kiro;
+pub mod omp;
 pub mod opencode;
+pub mod pi;
+pub mod qoder;
+pub mod qwen;
+pub mod stepfun;
+pub mod trae;
+pub mod trae_gui;
+pub mod traecn;
+pub mod workbuddy;
+
+pub(crate) mod hook_profiles;
+mod hook_registry;
+pub(crate) mod setting_compat_registry;
 
 use crate::provider::Provider;
 
@@ -48,7 +70,8 @@ impl ProviderRegistry {
     }
 
     pub fn find(id: &str) -> Option<Box<dyn Provider>> {
-        match id {
+        let id = aliases::canonical_provider_id(id);
+        match id.as_str() {
             "claude" => Some(Box::new(claude::ClaudeProvider)),
             "codex" => Some(Box::new(codex::CodexProvider)),
             "cline" => Some(Box::new(emerging::ClineProvider)),
@@ -62,19 +85,15 @@ impl ProviderRegistry {
             "qoder" => Some(Box::new(emerging::QoderProvider)),
             "qwen" => Some(Box::new(emerging::QwenProvider)),
             "trae" => Some(Box::new(emerging::TraeProvider)),
-            "trae_gui" | "trae-gui" => Some(Box::new(emerging::TraeGuiProvider)),
-            "traecn" | "trae-cn" | "trae_cn" => Some(Box::new(emerging::TraeCnProvider)),
-            "droid" | "factory" => Some(Box::new(emerging::DroidProvider)),
-            "codybuddycn" | "codybuddy-cn" | "codybuddy_cn" => {
-                Some(Box::new(emerging::CodyBuddyCnProvider))
-            }
-            "stepfun" | "step-fun" | "step_fun" => Some(Box::new(emerging::StepFunProvider)),
-            "workbuddy" | "work-buddy" | "work_buddy" => {
-                Some(Box::new(emerging::WorkBuddyProvider))
-            }
+            "trae_gui" => Some(Box::new(emerging::TraeGuiProvider)),
+            "traecn" => Some(Box::new(emerging::TraeCnProvider)),
+            "droid" => Some(Box::new(emerging::DroidProvider)),
+            "codybuddycn" => Some(Box::new(emerging::CodyBuddyCnProvider)),
+            "stepfun" => Some(Box::new(emerging::StepFunProvider)),
+            "workbuddy" => Some(Box::new(emerging::WorkBuddyProvider)),
             "hermes" => Some(Box::new(emerging::HermesProvider)),
             "pi" => Some(Box::new(emerging::PiProvider)),
-            "omp" | "oh-my-pi" | "oh_my_pi" => Some(Box::new(emerging::OmpProvider)),
+            "omp" => Some(Box::new(emerging::OmpProvider)),
             "gemini" => Some(Box::new(gemini::GeminiProvider)),
             "kiro" => Some(Box::new(kiro::KiroProvider)),
             "kimi" => Some(Box::new(kimi::KimiProvider)),
@@ -91,6 +110,54 @@ pub fn all_provider_ids() -> &'static [&'static str] {
 /// Find provider by ID.
 pub fn find_provider(id: &str) -> Option<Box<dyn Provider>> {
     ProviderRegistry::find(id)
+}
+
+pub(crate) fn canonical_provider_id(provider_id: &str) -> String {
+    aliases::canonical_provider_id(provider_id)
+}
+
+/// Find provider-owned hook management implementation by ID or hook profile alias.
+pub fn find_provider_hook(
+    provider: &str,
+) -> Option<&'static dyn crate::hooks::contract::ProviderHook> {
+    hook_registry::find_provider_hook(provider)
+}
+
+/// Find provider-owned hook payload adapter by ID or hook profile alias.
+pub fn find_hook_adapter(
+    provider: &str,
+) -> Option<&'static dyn crate::hooks::contract::HookAdapter> {
+    hook_registry::find_hook_adapter(provider)
+}
+
+pub(crate) fn legacy_web_preference_default_bool(key: &str) -> Option<bool> {
+    setting_compat_registry::legacy_web_preference_default_bool(key)
+}
+
+pub(crate) fn apply_legacy_web_preference(
+    prefs: &mut crate::config::WebPreferences,
+    key: &str,
+    value: &serde_json::Value,
+) -> anyhow::Result<bool> {
+    setting_compat_registry::apply_legacy_web_preference(prefs, key, value)
+}
+
+pub(crate) fn sync_legacy_field_from_provider_preference(
+    prefs: &mut crate::config::WebPreferences,
+    provider_id: &str,
+    key: &str,
+    value: Option<&serde_json::Value>,
+) {
+    setting_compat_registry::sync_legacy_field_from_provider_preference(
+        prefs,
+        provider_id,
+        key,
+        value,
+    );
+}
+
+pub(crate) fn hydrate_legacy_preferences(prefs: &mut crate::config::WebPreferences) {
+    setting_compat_registry::hydrate_legacy_preferences(prefs);
 }
 
 /// Default switch target for a given source provider.

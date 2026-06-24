@@ -296,6 +296,7 @@ fn print_codex_repair_report(report: providers::codex::CodexWorkspaceRepairRepor
     println!("Hidden sessions: {}", report.hidden_session_count);
     println!("Repaired sessions: {}", report.repaired_session_count);
     println!("Reindexed sessions: {}", report.reindexed_session_count);
+    println!("Retitled sessions: {}", report.retitled_session_count);
     println!("Updated SQLite rows: {}", report.sqlite_rows_updated);
     if report.sqlite_provider_rows_updated > 0 {
         println!(
@@ -333,13 +334,14 @@ fn print_codex_repair_report(report: providers::codex::CodexWorkspaceRepairRepor
         println!();
         for item in report.touched_sessions {
             println!(
-                "- {} | {} | provider: {} -> {} | index_added={}",
+                "- {} | {} | provider: {} -> {} | index_added={} | title_fixed={}",
                 item.session_id,
                 item.title.unwrap_or_else(|| "(untitled)".to_string()),
                 item.previous_model_provider
                     .unwrap_or_else(|| "(none)".to_string()),
                 item.current_model_provider,
-                item.added_to_index
+                item.added_to_index,
+                item.updated_index_title
             );
         }
     }
@@ -590,7 +592,7 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 to_dir,
                 title,
             })?;
-            println!("Shared group created: {}", result.id);
+            println!("Sync group created: {}", result.id);
             println!("Title: {}", result.title);
             for holding in result.holdings {
                 println!(
@@ -628,16 +630,16 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
             delete_provider_sessions,
         } => {
             shared::delete_group(&group_id, delete_provider_sessions)?;
-            println!("Shared group removed: {}", group_id);
+            println!("Sync group removed: {}", group_id);
         }
         ShareCommands::Rename { group_id, title } => {
             shared::rename_group(&group_id, &title)?;
-            println!("Shared group renamed: {} -> {}", group_id, title);
+            println!("Sync group renamed: {} -> {}", group_id, title);
         }
         ShareCommands::List => {
             let groups = shared::list_groups()?;
             if groups.is_empty() {
-                println!("No shared groups.");
+                println!("No sync groups.");
             }
             for group in groups {
                 println!(
@@ -665,7 +667,7 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 shared::list_groups()?
             };
             if groups.is_empty() {
-                println!("No shared groups.");
+                println!("No sync groups.");
             }
             for mut group in groups {
                 let _ = shared::refresh_active_times(&mut group);
@@ -967,6 +969,8 @@ fn print_session_list(all: bool, providers: Vec<String>) -> Result<()> {
         include_message_counts: true,
         limit: None,
         offset: None,
+        sort: core::SessionListSort::Recent,
+        hook_filter: core::SessionHookFilter::All,
     })?;
     let total_shown: usize = groups.iter().map(|group| group.sessions.len()).sum();
 

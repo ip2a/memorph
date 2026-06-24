@@ -7,7 +7,7 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -341,75 +341,9 @@ fn provider_response_json(
     event_name: &str,
     response: &HookIngestResponse,
 ) -> Option<Value> {
-    let decision = response.decision.as_ref()?;
-    if provider.eq_ignore_ascii_case("cline") {
-        return Some(cline_response_json(decision, response));
-    }
-    let behavior = decision_behavior(decision)?;
-    if uses_hook_specific_output(provider) {
-        let mut value = json!({
-            "hookSpecificOutput": {
-                "hookEventName": event_name,
-                "decision": {
-                    "behavior": behavior
-                }
-            }
-        });
-        if let Some(text) = response.response_text.as_deref() {
-            value["hookSpecificOutput"]["response"] = json!(text);
-        }
-        return Some(value);
-    }
-    let mut value = json!({"decision": behavior});
-    if let Some(text) = response.response_text.as_deref() {
-        value["response"] = json!(text);
-    }
-    Some(value)
-}
-
-fn uses_hook_specific_output(provider: &str) -> bool {
-    matches!(
-        provider.trim().to_ascii_lowercase().as_str(),
-        "claude"
-            | "opencode"
-            | "qwen"
-            | "qoder"
-            | "droid"
-            | "factory"
-            | "codebuddy"
-            | "codybuddycn"
-            | "stepfun"
-            | "antigravity"
-            | "workbuddy"
-            | "hermes"
-    )
-}
-
-fn cline_response_json(decision: &HookDecision, response: &HookIngestResponse) -> Value {
-    let cancel = matches!(decision, HookDecision::Deny);
-    let mut value = json!({"cancel": cancel});
-    if let Some(text) = response
-        .response_text
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-    {
-        if cancel {
-            value["errorMessage"] = json!(text);
-        } else {
-            value["contextModification"] = json!(text);
-        }
-    }
-    value
-}
-
-fn decision_behavior(decision: &HookDecision) -> Option<&'static str> {
-    match decision {
-        HookDecision::Allow => Some("allow"),
-        HookDecision::Deny => Some("deny"),
-        HookDecision::AskUser => Some("ask_user"),
-        HookDecision::Ignore => Some("ignore"),
-        HookDecision::RecordOnly | HookDecision::ProviderDefault => None,
-    }
+    crate::hooks::normalizer::adapter_for(provider)
+        .map(|adapter| adapter.blocking_response_json(event_name, response))
+        .unwrap_or_else(|| crate::hooks::contract::generic_blocking_response_json(response))
 }
 
 #[allow(dead_code)]
@@ -426,13 +360,13 @@ mod tests {
     fn build_request_captures_required_fields() {
         let request = build_request(
             BridgeRunOptions {
-                provider: "claude".to_string(),
+                provider: "sample".to_string(),
                 event: "PreToolUse".to_string(),
                 blocking: true,
             },
             json!({"tool_name": "Bash"}),
         );
-        assert_eq!(request.provider, "claude");
+        assert_eq!(request.provider, "sample");
         assert_eq!(request.event_name, "PreToolUse");
         assert!(request.blocking);
         assert!(request.environment.pid.is_some());
@@ -479,63 +413,17 @@ mod tests {
     }
 
     #[test]
-    fn claude_response_uses_hook_specific_output_for_real_decisions() {
+    fn generic_response_uses_default_decision_shape() {
         let response = HookIngestResponse {
             accepted: true,
             event_ids: vec!["e1".to_string()],
             decision: Some(HookDecision::Allow),
             pending_request_id: None,
-            response_text: None,
+            response_text: Some("ok".to_string()),
             message: None,
         };
-        let value = provider_response_json("claude", "PermissionRequest", &response).unwrap();
-        assert_eq!(
-            value["hookSpecificOutput"]["hookEventName"],
-            "PermissionRequest"
-        );
-        assert_eq!(value["hookSpecificOutput"]["decision"]["behavior"], "allow");
-    }
-
-    #[test]
-    fn claude_fork_providers_use_hook_specific_output() {
-        let response = HookIngestResponse {
-            accepted: true,
-            event_ids: vec!["e1".to_string()],
-            decision: Some(HookDecision::Deny),
-            pending_request_id: None,
-            response_text: Some("blocked".to_string()),
-            message: None,
-        };
-        for provider in [
-            "qwen",
-            "qoder",
-            "droid",
-            "codebuddy",
-            "codybuddycn",
-            "stepfun",
-            "antigravity",
-            "workbuddy",
-            "hermes",
-        ] {
-            let value = provider_response_json(provider, "PreToolUse", &response).unwrap();
-            assert_eq!(value["hookSpecificOutput"]["hookEventName"], "PreToolUse");
-            assert_eq!(value["hookSpecificOutput"]["decision"]["behavior"], "deny");
-            assert_eq!(value["hookSpecificOutput"]["response"], "blocked");
-        }
-    }
-
-    #[test]
-    fn cline_response_uses_cancel_shape() {
-        let response = HookIngestResponse {
-            accepted: true,
-            event_ids: vec!["e1".to_string()],
-            decision: Some(HookDecision::Deny),
-            pending_request_id: None,
-            response_text: Some("blocked".to_string()),
-            message: None,
-        };
-        let value = provider_response_json("cline", "PreToolUse", &response).unwrap();
-        assert_eq!(value, json!({"cancel": true, "errorMessage": "blocked"}));
+        let value = provider_response_json("generic", "PreToolUse", &response).unwrap();
+        assert_eq!(value, json!({"decision": "allow", "response": "ok"}));
     }
 
     #[test]
@@ -547,8 +435,8 @@ mod tests {
                 id: "pending-1".to_string(),
                 kind: crate::hooks::model::PendingHookRequestKind::Permission,
                 status: PendingHookRequestStatus::Expired,
-                provider: "claude".to_string(),
-                runtime_id: crate::hooks::model::RuntimeSessionId::new("claude:session:s1"),
+                provider: "sample".to_string(),
+                runtime_id: crate::hooks::model::RuntimeSessionId::new("sample:session:s1"),
                 event_id: "e1".to_string(),
                 hook_request_id: "hook-request-1".to_string(),
                 provider_request_id: Some("provider-request-1".to_string()),
@@ -604,6 +492,6 @@ mod tests {
             response_text: None,
             message: None,
         };
-        assert!(provider_response_json("claude", "PreToolUse", &response).is_none());
+        assert!(provider_response_json("generic", "PreToolUse", &response).is_none());
     }
 }

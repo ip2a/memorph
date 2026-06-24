@@ -119,18 +119,18 @@ mod tests {
 
     #[test]
     fn prefers_provider_session_id() {
-        let mut event = HookEvent::new("claude", HookEventType::Heartbeat, Value::Null);
+        let mut event = HookEvent::new("sample", HookEventType::Heartbeat, Value::Null);
         event.provider_session_id = Some("abc/123".to_string());
         let id = runtime_session_id_for_event(&event);
-        assert_eq!(id.0, "claude:session:abc_123");
+        assert_eq!(id.0, "sample:session:abc_123");
     }
 
     #[test]
     fn falls_back_to_run_id() {
-        let mut event = HookEvent::new("codex", HookEventType::Heartbeat, Value::Null);
+        let mut event = HookEvent::new("other-sample", HookEventType::Heartbeat, Value::Null);
         event.run_id = Some("run-1".to_string());
         let id = runtime_session_id_for_event(&event);
-        assert_eq!(id.0, "codex:run:run-1");
+        assert_eq!(id.0, "other-sample:run:run-1");
     }
 
     #[test]

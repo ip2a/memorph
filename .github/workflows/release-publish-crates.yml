@@ -72,7 +72,7 @@ jobs:
         run: |
           version="${{ steps.cargo_meta.outputs.version }}"
           for attempt in $(seq 1 20); do
-            if curl -fsSL "https://crates.io/api/v1/crates/memorph/${version}" >/dev/null; then
+            if cargo search memorph --registry crates-io --limit 1 | grep -E "^memorph = \"${version}\"" >/dev/null; then
               echo "[ok] memorph ${version} is visible on crates.io"
               exit 0
             fi

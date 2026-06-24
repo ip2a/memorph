@@ -525,7 +525,7 @@ mod tests {
     fn session(vars: &[(&str, &str)]) -> RuntimeSession {
         RuntimeSession {
             runtime_id: RuntimeSessionId::new("runtime-1"),
-            provider: "claude".to_string(),
+            provider: "sample".to_string(),
             provider_session_id: Some("session-1".to_string()),
             run_id: None,
             cwd: Some(PathBuf::from("/tmp/project")),

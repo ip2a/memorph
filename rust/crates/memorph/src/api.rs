@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Context};
+use anyhow::{Context, anyhow};
 use axum::{
+    Json, Router,
     extract::{Path, Query},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post},
-    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -252,6 +252,38 @@ struct SessionDetailPayload {
     events_limit: Option<usize>,
     returned_event_count: usize,
     has_more_events: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hook_runtime_sessions: Vec<hooks::model::RuntimeSession>,
+}
+
+#[derive(Debug, Serialize)]
+struct SharedHoldingPayload {
+    id: String,
+    provider: String,
+    session_id: String,
+    target_dir: Option<String>,
+    created_at: i64,
+    last_active_at: Option<i64>,
+    last_sync_at: Option<i64>,
+    last_sync_from: Option<String>,
+    last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hook_runtime_summary: Option<hooks::augmentation::HookRuntimeSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hook_diagnosis: Option<hooks::augmentation::SessionHookDiagnosis>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hook_runtime_sessions: Vec<hooks::model::RuntimeSession>,
+}
+
+#[derive(Debug, Serialize)]
+struct SharedGroupPayload {
+    id: String,
+    title: String,
+    #[serde(default)]
+    source_provider: Option<String>,
+    created_at: i64,
+    updated_at: i64,
+    holdings: Vec<SharedHoldingPayload>,
 }
 
 #[derive(Deserialize)]
@@ -774,6 +806,8 @@ struct ListQuery {
     details: Option<bool>,
     limit: Option<usize>,
     offset: Option<usize>,
+    sort: Option<core::SessionListSort>,
+    hook_filter: Option<core::SessionHookFilter>,
 }
 
 #[derive(Deserialize)]
@@ -804,6 +838,8 @@ async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
         include_message_counts: q.details.unwrap_or(true),
         limit: q.limit,
         offset: q.offset,
+        sort: q.sort.unwrap_or_default(),
+        hook_filter: q.hook_filter.unwrap_or_default(),
     };
     match core::list_sessions(&params) {
         Ok(groups) => ApiResponse::success(groups).into_response(),
@@ -862,31 +898,23 @@ async fn get_session(
     Path((provider, session_id)): Path<(String, String)>,
     Query(q): Query<SessionDetailQuery>,
 ) -> impl IntoResponse {
-    match core::get_session_detail_view(&provider, &session_id) {
-        Ok(mut view) => {
+    let events_offset = q.event_offset.unwrap_or(0);
+    let events_limit = q.event_limit;
+    match core::get_session_detail_view_page(&provider, &session_id, events_offset, events_limit) {
+        Ok(view) => {
             if let Some(project_dir) = view.workspace_dir.as_deref() {
                 let _ = config::remember_workspace(std::path::Path::new(project_dir));
             }
-            let events_offset = q.event_offset.unwrap_or(0).min(view.events.len());
-            let events_limit = q.event_limit;
-            if let Some(limit) = events_limit {
-                view.events = view
-                    .events
-                    .into_iter()
-                    .skip(events_offset)
-                    .take(limit)
-                    .collect();
-            } else if events_offset > 0 {
-                view.events = view.events.into_iter().skip(events_offset).collect();
-            }
             let returned_event_count = view.events.len();
             let has_more_events = events_offset + returned_event_count < view.event_count;
+            let hook_runtime_sessions = view.hook_runtime_sessions.clone();
             ApiResponse::success(SessionDetailPayload {
                 view,
                 events_offset,
                 events_limit,
                 returned_event_count,
                 has_more_events,
+                hook_runtime_sessions,
             })
             .into_response()
         }
@@ -1340,7 +1368,7 @@ async fn shared_status(Query(q): Query<ShareStatusQuery>) -> impl IntoResponse {
         Some(id) => match shared::load_group(&id) {
             Ok(mut group) => {
                 let _ = shared::refresh_active_times(&mut group);
-                ApiResponse::success(group).into_response()
+                ApiResponse::success(shared_group_payload(group)).into_response()
             }
             Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
         },
@@ -1349,11 +1377,108 @@ async fn shared_status(Query(q): Query<ShareStatusQuery>) -> impl IntoResponse {
                 for group in &mut groups {
                     let _ = shared::refresh_active_times(group);
                 }
-                ApiResponse::success(groups).into_response()
+                let payload: Vec<SharedGroupPayload> =
+                    groups.into_iter().map(shared_group_payload).collect();
+                ApiResponse::success(payload).into_response()
             }
             Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         },
     }
+}
+
+fn shared_group_payload(group: shared::SharedGroup) -> SharedGroupPayload {
+    SharedGroupPayload {
+        id: group.id,
+        title: group.title,
+        source_provider: group.source_provider,
+        created_at: group.created_at,
+        updated_at: group.updated_at,
+        holdings: group
+            .holdings
+            .into_iter()
+            .map(shared_holding_payload)
+            .collect(),
+    }
+}
+
+fn shared_holding_payload(holding: shared::Holding) -> SharedHoldingPayload {
+    let hook_augmentation = hooks::augmentation::augment_session(
+        &holding.provider,
+        &holding.session_id,
+        holding.target_dir.as_deref(),
+    );
+    SharedHoldingPayload {
+        id: holding.id,
+        provider: holding.provider,
+        session_id: holding.session_id,
+        target_dir: holding.target_dir,
+        created_at: holding.created_at,
+        last_active_at: holding.last_active_at,
+        last_sync_at: holding.last_sync_at,
+        last_sync_from: holding.last_sync_from,
+        last_error: holding.last_error,
+        hook_runtime_summary: hook_augmentation.runtime_summary,
+        hook_diagnosis: hook_augmentation.diagnosis,
+        hook_runtime_sessions: hook_augmentation.runtime_sessions,
+    }
+}
+
+fn resolve_share_sync_source(
+    group: &mut shared::SharedGroup,
+    source_holding_id: Option<String>,
+) -> anyhow::Result<String> {
+    if let Some(source_id) = source_holding_id {
+        if !group.holdings.iter().any(|holding| holding.id == source_id) {
+            anyhow::bail!("Source holding not found: {}", source_id);
+        }
+        return Ok(source_id);
+    }
+
+    shared::refresh_active_times(group)?;
+    group
+        .holdings
+        .iter()
+        .filter(|holding| holding.last_active_at.is_some())
+        .max_by_key(|holding| holding.last_active_at.unwrap_or(0))
+        .map(|holding| holding.id.clone())
+        .with_context(|| "No holding with active time found")
+}
+
+fn hook_status_blocks_sync(status: &hooks::model::RuntimeSessionStatus) -> bool {
+    matches!(
+        status,
+        hooks::model::RuntimeSessionStatus::Running
+            | hooks::model::RuntimeSessionStatus::WaitingPermission
+            | hooks::model::RuntimeSessionStatus::WaitingUser
+    )
+}
+
+fn blocked_sync_targets_from_snapshot(
+    group: &shared::SharedGroup,
+    source_holding_id: &str,
+    snapshot: &[hooks::model::RuntimeSession],
+) -> Vec<String> {
+    group
+        .holdings
+        .iter()
+        .filter(|holding| holding.id != source_holding_id)
+        .filter_map(|holding| {
+            let augmentation = hooks::augmentation::augment_session_from_snapshot(
+                snapshot,
+                &holding.provider,
+                &holding.session_id,
+                holding.target_dir.as_deref(),
+            );
+            let summary = augmentation.runtime_summary?;
+            if !hook_status_blocks_sync(&summary.status) {
+                return None;
+            }
+            Some(format!(
+                "{}:{} is {:?}",
+                holding.provider, holding.session_id, summary.status
+            ))
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -1363,11 +1488,31 @@ struct ShareSyncBody {
 }
 
 async fn sync_shared_sessions(Json(body): Json<ShareSyncBody>) -> impl IntoResponse {
-    let result = if let Some(source_id) = body.source_holding_id {
-        shared::push_sync(&body.group_id, &source_id)
-    } else {
-        shared::sync_to_latest(&body.group_id)
+    let mut group = match shared::load_group(&body.group_id) {
+        Ok(group) => group,
+        Err(e) => return api_error(StatusCode::NOT_FOUND, e).into_response(),
     };
+    let source_id = match resolve_share_sync_source(&mut group, body.source_holding_id) {
+        Ok(source_id) => source_id,
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, e).into_response(),
+    };
+    let blocked = blocked_sync_targets_from_snapshot(
+        &group,
+        &source_id,
+        &hooks::server::runtime_sessions_snapshot(),
+    );
+    if !blocked.is_empty() {
+        return api_error(
+            StatusCode::CONFLICT,
+            format!(
+                "Session sync blocked because target sessions are active: {}",
+                blocked.join("; ")
+            ),
+        )
+        .into_response();
+    }
+
+    let result = shared::push_sync(&body.group_id, &source_id);
     match result {
         Ok(report) => ApiResponse::success(report).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -1475,15 +1620,44 @@ mod tests {
         EventSource, MappingDisposition, ProviderSessionRef, SessionContext, SessionEvent,
         SessionEventKind, SessionIdentity, SessionProvenance,
     };
+    use crate::hooks::model::{RuntimeSession, RuntimeSessionId, RuntimeSessionStatus};
+    use crate::hooks::protocol::{HookIngestRequest, HookRuntimeEndpoint};
+    use crate::storage::session_state::ResolvedLocalSessionState;
     use axum::{
-        body::{to_bytes, Body},
+        body::{Body, to_bytes},
         http::Request,
     };
     use chrono::Utc;
     use std::collections::BTreeMap;
     use std::io::Write;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::Builder;
     use tower::util::ServiceExt;
+
+    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct ConfigTestHome {
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ConfigTestHome {
+        fn new(path: &Path) -> Self {
+            let guard = test_guard();
+            crate::config::set_test_home_dir(path.to_path_buf());
+            Self { _guard: guard }
+        }
+    }
+
+    impl Drop for ConfigTestHome {
+        fn drop(&mut self) {
+            crate::config::reset_test_home_dir();
+        }
+    }
 
     async fn read_json(app: Router, request: Request<Body>) -> (StatusCode, serde_json::Value) {
         let response = app.oneshot(request).await.unwrap();
@@ -1491,6 +1665,100 @@ mod tests {
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         (status, value)
+    }
+
+    fn runtime_session_for_payload(runtime_id: &str) -> RuntimeSession {
+        RuntimeSession {
+            runtime_id: RuntimeSessionId::new(runtime_id),
+            provider: "claude".to_string(),
+            provider_session_id: Some("session-1".to_string()),
+            run_id: None,
+            cwd: None,
+            pid: None,
+            parent_pid: None,
+            pid_start_time: None,
+            tty: None,
+            terminal_vars: BTreeMap::new(),
+            process_ancestry: Vec::new(),
+            correlation: None,
+            model: None,
+            session_title: None,
+            transcript_path: None,
+            workspace_roots: Vec::new(),
+            last_user_prompt: None,
+            last_assistant_message: None,
+            last_tool_result: None,
+            last_error: None,
+            stop_reason: None,
+            compact_count: 0,
+            tool_call_count: 0,
+            failed_tool_count: 0,
+            permission_request_count: 0,
+            question_count: 0,
+            status: RuntimeSessionStatus::Running,
+            current_tool: None,
+            pending_permission: None,
+            pending_question: None,
+            recent_activity: Vec::new(),
+            subagents: BTreeMap::new(),
+            last_event_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    fn shared_holding(id: &str, provider: &str, session_id: &str) -> shared::Holding {
+        shared::Holding {
+            id: id.to_string(),
+            provider: provider.to_string(),
+            session_id: session_id.to_string(),
+            target_dir: None,
+            created_at: 1,
+            last_active_at: None,
+            last_sync_at: None,
+            last_sync_from: None,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn sync_safety_blocks_active_target_runtime() {
+        let group = shared::SharedGroup {
+            id: "group-1".to_string(),
+            title: "group".to_string(),
+            source_provider: Some("codex".to_string()),
+            created_at: 1,
+            updated_at: 1,
+            holdings: vec![
+                shared_holding("source", "codex", "source-session"),
+                shared_holding("target", "claude", "session-1"),
+            ],
+        };
+        let snapshot = vec![runtime_session_for_payload("runtime-1")];
+
+        let blocked = blocked_sync_targets_from_snapshot(&group, "source", &snapshot);
+
+        assert_eq!(blocked.len(), 1);
+        assert!(blocked[0].contains("claude:session-1"));
+    }
+
+    #[test]
+    fn sync_safety_allows_active_source_runtime() {
+        let group = shared::SharedGroup {
+            id: "group-1".to_string(),
+            title: "group".to_string(),
+            source_provider: Some("claude".to_string()),
+            created_at: 1,
+            updated_at: 1,
+            holdings: vec![
+                shared_holding("source", "claude", "session-1"),
+                shared_holding("target", "codex", "target-session"),
+            ],
+        };
+        let snapshot = vec![runtime_session_for_payload("runtime-1")];
+
+        let blocked = blocked_sync_targets_from_snapshot(&group, "source", &snapshot);
+
+        assert!(blocked.is_empty());
     }
 
     struct ArchiveFixture {
@@ -1680,12 +1948,148 @@ mod tests {
                 > 0
         );
         assert_eq!(value["data"]["candidates"][0]["risk"], "medium");
-        assert!(value["data"]["skipped"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|skipped| skipped["event_id"] == "recent-user"
-                && skipped["reason"] == "protected_recent_message"));
+        assert!(
+            value["data"]["skipped"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|skipped| skipped["event_id"] == "recent-user"
+                    && skipped["reason"] == "protected_recent_message")
+        );
+    }
+
+    #[test]
+    fn session_detail_payload_serializes_hook_runtime_sessions() {
+        let payload = SessionDetailPayload {
+            view: core::SessionDetailView {
+                provider_id: "claude".to_string(),
+                provider_name: "claude".to_string(),
+                session_id: "session-1".to_string(),
+                canonical_id: "canonical-1".to_string(),
+                title: Some("Session".to_string()),
+                native_title: None,
+                display_title: None,
+                workspace_dir: Some("/tmp/project".to_string()),
+                created_at: None,
+                last_active_at: None,
+                source_path: None,
+                resume_command: None,
+                local_state: ResolvedLocalSessionState::default(),
+                event_count: 0,
+                message_count: 0,
+                artifact_count: 0,
+                hook_runtime_summary: Some(hooks::augmentation::HookRuntimeSummary {
+                    linked_sessions: 1,
+                    waiting_sessions: 0,
+                    status: hooks::model::RuntimeSessionStatus::Running,
+                    current_tool_name: Some("Bash".to_string()),
+                    has_pending_permission: false,
+                    has_pending_question: false,
+                    last_event_at: None,
+                    matched_by: Some("provider_session_id".to_string()),
+                    confidence: Some(hooks::augmentation::HookLinkConfidence::High),
+                }),
+                hook_diagnosis: Some(hooks::augmentation::SessionHookDiagnosis {
+                    kind: hooks::augmentation::SessionHookDiagnosisKind::Linked,
+                    provider_status: hooks::model::HookHealthStatus::InstalledOk,
+                    linked_runtime_sessions: 1,
+                    provider_runtime_sessions: 1,
+                    matched_by: Some("provider_session_id".to_string()),
+                    confidence: Some(hooks::augmentation::HookLinkConfidence::High),
+                    last_event_at: None,
+                    message: "Hook runtime is linked directly to this session.".to_string(),
+                    actions: Vec::new(),
+                }),
+                hook_runtime_sessions: vec![runtime_session_for_payload(
+                    "claude:session:session-1",
+                )],
+                events: Vec::new(),
+                artifacts: Vec::new(),
+            },
+            events_offset: 0,
+            events_limit: Some(50),
+            returned_event_count: 0,
+            has_more_events: false,
+            hook_runtime_sessions: vec![runtime_session_for_payload("claude:session:session-1")],
+        };
+
+        let value = serde_json::to_value(payload).unwrap();
+        assert_eq!(value["hook_runtime_sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["view"]["hook_runtime_summary"]["matched_by"],
+            "provider_session_id"
+        );
+        assert_eq!(value["view"]["hook_runtime_summary"]["confidence"], "high");
+        assert_eq!(value["view"]["hook_diagnosis"]["kind"], "linked");
+        assert_eq!(
+            value["hook_runtime_sessions"][0]["provider_session_id"],
+            "session-1"
+        );
+    }
+
+    #[test]
+    fn shared_holding_payload_serializes_hook_runtime_sessions() {
+        let _guard = test_guard();
+        let dir = tempfile::tempdir().unwrap();
+        crate::hooks::store::set_test_store_root(dir.path().to_path_buf());
+        crate::hooks::server::reset_for_tests();
+        let endpoint = HookRuntimeEndpoint {
+            endpoint: "http://127.0.0.1:3737".to_string(),
+            token: "test-token".to_string(),
+            pid: 1,
+            started_at: Utc::now(),
+        };
+        crate::hooks::server::set_runtime_endpoint_for_tests(endpoint.clone());
+
+        let request = HookIngestRequest::new(
+            "generic",
+            "tool_started",
+            serde_json::json!({
+                "session_id": "session-1",
+                "cwd": "/tmp/project",
+                "tool": {"name": "Bash", "input": {"command": "cargo check"}}
+            }),
+        );
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let (status, value) = read_json(
+                router(),
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hooks/ingest")
+                    .header("content-type", "application/json")
+                    .header("x-memorph-hook-token", endpoint.token)
+                    .body(Body::from(serde_json::to_vec(&request).unwrap()))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(value["ok"], true);
+        });
+
+        let payload = shared_holding_payload(shared::Holding {
+            id: "holding-1".to_string(),
+            provider: "generic".to_string(),
+            session_id: "session-1".to_string(),
+            target_dir: Some("/tmp/project".to_string()),
+            created_at: 1,
+            last_active_at: None,
+            last_sync_at: None,
+            last_sync_from: None,
+            last_error: None,
+        });
+
+        let value = serde_json::to_value(payload).unwrap();
+        assert_eq!(value["provider"], "generic");
+        assert_eq!(value["session_id"], "session-1");
+        assert_eq!(value["hook_runtime_summary"]["current_tool_name"], "Bash");
+        assert_eq!(
+            value["hook_runtime_summary"]["matched_by"],
+            "provider_session_id"
+        );
+        assert_eq!(value["hook_runtime_summary"]["confidence"], "high");
+        assert_eq!(value["hook_diagnosis"]["kind"], "linked");
+        assert_eq!(value["hook_runtime_sessions"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1710,10 +2114,12 @@ mod tests {
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(value["ok"], false);
-        assert!(value["error"]
-            .as_str()
-            .unwrap()
-            .contains("Use either session_id or file"));
+        assert!(
+            value["error"]
+                .as_str()
+                .unwrap()
+                .contains("Use either session_id or file")
+        );
     }
 
     #[tokio::test]
@@ -1734,10 +2140,12 @@ mod tests {
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(value["ok"], false);
-        assert!(value["error"]
-            .as_str()
-            .unwrap()
-            .contains("Unsupported compression archive ref"));
+        assert!(
+            value["error"]
+                .as_str()
+                .unwrap()
+                .contains("Unsupported compression archive ref")
+        );
     }
 
     #[tokio::test]
@@ -1763,10 +2171,12 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["data"]["archive_ref"], fixture.archive_ref);
         assert_eq!(value["data"]["retrieval_mode"], "query_matches");
-        assert!(value["data"]["recommended_next_action"]
-            .as_str()
-            .unwrap()
-            .contains("partial retrieval"));
+        assert!(
+            value["data"]["recommended_next_action"]
+                .as_str()
+                .unwrap()
+                .contains("partial retrieval")
+        );
         assert_eq!(value["data"]["source_event_count"], 2);
         assert_eq!(
             value["data"]["returned_event_ids"],
@@ -1776,10 +2186,12 @@ mod tests {
         assert_eq!(value["data"]["omitted_event_count"], 1);
         assert_eq!(value["data"]["events"][0]["id"], "needle-event");
         assert_eq!(value["data"]["matches"][0]["event_id"], "needle-event");
-        assert!(value["data"]["matches"][0]["snippets"][0]
-            .as_str()
-            .unwrap()
-            .contains("needle detail"));
+        assert!(
+            value["data"]["matches"][0]["snippets"][0]
+                .as_str()
+                .unwrap()
+                .contains("needle detail")
+        );
     }
 
     #[tokio::test]
@@ -1802,16 +2214,20 @@ mod tests {
             value["data"]["input_schema"]["required"],
             serde_json::json!(["archive_ref"])
         );
-        assert!(value["data"]["usage_rules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|rule| rule.as_str().unwrap().contains("Prefer query retrieval")));
-        assert!(value["data"]["usage_rules"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|rule| rule.as_str().unwrap().contains("exact phrase matches")));
+        assert!(
+            value["data"]["usage_rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|rule| rule.as_str().unwrap().contains("Prefer query retrieval"))
+        );
+        assert!(
+            value["data"]["usage_rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|rule| rule.as_str().unwrap().contains("exact phrase matches"))
+        );
     }
 
     #[tokio::test]
@@ -1836,19 +2252,23 @@ mod tests {
             value["data"]["archive_ref"],
             "memorph-archive://group/archive.json.gz"
         );
-        assert!(value["data"]["query_first_cli"]
-            .as_str()
-            .unwrap()
-            .contains("--query <terms> --max-results 5"));
+        assert!(
+            value["data"]["query_first_cli"]
+                .as_str()
+                .unwrap()
+                .contains("--query <terms> --max-results 5")
+        );
         assert_eq!(
             value["data"]["api_query_body"]["archive_ref"],
             "memorph-archive://group/archive.json.gz"
         );
-        assert!(value["data"]["suggested_steps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|step| step.as_str().unwrap().contains("broader term coverage")));
+        assert!(
+            value["data"]["suggested_steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|step| step.as_str().unwrap().contains("broader term coverage"))
+        );
     }
 
     #[tokio::test]
@@ -1869,10 +2289,12 @@ mod tests {
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(value["ok"], false);
-        assert!(value["error"]
-            .as_str()
-            .unwrap()
-            .contains("Unsupported compression archive ref"));
+        assert!(
+            value["error"]
+                .as_str()
+                .unwrap()
+                .contains("Unsupported compression archive ref")
+        );
     }
 
     #[tokio::test]
@@ -1887,9 +2309,11 @@ mod tests {
         assert_eq!(value["ok"], true);
 
         let settings = value["data"]["settings"].as_array().unwrap();
-        assert!(settings
-            .iter()
-            .any(|setting| setting["id"] == "repair_workspace_sessions"));
+        assert!(
+            settings
+                .iter()
+                .any(|setting| setting["id"] == "repair_workspace_sessions")
+        );
     }
     #[tokio::test]
     async fn settings_route_lists_codeisland_gap_provider_hook_actions() {
@@ -1914,6 +2338,83 @@ mod tests {
                 "missing {action}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn provider_setting_update_syncs_legacy_settings_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+
+        let update_request = Request::builder()
+            .method("PUT")
+            .uri("/api/v1/providers/opencode/settings/show_subagents")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "value": true })).unwrap(),
+            ))
+            .unwrap();
+        let (update_status, update_value) = read_json(router(), update_request).await;
+
+        assert_eq!(update_status, StatusCode::OK);
+        assert_eq!(update_value["data"]["value"], true);
+
+        let settings_request = Request::builder()
+            .uri("/api/v1/settings")
+            .body(Body::empty())
+            .unwrap();
+        let (settings_status, settings_value) = read_json(router(), settings_request).await;
+
+        assert_eq!(settings_status, StatusCode::OK);
+        assert_eq!(settings_value["data"]["show_opencode_subagents"], true);
+    }
+
+    #[tokio::test]
+    async fn legacy_settings_update_syncs_provider_setting_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+
+        let update_request = Request::builder()
+            .method("PUT")
+            .uri("/api/v1/settings")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "sessions_per_provider": 12,
+                    "language": "en",
+                    "show_opencode_subagents": true,
+                    "sort_providers_by_session_count": true,
+                    "default_backup_dir": "./backups",
+                    "logging": {
+                        "max_size_bytes": 5 * 1024 * 1024,
+                        "retention_days": null
+                    },
+                    "home_buttons": {
+                        "switch": true,
+                        "view": true,
+                        "export": true,
+                        "share": false,
+                        "delete": false
+                    },
+                    "agent_order": [],
+                    "primary_agents": []
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let (update_status, update_value) = read_json(router(), update_request).await;
+
+        assert_eq!(update_status, StatusCode::OK);
+        assert_eq!(update_value["data"]["show_opencode_subagents"], true);
+
+        let setting_request = Request::builder()
+            .uri("/api/v1/providers/opencode/settings/show_subagents")
+            .body(Body::empty())
+            .unwrap();
+        let (setting_status, setting_value) = read_json(router(), setting_request).await;
+
+        assert_eq!(setting_status, StatusCode::OK);
+        assert_eq!(setting_value["data"]["id"], "show_subagents");
+        assert_eq!(setting_value["data"]["value"], true);
     }
 
     #[tokio::test]
@@ -1946,19 +2447,25 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         let providers = value["data"]["providers"].as_array().unwrap();
-        for profile in crate::hooks::profiles::all() {
+        for descriptor in crate::hooks::registry::all() {
             let entry = providers
                 .iter()
-                .find(|provider| provider["provider_id"] == profile.provider)
-                .unwrap_or_else(|| panic!("missing agent entry for {}", profile.provider));
-            assert_eq!(entry["hook"]["provider"], profile.provider);
-            assert_eq!(entry["hook_profile"]["provider"], profile.provider);
+                .find(|provider| provider["provider_id"] == descriptor.provider())
+                .unwrap_or_else(|| panic!("missing agent entry for {}", descriptor.provider()));
+            assert_eq!(entry["hook"]["provider"], descriptor.provider());
+            assert_eq!(entry["hook_profile"]["provider"], descriptor.provider());
+            assert_eq!(
+                entry["hook_required_events"].as_array().unwrap().len(),
+                descriptor.required_events.len()
+            );
             assert!(entry["hook_profile"]["events"].as_array().unwrap().len() > 0);
-            assert!(entry["settings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|setting| setting["id"] == "install_hook"));
+            assert!(
+                entry["settings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|setting| setting["id"] == "install_hook")
+            );
         }
     }
 
