@@ -90,7 +90,7 @@ export function createHomeModule({
   function getToolbarProviderCandidates() {
     const visible = providers
       .visible()
-      .filter((item) => providers.hasFilter(item, "is_installed") && providers.hasFilter(item, "has_sessions"));
+      .filter((item) => providers.hasFilter(item, "is_installed"));
     if (visible.length) return visible;
 
     const ordered = getOrderedProviders();

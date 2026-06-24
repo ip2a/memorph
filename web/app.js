@@ -266,33 +266,31 @@ function autoCollapseHomeHero() {
   state.ui.homeHeroTransientCollapsed = true;
 }
 
+async function refreshCatalog(workspace = state.home.workspace) {
+  const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+  state.catalog = await api(`/api/v1/providers/catalog${query}`);
+}
+
+function defaultHomeProviders() {
+  return providers
+    .visible()
+    .filter((item) => providers.hasFilter(item, "is_installed"))
+    .map((item) => item.provider_id);
+}
+
 async function bootstrap() {
   setLoading(true, { label: t("loadingWorkspace"), detail: workspaceName(state.home.workspace) });
   try {
     await loadI18n();
     state.meta = await api("/api/v1/meta");
-    state.catalog = state.meta.catalog || { providers: [] };
     setDocumentLanguage();
     state.home.visible = state.meta.settings.sessions_per_provider;
     if (!state.home.workspace) {
       state.home.workspace =
         state.meta.selected_workspace || state.meta.workspaces[0]?.path || "";
     }
-    if (state.home.workspace) {
-      state.home.providers = providers
-        .visible()
-        .filter(
-          (item) =>
-            providers.hasFilter(item, "is_installed") &&
-            providers.hasFilter(item, "has_sessions")
-        )
-        .map((item) => item.provider_id);
-    } else {
-      state.home.providers = providers
-        .visible()
-        .filter((item) => providers.hasFilter(item, "is_installed"))
-        .map((item) => item.provider_id);
-    }
+    await refreshCatalog(state.home.workspace);
+    state.home.providers = defaultHomeProviders();
     await loadRoute();
   } catch (error) {
     fatal(error);
@@ -326,17 +324,8 @@ async function loadRoute() {
       const detailWorkspace = detail.view?.workspace_dir;
       if (detailWorkspace && detailWorkspace !== state.home.workspace) {
         state.home.workspace = detailWorkspace;
-        state.catalog = await api(
-          `/api/v1/providers/catalog?workspace=${encodeURIComponent(detailWorkspace)}`
-        );
-        state.home.providers = providers
-          .visible()
-          .filter(
-            (item) =>
-              providers.hasFilter(item, "is_installed") &&
-              providers.hasFilter(item, "has_sessions")
-          )
-          .map((item) => item.provider_id);
+        await refreshCatalog(detailWorkspace);
+        state.home.providers = defaultHomeProviders();
       }
       state.home.syncGroups = await api("/api/v1/sync/status");
     } else if (route.name === "sync-list") {
@@ -639,17 +628,8 @@ async function setWorkspace(workspace) {
       render();
       return;
     }
-    state.catalog = await api(
-      `/api/v1/providers/catalog?workspace=${encodeURIComponent(workspace)}`
-    );
-    state.home.providers = providers
-      .visible()
-      .filter(
-        (item) =>
-          providers.hasFilter(item, "is_installed") &&
-          providers.hasFilter(item, "has_sessions")
-      )
-      .map((item) => item.provider_id);
+    await refreshCatalog(workspace);
+    state.home.providers = defaultHomeProviders();
     await loadHome();
     if (state.route.name === "agents") {
       await loadAgentManagement();
@@ -727,9 +707,7 @@ async function persistProvidersAndReload() {
         workspace: state.home.workspace,
       },
     });
-    state.catalog = await api(
-      `/api/v1/providers/catalog?workspace=${encodeURIComponent(state.home.workspace)}`
-    );
+    await refreshCatalog(state.home.workspace);
     await loadHome();
     render();
   } catch (error) {
@@ -1551,7 +1529,7 @@ async function saveSettings(body) {
     },
   });
   state.meta = await api("/api/v1/meta");
-  state.catalog = state.meta.catalog || { providers: [] };
+  await refreshCatalog(state.home.workspace);
   setDocumentLanguage();
   state.home.visible = state.meta.settings.sessions_per_provider;
   toast(t("saved"), t("settingsTitle"));

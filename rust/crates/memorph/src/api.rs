@@ -9,8 +9,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 use crate::{
     agent_management, config, core, hooks, logging, provider_features, provider_settings,
@@ -448,9 +448,6 @@ fn filter_sessions_by_workspace(
         .collect()
 }
 
-use std::sync::{Arc, OnceLock, RwLock};
-use std::time::{Duration, Instant};
-
 struct CatalogCacheEntry {
     workspace: Option<String>,
     catalog: ProviderCatalog,
@@ -508,7 +505,10 @@ fn cache_key(workspace: Option<&str>) -> Option<String> {
 async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result<ProviderCatalog> {
     // Try cache first.
     {
-        let cache = catalog_cache().read().map_err(|_| anyhow::anyhow!("Catalog cache poisoned"))?;
+        let cache_handle = catalog_cache();
+        let cache = cache_handle
+            .read()
+            .map_err(|_| anyhow::anyhow!("Catalog cache poisoned"))?;
         if cache.generated_at.elapsed() < CATALOG_CACHE_TTL && cache.workspace == cache_key(workspace) {
             return Ok(cache.catalog.clone());
         }
@@ -588,7 +588,10 @@ async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result
 
     // Update cache.
     {
-        let mut cache = catalog_cache().write().map_err(|_| anyhow::anyhow!("Catalog cache poisoned"))?;
+        let cache_handle = catalog_cache();
+        let mut cache = cache_handle
+            .write()
+            .map_err(|_| anyhow::anyhow!("Catalog cache poisoned"))?;
         cache.workspace = cache_key(workspace);
         cache.catalog = catalog.clone();
         cache.generated_at = Instant::now();
@@ -600,7 +603,10 @@ async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result
 async fn build_provider_catalog_active(workspace: Option<&str>) -> anyhow::Result<ProviderActiveCatalog> {
     // Try cache first.
     {
-        let cache = active_catalog_cache().read().map_err(|_| anyhow::anyhow!("Active catalog cache poisoned"))?;
+        let cache_handle = active_catalog_cache();
+        let cache = cache_handle
+            .read()
+            .map_err(|_| anyhow::anyhow!("Active catalog cache poisoned"))?;
         if cache.generated_at.elapsed() < ACTIVE_CATALOG_CACHE_TTL && cache.workspace == cache_key(workspace) {
             return Ok(ProviderActiveCatalog { providers: cache.providers.clone() });
         }
@@ -655,7 +661,10 @@ async fn build_provider_catalog_active(workspace: Option<&str>) -> anyhow::Resul
 
     // Update cache.
     {
-        let mut cache = active_catalog_cache().write().map_err(|_| anyhow::anyhow!("Active catalog cache poisoned"))?;
+        let cache_handle = active_catalog_cache();
+        let mut cache = cache_handle
+            .write()
+            .map_err(|_| anyhow::anyhow!("Active catalog cache poisoned"))?;
         cache.workspace = cache_key(workspace);
         cache.providers = result.providers.clone();
         cache.generated_at = Instant::now();
