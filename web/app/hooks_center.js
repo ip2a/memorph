@@ -1,5 +1,6 @@
 export function createHooksCenterModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -97,7 +98,7 @@ export function createHooksCenterModule({
             class="meta-link-button"
             data-action="select-hook-provider"
             data-provider="${escapeAttr(providerId)}"
-          >${escapeHtml(provider.name || providerId)}</button>
+          >${escapeHtml(providers.displayName(providerId))}</button>
           <span>${escapeHtml(hook.message || profile.config_hint || t("hookOptionalInstallHint"))}</span>
         </div>
         <div class="hook-provider-main">
@@ -120,6 +121,7 @@ export function createHooksCenterModule({
   function renderProviderDetail() {
     const detail = state.hooks.providerDetail;
     const provider = detail?.provider;
+    const providerId = provider?.provider_id || "";
     if (!provider) {
       return `
         <section class="section-panel">
@@ -139,7 +141,7 @@ export function createHooksCenterModule({
       <section class="section-panel">
         <div class="section-heading">
           <div>
-            <strong>${escapeHtml(provider.name || provider.provider_id)} ${t("hookProviderDetail")}</strong>
+            <strong>${escapeHtml(providers.displayName(providerId))} ${t("hookProviderDetail")}</strong>
             <small>${t("hookProviderDetailHint")}</small>
           </div>
         </div>
@@ -421,7 +423,7 @@ export function createHooksCenterModule({
         </div>
         <div class="hook-provider-main">
           <div class="pill-row hook-event-pill-row">
-            <span class="pill">${escapeHtml(group.provider_name || providerId)}</span>
+            <span class="pill">${escapeHtml(providers.displayName(group.provider_id || providerId))}</span>
             <span class="pill">${escapeHtml(diagnosis.kind || "unknown")}</span>
             ${diagnosis.confidence ? `<span class="pill">confidence=${escapeHtml(diagnosis.confidence)}</span>` : ""}
             ${diagnosis.matched_by || summary.matched_by ? `<span class="pill">matched=${escapeHtml(diagnosis.matched_by || summary.matched_by)}</span>` : ""}
@@ -450,10 +452,11 @@ export function createHooksCenterModule({
 
   function renderDiagnosisRow(provider) {
     const diagnosis = provider.hook_diagnosis || {};
+    const providerId = provider.provider_id || "";
     return `
       <div class="settings-row agent-detail-row">
         <div class="settings-copy settings-copy-inline">
-          <strong>${escapeHtml(provider.name || provider.provider_id)}</strong>
+          <strong>${escapeHtml(providers.displayName(providerId))}</strong>
           <span>${escapeHtml(t("hookDiagnosisProviderHint"))}</span>
         </div>
         <div class="pill-row hook-event-pill-row">

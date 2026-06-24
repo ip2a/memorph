@@ -1,5 +1,6 @@
 export function createManagerCompressionModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -30,7 +31,7 @@ export function createManagerCompressionModule({
               <div class="manager-row-copy">
                 <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(item.title || item.session_id)}</a>
                 <div class="manager-meta">
-                  <span>${escapeHtml(item.provider_name)}</span>
+                  <span>${escapeHtml(providers.displayName(item.provider_id))}</span>
                   <span>${escapeHtml(formatBytes(item.size_bytes))}</span>
                   <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(item.last_active_at)))}</span>
                 </div>
@@ -106,12 +107,12 @@ export function createManagerCompressionModule({
   function renderManagerForm(managerDraft) {
     const providerChecks = getOrderedProviders()
       .map((item) => {
-        const checked = managerDraft.providers.includes(item.id);
+        const checked = managerDraft.providers.includes(item.provider_id);
         return `
           <label class="agent-provider-item manager-provider-item ${checked ? "is-active" : ""}">
-            <input data-role="manager-provider-toggle" type="checkbox" name="manager_provider" value="${escapeAttr(item.id)}" ${checked ? "checked" : ""}>
+            <input data-role="manager-provider-toggle" type="checkbox" name="manager_provider" value="${escapeAttr(item.provider_id)}" ${checked ? "checked" : ""}>
             <span class="agent-provider-head">
-              <strong class="agent-provider-name">${escapeHtml(item.name)}</strong>
+              <strong class="agent-provider-name">${escapeHtml(item.display_name)}</strong>
               <span class="agent-provider-state ${checked ? "is-installed" : "is-missing"}" aria-hidden="true">${checked ? "●" : "○"}</span>
             </span>
           </label>`;
@@ -166,7 +167,7 @@ export function createManagerCompressionModule({
             return `
               <div class="agent-provider-item">
                 <span class="agent-provider-head">
-                  <strong class="agent-provider-name">${escapeHtml(provider.provider_id || "—")}</strong>
+                  <strong class="agent-provider-name">${escapeHtml(providers.displayName(provider.provider_id))}</strong>
                   <span class="pill">${escapeHtml(defaultProjection)}</span>
                 </span>
               </div>`;

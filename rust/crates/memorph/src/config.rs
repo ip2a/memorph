@@ -107,7 +107,7 @@ pub struct HomeButtonConfig {
     #[serde(default = "default_true")]
     pub export: bool,
     #[serde(default = "default_false")]
-    pub share: bool,
+    pub sync: bool,
     #[serde(default = "default_false")]
     pub delete: bool,
 }
@@ -118,7 +118,7 @@ impl Default for HomeButtonConfig {
             switch: true,
             view: true,
             export: true,
-            share: false,
+            sync: false,
             delete: false,
         }
     }
@@ -138,6 +138,26 @@ pub struct AgentDisplayPreferences {
     pub order: Vec<String>,
     #[serde(default)]
     pub primary: Vec<String>,
+    #[serde(default)]
+    pub sort_order: ProviderDisplayOrder,
+    #[serde(default)]
+    pub hidden_state: ProviderDisplayHidden,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderDisplayOrder {
+    #[serde(default)]
+    pub global: Vec<String>,
+    #[serde(default)]
+    pub workspace: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProviderDisplayHidden {
+    #[serde(default)]
+    pub global: Vec<String>,
+    #[serde(default)]
+    pub workspace: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -170,6 +190,10 @@ pub struct WorkspaceEntry {
     pub last_viewed_at: i64,
     #[serde(default)]
     pub providers: Vec<String>,
+    #[serde(default)]
+    pub sort_order: Vec<String>,
+    #[serde(default)]
+    pub hidden_state: Vec<String>,
 }
 
 #[cfg(test)]
@@ -255,7 +279,7 @@ fn canonical_workspace_string(path: &Path) -> Result<String> {
     Ok(canonical.to_string_lossy().to_string())
 }
 
-fn normalize_workspace_key(workspace: &str) -> Result<String> {
+pub(crate) fn normalize_workspace_key(workspace: &str) -> Result<String> {
     let workspace = workspace.trim();
     if workspace.is_empty() {
         anyhow::bail!("Workspace path cannot be empty");
@@ -282,6 +306,8 @@ pub fn remember_workspace(path: &Path) -> Result<()> {
             path: workspace,
             last_viewed_at: now,
             providers: Vec::new(),
+            sort_order: Vec::new(),
+            hidden_state: Vec::new(),
         });
     }
 
@@ -377,10 +403,54 @@ pub fn set_provider_preference(provider_id: &str, key: &str, value: Option<Value
     save_config(&config)
 }
 
-pub fn update_agent_display_preferences(order: Vec<String>, primary: Vec<String>) -> Result<()> {
+pub fn update_agent_display_preferences(
+    sort_order: ProviderDisplayOrder,
+    hidden_state: ProviderDisplayHidden,
+) -> Result<()> {
     let mut config = load_config()?;
-    config.web.agent_display.order = normalize_provider_ids(order);
-    config.web.agent_display.primary = normalize_provider_ids(primary);
+    config.web.agent_display.sort_order = ProviderDisplayOrder {
+        global: normalize_provider_ids(sort_order.global),
+        workspace: normalize_provider_ids(sort_order.workspace),
+    };
+    config.web.agent_display.hidden_state = ProviderDisplayHidden {
+        global: normalize_provider_ids(hidden_state.global),
+        workspace: normalize_provider_ids(hidden_state.workspace),
+    };
+    // Keep legacy `order` in sync with global sort order for backward compatibility.
+    config.web.agent_display.order = config.web.agent_display.sort_order.global.clone();
+    save_config(&config)
+}
+
+pub fn update_workspace_catalog_preferences(
+    workspace: &str,
+    sort_order: Vec<String>,
+    hidden_state: Vec<String>,
+) -> Result<()> {
+    let workspace = normalize_workspace_key(workspace)?;
+    let mut config = load_config()?;
+    let now = chrono::Utc::now().timestamp_millis();
+
+    if let Some(entry) = config
+        .workspaces
+        .iter_mut()
+        .find(|entry| entry.path == workspace)
+    {
+        entry.sort_order = normalize_provider_ids(sort_order);
+        entry.hidden_state = normalize_provider_ids(hidden_state);
+        entry.last_viewed_at = now;
+    } else {
+        config.workspaces.push(WorkspaceEntry {
+            path: workspace,
+            last_viewed_at: now,
+            providers: Vec::new(),
+            sort_order: normalize_provider_ids(sort_order),
+            hidden_state: normalize_provider_ids(hidden_state),
+        });
+    }
+
+    config
+        .workspaces
+        .sort_by_key(|entry| std::cmp::Reverse(entry.last_viewed_at));
     save_config(&config)
 }
 
@@ -391,7 +461,11 @@ pub fn update_home_button_config(home_buttons: HomeButtonConfig) -> Result<()> {
 }
 
 pub fn ordered_provider_ids(prefs: &WebPreferences) -> Vec<String> {
-    let mut ordered = normalize_provider_ids(prefs.agent_display.order.clone());
+    let mut ordered = normalize_provider_ids(prefs.agent_display.sort_order.global.clone());
+    // Migration: legacy `order` field feeds into global sort order when new field is empty.
+    if ordered.is_empty() {
+        ordered = normalize_provider_ids(prefs.agent_display.order.clone());
+    }
     for id in crate::providers::all_provider_ids() {
         if !ordered.iter().any(|existing| existing == id) {
             ordered.push((*id).to_string());
@@ -400,7 +474,52 @@ pub fn ordered_provider_ids(prefs: &WebPreferences) -> Vec<String> {
     ordered
 }
 
+pub fn workspace_ordered_provider_ids(workspace: Option<&str>) -> Vec<String> {
+    let Some(workspace) = workspace.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Vec::new();
+    };
+    let config = match load_config() {
+        Ok(config) => config,
+        Err(_) => return Vec::new(),
+    };
+    let workspace = match normalize_workspace_key(workspace) {
+        Ok(path) => path,
+        Err(_) => return Vec::new(),
+    };
+    config
+        .workspaces
+        .iter()
+        .find(|entry| entry.path == workspace)
+        .map(|entry| normalize_provider_ids(entry.sort_order.clone()))
+        .unwrap_or_default()
+}
+
+pub fn global_hidden_provider_ids(prefs: &WebPreferences) -> Vec<String> {
+    normalize_provider_ids(prefs.agent_display.hidden_state.global.clone())
+}
+
+pub fn workspace_hidden_provider_ids(workspace: Option<&str>) -> Vec<String> {
+    let Some(workspace) = workspace.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Vec::new();
+    };
+    let config = match load_config() {
+        Ok(config) => config,
+        Err(_) => return Vec::new(),
+    };
+    let workspace = match normalize_workspace_key(workspace) {
+        Ok(path) => path,
+        Err(_) => return Vec::new(),
+    };
+    config
+        .workspaces
+        .iter()
+        .find(|entry| entry.path == workspace)
+        .map(|entry| normalize_provider_ids(entry.hidden_state.clone()))
+        .unwrap_or_default()
+}
+
 pub fn primary_provider_ids(prefs: &WebPreferences) -> Vec<String> {
+    // `primary` is deprecated in favor of explicit sort_order; kept for backward reads.
     let ordered = ordered_provider_ids(prefs);
     let primary = normalize_provider_ids(prefs.agent_display.primary.clone());
     if primary.is_empty() {
@@ -595,6 +714,8 @@ pub fn set_workspace_providers(workspace: &str, providers: Vec<String>) -> Resul
             path: workspace,
             last_viewed_at: chrono::Utc::now().timestamp_millis(),
             providers,
+            sort_order: Vec::new(),
+            hidden_state: Vec::new(),
         });
     }
 
@@ -637,6 +758,37 @@ mod tests {
         set_provider_preference_in_prefs(&mut prefs, "codex", "sample_toggle", None).unwrap();
 
         assert!(!prefs.provider_prefs.contains_key("codex"));
+    }
+
+    #[test]
+    fn ordered_provider_ids_prefers_sort_order_global() {
+        let mut prefs = WebPreferences::default();
+        prefs.agent_display.sort_order.global = vec!["opencode".into(), "claude".into()];
+        prefs.agent_display.order = vec!["codex".into()]; // legacy should be ignored
+
+        let ordered = ordered_provider_ids(&prefs);
+        assert_eq!(ordered[0], "opencode");
+        assert_eq!(ordered[1], "claude");
+        assert!(ordered.contains(&"codex".to_string()));
+    }
+
+    #[test]
+    fn ordered_provider_ids_migrates_legacy_order() {
+        let mut prefs = WebPreferences::default();
+        prefs.agent_display.order = vec!["codex".into(), "claude".into()];
+
+        let ordered = ordered_provider_ids(&prefs);
+        assert_eq!(ordered[0], "codex");
+        assert_eq!(ordered[1], "claude");
+    }
+
+    #[test]
+    fn global_hidden_provider_ids_reads_hidden_state_global() {
+        let mut prefs = WebPreferences::default();
+        prefs.agent_display.hidden_state.global = vec!["cursor".into()];
+
+        let hidden = global_hidden_provider_ids(&prefs);
+        assert_eq!(hidden, vec!["cursor".to_string()]);
     }
 
     #[test]

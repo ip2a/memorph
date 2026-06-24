@@ -7,6 +7,7 @@ export function randomAsciiBannerColor() {
 
 export function createState() {
   return {
+    catalog: { providers: [] },
     meta: null,
     route: parseRoute(window.location.pathname),
     loading: 0,
@@ -26,10 +27,10 @@ export function createState() {
       hookFilter: "all",
       visible: 12,
       groups: [],
-      sharedGroups: [],
+      syncGroups: [],
     },
     session: null,
-    sharedDetail: null,
+    syncDetail: null,
     manager: {
       draft: null,
       preview: null,

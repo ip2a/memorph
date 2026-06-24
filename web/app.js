@@ -18,14 +18,16 @@ import { createHomeModule } from "./app/home.js";
 import { createHooksCenterModule } from "./app/hooks_center.js";
 import { createManagerCompressionModule } from "./app/manager_compression.js";
 import { createModalModule } from "./app/modals.js";
-import { createSessionSharedModule } from "./app/session_shared.js";
+import { createSessionSyncModule } from "./app/session_sync.js";
 import { createFormatHelpers } from "./app/helpers.js";
 import { api } from "./app/http.js";
 import { createI18n } from "./app/i18n.js";
+import { createProviders } from "./app/providers.js";
 import { parseRoute } from "./app/router.js";
 import { createState, randomAsciiBannerColor } from "./app/state.js";
 
 const state = createState();
+const providers = createProviders(state);
 const HOME_HERO_MODE_STORAGE_KEY = "memorph.homeHeroMode";
 restoreHomeHeroMode();
 const { lang, t, loadI18n, setDocumentLanguage } = createI18n(
@@ -45,7 +47,7 @@ const {
   escapeAttr,
 } = createFormatHelpers(lang);
 const {
-  findSharedRef,
+  findSyncRef,
   getDefaultSwitchTarget,
   getFoldedProviders,
   getOrderedProviders,
@@ -55,6 +57,7 @@ const {
   scheduleHomeProviderLayout,
 } = createHomeModule({
   state,
+  providers,
   ascii: ASCII,
   t,
   escapeHtml,
@@ -78,6 +81,7 @@ const {
   renderAgentManagementPage,
 } = createAgentsSettingsModule({
   state,
+  providers,
   aboutLinks: ABOUT_LINKS,
   t,
   escapeHtml,
@@ -91,10 +95,11 @@ const {
 const {
   detailEventToText,
   renderSessionDetail,
-  renderSharedDetail,
-  renderSharedList,
-} = createSessionSharedModule({
+  renderSyncDetail,
+  renderSyncList,
+} = createSessionSyncModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -103,8 +108,7 @@ const {
   markdown,
   renderAgentDetailRow,
   renderMetaLine,
-  getOrderedProviders,
-  findSharedRef,
+  findSyncRef,
 });
 const {
   renderCompressionPage,
@@ -113,6 +117,7 @@ const {
   updateManagerSelectionStats,
 } = createManagerCompressionModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -127,6 +132,7 @@ const {
 });
 const { renderHooksCenterPage } = createHooksCenterModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,
@@ -255,6 +261,7 @@ async function bootstrap() {
   try {
     await loadI18n();
     state.meta = await api("/api/v1/meta");
+    state.catalog = state.meta.catalog || { providers: [] };
     setDocumentLanguage();
     state.home.visible = state.meta.settings.sessions_per_provider;
     if (!state.home.workspace) {
@@ -262,13 +269,19 @@ async function bootstrap() {
         state.meta.selected_workspace || state.meta.workspaces[0]?.path || "";
     }
     if (state.home.workspace) {
-      state.home.providers = await api(
-        `/api/v1/workspaces/providers?workspace=${encodeURIComponent(state.home.workspace)}`
-      );
+      state.home.providers = providers
+        .visible()
+        .filter(
+          (item) =>
+            providers.hasFilter(item, "is_installed") &&
+            providers.hasFilter(item, "has_sessions")
+        )
+        .map((item) => item.provider_id);
     } else {
-      state.home.providers = state.meta.settings.primary_agents.length
-        ? [...state.meta.settings.primary_agents]
-        : state.meta.providers.map((item) => item.id);
+      state.home.providers = providers
+        .visible()
+        .filter((item) => providers.hasFilter(item, "is_installed"))
+        .map((item) => item.provider_id);
     }
     await loadRoute();
   } catch (error) {
@@ -303,20 +316,28 @@ async function loadRoute() {
       const detailWorkspace = detail.view?.workspace_dir;
       if (detailWorkspace && detailWorkspace !== state.home.workspace) {
         state.home.workspace = detailWorkspace;
-        state.home.providers = await api(
-          `/api/v1/workspaces/providers?workspace=${encodeURIComponent(detailWorkspace)}`
+        state.catalog = await api(
+          `/api/v1/providers/catalog?workspace=${encodeURIComponent(detailWorkspace)}`
         );
+        state.home.providers = providers
+          .visible()
+          .filter(
+            (item) =>
+              providers.hasFilter(item, "is_installed") &&
+              providers.hasFilter(item, "has_sessions")
+          )
+          .map((item) => item.provider_id);
       }
-      state.home.sharedGroups = await api("/api/v1/share/status");
-    } else if (route.name === "shared-list") {
-      state.home.sharedGroups = await api("/api/v1/share/status");
-    } else if (route.name === "shared-detail") {
-      state.home.sharedGroups = await api("/api/v1/share/status");
-      state.sharedDetail = await api(
-        `/api/v1/share/status?group_id=${encodeURIComponent(route.groupId)}`
+      state.home.syncGroups = await api("/api/v1/sync/status");
+    } else if (route.name === "sync-list") {
+      state.home.syncGroups = await api("/api/v1/sync/status");
+    } else if (route.name === "sync-detail") {
+      state.home.syncGroups = await api("/api/v1/sync/status");
+      state.syncDetail = await api(
+        `/api/v1/sync/status?group_id=${encodeURIComponent(route.groupId)}`
       );
     } else if (route.name === "manager") {
-      state.home.sharedGroups = await api("/api/v1/share/status");
+      state.home.syncGroups = await api("/api/v1/sync/status");
       if (!state.manager.preview) {
         await loadDefaultManagerPreview();
       }
@@ -342,7 +363,7 @@ async function loadRoute() {
 async function loadHome() {
   if (!state.home.workspace) {
     state.home.groups = [];
-    state.home.sharedGroups = await api("/api/v1/share/status");
+    state.home.syncGroups = await api("/api/v1/sync/status");
     return;
   }
   const params = new URLSearchParams({
@@ -355,7 +376,7 @@ async function loadHome() {
     hook_filter: state.home.hookFilter,
   });
   state.home.groups = await api(`/api/v1/sessions?${params.toString()}`);
-  state.home.sharedGroups = await api("/api/v1/share/status");
+  state.home.syncGroups = await api("/api/v1/sync/status");
 }
 
 async function refreshHomeSessions(options = {}) {
@@ -605,9 +626,17 @@ async function setWorkspace(workspace) {
       render();
       return;
     }
-    state.home.providers = await api(
-      `/api/v1/workspaces/providers?workspace=${encodeURIComponent(workspace)}`
+    state.catalog = await api(
+      `/api/v1/providers/catalog?workspace=${encodeURIComponent(workspace)}`
     );
+    state.home.providers = providers
+      .visible()
+      .filter(
+        (item) =>
+          providers.hasFilter(item, "is_installed") &&
+          providers.hasFilter(item, "has_sessions")
+      )
+      .map((item) => item.provider_id);
     await loadHome();
     if (state.route.name === "agents") {
       await loadAgentManagement();
@@ -671,13 +700,23 @@ async function updateManagerProvider(provider, checked, trigger = null) {
 async function persistProvidersAndReload() {
   if (!state.home.workspace) return;
   try {
-    await api("/api/v1/workspaces/providers", {
+    const visibleIds = providers
+      .visible()
+      .map((item) => item.provider_id);
+    const hiddenWorkspace = visibleIds.filter(
+      (id) => !state.home.providers.includes(id)
+    );
+    await api("/api/v1/providers/catalog", {
       method: "PUT",
       body: {
+        sort_order: { global: [], workspace: [] },
+        hidden_state: { global: [], workspace: hiddenWorkspace },
         workspace: state.home.workspace,
-        providers: state.home.providers,
       },
     });
+    state.catalog = await api(
+      `/api/v1/providers/catalog?workspace=${encodeURIComponent(state.home.workspace)}`
+    );
     await loadHome();
     render();
   } catch (error) {
@@ -761,6 +800,9 @@ async function handleAction(action, data, trigger = null) {
     case "open-compression":
       navigate("/compression");
       break;
+    case "compress-session":
+      openCompressSessionModal(data.provider || "", data.sessionId || "");
+      break;
     case "open-compression-restore":
       openCompressionRestoreModal(data.archiveRef || "");
       break;
@@ -823,20 +865,20 @@ async function handleAction(action, data, trigger = null) {
     case "toggle-detail-message":
       toggleDetailMessage(trigger);
       break;
-    case "open-share-create":
-      openShareCreateModal(data.provider, data.sessionId, data.title || "");
+    case "open-sync-create":
+      openSyncCreateModal(data.provider, data.sessionId, data.title || "");
       break;
-    case "open-shared-rename":
-      openSharedRenameModal(data.groupId, data.title || "");
+    case "open-sync-rename":
+      openSyncRenameModal(data.groupId, data.title || "");
       break;
-    case "open-shared-remove":
-      openSharedRemoveModal(data.groupId);
+    case "open-sync-remove":
+      openSyncRemoveModal(data.groupId);
       break;
-    case "open-shared-bind":
-      openSharedBindModal(data.groupId);
+    case "open-sync-bind":
+      openSyncBindModal(data.groupId);
       break;
     case "run-sync-latest":
-      await runSharedSync(data.groupId);
+      await runSyncGroup(data.groupId);
       break;
     case "open-sync-from":
       openPushSyncModal(data.groupId, data.holdingId, data.provider || "", data.sessionId || "");
@@ -933,22 +975,22 @@ async function handleSubmit(kind, formData) {
       case "delete-session":
         await runDelete(formData);
         break;
-      case "create-shared":
-        await runShareCreate(formData);
+      case "create-sync":
+        await runSyncCreate(formData);
         break;
-      case "rename-shared":
-        await runSharedRename(formData);
+      case "rename-sync":
+        await runSyncRename(formData);
         break;
-      case "remove-shared":
-        await runSharedRemove(formData);
+      case "remove-sync":
+        await runSyncRemove(formData);
         break;
-      case "bind-shared":
-        await runSharedBind(formData);
+      case "bind-sync":
+        await runSyncBind(formData);
         break;
-      case "sync-from-shared":
-        await runSharedSync(String(formData.get("group_id")), String(formData.get("holding_id")));
+      case "sync-from-sync":
+        await runSyncGroup(String(formData.get("group_id")), String(formData.get("holding_id")));
         break;
-      case "unbind-shared":
+      case "unbind-sync":
         await runUnbind(String(formData.get("group_id")), String(formData.get("holding_id")));
         break;
       case "save-settings":
@@ -968,6 +1010,13 @@ async function handleSubmit(kind, formData) {
         break;
       case "expand-compression":
         await runCompressionExpand(formData);
+        break;
+      case "compress-session":
+        {
+          const provider = String(formData.get("provider") || "");
+          const sessionId = String(formData.get("session_id") || "");
+          toast(t("notImplemented"), `${provider} / ${sessionId}`);
+        }
         break;
       default:
         break;
@@ -1194,14 +1243,14 @@ async function runDelete(formData) {
   });
 }
 
-async function runShareCreate(formData) {
+async function runSyncCreate(formData) {
   const provider = String(formData.get("provider"));
   const targets = [...new Set(formData.getAll("targets").map(String).filter((target) => target && target !== provider))];
   if (!targets.length) {
     toast(t("error"), t("noSyncTargets"), true);
     return;
   }
-  const result = await api("/api/v1/share", {
+  const result = await api("/api/v1/sync", {
     method: "POST",
     body: {
       provider,
@@ -1214,21 +1263,21 @@ async function runShareCreate(formData) {
   await loadHome();
   closeModal();
   openActionResultModal({
-    title: t("sharedCreated"),
+    title: t("syncCreated"),
     summary: result.id,
     lines: [
       `${t("sessionId")}: ${result.id}`,
       `${t("holdings")}: ${result.holdings.length}`,
     ],
-    navPath: `/shared/${encodeURIComponent(result.id)}`,
+    navPath: `/sync/${encodeURIComponent(result.id)}`,
     navLabel: t("openDetail"),
   });
 }
 
-async function runSharedRename(formData) {
+async function runSyncRename(formData) {
   const groupId = String(formData.get("group_id"));
   const title = String(formData.get("title"));
-  await api(`/api/v1/share/${encodeURIComponent(groupId)}`, {
+  await api(`/api/v1/sync/${encodeURIComponent(groupId)}`, {
     method: "PATCH",
     body: { title },
   });
@@ -1236,47 +1285,47 @@ async function runSharedRename(formData) {
   closeModal();
   openActionResultModal({
     title: t("rename"),
-    summary: t("sharedTitle"),
+    summary: t("syncTitle"),
     lines: [
       `${t("sessionId")}: ${groupId}`,
       `${t("title")}: ${title}`,
     ],
-    navPath: `/shared/${encodeURIComponent(groupId)}`,
+    navPath: `/sync/${encodeURIComponent(groupId)}`,
     navLabel: t("openDetail"),
   });
 }
 
-async function runSharedRemove(formData) {
+async function runSyncRemove(formData) {
   const groupId = String(formData.get("group_id"));
-  const removeUrl = new URL(`/api/v1/share/${encodeURIComponent(groupId)}`, window.location.origin);
+  const removeUrl = new URL(`/api/v1/sync/${encodeURIComponent(groupId)}`, window.location.origin);
   removeUrl.searchParams.set("delete_provider_sessions", formData.get("delete_provider_sessions") ? "true" : "false");
   await api(removeUrl.pathname + removeUrl.search, { method: "DELETE" });
-  state.home.sharedGroups = (state.home.sharedGroups || []).filter((group) => group.id !== groupId);
-  if (state.route.name === "shared-detail" && state.route.groupId === groupId) {
-    replacePath("/shared");
-    state.sharedDetail = null;
+  state.home.syncGroups = (state.home.syncGroups || []).filter((group) => group.id !== groupId);
+  if (state.route.name === "sync-detail" && state.route.groupId === groupId) {
+    replacePath("/sync");
+    state.syncDetail = null;
   }
   closeModal();
   openActionResultModal({
     title: t("deleted"),
     lines: [
       `${t("sessionId")}: ${groupId}`,
-      `${t("sharedTitle")}: ${groupId}`,
+      `${t("syncTitle")}: ${groupId}`,
     ],
-    navPath: "/shared",
-    navLabel: t("sharedGroups"),
+    navPath: "/sync",
+    navLabel: t("syncGroups"),
   });
 }
 
-async function runSharedBind(formData) {
+async function runSyncBind(formData) {
   const provider = String(formData.get("provider"));
   const sessionId = emptyToNull(formData.get("session_id"));
-  if (!sessionId && !getOrderedProviders().some((item) => item.id === provider && item.export)) {
+  if (!sessionId && !providers.capabilitySet(provider).export) {
     toast(t("error"), t("noSyncTargets"), true);
     return;
   }
 
-  const result = await api("/api/v1/share/bind", {
+  const result = await api("/api/v1/sync/bind", {
     method: "POST",
     body: {
       group_id: String(formData.get("group_id")),
@@ -1299,8 +1348,8 @@ async function runSharedBind(formData) {
   });
 }
 
-async function runSharedSync(groupId, sourceHoldingId = null) {
-  const result = await api("/api/v1/share/sync", {
+async function runSyncGroup(groupId, sourceHoldingId = null) {
+  const result = await api("/api/v1/sync/sync", {
     method: "POST",
     body: {
       group_id: groupId,
@@ -1313,7 +1362,7 @@ async function runSharedSync(groupId, sourceHoldingId = null) {
 }
 
 async function runUnbind(groupId, holdingId) {
-  await api(`/api/v1/share/holdings/${encodeURIComponent(groupId)}/${encodeURIComponent(holdingId)}`, {
+  await api(`/api/v1/sync/holdings/${encodeURIComponent(groupId)}/${encodeURIComponent(holdingId)}`, {
     method: "DELETE",
   });
   await loadRoute();
@@ -1323,9 +1372,9 @@ async function runUnbind(groupId, holdingId) {
     summary: t("deleted"),
     lines: [
       `${t("sessionId")}: ${holdingId}`,
-      `${t("sharedTitle")}: ${groupId}`,
+      `${t("syncTitle")}: ${groupId}`,
     ],
-    navPath: `/shared/${encodeURIComponent(groupId)}`,
+    navPath: `/sync/${encodeURIComponent(groupId)}`,
     navLabel: t("openDetail"),
   });
 }
@@ -1341,11 +1390,12 @@ async function runSaveSettings(formData) {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
       export: formData.get("home_button_export") === "true",
-      share: formData.get("home_button_share") === "true",
+      sync: formData.get("home_button_sync") === "true",
       delete: formData.get("home_button_delete") === "true",
     },
     agent_order: formData.getAll("agent_order").map(String),
-    primary_agents: formData.getAll("primary_agents").map(String),
+    primary_agents: [],
+    hidden_agents: formData.getAll("hidden_agents").map(String),
   };
   await saveSettings(body);
   closeModal();
@@ -1356,7 +1406,15 @@ async function saveSettings(body) {
     method: "PUT",
     body,
   });
+  await api("/api/v1/providers/catalog", {
+    method: "PUT",
+    body: {
+      sort_order: { global: body.agent_order, workspace: [] },
+      hidden_state: { global: body.hidden_agents, workspace: [] },
+    },
+  });
   state.meta = await api("/api/v1/meta");
+  state.catalog = state.meta.catalog || { providers: [] };
   setDocumentLanguage();
   state.home.visible = state.meta.settings.sessions_per_provider;
   toast(t("saved"), t("settingsTitle"));
@@ -1616,11 +1674,12 @@ function readSettingsDraft() {
       view: formData.get("home_button_view") === "true",
       switch: formData.get("home_button_switch") === "true",
       export: formData.get("home_button_export") === "true",
-      share: formData.get("home_button_share") === "true",
+      sync: formData.get("home_button_sync") === "true",
       delete: formData.get("home_button_delete") === "true",
     },
     agent_order: formData.getAll("agent_order").map(String),
-    primary_agents: formData.getAll("primary_agents").map(String),
+    primary_agents: [],
+    hidden_agents: formData.getAll("hidden_agents").map(String),
   };
 }
 
@@ -1668,10 +1727,10 @@ function renderPage() {
       return renderHome();
     case "session":
       return `<div class="page-scroll">${renderSessionDetail()}</div>`;
-    case "shared-list":
-      return `<div class="page-scroll manager-page-scroll">${renderSharedList()}</div>`;
-    case "shared-detail":
-      return `<div class="page-scroll">${renderSharedDetail()}</div>`;
+    case "sync-list":
+      return `<div class="page-scroll manager-page-scroll">${renderSyncList()}</div>`;
+    case "sync-detail":
+      return `<div class="page-scroll">${renderSyncDetail()}</div>`;
     case "manager":
       return `<div class="page-scroll manager-page-scroll">${renderManagerPage()}</div>`;
     case "compression":
@@ -1708,7 +1767,7 @@ function openHookOperationConfirm(providerId, settingId) {
   );
   const hook = provider?.hook || {};
   const profile = provider?.hook_profile || {};
-  const providerName = provider?.name || providerId;
+  const providerName = providers.displayName(providerId);
   const configPath = hook.config_path || profile.config_hint || "—";
   const operationLabel = hookOperationLabel(settingId);
   const isUninstall = settingId === "uninstall_hook";
@@ -2034,6 +2093,7 @@ function renderWorkspaceDatalist() {
 const {
   openActionResultModal,
   openAgentFilterModal,
+  openCompressSessionModal,
   openCompressionExpandModal,
   openCompressionRestoreModal,
   openDeleteModal,
@@ -2041,10 +2101,10 @@ const {
   openImportModal,
   openPushSyncModal,
   openRenameModal,
-  openShareCreateModal,
-  openSharedBindModal,
-  openSharedRemoveModal,
-  openSharedRenameModal,
+  openSyncCreateModal,
+  openSyncBindModal,
+  openSyncRemoveModal,
+  openSyncRenameModal,
   openSortOptionsModal,
   openSwitchModal,
   openSyncResultModal,

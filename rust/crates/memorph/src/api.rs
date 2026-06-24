@@ -1,10 +1,10 @@
-use anyhow::{Context, anyhow};
+use anyhow::{anyhow, Context};
 use axum::{
-    Json, Router,
     extract::{Path, Query},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post},
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,7 +13,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::{
-    agent_management, config, core, hooks, logging, provider_features, provider_settings, shared,
+    agent_management, config, core, hooks, logging, provider_features, provider_settings,
+    providers::catalog::{build_catalog, sort_catalog, CatalogInput, ProviderCatalog},
+    sync as session_sync,
 };
 
 type FolderPicker =
@@ -67,6 +69,10 @@ pub fn router() -> Router {
             post(detect_agent_management_provider),
         )
         .route("/api/v1/providers", get(list_providers))
+        .route(
+            "/api/v1/providers/catalog",
+            get(get_provider_catalog).put(update_provider_catalog),
+        )
         .route(
             "/api/v1/providers/{provider}/features",
             get(list_legacy_provider_features),
@@ -152,19 +158,19 @@ pub fn router() -> Router {
             get(get_workspace_providers).put(update_workspace_providers),
         )
         .route(
-            "/api/v1/share",
-            get(list_shared_sessions).post(create_shared_session),
+            "/api/v1/sync",
+            get(list_sync_groups).post(create_sync_group),
         )
-        .route("/api/v1/share/status", get(shared_status))
-        .route("/api/v1/share/sync", post(sync_shared_sessions))
-        .route("/api/v1/share/bind", post(bind_shared_session))
+        .route("/api/v1/sync/status", get(sync_status))
+        .route("/api/v1/sync/sync", post(sync_session_groups))
+        .route("/api/v1/sync/bind", post(bind_sync_group))
         .route(
-            "/api/v1/share/holdings/{group_id}/{holding_id}",
-            delete(unbind_shared_session),
+            "/api/v1/sync/holdings/{group_id}/{holding_id}",
+            delete(unbind_sync_group),
         )
         .route(
-            "/api/v1/share/{group_id}",
-            delete(remove_shared_session).patch(rename_shared_session),
+            "/api/v1/sync/{group_id}",
+            delete(remove_sync_group).patch(rename_sync_group),
         )
         .route("/api/v1/manager/preview", post(manager_preview))
         .route("/api/v1/manager/clean", post(manager_clean))
@@ -239,6 +245,7 @@ struct ConfigFilePayload {
 struct MetaPayload {
     version: &'static str,
     providers: Vec<ProviderInfo>,
+    catalog: ProviderCatalog,
     selected_workspace: Option<String>,
     workspaces: Vec<config::WorkspaceEntry>,
     settings: SettingsPayload,
@@ -257,7 +264,7 @@ struct SessionDetailPayload {
 }
 
 #[derive(Debug, Serialize)]
-struct SharedHoldingPayload {
+struct SyncHoldingPayload {
     id: String,
     provider: String,
     session_id: String,
@@ -276,14 +283,14 @@ struct SharedHoldingPayload {
 }
 
 #[derive(Debug, Serialize)]
-struct SharedGroupPayload {
+struct SyncGroupPayload {
     id: String,
     title: String,
     #[serde(default)]
     source_provider: Option<String>,
     created_at: i64,
     updated_at: i64,
-    holdings: Vec<SharedHoldingPayload>,
+    holdings: Vec<SyncHoldingPayload>,
 }
 
 #[derive(Deserialize)]
@@ -300,6 +307,7 @@ struct SettingsBody {
     #[serde(default)]
     agent_order: Vec<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     primary_agents: Vec<String>,
 }
 
@@ -372,6 +380,107 @@ fn provider_info_list() -> Vec<ProviderInfo> {
             }
         })
         .collect()
+}
+
+fn scan_provider_sessions(
+    provider_id: &str,
+    workspace: Option<&str>,
+) -> anyhow::Result<Vec<crate::provider::ProviderSessionSummary>> {
+    let provider = crate::providers::find_provider(provider_id)
+        .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", provider_id))?;
+    let sessions = provider.scan_sessions()?;
+    let Some(workspace) = workspace.filter(|value| !value.is_empty()) else {
+        return Ok(sessions);
+    };
+    Ok(sessions
+        .into_iter()
+        .filter(|session| {
+            crate::provider::default_workspace_matches(
+                session.project_dir.as_deref(),
+                Some(workspace),
+            )
+        })
+        .collect())
+}
+
+fn provider_session_signals(provider_id: &str, workspace: Option<&str>) -> (bool, i64, i64) {
+    let all_sessions = scan_provider_sessions(provider_id, None).unwrap_or_default();
+    let workspace_sessions: Vec<_> = match workspace.filter(|value| !value.is_empty()) {
+        Some(value) => all_sessions
+            .iter()
+            .filter(|session| {
+                crate::provider::default_workspace_matches(
+                    session.project_dir.as_deref(),
+                    Some(value),
+                )
+            })
+            .cloned()
+            .collect(),
+        None => all_sessions.clone(),
+    };
+
+    let global_last_active = all_sessions
+        .iter()
+        .filter_map(|session| session.last_active_at)
+        .max()
+        .unwrap_or(0);
+    let workspace_last_active = workspace_sessions
+        .iter()
+        .filter_map(|session| session.last_active_at)
+        .max()
+        .unwrap_or(0);
+    let has_sessions = !workspace_sessions.is_empty();
+
+    (has_sessions, global_last_active, workspace_last_active)
+}
+
+fn build_provider_catalog(workspace: Option<&str>) -> anyhow::Result<ProviderCatalog> {
+    let prefs = config::web_preferences()?;
+    let ordered_ids = config::ordered_provider_ids(&prefs);
+    let hidden_global = config::global_hidden_provider_ids(&prefs);
+    let hidden_workspace = config::workspace_hidden_provider_ids(workspace);
+    let workspace_order = config::workspace_ordered_provider_ids(workspace);
+
+    let mut catalog = build_catalog(CatalogInput {
+        ordered_ids: &ordered_ids,
+        hidden_global: &hidden_global,
+        hidden_workspace: &hidden_workspace,
+        has_sessions: &|id| provider_session_signals(id, workspace).0,
+        environment: &|id| crate::agent_environment::detect_provider_environment(id),
+        active_time: &|id| {
+            let (_, global, workspace_active) = provider_session_signals(id, workspace);
+            (global, workspace_active)
+        },
+    });
+
+    // Apply explicit sort_order indices.
+    let global_index: std::collections::HashMap<&str, usize> = prefs
+        .agent_display
+        .sort_order
+        .global
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id.as_str(), index))
+        .collect();
+    let workspace_index: std::collections::HashMap<&str, usize> = workspace_order
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id.as_str(), index))
+        .collect();
+
+    for provider in &mut catalog.providers {
+        provider.sort_order.global = global_index
+            .get(provider.provider_id.as_str())
+            .map(|index| *index as i64)
+            .unwrap_or(-1);
+        provider.sort_order.workspace = workspace_index
+            .get(provider.provider_id.as_str())
+            .map(|index| *index as i64)
+            .unwrap_or(-1);
+    }
+
+    sort_catalog(&mut catalog);
+    Ok(catalog)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -629,16 +738,19 @@ fn config_file_payload() -> anyhow::Result<ConfigFilePayload> {
 }
 
 async fn get_meta() -> impl IntoResponse {
+    let selected_workspace = config::selected_workspace().unwrap_or(None);
     match (
         settings_payload(),
-        config::selected_workspace(),
+        Ok(selected_workspace.clone()),
         config::known_workspaces(),
         config_file_payload(),
+        build_provider_catalog(selected_workspace.as_deref()),
     ) {
-        (Ok(settings), Ok(selected_workspace), Ok(workspaces), Ok(config_file)) => {
+        (Ok(settings), Ok(selected_workspace), Ok(workspaces), Ok(config_file), Ok(catalog)) => {
             ApiResponse::success(MetaPayload {
                 version: env!("CARGO_PKG_VERSION"),
                 providers: provider_info_list(),
+                catalog,
                 selected_workspace,
                 workspaces,
                 settings,
@@ -646,7 +758,11 @@ async fn get_meta() -> impl IntoResponse {
             })
             .into_response()
         }
-        (Err(e), _, _, _) | (_, Err(e), _, _) | (_, _, Err(e), _) | (_, _, _, Err(e)) => {
+        (Err(e), _, _, _, _)
+        | (_, Err(e), _, _, _)
+        | (_, _, Err(e), _, _)
+        | (_, _, _, Err(e), _)
+        | (_, _, _, _, Err(e)) => {
             api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
         }
     }
@@ -682,6 +798,56 @@ async fn detect_agent_management_provider(Path(provider): Path<String>) -> impl 
 
 async fn list_providers() -> impl IntoResponse {
     ApiResponse::success(provider_info_list()).into_response()
+}
+
+#[derive(Deserialize)]
+struct CatalogQuery {
+    workspace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UpdateCatalogBody {
+    #[serde(default)]
+    sort_order: config::ProviderDisplayOrder,
+    #[serde(default)]
+    hidden_state: config::ProviderDisplayHidden,
+    workspace: Option<String>,
+}
+
+async fn get_provider_catalog(Query(q): Query<CatalogQuery>) -> impl IntoResponse {
+    match build_provider_catalog(q.workspace.as_deref()) {
+        Ok(catalog) => ApiResponse::success(catalog).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn update_provider_catalog(Json(body): Json<UpdateCatalogBody>) -> impl IntoResponse {
+    let result = if let Some(workspace) = body.workspace.as_deref() {
+        config::update_workspace_catalog_preferences(
+            workspace,
+            body.sort_order.workspace,
+            body.hidden_state.workspace,
+        )
+    } else {
+        config::update_agent_display_preferences(
+            config::ProviderDisplayOrder {
+                global: body.sort_order.global,
+                workspace: body.sort_order.workspace,
+            },
+            config::ProviderDisplayHidden {
+                global: body.hidden_state.global,
+                workspace: body.hidden_state.workspace,
+            },
+        )
+    };
+
+    match result {
+        Ok(()) => match build_provider_catalog(body.workspace.as_deref()) {
+            Ok(catalog) => ApiResponse::success(catalog).into_response(),
+            Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+        },
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
 }
 
 async fn list_legacy_provider_features(Path(provider): Path<String>) -> impl IntoResponse {
@@ -789,7 +955,18 @@ async fn update_settings(Json(body): Json<SettingsBody>) -> impl IntoResponse {
         Some(body.logging),
     )
     .and_then(|_| config::update_home_button_config(body.home_buttons))
-    .and_then(|_| config::update_agent_display_preferences(body.agent_order, body.primary_agents));
+    .and_then(|_| {
+        config::update_agent_display_preferences(
+            config::ProviderDisplayOrder {
+                global: body.agent_order,
+                workspace: Vec::new(),
+            },
+            config::ProviderDisplayHidden {
+                global: Vec::new(),
+                workspace: Vec::new(),
+            },
+        )
+    });
 
     match update_result.and_then(|_| settings_payload()) {
         Ok(settings) => ApiResponse::success(settings).into_response(),
@@ -1248,7 +1425,6 @@ struct SwitchBody {
     target_title: Option<String>,
     #[serde(default)]
     move_original: bool,
-    active_compression: Option<core::active_compression::ActiveCompressionPolicy>,
 }
 
 async fn switch_session(Json(body): Json<SwitchBody>) -> impl IntoResponse {
@@ -1259,7 +1435,6 @@ async fn switch_session(Json(body): Json<SwitchBody>) -> impl IntoResponse {
         to_dir: body.to_dir,
         target_title: body.target_title,
         move_original: body.move_original,
-        active_compression: body.active_compression,
     };
     match core::switch_session(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),
@@ -1297,15 +1472,15 @@ async fn find_sessions(Query(q): Query<FindQuery>) -> impl IntoResponse {
     }
 }
 
-async fn list_shared_sessions() -> impl IntoResponse {
-    match shared::list_groups() {
+async fn list_sync_groups() -> impl IntoResponse {
+    match session_sync::list_groups() {
         Ok(items) => ApiResponse::success(items).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
 #[derive(Deserialize)]
-struct ShareCreateBody {
+struct SyncCreateBody {
     provider: String,
     session_id: String,
     #[serde(default)]
@@ -1314,71 +1489,71 @@ struct ShareCreateBody {
     title: Option<String>,
 }
 
-async fn create_shared_session(Json(body): Json<ShareCreateBody>) -> impl IntoResponse {
-    let params = shared::ShareCreateParams {
+async fn create_sync_group(Json(body): Json<SyncCreateBody>) -> impl IntoResponse {
+    let params = session_sync::SyncCreateParams {
         provider: body.provider,
         session_id: body.session_id,
         targets: body.targets,
         to_dir: body.to_dir,
         title: body.title,
     };
-    match shared::create_group(&params) {
+    match session_sync::create_group(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
 #[derive(Deserialize)]
-struct ShareBindBody {
+struct SyncBindBody {
     group_id: String,
     provider: String,
     session_id: Option<String>,
     to_dir: Option<String>,
 }
 
-async fn bind_shared_session(Json(body): Json<ShareBindBody>) -> impl IntoResponse {
-    let params = shared::AddHoldingParams {
+async fn bind_sync_group(Json(body): Json<SyncBindBody>) -> impl IntoResponse {
+    let params = session_sync::AddHoldingParams {
         group_id: body.group_id,
         provider: body.provider,
         session_id: body.session_id,
         to_dir: body.to_dir,
     };
-    match shared::add_holding(&params) {
+    match session_sync::add_holding(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
-async fn unbind_shared_session(
+async fn unbind_sync_group(
     Path((group_id, holding_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match shared::remove_holding(&group_id, &holding_id) {
+    match session_sync::remove_holding(&group_id, &holding_id) {
         Ok(()) => ApiResponse::success("unbound").into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
 #[derive(Deserialize)]
-struct ShareStatusQuery {
+struct SyncStatusQuery {
     group_id: Option<String>,
 }
 
-async fn shared_status(Query(q): Query<ShareStatusQuery>) -> impl IntoResponse {
+async fn sync_status(Query(q): Query<SyncStatusQuery>) -> impl IntoResponse {
     match q.group_id {
-        Some(id) => match shared::load_group(&id) {
+        Some(id) => match session_sync::load_group(&id) {
             Ok(mut group) => {
-                let _ = shared::refresh_active_times(&mut group);
-                ApiResponse::success(shared_group_payload(group)).into_response()
+                let _ = session_sync::refresh_active_times(&mut group);
+                ApiResponse::success(sync_group_payload(group)).into_response()
             }
             Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
         },
-        None => match shared::list_groups() {
+        None => match session_sync::list_groups() {
             Ok(mut groups) => {
                 for group in &mut groups {
-                    let _ = shared::refresh_active_times(group);
+                    let _ = session_sync::refresh_active_times(group);
                 }
-                let payload: Vec<SharedGroupPayload> =
-                    groups.into_iter().map(shared_group_payload).collect();
+                let payload: Vec<SyncGroupPayload> =
+                    groups.into_iter().map(sync_group_payload).collect();
                 ApiResponse::success(payload).into_response()
             }
             Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -1386,8 +1561,8 @@ async fn shared_status(Query(q): Query<ShareStatusQuery>) -> impl IntoResponse {
     }
 }
 
-fn shared_group_payload(group: shared::SharedGroup) -> SharedGroupPayload {
-    SharedGroupPayload {
+fn sync_group_payload(group: session_sync::SyncGroup) -> SyncGroupPayload {
+    SyncGroupPayload {
         id: group.id,
         title: group.title,
         source_provider: group.source_provider,
@@ -1396,18 +1571,18 @@ fn shared_group_payload(group: shared::SharedGroup) -> SharedGroupPayload {
         holdings: group
             .holdings
             .into_iter()
-            .map(shared_holding_payload)
+            .map(sync_holding_payload)
             .collect(),
     }
 }
 
-fn shared_holding_payload(holding: shared::Holding) -> SharedHoldingPayload {
+fn sync_holding_payload(holding: session_sync::Holding) -> SyncHoldingPayload {
     let hook_augmentation = hooks::augmentation::augment_session(
         &holding.provider,
         &holding.session_id,
         holding.target_dir.as_deref(),
     );
-    SharedHoldingPayload {
+    SyncHoldingPayload {
         id: holding.id,
         provider: holding.provider,
         session_id: holding.session_id,
@@ -1423,8 +1598,8 @@ fn shared_holding_payload(holding: shared::Holding) -> SharedHoldingPayload {
     }
 }
 
-fn resolve_share_sync_source(
-    group: &mut shared::SharedGroup,
+fn resolve_sync_source(
+    group: &mut session_sync::SyncGroup,
     source_holding_id: Option<String>,
 ) -> anyhow::Result<String> {
     if let Some(source_id) = source_holding_id {
@@ -1434,7 +1609,7 @@ fn resolve_share_sync_source(
         return Ok(source_id);
     }
 
-    shared::refresh_active_times(group)?;
+    session_sync::refresh_active_times(group)?;
     group
         .holdings
         .iter()
@@ -1454,7 +1629,7 @@ fn hook_status_blocks_sync(status: &hooks::model::RuntimeSessionStatus) -> bool 
 }
 
 fn blocked_sync_targets_from_snapshot(
-    group: &shared::SharedGroup,
+    group: &session_sync::SyncGroup,
     source_holding_id: &str,
     snapshot: &[hooks::model::RuntimeSession],
 ) -> Vec<String> {
@@ -1482,17 +1657,17 @@ fn blocked_sync_targets_from_snapshot(
 }
 
 #[derive(Deserialize)]
-struct ShareSyncBody {
+struct SyncGroupBody {
     group_id: String,
     source_holding_id: Option<String>,
 }
 
-async fn sync_shared_sessions(Json(body): Json<ShareSyncBody>) -> impl IntoResponse {
-    let mut group = match shared::load_group(&body.group_id) {
+async fn sync_session_groups(Json(body): Json<SyncGroupBody>) -> impl IntoResponse {
+    let mut group = match session_sync::load_group(&body.group_id) {
         Ok(group) => group,
         Err(e) => return api_error(StatusCode::NOT_FOUND, e).into_response(),
     };
-    let source_id = match resolve_share_sync_source(&mut group, body.source_holding_id) {
+    let source_id = match resolve_sync_source(&mut group, body.source_holding_id) {
         Ok(source_id) => source_id,
         Err(e) => return api_error(StatusCode::BAD_REQUEST, e).into_response(),
     };
@@ -1512,7 +1687,7 @@ async fn sync_shared_sessions(Json(body): Json<ShareSyncBody>) -> impl IntoRespo
         .into_response();
     }
 
-    let result = shared::push_sync(&body.group_id, &source_id);
+    let result = session_sync::push_sync(&body.group_id, &source_id);
     match result {
         Ok(report) => ApiResponse::success(report).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -1520,30 +1695,30 @@ async fn sync_shared_sessions(Json(body): Json<ShareSyncBody>) -> impl IntoRespo
 }
 
 #[derive(Deserialize)]
-struct ShareRemoveQuery {
+struct SyncRemoveQuery {
     delete_provider_sessions: Option<bool>,
 }
 
-async fn remove_shared_session(
+async fn remove_sync_group(
     Path(group_id): Path<String>,
-    Query(q): Query<ShareRemoveQuery>,
+    Query(q): Query<SyncRemoveQuery>,
 ) -> impl IntoResponse {
-    match shared::delete_group(&group_id, q.delete_provider_sessions.unwrap_or(false)) {
+    match session_sync::delete_group(&group_id, q.delete_provider_sessions.unwrap_or(false)) {
         Ok(()) => ApiResponse::success("removed").into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
 #[derive(Deserialize)]
-struct ShareRenameBody {
+struct SyncRenameBody {
     title: String,
 }
 
-async fn rename_shared_session(
+async fn rename_sync_group(
     Path(group_id): Path<String>,
-    Json(body): Json<ShareRenameBody>,
+    Json(body): Json<SyncRenameBody>,
 ) -> impl IntoResponse {
-    match shared::rename_group(&group_id, &body.title) {
+    match session_sync::rename_group(&group_id, &body.title) {
         Ok(()) => ApiResponse::success("renamed").into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -1624,7 +1799,7 @@ mod tests {
     use crate::hooks::protocol::{HookIngestRequest, HookRuntimeEndpoint};
     use crate::storage::session_state::ResolvedLocalSessionState;
     use axum::{
-        body::{Body, to_bytes},
+        body::{to_bytes, Body},
         http::Request,
     };
     use chrono::Utc;
@@ -1706,8 +1881,8 @@ mod tests {
         }
     }
 
-    fn shared_holding(id: &str, provider: &str, session_id: &str) -> shared::Holding {
-        shared::Holding {
+    fn sync_holding(id: &str, provider: &str, session_id: &str) -> session_sync::Holding {
+        session_sync::Holding {
             id: id.to_string(),
             provider: provider.to_string(),
             session_id: session_id.to_string(),
@@ -1722,15 +1897,15 @@ mod tests {
 
     #[test]
     fn sync_safety_blocks_active_target_runtime() {
-        let group = shared::SharedGroup {
+        let group = session_sync::SyncGroup {
             id: "group-1".to_string(),
             title: "group".to_string(),
             source_provider: Some("codex".to_string()),
             created_at: 1,
             updated_at: 1,
             holdings: vec![
-                shared_holding("source", "codex", "source-session"),
-                shared_holding("target", "claude", "session-1"),
+                sync_holding("source", "codex", "source-session"),
+                sync_holding("target", "claude", "session-1"),
             ],
         };
         let snapshot = vec![runtime_session_for_payload("runtime-1")];
@@ -1743,15 +1918,15 @@ mod tests {
 
     #[test]
     fn sync_safety_allows_active_source_runtime() {
-        let group = shared::SharedGroup {
+        let group = session_sync::SyncGroup {
             id: "group-1".to_string(),
             title: "group".to_string(),
             source_provider: Some("claude".to_string()),
             created_at: 1,
             updated_at: 1,
             holdings: vec![
-                shared_holding("source", "claude", "session-1"),
-                shared_holding("target", "codex", "target-session"),
+                sync_holding("source", "claude", "session-1"),
+                sync_holding("target", "codex", "target-session"),
             ],
         };
         let snapshot = vec![runtime_session_for_payload("runtime-1")];
@@ -1948,14 +2123,12 @@ mod tests {
                 > 0
         );
         assert_eq!(value["data"]["candidates"][0]["risk"], "medium");
-        assert!(
-            value["data"]["skipped"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|skipped| skipped["event_id"] == "recent-user"
-                    && skipped["reason"] == "protected_recent_message")
-        );
+        assert!(value["data"]["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|skipped| skipped["event_id"] == "recent-user"
+                && skipped["reason"] == "protected_recent_message"));
     }
 
     #[test]
@@ -2028,7 +2201,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_holding_payload_serializes_hook_runtime_sessions() {
+    fn sync_holding_payload_serializes_hook_runtime_sessions() {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         crate::hooks::store::set_test_store_root(dir.path().to_path_buf());
@@ -2067,7 +2240,7 @@ mod tests {
             assert_eq!(value["ok"], true);
         });
 
-        let payload = shared_holding_payload(shared::Holding {
+        let payload = sync_holding_payload(session_sync::Holding {
             id: "holding-1".to_string(),
             provider: "generic".to_string(),
             session_id: "session-1".to_string(),
@@ -2114,12 +2287,10 @@ mod tests {
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(value["ok"], false);
-        assert!(
-            value["error"]
-                .as_str()
-                .unwrap()
-                .contains("Use either session_id or file")
-        );
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Use either session_id or file"));
     }
 
     #[tokio::test]
@@ -2140,12 +2311,10 @@ mod tests {
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(value["ok"], false);
-        assert!(
-            value["error"]
-                .as_str()
-                .unwrap()
-                .contains("Unsupported compression archive ref")
-        );
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported compression archive ref"));
     }
 
     #[tokio::test]
@@ -2171,12 +2340,10 @@ mod tests {
         assert_eq!(value["ok"], true);
         assert_eq!(value["data"]["archive_ref"], fixture.archive_ref);
         assert_eq!(value["data"]["retrieval_mode"], "query_matches");
-        assert!(
-            value["data"]["recommended_next_action"]
-                .as_str()
-                .unwrap()
-                .contains("partial retrieval")
-        );
+        assert!(value["data"]["recommended_next_action"]
+            .as_str()
+            .unwrap()
+            .contains("partial retrieval"));
         assert_eq!(value["data"]["source_event_count"], 2);
         assert_eq!(
             value["data"]["returned_event_ids"],
@@ -2186,12 +2353,10 @@ mod tests {
         assert_eq!(value["data"]["omitted_event_count"], 1);
         assert_eq!(value["data"]["events"][0]["id"], "needle-event");
         assert_eq!(value["data"]["matches"][0]["event_id"], "needle-event");
-        assert!(
-            value["data"]["matches"][0]["snippets"][0]
-                .as_str()
-                .unwrap()
-                .contains("needle detail")
-        );
+        assert!(value["data"]["matches"][0]["snippets"][0]
+            .as_str()
+            .unwrap()
+            .contains("needle detail"));
     }
 
     #[tokio::test]
@@ -2214,20 +2379,16 @@ mod tests {
             value["data"]["input_schema"]["required"],
             serde_json::json!(["archive_ref"])
         );
-        assert!(
-            value["data"]["usage_rules"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|rule| rule.as_str().unwrap().contains("Prefer query retrieval"))
-        );
-        assert!(
-            value["data"]["usage_rules"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|rule| rule.as_str().unwrap().contains("exact phrase matches"))
-        );
+        assert!(value["data"]["usage_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| rule.as_str().unwrap().contains("Prefer query retrieval")));
+        assert!(value["data"]["usage_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|rule| rule.as_str().unwrap().contains("exact phrase matches")));
     }
 
     #[tokio::test]
@@ -2252,23 +2413,19 @@ mod tests {
             value["data"]["archive_ref"],
             "memorph-archive://group/archive.json.gz"
         );
-        assert!(
-            value["data"]["query_first_cli"]
-                .as_str()
-                .unwrap()
-                .contains("--query <terms> --max-results 5")
-        );
+        assert!(value["data"]["query_first_cli"]
+            .as_str()
+            .unwrap()
+            .contains("--query <terms> --max-results 5"));
         assert_eq!(
             value["data"]["api_query_body"]["archive_ref"],
             "memorph-archive://group/archive.json.gz"
         );
-        assert!(
-            value["data"]["suggested_steps"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|step| step.as_str().unwrap().contains("broader term coverage"))
-        );
+        assert!(value["data"]["suggested_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step.as_str().unwrap().contains("broader term coverage")));
     }
 
     #[tokio::test]
@@ -2289,12 +2446,10 @@ mod tests {
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(value["ok"], false);
-        assert!(
-            value["error"]
-                .as_str()
-                .unwrap()
-                .contains("Unsupported compression archive ref")
-        );
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unsupported compression archive ref"));
     }
 
     #[tokio::test]
@@ -2309,11 +2464,9 @@ mod tests {
         assert_eq!(value["ok"], true);
 
         let settings = value["data"]["settings"].as_array().unwrap();
-        assert!(
-            settings
-                .iter()
-                .any(|setting| setting["id"] == "repair_workspace_sessions")
-        );
+        assert!(settings
+            .iter()
+            .any(|setting| setting["id"] == "repair_workspace_sessions"));
     }
     #[tokio::test]
     async fn settings_route_lists_codeisland_gap_provider_hook_actions() {
@@ -2424,7 +2577,7 @@ mod tests {
                         "switch": true,
                         "view": true,
                         "export": true,
-                        "share": false,
+                        "sync": false,
                         "delete": false
                     },
                     "agent_order": [],
@@ -2447,6 +2600,33 @@ mod tests {
         assert_eq!(setting_status, StatusCode::OK);
         assert_eq!(setting_value["data"]["id"], "show_subagents");
         assert_eq!(setting_value["data"]["value"], true);
+    }
+
+    #[tokio::test]
+    async fn catalog_route_returns_classified_providers() {
+        let request = Request::builder()
+            .uri("/api/v1/providers/catalog")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+
+        let providers = value["data"]["providers"].as_array().unwrap();
+        assert!(!providers.is_empty());
+
+        let claude = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "claude")
+            .expect("missing claude catalog entry");
+        assert_eq!(claude["display_name"], "Claude");
+        assert!(claude["capability_set"].is_object());
+        assert!(claude["install_state"].is_object());
+        assert!(claude["hidden_state"].is_object());
+        assert!(claude["sort_order"].is_object());
+        assert!(claude["active_time"].is_object());
+        assert!(claude["filter_tags"].is_array());
     }
 
     #[tokio::test]
@@ -2491,13 +2671,11 @@ mod tests {
                 descriptor.required_events.len()
             );
             assert!(entry["hook_profile"]["events"].as_array().unwrap().len() > 0);
-            assert!(
-                entry["settings"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|setting| setting["id"] == "install_hook")
-            );
+            assert!(entry["settings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|setting| setting["id"] == "install_hook"));
         }
     }
 

@@ -1053,8 +1053,14 @@ impl App {
         )
         .and_then(|_| {
             config::update_agent_display_preferences(
-                self.settings_agent_order.clone(),
-                self.settings_primary_agents.clone(),
+                config::ProviderDisplayOrder {
+                    global: self.settings_agent_order.clone(),
+                    workspace: Vec::new(),
+                },
+                config::ProviderDisplayHidden {
+                    global: Vec::new(),
+                    workspace: Vec::new(),
+                },
             )
         });
 
@@ -1659,7 +1665,6 @@ impl App {
             to_dir: self.selected_target_workspace(),
             target_title: None,
             move_original: false,
-            active_compression: None,
         };
 
         match core::switch_session(&params) {

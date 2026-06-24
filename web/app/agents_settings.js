@@ -1,5 +1,6 @@
 export function createAgentsSettingsModule({
   state,
+  providers,
   aboutLinks,
   t,
   escapeHtml,
@@ -56,17 +57,17 @@ export function createAgentsSettingsModule({
     const activeSection = state.ui.settingsSection || "general";
     const settingsSectionClass = (section) => `settings-section ${activeSection === section ? "is-active" : "is-hidden"}`;
     const settingsNavClass = (section) => `settings-nav-item ${activeSection === section ? "is-active" : ""}`;
-    const items = [...settings.agent_order]
-      .map((providerId, index) => {
-        const info = state.meta.providers.find((item) => item.id === providerId);
-        const agentEntry = state.agents.providers.find((item) => item.provider_id === providerId);
-        const primary = settings.primary_agents.includes(providerId);
-        const installed = agentEntry?.installed ?? false;
+    const items = providers
+      .all()
+      .map((provider, index) => {
+        const providerId = provider.provider_id;
+        const installed = providers.isInstalled(providerId);
+        const hidden = providers.isHiddenGlobal(providerId);
         return `
-          <div class="settings-provider-row">
+          <div class="settings-provider-row ${hidden ? "is-hidden" : ""}">
             <div class="settings-copy">
               <div class="settings-provider-name">
-                <strong>${escapeHtml(info?.name || providerId)}</strong>
+                <strong>${escapeHtml(providers.displayName(providerId))}</strong>
                 <span class="settings-provider-status ${installed ? "is-installed" : "is-missing"}">${installed ? t("installed") : t("notDetected")}</span>
               </div>
               <span>${escapeHtml(providerId)}</span>
@@ -74,8 +75,8 @@ export function createAgentsSettingsModule({
             </div>
             <div class="settings-agent-list">
               <label class="settings-check">
-                <input type="checkbox" name="primary_agents" value="${escapeAttr(providerId)}" ${primary ? "checked" : ""}>
-                <span>${t("primary")}</span>
+                <input type="checkbox" name="hidden_agents" value="${escapeAttr(providerId)}" ${hidden ? "checked" : ""}>
+                <span>${t("hidden")}</span>
               </label>
               <button type="button" class="ghost" data-action="shift-agent-up" data-index="${index}">${t("moveUp")}</button>
               <button type="button" class="ghost" data-action="shift-agent-down" data-index="${index}">${t("moveDown")}</button>
@@ -182,8 +183,8 @@ export function createAgentsSettingsModule({
                       <span>${t("showExport")}</span>
                     </label>
                     <label class="settings-check">
-                      <input type="checkbox" name="home_button_share" value="true" ${settings.home_buttons.share ? "checked" : ""}>
-                      <span>${t("showShare")}</span>
+                      <input type="checkbox" name="home_button_sync" value="true" ${settings.home_buttons.sync ? "checked" : ""}>
+                      <span>${t("showSync")}</span>
                     </label>
                     <label class="settings-check">
                       <input type="checkbox" name="home_button_delete" value="true" ${settings.home_buttons.delete ? "checked" : ""}>
@@ -821,24 +822,7 @@ export function createAgentsSettingsModule({
   }
 
   function agentProviderDisplayName(provider) {
-    switch (provider?.provider_id) {
-      case "claude":
-        return "Claude";
-      case "codex":
-        return "Codex";
-      case "cursor":
-        return "Cursor";
-      case "deepseek":
-        return "DeepSeek";
-      case "kiro":
-        return "Kiro";
-      case "kimi":
-        return "Kimi";
-      case "opencode":
-        return "OpenCode";
-      default:
-        return provider?.name || provider?.provider_id || "Unknown";
-    }
+    return providers.displayName(provider);
   }
 
   function agentProviderEnvironment(provider) {

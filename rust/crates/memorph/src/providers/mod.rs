@@ -1,4 +1,5 @@
 mod aliases;
+pub mod catalog;
 pub mod antigravity;
 pub mod claude;
 pub mod cline;
