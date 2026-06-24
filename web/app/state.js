@@ -9,7 +9,7 @@ export function createState() {
   return {
     catalog: { providers: [] },
     meta: null,
-    route: parseRoute(window.location.pathname),
+    route: parseRoute(window.location.pathname, new URLSearchParams(window.location.search)),
     loading: 0,
     loadingInfo: null,
     ui: {
@@ -34,8 +34,10 @@ export function createState() {
     manager: {
       draft: null,
       preview: null,
+      workspacePreview: null,
       report: null,
       pendingItems: [],
+      viewMode: "sessions",
     },
     compression: {
       archives: [],

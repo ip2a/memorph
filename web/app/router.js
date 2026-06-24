@@ -1,9 +1,17 @@
-export function parseRoute(pathname) {
+export function parseRoute(pathname, searchParams = null) {
   if (pathname === "/agents" || pathname === "/tools") return { name: "agents" };
   if (pathname === "/hooks") return { name: "hooks" };
-  if (pathname === "/manager") return { name: "manager" };
+  if (pathname === "/manager") {
+    const params = searchParams || new URLSearchParams();
+    return {
+      name: "manager",
+      provider: params.get("provider") || undefined,
+      workspace: params.get("workspace") || undefined,
+      view: params.get("view") || undefined,
+    };
+  }
   if (pathname === "/compression") return { name: "compression" };
-  if (pathname === "/shared") return { name: "shared-list" };
+  if (pathname === "/sync") return { name: "sync-list" };
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)\/([^/]+)$/);
   if (sessionMatch) {
     return {
@@ -12,11 +20,11 @@ export function parseRoute(pathname) {
       sessionId: decodeURIComponent(sessionMatch[2]),
     };
   }
-  const sharedMatch = pathname.match(/^\/shared\/([^/]+)$/);
-  if (sharedMatch) {
+  const syncMatch = pathname.match(/^\/sync\/([^/]+)$/);
+  if (syncMatch) {
     return {
-      name: "shared-detail",
-      groupId: decodeURIComponent(sharedMatch[1]),
+      name: "sync-detail",
+      groupId: decodeURIComponent(syncMatch[1]),
     };
   }
   return { name: "home" };

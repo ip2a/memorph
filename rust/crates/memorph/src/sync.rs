@@ -14,7 +14,7 @@ use crate::providers;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SharedGroup {
+pub struct SyncGroup {
     pub id: String,
     pub title: String,
     #[serde(default)]
@@ -42,7 +42,7 @@ pub struct Holding {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShareCreateParams {
+pub struct SyncCreateParams {
     pub provider: String,
     pub session_id: String,
     pub targets: Vec<String>,
@@ -70,27 +70,26 @@ pub struct SyncReport {
 // Storage helpers
 // ---------------------------------------------------------------------------
 
-fn shared_dir() -> Result<PathBuf> {
+fn sync_dir() -> Result<PathBuf> {
     let config_dir = crate::config::config_path()?
         .parent()
         .context("Config file path has no parent directory")?
         .to_path_buf();
-    let dir = config_dir.join("shared");
+    let dir = config_dir.join("sync");
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
 
 fn group_path(id: &str) -> Result<PathBuf> {
-    Ok(shared_dir()?.join(format!("{}.json", id)))
+    Ok(sync_dir()?.join(format!("{}.json", id)))
 }
 
-pub fn list_groups() -> Result<Vec<SharedGroup>> {
-    let dir = shared_dir()?;
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-
+pub fn list_groups() -> Result<Vec<SyncGroup>> {
     let mut groups = Vec::new();
+    let dir = sync_dir()?;
+    if !dir.exists() {
+        return Ok(groups);
+    }
     for entry in std::fs::read_dir(&dir)? {
         let entry = match entry {
             Ok(e) => e,
@@ -110,7 +109,7 @@ pub fn list_groups() -> Result<Vec<SharedGroup>> {
                 continue;
             }
         };
-        let group: SharedGroup = match serde_json::from_str(&content) {
+        let group: SyncGroup = match serde_json::from_str(&content) {
             Ok(g) => g,
             Err(e) => {
                 eprintln!(
@@ -128,16 +127,15 @@ pub fn list_groups() -> Result<Vec<SharedGroup>> {
     Ok(groups)
 }
 
-pub fn load_group(id: &str) -> Result<SharedGroup> {
+pub fn load_group(id: &str) -> Result<SyncGroup> {
     let path = group_path(id)?;
     let content =
         std::fs::read_to_string(&path).with_context(|| format!("Sync group not found: {}", id))?;
-    let group: SharedGroup = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse sync group: {}", path.display()))?;
-    Ok(group)
+    serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse sync group: {}", path.display()))
 }
 
-fn save_group(group: &SharedGroup) -> Result<()> {
+fn save_group(group: &SyncGroup) -> Result<()> {
     let path = group_path(&group.id)?;
     let content = serde_json::to_string_pretty(group)? + "\n";
     crate::storage::atomic_write::write_string_atomic(&path, &content)?;
@@ -148,7 +146,7 @@ fn save_group(group: &SharedGroup) -> Result<()> {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-pub fn create_group(params: &ShareCreateParams) -> Result<SharedGroup> {
+pub fn create_group(params: &SyncCreateParams) -> Result<SyncGroup> {
     let targets = normalized_distinct_targets(&params.provider, &params.targets);
     if targets.is_empty() {
         anyhow::bail!("At least one target provider is required");
@@ -219,7 +217,7 @@ pub fn create_group(params: &ShareCreateParams) -> Result<SharedGroup> {
         return Err(error);
     }
 
-    let group = SharedGroup {
+    let group = SyncGroup {
         id: group_id,
         title,
         source_provider: Some(params.provider.clone()),
@@ -315,7 +313,7 @@ pub fn add_holding(params: &AddHoldingParams) -> Result<Holding> {
     Ok(holding)
 }
 
-fn group_has_holding(group: &SharedGroup, provider: &str, session_id: &str) -> bool {
+fn group_has_holding(group: &SyncGroup, provider: &str, session_id: &str) -> bool {
     group
         .holdings
         .iter()
@@ -461,7 +459,7 @@ pub fn sync_to_latest(group_id: &str) -> Result<SyncReport> {
 // Status helpers
 // ---------------------------------------------------------------------------
 
-pub fn refresh_active_times(group: &mut SharedGroup) -> Result<()> {
+pub fn refresh_active_times(group: &mut SyncGroup) -> Result<()> {
     for holding in &mut group.holdings {
         if let Some(provider) = providers::find_provider(&holding.provider) {
             if provider.capabilities().scan {
@@ -482,7 +480,7 @@ pub fn refresh_active_times(group: &mut SharedGroup) -> Result<()> {
     Ok(())
 }
 
-fn build_canonical_session(group: &SharedGroup) -> Result<(CanonicalSession, String)> {
+fn build_canonical_session(group: &SyncGroup) -> Result<(CanonicalSession, String)> {
     // For now, build from the first holding that we can load.
     // In practice, add_holding is usually called with a specific session_id
     // or when creating a new projection from the group.
@@ -540,7 +538,7 @@ mod tests {
 
     #[test]
     fn group_has_holding_matches_provider_and_session() {
-        let group = SharedGroup {
+        let group = SyncGroup {
             id: "group-1".to_string(),
             title: "group".to_string(),
             source_provider: Some("codex".to_string()),
@@ -565,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_export_preparation_preserves_source_compression() {
+    fn sync_export_preparation_preserves_source_compression() {
         let session = CanonicalSession {
             schema: CanonicalSchema::default(),
             identity: SessionIdentity {

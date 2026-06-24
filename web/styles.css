@@ -349,14 +349,8 @@ button[disabled] {
   outline: none;
 }
 
-.home-hero-affordance {
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.home-hero-compact-action:hover .home-hero-affordance,
-.home-hero-compact-action:focus-visible .home-hero-affordance,
+.home-hero-compact-action:hover,
+.home-hero-compact-action:focus-visible,
 .ascii-banner-action:hover pre {
   color: var(--ink);
 }
@@ -574,7 +568,7 @@ button[disabled] {
 }
 
 .list-grid,
-.shared-grid,
+.sync-grid,
 .workspace-list,
 .manager-list,
 .settings-provider-list,
@@ -727,7 +721,7 @@ button[disabled] {
 }
 
 .list-grid,
-.shared-grid {
+.sync-grid {
   margin-top: 18px;
 }
 
@@ -845,7 +839,7 @@ button[disabled] {
   opacity: 0.82;
 }
 
-.shared-badge {
+.sync-badge {
   display: inline-flex;
   align-items: center;
   padding: 1px 7px;
@@ -866,12 +860,12 @@ button[disabled] {
   opacity: 0.82;
 }
 
-.shared-list {
+.sync-list {
   display: grid;
   border-top: 1px solid var(--line);
 }
 
-.shared-row {
+.sync-row {
   display: grid;
   grid-template-columns: minmax(120px, 0.72fr) minmax(0, 1.05fr) minmax(0, 0.82fr) minmax(0, 1fr) auto;
   gap: 14px;
@@ -881,12 +875,12 @@ button[disabled] {
   padding: 9px 0;
 }
 
-.shared-row:hover {
+.sync-row:hover {
   background: var(--ink);
   color: var(--paper);
 }
 
-.shared-row > * {
+.sync-row > * {
   min-width: 0;
 }
 
@@ -962,6 +956,11 @@ button[disabled] {
 .msg-item[data-role="user"] {
   background: #f0f4f8;
   border-left: 3px solid #d4dde6;
+}
+
+.msg-item.is-highlighted {
+  outline: 2px solid rgba(0, 0, 0, 0.35);
+  outline-offset: -2px;
 }
 
 .msg-header {
@@ -1093,7 +1092,7 @@ button[disabled] {
 
 .session-group,
 .detail-layout,
-.shared-layout,
+.sync-layout,
 .manager-layout {
   display: grid;
   gap: 16px;
@@ -1326,6 +1325,21 @@ button[disabled] {
   gap: 6px;
 }
 
+.import-modal-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) minmax(0, 1fr);
+  gap: 14px 16px;
+  align-items: start;
+}
+
+.import-modal-grid .import-provider-field select {
+  width: 100%;
+}
+
+.import-modal-grid > .field:last-child {
+  grid-column: 1 / -1;
+}
+
 .session-results {
   min-height: 0;
   overflow-y: auto;
@@ -1346,16 +1360,51 @@ button[disabled] {
 }
 
 .detail-layout {
-  grid-template-columns: minmax(0, 1fr);
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: 14px;
   margin-top: 18px;
 }
 
-.shared-layout {
+.detail-timeline {
+  position: sticky;
+  top: 10px;
+  display: flex;
+  flex-direction: column;
+  width: 20px;
+  max-height: calc(100vh - 40px);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.timeline-segment {
+  flex: var(--timeline-flex, 1) 1 0;
+  min-height: 3px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, var(--timeline-depth, 0.25));
+  cursor: pointer;
+}
+
+.timeline-segment:hover,
+.timeline-segment:focus {
+  background: rgba(0, 0, 0, 0.92);
+}
+
+.timeline-segment:last-child {
+  border-bottom: 0;
+}
+
+.sync-layout {
   grid-template-columns: minmax(0, 1fr) minmax(320px, 0.85fr);
   margin-top: 18px;
 }
 
-.shared-detail-right {
+.sync-detail-right {
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 12px;
@@ -1980,6 +2029,28 @@ button[disabled] {
   min-width: 0;
 }
 
+.manager-view-tabs {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 10px;
+}
+
+.manager-view-tabs button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.manager-view-tabs button.is-active {
+  background: var(--surface);
+  border-color: var(--line);
+  font-weight: 600;
+}
+
 .manager-preview-actions {
   display: flex;
   flex-wrap: nowrap;
@@ -2040,7 +2111,7 @@ button[disabled] {
 
 .manager-result-panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
   height: 100%;
@@ -2406,7 +2477,7 @@ button[disabled] {
 
 @media (max-width: 860px) {
   .detail-layout,
-  .shared-layout,
+  .sync-layout,
   .manager-layout,
   .manager-page-layout,
   .manager-compact-filters,
@@ -2541,7 +2612,11 @@ button[disabled] {
   .workspace-combo,
   .path-picker,
   .session-row-main,
-  .shared-row {
+  .sync-row {
+    grid-template-columns: 1fr;
+  }
+
+  .import-modal-grid {
     grid-template-columns: 1fr;
   }
 

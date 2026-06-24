@@ -35,6 +35,8 @@ pub struct ResolvedLocalSessionState {
     pub tags: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preferred_targets: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compressed_archive_refs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -51,6 +53,8 @@ pub struct SessionLocalStateUpdate {
     pub tags: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preferred_targets: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compressed_archive_refs: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_override: Option<WorkspaceLocalStateUpdate>,
 }
@@ -152,6 +156,7 @@ pub fn resolve_session_state(
         notes: state.notes.clone(),
         tags: state.tags.clone(),
         preferred_targets: state.preferred_targets.clone(),
+        compressed_archive_refs: state.compressed_archive_refs.clone(),
     };
 
     if let Some(workspace_dir) = workspace_dir {
@@ -249,6 +254,7 @@ pub fn set_display_title_in_store(
             tags: Vec::new(),
             preferred_targets: Vec::new(),
             workspace_overrides: Vec::new(),
+            compressed_archive_refs: Vec::new(),
             updated_at: Utc::now(),
         });
     state.display_title = Some(title.to_string());
@@ -276,6 +282,7 @@ pub fn update_session_state_in_store(
             tags: Vec::new(),
             preferred_targets: Vec::new(),
             workspace_overrides: Vec::new(),
+            compressed_archive_refs: Vec::new(),
             updated_at: Utc::now(),
         });
 
@@ -304,6 +311,9 @@ pub fn update_session_state_in_store(
     }
     if let Some(preferred_targets) = &update.preferred_targets {
         state.preferred_targets = crate::config::normalize_provider_ids(preferred_targets.clone());
+    }
+    if let Some(refs) = &update.compressed_archive_refs {
+        state.compressed_archive_refs = refs.clone();
     }
     if let Some(workspace_override) = &update.workspace_override {
         apply_workspace_override_update(&mut state, workspace_override);
@@ -386,6 +396,7 @@ fn migrate_legacy_overrides(path: &Path) -> Result<SessionStateStore> {
                     tags: Vec::new(),
                     preferred_targets: Vec::new(),
                     workspace_overrides: Vec::<WorkspaceSessionState>::new(),
+                    compressed_archive_refs: Vec::new(),
                     updated_at: chrono::DateTime::from_timestamp_millis(session.updated_at)
                         .unwrap_or_else(Utc::now),
                 },
@@ -498,6 +509,7 @@ mod tests {
                     pinned: Some(false),
                     preferred_targets: Some(vec!["codex".to_string(), "kiro".to_string()]),
                 }],
+                compressed_archive_refs: Vec::new(),
                 updated_at: Utc::now(),
             },
         );
@@ -573,6 +585,7 @@ mod tests {
                     "claude".to_string(),
                     "missing".to_string(),
                 ]),
+                compressed_archive_refs: None,
                 workspace_override: None,
             },
         );
@@ -603,6 +616,7 @@ mod tests {
                 notes: None,
                 tags: None,
                 preferred_targets: Some(vec!["claude".to_string()]),
+                compressed_archive_refs: None,
                 workspace_override: Some(WorkspaceLocalStateUpdate {
                     workspace_dir: workspace.to_string_lossy().to_string(),
                     hidden: Some(Some(true)),
@@ -628,6 +642,7 @@ mod tests {
                 notes: None,
                 tags: None,
                 preferred_targets: None,
+                compressed_archive_refs: None,
                 workspace_override: Some(WorkspaceLocalStateUpdate {
                     workspace_dir: workspace_key.clone(),
                     hidden: Some(None),

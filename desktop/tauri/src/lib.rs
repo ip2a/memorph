@@ -214,6 +214,23 @@ pub fn run() {
             .map(|path| path.to_string_lossy().to_string()))
     });
 
+    let _ = api::register_file_picker(|start_path| {
+        let mut dialog = rfd::FileDialog::new();
+        if let Some(start) = start_path.map(PathBuf::from) {
+            let dir = if start.exists() && start.is_dir() {
+                Some(start)
+            } else {
+                start.parent().map(PathBuf::from)
+            };
+            if let Some(path) = dir {
+                dialog = dialog.set_directory(path);
+            }
+        }
+        Ok(dialog
+            .pick_file()
+            .map(|path| path.to_string_lossy().to_string()))
+    });
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {

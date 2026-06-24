@@ -5,9 +5,9 @@ use clap::Parser;
 use memorph::{
     cli::{
         Cli, Commands, CompressionCommands, LegacyCodexToolCommands, LegacyToolCommands,
-        ShareCommands,
+        SyncCommands,
     },
-    core, provider_features, providers, server, shared, tui, web_assets,
+    core, provider_features, providers, server, sync as session_sync, tui, web_assets,
 };
 use std::path::Path;
 use std::process::Command;
@@ -110,27 +110,7 @@ fn run_command(command: Commands) -> Result<()> {
             to,
             session_id,
             to_dir,
-            active_compression,
-            protect_recent_message_events,
-            min_candidate_bytes,
-            min_savings_ratio_percent,
         } => {
-            let active_compression = if active_compression {
-                let mut policy = core::active_compression::ActiveCompressionPolicy::default();
-                policy.mode = core::active_compression::ActiveCompressionMode::Auto;
-                if let Some(value) = protect_recent_message_events {
-                    policy.protect_recent_message_events = value;
-                }
-                if let Some(value) = min_candidate_bytes {
-                    policy.min_candidate_bytes = value;
-                }
-                if let Some(value) = min_savings_ratio_percent {
-                    policy.min_savings_ratio_percent = value;
-                }
-                Some(policy)
-            } else {
-                None
-            };
             let result = core::switch_session(&core::SwitchParams {
                 from,
                 to,
@@ -138,7 +118,6 @@ fn run_command(command: Commands) -> Result<()> {
                 to_dir,
                 target_title: None,
                 move_original: false,
-                active_compression,
             })?;
 
             println!("Switched from {} to {}", result.from_name, result.to_name);
@@ -146,9 +125,6 @@ fn run_command(command: Commands) -> Result<()> {
             println!("  Target: {}", result.target_session_id);
             if let Some(cmd) = result.resume_command {
                 println!("  Resume: {}", cmd);
-            }
-            if let Some(report) = result.active_compression_report {
-                print_active_compression_report(&report);
             }
         }
 
@@ -192,7 +168,7 @@ fn run_command(command: Commands) -> Result<()> {
             }
         }
 
-        Commands::Share { command } => run_share_command(command)?,
+        Commands::Sync { command } => run_sync_command(command)?,
 
         Commands::Compression { command } => run_compression_command(command)?,
 
@@ -576,16 +552,16 @@ fn print_active_compression_report(report: &core::active_compression::ActiveComp
     }
 }
 
-fn run_share_command(command: ShareCommands) -> Result<()> {
+fn run_sync_command(command: SyncCommands) -> Result<()> {
     match command {
-        ShareCommands::Create {
+        SyncCommands::Create {
             provider,
             session_id,
             targets,
             to_dir,
             title,
         } => {
-            let result = shared::create_group(&shared::ShareCreateParams {
+            let result = session_sync::create_group(&session_sync::SyncCreateParams {
                 provider,
                 session_id,
                 targets,
@@ -601,13 +577,13 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 );
             }
         }
-        ShareCommands::Bind {
+        SyncCommands::Bind {
             group_id,
             provider,
             session_id,
             to_dir,
         } => {
-            let holding = shared::add_holding(&shared::AddHoldingParams {
+            let holding = session_sync::add_holding(&session_sync::AddHoldingParams {
                 group_id: group_id.clone(),
                 provider,
                 session_id,
@@ -618,26 +594,26 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 holding.id, holding.provider, holding.session_id
             );
         }
-        ShareCommands::Unbind {
+        SyncCommands::Unbind {
             group_id,
             holding_id,
         } => {
-            shared::remove_holding(&group_id, &holding_id)?;
+            session_sync::remove_holding(&group_id, &holding_id)?;
             println!("Holding removed: {}", holding_id);
         }
-        ShareCommands::Remove {
+        SyncCommands::Remove {
             group_id,
             delete_provider_sessions,
         } => {
-            shared::delete_group(&group_id, delete_provider_sessions)?;
+            session_sync::delete_group(&group_id, delete_provider_sessions)?;
             println!("Sync group removed: {}", group_id);
         }
-        ShareCommands::Rename { group_id, title } => {
-            shared::rename_group(&group_id, &title)?;
+        SyncCommands::Rename { group_id, title } => {
+            session_sync::rename_group(&group_id, &title)?;
             println!("Sync group renamed: {} -> {}", group_id, title);
         }
-        ShareCommands::List => {
-            let groups = shared::list_groups()?;
+        SyncCommands::List => {
+            let groups = session_sync::list_groups()?;
             if groups.is_empty() {
                 println!("No sync groups.");
             }
@@ -660,17 +636,17 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 }
             }
         }
-        ShareCommands::Status { group_id } => {
+        SyncCommands::Status { group_id } => {
             let groups = if let Some(id) = group_id {
-                vec![shared::load_group(&id)?]
+                vec![session_sync::load_group(&id)?]
             } else {
-                shared::list_groups()?
+                session_sync::list_groups()?
             };
             if groups.is_empty() {
                 println!("No sync groups.");
             }
             for mut group in groups {
-                let _ = shared::refresh_active_times(&mut group);
+                let _ = session_sync::refresh_active_times(&mut group);
                 println!(
                     "\n{} | {} | created={} | updated={}",
                     group.id, group.title, group.created_at, group.updated_at
@@ -700,14 +676,14 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 }
             }
         }
-        ShareCommands::Sync {
+        SyncCommands::Sync {
             group_id,
             from_holding,
         } => {
             let report = if let Some(holding_id) = from_holding {
-                shared::push_sync(&group_id, &holding_id)?
+                session_sync::push_sync(&group_id, &holding_id)?
             } else {
-                shared::sync_to_latest(&group_id)?
+                session_sync::sync_to_latest(&group_id)?
             };
             println!(
                 "Sync complete: source={} | success={:?} | errors={}",
@@ -719,11 +695,11 @@ fn run_share_command(command: ShareCommands) -> Result<()> {
                 eprintln!("  {}", error);
             }
         }
-        ShareCommands::Push {
+        SyncCommands::Push {
             group_id,
             holding_id,
         } => {
-            let report = shared::push_sync(&group_id, &holding_id)?;
+            let report = session_sync::push_sync(&group_id, &holding_id)?;
             println!(
                 "Push sync complete: source={} | success={:?} | errors={}",
                 report.source_provider,

@@ -15,138 +15,125 @@ export function createHooksCenterModule({
     }
 
     return `
-      <section class="manager-hero">
+      <div class="manager-page-layout agent-management-page-layout">
+        <section class="section-panel manager-control-panel agent-provider-panel">
+          ${renderHooksOverviewSummary(overview)}
+          ${renderHooksProviderList(overview.providers || [])}
+        </section>
+
+        <section class="section-panel manager-result-panel agent-provider-detail-panel">
+          ${
+            state.hooks.selectedProvider && state.hooks.providerDetail
+              ? renderProviderDetail(state.hooks.providerDetail)
+              : `<div class="empty-state">${t("hookSelectProvider")}</div>`
+          }
+        </section>
+      </div>
+    `;
+  }
+
+  function renderHooksOverviewSummary(overview) {
+    const summary = overview.summary || {};
+    const server = overview.server || {};
+    return `
+      <section class="manager-workspace-summary">
         <div>
-          <p class="eyebrow">${t("hooks")}</p>
-          <h1>${t("hooksTitle")}</h1>
-          <p class="muted">${t("hooksHint")}</p>
+          <span class="eyebrow">${t("hooks")}</span>
+          <strong>${t("hooksTitle")}</strong>
+          <p>${t("hooksHint")}</p>
+        </div>
+        <div class="manager-summary-grid agent-environment-grid">
+          ${renderMetaLine(t("hookServer"), server.running ? t("running") : t("notDetected"))}
+          ${renderMetaLine(t("providers"), String(summary.providers || 0))}
+          ${renderMetaLine(t("hookInstalledOk"), String(summary.installed_ok || 0))}
+          ${renderMetaLine(t("hookNeedsAttention"), String(summary.needs_attention || 0))}
+          ${renderMetaLine(t("hookActiveRuntime"), String(summary.active_runtime_sessions || 0))}
+          ${renderMetaLine(t("errors"), String(summary.recent_errors || 0))}
         </div>
         <div class="manager-actions">
           <button type="button" data-action="refresh-hooks">${t("refresh")}</button>
           <button type="button" data-action="run-hook-doctor" data-repair="false">${t("hookDoctor")}</button>
           <button type="button" data-action="cleanup-hook-runtime">${t("hookCleanup")}</button>
         </div>
-      </section>
-      ${renderOverviewSummary(overview)}
-      ${renderProviderMatrix(overview.providers || [])}
-      ${renderProviderDetail()}
-      ${renderRuntimeSessions(overview.runtime_sessions || [])}
-      ${renderDiagnosisPanel(state.hooks.sessionDiagnosis || [], overview.providers || [])}
-      ${renderRecentErrors(overview.recent_errors || [])}
-    `;
-  }
-
-  function renderOverviewSummary(overview) {
-    const summary = overview.summary || {};
-    const server = overview.server || {};
-    return `
-      <section class="section-panel">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookOverview")}</strong>
-            <small>${t("hookOverviewHint")}</small>
-          </div>
-        </div>
-        <div class="manager-summary-grid agent-environment-grid">
-          ${renderMetaLine(t("hookServer"), server.running ? t("running") : t("notDetected"))}
-          ${renderMetaLine(t("providers"), String(summary.providers || 0))}
-          ${renderMetaLine(t("hookSupportedProviders"), String(summary.supported_providers || 0))}
-          ${renderMetaLine(t("hookInstalledOk"), String(summary.installed_ok || 0))}
-          ${renderMetaLine(t("hookNotInstalled"), String(summary.not_installed || 0))}
-          ${renderMetaLine(t("hookNeedsAttention"), String(summary.needs_attention || 0))}
-          ${renderMetaLine(t("hookActiveRuntime"), String(summary.active_runtime_sessions || 0))}
-          ${renderMetaLine(t("hookLinkedSessions"), String(summary.linked_sessions || 0))}
-          ${renderMetaLine(t("hookWeakSessions"), String(summary.weakly_linked_sessions || 0))}
-          ${renderMetaLine(t("hookNoMatchSessions"), String(summary.no_session_match || 0))}
-          ${renderMetaLine(t("hookObservedBlocking"), String(summary.observed_blocking_requests || 0))}
-          ${renderMetaLine(t("errors"), String(summary.recent_errors || 0))}
-        </div>
-        <div class="empty-state">${escapeHtml(t("hookRecordOnlyBoundary"))}</div>
       </section>`;
   }
 
-  function renderProviderMatrix(providers) {
+  function renderHooksProviderList(providerList) {
+    if (!providerList.length) {
+      return `<div class="empty-state">${t("noProviders")}</div>`;
+    }
     return `
-      <section class="section-panel">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookProviderMatrix")}</strong>
-            <small>${t("hookProviderMatrixHint")}</small>
-          </div>
-        </div>
-        <div class="settings-list">
-          ${providers.length ? providers.map(renderProviderRow).join("") : `<div class="empty-state">${t("noProviders")}</div>`}
-        </div>
-      </section>`;
-  }
-
-  function renderProviderRow(provider) {
-    const hook = provider.hook || {};
-    const diagnosis = provider.hook_diagnosis || {};
-    const profile = provider.hook_profile || {};
-    const capabilities = provider.hook_capabilities || {};
-    const requiredEvents = Array.isArray(provider.hook_required_events) ? provider.hook_required_events : [];
-    const providerId = provider.provider_id || hook.provider || "";
-    const supported = !!provider.hook_profile;
-    const actionIds = providerActionIds(hook.status, supported, capabilities);
-    const selected = state.hooks.selectedProvider === providerId;
-    return `
-      <div class="settings-row agent-detail-row hook-provider-row ${selected ? "is-active" : ""}">
-        <div class="settings-copy settings-copy-inline">
-          <button
-            type="button"
-            class="meta-link-button"
-            data-action="select-hook-provider"
-            data-provider="${escapeAttr(providerId)}"
-          >${escapeHtml(providers.displayName(providerId))}</button>
-          <span>${escapeHtml(hook.message || profile.config_hint || t("hookOptionalInstallHint"))}</span>
-        </div>
-        <div class="hook-provider-main">
-          <div class="pill-row hook-event-pill-row">
-            <span class="pill">${escapeHtml(hook.status || "unknown")}</span>
-            <span class="pill">${escapeHtml(formatHookFormat(profile.format))}</span>
-            <span class="pill">${t("hookCapabilities")}=${escapeHtml(formatCapabilities(capabilities))}</span>
-            <span class="pill">${t("hookRequiredEvents")}=${escapeHtml(String(requiredEvents.length || (Array.isArray(profile.events) ? profile.events.length : 0)))}</span>
-            <span class="pill">${t("hookLinkedSessions")}=${escapeHtml(String(diagnosis.linked || 0))}</span>
-            <span class="pill">${t("hookWeakSessions")}=${escapeHtml(String(diagnosis.weakly_linked || 0))}</span>
-            <span class="pill">${t("hookActiveRuntime")}=${escapeHtml(String(diagnosis.active_runtime_sessions || 0))}</span>
-          </div>
-          <div class="pill-row">
-            ${actionIds.map((settingId) => renderHookActionButton(providerId, settingId)).join("")}
-          </div>
-        </div>
+      <div class="manager-list agent-provider-list">
+        ${providerList.map(renderHooksProviderListItem).join("")}
       </div>`;
   }
 
-  function renderProviderDetail() {
-    const detail = state.hooks.providerDetail;
-    const provider = detail?.provider;
+  function renderHooksProviderListItem(provider) {
+    const providerId = provider.provider_id || "";
+    const selected = state.hooks.selectedProvider === providerId;
+    const hook = provider.hook || {};
+    const status = hook.status || "unknown";
+    const statusClass = status === "installed_ok" ? "is-installed" : "is-missing";
+    return `
+      <button
+        type="button"
+        class="agent-provider-item ${selected ? "is-active" : ""}"
+        data-action="select-hook-provider"
+        data-provider="${escapeAttr(providerId)}"
+      >
+        <span class="agent-provider-head">
+          <strong class="agent-provider-name">${escapeHtml(providerDisplayName(provider))}</strong>
+          <span class="agent-provider-state ${statusClass}" title="${escapeAttr(status)}" aria-label="${escapeAttr(status)}">
+            ${status === "installed_ok" ? "●" : "○"}
+          </span>
+        </span>
+      </button>`;
+  }
+
+  function providerDisplayName(provider) {
+    return providers.displayName(provider);
+  }
+
+  function renderProviderDetail(detail) {
+    const provider = detail.provider;
     const providerId = provider?.provider_id || "";
-    if (!provider) {
-      return `
-        <section class="section-panel">
-          <div class="empty-state">${t("hookSelectProvider")}</div>
-        </section>`;
+    if (!providerId) {
+      return `<div class="empty-state">${t("hookSelectProvider")}</div>`;
     }
+
     const hook = provider.hook || {};
     const diagnosis = provider.hook_diagnosis || {};
     const profile = provider.hook_profile || {};
     const capabilities = provider.hook_capabilities || {};
     const events = Array.isArray(profile.events) ? profile.events : [];
-    const requiredEvents = Array.isArray(provider.hook_required_events) ? provider.hook_required_events : [];
+    const requiredEvents = Array.isArray(provider.hook_required_events)
+      ? provider.hook_required_events
+      : [];
     const runtimeSessions = detail.runtime_sessions || [];
     const recentEvents = detail.recent_events || [];
     const recentErrors = detail.recent_errors || [];
+
+    const supported = Object.keys(profile).length > 0 && !!profile.format;
+    const actionIds = providerActionIds(hook.status, supported, capabilities);
+    const actionButtons = actionIds.map((id) => renderHookActionButton(providerId, id)).join("");
+
     return `
-      <section class="section-panel">
-        <div class="section-heading">
-          <div>
-            <strong>${escapeHtml(providers.displayName(providerId))} ${t("hookProviderDetail")}</strong>
-            <small>${t("hookProviderDetailHint")}</small>
+      <header class="manager-section-head agent-provider-detail-header">
+        <div class="stack agent-provider-detail-head">
+          <strong>${escapeHtml(providerDisplayName(provider))}</strong>
+          <small>${t("hookProviderDetailHint")}</small>
+          <div class="pill-row">
+            <span class="pill">${escapeHtml(providerId)}</span>
+            <span class="pill">${escapeHtml(hook.status || "unknown")}</span>
+            ${profile.format ? `<span class="pill">${escapeHtml(formatHookFormat(profile.format))}</span>` : ""}
           </div>
         </div>
+        ${actionButtons ? `<div class="pill-row">${actionButtons}</div>` : ""}
+      </header>
+
+      <div class="agent-provider-detail-scroll">
         <div class="manager-summary-grid agent-environment-grid">
-          ${renderMetaLine(t("provider"), provider.provider_id)}
+          ${renderMetaLine(t("provider"), providerId)}
           ${renderMetaLine("Hook status", hook.status || "unknown")}
           ${renderMetaLine(t("hookCapabilities"), formatCapabilities(capabilities))}
           ${renderMetaLine(t("hookRequiredEvents"), String(requiredEvents.length || events.length))}
@@ -155,17 +142,23 @@ export function createHooksCenterModule({
           ${renderMetaLine("Installed version", hook.installed_version || "—")}
           ${renderMetaLine("Current version", hook.current_version || "—")}
           ${renderMetaLine("Last event", hook.last_event_at ? formatDate(hook.last_event_at) : "—")}
-          ${renderMetaLine(t("hookActiveRuntime"), String(runtimeSessions.filter((session) => !["completed", "failed"].includes(session.status)).length))}
+          ${renderMetaLine(
+            t("hookActiveRuntime"),
+            String(runtimeSessions.filter((session) => !["completed", "failed"].includes(session.status)).length)
+          )}
           ${renderMetaLine(t("hookLinkedSessions"), String(diagnosis.linked || 0))}
           ${renderMetaLine(t("hookWeakSessions"), String(diagnosis.weakly_linked || 0))}
           ${renderMetaLine(t("hookNoMatchSessions"), String(diagnosis.no_session_match || 0))}
         </div>
+
         ${hook.message ? `<div class="empty-state">${escapeHtml(hook.message)}</div>` : ""}
         ${renderProviderEventProfile(events, requiredEvents)}
         ${renderProviderRuntimeSessions(runtimeSessions)}
         ${renderProviderRecentEvents(recentEvents)}
         ${renderProviderRecentErrors(recentErrors)}
-      </section>`;
+        ${renderProviderRecommendedActions(providerId, diagnosis.recommended_actions || [])}
+        ${renderProviderSessionDiagnosis(providerId)}
+      </div>`;
   }
 
   function renderProviderEventProfile(events, requiredEvents = []) {
@@ -176,19 +169,30 @@ export function createHooksCenterModule({
         <div class="section-heading">
           <div>
             <strong>${t("hookEventProfile")}</strong>
-            <small>${t("hookEventProfileHint")} · ${t("hookRequiredEvents")}=${escapeHtml(String(requiredEvents.length || events.length))}</small>
+            <small>${t("hookEventProfileHint")} · ${t("hookRequiredEvents")}=${escapeHtml(
+              String(requiredEvents.length || events.length)
+            )}</small>
           </div>
         </div>
         <div class="pill-row hook-event-pill-row">
           ${
             events.length
-              ? events.map((event) => `<span class="pill" title="${escapeAttr(event.blocking ? "blocking" : "record-only")}">${escapeHtml(event.name)}${event.blocking ? " *" : ""}</span>`).join("")
+              ? events
+                  .map(
+                    (event) =>
+                      `<span class="pill" title="${escapeAttr(event.blocking ? "blocking" : "record-only")}">${escapeHtml(
+                        event.name
+                      )}${event.blocking ? " *" : ""}</span>`
+                  )
+                  .join("")
               : `<span class="pill">—</span>`
           }
         </div>
         ${
           missingRequired.length
-            ? `<div class="empty-state">${escapeHtml(t("hookMissingRequiredEvents"))}: ${escapeHtml(missingRequired.join(", "))}</div>`
+            ? `<div class="empty-state">${escapeHtml(t("hookMissingRequiredEvents"))}: ${escapeHtml(
+                missingRequired.join(", ")
+              )}</div>`
             : ""
         }
       </div>`;
@@ -225,7 +229,8 @@ export function createHooksCenterModule({
   }
 
   function renderEventRow(event) {
-    const subject = event.tool?.name || event.message?.role || event.provider_session_id || event.run_id || event.event_id;
+    const subject =
+      event.tool?.name || event.message?.role || event.provider_session_id || event.run_id || event.event_id;
     return `
       <div class="settings-row agent-detail-row">
         <div class="settings-copy settings-copy-inline">
@@ -256,6 +261,59 @@ export function createHooksCenterModule({
       </div>`;
   }
 
+  function renderProviderRecommendedActions(providerId, actions) {
+    if (!actions.length) return "";
+    return `
+      <div class="stack hook-provider-detail-block">
+        <div class="section-heading">
+          <div>
+            <strong>${t("hookRecommendedActions")}</strong>
+            <small>${t("hookRecommendedActionsHint")}</small>
+          </div>
+        </div>
+        <div class="settings-list">
+          ${actions
+            .map(
+              (action) => `
+                <div class="settings-row agent-detail-row">
+                  <div class="settings-copy settings-copy-inline">
+                    <strong>${escapeHtml(action.label)}</strong>
+                    <span>${escapeHtml(action.reason)}</span>
+                  </div>
+                  <div class="pill-row">
+                    ${renderDiagnosisAction(providerId, action)}
+                  </div>
+                </div>`
+            )
+            .join("")}
+        </div>
+      </div>`;
+  }
+
+  function renderProviderSessionDiagnosis(providerId) {
+    const groups = state.hooks.sessionDiagnosis || [];
+    const rows = [];
+    for (const group of groups) {
+      if ((group.provider_id || "") !== providerId) continue;
+      for (const session of group.sessions || []) {
+        rows.push({ group, session });
+      }
+    }
+    if (!rows.length) return "";
+    return `
+      <div class="stack hook-provider-detail-block">
+        <div class="section-heading">
+          <div>
+            <strong>${t("hookSessionDiagnosis")}</strong>
+            <small>${t("hookSessionDiagnosisHint")}</small>
+          </div>
+        </div>
+        <div class="settings-list">
+          ${rows.map(({ group, session }) => renderSessionDiagnosisRow(group, session)).join("")}
+        </div>
+      </div>`;
+  }
+
   function providerActionIds(status, supported, capabilities = {}) {
     if (!supported) return [];
     const available = {
@@ -266,7 +324,17 @@ export function createHooksCenterModule({
     };
     const filterAvailable = (ids) => ids.filter((id) => available[id]);
     if (status === "not_installed") return filterAvailable(["install_hook", "verify_hook"]);
-    if (["installed_disabled", "installed_stale_binary", "installed_stale_endpoint", "installed_broken_config", "installed_conflict", "repairable", "needs_user_action"].includes(status)) {
+    if (
+      [
+        "installed_disabled",
+        "installed_stale_binary",
+        "installed_stale_endpoint",
+        "installed_broken_config",
+        "installed_conflict",
+        "repairable",
+        "needs_user_action",
+      ].includes(status)
+    ) {
       return filterAvailable(["repair_hook", "verify_hook", "uninstall_hook"]);
     }
     if (status === "installed_ok") return filterAvailable(["verify_hook", "repair_hook", "uninstall_hook"]);
@@ -303,22 +371,6 @@ export function createHooksCenterModule({
     }
   }
 
-  function renderRuntimeSessions(sessions) {
-    const active = sessions.filter((session) => !["completed", "failed"].includes(session.status));
-    return `
-      <section class="section-panel">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookRuntimeSessions")}</strong>
-            <small>${t("hookRuntimeSessionsHint")}</small>
-          </div>
-        </div>
-        <div class="settings-list">
-          ${active.length ? active.map(renderRuntimeRow).join("") : `<div class="empty-state">${t("hookNoActiveRuntime")}</div>`}
-        </div>
-      </section>`;
-  }
-
   function renderRuntimeRow(session) {
     const workspace = session.cwd || session.correlation?.project_dir || "—";
     const sessionId = session.provider_session_id || session.correlation?.session_id || session.runtime_id || "—";
@@ -335,73 +387,6 @@ export function createHooksCenterModule({
           <span class="pill">${t("updatedAt")}=${escapeHtml(formatDate(session.updated_at || session.last_event_at))}</span>
         </div>
       </div>`;
-  }
-
-  function renderDiagnosisPanel(groups, providers) {
-    const filters = hookDiagnosisFilters();
-    const activeFilter = state.hooks.diagnosisFilter || "attention";
-    const sessionRows = groups.flatMap((group) =>
-      (group.sessions || []).map((session) => ({
-        group,
-        session,
-      }))
-    );
-    const providerRows = providers.filter((provider) => {
-      const diagnosis = provider.hook_diagnosis || {};
-      return (
-        (diagnosis.hook_needs_attention || 0) +
-          (diagnosis.no_session_match || 0) +
-          (diagnosis.no_active_runtime || 0) +
-          (diagnosis.no_events_yet || 0) +
-          (diagnosis.weakly_linked || 0) >
-        0
-      );
-    });
-    return `
-      <section class="section-panel">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookSessionDiagnosis")}</strong>
-            <small>${t("hookSessionDiagnosisHint")} · ${escapeHtml(hookDiagnosisFilterLabel(activeFilter))}</small>
-          </div>
-          <div class="pill-row hook-event-pill-row">
-            ${filters
-              .map(
-                (filter) => `<button
-                  type="button"
-                  class="${filter.id === activeFilter ? "invert" : ""}"
-                  data-action="set-hook-diagnosis-filter"
-                  data-filter="${escapeAttr(filter.id)}"
-                >${escapeHtml(filter.label)}</button>`
-              )
-              .join("")}
-          </div>
-        </div>
-        <div class="settings-list">
-          ${
-            sessionRows.length
-              ? sessionRows.map(({ group, session }) => renderSessionDiagnosisRow(group, session)).join("")
-              : providerRows.length
-                ? providerRows.map(renderDiagnosisRow).join("")
-                : `<div class="empty-state">${t("hookNoDiagnosisIssues")}</div>`
-          }
-        </div>
-      </section>`;
-  }
-
-  function hookDiagnosisFilters() {
-    return [
-      { id: "attention", label: t("hookFilterAttention") },
-      { id: "weak", label: t("hookFilterWeak") },
-      { id: "no_match", label: t("hookFilterNoMatch") },
-      { id: "runtime", label: t("hookFilterRuntime") },
-      { id: "linked", label: t("hookFilterLinked") },
-      { id: "no_hook", label: t("hookFilterNoHook") },
-    ];
-  }
-
-  function hookDiagnosisFilterLabel(filterId) {
-    return hookDiagnosisFilters().find((filter) => filter.id === filterId)?.label || filterId;
   }
 
   function renderSessionDiagnosisRow(group, session) {
@@ -423,7 +408,7 @@ export function createHooksCenterModule({
         </div>
         <div class="hook-provider-main">
           <div class="pill-row hook-event-pill-row">
-            <span class="pill">${escapeHtml(providers.displayName(group.provider_id || providerId))}</span>
+            <span class="pill">${escapeHtml(providerDisplayNameById(group.provider_id || providerId))}</span>
             <span class="pill">${escapeHtml(diagnosis.kind || "unknown")}</span>
             ${diagnosis.confidence ? `<span class="pill">confidence=${escapeHtml(diagnosis.confidence)}</span>` : ""}
             ${diagnosis.matched_by || summary.matched_by ? `<span class="pill">matched=${escapeHtml(diagnosis.matched_by || summary.matched_by)}</span>` : ""}
@@ -431,6 +416,10 @@ export function createHooksCenterModule({
           ${actionButtons ? `<div class="pill-row">${actionButtons}</div>` : ""}
         </div>
       </div>`;
+  }
+
+  function providerDisplayNameById(providerId) {
+    return providers.displayName(providerId);
   }
 
   function renderDiagnosisAction(providerId, action) {
@@ -447,43 +436,7 @@ export function createHooksCenterModule({
       data-setting-id="${escapeAttr(settingId)}"
       title="${escapeAttr(action.reason || "")}"
       ${pending ? "disabled" : ""}
-    >${escapeHtml(pending ? t("running") : hookActionLabel(settingId))}</button>`;
-  }
-
-  function renderDiagnosisRow(provider) {
-    const diagnosis = provider.hook_diagnosis || {};
-    const providerId = provider.provider_id || "";
-    return `
-      <div class="settings-row agent-detail-row">
-        <div class="settings-copy settings-copy-inline">
-          <strong>${escapeHtml(providers.displayName(providerId))}</strong>
-          <span>${escapeHtml(t("hookDiagnosisProviderHint"))}</span>
-        </div>
-        <div class="pill-row hook-event-pill-row">
-          <span class="pill">needs=${escapeHtml(String(diagnosis.hook_needs_attention || 0))}</span>
-          <span class="pill">weak=${escapeHtml(String(diagnosis.weakly_linked || 0))}</span>
-          <span class="pill">no_match=${escapeHtml(String(diagnosis.no_session_match || 0))}</span>
-          <span class="pill">no_active=${escapeHtml(String(diagnosis.no_active_runtime || 0))}</span>
-          <span class="pill">no_events=${escapeHtml(String(diagnosis.no_events_yet || 0))}</span>
-        </div>
-      </div>`;
-  }
-
-  function renderRecentErrors(errors) {
-    return `
-      <section class="section-panel">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookRecentErrors")}</strong>
-            <small>${t("hookRecentErrorsHint")}</small>
-          </div>
-        </div>
-        ${
-          errors.length
-            ? `<div class="settings-list">${errors.map(renderErrorRow).join("")}</div>`
-            : `<div class="empty-state">${t("hookNoRecentErrors")}</div>`
-        }
-      </section>`;
+    >${escapeHtml(pending ? t("running") : action.label)}</button>`;
   }
 
   function renderErrorRow(error) {

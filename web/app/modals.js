@@ -19,14 +19,17 @@ export function createModalModule({
       title: t("import"),
       submit: "import-session",
       body: `
-        <div class="stack">
-          <label class="field">
+        <div class="import-modal-grid">
+          <label class="field import-provider-field">
             <span>${t("targetProvider")}</span>
             <select name="provider">${homeProviderOptions()}</select>
           </label>
           <label class="field">
             <span>${t("fileOrId")}</span>
-            <input name="file_or_id" required placeholder="${escapeAttr(t("fileOrIdPlaceholder"))}">
+            <div class="path-picker">
+              <input name="file_or_id" required placeholder="${escapeAttr(t("fileOrIdPlaceholder"))}">
+              <button type="button" class="ghost" data-action="browse-file" data-target-field="file_or_id">${t("browse")}</button>
+            </div>
           </label>
           ${renderPathField("to_dir", t("targetDir"), state.home.workspace, t("workspaceFieldHint"), state.home.workspace)}
         </div>

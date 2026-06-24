@@ -149,6 +149,34 @@ export function createSessionSyncModule({
       </article>`;
   }
 
+  function estimateEventSize(event) {
+    if (event.metadata?.size_bytes != null) return Number(event.metadata.size_bytes) || 0;
+    return (event.blocks || []).reduce((sum, block) => {
+      if (block == null) return sum;
+      if (block.text != null) return sum + String(block.text).length;
+      if (block.content != null) return sum + String(block.content).length;
+      if (block.diff_text != null) return sum + String(block.diff_text).length;
+      if (block.payload != null) return sum + JSON.stringify(block.payload).length;
+      if (block.raw != null) return sum + JSON.stringify(block.raw).length;
+      return sum + JSON.stringify(block).length;
+    }, 0);
+  }
+
+  function renderDetailTimeline(events) {
+    const sizes = (events || []).map(estimateEventSize);
+    const total = sizes.reduce((sum, size) => sum + size, 0) || 1;
+    const max = Math.max(1, ...sizes);
+    return `
+      <aside class="detail-timeline" aria-label="${escapeAttr(t("timeline") || "Timeline")}">
+        ${sizes.map((size, index) => {
+          const ratio = size / total;
+          const intensity = max ? size / max : 0;
+          const depth = Math.max(0.08, Math.min(0.85, 0.12 + intensity * 0.7));
+          return `<button type="button" class="timeline-segment" data-action="scroll-to-message" data-message-index="${index}" title="${escapeAttr(formatBytes(size))}" style="--timeline-flex: ${Math.max(0.02, ratio)}; --timeline-depth: ${depth.toFixed(3)};"></button>`;
+        }).join("")}
+      </aside>`;
+  }
+
   function renderRuntimeSessionRow(session) {
     const tool = session.current_tool;
     const permission = session.pending_permission;
@@ -251,6 +279,28 @@ export function createSessionSyncModule({
       </section>`;
   }
 
+  function collectCompressedArchiveRefs(view) {
+    const refs = new Set((view.compressed_archive_refs || []).slice());
+    (view.events || []).forEach((event) => {
+      (event.blocks || []).forEach((block) => {
+        if (block.type === "compressed" && block.archive_ref) {
+          refs.add(block.archive_ref);
+        }
+      });
+    });
+    return refs;
+  }
+
+  function hasCompressedEvents(view) {
+    return collectCompressedArchiveRefs(view).size > 0;
+  }
+
+  function renderCompressionArchiveRef(view) {
+    const refs = collectCompressedArchiveRefs(view);
+    if (!refs.size) return "";
+    return `<a class="button" href="/compression" data-nav="/compression">${t("viewCompression")}</a>`;
+  }
+
   function renderSessionDetailView(detail, view) {
     const syncRef = findSyncRef(state.route.provider, state.route.sessionId);
     const workspace = view.workspace_dir || state.home.workspace || "";
@@ -258,6 +308,7 @@ export function createSessionSyncModule({
       (session) => session.provider_id === state.route.provider && session.session_id === state.route.sessionId
     );
     const sizeBytes = sessionMeta?.size_bytes;
+    const compressed = hasCompressedEvents(view);
     return `
       <section class="session-header">
         <div>
@@ -273,7 +324,8 @@ export function createSessionSyncModule({
           </div>
         </div>
         <div class="session-actions">
-          <button type="button" data-action="compress-session" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${t("compression")}</button>
+          ${compressed ? renderCompressionArchiveRef(view) : ""}
+          <button type="button" data-action="compress-session" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${compressed ? t("compressAgain") : t("compression")}</button>
           ${syncRef ? `<a class="button" href="/sync/${syncRef}" data-nav="/sync/${syncRef}">${t("openSync")}</a>` : ""}
           <button type="button" data-action="open-sync-create" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-title="${escapeAttr(view.title || "")}">${t("syncAction")}</button>
           <button type="button" data-action="open-switch" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}" data-workspace="${escapeAttr(workspace)}" data-title="${escapeAttr(view.title || "")}">${t("switch")}</button>
@@ -289,6 +341,7 @@ export function createSessionSyncModule({
         view.hook_diagnosis
       )}
       <div class="detail-layout">
+        ${renderDetailTimeline(view.events)}
         <section>
           <div class="msg-list">
             ${view.events.length ? view.events.map((event, index) => renderDetailEvent(event, index)).join("") : `<div class="empty-state">${t("noMessages")}</div>`}

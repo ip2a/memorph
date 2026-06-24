@@ -77,6 +77,10 @@ pub fn router() -> Router {
             get(get_provider_catalog).put(update_provider_catalog),
         )
         .route(
+            "/api/v1/providers/catalog/active",
+            get(get_provider_catalog_active),
+        )
+        .route(
             "/api/v1/providers/{provider}/features",
             get(list_legacy_provider_features),
         )
@@ -258,8 +262,6 @@ struct ConfigFilePayload {
 #[derive(Debug, Serialize)]
 struct MetaPayload {
     version: &'static str,
-    providers: Vec<ProviderInfo>,
-    catalog: ProviderCatalog,
     selected_workspace: Option<String>,
     workspaces: Vec<config::WorkspaceEntry>,
     settings: SettingsPayload,
@@ -446,28 +448,77 @@ fn filter_sessions_by_workspace(
         .collect()
 }
 
-async fn build_provider_catalog(workspace: Option<&str>) -> anyhow::Result<ProviderCatalog> {
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::{Duration, Instant};
+
+struct CatalogCacheEntry {
+    workspace: Option<String>,
+    catalog: ProviderCatalog,
+    generated_at: Instant,
+}
+
+struct ActiveCatalogCacheEntry {
+    workspace: Option<String>,
+    providers: Vec<ProviderActiveInfo>,
+    generated_at: Instant,
+}
+
+static CATALOG_CACHE: OnceLock<Arc<RwLock<CatalogCacheEntry>>> = OnceLock::new();
+static ACTIVE_CATALOG_CACHE: OnceLock<Arc<RwLock<ActiveCatalogCacheEntry>>> = OnceLock::new();
+
+const CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
+const ACTIVE_CATALOG_CACHE_TTL: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Clone, Serialize)]
+struct ProviderActiveInfo {
+    provider_id: String,
+    has_sessions: bool,
+    active_time: crate::providers::catalog::ActiveTime,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProviderActiveCatalog {
+    providers: Vec<ProviderActiveInfo>,
+}
+
+fn catalog_cache() -> Arc<RwLock<CatalogCacheEntry>> {
+    CATALOG_CACHE
+        .get_or_init(|| Arc::new(RwLock::new(CatalogCacheEntry {
+            workspace: None,
+            catalog: ProviderCatalog { providers: Vec::new() },
+            generated_at: Instant::now() - CATALOG_CACHE_TTL * 2,
+        })))
+        .clone()
+}
+
+fn active_catalog_cache() -> Arc<RwLock<ActiveCatalogCacheEntry>> {
+    ACTIVE_CATALOG_CACHE
+        .get_or_init(|| Arc::new(RwLock::new(ActiveCatalogCacheEntry {
+            workspace: None,
+            providers: Vec::new(),
+            generated_at: Instant::now() - ACTIVE_CATALOG_CACHE_TTL * 2,
+        })))
+        .clone()
+}
+
+fn cache_key(workspace: Option<&str>) -> Option<String> {
+    workspace.map(|value| value.to_string())
+}
+
+async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result<ProviderCatalog> {
+    // Try cache first.
+    {
+        let cache = catalog_cache().read().map_err(|_| anyhow::anyhow!("Catalog cache poisoned"))?;
+        if cache.generated_at.elapsed() < CATALOG_CACHE_TTL && cache.workspace == cache_key(workspace) {
+            return Ok(cache.catalog.clone());
+        }
+    }
+
     let prefs = config::web_preferences()?;
     let ordered_ids = config::ordered_provider_ids(&prefs);
     let hidden_global = config::global_hidden_provider_ids(&prefs);
     let hidden_workspace = config::workspace_hidden_provider_ids(workspace);
     let workspace_order = config::workspace_ordered_provider_ids(workspace);
-
-    // Scan sessions concurrently; each scan is synchronous I/O.
-    let mut scan_handles = Vec::new();
-    for id in &ordered_ids {
-        let id = id.clone();
-        scan_handles.push(tokio::task::spawn_blocking(move || {
-            (id.clone(), scan_provider_sessions(&id, None).unwrap_or_default())
-        }));
-    }
-    let mut sessions_by_provider: std::collections::HashMap<String, Vec<crate::provider::ProviderSessionSummary>> =
-        std::collections::HashMap::new();
-    for handle in scan_handles {
-        if let Ok((id, sessions)) = handle.await {
-            sessions_by_provider.insert(id, sessions);
-        }
-    }
 
     // Detect environment concurrently.
     let mut env_handles = Vec::new();
@@ -488,20 +539,11 @@ async fn build_provider_catalog(workspace: Option<&str>) -> anyhow::Result<Provi
         }
     }
 
-    let workspace_opt = workspace.filter(|value| !value.is_empty());
-
     let mut catalog = build_catalog(CatalogInput {
         ordered_ids: &ordered_ids,
         hidden_global: &hidden_global,
         hidden_workspace: &hidden_workspace,
-        has_sessions: &|id| {
-            sessions_by_provider
-                .get(id)
-                .map(|sessions| {
-                    !filter_sessions_by_workspace(sessions, workspace_opt).is_empty()
-                })
-                .unwrap_or(false)
-        },
+        has_sessions: &|_| false,
         environment: &|id| {
             env_by_provider.get(id).cloned().unwrap_or_else(|| {
                 crate::agent_environment::AgentEnvironmentStatus {
@@ -513,25 +555,7 @@ async fn build_provider_catalog(workspace: Option<&str>) -> anyhow::Result<Provi
                 }
             })
         },
-        active_time: &|id| {
-            sessions_by_provider
-                .get(id)
-                .map(|sessions| {
-                    let workspace_sessions = filter_sessions_by_workspace(sessions, workspace_opt);
-                    let global_last_active = sessions
-                        .iter()
-                        .filter_map(|session| session.last_active_at)
-                        .max()
-                        .unwrap_or(0);
-                    let workspace_last_active = workspace_sessions
-                        .iter()
-                        .filter_map(|session| session.last_active_at)
-                        .max()
-                        .unwrap_or(0);
-                    (global_last_active, workspace_last_active)
-                })
-                .unwrap_or((0, 0))
-        },
+        active_time: &|_| (0, 0),
     });
 
     // Apply explicit sort_order indices.
@@ -561,7 +585,92 @@ async fn build_provider_catalog(workspace: Option<&str>) -> anyhow::Result<Provi
     }
 
     sort_catalog(&mut catalog);
+
+    // Update cache.
+    {
+        let mut cache = catalog_cache().write().map_err(|_| anyhow::anyhow!("Catalog cache poisoned"))?;
+        cache.workspace = cache_key(workspace);
+        cache.catalog = catalog.clone();
+        cache.generated_at = Instant::now();
+    }
+
     Ok(catalog)
+}
+
+async fn build_provider_catalog_active(workspace: Option<&str>) -> anyhow::Result<ProviderActiveCatalog> {
+    // Try cache first.
+    {
+        let cache = active_catalog_cache().read().map_err(|_| anyhow::anyhow!("Active catalog cache poisoned"))?;
+        if cache.generated_at.elapsed() < ACTIVE_CATALOG_CACHE_TTL && cache.workspace == cache_key(workspace) {
+            return Ok(ProviderActiveCatalog { providers: cache.providers.clone() });
+        }
+    }
+
+    let ordered_ids = config::ordered_provider_ids(&config::web_preferences()?);
+    let workspace_opt = workspace.filter(|value| !value.is_empty());
+
+    // Scan sessions concurrently.
+    let mut scan_handles = Vec::new();
+    for id in &ordered_ids {
+        let id = id.clone();
+        scan_handles.push(tokio::task::spawn_blocking(move || {
+            (id.clone(), scan_provider_sessions(&id, None).unwrap_or_default())
+        }));
+    }
+    let mut sessions_by_provider: std::collections::HashMap<String, Vec<crate::provider::ProviderSessionSummary>> =
+        std::collections::HashMap::new();
+    for handle in scan_handles {
+        if let Ok((id, sessions)) = handle.await {
+            sessions_by_provider.insert(id, sessions);
+        }
+    }
+
+    let providers = ordered_ids
+        .iter()
+        .filter_map(|id| {
+            let sessions = sessions_by_provider.get(id)?;
+            let workspace_sessions = filter_sessions_by_workspace(sessions, workspace_opt);
+            let global_last_active = sessions
+                .iter()
+                .filter_map(|session| session.last_active_at)
+                .max()
+                .unwrap_or(0);
+            let workspace_last_active = workspace_sessions
+                .iter()
+                .filter_map(|session| session.last_active_at)
+                .max()
+                .unwrap_or(0);
+            Some(ProviderActiveInfo {
+                provider_id: id.clone(),
+                has_sessions: !workspace_sessions.is_empty(),
+                active_time: crate::providers::catalog::ActiveTime {
+                    global: global_last_active,
+                    workspace: workspace_last_active,
+                },
+            })
+        })
+        .collect();
+
+    let result = ProviderActiveCatalog { providers };
+
+    // Update cache.
+    {
+        let mut cache = active_catalog_cache().write().map_err(|_| anyhow::anyhow!("Active catalog cache poisoned"))?;
+        cache.workspace = cache_key(workspace);
+        cache.providers = result.providers.clone();
+        cache.generated_at = Instant::now();
+    }
+
+    Ok(result)
+}
+
+fn invalidate_catalog_cache() {
+    if let Ok(mut cache) = catalog_cache().try_write() {
+        cache.generated_at = Instant::now() - CATALOG_CACHE_TTL * 2;
+    }
+    if let Ok(mut cache) = active_catalog_cache().try_write() {
+        cache.generated_at = Instant::now() - ACTIVE_CATALOG_CACHE_TTL * 2;
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -819,20 +928,15 @@ fn config_file_payload() -> anyhow::Result<ConfigFilePayload> {
 }
 
 async fn get_meta() -> impl IntoResponse {
-    let selected_workspace = config::selected_workspace().unwrap_or(None);
-    let catalog = build_provider_catalog(selected_workspace.as_deref()).await;
     match (
         settings_payload(),
-        Ok(selected_workspace.clone()),
+        config::selected_workspace(),
         config::known_workspaces(),
         config_file_payload(),
-        catalog,
     ) {
-        (Ok(settings), Ok(selected_workspace), Ok(workspaces), Ok(config_file), Ok(catalog)) => {
+        (Ok(settings), Ok(selected_workspace), Ok(workspaces), Ok(config_file)) => {
             ApiResponse::success(MetaPayload {
                 version: env!("CARGO_PKG_VERSION"),
-                providers: provider_info_list(),
-                catalog,
                 selected_workspace,
                 workspaces,
                 settings,
@@ -840,11 +944,10 @@ async fn get_meta() -> impl IntoResponse {
             })
             .into_response()
         }
-        (Err(e), _, _, _, _)
-        | (_, Err(e), _, _, _)
-        | (_, _, Err(e), _, _)
-        | (_, _, _, Err(e), _)
-        | (_, _, _, _, Err(e)) => {
+        (Err(e), _, _, _)
+        | (_, Err(e), _, _)
+        | (_, _, Err(e), _)
+        | (_, _, _, Err(e)) => {
             api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
         }
     }
@@ -897,7 +1000,14 @@ struct UpdateCatalogBody {
 }
 
 async fn get_provider_catalog(Query(q): Query<CatalogQuery>) -> impl IntoResponse {
-    match build_provider_catalog(q.workspace.as_deref()).await {
+    match build_provider_catalog_light(q.workspace.as_deref()).await {
+        Ok(catalog) => ApiResponse::success(catalog).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn get_provider_catalog_active(Query(q): Query<CatalogQuery>) -> impl IntoResponse {
+    match build_provider_catalog_active(q.workspace.as_deref()).await {
         Ok(catalog) => ApiResponse::success(catalog).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -924,10 +1034,13 @@ async fn update_provider_catalog(Json(body): Json<UpdateCatalogBody>) -> impl In
     };
 
     match result {
-        Ok(()) => match build_provider_catalog(body.workspace.as_deref()).await {
-            Ok(catalog) => ApiResponse::success(catalog).into_response(),
-            Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
-        },
+        Ok(()) => {
+            invalidate_catalog_cache();
+            match build_provider_catalog_light(body.workspace.as_deref()).await {
+                Ok(catalog) => ApiResponse::success(catalog).into_response(),
+                Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+            }
+        }
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
