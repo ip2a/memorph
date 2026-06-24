@@ -115,6 +115,7 @@ const {
   renderManagerPage,
   unitOption,
   updateManagerSelectionStats,
+  selectedManagerWorkspaceItems,
 } = createManagerCompressionModule({
   state,
   providers,
@@ -145,7 +146,7 @@ const appEl = document.getElementById("app");
 const modalRoot = document.getElementById("modal-root");
 
 window.addEventListener("popstate", () => {
-  state.route = parseRoute(window.location.pathname);
+  state.route = parseRoute(window.location.pathname, new URLSearchParams(window.location.search));
   void loadRoute();
 });
 
@@ -221,7 +222,13 @@ document.addEventListener("change", (event) => {
       .forEach((el) => (el.checked = target.checked));
     updateManagerSelectionStats();
   }
-  if (target.name === "manager_item") {
+  if (target.dataset.role === "select-all-manager-workspace") {
+    document
+      .querySelectorAll('input[name="manager_workspace_item"]')
+      .forEach((el) => (el.checked = target.checked));
+    updateManagerSelectionStats();
+  }
+  if (target.name === "manager_item" || target.name === "manager_workspace_item") {
     updateManagerSelectionStats();
   }
 });
@@ -239,10 +246,13 @@ function restoreHomeHeroMode() {
   }
 }
 
-function setHomeHeroMode(mode) {
+function setHomeHeroMode(mode, refreshBanner = false) {
   if (!["auto", "expanded", "collapsed"].includes(mode)) return;
   state.ui.homeHeroMode = mode;
   state.ui.homeHeroTransientCollapsed = false;
+  if (refreshBanner) {
+    state.ui.asciiBannerColor = randomAsciiBannerColor();
+  }
   try {
     window.localStorage?.setItem(HOME_HERO_MODE_STORAGE_KEY, mode);
   } catch {
@@ -338,6 +348,7 @@ async function loadRoute() {
       );
     } else if (route.name === "manager") {
       state.home.syncGroups = await api("/api/v1/sync/status");
+      state.manager.viewMode = route.view === "workspaces" ? "workspaces" : "sessions";
       if (!state.manager.preview) {
         await loadDefaultManagerPreview();
       }
@@ -583,12 +594,13 @@ async function runUpdateCheck() {
 }
 
 function navigate(path) {
-  const samePath = window.location.pathname === path;
+  const url = new URL(path, window.location.href);
+  const samePath = window.location.pathname === url.pathname;
   state.modal = null;
   if (!samePath) {
     history.pushState({}, "", path);
   }
-  state.route = parseRoute(path);
+  state.route = parseRoute(url.pathname, url.searchParams);
   if (state.route.name === "home") {
     state.ui.asciiBannerColor = randomAsciiBannerColor();
   }
@@ -596,8 +608,9 @@ function navigate(path) {
 }
 
 function replacePath(path) {
+  const url = new URL(path, window.location.href);
   history.replaceState({}, "", path);
-  state.route = parseRoute(path);
+  state.route = parseRoute(url.pathname, url.searchParams);
 }
 
 async function updateLanguage(language) {
@@ -617,7 +630,7 @@ async function setWorkspace(workspace) {
   state.home.workspace = workspace;
   try {
     if (state.route.name === "manager") {
-      state.manager = { draft: defaultManagerDraft(), preview: null, report: null, pendingItems: [] };
+      state.manager = { draft: defaultManagerDraft(), preview: null, workspacePreview: null, report: null, pendingItems: [], viewMode: state.manager.viewMode || "sessions" };
     }
     if (!workspace) {
       state.home.providers = [];
@@ -822,7 +835,7 @@ async function handleAction(action, data, trigger = null) {
       render();
       break;
     case "set-home-hero-mode":
-      setHomeHeroMode(data.mode || "auto");
+      setHomeHeroMode(data.mode || "auto", true);
       break;
     case "open-import":
       openImportModal();
@@ -859,11 +872,11 @@ async function handleAction(action, data, trigger = null) {
     case "copy-detail-message":
       await copyDetailMessage(Number(data.messageIndex));
       break;
-    case "delete-detail-message":
-      toast(t("remove"), t("notImplemented"));
-      break;
     case "toggle-detail-message":
       toggleDetailMessage(trigger);
+      break;
+    case "scroll-to-message":
+      scrollToDetailMessage(Number(data.messageIndex));
       break;
     case "open-sync-create":
       openSyncCreateModal(data.provider, data.sessionId, data.title || "");
@@ -891,6 +904,37 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "open-manager-backup-confirm":
       openManagerBackupConfirmModal();
+      break;
+    case "open-manager-clean-workspace-confirm":
+      openManagerCleanWorkspaceConfirmModal();
+      break;
+    case "open-manager-backup-workspace-confirm":
+      openManagerBackupWorkspaceConfirmModal();
+      break;
+    case "set-manager-view":
+      {
+        const view = data.view === "workspaces" ? "workspaces" : "sessions";
+        state.manager.viewMode = view;
+        const params = new URLSearchParams(window.location.search);
+        if (view === "workspaces") {
+          params.set("view", "workspaces");
+        } else {
+          params.delete("view");
+        }
+        replacePath(`/manager?${params.toString()}`);
+        if (view === "workspaces" && !state.manager.workspacePreview) {
+          const draft = state.manager.draft || defaultManagerDraft();
+          if (draft.providers.length) {
+            api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) })
+              .then((workspacePreview) => {
+                state.manager.workspacePreview = workspacePreview;
+                render();
+              })
+              .catch((error) => toast(t("error"), error.message, true));
+          }
+        }
+        render();
+      }
       break;
     case "go-home":
       navigate("/");
@@ -1005,6 +1049,12 @@ async function handleSubmit(kind, formData) {
       case "backup-manager":
         await runManagerBackup();
         break;
+      case "clean-manager-workspace":
+        await runManagerWorkspaceClean();
+        break;
+      case "backup-manager-workspace":
+        await runManagerWorkspaceBackup();
+        break;
       case "restore-compression":
         await runCompressionRestore(formData);
         break;
@@ -1012,11 +1062,7 @@ async function handleSubmit(kind, formData) {
         await runCompressionExpand(formData);
         break;
       case "compress-session":
-        {
-          const provider = String(formData.get("provider") || "");
-          const sessionId = String(formData.get("session_id") || "");
-          toast(t("notImplemented"), `${provider} / ${sessionId}`);
-        }
+        await runCompressSession(formData);
         break;
       default:
         break;
@@ -1083,6 +1129,55 @@ function openManagerBackupConfirmModal() {
   render();
 }
 
+function openManagerCleanWorkspaceConfirmModal() {
+  const items = selectedManagerWorkspaceItems();
+  if (!items.length) {
+    toast(t("error"), t("noSelection"), true);
+    return;
+  }
+  state.manager.pendingItems = items;
+  const totalSessions = items.reduce((sum, item) => sum + Number(item.session_count || 0), 0);
+  state.modal = {
+    kind: "form",
+    title: t("cleanWorkspaceSelected"),
+    submit: "clean-manager-workspace",
+    submitClass: "danger",
+    submitLabel: t("confirm"),
+    body: `
+      <div class="stack">
+        <p>${t("cleanWorkspaceConfirm")}</p>
+        <div class="path-line">${t("workspaceStat")}: ${items.length}</div>
+        <div class="path-line">${t("sessionsStat")}: ${totalSessions}</div>
+      </div>`,
+  };
+  render();
+}
+
+function openManagerBackupWorkspaceConfirmModal() {
+  const items = selectedManagerWorkspaceItems();
+  if (!items.length) {
+    toast(t("error"), t("noSelection"), true);
+    return;
+  }
+  state.manager.pendingItems = items;
+  const outputDir = state.meta.settings.default_backup_dir || "./backups";
+  const totalSessions = items.reduce((sum, item) => sum + Number(item.session_count || 0), 0);
+  state.modal = {
+    kind: "form",
+    title: t("backupWorkspaceSelected"),
+    submit: "backup-manager-workspace",
+    submitLabel: t("confirm"),
+    body: `
+      <div class="stack">
+        <p>${t("backupWorkspaceConfirm")}</p>
+        <div class="path-line">${t("workspaceStat")}: ${items.length}</div>
+        <div class="path-line">${t("sessionsStat")}: ${totalSessions}</div>
+        <div class="path-line">${t("backupDir")}: ${escapeHtml(outputDir)}</div>
+      </div>`,
+  };
+  render();
+}
+
 async function runImport(formData) {
   const result = await api("/api/v1/import", {
     method: "POST",
@@ -1094,15 +1189,16 @@ async function runImport(formData) {
   });
   await loadHome();
   closeModal();
+  const importedProviderId = String(formData.get("provider"));
   openActionResultModal({
     title: t("imported"),
-    summary: result.provider_name,
+    summary: providers.displayName(importedProviderId),
     lines: [
-      `${t("target")}: ${result.provider_name}`,
+      `${t("target")}: ${providers.displayName(importedProviderId)}`,
       `${t("sessionId")}: ${result.new_session_id}`,
       ...(result.resume_command ? [`${t("resumeCommand")}: ${result.resume_command}`] : []),
     ],
-    navPath: `/sessions/${encodeURIComponent(String(formData.get("provider")))}/${encodeURIComponent(result.new_session_id)}`,
+    navPath: `/sessions/${encodeURIComponent(importedProviderId)}/${encodeURIComponent(result.new_session_id)}`,
   });
 }
 
@@ -1196,6 +1292,44 @@ async function runCompressionExpand(formData) {
     title: t("expandComplete"),
     lines: result.files,
   });
+}
+
+async function runCompressSession(formData) {
+  const provider = String(formData.get("provider") || "");
+  const sessionId = String(formData.get("session_id") || "");
+  if (!provider || !sessionId) throw new Error(t("missingSessionInfo"));
+  closeModal();
+  setLoading(true, { label: t("compressSession"), detail: `${provider} / ${sessionId}` });
+  try {
+    const result = await api("/api/v1/compression/apply", {
+      method: "POST",
+      body: {
+        source_provider_id: provider,
+        target_provider_id: provider,
+        session_id: sessionId,
+        policy: {
+          protect_recent_message_events: 6,
+          min_candidate_bytes: 4096,
+          min_savings_ratio_percent: 20,
+          mode: "auto",
+        },
+      },
+    });
+    await loadRoute();
+    const report = result.report || {};
+    const archiveRefs = result.archive_refs || [];
+    const candidates = report.candidates || [];
+    const saved = report.estimated_bytes_saved || 0;
+    openActionResultModal({
+      title: t("compressSessionComplete") || t("compressionTitle"),
+      summary: `${candidates.length} ${t("segments")}, ${formatBytes(saved)} ${t("saved")}`,
+      lines: archiveRefs.length ? archiveRefs : result.files || [],
+      navPath: `/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}`,
+      navLabel: t("openDetail"),
+    });
+  } finally {
+    setLoading(false);
+  }
 }
 
 async function runRename(formData) {
@@ -1429,17 +1563,17 @@ async function loadDefaultManagerPreview() {
   if (!draft.providers.length) {
     const preview = emptyManagerPreview();
     preview.default_preview = true;
-    state.manager = { draft, preview, report: null, pendingItems: [] };
+    state.manager = { draft, preview, workspacePreview: null, report: null, pendingItems: [], viewMode: "sessions" };
     render();
     return;
   }
-  const preview = await api("/api/v1/manager/preview", {
-    method: "POST",
-    body: managerPreviewBody(draft),
-  });
+  const [preview, workspacePreview] = await Promise.all([
+    api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+    api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+  ]);
   preview.output_dir = "";
   preview.default_preview = true;
-  state.manager = { draft, preview, report: null, pendingItems: [] };
+  state.manager = { draft, preview, workspacePreview, report: null, pendingItems: [], viewMode: state.manager.viewMode || "sessions" };
   render();
 }
 
@@ -1448,14 +1582,14 @@ async function runManagerPreview(formData) {
   if (!draft.providers.length) throw new Error(t("noTargetAgentSelected"));
   setLoading(true, { label: t("managerPreview"), detail: t("scanningSessions") });
   try {
-    const preview = await api("/api/v1/manager/preview", {
-      method: "POST",
-      body: managerPreviewBody(draft),
-    });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
     preview.default_preview = false;
-    state.manager = { draft, preview, report: null, pendingItems: [] };
+    state.manager = { draft, preview, workspacePreview, report: null, pendingItems: [], viewMode: state.manager.viewMode || "sessions" };
     state.modal = null;
     if (state.route.name !== "manager") replacePath("/manager");
     render();
@@ -1476,14 +1610,14 @@ async function runManagerClean() {
       body: { items },
     });
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const preview = await api("/api/v1/manager/preview", {
-      method: "POST",
-      body: managerPreviewBody(draft),
-    });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
     preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = { draft, preview, report: null, pendingItems: [] };
+    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
     openActionResultModal({
       title: t("cleanSelected"),
       summary: `${result.success} ${t("managerCleaned")}, ${result.failed} ${t("managerFailed")}, ${formatBytes(
@@ -1512,14 +1646,14 @@ async function runManagerBackup() {
       },
     });
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const preview = await api("/api/v1/manager/preview", {
-      method: "POST",
-      body: managerPreviewBody(draft),
-    });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = outputDir;
     preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = { draft, preview, report: null, pendingItems: [] };
+    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
     openActionResultModal({
       title: t("backupSelected"),
       summary: `${result.success} ${t("managerExported")}, ${result.failed} ${t("managerFailed")}`,
@@ -1536,12 +1670,96 @@ function selectedManagerItems() {
   );
 }
 
+async function runManagerWorkspaceClean() {
+  const draft = readManagerDraft();
+  const items = state.manager.pendingItems.length ? state.manager.pendingItems : selectedManagerWorkspaceItems();
+  if (!items.length) throw new Error(t("noSelection"));
+  closeModal();
+  setLoading(true, { label: t("cleanWorkspaceSelected"), detail: `${items.length} ${t("workspaceStat")}`, progress: 0.12 });
+  try {
+    const results = [];
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    let totalFreed = 0;
+    let errors = [];
+    for (const item of items) {
+      const result = await api("/api/v1/manager/clean-workspace", {
+        method: "POST",
+        body: { provider_id: item.provider_id, workspace: item.workspace },
+      });
+      totalSuccess += result.success;
+      totalFailed += result.failed;
+      totalFreed += result.freed_bytes;
+      errors = errors.concat(result.errors || []);
+      results.push(`${item.provider_id} / ${workspaceName(item.workspace) || item.workspace}: ${result.success}/${result.failed}`);
+    }
+    updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
+    applyManagerDraftFilters(preview, draft);
+    preview.output_dir = "";
+    preview.default_preview = Boolean(draft.is_default_preview);
+    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
+    openActionResultModal({
+      title: t("cleanWorkspaceSelected"),
+      summary: `${totalSuccess} ${t("managerCleaned")}, ${totalFailed} ${t("managerFailed")}, ${formatBytes(totalFreed)} ${t("managerFreed")}`,
+      lines: [...results, ...errors],
+    });
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function runManagerWorkspaceBackup() {
+  const draft = readManagerDraft();
+  const items = state.manager.pendingItems.length ? state.manager.pendingItems : selectedManagerWorkspaceItems();
+  if (!items.length) throw new Error(t("noSelection"));
+  const outputDir = state.meta.settings.default_backup_dir || "./backups";
+  closeModal();
+  setLoading(true, { label: t("backupWorkspaceSelected"), detail: `${items.length} ${t("workspaceStat")}`, progress: 0.12 });
+  try {
+    const results = [];
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    let files = [];
+    let errors = [];
+    for (const item of items) {
+      const result = await api("/api/v1/manager/backup-workspace", {
+        method: "POST",
+        body: { provider_id: item.provider_id, workspace: item.workspace, output_dir: outputDir },
+      });
+      totalSuccess += result.success;
+      totalFailed += result.failed;
+      files = files.concat(result.files || []);
+      errors = errors.concat(result.errors || []);
+      results.push(`${item.provider_id} / ${workspaceName(item.workspace) || item.workspace}: ${result.success}/${result.failed}`);
+    }
+    updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
+    const [preview, workspacePreview] = await Promise.all([
+      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
+      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
+    ]);
+    applyManagerDraftFilters(preview, draft);
+    preview.output_dir = outputDir;
+    preview.default_preview = Boolean(draft.is_default_preview);
+    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
+    openActionResultModal({
+      title: t("backupWorkspaceSelected"),
+      summary: `${totalSuccess} ${t("managerExported")}, ${totalFailed} ${t("managerFailed")}`,
+      lines: [...files, ...results, ...errors],
+    });
+  } finally {
+    setLoading(false);
+  }
+}
+
 function defaultManagerDraft() {
   const selectedProviders = state.home.providers.length
     ? state.home.providers
     : state.meta
-      ? getOrderedProviders().map((item) => item.id)
-      : [];
+      : getOrderedProviders().map((item) => item.provider_id);
   return {
     workspace: state.home.workspace || "",
     older_than_days: "",
@@ -1708,7 +1926,7 @@ function render() {
 }
 
 function renderTopbarContext() {
-  return renderTopbarContextMarkup(state, t, escapeHtml);
+  return renderTopbarContextMarkup(state, providers, t, escapeHtml);
 }
 
 function bindLocalButtons() {
@@ -2022,6 +2240,14 @@ function toggleDetailMessage(trigger) {
   item.classList.toggle("is-expanded");
 }
 
+function scrollToDetailMessage(index) {
+  const item = document.querySelector(`.msg-item[data-message-index="${index}"]`);
+  if (!item) return;
+  item.scrollIntoView({ behavior: "smooth", block: "start" });
+  item.classList.add("is-highlighted");
+  window.setTimeout(() => item.classList.remove("is-highlighted"), 1200);
+}
+
 function isExternalHttpUrl(url) {
   if (!url) return false;
   try {
@@ -2113,6 +2339,7 @@ const {
   openWorkspaceSwitchModal,
 } = createModalModule({
   state,
+  providers,
   t,
   escapeHtml,
   escapeAttr,

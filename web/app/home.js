@@ -198,7 +198,7 @@ export function createHomeModule({
       const leftIndex = indexMap.has(left.provider_id) ? indexMap.get(left.provider_id) : Number.MAX_SAFE_INTEGER;
       const rightIndex = indexMap.has(right.provider_id) ? indexMap.get(right.provider_id) : Number.MAX_SAFE_INTEGER;
       if (leftIndex !== rightIndex) return leftIndex - rightIndex;
-      return left.provider_name.localeCompare(right.provider_name);
+      return providers.displayName(left.provider_id).localeCompare(providers.displayName(right.provider_id));
     });
   }
 
@@ -400,7 +400,7 @@ export function createHomeModule({
           (group) => `
         <details class="provider-section" open>
           <summary>
-            <span>${escapeHtml(group.provider_name)}</span>
+            <span>${escapeHtml(providers.displayName(group.provider_id))}</span>
             <span>${group.shown_sessions || group.sessions.length}/${group.total_sessions || group.sessions.length}</span>
           </summary>
           <div class="session-list">

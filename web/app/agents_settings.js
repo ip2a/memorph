@@ -437,7 +437,7 @@ export function createAgentsSettingsModule({
           <strong>${escapeHtml(agentProviderDisplayName(provider))}</strong>
           <small>${t("agentManagementProviderHint")}</small>
           <div class="pill-row">
-            <span class="pill">${escapeHtml(provider.provider_id)}</span>
+            <span class="pill">${escapeHtml(providers.displayName(provider.provider_id))}</span>
             <span class="pill">${escapeHtml(environment.installed ? t("installed") : t("notDetected"))}</span>
             <span class="pill">${escapeHtml(environment.install_method || t("unknown"))}</span>
           </div>

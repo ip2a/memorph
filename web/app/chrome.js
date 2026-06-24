@@ -1,6 +1,6 @@
 let toastTimer = 0;
 
-function pageTitle(state, t) {
+function pageTitle(state, providers, t) {
   switch (state.route.name) {
     case "manager":
       return t("managerTitle");
@@ -10,19 +10,19 @@ function pageTitle(state, t) {
       return t("agentManagementTitle");
     case "hooks":
       return t("hooksTitle");
-    case "shared-list":
-      return t("sharedTitle");
-    case "shared-detail":
-      return t("sharedTitle");
+    case "sync-list":
+      return t("syncTitle");
+    case "sync-detail":
+      return t("syncTitle");
     case "session":
-      return state.session?.view?.provider_name || t("details");
+      return providers.displayName(state.session?.view?.provider_id) || t("details");
     default:
       return "";
   }
 }
 
-export function renderTopbarContext(state, t, escapeHtml) {
-  const label = pageTitle(state, t);
+export function renderTopbarContext(state, providers, t, escapeHtml) {
+  const label = pageTitle(state, providers, t);
   if (!label) return "";
   return `
     <span class="topbar-divider"></span>
@@ -61,7 +61,7 @@ export function renderAppShell({
           <button type="button" data-action="open-workspace-switch">${t("switchWorkspace")}</button>
           ${state.route.name === "hooks" ? "" : `<a class="button" href="/hooks" data-nav="/hooks">${t("hooks")}</a>`}
           ${state.route.name === "agents" ? "" : `<a class="button" href="/agents" data-nav="/agents">${t("agentManagement")}</a>`}
-          ${state.route.name === "manager" ? `<button type="button" data-action="open-compression">${t("compressSessions")}</button><a class="button" href="/shared" data-nav="/shared">${t("sharedGroups")}</a><button type="button" data-action="open-import">${t("importSession")}</button>` : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
+          ${state.route.name === "manager" ? `<button type="button" data-action="open-compression">${t("compressSessions")}</button><a class="button" href="/sync" data-nav="/sync">${t("syncGroups")}</a><button type="button" data-action="open-import">${t("importSession")}</button>` : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
           <button type="button" data-action="open-settings">${t("settings")}</button>
           <a class="icon-button" href="https://github.com/ip2a/memorph" target="_blank" rel="noopener noreferrer" data-action="open-external" data-url="https://github.com/ip2a/memorph" aria-label="GitHub repository" title="GitHub">
             ${githubIcon()}
