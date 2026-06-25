@@ -524,7 +524,8 @@ button[disabled] {
   min-width: 0;
 }
 
-.field label,
+.field > label,
+.field > span,
 .section-heading small {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
@@ -2094,10 +2095,25 @@ button[disabled] {
   display: grid;
   border-bottom: 1px solid var(--line);
   padding: 12px 10px 12px 12px;
+  cursor: pointer;
 }
 
 .manager-row:last-child {
   border-bottom: 0;
+}
+
+.manager-row.is-selected {
+  background: rgba(0, 0, 0, 0.04);
+  border-left: 3px solid rgba(0, 0, 0, 0.35);
+  padding-left: 9px;
+}
+
+.manager-row:hover {
+  background: var(--mist);
+}
+
+.manager-row.is-selected:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .manager-row-head {
@@ -2106,12 +2122,6 @@ button[disabled] {
   align-items: center;
   gap: 10px;
   justify-content: stretch;
-}
-
-.manager-select input {
-  width: 18px;
-  height: 18px;
-  margin: 0;
 }
 
 .manager-row-copy {
@@ -2166,17 +2176,22 @@ button[disabled] {
 .manager-stat-card {
   display: grid;
   align-content: center;
+  justify-items: center;
   gap: 4px;
   min-width: 0;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--text);
-  text-align: left;
+  text-align: center;
 }
 
 button.manager-stat-card {
   cursor: pointer;
+}
+
+button.manager-stat-card:hover {
+  background: rgba(0, 0, 0, 0.04);
 }
 
 button.manager-stat-card:hover span,
@@ -2317,45 +2332,41 @@ button.manager-stat-card:hover strong {
   overflow-wrap: anywhere;
 }
 
-.manager-filter-grid {
+.modal-form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  gap: 14px 16px;
+  align-items: start;
 }
 
-.filter-card {
-  display: grid;
-  gap: 8px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--mist);
-}
-
-.filter-card-wide {
+.modal-form-grid .field.span-full {
   grid-column: 1 / -1;
 }
 
-.filter-label {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 650;
+.modal-form-grid .field > span,
+.modal-form-grid .field > label {
+  color: var(--ink);
 }
 
-.manager-keyword-grid {
+.input-unit-combo {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
 }
 
-.compact-keyword-field input {
-  max-width: 220px;
+.input-unit-combo input,
+.input-unit-combo select {
+  min-height: 36px;
+  padding: 0 10px;
 }
 
-.size-bound-field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 72px;
-  gap: 6px;
+.input-unit-combo select {
+  min-width: 88px;
+}
+
+.modal-form-hint {
+  margin: 0;
+  font-size: 13px;
 }
 
 .manager-compact-filters {
@@ -2373,18 +2384,6 @@ button.manager-stat-card:hover strong {
   flex: 0 0 auto;
 }
 
-.unit-field {
-  display: inline-grid;
-  grid-template-columns: 80px 120px;
-  gap: 6px;
-  width: max-content;
-}
-
-.unit-field select[name="older_than_unit"] {
-  min-width: 88px;
-  width: auto;
-}
-
 .size-filter-field {
   display: inline-grid;
   grid-template-columns: max-content 52px 56px;
@@ -2398,13 +2397,7 @@ button.manager-stat-card:hover strong {
   width: auto;
 }
 
-.unit-field input,
-.size-filter-field input {
-  min-width: 0;
-  padding: 0 8px;
-}
-
-.unit-field select,
+.size-filter-field input,
 .size-filter-field select {
   min-width: 0;
   padding: 0 6px;
@@ -2638,8 +2631,7 @@ button.manager-stat-card:hover strong {
   .manager-layout,
   .manager-page-layout,
   .manager-compact-filters,
-  .manager-filter-grid,
-  .manager-keyword-grid,
+  .modal-form-grid,
   .home-hero,
   .workspace-panel,
   .filter-row-main,

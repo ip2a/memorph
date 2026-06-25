@@ -105,6 +105,8 @@ pub struct HomeButtonConfig {
     #[serde(default = "default_true")]
     pub view: bool,
     #[serde(default = "default_true")]
+    pub compress: bool,
+    #[serde(default = "default_true")]
     pub export: bool,
     #[serde(default = "default_false")]
     pub sync: bool,
@@ -117,6 +119,7 @@ impl Default for HomeButtonConfig {
         Self {
             switch: true,
             view: true,
+            compress: true,
             export: true,
             sync: false,
             delete: false,

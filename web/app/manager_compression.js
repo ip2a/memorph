@@ -30,12 +30,14 @@ export function createManagerCompressionModule({
   }
 
   function renderManagerPreview(preview, report = null) {
+    const selected = state.manager?.selectedItems || new Set();
     const rows = preview.items
       .map((item) => {
         const encoded = escapeAttr(encodeURIComponent(JSON.stringify(item)));
+        const isSelected = selected.has(encoded);
         const href = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
         return `
-          <article class="manager-row">
+          <article class="manager-row ${isSelected ? "is-selected" : ""}" data-action="toggle-manager-item" data-value="${encoded}">
             <div class="manager-row-head">
               <div class="manager-row-copy">
                 <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(item.title || item.session_id)}</a>
@@ -45,9 +47,6 @@ export function createManagerCompressionModule({
                   <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(item.last_active_at)))}</span>
                 </div>
               </div>
-              <label class="manager-select">
-                <input type="checkbox" name="manager_item" value="${encoded}">
-              </label>
             </div>
           </article>`;
       })
@@ -81,22 +80,28 @@ export function createManagerCompressionModule({
           <button type="button" class="invert" data-action="open-manager-filter">${t("filters")}</button>
           <button type="button" class="danger" data-action="open-manager-clean-confirm">${t("cleanSelected")}</button>
           <button type="button" data-action="open-manager-backup-confirm">${t("backupSelected")}</button>
-          <label class="check-row">
-            <input type="checkbox" data-role="select-all-manager">
-            <span>${t("selectAll")}</span>
-          </label>
+          <button type="button" class="button-small" data-action="select-all-manager">${t("selectAll")}</button>
         </div>
       </div>
       <div class="manager-list">${rows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>`;
   }
 
-  function renderManagerWorkspacePreview(preview) {
-    const rows = (preview.items || [])
+  function renderManagerWorkspacePreview(preview, loading = false) {
+    if (loading) {
+      return `
+        <div class="section-heading manager-section-head">
+          <div><strong>${t("managerWorkspacePreview")}</strong></div>
+        </div>
+        <div class="manager-list"><div class="empty-state">${inlineSpinner()}</div></div>`;
+    }
+    const selected = state.manager?.selectedWorkspaceItems || new Set();
+    const rows = (preview?.items || [])
       .map((item) => {
         const encoded = escapeAttr(encodeURIComponent(JSON.stringify(item)));
+        const isSelected = selected.has(encoded);
         const href = `/manager?provider=${encodeURIComponent(item.provider_id)}&workspace=${encodeURIComponent(item.workspace)}`;
         return `
-          <article class="manager-row">
+          <article class="manager-row ${isSelected ? "is-selected" : ""}" data-action="toggle-manager-workspace-item" data-value="${encoded}">
             <div class="manager-row-head">
               <div class="manager-row-copy">
                 <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(workspaceName(item.workspace) || item.workspace)}</a>
@@ -108,14 +113,11 @@ export function createManagerCompressionModule({
                 </div>
                 <div class="path-line">${escapeHtml(item.workspace)}</div>
               </div>
-              <label class="manager-select">
-                <input type="checkbox" name="manager_workspace_item" value="${encoded}">
-              </label>
             </div>
           </article>`;
       })
       .join("");
-    const summary = managerWorkspaceSelectionSummary(preview.total_count || preview.items?.length || 0, 0, 0);
+    const summary = managerWorkspaceSelectionSummary(preview?.total_count || preview?.items?.length || 0, 0, 0);
     return `
       <div class="section-heading manager-section-head">
         <div>
@@ -126,10 +128,7 @@ export function createManagerCompressionModule({
           <button type="button" class="invert" data-action="open-manager-filter">${t("filters")}</button>
           <button type="button" class="danger" data-action="open-manager-clean-workspace-confirm">${t("cleanSelected")}</button>
           <button type="button" data-action="open-manager-backup-workspace-confirm">${t("backupSelected")}</button>
-          <label class="check-row">
-            <input type="checkbox" data-role="select-all-manager-workspace">
-            <span>${t("selectAll")}</span>
-          </label>
+          <button type="button" class="button-small" data-action="select-all-manager-workspace">${t("selectAll")}</button>
         </div>
       </div>
       <div class="manager-list">${rows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>`;
@@ -142,11 +141,11 @@ export function createManagerCompressionModule({
       const selected = typeof selectedManagerItems === "function" ? selectedManagerItems() : [];
       const bytes = selected.reduce((sum, item) => sum + Number(item.size_bytes || 0), 0);
       summary.textContent = managerSelectionSummary(preview.total_count, selected.length, bytes);
-      const all = [...document.querySelectorAll('input[name="manager_item"]')];
-      const selectAll = document.querySelector('input[data-role="select-all-manager"]');
+      const all = [...document.querySelectorAll('.manager-row[data-action="toggle-manager-item"]')];
+      const selectAll = document.querySelector('[data-action="select-all-manager"]');
       if (selectAll) {
-        selectAll.checked = all.length > 0 && selected.length === all.length;
-        selectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+        selectAll.classList.toggle("invert", all.length > 0 && selected.length === all.length);
+        selectAll.textContent = all.length > 0 && selected.length === all.length ? t("deselectAll") : t("selectAll");
       }
     }
 
@@ -157,11 +156,11 @@ export function createManagerCompressionModule({
       const bytes = selected.reduce((sum, item) => sum + Number(item.total_size_bytes || 0), 0);
       const total = workspacePreview.total_count || workspacePreview.items?.length || 0;
       workspaceSummary.textContent = managerWorkspaceSelectionSummary(total, selected.length, bytes);
-      const all = [...document.querySelectorAll('input[name="manager_workspace_item"]')];
-      const selectAll = document.querySelector('input[data-role="select-all-manager-workspace"]');
+      const all = [...document.querySelectorAll('.manager-row[data-action="toggle-manager-workspace-item"]')];
+      const selectAll = document.querySelector('[data-action="select-all-manager-workspace"]');
       if (selectAll) {
-        selectAll.checked = all.length > 0 && selected.length === all.length;
-        selectAll.indeterminate = selected.length > 0 && selected.length < all.length;
+        selectAll.classList.toggle("invert", all.length > 0 && selected.length === all.length);
+        selectAll.textContent = all.length > 0 && selected.length === all.length ? t("deselectAll") : t("selectAll");
       }
     }
   }
@@ -214,8 +213,9 @@ export function createManagerCompressionModule({
 
   function renderManagerPage() {
     const draft = state.manager.draft || defaultManagerDraft();
-    const preview = state.manager.preview;
-    const workspacePreview = state.manager.workspacePreview;
+    const isDefault = state.manager.isDefaultPreview !== false;
+    const preview = isDefault ? state.manager.quickPreview : state.manager.preview;
+    const workspacePreview = isDefault ? state.manager.quickWorkspacePreview : state.manager.workspacePreview;
     const report = state.manager.report;
     const viewMode = state.manager.viewMode || "sessions";
     const viewDashboard = renderManagerDashboard(state.manager.stats, viewMode, state.manager.statsLoading);
@@ -227,7 +227,7 @@ export function createManagerCompressionModule({
         <section class="section-panel manager-result-panel">
           ${viewDashboard}
           ${viewMode === "workspaces"
-            ? renderManagerWorkspacePreview(workspacePreview || emptyManagerPreview())
+            ? renderManagerWorkspacePreview(workspacePreview, workspacePreview === null)
             : renderManagerPreview(preview || emptyManagerPreview(), report)}
         </section>
       </div>`;
@@ -247,7 +247,7 @@ export function createManagerCompressionModule({
       : stats?.current_workspace_session_count;
     const statValue = (value, formatter = (item) => String(item)) => {
       if (value != null) return escapeHtml(formatter(value));
-      return pending ? escapeHtml(t("managerStatsCalculating")) : "—";
+      return pending ? inlineSpinner() : "—";
     };
 
     return `
@@ -439,7 +439,12 @@ export function createManagerCompressionModule({
 }
 
 function selectedManagerWorkspaceItems() {
-  return [...document.querySelectorAll('input[name="manager_workspace_item"]:checked')].map((el) =>
-    JSON.parse(decodeURIComponent(el.value))
+  const visible = new Set(
+    [...document.querySelectorAll('.manager-row[data-action="toggle-manager-workspace-item"]')].map(
+      (el) => el.dataset.value
+    )
   );
+  return [...(state.manager?.selectedWorkspaceItems || new Set())]
+    .filter((value) => visible.has(value))
+    .map((value) => JSON.parse(decodeURIComponent(value)));
 }

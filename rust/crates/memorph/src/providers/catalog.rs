@@ -257,6 +257,7 @@ mod tests {
             executable_dir: None,
             config_path: String::new(),
             install_method: String::new(),
+            executable_version: None,
         }
     }
 

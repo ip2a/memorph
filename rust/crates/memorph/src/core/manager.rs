@@ -43,6 +43,13 @@ pub struct ManagerPreviewResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagerWorkspacesResult {
+    pub items: Vec<ManagerWorkspaceItem>,
+    pub total_count: usize,
+    pub total_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagerStatsResult {
     pub selected_agent_count: usize,
     pub current_workspace_session_count: usize,
@@ -240,12 +247,18 @@ pub fn stats(filter: &ManagerFilter) -> Result<ManagerStatsResult> {
     let all_workspaces = workspaces(&all_filter)?;
 
     let all_workspace_count = all_workspaces
+        .items
         .iter()
         .map(|item| item.workspace.clone())
         .collect::<BTreeSet<_>>()
         .len();
-    let all_workspace_session_count = all_workspaces.iter().map(|item| item.session_count).sum();
+    let all_workspace_session_count = all_workspaces
+        .items
+        .iter()
+        .map(|item| item.session_count)
+        .sum();
     let all_workspace_size_bytes = all_workspaces
+        .items
         .iter()
         .map(|item| item.total_size_bytes)
         .sum();
@@ -419,7 +432,7 @@ pub struct ManagerWorkspaceItem {
 }
 
 /// Build an aggregated view of (provider, workspace) groups across the requested providers.
-pub fn workspaces(filter: &ManagerFilter) -> Result<Vec<ManagerWorkspaceItem>> {
+pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
     let provider_ids = if filter.providers.is_empty() {
         providers::all_provider_ids()
             .iter()
@@ -520,7 +533,9 @@ pub fn workspaces(filter: &ManagerFilter) -> Result<Vec<ManagerWorkspaceItem>> {
         items.truncate(limit);
     }
 
-    Ok(items)
+    let total_count = items.len();
+    let total_size_bytes = items.iter().map(|i| i.total_size_bytes).sum();
+    Ok(ManagerWorkspacesResult { items, total_count, total_size_bytes })
 }
 
 /// Resolve the concrete ManagerItem rows for a given provider workspace.

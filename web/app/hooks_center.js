@@ -148,7 +148,6 @@ export function createHooksCenterModule({
         ${renderProviderRuntimeSessions(runtimeSessions)}
         ${renderProviderRecentEvents(recentEvents)}
         ${renderProviderRecentErrors(recentErrors)}
-        ${renderProviderSessionDiagnosis(providerId)}
       </div>`;
   }
 
@@ -229,23 +228,6 @@ export function createHooksCenterModule({
     return renderDetailBlock(t("hookRecentErrors"), t("hookRecentErrorsHint"), body);
   }
 
-  function renderProviderSessionDiagnosis(providerId) {
-    const groups = state.hooks.sessionDiagnosis || [];
-    const rows = [];
-    for (const group of groups) {
-      if ((group.provider_id || "") !== providerId) continue;
-      for (const session of group.sessions || []) {
-        rows.push({ group, session });
-      }
-    }
-    if (!rows.length) return "";
-    const body = `
-      <div class="settings-list agent-environment-paths">
-        ${rows.map(({ group, session }) => renderSessionDiagnosisRow(group, session)).join("")}
-      </div>`;
-    return renderDetailBlock(t("hookSessionDiagnosis"), t("hookSessionDiagnosisHint"), body);
-  }
-
   function providerActionIds(status, supported, capabilities = {}) {
     if (!supported) return [];
     const available = {
@@ -319,56 +301,6 @@ export function createHooksCenterModule({
           <span class="pill">${t("updatedAt")}=${escapeHtml(formatDate(session.updated_at || session.last_event_at))}</span>
         </div>
       </div>`;
-  }
-
-  function renderSessionDiagnosisRow(group, session) {
-    const diagnosis = session.hook_diagnosis || {};
-    const summary = session.hook_runtime_summary || {};
-    const providerId = session.provider_id || group.provider_id;
-    const title = session.display_title || session.title || session.session_id;
-    const actionButtons = (diagnosis.actions || []).map((action) => renderDiagnosisAction(providerId, action)).join("");
-    return `
-      <div class="settings-row agent-detail-row">
-        <div class="settings-copy settings-copy-inline">
-          <a
-            class="session-title session-title-link"
-            href="/sessions/${encodeURIComponent(providerId)}/${encodeURIComponent(session.session_id)}"
-            data-nav="/sessions/${encodeURIComponent(providerId)}/${encodeURIComponent(session.session_id)}"
-          >${escapeHtml(title)}</a>
-          <span>${escapeHtml(session.project_dir || "—")}</span>
-          <small>${escapeHtml(diagnosis.message || "")}</small>
-        </div>
-        <div class="hook-provider-main">
-          <div class="pill-row hook-event-pill-row">
-            <span class="pill">${escapeHtml(providerDisplayNameById(group.provider_id || providerId))}</span>
-            <span class="pill">${escapeHtml(diagnosis.kind || "unknown")}</span>
-            ${diagnosis.confidence ? `<span class="pill">confidence=${escapeHtml(diagnosis.confidence)}</span>` : ""}
-            ${diagnosis.matched_by || summary.matched_by ? `<span class="pill">matched=${escapeHtml(diagnosis.matched_by || summary.matched_by)}</span>` : ""}
-          </div>
-          ${actionButtons ? `<div class="pill-row">${actionButtons}</div>` : ""}
-        </div>
-      </div>`;
-  }
-
-  function providerDisplayNameById(providerId) {
-    return providers.displayName(providerId);
-  }
-
-  function renderDiagnosisAction(providerId, action) {
-    const settingId = action.setting_id || "";
-    if (!settingId) return "";
-    const key = `${providerId}:${settingId}`;
-    const pending = !!state.agents.pendingSettings[key];
-    const dataAction = settingId === "verify_hook" ? "run-hook-operation-now" : "open-hook-operation-confirm";
-    return `<button
-      type="button"
-      class="${settingId === "repair_hook" ? "invert" : ""}"
-      data-action="${escapeAttr(dataAction)}"
-      data-provider="${escapeAttr(providerId)}"
-      data-setting-id="${escapeAttr(settingId)}"
-      title="${escapeAttr(action.reason || "")}"
-      ${pending ? "disabled" : ""}
-    >${escapeHtml(pending ? t("running") : action.label)}</button>`;
   }
 
   function renderErrorRow(error) {

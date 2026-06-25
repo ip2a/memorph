@@ -190,6 +190,7 @@ pub fn router() -> Router {
         )
         .route("/api/v1/manager/preview", post(manager_preview))
         .route("/api/v1/manager/quick-preview", get(manager_quick_preview))
+        .route("/api/v1/manager/quick-workspaces", get(manager_quick_workspaces))
         .route("/api/v1/manager/workspaces", post(manager_workspaces))
         .route("/api/v1/manager/stats", post(manager_stats))
         .route("/api/v1/manager/clean", post(manager_clean))
@@ -562,6 +563,7 @@ async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result
                     executable_dir: None,
                     config_path: String::new(),
                     install_method: String::new(),
+                    executable_version: None,
                 }
             })
         },
@@ -2110,18 +2112,59 @@ struct ManagerQuickPreviewResult {
     selected_agent_count: usize,
 }
 
-async fn manager_quick_preview() -> impl IntoResponse {
-    let installed_provider_ids = match build_provider_catalog_light(None).await {
-        Ok(catalog) => catalog
-            .providers
-            .into_iter()
-            .filter(|provider| provider.install_state.is_installed)
-            .map(|provider| provider.provider_id)
-            .collect::<Vec<_>>(),
+#[derive(Deserialize)]
+struct ManagerQuickQuery {
+    /// Comma-separated provider ids. Empty/missing → fall back to all installed providers.
+    #[serde(default)]
+    providers: String,
+}
+
+const MANAGER_QUICK_LIMIT: usize = 15;
+
+/// Resolve provider ids for a quick endpoint: explicit `?providers=` wins, otherwise
+/// fall back to every currently-installed provider.
+async fn resolve_quick_provider_ids(query: &str) -> Result<Vec<String>, anyhow::Error> {
+    let trimmed: Vec<String> = query
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    if !trimmed.is_empty() {
+        return Ok(trimmed);
+    }
+    let catalog = build_provider_catalog_light(None).await?;
+    Ok(catalog
+        .providers
+        .into_iter()
+        .filter(|p| p.install_state.is_installed)
+        .map(|p| p.provider_id)
+        .collect())
+}
+
+fn quick_filter(provider_ids: Vec<String>) -> crate::core::manager::ManagerFilter {
+    crate::core::manager::ManagerFilter {
+        providers: provider_ids,
+        older_than_days: None,
+        older_than_ms: None,
+        larger_than_mb: None,
+        larger_than_bytes: None,
+        smaller_than_bytes: None,
+        workspace: None,
+        sort: Some("recent".to_string()),
+        limit: Some(MANAGER_QUICK_LIMIT),
+    }
+}
+
+async fn manager_quick_preview(
+    axum::extract::Query(query): axum::extract::Query<ManagerQuickQuery>,
+) -> impl IntoResponse {
+    let provider_ids = match resolve_quick_provider_ids(&query.providers).await {
+        Ok(ids) => ids,
         Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     };
 
-    if installed_provider_ids.is_empty() {
+    if provider_ids.is_empty() {
         return ApiResponse::success(ManagerQuickPreviewResult {
             items: Vec::new(),
             total_count: 0,
@@ -2131,26 +2174,41 @@ async fn manager_quick_preview() -> impl IntoResponse {
         .into_response();
     }
 
-    let filter = crate::core::manager::ManagerFilter {
-        providers: installed_provider_ids.clone(),
-        older_than_days: None,
-        older_than_ms: None,
-        larger_than_mb: None,
-        larger_than_bytes: None,
-        smaller_than_bytes: None,
-        workspace: None,
-        sort: Some("recent".to_string()),
-        limit: Some(15),
-    };
+    let selected_agent_count = provider_ids.len();
+    let filter = quick_filter(provider_ids);
 
     match crate::core::manager::preview(&filter) {
         Ok(preview) => ApiResponse::success(ManagerQuickPreviewResult {
-            selected_agent_count: installed_provider_ids.len(),
+            selected_agent_count,
             total_count: preview.total_count,
             total_size_bytes: preview.total_size_bytes,
             items: preview.items,
         })
         .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn manager_quick_workspaces(
+    axum::extract::Query(query): axum::extract::Query<ManagerQuickQuery>,
+) -> impl IntoResponse {
+    let provider_ids = match resolve_quick_provider_ids(&query.providers).await {
+        Ok(ids) => ids,
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+
+    if provider_ids.is_empty() {
+        return ApiResponse::success(crate::core::manager::ManagerWorkspacesResult {
+            items: Vec::new(),
+            total_count: 0,
+            total_size_bytes: 0,
+        })
+        .into_response();
+    }
+
+    let filter = quick_filter(provider_ids);
+    match crate::core::manager::workspaces(&filter) {
+        Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -3061,6 +3119,7 @@ mod tests {
                     "home_buttons": {
                         "switch": true,
                         "view": true,
+                        "compress": true,
                         "export": true,
                         "sync": false,
                         "delete": false

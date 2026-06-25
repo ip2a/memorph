@@ -33,14 +33,19 @@ export function createState() {
     syncDetail: null,
     manager: {
       draft: null,
-      preview: null,
-      workspacePreview: null,
+      preview: null,           // sessions: full filtered result (POST /manager/preview)
+      workspacePreview: null,   // workspaces: full filtered result (POST /manager/workspaces)
+      quickPreview: null,       // sessions: quick view (GET /manager/quick-preview)
+      quickWorkspacePreview: null, // workspaces: quick view (GET /manager/quick-workspaces)
+      isDefaultPreview: true,   // true = showing quick view, false = showing filtered result
       stats: null,
       statsLoading: false,
       statsRequestId: "",
       report: null,
       pendingItems: [],
       viewMode: "sessions",
+      selectedItems: new Set(),          // encoded session item values
+      selectedWorkspaceItems: new Set(), // encoded workspace item values
     },
     compression: {
       archives: [],

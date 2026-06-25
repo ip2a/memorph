@@ -176,6 +176,10 @@ export function createAgentsSettingsModule({
                       <span>${t("showView")}</span>
                     </label>
                     <label class="settings-check">
+                      <input type="checkbox" name="home_button_compress" value="true" ${settings.home_buttons.compress ? "checked" : ""}>
+                      <span>${t("showCompress")}</span>
+                    </label>
+                    <label class="settings-check">
                       <input type="checkbox" name="home_button_switch" value="true" ${settings.home_buttons.switch ? "checked" : ""}>
                       <span>${t("showSwitch")}</span>
                     </label>
@@ -413,15 +417,23 @@ export function createAgentsSettingsModule({
     );
   }
 
+  function sortProviderListByInstall(providerList) {
+    const installed = [];
+    const missing = [];
+    for (const item of providerList) {
+      if (agentProviderEnvironment(item).installed) {
+        installed.push(item);
+      } else {
+        missing.push(item);
+      }
+    }
+    return [...installed, ...missing];
+  }
+
   function renderAgentProviderList() {
-    const visible = state.agents.providers
-      .filter((item) => !providers.isHiddenGlobal(item.provider_id))
-      .sort((left, right) => {
-        const leftInstalled = agentProviderEnvironment(left).installed;
-        const rightInstalled = agentProviderEnvironment(right).installed;
-        if (leftInstalled === rightInstalled) return 0;
-        return leftInstalled ? -1 : 1;
-      });
+    const visible = sortProviderListByInstall(
+      state.agents.providers.filter((item) => !providers.isHiddenGlobal(item.provider_id))
+    );
     if (!visible.length) {
       return `<div class="empty-state">${t("noProviders")}</div>`;
     }
@@ -490,6 +502,7 @@ export function createAgentsSettingsModule({
         <div class="settings-list agent-environment-paths">
           ${renderAgentDetailRow(t("agentExecutablePath"), environment.executable_path || "—", "")}
           ${renderAgentDetailRow(t("agentExecutableDir"), environment.executable_dir || "—", "")}
+          ${renderAgentDetailRow(t("agentExecutableVersion"), environment.executable_version || "—", "")}
           ${renderAgentDetailRow(t("agentConfigPath"), environment.config_path || "—", "")}
         </div>
       </div>
@@ -557,12 +570,10 @@ export function createAgentsSettingsModule({
         </div>
         <div class="manager-summary-grid agent-environment-grid">
           ${renderMetaLine("Hook status", status)}
-          ${renderMetaLine("Hook capabilities", formatHookCapabilities(capabilities))}
           ${renderMetaLine("Hook format", profile ? hookFormatLabel(profile.format) : "—")}
           ${renderMetaLine("Events", events.length ? `${events.length} total / ${blockingCount} blocking` : "—")}
           ${renderMetaLine("Installed version", hook.installed_version || "—")}
           ${renderMetaLine("Current version", hook.current_version || "—")}
-          ${renderMetaLine("Last event", lastEvent)}
           ${renderMetaLine("Sessions", String(diagnosis.total_sessions || 0))}
           ${renderMetaLine("Linked", String(diagnosis.linked || 0))}
           ${renderMetaLine("Weak", String(diagnosis.weakly_linked || 0))}
@@ -570,7 +581,6 @@ export function createAgentsSettingsModule({
           ${renderMetaLine("Active runtime", String(diagnosis.active_runtime_sessions || 0))}
         </div>
         <div class="settings-list agent-environment-paths">
-          ${renderAgentDetailRow("Hook config", hook.config_path || profile?.config_hint || "—", hook.message || "No hook status message.")}
           ${renderHookDiagnosisSummaryRow(diagnosis)}
           ${events.length ? renderHookEventProfileRow(events) : ""}
         </div>
@@ -594,7 +604,6 @@ export function createAgentsSettingsModule({
       <div class="settings-row agent-detail-row">
         <div class="settings-copy settings-copy-inline">
           <strong>Session diagnosis</strong>
-          <span>Aggregated hook linkage and runtime health across scanned sessions.</span>
         </div>
         <div class="pill-row hook-event-pill-row">
           <span class="pill">linked=${escapeHtml(String(diagnosis.linked || 0))}</span>
@@ -651,7 +660,6 @@ export function createAgentsSettingsModule({
       <div class="settings-row agent-detail-row">
         <div class="settings-copy settings-copy-inline">
           <strong>Hook events</strong>
-          <span>Provider events memorph can capture. Blocking events may require a policy decision.</span>
         </div>
         <div class="pill-row hook-event-pill-row">
           ${events

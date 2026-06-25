@@ -222,21 +222,6 @@ document.addEventListener("change", (event) => {
     autoCollapseHomeHero();
     render();
   }
-  if (target.dataset.role === "select-all-manager") {
-    document
-      .querySelectorAll('input[name="manager_item"]')
-      .forEach((el) => (el.checked = target.checked));
-    updateManagerSelectionStats();
-  }
-  if (target.dataset.role === "select-all-manager-workspace") {
-    document
-      .querySelectorAll('input[name="manager_workspace_item"]')
-      .forEach((el) => (el.checked = target.checked));
-    updateManagerSelectionStats();
-  }
-  if (target.name === "manager_item" || target.name === "manager_workspace_item") {
-    updateManagerSelectionStats();
-  }
 });
 
 void bootstrap();
@@ -365,8 +350,21 @@ async function loadRoute() {
     } else if (route.name === "manager") {
       state.home.syncGroups = await api("/api/v1/sync/status");
       state.manager.viewMode = route.view === "workspaces" ? "workspaces" : "sessions";
-      if (!state.manager.preview) {
+      if (!state.manager.quickPreview) {
         await loadDefaultManagerPreview();
+      }
+      // If landing directly on workspaces view but quick workspace data not loaded yet, fetch it
+      if (state.manager.viewMode === "workspaces" && !state.manager.quickWorkspacePreview && state.manager.isDefaultPreview) {
+        const draft = state.manager.draft || defaultManagerDraft();
+        if (draft.providers.length) {
+          const providerQuery = draft.providers.join(",");
+          api(`/api/v1/manager/quick-workspaces?providers=${encodeURIComponent(providerQuery)}`)
+            .then((quickWorkspacePreview) => {
+              state.manager.quickWorkspacePreview = quickWorkspacePreview;
+              render();
+            })
+            .catch((error) => toast(t("error"), error.message, true));
+        }
       }
     } else if (route.name === "compression") {
       const workspaceQuery = state.home.workspace
@@ -676,10 +674,17 @@ async function setWorkspace(workspace) {
         draft: null,
         preview: null,
         workspacePreview: null,
+        quickPreview: null,
+        quickWorkspacePreview: null,
+        isDefaultPreview: true,
         stats: null,
+        statsLoading: false,
+        statsRequestId: "",
         report: null,
         pendingItems: [],
         viewMode: state.manager.viewMode || "sessions",
+        selectedItems: new Set(),
+        selectedWorkspaceItems: new Set(),
       };
     }
     await refreshCatalog(workspace);
@@ -736,15 +741,12 @@ async function updateManagerProvider(provider, checked, trigger = null) {
   const next = new Set(draft.providers);
   if (checked) next.add(provider);
   else next.delete(provider);
-  state.manager.draft = {
-    ...draft,
-    providers: [...next],
-  };
+  const nextDraft = { ...draft, providers: [...next] };
+  state.manager.draft = nextDraft;
 
+  // Optimistic UI: update the provider row immediately
   const item = trigger?.closest?.(".manager-provider-item");
-  if (!item) {
-    render();
-  } else {
+  if (item) {
     item.classList.toggle("is-active", checked);
     const stateMarker = item.querySelector(".agent-provider-state");
     if (stateMarker) {
@@ -754,8 +756,74 @@ async function updateManagerProvider(provider, checked, trigger = null) {
     }
   }
 
-  if (state.manager.preview?.default_preview) {
-    await loadDefaultManagerPreview();
+  if (!nextDraft.providers.length) {
+    const emptyPreview = emptyManagerPreview();
+    state.manager = {
+      ...state.manager,
+      draft: nextDraft,
+      quickPreview: emptyPreview,
+      quickWorkspacePreview: null,
+      preview: null,
+      workspacePreview: null,
+      stats: null,
+      statsLoading: false,
+      statsRequestId: "",
+      report: null,
+      pendingItems: [],
+      selectedItems: new Set(),
+      selectedWorkspaceItems: new Set(),
+    };
+    render();
+    return;
+  }
+
+  const isDefault = state.manager.isDefaultPreview;
+  setLoading(true, { label: t("managerPreview"), detail: t("scanningSessions") });
+  try {
+    if (isDefault) {
+      // Quick view mode: refresh quick-preview (and invalidate quick-workspaces cache)
+      const providerQuery = nextDraft.providers.join(",");
+      const quickPreview = await api(`/api/v1/manager/quick-preview?providers=${encodeURIComponent(providerQuery)}`);
+      state.manager = {
+        ...state.manager,
+        draft: nextDraft,
+        quickPreview,
+        quickWorkspacePreview: null, // invalidate; will lazy-reload if user switches view
+        preview: null,
+        workspacePreview: null,
+        stats: null,
+        statsLoading: true,
+        statsRequestId: "",
+        report: null,
+        pendingItems: [],
+        selectedItems: new Set(),
+        selectedWorkspaceItems: new Set(),
+      };
+    } else {
+      // Filtered view mode: re-run full scan with updated providers
+      const { preview, workspacePreview } = await loadManagerData(nextDraft);
+      applyManagerDraftFilters(preview, nextDraft);
+      preview.output_dir = "";
+      state.manager = {
+        ...state.manager,
+        draft: nextDraft,
+        preview,
+        workspacePreview,
+        stats: null,
+        statsLoading: true,
+        statsRequestId: "",
+        report: null,
+        pendingItems: [],
+        selectedItems: new Set(),
+        selectedWorkspaceItems: new Set(),
+      };
+    }
+    render();
+    queueManagerStatsLoad(nextDraft);
+  } catch (error) {
+    toast(t("error"), error.message, true);
+  } finally {
+    setLoading(false);
   }
 }
 
@@ -972,6 +1040,68 @@ async function handleAction(action, data, trigger = null) {
     case "open-manager-backup-workspace-confirm":
       openManagerBackupWorkspaceConfirmModal();
       break;
+    case "toggle-manager-item":
+      {
+        const value = data.value || "";
+        const set = state.manager.selectedItems;
+        const row = trigger.closest('.manager-row[data-action="toggle-manager-item"]');
+        if (set.has(value)) {
+          set.delete(value);
+          row?.classList.remove("is-selected");
+        } else {
+          set.add(value);
+          row?.classList.add("is-selected");
+        }
+        updateManagerSelectionStats();
+      }
+      break;
+    case "toggle-manager-workspace-item":
+      {
+        const value = data.value || "";
+        const set = state.manager.selectedWorkspaceItems;
+        const row = trigger.closest('.manager-row[data-action="toggle-manager-workspace-item"]');
+        if (set.has(value)) {
+          set.delete(value);
+          row?.classList.remove("is-selected");
+        } else {
+          set.add(value);
+          row?.classList.add("is-selected");
+        }
+        updateManagerSelectionStats();
+      }
+      break;
+    case "select-all-manager":
+      {
+        const rows = [...document.querySelectorAll('.manager-row[data-action="toggle-manager-item"]')];
+        const allSelected = rows.length > 0 && rows.every((el) => state.manager.selectedItems.has(el.dataset.value));
+        rows.forEach((el) => {
+          if (allSelected) {
+            state.manager.selectedItems.delete(el.dataset.value);
+            el.classList.remove("is-selected");
+          } else {
+            state.manager.selectedItems.add(el.dataset.value);
+            el.classList.add("is-selected");
+          }
+        });
+        updateManagerSelectionStats();
+      }
+      break;
+    case "select-all-manager-workspace":
+      {
+        const rows = [...document.querySelectorAll('.manager-row[data-action="toggle-manager-workspace-item"]')];
+        const allSelected = rows.length > 0 && rows.every((el) => state.manager.selectedWorkspaceItems.has(el.dataset.value));
+        rows.forEach((el) => {
+          if (allSelected) {
+            state.manager.selectedWorkspaceItems.delete(el.dataset.value);
+            el.classList.remove("is-selected");
+          } else {
+            state.manager.selectedWorkspaceItems.add(el.dataset.value);
+            el.classList.add("is-selected");
+          }
+        });
+        updateManagerSelectionStats();
+      }
+      break;
     case "set-manager-view":
       {
         const view = data.view === "workspaces" ? "workspaces" : "sessions";
@@ -983,16 +1113,19 @@ async function handleAction(action, data, trigger = null) {
           params.delete("view");
         }
         replacePath(`/manager?${params.toString()}`);
-        if (view === "workspaces" && !state.manager.workspacePreview) {
+        if (view === "workspaces" && !state.manager.quickWorkspacePreview && state.manager.isDefaultPreview) {
+          // Lazy-load the quick workspace view on first switch
           const draft = state.manager.draft || defaultManagerDraft();
           if (draft.providers.length) {
-            render();
-            api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) })
-              .then((workspacePreview) => {
-                state.manager.workspacePreview = workspacePreview;
+            render(); // show loading state immediately
+            const providerQuery = draft.providers.join(",");
+            api(`/api/v1/manager/quick-workspaces?providers=${encodeURIComponent(providerQuery)}`)
+              .then((quickWorkspacePreview) => {
+                state.manager.quickWorkspacePreview = quickWorkspacePreview;
                 render();
               })
               .catch((error) => toast(t("error"), error.message, true));
+            return;
           }
         }
         render();
@@ -1588,6 +1721,7 @@ async function runSaveSettings(formData) {
     logging: logSettingsFromFormData(formData),
     home_buttons: {
       view: formData.get("home_button_view") === "true",
+      compress: formData.get("home_button_compress") === "true",
       switch: formData.get("home_button_switch") === "true",
       export: formData.get("home_button_export") === "true",
       sync: formData.get("home_button_sync") === "true",
@@ -1623,25 +1757,26 @@ async function saveSettings(body) {
 
 async function loadManagerData(draft) {
   const body = managerPreviewBody(draft);
-  return Promise.all([
+  const [preview, workspacePreview] = await Promise.all([
     api("/api/v1/manager/preview", { method: "POST", body }),
     api("/api/v1/manager/workspaces", { method: "POST", body }),
   ]);
-}
-
-async function loadDefaultManagerData(draft) {
-  const body = managerPreviewBody(draft);
-  return Promise.all([
-    api("/api/v1/manager/quick-preview"),
-    api("/api/v1/manager/workspaces", { method: "POST", body }),
-  ]);
+  return { preview, workspacePreview };
 }
 
 async function refreshManagerData(draft) {
-  if (draft.is_default_preview) {
-    return loadDefaultManagerData(draft);
+  if (state.manager.isDefaultPreview) {
+    const providerQuery = draft.providers.join(",");
+    const [quickPreview, quickWorkspacePreview] = await Promise.all([
+      api(`/api/v1/manager/quick-preview?providers=${encodeURIComponent(providerQuery)}`),
+      state.manager.viewMode === "workspaces"
+        ? api(`/api/v1/manager/quick-workspaces?providers=${encodeURIComponent(providerQuery)}`)
+        : Promise.resolve(null),
+    ]);
+    return { quickPreview, quickWorkspacePreview, isDefaultPreview: true };
   }
-  return loadManagerData(draft);
+  const { preview, workspacePreview } = await loadManagerData(draft);
+  return { preview, workspacePreview, isDefaultPreview: false };
 }
 
 function queueManagerStatsLoad(draft) {
@@ -1666,40 +1801,43 @@ function queueManagerStatsLoad(draft) {
 }
 
 async function loadDefaultManagerPreview() {
-  const draft = {
-    ...(state.manager.draft || defaultManagerDraft()),
-    is_default_preview: true,
-  };
+  const draft = state.manager.draft || defaultManagerDraft();
   if (!draft.providers.length) {
-    const preview = emptyManagerPreview();
-    preview.default_preview = true;
     state.manager = {
+      ...state.manager,
       draft,
-      preview,
+      quickPreview: emptyManagerPreview(),
+      quickWorkspacePreview: null,
+      preview: null,
       workspacePreview: null,
+      isDefaultPreview: true,
       stats: null,
       statsLoading: false,
       statsRequestId: "",
       report: null,
       pendingItems: [],
-      viewMode: "sessions",
+      selectedItems: new Set(),
+      selectedWorkspaceItems: new Set(),
     };
     render();
     return;
   }
-  const [preview, workspacePreview] = await loadDefaultManagerData(draft);
-  preview.output_dir = "";
-  preview.default_preview = true;
+  const quickPreview = await api("/api/v1/manager/quick-preview");
   state.manager = {
+    ...state.manager,
     draft,
-    preview,
-    workspacePreview,
+    quickPreview,
+    quickWorkspacePreview: null,
+    preview: null,
+    workspacePreview: null,
+    isDefaultPreview: true,
     stats: null,
     statsLoading: true,
     statsRequestId: "",
     report: null,
     pendingItems: [],
-    viewMode: state.manager.viewMode || "sessions",
+    selectedItems: new Set(),
+    selectedWorkspaceItems: new Set(),
   };
   render();
   queueManagerStatsLoad(draft);
@@ -1710,20 +1848,23 @@ async function runManagerPreview(formData) {
   if (!draft.providers.length) throw new Error(t("noTargetAgentSelected"));
   setLoading(true, { label: t("managerPreview"), detail: t("scanningSessions") });
   try {
-    const [preview, workspacePreview] = await loadManagerData(draft);
+    const { preview, workspacePreview } = await loadManagerData(draft);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
-    preview.default_preview = false;
     state.manager = {
+      ...state.manager,
       draft,
       preview,
       workspacePreview,
+      isDefaultPreview: false,
       stats: null,
       statsLoading: true,
       statsRequestId: "",
       report: null,
       pendingItems: [],
       viewMode: state.manager.viewMode || "sessions",
+      selectedItems: new Set(),
+      selectedWorkspaceItems: new Set(),
     };
     state.modal = null;
     if (state.route.name !== "manager") replacePath("/manager");
@@ -1746,21 +1887,8 @@ async function runManagerClean() {
       body: { items },
     });
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const [preview, workspacePreview] = await refreshManagerData(draft);
-    applyManagerDraftFilters(preview, draft);
-    preview.output_dir = "";
-    preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = {
-      ...state.manager,
-      draft,
-      preview,
-      workspacePreview,
-      stats: null,
-      statsLoading: true,
-      statsRequestId: "",
-      report: null,
-      pendingItems: [],
-    };
+    const refreshResult = await refreshManagerData(draft);
+    applyRefreshResult(refreshResult, draft);
     openActionResultModal({
       title: t("cleanSelected"),
       summary: `${result.success} ${t("managerCleaned")}, ${result.failed} ${t("managerFailed")}, ${formatBytes(
@@ -1790,21 +1918,8 @@ async function runManagerBackup() {
       },
     });
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const [preview, workspacePreview] = await refreshManagerData(draft);
-    applyManagerDraftFilters(preview, draft);
-    preview.output_dir = outputDir;
-    preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = {
-      ...state.manager,
-      draft,
-      preview,
-      workspacePreview,
-      stats: null,
-      statsLoading: true,
-      statsRequestId: "",
-      report: null,
-      pendingItems: [],
-    };
+    const refreshResult = await refreshManagerData(draft);
+    applyRefreshResult(refreshResult, draft, { outputDir });
     openActionResultModal({
       title: t("backupSelected"),
       summary: `${result.success} ${t("managerExported")}, ${result.failed} ${t("managerFailed")}`,
@@ -1817,9 +1932,54 @@ async function runManagerBackup() {
 }
 
 function selectedManagerItems() {
-  return [...document.querySelectorAll('input[name="manager_item"]:checked')].map((el) =>
-    JSON.parse(decodeURIComponent(el.value))
+  const visible = new Set(
+    [...document.querySelectorAll('.manager-row[data-action="toggle-manager-item"]')].map((el) => el.dataset.value)
   );
+  return [...(state.manager?.selectedItems || new Set())]
+    .filter((value) => visible.has(value))
+    .map((value) => JSON.parse(decodeURIComponent(value)));
+}
+
+// Apply the result of refreshManagerData() back into state.manager.
+// refreshResult is either { isDefaultPreview: true, quickPreview, quickWorkspacePreview }
+// or { isDefaultPreview: false, preview, workspacePreview }.
+function applyRefreshResult(refreshResult, draft, { outputDir = "", report = null } = {}) {
+  if (refreshResult.isDefaultPreview) {
+    state.manager = {
+      ...state.manager,
+      draft,
+      quickPreview: refreshResult.quickPreview,
+      quickWorkspacePreview: refreshResult.quickWorkspacePreview,
+      preview: null,
+      workspacePreview: null,
+      isDefaultPreview: true,
+      stats: null,
+      statsLoading: true,
+      statsRequestId: "",
+      report,
+      pendingItems: [],
+      selectedItems: new Set(),
+      selectedWorkspaceItems: new Set(),
+    };
+  } else {
+    const preview = refreshResult.preview;
+    applyManagerDraftFilters(preview, draft);
+    preview.output_dir = outputDir;
+    state.manager = {
+      ...state.manager,
+      draft,
+      preview,
+      workspacePreview: refreshResult.workspacePreview,
+      isDefaultPreview: false,
+      stats: null,
+      statsLoading: true,
+      statsRequestId: "",
+      report,
+      pendingItems: [],
+      selectedItems: new Set(),
+      selectedWorkspaceItems: new Set(),
+    };
+  }
 }
 
 async function runManagerWorkspaceClean() {
@@ -1846,21 +2006,8 @@ async function runManagerWorkspaceClean() {
       results.push(`${item.provider_id} / ${workspaceName(item.workspace) || item.workspace}: ${result.success}/${result.failed}`);
     }
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const [preview, workspacePreview] = await refreshManagerData(draft);
-    applyManagerDraftFilters(preview, draft);
-    preview.output_dir = "";
-    preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = {
-      ...state.manager,
-      draft,
-      preview,
-      workspacePreview,
-      stats: null,
-      statsLoading: true,
-      statsRequestId: "",
-      report: null,
-      pendingItems: [],
-    };
+    const refreshResult = await refreshManagerData(draft);
+    applyRefreshResult(refreshResult, draft);
     openActionResultModal({
       title: t("cleanWorkspaceSelected"),
       summary: `${totalSuccess} ${t("managerCleaned")}, ${totalFailed} ${t("managerFailed")}, ${formatBytes(totalFreed)} ${t("managerFreed")}`,
@@ -1897,21 +2044,8 @@ async function runManagerWorkspaceBackup() {
       results.push(`${item.provider_id} / ${workspaceName(item.workspace) || item.workspace}: ${result.success}/${result.failed}`);
     }
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const [preview, workspacePreview] = await refreshManagerData(draft);
-    applyManagerDraftFilters(preview, draft);
-    preview.output_dir = outputDir;
-    preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = {
-      ...state.manager,
-      draft,
-      preview,
-      workspacePreview,
-      stats: null,
-      statsLoading: true,
-      statsRequestId: "",
-      report: null,
-      pendingItems: [],
-    };
+    const refreshResult = await refreshManagerData(draft);
+    applyRefreshResult(refreshResult, draft, { outputDir });
     openActionResultModal({
       title: t("backupWorkspaceSelected"),
       summary: `${totalSuccess} ${t("managerExported")}, ${totalFailed} ${t("managerFailed")}`,
@@ -1941,7 +2075,6 @@ function defaultManagerDraft() {
     max_results: "10",
     sort_order: "recent",
     providers: selectedProviders,
-    is_default_preview: true,
   };
 }
 
@@ -1962,7 +2095,6 @@ function managerDraftFromFormData(formData) {
     providers: formData.getAll("providers").map(String).length
       ? formData.getAll("providers").map(String)
       : current.providers,
-    is_default_preview: false,
   };
 }
 
@@ -2058,6 +2190,7 @@ function readSettingsDraft() {
     logging: logSettingsFromFormData(formData),
     home_buttons: {
       view: formData.get("home_button_view") === "true",
+      compress: formData.get("home_button_compress") === "true",
       switch: formData.get("home_button_switch") === "true",
       export: formData.get("home_button_export") === "true",
       sync: formData.get("home_button_sync") === "true",
@@ -2300,75 +2433,69 @@ function openManagerFilterModal() {
     submit: "preview-manager",
     body: `
       ${providerInputs}
-      <div class="stack">
-        <section class="manager-filter-grid">
-          <div class="filter-card filter-card-wide">
-            <span class="filter-label">${t("olderThanDays")}</span>
-            <div class="unit-field">
-              <input type="text" inputmode="decimal" name="older_than_days" placeholder="30" value="${escapeAttr(
-                draft.older_than_days
-              )}">
-              <select name="older_than_unit">
-                ${unitOption("minutes", t("minutes"), draft.older_than_unit)}
-                ${unitOption("hours", t("hours"), draft.older_than_unit)}
-                ${unitOption("days", t("days"), draft.older_than_unit)}
-                ${unitOption("weeks", t("weeks"), draft.older_than_unit)}
-                ${unitOption("months", t("months"), draft.older_than_unit)}
-              </select>
-            </div>
-          </div>
-          <div class="filter-card">
-            <span class="filter-label">${t("storageGreaterThan")}</span>
-            <div class="size-bound-field">
-              <input type="text" inputmode="decimal" name="size_min_value" placeholder="1" value="${escapeAttr(
-                draft.size_min_value
-              )}">
-              <select name="size_min_unit">
-                ${unitOption("kb", "KB", draft.size_min_unit)}
-                ${unitOption("mb", "MB", draft.size_min_unit)}
-                ${unitOption("gb", "GB", draft.size_min_unit)}
-              </select>
-            </div>
-          </div>
-          <div class="filter-card">
-            <span class="filter-label">${t("storageLessThan")}</span>
-            <div class="size-bound-field">
-              <input type="text" inputmode="decimal" name="size_max_value" placeholder="10" value="${escapeAttr(
-                draft.size_max_value
-              )}">
-              <select name="size_max_unit">
-                ${unitOption("kb", "KB", draft.size_max_unit)}
-                ${unitOption("mb", "MB", draft.size_max_unit)}
-                ${unitOption("gb", "GB", draft.size_max_unit)}
-              </select>
-            </div>
-          </div>
-        </section>
-        <section class="manager-keyword-grid">
-          <label class="field compact-keyword-field">
-            <span>${t("managerMaxResults")}</span>
-            <input type="text" inputmode="numeric" name="max_results" value="${escapeAttr(draft.max_results || "")}" placeholder="10">
-          </label>
-          <label class="field compact-keyword-field">
-            <span>${t("managerSortOrder")}</span>
-            <select name="sort_order">
-              ${unitOption("recent", t("managerSortRecentDesc"), draft.sort_order || "recent")}
-              ${unitOption("size", t("managerSortSizeDesc"), draft.sort_order || "recent")}
+      <div class="modal-form-grid">
+        <label class="field span-full">
+          <span>${t("olderThanDays")}</span>
+          <div class="input-unit-combo">
+            <input type="text" inputmode="decimal" name="older_than_days" placeholder="30" value="${escapeAttr(
+              draft.older_than_days
+            )}">
+            <select name="older_than_unit">
+              ${unitOption("minutes", t("minutes"), draft.older_than_unit)}
+              ${unitOption("hours", t("hours"), draft.older_than_unit)}
+              ${unitOption("days", t("days"), draft.older_than_unit)}
+              ${unitOption("weeks", t("weeks"), draft.older_than_unit)}
+              ${unitOption("months", t("months"), draft.older_than_unit)}
             </select>
-          </label>
-        </section>
-        <section class="manager-keyword-grid">
-          <label class="field compact-keyword-field">
-            <span>${t("titleContains")}</span>
-            <input name="title_contains" value="${escapeAttr(draft.title_contains || "")}" placeholder="${escapeAttr(t("keywordPlaceholder"))}">
-          </label>
-          <label class="field compact-keyword-field">
-            <span>${t("titleExcludes")}</span>
-            <input name="title_excludes" value="${escapeAttr(draft.title_excludes || "")}" placeholder="${escapeAttr(t("keywordPlaceholder"))}">
-          </label>
-        </section>
-        <p class="muted">${t("managerFilterFutureHint")}</p>
-      </div>`,
+          </div>
+        </label>
+        <label class="field">
+          <span>${t("storageGreaterThan")}</span>
+          <div class="input-unit-combo">
+            <input type="text" inputmode="decimal" name="size_min_value" placeholder="1" value="${escapeAttr(
+              draft.size_min_value
+            )}">
+            <select name="size_min_unit">
+              ${unitOption("kb", "KB", draft.size_min_unit)}
+              ${unitOption("mb", "MB", draft.size_min_unit)}
+              ${unitOption("gb", "GB", draft.size_min_unit)}
+            </select>
+          </div>
+        </label>
+        <label class="field">
+          <span>${t("storageLessThan")}</span>
+          <div class="input-unit-combo">
+            <input type="text" inputmode="decimal" name="size_max_value" placeholder="10" value="${escapeAttr(
+              draft.size_max_value
+            )}">
+            <select name="size_max_unit">
+              ${unitOption("kb", "KB", draft.size_max_unit)}
+              ${unitOption("mb", "MB", draft.size_max_unit)}
+              ${unitOption("gb", "GB", draft.size_max_unit)}
+            </select>
+          </div>
+        </label>
+        <label class="field">
+          <span>${t("managerMaxResults")}</span>
+          <input type="text" inputmode="numeric" name="max_results" value="${escapeAttr(draft.max_results || "")}" placeholder="10">
+        </label>
+        <label class="field">
+          <span>${t("managerSortOrder")}</span>
+          <select name="sort_order">
+            ${unitOption("recent", t("managerSortRecentDesc"), draft.sort_order || "recent")}
+            ${unitOption("size", t("managerSortSizeDesc"), draft.sort_order || "recent")}
+          </select>
+        </label>
+        <label class="field">
+          <span>${t("titleContains")}</span>
+          <input name="title_contains" value="${escapeAttr(draft.title_contains || "")}" placeholder="${escapeAttr(t("keywordPlaceholder"))}">
+        </label>
+        <label class="field">
+          <span>${t("titleExcludes")}</span>
+          <input name="title_excludes" value="${escapeAttr(draft.title_excludes || "")}" placeholder="${escapeAttr(t("keywordPlaceholder"))}">
+        </label>
+      </div>
+      <p class="modal-form-hint muted">${t("managerFilterFutureHint")}</p>`,
     submitLabel: t("preview"),
   };
   render();

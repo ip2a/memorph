@@ -1,5 +1,6 @@
 use std::env;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::Serialize;
 
@@ -12,6 +13,8 @@ pub struct AgentEnvironmentStatus {
     pub executable_dir: Option<String>,
     pub config_path: String,
     pub install_method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable_version: Option<String>,
 }
 
 pub fn detect_provider_environment(provider_id: &str) -> AgentEnvironmentStatus {
@@ -22,6 +25,9 @@ pub fn detect_provider_environment(provider_id: &str) -> AgentEnvironmentStatus 
     let executable_dir = executable_path
         .as_ref()
         .and_then(|path| path.parent().map(Path::to_path_buf));
+    let executable_version = executable_path
+        .as_deref()
+        .and_then(detect_executable_version);
 
     AgentEnvironmentStatus {
         installed: executable_path.is_some(),
@@ -31,7 +37,23 @@ pub fn detect_provider_environment(provider_id: &str) -> AgentEnvironmentStatus 
             provider_id,
         )),
         install_method: detect_install_method(executable_path.as_deref()).to_string(),
+        executable_version,
     }
+}
+
+fn detect_executable_version(executable_path: &Path) -> Option<String> {
+    let output = Command::new(executable_path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        return None;
+    }
+    Some(stdout)
 }
 
 fn find_executable_path(candidates: &[&str]) -> Option<PathBuf> {

@@ -71,12 +71,15 @@ jobs:
         shell: bash
         run: |
           version="${{ steps.cargo_meta.outputs.version }}"
-          for attempt in $(seq 1 20); do
-            if cargo search memorph --registry crates-io --limit 1 | grep -E "^memorph = \"${version}\"" >/dev/null; then
+          api_url="https://crates.io/api/v1/crates/memorph/${version}"
+          user_agent="memorph-release-pipeline (https://github.com/ip2a/memorph)"
+          for attempt in $(seq 1 40); do
+            response=$(curl -s -A "${user_agent}" --fail "${api_url}" || true)
+            if [ -n "${response}" ] && echo "${response}" | grep -q "\"num\":\"${version}\""; then
               echo "[ok] memorph ${version} is visible on crates.io"
               exit 0
             fi
-            echo "[info] Waiting for memorph ${version} to appear on crates.io (attempt ${attempt}/20)"
+            echo "[info] Waiting for memorph ${version} to appear on crates.io (attempt ${attempt}/40)"
             sleep 15
           done
           echo "[error] memorph ${version} did not appear on crates.io in time"
