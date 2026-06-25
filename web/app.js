@@ -36,6 +36,7 @@ const { lang, t, loadI18n, setDocumentLanguage } = createI18n(
 const {
   shortId,
   markdown,
+  formatContent,
   formatDate,
   formatValue,
   formatBytes,
@@ -106,12 +107,14 @@ const {
   formatDate,
   formatBytes,
   markdown,
+  formatContent,
   renderAgentDetailRow,
   renderMetaLine,
   findSyncRef,
 });
 const {
   renderCompressionPage,
+  renderCompressionArchiveDetail,
   renderManagerPage,
   unitOption,
   updateManagerSelectionStats,
@@ -125,6 +128,8 @@ const {
   formatDate,
   formatBytes,
   formatRatio,
+  markdown,
+  formatContent,
   workspaceName,
   getOrderedProviders,
   renderMetaLine,
@@ -140,6 +145,7 @@ const { renderHooksCenterPage } = createHooksCenterModule({
   formatDate,
   formatValue,
   renderMetaLine,
+  workspaceName,
 });
 
 const appEl = document.getElementById("app");
@@ -271,11 +277,27 @@ async function refreshCatalog(workspace = state.home.workspace) {
   state.catalog = await api(`/api/v1/providers/catalog${query}`);
 }
 
-function defaultHomeProviders() {
+function homeProviderCandidates() {
   return providers
-    .visible()
+    .all()
+    .filter((item) => !item.hidden_state?.global)
     .filter((item) => providers.hasFilter(item, "is_installed"))
     .map((item) => item.provider_id);
+}
+
+function hasWorkspaceProviderSelection(workspace = state.home.workspace) {
+  if (!workspace) return false;
+  return (state.meta?.workspaces || []).some((item) => item.path === workspace && Array.isArray(item.providers) && item.providers.length > 0);
+}
+
+async function resolveHomeProviders(workspace = state.home.workspace) {
+  const candidates = homeProviderCandidates();
+  if (!workspace || !candidates.length) return candidates;
+  if (!hasWorkspaceProviderSelection(workspace)) return candidates;
+
+  const saved = await api(`/api/v1/workspaces/providers?workspace=${encodeURIComponent(workspace)}`);
+  const selected = saved.filter((id) => candidates.includes(id));
+  return selected.length ? selected : candidates;
 }
 
 async function bootstrap() {
@@ -290,7 +312,7 @@ async function bootstrap() {
         state.meta.selected_workspace || state.meta.workspaces[0]?.path || "";
     }
     await refreshCatalog(state.home.workspace);
-    state.home.providers = defaultHomeProviders();
+    state.home.providers = await resolveHomeProviders(state.home.workspace);
     await loadRoute();
   } catch (error) {
     fatal(error);
@@ -314,18 +336,23 @@ async function loadRoute() {
         event_offset: "0",
         event_limit: String(DETAIL_EVENT_PAGE_SIZE),
       });
-      const detail = await api(
-        `/api/v1/sessions/${encodeURIComponent(route.provider)}/${encodeURIComponent(route.sessionId)}?${detailParams.toString()}`
-      );
+      const statsUrl = `/api/v1/sessions/${encodeURIComponent(route.provider)}/${encodeURIComponent(route.sessionId)}/stats`;
+      const [detail, stats] = await Promise.all([
+        api(
+          `/api/v1/sessions/${encodeURIComponent(route.provider)}/${encodeURIComponent(route.sessionId)}?${detailParams.toString()}`
+        ),
+        api(statsUrl).catch(() => null),
+      ]);
       state.session = {
         ...detail,
         hook_runtime_sessions: detail.hook_runtime_sessions || [],
+        stats: stats || null,
       };
       const detailWorkspace = detail.view?.workspace_dir;
       if (detailWorkspace && detailWorkspace !== state.home.workspace) {
         state.home.workspace = detailWorkspace;
         await refreshCatalog(detailWorkspace);
-        state.home.providers = defaultHomeProviders();
+        state.home.providers = await resolveHomeProviders(detailWorkspace);
       }
       state.home.syncGroups = await api("/api/v1/sync/status");
     } else if (route.name === "sync-list") {
@@ -342,8 +369,11 @@ async function loadRoute() {
         await loadDefaultManagerPreview();
       }
     } else if (route.name === "compression") {
+      const workspaceQuery = state.home.workspace
+        ? `?workspace=${encodeURIComponent(state.home.workspace)}`
+        : "";
       const [archives, providers] = await Promise.all([
-        api("/api/v1/compression/archives"),
+        api(`/api/v1/compression/archives${workspaceQuery}`),
         api("/api/v1/compression/providers"),
       ]);
       state.compression.archives = archives;
@@ -391,6 +421,27 @@ async function refreshHomeSessions(options = {}) {
   }
 }
 
+async function loadCompressionArchiveDetail(archiveRef) {
+  if (!archiveRef) return;
+  setLoading(true, { label: t("loading"), detail: archiveRef });
+  try {
+    const archive = await api(
+      `/api/v1/compression/archive?archive_ref=${encodeURIComponent(archiveRef)}`
+    );
+    state.compression.selectedArchive = archive;
+    state.modal = {
+      kind: "custom",
+      title: t("compressionArchiveDetail"),
+      body: renderCompressionArchiveDetail(archive),
+    };
+    render();
+  } catch (error) {
+    toast(t("error"), error.message, true);
+  } finally {
+    setLoading(false);
+  }
+}
+
 async function loadMoreSessionEvents() {
   const current = state.session;
   const view = current?.view;
@@ -409,6 +460,7 @@ async function loadMoreSessionEvents() {
       ...current,
       ...next,
       hook_runtime_sessions: current.hook_runtime_sessions || [],
+      stats: current.stats || null,
       view: {
         ...view,
         ...next.view,
@@ -562,7 +614,7 @@ function refreshSettingsModalWithCurrentDraft() {
 }
 
 function switchSettingsSection(section) {
-  if (!new Set(["general", "display", "order", "config", "about"]).has(section)) return;
+  if (!new Set(["general", "display", "order", "hook", "config", "about"]).has(section)) return;
   state.ui.settingsSection = section;
   openSettingsModal(readSettingsDraft());
 }
@@ -618,18 +670,31 @@ async function setWorkspace(workspace) {
   setLoading(true, { label: t("loadingWorkspace"), detail: workspaceName(workspace) });
   state.home.workspace = workspace;
   try {
-    if (state.route.name === "manager") {
-      state.manager = { draft: defaultManagerDraft(), preview: null, workspacePreview: null, report: null, pendingItems: [], viewMode: state.manager.viewMode || "sessions" };
+    const reloadManager = state.route.name === "manager";
+    if (reloadManager) {
+      state.manager = {
+        draft: null,
+        preview: null,
+        workspacePreview: null,
+        stats: null,
+        report: null,
+        pendingItems: [],
+        viewMode: state.manager.viewMode || "sessions",
+      };
     }
+    await refreshCatalog(workspace);
     if (!workspace) {
       state.home.providers = [];
       await loadHome();
       await refreshWorkspaceMeta();
-      render();
+      if (reloadManager) {
+        await loadDefaultManagerPreview();
+      } else {
+        render();
+      }
       return;
     }
-    await refreshCatalog(workspace);
-    state.home.providers = defaultHomeProviders();
+    state.home.providers = await resolveHomeProviders(workspace);
     await loadHome();
     if (state.route.name === "agents") {
       await loadAgentManagement();
@@ -638,7 +703,11 @@ async function setWorkspace(workspace) {
       await loadHooksCenter();
     }
     await refreshWorkspaceMeta();
-    render();
+    if (reloadManager) {
+      await loadDefaultManagerPreview();
+    } else {
+      render();
+    }
   } finally {
     setLoading(false);
   }
@@ -693,12 +762,17 @@ async function updateManagerProvider(provider, checked, trigger = null) {
 async function persistProvidersAndReload() {
   if (!state.home.workspace) return;
   try {
-    const visibleIds = providers
-      .visible()
-      .map((item) => item.provider_id);
-    const hiddenWorkspace = visibleIds.filter(
+    const candidateIds = homeProviderCandidates();
+    const hiddenWorkspace = candidateIds.filter(
       (id) => !state.home.providers.includes(id)
     );
+    await api("/api/v1/workspaces/providers", {
+      method: "PUT",
+      body: {
+        workspace: state.home.workspace,
+        providers: state.home.providers,
+      },
+    });
     await api("/api/v1/providers/catalog", {
       method: "PUT",
       body: {
@@ -797,13 +871,19 @@ async function handleAction(action, data, trigger = null) {
     case "open-compression-restore":
       openCompressionRestoreModal(data.archiveRef || "");
       break;
+    case "open-compression-detail":
+      await loadCompressionArchiveDetail(data.archiveRef || "");
+      break;
     case "open-compression-expand":
       openCompressionExpandModal();
       break;
     case "refresh-compression":
       {
+        const workspaceQuery = state.home.workspace
+          ? `?workspace=${encodeURIComponent(state.home.workspace)}`
+          : "";
         const [archives, providers] = await Promise.all([
-          api("/api/v1/compression/archives"),
+          api(`/api/v1/compression/archives${workspaceQuery}`),
           api("/api/v1/compression/providers"),
         ]);
         state.compression.archives = archives;
@@ -852,6 +932,9 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "toggle-detail-message":
       toggleDetailMessage(trigger);
+      break;
+    case "toggle-message-raw":
+      toggleMessageRaw(trigger);
       break;
     case "scroll-to-message":
       scrollToDetailMessage(Number(data.messageIndex));
@@ -903,6 +986,7 @@ async function handleAction(action, data, trigger = null) {
         if (view === "workspaces" && !state.manager.workspacePreview) {
           const draft = state.manager.draft || defaultManagerDraft();
           if (draft.providers.length) {
+            render();
             api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) })
               .then((workspacePreview) => {
                 state.manager.workspacePreview = workspacePreview;
@@ -1232,6 +1316,7 @@ async function runExport(formData) {
       session_id: String(formData.get("session_id")),
       output_prefix: emptyToNull(formData.get("output_prefix")),
       format: String(formData.get("format")),
+      output_dir: emptyToNull(formData.get("output_dir")),
     },
   });
   closeModal();
@@ -1536,6 +1621,50 @@ async function saveSettings(body) {
   render();
 }
 
+async function loadManagerData(draft) {
+  const body = managerPreviewBody(draft);
+  return Promise.all([
+    api("/api/v1/manager/preview", { method: "POST", body }),
+    api("/api/v1/manager/workspaces", { method: "POST", body }),
+  ]);
+}
+
+async function loadDefaultManagerData(draft) {
+  const body = managerPreviewBody(draft);
+  return Promise.all([
+    api("/api/v1/manager/quick-preview"),
+    api("/api/v1/manager/workspaces", { method: "POST", body }),
+  ]);
+}
+
+async function refreshManagerData(draft) {
+  if (draft.is_default_preview) {
+    return loadDefaultManagerData(draft);
+  }
+  return loadManagerData(draft);
+}
+
+function queueManagerStatsLoad(draft) {
+  const requestId = `${Date.now()}:${Math.random()}`;
+  state.manager.stats = null;
+  state.manager.statsLoading = true;
+  state.manager.statsRequestId = requestId;
+
+  const body = managerPreviewBody(draft);
+  void api("/api/v1/manager/stats", { method: "POST", body })
+    .then((stats) => {
+      if (state.manager.statsRequestId !== requestId) return;
+      state.manager.stats = stats;
+      state.manager.statsLoading = false;
+      if (state.route.name === "manager") render();
+    })
+    .catch(() => {
+      if (state.manager.statsRequestId !== requestId) return;
+      state.manager.statsLoading = false;
+      if (state.route.name === "manager") render();
+    });
+}
+
 async function loadDefaultManagerPreview() {
   const draft = {
     ...(state.manager.draft || defaultManagerDraft()),
@@ -1544,18 +1673,36 @@ async function loadDefaultManagerPreview() {
   if (!draft.providers.length) {
     const preview = emptyManagerPreview();
     preview.default_preview = true;
-    state.manager = { draft, preview, workspacePreview: null, report: null, pendingItems: [], viewMode: "sessions" };
+    state.manager = {
+      draft,
+      preview,
+      workspacePreview: null,
+      stats: null,
+      statsLoading: false,
+      statsRequestId: "",
+      report: null,
+      pendingItems: [],
+      viewMode: "sessions",
+    };
     render();
     return;
   }
-  const [preview, workspacePreview] = await Promise.all([
-    api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
-    api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
-  ]);
+  const [preview, workspacePreview] = await loadDefaultManagerData(draft);
   preview.output_dir = "";
   preview.default_preview = true;
-  state.manager = { draft, preview, workspacePreview, report: null, pendingItems: [], viewMode: state.manager.viewMode || "sessions" };
+  state.manager = {
+    draft,
+    preview,
+    workspacePreview,
+    stats: null,
+    statsLoading: true,
+    statsRequestId: "",
+    report: null,
+    pendingItems: [],
+    viewMode: state.manager.viewMode || "sessions",
+  };
   render();
+  queueManagerStatsLoad(draft);
 }
 
 async function runManagerPreview(formData) {
@@ -1563,17 +1710,25 @@ async function runManagerPreview(formData) {
   if (!draft.providers.length) throw new Error(t("noTargetAgentSelected"));
   setLoading(true, { label: t("managerPreview"), detail: t("scanningSessions") });
   try {
-    const [preview, workspacePreview] = await Promise.all([
-      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
-      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
-    ]);
+    const [preview, workspacePreview] = await loadManagerData(draft);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
     preview.default_preview = false;
-    state.manager = { draft, preview, workspacePreview, report: null, pendingItems: [], viewMode: state.manager.viewMode || "sessions" };
+    state.manager = {
+      draft,
+      preview,
+      workspacePreview,
+      stats: null,
+      statsLoading: true,
+      statsRequestId: "",
+      report: null,
+      pendingItems: [],
+      viewMode: state.manager.viewMode || "sessions",
+    };
     state.modal = null;
     if (state.route.name !== "manager") replacePath("/manager");
     render();
+    queueManagerStatsLoad(draft);
   } finally {
     setLoading(false);
   }
@@ -1591,14 +1746,21 @@ async function runManagerClean() {
       body: { items },
     });
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const [preview, workspacePreview] = await Promise.all([
-      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
-      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
-    ]);
+    const [preview, workspacePreview] = await refreshManagerData(draft);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
     preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
+    state.manager = {
+      ...state.manager,
+      draft,
+      preview,
+      workspacePreview,
+      stats: null,
+      statsLoading: true,
+      statsRequestId: "",
+      report: null,
+      pendingItems: [],
+    };
     openActionResultModal({
       title: t("cleanSelected"),
       summary: `${result.success} ${t("managerCleaned")}, ${result.failed} ${t("managerFailed")}, ${formatBytes(
@@ -1606,6 +1768,7 @@ async function runManagerClean() {
       )} ${t("managerFreed")}`,
       lines: result.errors || [],
     });
+    queueManagerStatsLoad(draft);
   } finally {
     setLoading(false);
   }
@@ -1627,19 +1790,27 @@ async function runManagerBackup() {
       },
     });
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const [preview, workspacePreview] = await Promise.all([
-      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
-      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
-    ]);
+    const [preview, workspacePreview] = await refreshManagerData(draft);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = outputDir;
     preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
+    state.manager = {
+      ...state.manager,
+      draft,
+      preview,
+      workspacePreview,
+      stats: null,
+      statsLoading: true,
+      statsRequestId: "",
+      report: null,
+      pendingItems: [],
+    };
     openActionResultModal({
       title: t("backupSelected"),
       summary: `${result.success} ${t("managerExported")}, ${result.failed} ${t("managerFailed")}`,
       lines: [...(result.files || []), ...(result.errors || [])],
     });
+    queueManagerStatsLoad(draft);
   } finally {
     setLoading(false);
   }
@@ -1675,19 +1846,27 @@ async function runManagerWorkspaceClean() {
       results.push(`${item.provider_id} / ${workspaceName(item.workspace) || item.workspace}: ${result.success}/${result.failed}`);
     }
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const [preview, workspacePreview] = await Promise.all([
-      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
-      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
-    ]);
+    const [preview, workspacePreview] = await refreshManagerData(draft);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = "";
     preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
+    state.manager = {
+      ...state.manager,
+      draft,
+      preview,
+      workspacePreview,
+      stats: null,
+      statsLoading: true,
+      statsRequestId: "",
+      report: null,
+      pendingItems: [],
+    };
     openActionResultModal({
       title: t("cleanWorkspaceSelected"),
       summary: `${totalSuccess} ${t("managerCleaned")}, ${totalFailed} ${t("managerFailed")}, ${formatBytes(totalFreed)} ${t("managerFreed")}`,
       lines: [...results, ...errors],
     });
+    queueManagerStatsLoad(draft);
   } finally {
     setLoading(false);
   }
@@ -1718,28 +1897,37 @@ async function runManagerWorkspaceBackup() {
       results.push(`${item.provider_id} / ${workspaceName(item.workspace) || item.workspace}: ${result.success}/${result.failed}`);
     }
     updateLoading({ detail: t("refreshingSessions"), progress: 0.82 });
-    const [preview, workspacePreview] = await Promise.all([
-      api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) }),
-      api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) }),
-    ]);
+    const [preview, workspacePreview] = await refreshManagerData(draft);
     applyManagerDraftFilters(preview, draft);
     preview.output_dir = outputDir;
     preview.default_preview = Boolean(draft.is_default_preview);
-    state.manager = { ...state.manager, draft, preview, workspacePreview, report: null, pendingItems: [] };
+    state.manager = {
+      ...state.manager,
+      draft,
+      preview,
+      workspacePreview,
+      stats: null,
+      statsLoading: true,
+      statsRequestId: "",
+      report: null,
+      pendingItems: [],
+    };
     openActionResultModal({
       title: t("backupWorkspaceSelected"),
       summary: `${totalSuccess} ${t("managerExported")}, ${totalFailed} ${t("managerFailed")}`,
       lines: [...files, ...results, ...errors],
     });
+    queueManagerStatsLoad(draft);
   } finally {
     setLoading(false);
   }
 }
 
 function defaultManagerDraft() {
-  const selectedProviders = state.home.providers.length
-    ? state.home.providers
-    : getOrderedProviders().map((item) => item.provider_id);
+  const selectedProviders = getOrderedProviders()
+    .filter((item) => !providers.isHiddenGlobal(item))
+    .filter((item) => providers.hasFilter(item, "is_installed"))
+    .map((item) => item.provider_id);
   return {
     workspace: state.home.workspace || "",
     older_than_days: "",
@@ -2217,7 +2405,18 @@ async function copyDetailMessage(index) {
 function toggleDetailMessage(trigger) {
   const item = trigger?.closest?.(".msg-item");
   if (!item) return;
-  item.classList.toggle("is-expanded");
+  const isExpanded = item.classList.toggle("is-expanded");
+  trigger.textContent = isExpanded ? t("collapse") : t("expand");
+}
+
+function toggleMessageRaw(trigger) {
+  const item = trigger?.closest?.(".msg-item");
+  if (!item) return;
+  const isRaw = item.classList.toggle("is-raw");
+  item.querySelectorAll(".content-block").forEach((block) => {
+    block.classList.toggle("is-raw", isRaw);
+  });
+  trigger.textContent = isRaw ? t("viewFormatted") : t("viewRaw");
 }
 
 function scrollToDetailMessage(index) {

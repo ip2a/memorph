@@ -22,9 +22,27 @@ export function createFormatHelpers(getLanguage) {
     const chunks = [];
     let inCode = false;
     let codeLines = [];
+    let inList = false;
+    let listItems = [];
+
+    function flushList() {
+      if (!listItems.length) return;
+      chunks.push(`<ul>${listItems.join("")}</ul>`);
+      listItems = [];
+      inList = false;
+    }
+
+    function inlineMarkup(line) {
+      return escapeHtml(line)
+        .replace(/`([^`]+)`/g, '<code class="inline-code">$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[^*])\*([^*]+)\*(?![*])/g, '$1<em>$2</em>')
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    }
 
     for (const line of lines) {
       if (line.startsWith("```")) {
+        flushList();
         if (inCode) {
           chunks.push(`<pre class="code-block">${escapeHtml(codeLines.join("\n"))}</pre>`);
           codeLines = [];
@@ -40,19 +58,142 @@ export function createFormatHelpers(getLanguage) {
         continue;
       }
 
+      const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+      if (headingMatch) {
+        flushList();
+        const level = headingMatch[1].length;
+        chunks.push(`<h${level}>${escapeHtml(headingMatch[2])}</h${level}>`);
+        continue;
+      }
+
+      const listMatch = line.match(/^(\s*)[-*+]\s+(.*)$/);
+      if (listMatch) {
+        inList = true;
+        listItems.push(`<li>${inlineMarkup(listMatch[2])}</li>`);
+        continue;
+      }
+
+      flushList();
+
       if (!line.trim()) {
         chunks.push("<p><br></p>");
         continue;
       }
 
-      chunks.push(`<p>${escapeHtml(line).replace(/`([^`]+)`/g, '<span class="inline-code">$1</span>')}</p>`);
+      chunks.push(`<p>${inlineMarkup(line)}</p>`);
     }
+
+    flushList();
 
     if (inCode) {
       chunks.push(`<pre class="code-block">${escapeHtml(codeLines.join("\n"))}</pre>`);
     }
 
     return chunks.join("");
+  }
+
+  function looksLikeJson(text) {
+    const trimmed = String(text || "").trim();
+    if (!trimmed) return false;
+    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
+      try {
+        JSON.parse(trimmed);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  function looksLikeMarkdown(text) {
+    const sample = String(text || "").trim();
+    if (!sample) return false;
+    const markdownPatterns = [
+      /^#{1,6}\s+/m,
+      /^[-*+]\s+/m,
+      /^```/m,
+      /\*\*[^*]+\*\*/,
+      /\[([^\]]+)\]\(([^)]+)\)/,
+      /^>\s+/m,
+      /^\d+\.\s+/m,
+    ];
+    return markdownPatterns.some((pattern) => pattern.test(sample));
+  }
+
+  function highlightJson(jsonText) {
+    const pretty = JSON.stringify(JSON.parse(jsonText), null, 2);
+    let out = "";
+    let i = 0;
+    while (i < pretty.length) {
+      const char = pretty[i];
+      if (char === '"') {
+        let j = i + 1;
+        while (j < pretty.length) {
+          if (pretty[j] === '\\' && j + 1 < pretty.length) {
+            j += 2;
+            continue;
+          }
+          if (pretty[j] === '"') {
+            j += 1;
+            break;
+          }
+          j += 1;
+        }
+        const token = pretty.slice(i, j);
+        const isKey = pretty.slice(j).match(/^\s*:/);
+        const escaped = escapeHtml(token);
+        out += isKey
+          ? `<span class="json-key">${escaped}</span><span class="json-colon">:</span>`
+          : `<span class="json-string">${escaped}</span>`;
+        i = j;
+        if (isKey) {
+          const colonMatch = pretty.slice(j).match(/^\s*:/);
+          if (colonMatch) {
+            i += colonMatch[0].indexOf(':') + 1;
+          }
+        }
+        continue;
+      }
+      if (/[-\d]/.test(char)) {
+        const match = pretty.slice(i).match(/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+        if (match) {
+          out += `<span class="json-number">${escapeHtml(match[0])}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+      if (/[a-z]/.test(char)) {
+        const match = pretty.slice(i).match(/^(true|false|null)/);
+        if (match) {
+          out += `<span class="json-literal">${match[0]}</span>`;
+          i += match[0].length;
+          continue;
+        }
+      }
+      out += escapeHtml(char);
+      i += 1;
+    }
+    return out;
+  }
+
+  function formatJson(text) {
+    try {
+      return `<pre class="code-block json-block"><code>${highlightJson(text)}</code></pre>`;
+    } catch {
+      return `<pre class="code-block"><code>${escapeHtml(text)}</code></pre>`;
+    }
+  }
+
+  function formatContent(text) {
+    const raw = String(text || "");
+    if (looksLikeJson(raw)) {
+      return { kind: "json", html: formatJson(raw), raw };
+    }
+    if (looksLikeMarkdown(raw)) {
+      return { kind: "markdown", html: markdown(raw), raw };
+    }
+    return { kind: "text", html: escapeHtml(raw), raw };
   }
 
   function formatDate(value) {
@@ -106,6 +247,7 @@ export function createFormatHelpers(getLanguage) {
   return {
     shortId,
     markdown,
+    formatContent,
     formatDate,
     formatValue,
     formatBytes,

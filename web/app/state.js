@@ -35,6 +35,9 @@ export function createState() {
       draft: null,
       preview: null,
       workspacePreview: null,
+      stats: null,
+      statsLoading: false,
+      statsRequestId: "",
       report: null,
       pendingItems: [],
       viewMode: "sessions",
@@ -42,6 +45,7 @@ export function createState() {
     compression: {
       archives: [],
       providers: [],
+      selectedArchive: null,
     },
     agents: {
       providers: [],

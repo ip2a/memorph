@@ -29,10 +29,8 @@ export function createHomeModule({
   function renderHomeHeroMeta(filteredGroups, totalSessions, shownSessions) {
     return `
       <div class="meta-line">
-        <span>${t("sessionsStat")}=${totalSessions}</span>
-        <span>${t("terminalAgents")}=${filteredGroups.length}</span>
-        <span>${t("shown")}=${shownSessions}</span>
-        <span>${t("hookFilter")}=${escapeHtml(activeHookFilterLabel())}</span>
+        <a href="/manager" data-nav="/manager" class="meta-link">${t("sessionsStat")}=${totalSessions}</a>
+        <a href="/agents" data-nav="/agents" class="meta-link">${t("agentManagement")}=${filteredGroups.length}</a>
       </div>`;
   }
 
@@ -89,7 +87,8 @@ export function createHomeModule({
 
   function getToolbarProviderCandidates() {
     const visible = providers
-      .visible()
+      .all()
+      .filter((item) => !providers.isHiddenGlobal(item))
       .filter((item) => providers.hasFilter(item, "is_installed"));
     if (visible.length) return visible;
 
@@ -307,7 +306,6 @@ export function createHomeModule({
     const syncAction = syncRef
       ? `<a class="button" href="/sync/${syncRef}" data-nav="/sync/${syncRef}">${t("openSync")}</a>`
       : `<button type="button" data-action="open-sync-create" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}" data-title="${escapeAttr(item.title || "")}">${t("syncAction")}</button>`;
-    const hookRuntime = renderHookRuntimeBadge(item.hook_runtime_summary, item.hook_diagnosis);
     return `
       <article class="session-row">
         <div class="session-row-main">
@@ -316,12 +314,10 @@ export function createHomeModule({
               <a class="session-title session-title-link" href="/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}" data-nav="/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}">
                 ${escapeHtml(item.title || item.session_id)}
               </a>
-              <span class="session-workspace">${escapeHtml(item.project_dir || "—")}</span>
             </div>
             <div class="session-meta-bar">
               <span class="session-id-pill">${escapeHtml(item.session_id)}</span>
               ${syncRef ? `<a class="sync-badge" href="/sync/${syncRef}" data-nav="/sync/${syncRef}">${t("activeSync")}</a>` : ""}
-              ${hookRuntime}
               <span class="meta-dot">·</span>
               <span class="meta-item" title="${escapeAttr(t("lastActiveAt"))}">${escapeHtml(formatDate(item.last_active_at))}</span>
               <span class="meta-dot">·</span>

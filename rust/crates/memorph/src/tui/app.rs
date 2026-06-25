@@ -867,7 +867,7 @@ impl App {
         let mut actions = vec![AgentManagementAction {
             id: "detect".to_string(),
             label: self.t("detect").to_string(),
-            description: self.t("agentManagementProviderHint").to_string(),
+            description: String::new(),
             kind: AgentManagementActionKind::Detect,
             enabled: None,
         }];
@@ -1784,6 +1784,7 @@ impl App {
             session_id: selected.session_id,
             output_prefix: Some(output_prefix.to_string()),
             format: "json".to_string(),
+            output_dir: None,
         };
 
         match core::export_session(&params) {

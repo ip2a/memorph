@@ -51,6 +51,7 @@ fn run_command(command: Commands) -> Result<()> {
                 provider,
                 session_id,
                 output_prefix: output,
+                output_dir: None,
                 format: format.clone(),
             })?;
 
@@ -332,7 +333,7 @@ fn print_codex_repair_report(report: providers::codex::CodexWorkspaceRepairRepor
 fn run_compression_command(command: CompressionCommands) -> Result<()> {
     match command {
         CompressionCommands::List => {
-            let archives = core::list_compression_archives()?;
+            let archives = core::list_compression_archives(None)?;
             if archives.is_empty() {
                 println!("No compression archives.");
             } else {

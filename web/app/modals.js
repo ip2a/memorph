@@ -146,6 +146,8 @@ export function createModalModule({
 
   function openAgentFilterModal() {
     const items = getOrderedProviders()
+      .filter((item) => !providers.isHiddenGlobal(item))
+      .filter((item) => providers.hasFilter(item, "is_installed"))
       .map((item) => {
         const checked = state.home.providers.includes(item.provider_id);
         return `
@@ -216,22 +218,33 @@ export function createModalModule({
       body: `
         <input type="hidden" name="provider" value="${escapeAttr(provider)}">
         <input type="hidden" name="session_id" value="${escapeAttr(sessionId)}">
-        <div class="stack">
+        <div class="stack export-form">
           <label class="field">
-            <span>${t("outputPrefix")}</span>
-            <input name="output_prefix" value="${escapeAttr(sessionId)}">
+            <span>${t("outputFileName")}</span>
+            <input name="output_prefix" value="${escapeAttr(sessionId)}" placeholder="${escapeAttr(t("outputFileNamePlaceholder"))}">
           </label>
-          <label class="field">
-            <span>${t("format")}</span>
-            <select name="format">
-              <option value="json">json</option>
-              <option value="md">md</option>
-              <option value="html">html</option>
-              <option value="morph">morph</option>
-              <option value="both">both</option>
-            </select>
-          </label>
-        </div>`,
+          <div class="export-form-row">
+            <label class="field format-field">
+              <span>${t("format")}</span>
+              <select name="format" class="format-select">
+                <option value="json">json</option>
+                <option value="md">md</option>
+                <option value="html">html</option>
+                <option value="morph">morph</option>
+                <option value="both" selected>both</option>
+              </select>
+            </label>
+            <label class="field export-dir-field">
+              <span>${t("exportDir")}</span>
+              <div class="path-picker">
+                <input name="output_dir" list="known-workspaces" value="${escapeAttr(state.home.workspace || "")}" placeholder="${escapeAttr(t("exportDirPlaceholder"))}">
+                <button type="button" class="ghost" data-action="browse-folder" data-target-field="output_dir">${t("browse")}</button>
+              </div>
+              <small class="muted">${t("exportDirHint")}</small>
+            </label>
+          </div>
+        </div>
+        ${renderWorkspaceDatalist()}`,
       submitLabel: t("export"),
     };
     render();

@@ -170,8 +170,16 @@ pub fn init_watcher() {
     WATCHER_INIT.call_once(|| {
         let cache = global_cache();
         let registry = build_path_registry();
-        let watcher =
-            CacheWatcher::new(cache, registry).expect("Failed to initialize cache watcher");
-        let _ = Box::leak(Box::new(watcher));
+        match CacheWatcher::new(cache, registry) {
+            Ok(watcher) => {
+                let _ = Box::leak(Box::new(watcher));
+            }
+            Err(err) => {
+                crate::logging::error(
+                    "cache_watcher_init",
+                    &format!("Failed to initialize cache watcher: {err}"),
+                );
+            }
+        }
     });
 }

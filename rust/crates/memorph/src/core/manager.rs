@@ -1,7 +1,12 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    path::Path,
+    sync::{OnceLock, RwLock},
+    time::{Duration, Instant},
+};
 
 use crate::{core, provider::ProviderSessionSummary, providers};
 
@@ -35,6 +40,52 @@ pub struct ManagerPreviewResult {
     pub items: Vec<ManagerItem>,
     pub total_count: usize,
     pub total_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManagerStatsResult {
+    pub selected_agent_count: usize,
+    pub current_workspace_session_count: usize,
+    pub current_workspace_size_bytes: u64,
+    pub all_workspace_count: usize,
+    pub all_workspace_session_count: usize,
+    pub all_workspace_size_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct CachedManagerStats {
+    result: ManagerStatsResult,
+    refreshed_at: Instant,
+}
+
+static MANAGER_STATS_CACHE: OnceLock<RwLock<HashMap<String, CachedManagerStats>>> = OnceLock::new();
+const MANAGER_STATS_CACHE_TTL: Duration = Duration::from_secs(30);
+
+fn manager_stats_cache() -> &'static RwLock<HashMap<String, CachedManagerStats>> {
+    MANAGER_STATS_CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+pub fn invalidate_stats_cache() {
+    if let Ok(mut cache) = manager_stats_cache().write() {
+        cache.clear();
+    }
+}
+
+fn manager_stats_cache_key(filter: &ManagerFilter) -> String {
+    let mut providers = filter.providers.clone();
+    providers.sort();
+    providers.dedup();
+    format!(
+        "providers={}|older_days={:?}|older_ms={:?}|larger_mb={:?}|larger_bytes={:?}|smaller_bytes={:?}|workspace={:?}|sort={:?}",
+        providers.join(","),
+        filter.older_than_days,
+        filter.older_than_ms,
+        filter.larger_than_mb,
+        filter.larger_than_bytes,
+        filter.smaller_than_bytes,
+        filter.workspace,
+        filter.sort
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +214,64 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
     })
 }
 
+pub fn stats(filter: &ManagerFilter) -> Result<ManagerStatsResult> {
+    let cache_key = manager_stats_cache_key(filter);
+    if let Ok(cache) = manager_stats_cache().read() {
+        if let Some(cached) = cache.get(&cache_key) {
+            if cached.refreshed_at.elapsed() < MANAGER_STATS_CACHE_TTL {
+                return Ok(cached.result.clone());
+            }
+        }
+    }
+
+    let selected_agent_count = if filter.providers.is_empty() {
+        providers::all_provider_ids().len()
+    } else {
+        filter.providers.iter().collect::<BTreeSet<_>>().len()
+    };
+
+    let mut current_filter = filter.clone();
+    current_filter.limit = None;
+    let current_workspace = preview(&current_filter)?;
+
+    let mut all_filter = filter.clone();
+    all_filter.workspace = None;
+    all_filter.limit = None;
+    let all_workspaces = workspaces(&all_filter)?;
+
+    let all_workspace_count = all_workspaces
+        .iter()
+        .map(|item| item.workspace.clone())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let all_workspace_session_count = all_workspaces.iter().map(|item| item.session_count).sum();
+    let all_workspace_size_bytes = all_workspaces
+        .iter()
+        .map(|item| item.total_size_bytes)
+        .sum();
+
+    let result = ManagerStatsResult {
+        selected_agent_count,
+        current_workspace_session_count: current_workspace.total_count,
+        current_workspace_size_bytes: current_workspace.total_size_bytes,
+        all_workspace_count,
+        all_workspace_session_count,
+        all_workspace_size_bytes,
+    };
+
+    if let Ok(mut cache) = manager_stats_cache().write() {
+        cache.insert(
+            cache_key,
+            CachedManagerStats {
+                result: result.clone(),
+                refreshed_at: Instant::now(),
+            },
+        );
+    }
+
+    Ok(result)
+}
+
 /// Clean (delete) the specified sessions.
 pub fn clean(items: &[ManagerItem]) -> ManagerCleanResult {
     let mut success = 0usize;
@@ -210,6 +319,7 @@ pub fn clean(items: &[ManagerItem]) -> ManagerCleanResult {
         }
     }
 
+    invalidate_stats_cache();
     ManagerCleanResult {
         success,
         failed,

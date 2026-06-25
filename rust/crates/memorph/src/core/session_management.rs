@@ -184,7 +184,7 @@ pub fn expand_compression_session(params: &ExpandCompressionSessionParams) -> Re
         .map(|value| format!("{}_expanded", value))
         .unwrap_or_else(|| format!("{}_expanded", session.identity.canonical_id));
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
-    write_session_export_files(&expanded, prefix, &params.format)
+    write_session_export_files(&expanded, prefix, &params.format, None)
 }
 
 pub fn restore_compression_archive(
@@ -194,11 +194,13 @@ pub fn restore_compression_archive(
     let session = session_from_compression_archive_for_tests(&params.archive_ref, archive)?;
     let default_prefix = format!("{}_compression_archive", session.identity.canonical_id);
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
-    write_session_export_files(&session, prefix, &params.format)
+    write_session_export_files(&session, prefix, &params.format, None)
 }
 
-pub fn list_compression_archives() -> Result<Vec<compression::CompressionArchiveSummary>> {
-    compression::list_archives()
+pub fn list_compression_archives(
+    workspace: Option<&str>,
+) -> Result<Vec<compression::CompressionArchiveSummary>> {
+    compression::list_archives_for_workspace(workspace)
 }
 
 pub fn list_compression_provider_support() -> Vec<crate::provider::ProviderCompressionSupport> {
@@ -241,6 +243,7 @@ pub fn write_session_export_files(
     session: &CanonicalSession,
     prefix: &str,
     format_name: &str,
+    output_dir: Option<&Path>,
 ) -> Result<ExportResult> {
     let mut files = Vec::new();
 
@@ -256,24 +259,33 @@ pub fn write_session_export_files(
         );
     }
 
+    if let Some(dir) = output_dir {
+        if !dir.exists() {
+            std::fs::create_dir_all(dir)
+                .with_context(|| format!("Failed to create output directory: {}", dir.display()))?;
+        }
+    }
+
+    let base = output_dir.map(Path::to_path_buf).unwrap_or_else(PathBuf::new);
+
     if write_morph {
-        let path = PathBuf::from(format!("{}.morph", prefix));
+        let path = base.join(format!("{}.morph", prefix));
         format::write_session(&path, session)?;
         files.push(path.display().to_string());
     }
     if write_json {
-        let path = PathBuf::from(format!("{}.json", prefix));
+        let path = base.join(format!("{}.json", prefix));
         let json = serde_json::to_string_pretty(session)?;
         std::fs::write(&path, json)?;
         files.push(path.display().to_string());
     }
     if write_markdown {
-        let path = PathBuf::from(format!("{}.md", prefix));
+        let path = base.join(format!("{}.md", prefix));
         format::write_markdown(&path, session)?;
         files.push(path.display().to_string());
     }
     if write_html {
-        let path = PathBuf::from(format!("{}.html", prefix));
+        let path = base.join(format!("{}.html", prefix));
         format::write_html(&path, session)?;
         files.push(path.display().to_string());
     }

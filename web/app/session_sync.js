@@ -7,6 +7,7 @@ export function createSessionSyncModule({
   formatDate,
   formatBytes,
   markdown,
+  formatContent,
   renderAgentDetailRow,
   renderMetaLine,
   findSyncRef,
@@ -43,7 +44,15 @@ export function createSessionSyncModule({
     return text.split("\n").length;
   }
 
-  function renderDetailBlock(block) {
+  function renderFormattedBlock(messageIndex, blockIndex, kind, clamp, formatted, raw) {
+    return `
+      <div class="content-block content-${kind} ${clamp}" data-block-kind="${kind}" data-message-index="${messageIndex}" data-block-index="${blockIndex}">
+        <div class="content-formatted">${formatted}</div>
+        <div class="content-raw" hidden><pre><code>${escapeHtml(raw)}</code></pre></div>
+      </div>`;
+  }
+
+  function renderDetailBlock(block, messageIndex, blockIndex) {
     const clampIf = (text, limit = 3) => {
       const lines = countLines(text || "");
       return lines > limit ? "is-clamped" : "";
@@ -64,13 +73,15 @@ export function createSessionSyncModule({
           null,
           2
         );
+        const formatted = formatContent(text);
         const clamp = clampIf(text);
-        return `<div class="content-block content-tool ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+        return renderFormattedBlock(messageIndex, blockIndex, "tool", clamp, formatted.html, text);
       }
       case "tool_result": {
         const text = block.content || "";
+        const formatted = formatContent(text);
         const clamp = clampIf(text);
-        return `<div class="content-block content-tool ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+        return renderFormattedBlock(messageIndex, blockIndex, "tool", clamp, formatted.html, text);
       }
       case "patch": {
         const text = block.diff_text || JSON.stringify(
@@ -78,8 +89,9 @@ export function createSessionSyncModule({
           null,
           2
         );
+        const formatted = formatContent(text);
         const clamp = clampIf(text);
-        return `<div class="content-block content-patch ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+        return renderFormattedBlock(messageIndex, blockIndex, "patch", clamp, formatted.html, text);
       }
       case "command": {
         const text = JSON.stringify(
@@ -87,8 +99,9 @@ export function createSessionSyncModule({
           null,
           2
         );
+        const formatted = formatContent(text);
         const clamp = clampIf(text);
-        return `<div class="content-block content-command ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+        return renderFormattedBlock(messageIndex, blockIndex, "command", clamp, formatted.html, text);
       }
       case "command_result": {
         const text = JSON.stringify(
@@ -96,52 +109,87 @@ export function createSessionSyncModule({
           null,
           2
         );
+        const formatted = formatContent(text);
         const clamp = clampIf(text);
-        return `<div class="content-block content-command-result ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+        return renderFormattedBlock(messageIndex, blockIndex, "command-result", clamp, formatted.html, text);
       }
       case "file": {
         const clamp = block.content ? clampIf(block.content) : "";
-        return `<div class="content-block content-file ${clamp}"><code>${escapeHtml(block.path || "")}</code>${block.content ? `<pre><code>${escapeHtml(block.content)}</code></pre>` : ""}</div>`;
+        const raw = block.content || "";
+        const formatted = raw ? formatContent(raw) : { html: "", raw: "" };
+        return renderFormattedBlock(
+          messageIndex,
+          blockIndex,
+          "file",
+          clamp,
+          `<code>${escapeHtml(block.path || "")}</code>${formatted.html ? `<div class="file-content">${formatted.html}</div>` : ""}`,
+          `${block.path || ""}${block.path && raw ? "\n" : ""}${raw}`
+        );
       }
       case "image":
         return `<div class="content-block content-image"><code>${escapeHtml(block.path || block.mime_type || "")}</code></div>`;
       case "provider_payload": {
         const text = JSON.stringify(block.payload ?? {}, null, 2);
+        const formatted = formatContent(text);
         const clamp = clampIf(text);
-        return `<div class="content-block content-provider-payload ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+        return renderFormattedBlock(messageIndex, blockIndex, "provider-payload", clamp, formatted.html, text);
       }
       case "unknown": {
         const text = JSON.stringify(block.raw ?? block, null, 2);
+        const formatted = formatContent(text);
         const clamp = clampIf(text);
-        return `<div class="content-block content-unknown ${clamp}"><pre><code>${escapeHtml(text)}</code></pre></div>`;
+        return renderFormattedBlock(messageIndex, blockIndex, "unknown", clamp, formatted.html, text);
       }
       default: {
         const text = JSON.stringify(block, null, 2);
+        const formatted = formatContent(text);
         const clamp = clampIf(text);
-        return `<div class="content-block content-unknown ${clamp}"><pre>${escapeHtml(text)}</pre></div>`;
+        return renderFormattedBlock(messageIndex, blockIndex, "unknown", clamp, formatted.html, text);
       }
     }
   }
 
+  function findEventStats(eventId, eventIndex) {
+    const events = state.session?.stats?.events;
+    if (!events) return null;
+    return events.find((item) => item.event_id === eventId)
+      || events.find((item, idx) => idx === eventIndex && !eventId)
+      || null;
+  }
+
+  function renderEventStats(stats) {
+    if (!stats) return "";
+    const visibleChars = t("statsVisibleChars", { count: stats.visible_char_count });
+    const visibleBytes = t("statsVisibleBytes", { size: formatBytes(stats.visible_byte_size) });
+    const totalChars = t("statsTotalChars", { count: stats.char_count });
+    const totalBytes = t("statsTotalBytes", { size: formatBytes(stats.byte_size) });
+    const title = t("statsTooltip", { visibleChars, visibleBytes, totalChars, totalBytes });
+    const label = t("statsLabel", { size: formatBytes(stats.byte_size), count: stats.char_count });
+    return ` · <span class="msg-stats" title="${escapeAttr(title)}">${label}</span>`;
+  }
+
   function renderDetailEvent(event, index) {
-    const blocks = (event.blocks || []).map(renderDetailBlock).join("");
+    const blocks = (event.blocks || []).map((block, blockIndex) => renderDetailBlock(block, index, blockIndex)).join("");
     const role = (event.role || "unknown").replaceAll("_", " ");
     const kind = (event.kind || "unknown").replaceAll("_", " ");
     const blockLabels = getBlockLabels(event.blocks);
     const labelPart = blockLabels.length
       ? ` · ${blockLabels.map((label) => `<span class="msg-block-label">${escapeHtml(label)}</span>`).join(" · ")}`
       : "";
+    const stats = findEventStats(event.id, index);
+    const statsPart = renderEventStats(stats);
     return `
       <article class="msg-item" data-message-index="${index}" data-role="${escapeAttr(event.role || "unknown")}">
         <header class="msg-header">
           <span class="msg-header-main">
             <span class="msg-role">${escapeHtml(role)}</span>
-            <span>${escapeHtml(kind)}</span>${labelPart}
+            <span>${escapeHtml(kind)}</span>${labelPart}${statsPart}
           </span>
           <span class="msg-header-meta">
             <a href="#" class="text-action" data-action="copy-detail-message" data-message-index="${index}">${t("copy")}</a>
             <a href="#" class="text-action" data-action="delete-detail-message" data-message-index="${index}">${t("remove")}</a>
             <a href="#" class="text-action" data-action="toggle-detail-message" data-message-index="${index}">${t("expand")}</a>
+            <a href="#" class="text-action" data-action="toggle-message-raw" data-message-index="${index}">${t("viewRaw")}</a>
             <span>${escapeHtml(formatDate(event.timestamp))}</span>
           </span>
         </header>
@@ -334,12 +382,6 @@ export function createSessionSyncModule({
           <button type="button" class="danger" data-action="open-delete" data-provider="${escapeAttr(state.route.provider)}" data-session-id="${escapeAttr(state.route.sessionId)}">${t("remove")}</button>
         </div>
       </section>
-      ${renderSessionHookRuntimeBlock(
-        state.route.provider,
-        detail.hook_runtime_sessions || [],
-        view.hook_runtime_summary,
-        view.hook_diagnosis
-      )}
       <div class="detail-layout">
         ${renderDetailTimeline(view.events)}
         <section>

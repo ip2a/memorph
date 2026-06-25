@@ -3,18 +3,24 @@ use chrono::Utc;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::collections::{BTreeMap, HashMap};
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, OnceLock, RwLock};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::canonical::{
     CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole, EventSource,
     MappingDisposition, SessionEvent, SessionEventKind,
 };
 use crate::config;
-use crate::provider::canonical_event_text;
+use crate::logging;
+use crate::provider::{self, canonical_event_text};
 
 const ARCHIVE_SCHEME: &str = "memorph-archive://";
 const ARCHIVE_VERSION: u32 = 1;
@@ -133,6 +139,8 @@ pub struct CompressionArchive {
     pub canonical_id: String,
     pub source_provider_id: String,
     pub target_provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<String>,
     pub summary_event_id: String,
     pub source_event_ids: Vec<String>,
     pub events: Vec<SessionEvent>,
@@ -145,11 +153,42 @@ pub struct CompressionArchiveSummary {
     pub canonical_id: String,
     pub source_provider_id: String,
     pub target_provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<String>,
     pub summary_event_id: String,
     pub source_event_count: usize,
     pub original_size_bytes: u64,
     pub stored_size_bytes: u64,
     pub compression_ratio: f64,
+}
+
+#[derive(Deserialize)]
+struct ArchiveHeader {
+    #[allow(dead_code)]
+    version: u32,
+    created_at: chrono::DateTime<Utc>,
+    canonical_id: String,
+    source_provider_id: String,
+    target_provider_id: String,
+    #[serde(default)]
+    workspace_dir: Option<String>,
+    summary_event_id: String,
+    source_event_ids: Vec<String>,
+    #[allow(dead_code)]
+    events: IgnoredAny,
+}
+
+#[derive(Debug)]
+struct ArchiveSummaryHeader {
+    #[allow(dead_code)]
+    version: u32,
+    created_at: chrono::DateTime<Utc>,
+    canonical_id: String,
+    source_provider_id: String,
+    target_provider_id: String,
+    workspace_dir: Option<String>,
+    summary_event_id: String,
+    source_event_count: usize,
 }
 
 pub fn prepare_for_export(
@@ -192,7 +231,11 @@ pub(crate) fn load_archive_from_dir(
 }
 
 pub fn list_archives() -> Result<Vec<CompressionArchiveSummary>> {
-    list_archives_in_dir(&archive_base_dir()?)
+    list_archives_in_dir(&archive_base_dir()?, None)
+}
+
+pub fn list_archives_for_workspace(workspace: Option<&str>) -> Result<Vec<CompressionArchiveSummary>> {
+    list_archives_in_dir(&archive_base_dir()?, workspace)
 }
 
 pub(crate) fn write_active_compression_archive_in_dir(
@@ -661,6 +704,7 @@ fn write_archive(
         canonical_id: session.identity.canonical_id.clone(),
         source_provider_id: policy.source_provider_id.clone(),
         target_provider_id: policy.target_provider_id.clone(),
+        workspace_dir: session.context.workspace_dir.clone(),
         summary_event_id: summary_event.id.clone(),
         source_event_ids,
         events,
@@ -688,6 +732,68 @@ fn read_archive_text(path: &Path) -> Result<String> {
 
     std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read compression archive: {}", path.display()))
+}
+
+/// Decompress only the first `limit` bytes of a gzip archive to extract metadata.
+fn read_archive_header_text(path: &Path, limit: usize) -> Result<String> {
+    if path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.ends_with(".json.gz"))
+    {
+        let file = File::open(path)
+            .with_context(|| format!("Failed to read compression archive: {}", path.display()))?;
+        let mut decoder = GzDecoder::new(BufReader::new(file));
+        let mut buf = vec![0u8; limit];
+        let n = decoder
+            .read(&mut buf)
+            .with_context(|| format!("Failed to decompress archive prefix: {}", path.display()))?;
+        buf.truncate(n);
+        String::from_utf8(buf)
+            .with_context(|| format!("Archive prefix is not UTF-8: {}", path.display()))
+    } else {
+        let mut file = File::open(path)
+            .with_context(|| format!("Failed to read compression archive: {}", path.display()))?;
+        let mut buf = vec![0u8; limit];
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("Failed to read archive prefix: {}", path.display()))?;
+        buf.truncate(n);
+        String::from_utf8(buf)
+            .with_context(|| format!("Archive prefix is not UTF-8: {}", path.display()))
+    }
+}
+
+/// Parse a partial JSON document as an archive summary header.
+///
+/// The header fields appear before `events`, so we can stop after reading the top-level object
+/// keys we care about. We append `,"events":[]}` to terminate the object if it is incomplete.
+fn parse_summary_header(prefix: &str) -> Result<ArchiveSummaryHeader> {
+    let trimmed = prefix.trim_end();
+    let json = if trimmed.ends_with('}') {
+        trimmed.to_string()
+    } else {
+        // Object was truncated after a field; ensure it is valid JSON for the fields we need.
+        let mut fixed = trimmed.to_string();
+        // Strip a trailing comma if present to keep JSON valid.
+        if fixed.ends_with(',') {
+            fixed.pop();
+        }
+        fixed.push_str("}}");
+        fixed
+    };
+    let header: ArchiveHeader = serde_json::from_str(&json)
+        .with_context(|| "Failed to parse archive header from prefix")?;
+    Ok(ArchiveSummaryHeader {
+        version: header.version,
+        created_at: header.created_at,
+        canonical_id: header.canonical_id,
+        source_provider_id: header.source_provider_id,
+        target_provider_id: header.target_provider_id,
+        workspace_dir: header.workspace_dir,
+        summary_event_id: header.summary_event_id,
+        source_event_count: header.source_event_ids.len(),
+    })
 }
 
 fn write_gzip_atomic(path: &Path, content: &[u8]) -> Result<()> {
@@ -733,12 +839,165 @@ fn archive_path_from_ref_in_dir(archive_dir: &Path, archive_ref: &str) -> Result
     Ok(archive_dir.join(relative_path))
 }
 
-fn list_archives_in_dir(archive_dir: &Path) -> Result<Vec<CompressionArchiveSummary>> {
-    if !archive_dir.exists() {
-        return Ok(Vec::new());
-    }
+/// Number of bytes to decompress from the start of each gzip archive to extract the header.
+const ARCHIVE_HEADER_READ_LIMIT: usize = 2 * 1024;
 
-    let mut summaries = Vec::new();
+/// Build a deterministic cache file path inside the archive directory.
+fn archive_summary_index_path(archive_dir: &Path) -> PathBuf {
+    archive_dir.join(".summary_index.json")
+}
+
+/// In-memory cache for the archive summary index, keyed by archive directory path.
+#[derive(Clone, Debug)]
+struct IndexCacheEntry {
+    summaries: Vec<CompressionArchiveSummary>,
+    generated_at: Instant,
+}
+
+static INDEX_CACHE: OnceLock<Arc<RwLock<HashMap<PathBuf, IndexCacheEntry>>>> = OnceLock::new();
+
+const INDEX_CACHE_TTL: Duration = Duration::from_secs(30);
+
+fn index_cache() -> Arc<RwLock<HashMap<PathBuf, IndexCacheEntry>>> {
+    INDEX_CACHE
+        .get_or_init(|| Arc::new(RwLock::new(HashMap::new())))
+        .clone()
+}
+
+fn cached_summaries_for_dir(archive_dir: &Path) -> Option<Vec<CompressionArchiveSummary>> {
+    let cache = index_cache();
+    let data = cache.read().ok()?;
+    let entry = data.get(archive_dir)?;
+    if entry.generated_at.elapsed() < INDEX_CACHE_TTL {
+        Some(entry.summaries.clone())
+    } else {
+        None
+    }
+}
+
+fn set_cached_summaries_for_dir(archive_dir: &Path, summaries: Vec<CompressionArchiveSummary>) {
+    if let Ok(mut cache) = index_cache().write() {
+        cache.insert(
+            archive_dir.to_path_buf(),
+            IndexCacheEntry {
+                summaries,
+                generated_at: Instant::now(),
+            },
+        );
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ArchiveSummaryIndexEntry {
+    archive_ref: String,
+    created_at: chrono::DateTime<Utc>,
+    canonical_id: String,
+    source_provider_id: String,
+    target_provider_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace_dir: Option<String>,
+    summary_event_id: String,
+    source_event_count: usize,
+    original_size_bytes: u64,
+    stored_size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ArchiveSummaryIndex {
+    generated_at: chrono::DateTime<Utc>,
+    entries: Vec<ArchiveSummaryIndexEntry>,
+}
+
+impl From<&CompressionArchiveSummary> for ArchiveSummaryIndexEntry {
+    fn from(summary: &CompressionArchiveSummary) -> Self {
+        Self {
+            archive_ref: summary.archive_ref.clone(),
+            created_at: summary.created_at,
+            canonical_id: summary.canonical_id.clone(),
+            source_provider_id: summary.source_provider_id.clone(),
+            target_provider_id: summary.target_provider_id.clone(),
+            workspace_dir: summary.workspace_dir.clone(),
+            summary_event_id: summary.summary_event_id.clone(),
+            source_event_count: summary.source_event_count,
+            original_size_bytes: summary.original_size_bytes,
+            stored_size_bytes: summary.stored_size_bytes,
+        }
+    }
+}
+
+impl From<ArchiveSummaryIndexEntry> for CompressionArchiveSummary {
+    fn from(entry: ArchiveSummaryIndexEntry) -> Self {
+        Self {
+            archive_ref: entry.archive_ref,
+            created_at: entry.created_at,
+            canonical_id: entry.canonical_id,
+            source_provider_id: entry.source_provider_id,
+            target_provider_id: entry.target_provider_id,
+            workspace_dir: entry.workspace_dir,
+            summary_event_id: entry.summary_event_id,
+            source_event_count: entry.source_event_count,
+            original_size_bytes: entry.original_size_bytes,
+            stored_size_bytes: entry.stored_size_bytes,
+            compression_ratio: compression_ratio(entry.original_size_bytes, entry.stored_size_bytes),
+        }
+    }
+}
+
+fn read_summary_index(archive_dir: &Path) -> Option<ArchiveSummaryIndex> {
+    let path = archive_summary_index_path(archive_dir);
+    let metadata = std::fs::metadata(&path).ok()?;
+    if metadata.modified().ok()? < std::fs::metadata(archive_dir).ok()?.modified().ok()? {
+        return None;
+    }
+    let raw = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn write_summary_index(
+    archive_dir: &Path,
+    summaries: &[CompressionArchiveSummary],
+) -> Result<()> {
+    let path = archive_summary_index_path(archive_dir);
+    let index = ArchiveSummaryIndex {
+        generated_at: Utc::now(),
+        entries: summaries.iter().map(ArchiveSummaryIndexEntry::from).collect(),
+    };
+    let raw = serde_json::to_vec_pretty(&index)?;
+    let mut file = tempfile::NamedTempFile::new_in(archive_dir)
+        .with_context(|| format!("Failed to create temporary index file in {}", archive_dir.display()))?;
+    file.write_all(&raw)
+        .with_context(|| format!("Failed to write temporary index file for {}", path.display()))?;
+    file.as_file()
+        .sync_all()
+        .with_context(|| format!("Failed to sync temporary index file for {}", path.display()))?;
+    file.persist(&path)
+        .map_err(|err| err.error)
+        .with_context(|| format!("Failed to persist index file to {}", path.display()))?;
+    Ok(())
+}
+
+fn read_archive_summary_from_path(path: &Path, group_name: &str) -> Option<CompressionArchiveSummary> {
+    let prefix = read_archive_header_text(path, ARCHIVE_HEADER_READ_LIMIT).ok()?;
+    let header = parse_summary_header(&prefix).ok()?;
+    let stored_size_bytes = path.metadata().ok()?.len();
+    let file_name = path.file_name()?.to_str()?;
+    Some(CompressionArchiveSummary {
+        archive_ref: format!("{}{}/{}", ARCHIVE_SCHEME, group_name, file_name),
+        created_at: header.created_at,
+        canonical_id: header.canonical_id,
+        source_provider_id: header.source_provider_id,
+        target_provider_id: header.target_provider_id,
+        workspace_dir: header.workspace_dir,
+        summary_event_id: header.summary_event_id,
+        source_event_count: header.source_event_count,
+        original_size_bytes: prefix.len() as u64,
+        stored_size_bytes,
+        compression_ratio: compression_ratio(prefix.len() as u64, stored_size_bytes),
+    })
+}
+
+fn collect_archive_paths(archive_dir: &Path) -> Result<Vec<(PathBuf, String)>> {
+    let mut result = Vec::new();
     for group_entry in std::fs::read_dir(archive_dir)
         .with_context(|| format!("Failed to read archive dir: {}", archive_dir.display()))?
     {
@@ -758,34 +1017,78 @@ fn list_archives_in_dir(archive_dir: &Path) -> Result<Vec<CompressionArchiveSumm
             if !is_supported_archive_path(&path) {
                 continue;
             }
-            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            let raw = read_archive_text(&path)?;
-            let archive: CompressionArchive = serde_json::from_str(&raw)
-                .with_context(|| format!("Failed to parse archive: {}", path.display()))?;
-            let original_size_bytes = raw.len() as u64;
-            let stored_size_bytes = path
-                .metadata()
-                .with_context(|| format!("Failed to stat archive: {}", path.display()))?
-                .len();
-            summaries.push(CompressionArchiveSummary {
-                archive_ref: format!("{}{}/{}", ARCHIVE_SCHEME, group_name, file_name),
-                created_at: archive.created_at,
-                canonical_id: archive.canonical_id,
-                source_provider_id: archive.source_provider_id,
-                target_provider_id: archive.target_provider_id,
-                summary_event_id: archive.summary_event_id,
-                source_event_count: archive.source_event_ids.len(),
-                original_size_bytes,
-                stored_size_bytes,
-                compression_ratio: compression_ratio(original_size_bytes, stored_size_bytes),
-            });
+            result.push((path, group_name.to_string()));
         }
     }
+    Ok(result)
+}
+
+fn list_archives_in_dir(
+    archive_dir: &Path,
+    workspace_filter: Option<&str>,
+) -> Result<Vec<CompressionArchiveSummary>> {
+    if !archive_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let requested_workspace = workspace_filter.map(str::trim).filter(|value| !value.is_empty());
+
+    // 1. Try the in-memory cache first. The cache always holds the unfiltered
+    //    set so that different workspace filters can share it.
+    if let Some(cached) = cached_summaries_for_dir(archive_dir) {
+        return Ok(filter_summaries_by_workspace(cached, requested_workspace));
+    }
+
+    // 2. Try the persistent index file (valid if newer than the archive directory).
+    if let Some(index) = read_summary_index(archive_dir) {
+        let summaries: Vec<CompressionArchiveSummary> =
+            index.entries.into_iter().map(Into::into).collect();
+        set_cached_summaries_for_dir(archive_dir, summaries.clone());
+        return Ok(filter_summaries_by_workspace(summaries, requested_workspace));
+    }
+
+    // 3. Fall back to scanning files, using header-only reads and parallelism.
+    let paths = collect_archive_paths(archive_dir)?;
+
+    let mut summaries: Vec<CompressionArchiveSummary> = thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(paths.len());
+        for (path, group_name) in paths {
+            handles.push(scope.spawn(move || read_archive_summary_from_path(&path, &group_name)));
+        }
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok().flatten())
+            .collect()
+    });
 
     summaries.sort_by_key(|summary| std::cmp::Reverse(summary.created_at));
-    Ok(summaries)
+
+    // 4. Persist the index for subsequent requests. The index is unfiltered so
+    //    it remains valid regardless of which workspace filter is requested next.
+    if let Err(err) = write_summary_index(archive_dir, &summaries) {
+        logging::error(
+            "compression_summary_index",
+            &format!("Failed to write summary index: {err}"),
+        );
+    }
+    set_cached_summaries_for_dir(archive_dir, summaries.clone());
+
+    Ok(filter_summaries_by_workspace(summaries, requested_workspace))
+}
+
+fn filter_summaries_by_workspace(
+    summaries: Vec<CompressionArchiveSummary>,
+    requested_workspace: Option<&str>,
+) -> Vec<CompressionArchiveSummary> {
+    let Some(requested) = requested_workspace else {
+        return summaries;
+    };
+    summaries
+        .into_iter()
+        .filter(|summary| {
+            provider::default_workspace_matches(summary.workspace_dir.as_deref(), Some(requested))
+        })
+        .collect()
 }
 
 fn is_supported_archive_path(path: &Path) -> bool {
@@ -1021,7 +1324,7 @@ mod tests {
             prepare_for_export_with_archive_dir(&session, &policy, temp.path()).unwrap();
         assert_eq!(report.archive_refs.len(), 1);
 
-        let archives = list_archives_in_dir(temp.path()).unwrap();
+        let archives = list_archives_in_dir(temp.path(), None).unwrap();
 
         assert_eq!(archives.len(), 1);
         assert_eq!(archives[0].archive_ref, report.archive_refs[0]);
@@ -1190,7 +1493,7 @@ mod tests {
                 && archive_ref == "memorph-archive://portable/a.json"
         ));
         assert_eq!(prepared.events[1].id, "tail");
-        assert!(list_archives_in_dir(temp.path()).unwrap().is_empty());
+        assert!(list_archives_in_dir(temp.path(), None).unwrap().is_empty());
     }
 
     #[test]
@@ -1257,7 +1560,7 @@ mod tests {
             vec!["event-b1".to_string(), "event-b2".to_string()],
         );
 
-        let archives = list_archives_in_dir(temp.path()).unwrap();
+        let archives = list_archives_in_dir(temp.path(), None).unwrap();
 
         assert_eq!(archives.len(), 2);
         assert_eq!(
@@ -1313,6 +1616,7 @@ mod tests {
             canonical_id: canonical_id.to_string(),
             source_provider_id: "opencode".to_string(),
             target_provider_id: "codex".to_string(),
+            workspace_dir: None,
             summary_event_id: summary_event_id.to_string(),
             source_event_ids,
             events: Vec::new(),

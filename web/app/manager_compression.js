@@ -7,6 +7,8 @@ export function createManagerCompressionModule({
   formatDate,
   formatBytes,
   formatRatio,
+  markdown,
+  formatContent,
   workspaceName,
   getOrderedProviders,
   renderMetaLine,
@@ -174,6 +176,8 @@ export function createManagerCompressionModule({
 
   function renderManagerForm(managerDraft) {
     const providerChecks = getOrderedProviders()
+      .filter((item) => !providers.isHiddenGlobal(item))
+      .filter((item) => providers.hasFilter(item, "is_installed"))
       .map((item) => {
         const checked = managerDraft.providers.includes(item.provider_id);
         return `
@@ -214,18 +218,14 @@ export function createManagerCompressionModule({
     const workspacePreview = state.manager.workspacePreview;
     const report = state.manager.report;
     const viewMode = state.manager.viewMode || "sessions";
-    const viewTabs = `
-      <div class="manager-view-tabs">
-        <button type="button" class="${viewMode === "sessions" ? "is-active" : ""}" data-action="set-manager-view" data-view="sessions">${t("managerViewSessions")}</button>
-        <button type="button" class="${viewMode === "workspaces" ? "is-active" : ""}" data-action="set-manager-view" data-view="workspaces">${t("managerViewWorkspaces")}</button>
-      </div>`;
+    const viewDashboard = renderManagerDashboard(state.manager.stats, viewMode, state.manager.statsLoading);
     return `
       <div class="manager-page-layout">
         <section class="section-panel manager-control-panel">
           ${renderManagerForm(draft)}
         </section>
         <section class="section-panel manager-result-panel">
-          ${viewTabs}
+          ${viewDashboard}
           ${viewMode === "workspaces"
             ? renderManagerWorkspacePreview(workspacePreview || emptyManagerPreview())
             : renderManagerPreview(preview || emptyManagerPreview(), report)}
@@ -233,35 +233,158 @@ export function createManagerCompressionModule({
       </div>`;
   }
 
-  function renderCompressionProviderSupport(providers) {
-    if (!providers.length) {
-      return `<div class="manager-list agent-provider-list"><div class="empty-state">${t("noProviders")}</div></div>`;
-    }
+  function renderManagerDashboard(stats, viewMode, statsLoading = false) {
+    const isAllWorkspaces = viewMode === "workspaces";
+    const pending = statsLoading || !stats;
+    const primaryLabel = isAllWorkspaces ? t("managerAllWorkspaceScope") : t("managerCurrentWorkspaceScope");
+    const primarySize = isAllWorkspaces
+      ? stats?.all_workspace_size_bytes
+      : stats?.current_workspace_size_bytes;
+    const workspaceCount = stats?.all_workspace_count;
+    const selectedAgentCount = stats?.selected_agent_count;
+    const sessionCount = isAllWorkspaces
+      ? stats?.all_workspace_session_count
+      : stats?.current_workspace_session_count;
+    const statValue = (value, formatter = (item) => String(item)) => {
+      if (value != null) return escapeHtml(formatter(value));
+      return pending ? escapeHtml(t("managerStatsCalculating")) : "—";
+    };
+
     return `
-      <div class="manager-list agent-provider-list">
-        ${providers
-          .map((provider) => {
-            const defaultProjection = provider.default_projection || "portable";
-            return `
-              <div class="agent-provider-item">
-                <span class="agent-provider-head">
-                  <strong class="agent-provider-name">${escapeHtml(providers.displayName(provider.provider_id))}</strong>
-                  <span class="pill">${escapeHtml(defaultProjection)}</span>
-                </span>
-              </div>`;
-          })
-          .join("")}
+      <div class="manager-view-tabs manager-stats-dashboard" aria-label="${escapeAttr(t("managerStatsDashboard"))}">
+        <button type="button" class="manager-stat-card ${!isAllWorkspaces ? "is-active" : ""}" data-action="set-manager-view" data-view="sessions">
+          <span>${escapeHtml(primaryLabel)}</span>
+          <strong>${statValue(primarySize, formatBytes)}</strong>
+          <em>${t("size")}</em>
+        </button>
+        <button type="button" class="manager-stat-card ${isAllWorkspaces ? "is-active" : ""}" data-action="set-manager-view" data-view="workspaces">
+          <span>${t("managerAllWorkspaces")}</span>
+          <strong>${statValue(workspaceCount)}</strong>
+          <em>${t("managerWorkspaceUnit")}</em>
+        </button>
+        <div class="manager-stat-card is-readonly">
+          <span>${t("managerSelectedAgents")}</span>
+          <strong>${statValue(selectedAgentCount)}</strong>
+          <em>${t("managerAgentUnit")}</em>
+        </div>
+        <div class="manager-stat-card is-readonly">
+          <span>${t("managerCurrentSessions")}</span>
+          <strong>${statValue(sessionCount)}</strong>
+          <em>${t("sessionsStat")}</em>
+        </div>
+      </div>`;
+  }
+
+  function renderCompressionWorkspaceSummary() {
+    const providerChecks = getOrderedProviders()
+      .filter((item) => !providers.isHiddenGlobal(item))
+      .filter((item) => providers.hasFilter(item, "is_installed"))
+      .map((item) => {
+        const checked = state.home.providers.includes(item.provider_id);
+        return `
+          <label class="agent-provider-item manager-provider-item ${checked ? "is-active" : ""}">
+            <input data-role="provider-toggle" type="checkbox" value="${escapeAttr(item.provider_id)}" ${checked ? "checked" : ""}>
+            <span class="agent-provider-head">
+              <strong class="agent-provider-name">${escapeHtml(item.display_name)}</strong>
+              <span class="agent-provider-state ${checked ? "is-installed" : "is-missing"}" aria-hidden="true">${checked ? "●" : "○"}</span>
+            </span>
+          </label>`;
+      })
+      .join("");
+    return `
+      <div class="manager-control-content">
+        <section class="manager-workspace-summary">
+          <div>
+            <span class="eyebrow">${t("workspace")}</span>
+            <strong>${escapeHtml(workspaceName(state.home.workspace) || t("workspaceEmpty"))}</strong>
+            <p>${escapeHtml(state.home.workspace || "—")}</p>
+          </div>
+        </section>
+        <section class="manager-control-bottom">
+          <section class="stack">
+            <div class="section-heading">
+              <div>
+                <strong>${t("providers")}</strong>
+              </div>
+            </div>
+            <div class="manager-list agent-provider-list manager-provider-list">${providerChecks || `<div class="empty-state">${t("noProviders")}</div>`}</div>
+          </section>
+        </section>
+      </div>`;
+  }
+
+  function renderBlock(block) {
+    const text = block.text != null
+      ? String(block.text)
+      : block.content != null
+        ? String(block.content)
+        : block.diff_text != null
+          ? String(block.diff_text)
+          : block.summary != null
+            ? String(block.summary)
+            : JSON.stringify(block, null, 2);
+    const formatted = formatContent(text);
+    return `<div class="content-block">${formatted.html}</div>`;
+  }
+
+  function renderArchiveEvent(event, index) {
+    const role = (event.role || "unknown").replaceAll("_", " ");
+    const kind = (event.kind || "unknown").replaceAll("_", " ");
+    const blocks = (event.blocks || []).map(renderBlock).join("") || `<p class="muted">${escapeHtml(t("noDetails"))}</p>`;
+    return `
+      <article class="msg-item" data-message-index="${index}" data-role="${escapeAttr(event.role || "unknown")}">
+        <header class="msg-header">
+          <span class="msg-header-main">
+            <span class="msg-role">${escapeHtml(role)}</span>
+            <span>${escapeHtml(kind)}</span>
+          </span>
+          <span class="msg-header-meta">
+            <span>${escapeHtml(formatDate(event.timestamp))}</span>
+          </span>
+        </header>
+        <div class="msg-body">${blocks}</div>
+      </article>`;
+  }
+
+  function renderCompressionArchiveDetail(archive) {
+    const events = archive.events || [];
+    return `
+      <div class="stack compression-archive-detail">
+        <section class="section-panel stack">
+          <div class="manager-summary-grid">
+            ${renderMetaLine(t("archiveRef"), archive.archive_ref)}
+            ${renderMetaLine(t("canonicalId") || "canonical id", archive.canonical_id)}
+            ${renderMetaLine(t("sourceProvider"), archive.source_provider_id)}
+            ${renderMetaLine(t("targetProvider"), archive.target_provider_id)}
+            ${renderMetaLine(t("workspace"), archive.workspace_dir)}
+            ${renderMetaLine(t("summaryEventId"), archive.summary_event_id)}
+            ${renderMetaLine(t("sourceEvents"), String(archive.source_event_ids?.length ?? archive.source_event_count ?? events.length))}
+            ${renderMetaLine(t("storedSize"), formatBytes(archive.stored_size_bytes))}
+            ${renderMetaLine(t("originalSize"), formatBytes(archive.original_size_bytes))}
+            ${renderMetaLine(t("createdAt"), formatDate(archive.created_at))}
+          </div>
+        </section>
+        <section class="section-panel stack">
+          <div class="section-heading">
+            <div>
+              <strong>${t("events")}</strong>
+              <span>${events.length}</span>
+            </div>
+          </div>
+          <div class="msg-list">
+            ${events.length ? events.map(renderArchiveEvent).join("") : `<div class="empty-state">${t("noMessages")}</div>`}
+          </div>
+        </section>
       </div>`;
   }
 
   function renderCompressionPage() {
     const archives = state.compression.archives || [];
-    const providers = state.compression.providers || [];
     const rows = archives
       .map((archive) => {
         const archiveRef = archive.archive_ref || "";
         return `
-          <article class="manager-row">
+          <article class="manager-row" data-action="open-compression-detail" data-archive-ref="${escapeAttr(archiveRef)}">
             <div class="manager-row-head">
               <div class="manager-row-copy">
                 <div class="session-title">${escapeHtml(archive.canonical_id || t("compressionArchive"))}</div>
@@ -276,6 +399,7 @@ export function createManagerCompressionModule({
                 <div class="path-line">${escapeHtml(archiveRef)}</div>
               </div>
               <div class="session-actions">
+                <button type="button" data-action="open-compression-detail" data-archive-ref="${escapeAttr(archiveRef)}">${t("view")}</button>
                 <button type="button" data-action="open-compression-restore" data-archive-ref="${escapeAttr(archiveRef)}">${t("restore")}</button>
               </div>
             </div>
@@ -285,19 +409,8 @@ export function createManagerCompressionModule({
 
     return `
       <div class="manager-page-layout">
-        <section class="section-panel manager-control-panel agent-provider-panel">
-          <section class="manager-workspace-summary">
-            <div>
-              <span class="eyebrow">${t("compression")}</span>
-              <strong>${t("compressionTitle")}</strong>
-              <p>${t("compressionHint")}</p>
-            </div>
-          </section>
-          ${renderCompressionProviderSupport(providers)}
-          <div class="manager-control-actions">
-            <button type="button" data-action="open-compression-expand">${t("expand")}</button>
-            <button class="invert" type="button" data-action="refresh-compression">${t("refresh")}</button>
-          </div>
+        <section class="section-panel manager-control-panel">
+          ${renderCompressionWorkspaceSummary()}
         </section>
         <section class="section-panel manager-result-panel">
           <div class="section-heading manager-section-head">
@@ -317,6 +430,7 @@ export function createManagerCompressionModule({
 
   return {
     renderCompressionPage,
+    renderCompressionArchiveDetail,
     renderManagerPage,
     unitOption,
     updateManagerSelectionStats,

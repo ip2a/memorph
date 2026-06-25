@@ -36,7 +36,9 @@ pub async fn run(port: u16, no_open: bool) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     let url = format!("http://{}", listener.local_addr()?);
-    let _ = crate::hooks::server::publish_runtime_endpoint(&url);
+    if let Err(err) = crate::hooks::server::publish_runtime_endpoint(&url) {
+        crate::logging::error("publish_runtime_endpoint", &format!("{err}"));
+    }
     println!("memorph server started: {}", url);
 
     if !no_open {
@@ -57,7 +59,9 @@ pub async fn run_api(port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     let url = format!("http://{}", listener.local_addr()?);
-    let _ = crate::hooks::server::publish_runtime_endpoint(&url);
+    if let Err(err) = crate::hooks::server::publish_runtime_endpoint(&url) {
+        crate::logging::error("publish_runtime_endpoint", &format!("{err}"));
+    }
 
     println!("memorph API server started: {}", url);
     println!("API base path: /api/v1");

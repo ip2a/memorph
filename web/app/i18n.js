@@ -5,8 +5,14 @@ export function createI18n(getLanguage) {
     return getLanguage() || "zh";
   }
 
-  function t(key) {
-    return dictionaries[lang()]?.[key] || dictionaries.zh[key] || key;
+  function t(key, vars) {
+    let text = dictionaries[lang()]?.[key] || dictionaries.zh[key] || key;
+    if (vars && typeof text === "string") {
+      for (const [name, value] of Object.entries(vars)) {
+        text = text.replaceAll(`{${name}}`, String(value));
+      }
+    }
+    return text;
   }
 
   function setDocumentLanguage() {

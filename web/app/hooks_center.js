@@ -7,6 +7,7 @@ export function createHooksCenterModule({
   formatDate,
   formatValue,
   renderMetaLine,
+  workspaceName,
 }) {
   function renderHooksCenterPage() {
     const overview = state.hooks.overview;
@@ -33,47 +34,42 @@ export function createHooksCenterModule({
   }
 
   function renderHooksOverviewSummary(overview) {
-    const summary = overview.summary || {};
     const server = overview.server || {};
+    const title = escapeHtml(workspaceName(state.home.workspace) || "memorph");
+    const path = escapeHtml(state.home.workspace || "—");
+    const pathTitle = escapeAttr(state.home.workspace || "");
     return `
-      <section class="manager-workspace-summary">
-        <div>
-          <span class="eyebrow">${t("hooks")}</span>
-          <strong>${t("hooksTitle")}</strong>
-          <p>${t("hooksHint")}</p>
-        </div>
-        <div class="manager-summary-grid agent-environment-grid">
-          ${renderMetaLine(t("hookServer"), server.running ? t("running") : t("notDetected"))}
-          ${renderMetaLine(t("providers"), String(summary.providers || 0))}
-          ${renderMetaLine(t("hookInstalledOk"), String(summary.installed_ok || 0))}
-          ${renderMetaLine(t("hookNeedsAttention"), String(summary.needs_attention || 0))}
-          ${renderMetaLine(t("hookActiveRuntime"), String(summary.active_runtime_sessions || 0))}
-          ${renderMetaLine(t("errors"), String(summary.recent_errors || 0))}
-        </div>
-        <div class="manager-actions">
-          <button type="button" data-action="refresh-hooks">${t("refresh")}</button>
-          <button type="button" data-action="run-hook-doctor" data-repair="false">${t("hookDoctor")}</button>
-          <button type="button" data-action="cleanup-hook-runtime">${t("hookCleanup")}</button>
+      <section class="manager-workspace-summary hook-workspace-summary">
+        <div class="hook-workspace-head">
+          <p class="eyebrow">${t("workspace")}</p>
+          <strong>${title}</strong>
+          <button type="button" class="workspace-path" data-action="open-workspace-switch" title="${pathTitle}">${path}</button>
         </div>
       </section>`;
   }
 
   function renderHooksProviderList(providerList) {
-    if (!providerList.length) {
+    const visible = providerList
+      .filter((item) => !providers.isHiddenGlobal(item.provider_id))
+      .sort((left, right) => {
+        const leftInstalled = providers.isInstalled(left.provider_id);
+        const rightInstalled = providers.isInstalled(right.provider_id);
+        if (leftInstalled === rightInstalled) return 0;
+        return leftInstalled ? -1 : 1;
+      });
+    if (!visible.length) {
       return `<div class="empty-state">${t("noProviders")}</div>`;
     }
     return `
-      <div class="manager-list agent-provider-list">
-        ${providerList.map(renderHooksProviderListItem).join("")}
+      <div class="manager-list agent-provider-list hook-provider-list">
+        ${visible.map(renderHooksProviderListItem).join("")}
       </div>`;
   }
 
   function renderHooksProviderListItem(provider) {
     const providerId = provider.provider_id || "";
     const selected = state.hooks.selectedProvider === providerId;
-    const hook = provider.hook || {};
-    const status = hook.status || "unknown";
-    const statusClass = status === "installed_ok" ? "is-installed" : "is-missing";
+    const installed = providers.isInstalled(providerId);
     return `
       <button
         type="button"
@@ -83,9 +79,7 @@ export function createHooksCenterModule({
       >
         <span class="agent-provider-head">
           <strong class="agent-provider-name">${escapeHtml(providerDisplayName(provider))}</strong>
-          <span class="agent-provider-state ${statusClass}" title="${escapeAttr(status)}" aria-label="${escapeAttr(status)}">
-            ${status === "installed_ok" ? "●" : "○"}
-          </span>
+          <span class="settings-provider-status ${installed ? "is-installed" : "is-missing"}">${escapeHtml(installed ? t("installed") : t("notDetected"))}</span>
         </span>
       </button>`;
   }
@@ -135,12 +129,8 @@ export function createHooksCenterModule({
         <div class="manager-summary-grid agent-environment-grid">
           ${renderMetaLine(t("provider"), providerId)}
           ${renderMetaLine("Hook status", hook.status || "unknown")}
-          ${renderMetaLine(t("hookCapabilities"), formatCapabilities(capabilities))}
           ${renderMetaLine(t("hookRequiredEvents"), String(requiredEvents.length || events.length))}
           ${renderMetaLine("Hook format", formatHookFormat(profile.format))}
-          ${renderMetaLine("Hook config", hook.config_path || profile.config_hint || "—")}
-          ${renderMetaLine("Installed version", hook.installed_version || "—")}
-          ${renderMetaLine("Current version", hook.current_version || "—")}
           ${renderMetaLine("Last event", hook.last_event_at ? formatDate(hook.last_event_at) : "—")}
           ${renderMetaLine(
             t("hookActiveRuntime"),
@@ -151,12 +141,13 @@ export function createHooksCenterModule({
           ${renderMetaLine(t("hookNoMatchSessions"), String(diagnosis.no_session_match || 0))}
         </div>
 
+        ${renderWideMetaLine("Hook config", hook.config_path || profile.config_hint || "—")}
+
         ${hook.message ? `<div class="empty-state">${escapeHtml(hook.message)}</div>` : ""}
         ${renderProviderEventProfile(events, requiredEvents)}
         ${renderProviderRuntimeSessions(runtimeSessions)}
         ${renderProviderRecentEvents(recentEvents)}
         ${renderProviderRecentErrors(recentErrors)}
-        ${renderProviderRecommendedActions(providerId, diagnosis.recommended_actions || [])}
         ${renderProviderSessionDiagnosis(providerId)}
       </div>`;
   }
@@ -164,68 +155,55 @@ export function createHooksCenterModule({
   function renderProviderEventProfile(events, requiredEvents = []) {
     const eventNames = events.map((event) => event.name);
     const missingRequired = requiredEvents.filter((event) => !eventNames.includes(event));
-    return `
-      <div class="stack hook-provider-detail-block">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookEventProfile")}</strong>
-            <small>${t("hookEventProfileHint")} · ${t("hookRequiredEvents")}=${escapeHtml(
-              String(requiredEvents.length || events.length)
-            )}</small>
+    const body = events.length
+      ? `<div class="settings-list agent-environment-paths">
+          <div class="settings-row agent-detail-row">
+            <div class="settings-copy settings-copy-inline">
+              <strong>${t("hookEventProfile")}</strong>
+              <span>${t("hookEventProfileHint")}</span>
+            </div>
+            <div class="pill-row hook-event-pill-row">
+              ${events
+                .map(
+                  (event) =>
+                    `<span class="pill" title="${escapeAttr(event.blocking ? "blocking" : "record-only")}">${escapeHtml(
+                      event.name
+                    )}${event.blocking ? " *" : ""}</span>`
+                )
+                .join("")}
+            </div>
           </div>
-        </div>
-        <div class="pill-row hook-event-pill-row">
           ${
-            events.length
-              ? events
-                  .map(
-                    (event) =>
-                      `<span class="pill" title="${escapeAttr(event.blocking ? "blocking" : "record-only")}">${escapeHtml(
-                        event.name
-                      )}${event.blocking ? " *" : ""}</span>`
-                  )
-                  .join("")
-              : `<span class="pill">—</span>`
+            missingRequired.length
+              ? `<div class="settings-row agent-detail-row">
+                  <div class="settings-copy settings-copy-inline">
+                    <strong>${t("hookMissingRequiredEvents")}</strong>
+                  </div>
+                  <div class="pill-row hook-event-pill-row">
+                    ${missingRequired
+                      .map((name) => `<span class="pill">${escapeHtml(name)}</span>`)
+                      .join("")}
+                  </div>
+                </div>`
+              : ""
           }
-        </div>
-        ${
-          missingRequired.length
-            ? `<div class="empty-state">${escapeHtml(t("hookMissingRequiredEvents"))}: ${escapeHtml(
-                missingRequired.join(", ")
-              )}</div>`
-            : ""
-        }
-      </div>`;
+        </div>`
+      : `<div class="empty-state">${t("hookNoRecentEvents")}</div>`;
+    return renderDetailBlock(t("hookEventProfile"), t("hookEventProfileHint"), body);
   }
 
   function renderProviderRuntimeSessions(sessions) {
-    return `
-      <div class="stack hook-provider-detail-block">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookRuntimeSessions")}</strong>
-            <small>${t("hookRuntimeSessionsHint")}</small>
-          </div>
-        </div>
-        <div class="settings-list">
-          ${sessions.length ? sessions.map(renderRuntimeRow).join("") : `<div class="empty-state">${t("hookNoActiveRuntime")}</div>`}
-        </div>
-      </div>`;
+    const body = sessions.length
+      ? `<div class="settings-list agent-environment-paths">${sessions.map(renderRuntimeRow).join("")}</div>`
+      : `<div class="empty-state">${t("hookNoActiveRuntime")}</div>`;
+    return renderDetailBlock(t("hookRuntimeSessions"), t("hookRuntimeSessionsHint"), body);
   }
 
   function renderProviderRecentEvents(events) {
-    return `
-      <div class="stack hook-provider-detail-block">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookRecentEvents")}</strong>
-            <small>${t("hookRecentEventsHint")}</small>
-          </div>
-        </div>
-        <div class="settings-list">
-          ${events.length ? events.map(renderEventRow).join("") : `<div class="empty-state">${t("hookNoRecentEvents")}</div>`}
-        </div>
-      </div>`;
+    const body = events.length
+      ? `<div class="settings-list agent-environment-paths">${events.map(renderEventRow).join("")}</div>`
+      : `<div class="empty-state">${t("hookNoRecentEvents")}</div>`;
+    return renderDetailBlock(t("hookRecentEvents"), t("hookRecentEventsHint"), body);
   }
 
   function renderEventRow(event) {
@@ -245,49 +223,10 @@ export function createHooksCenterModule({
   }
 
   function renderProviderRecentErrors(errors) {
-    return `
-      <div class="stack hook-provider-detail-block">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookRecentErrors")}</strong>
-            <small>${t("hookRecentErrorsHint")}</small>
-          </div>
-        </div>
-        ${
-          errors.length
-            ? `<div class="settings-list">${errors.map(renderErrorRow).join("")}</div>`
-            : `<div class="empty-state">${t("hookNoRecentErrors")}</div>`
-        }
-      </div>`;
-  }
-
-  function renderProviderRecommendedActions(providerId, actions) {
-    if (!actions.length) return "";
-    return `
-      <div class="stack hook-provider-detail-block">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookRecommendedActions")}</strong>
-            <small>${t("hookRecommendedActionsHint")}</small>
-          </div>
-        </div>
-        <div class="settings-list">
-          ${actions
-            .map(
-              (action) => `
-                <div class="settings-row agent-detail-row">
-                  <div class="settings-copy settings-copy-inline">
-                    <strong>${escapeHtml(action.label)}</strong>
-                    <span>${escapeHtml(action.reason)}</span>
-                  </div>
-                  <div class="pill-row">
-                    ${renderDiagnosisAction(providerId, action)}
-                  </div>
-                </div>`
-            )
-            .join("")}
-        </div>
-      </div>`;
+    const body = errors.length
+      ? `<div class="settings-list agent-environment-paths">${errors.map(renderErrorRow).join("")}</div>`
+      : `<div class="empty-state">${t("hookNoRecentErrors")}</div>`;
+    return renderDetailBlock(t("hookRecentErrors"), t("hookRecentErrorsHint"), body);
   }
 
   function renderProviderSessionDiagnosis(providerId) {
@@ -300,18 +239,11 @@ export function createHooksCenterModule({
       }
     }
     if (!rows.length) return "";
-    return `
-      <div class="stack hook-provider-detail-block">
-        <div class="section-heading">
-          <div>
-            <strong>${t("hookSessionDiagnosis")}</strong>
-            <small>${t("hookSessionDiagnosisHint")}</small>
-          </div>
-        </div>
-        <div class="settings-list">
-          ${rows.map(({ group, session }) => renderSessionDiagnosisRow(group, session)).join("")}
-        </div>
+    const body = `
+      <div class="settings-list agent-environment-paths">
+        ${rows.map(({ group, session }) => renderSessionDiagnosisRow(group, session)).join("")}
       </div>`;
+    return renderDetailBlock(t("hookSessionDiagnosis"), t("hookSessionDiagnosisHint"), body);
   }
 
   function providerActionIds(status, supported, capabilities = {}) {
@@ -450,6 +382,19 @@ export function createHooksCenterModule({
       </div>`;
   }
 
+  function renderDetailBlock(title, hint, body) {
+    return `
+      <div class="stack hook-provider-detail-block">
+        <div class="section-heading">
+          <div>
+            <strong>${escapeHtml(title)}</strong>
+            <small>${escapeHtml(hint)}</small>
+          </div>
+        </div>
+        ${body}
+      </div>`;
+  }
+
   function formatHookFormat(format) {
     if (!format) return "—";
     return String(format)
@@ -458,11 +403,11 @@ export function createHooksCenterModule({
       .join(" ");
   }
 
-  function formatCapabilities(capabilities) {
-    const enabled = ["detect", "verify", "install", "repair", "uninstall"].filter(
-      (key) => capabilities[key] === true
-    );
-    return enabled.length ? enabled.join(" / ") : "—";
+  function renderWideMetaLine(label, value) {
+    if (value === null || value === undefined || value === "") return "";
+    return `<div class="stack meta-line-wide hook-wide-meta"><span class="eyebrow">${escapeHtml(label)}</span><div class="path-line">${escapeHtml(
+      formatValue(value)
+    )}</div></div>`;
   }
 
   return {

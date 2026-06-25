@@ -1,6 +1,6 @@
 {
   "name": "memorph-bin-linux-arm64-gnu",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "description": "memorph platform package (linux arm64 gnu)",
   "license": "MIT",
   "repository": {

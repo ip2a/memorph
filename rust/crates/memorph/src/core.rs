@@ -876,6 +876,67 @@ fn session_message_count(session: &CanonicalSession) -> usize {
         .count()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventStats {
+    pub event_id: String,
+    pub char_count: usize,
+    pub byte_size: usize,
+    pub visible_char_count: usize,
+    pub visible_byte_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionStats {
+    pub provider_id: String,
+    pub session_id: String,
+    pub events: Vec<EventStats>,
+    pub total_char_count: usize,
+    pub total_byte_size: usize,
+    pub total_visible_char_count: usize,
+    pub total_visible_byte_size: usize,
+}
+
+pub fn compute_session_stats(provider_id: &str, session_id: &str) -> Result<SessionStats> {
+    let imported = get_canonical_session(provider_id, session_id)?;
+    let mut events = Vec::with_capacity(imported.session.events.len());
+    let mut total_char_count = 0usize;
+    let mut total_byte_size = 0usize;
+    let mut total_visible_char_count = 0usize;
+    let mut total_visible_byte_size = 0usize;
+
+    for event in &imported.session.events {
+        let full_text = provider::canonical_event_text(event);
+        let visible_text = provider::canonical_event_visible_text(event);
+        let char_count = full_text.chars().count();
+        let byte_size = full_text.len();
+        let visible_char_count = visible_text.chars().count();
+        let visible_byte_size = visible_text.len();
+
+        total_char_count = total_char_count.saturating_add(char_count);
+        total_byte_size = total_byte_size.saturating_add(byte_size);
+        total_visible_char_count = total_visible_char_count.saturating_add(visible_char_count);
+        total_visible_byte_size = total_visible_byte_size.saturating_add(visible_byte_size);
+
+        events.push(EventStats {
+            event_id: event.id.clone(),
+            char_count,
+            byte_size,
+            visible_char_count,
+            visible_byte_size,
+        });
+    }
+
+    Ok(SessionStats {
+        provider_id: provider_id.to_string(),
+        session_id: session_id.to_string(),
+        events,
+        total_char_count,
+        total_byte_size,
+        total_visible_char_count,
+        total_visible_byte_size,
+    })
+}
+
 fn load_canonical_session_from_meta(
     provider: &dyn provider::Provider,
     provider_id: &str,
@@ -958,6 +1019,8 @@ pub struct ExportParams {
     pub session_id: String,
     pub output_prefix: Option<String>,
     pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -972,7 +1035,13 @@ pub fn export_session(params: &ExportParams) -> Result<ExportResult> {
         .output_prefix
         .as_deref()
         .unwrap_or(&params.session_id);
-    session_management::write_session_export_files(&imported.session, prefix, &params.format)
+    let output_dir = params.output_dir.as_deref().map(std::path::Path::new);
+    session_management::write_session_export_files(
+        &imported.session,
+        prefix,
+        &params.format,
+        output_dir,
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1386,8 +1455,14 @@ fn truncate_search_snippet(value: &str, max_chars: usize) -> String {
     out
 }
 
-pub fn list_compression_archives() -> Result<Vec<compression::CompressionArchiveSummary>> {
-    session_management::list_compression_archives()
+pub fn list_compression_archives(
+    workspace: Option<&str>,
+) -> Result<Vec<compression::CompressionArchiveSummary>> {
+    session_management::list_compression_archives(workspace)
+}
+
+pub fn get_compression_archive(archive_ref: &str) -> Result<compression::CompressionArchive> {
+    compression::load_archive(archive_ref)
 }
 
 pub fn list_compression_provider_support() -> Vec<crate::provider::ProviderCompressionSupport> {
@@ -1499,7 +1574,7 @@ fn active_compression_apply_session(
     let default_prefix = format!("{}_active_compressed", session.identity.canonical_id);
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
     let export =
-        session_management::write_session_export_files(&applied.session, prefix, &params.format)?;
+        session_management::write_session_export_files(&applied.session, prefix, &params.format, None)?;
 
     Ok(ActiveCompressionApplyCommandResult {
         files: export.files,
@@ -2170,6 +2245,7 @@ mod tests {
             canonical_id: "canonical-archive".to_string(),
             source_provider_id: "opencode".to_string(),
             target_provider_id: "codex".to_string(),
+            workspace_dir: None,
             summary_event_id: "summary-event".to_string(),
             source_event_ids: vec!["old-event".to_string()],
             events: vec![SessionEvent {

@@ -8,10 +8,24 @@ use crate::providers::{aliases::canonical_provider_id, find_provider};
 
 /// Filter 标签：决定 provider 是否进入某个 UI 候选集。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ProviderFilterTag {
+    #[serde(rename = "is_installed")]
     Installed,
+    #[serde(rename = "has_sessions")]
     HasSessions,
+}
+
+/// 安装状态视图（按设计文档 JSON 字段命名）。
+#[derive(Debug, Clone, Serialize)]
+pub struct InstallState {
+    #[serde(rename = "is_installed")]
+    pub is_installed: bool,
+    #[serde(rename = "exec_path", skip_serializing_if = "Option::is_none")]
+    pub exec_path: Option<String>,
+    #[serde(rename = "exec_dir", skip_serializing_if = "Option::is_none")]
+    pub exec_dir: Option<String>,
+    pub config_path: String,
+    pub install_method: String,
 }
 
 /// 单个 provider 的完整目录视图。
@@ -20,7 +34,7 @@ pub struct ProviderView {
     pub provider_id: String,
     pub display_name: String,
     pub capability_set: ProviderCapabilities,
-    pub install_state: AgentEnvironmentStatus,
+    pub install_state: InstallState,
     pub filter_tags: Vec<ProviderFilterTag>,
     pub hidden_state: HiddenState,
     pub sort_order: SortOrder,
@@ -151,7 +165,13 @@ pub fn build_catalog(input: CatalogInput<'_>) -> ProviderCatalog {
                 provider_id: id.clone(),
                 display_name: display_name(id),
                 capability_set: provider.capabilities(),
-                install_state: environment,
+                install_state: InstallState {
+                    is_installed: environment.installed,
+                    exec_path: environment.executable_path,
+                    exec_dir: environment.executable_dir,
+                    config_path: environment.config_path.clone(),
+                    install_method: environment.install_method.clone(),
+                },
                 filter_tags,
                 hidden_state,
                 sort_order: SortOrder::default(),

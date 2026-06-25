@@ -70,7 +70,7 @@ export function createAgentsSettingsModule({
                 <strong>${escapeHtml(providers.displayName(providerId))}</strong>
                 <span class="settings-provider-status ${installed ? "is-installed" : "is-missing"}">${installed ? t("installed") : t("notDetected")}</span>
               </div>
-              <span>${escapeHtml(providerId)}</span>
+              <span class="settings-provider-id ${hidden ? "is-strikethrough" : ""}">${escapeHtml(providerId)}</span>
               <input type="hidden" name="agent_order" value="${escapeAttr(providerId)}">
             </div>
             <div class="settings-agent-list">
@@ -97,6 +97,7 @@ export function createAgentsSettingsModule({
             <button type="button" class="${settingsNavClass("general")}" data-action="switch-settings-section" data-section="general">${t("general")}</button>
             <button type="button" class="${settingsNavClass("display")}" data-action="switch-settings-section" data-section="display">${t("display")}</button>
             <button type="button" class="${settingsNavClass("order")}" data-action="switch-settings-section" data-section="order">${t("order")}</button>
+            <button type="button" class="${settingsNavClass("hook")}" data-action="switch-settings-section" data-section="hook">${t("hooks")}</button>
             <button type="button" class="${settingsNavClass("config")}" data-action="switch-settings-section" data-section="config">${t("configFile")}</button>
             <button type="button" class="${settingsNavClass("about")}" data-action="switch-settings-section" data-section="about">${t("about")}</button>
           </nav>
@@ -205,6 +206,27 @@ export function createAgentsSettingsModule({
                     <span>${t("settingsProvidersHint")}</span>
                   </div>
                   <div class="settings-provider-list settings-provider-list-vertical">${items}</div>
+                </div>
+              </div>
+            </section>
+            <section class="${settingsSectionClass("hook")}" id="settings-hook">
+              <div class="settings-section-head">
+                <h4>${t("hooks")}</h4>
+              </div>
+              <div class="settings-list">
+                <div class="settings-row">
+                  <div class="settings-copy">
+                    <strong>${t("hookDoctor")}</strong>
+                    <span>${t("hookDoctorHint")}</span>
+                  </div>
+                  <button type="button" data-action="run-hook-doctor" data-repair="false">${t("hookDoctor")}</button>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-copy">
+                    <strong>${t("hookCleanup")}</strong>
+                    <span>${t("hookCleanupHint")}</span>
+                  </div>
+                  <button type="button" data-action="cleanup-hook-runtime">${t("hookCleanup")}</button>
                 </div>
               </div>
             </section>
@@ -392,12 +414,20 @@ export function createAgentsSettingsModule({
   }
 
   function renderAgentProviderList() {
-    if (!state.agents.providers.length) {
+    const visible = state.agents.providers
+      .filter((item) => !providers.isHiddenGlobal(item.provider_id))
+      .sort((left, right) => {
+        const leftInstalled = agentProviderEnvironment(left).installed;
+        const rightInstalled = agentProviderEnvironment(right).installed;
+        if (leftInstalled === rightInstalled) return 0;
+        return leftInstalled ? -1 : 1;
+      });
+    if (!visible.length) {
       return `<div class="empty-state">${t("noProviders")}</div>`;
     }
     return `
       <div class="manager-list agent-provider-list">
-        ${state.agents.providers
+        ${visible
           .map((item) => {
             const selected = item.provider_id === state.agents.selectedProvider;
             const installed = agentProviderEnvironment(item).installed;
@@ -405,14 +435,14 @@ export function createAgentsSettingsModule({
             return `
               <button
                 type="button"
-                class="agent-provider-item ${selected ? "is-active" : ""}"
+                class="agent-provider-item ${selected ? "is-active" : ""} ${installed ? "is-installed" : "is-missing"}"
                 data-action="select-agent-provider"
                 data-provider="${escapeAttr(item.provider_id)}"
               >
                 <span class="agent-provider-head">
                   <strong class="agent-provider-name">${escapeHtml(agentProviderDisplayName(item))}</strong>
-                  <span class="agent-provider-state ${installed ? "is-installed" : "is-missing"}" title="${escapeAttr(statusLabel)}" aria-label="${escapeAttr(statusLabel)}">
-                    ${installed ? "●" : "○"}
+                  <span class="agent-provider-state pill ${installed ? "is-installed" : "is-missing"}" title="${escapeAttr(statusLabel)}" aria-label="${escapeAttr(statusLabel)}">
+                    ${statusLabel}
                   </span>
                 </span>
               </button>`;
@@ -435,7 +465,6 @@ export function createAgentsSettingsModule({
       <header class="manager-section-head agent-provider-detail-header">
         <div class="stack agent-provider-detail-head">
           <strong>${escapeHtml(agentProviderDisplayName(provider))}</strong>
-          <small>${t("agentManagementProviderHint")}</small>
           <div class="pill-row">
             <span class="pill">${escapeHtml(providers.displayName(provider.provider_id))}</span>
             <span class="pill">${escapeHtml(environment.installed ? t("installed") : t("notDetected"))}</span>
@@ -452,7 +481,6 @@ export function createAgentsSettingsModule({
         <div class="section-heading">
           <div>
             <strong>${t("agentManagementEnvironment")}</strong>
-            <small>${t("agentManagementEnvironmentHint")}</small>
           </div>
         </div>
         <div class="manager-summary-grid agent-environment-grid">
@@ -460,9 +488,9 @@ export function createAgentsSettingsModule({
           ${renderMetaLine(t("agentInstallMethod"), environment.install_method || t("unknown"))}
         </div>
         <div class="settings-list agent-environment-paths">
-          ${renderAgentDetailRow(t("agentExecutablePath"), environment.executable_path || "—", t("agentExecutablePathHint"))}
-          ${renderAgentDetailRow(t("agentExecutableDir"), environment.executable_dir || "—", t("agentExecutableDirHint"))}
-          ${renderAgentDetailRow(t("agentConfigPath"), environment.config_path || "—", t("agentConfigPathHint"))}
+          ${renderAgentDetailRow(t("agentExecutablePath"), environment.executable_path || "—", "")}
+          ${renderAgentDetailRow(t("agentExecutableDir"), environment.executable_dir || "—", "")}
+          ${renderAgentDetailRow(t("agentConfigPath"), environment.config_path || "—", "")}
         </div>
       </div>
       ${renderAgentHookStatus(provider)}
@@ -634,11 +662,12 @@ export function createAgentsSettingsModule({
   }
 
   function renderAgentDetailRow(label, value, hint) {
+    const hintHtml = hint ? `<span>${escapeHtml(hint)}</span>` : "";
     return `
       <div class="settings-row agent-detail-row">
         <div class="settings-copy settings-copy-inline">
           <strong>${escapeHtml(label)}</strong>
-          <span>${escapeHtml(hint)}</span>
+          ${hintHtml}
         </div>
         <div class="path-line">${escapeHtml(String(value || "—"))}</div>
       </div>`;

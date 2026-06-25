@@ -117,6 +117,10 @@ pub fn router() -> Router {
         .route("/api/v1/sessions", get(list_sessions))
         .route("/api/v1/sessions/{provider}/{session_id}", get(get_session))
         .route(
+            "/api/v1/sessions/{provider}/{session_id}/stats",
+            get(get_session_stats),
+        )
+        .route(
             "/api/v1/sessions/{provider}/{session_id}",
             delete(delete_session)
                 .patch(rename_session)
@@ -126,6 +130,10 @@ pub fn router() -> Router {
         .route(
             "/api/v1/compression/archives",
             get(list_compression_archives),
+        )
+        .route(
+            "/api/v1/compression/archive",
+            get(get_compression_archive),
         )
         .route(
             "/api/v1/compression/providers",
@@ -181,7 +189,9 @@ pub fn router() -> Router {
             delete(remove_sync_group).patch(rename_sync_group),
         )
         .route("/api/v1/manager/preview", post(manager_preview))
+        .route("/api/v1/manager/quick-preview", get(manager_quick_preview))
         .route("/api/v1/manager/workspaces", post(manager_workspaces))
+        .route("/api/v1/manager/stats", post(manager_stats))
         .route("/api/v1/manager/clean", post(manager_clean))
         .route("/api/v1/manager/clean-workspace", post(manager_clean_workspace))
         .route("/api/v1/manager/backup", post(manager_backup))
@@ -1318,6 +1328,25 @@ async fn get_session(
     }
 }
 
+async fn get_session_stats(
+    Path((provider, session_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        core::compute_session_stats(&provider, &session_id)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(stats)) => ApiResponse::success(stats).into_response(),
+        Ok(Err(e)) => api_error(StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to compute session stats: {}", e),
+        )
+        .into_response(),
+    }
+}
+
 async fn delete_session(Path((provider, session_id)): Path<(String, String)>) -> impl IntoResponse {
     match core::delete_session(&provider, &session_id) {
         Ok(()) => ApiResponse::success("deleted").into_response(),
@@ -1445,6 +1474,8 @@ struct ExportBody {
     output_prefix: Option<String>,
     #[serde(default = "default_format")]
     format: String,
+    #[serde(default)]
+    output_dir: Option<String>,
 }
 
 fn default_format() -> String {
@@ -1457,6 +1488,7 @@ async fn export_session(Json(body): Json<ExportBody>) -> impl IntoResponse {
         session_id: body.session_id,
         output_prefix: body.output_prefix,
         format: body.format,
+        output_dir: body.output_dir,
     };
     match core::export_session(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),
@@ -1464,9 +1496,104 @@ async fn export_session(Json(body): Json<ExportBody>) -> impl IntoResponse {
     }
 }
 
-async fn list_compression_archives() -> impl IntoResponse {
-    match core::list_compression_archives() {
-        Ok(items) => ApiResponse::success(items).into_response(),
+struct CompressionArchivesCacheEntry {
+    workspace: Option<String>,
+    items: Vec<core::compression::CompressionArchiveSummary>,
+    generated_at: Instant,
+}
+
+static COMPRESSION_ARCHIVES_CACHE: OnceLock<Arc<RwLock<CompressionArchivesCacheEntry>>> =
+    OnceLock::new();
+
+const COMPRESSION_ARCHIVES_CACHE_TTL: Duration = Duration::from_secs(5);
+
+fn compression_archives_cache() -> Arc<RwLock<CompressionArchivesCacheEntry>> {
+    COMPRESSION_ARCHIVES_CACHE
+        .get_or_init(|| {
+            Arc::new(RwLock::new(CompressionArchivesCacheEntry {
+                workspace: None,
+                items: Vec::new(),
+                generated_at: Instant::now() - COMPRESSION_ARCHIVES_CACHE_TTL * 2,
+            }))
+        })
+        .clone()
+}
+
+async fn list_compression_archives_cached(
+    workspace: Option<String>,
+) -> anyhow::Result<Vec<core::compression::CompressionArchiveSummary>> {
+    let workspace_key = workspace.filter(|value| !value.is_empty());
+
+    {
+        let cache_handle = compression_archives_cache();
+        let cache = cache_handle
+            .read()
+            .map_err(|_| anyhow!("Compression archives cache poisoned"))?;
+        if cache.generated_at.elapsed() < COMPRESSION_ARCHIVES_CACHE_TTL
+            && cache.workspace == workspace_key
+        {
+            return Ok(cache.items.clone());
+        }
+    }
+
+    let workspace_for_spawn = workspace_key.clone();
+    let items = tokio::task::spawn_blocking(move || {
+        core::list_compression_archives(workspace_for_spawn.as_deref())
+    })
+    .await
+    .map_err(|err| anyhow!("Failed to list compression archives: {err}"))??;
+
+    {
+        let cache_handle = compression_archives_cache();
+        let mut cache = cache_handle
+            .write()
+            .map_err(|_| anyhow!("Compression archives cache poisoned"))?;
+        cache.workspace = workspace_key;
+        cache.items = items.clone();
+        cache.generated_at = Instant::now();
+    }
+
+    Ok(items)
+}
+
+#[derive(Deserialize)]
+struct CompressionArchivesQuery {
+    workspace: Option<String>,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+async fn list_compression_archives(Query(q): Query<CompressionArchivesQuery>) -> impl IntoResponse {
+    let workspace = q.workspace.clone().filter(|value| !value.is_empty());
+    match list_compression_archives_cached(workspace).await {
+        Ok(items) => {
+            let total = items.len();
+            let offset = q.offset.unwrap_or(0).min(total);
+            let remaining = total.saturating_sub(offset);
+            let limit = q.limit.map(|value| value.min(remaining)).unwrap_or(remaining);
+            let page: Vec<_> = items.into_iter().skip(offset).take(limit).collect();
+
+            let mut response = ApiResponse::success(page).into_response();
+            let headers = response.headers_mut();
+            let _ = headers.insert("X-Total-Count", total.to_string().parse().unwrap());
+            let _ = headers.insert("X-Offset", offset.to_string().parse().unwrap());
+            let _ = headers.insert("X-Limit", limit.to_string().parse().unwrap());
+            response
+        }
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CompressionArchiveQuery {
+    archive_ref: String,
+}
+
+async fn get_compression_archive(Query(q): Query<CompressionArchiveQuery>) -> impl IntoResponse {
+    match core::get_compression_archive(&q.archive_ref) {
+        Ok(archive) => ApiResponse::success(archive).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -1975,6 +2102,77 @@ async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoRespo
     }
 }
 
+#[derive(Debug, Serialize)]
+struct ManagerQuickPreviewResult {
+    items: Vec<crate::core::manager::ManagerItem>,
+    total_count: usize,
+    total_size_bytes: u64,
+    selected_agent_count: usize,
+}
+
+async fn manager_quick_preview() -> impl IntoResponse {
+    let installed_provider_ids = match build_provider_catalog_light(None).await {
+        Ok(catalog) => catalog
+            .providers
+            .into_iter()
+            .filter(|provider| provider.install_state.is_installed)
+            .map(|provider| provider.provider_id)
+            .collect::<Vec<_>>(),
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+
+    if installed_provider_ids.is_empty() {
+        return ApiResponse::success(ManagerQuickPreviewResult {
+            items: Vec::new(),
+            total_count: 0,
+            total_size_bytes: 0,
+            selected_agent_count: 0,
+        })
+        .into_response();
+    }
+
+    let filter = crate::core::manager::ManagerFilter {
+        providers: installed_provider_ids.clone(),
+        older_than_days: None,
+        older_than_ms: None,
+        larger_than_mb: None,
+        larger_than_bytes: None,
+        smaller_than_bytes: None,
+        workspace: None,
+        sort: Some("recent".to_string()),
+        limit: Some(15),
+    };
+
+    match crate::core::manager::preview(&filter) {
+        Ok(preview) => ApiResponse::success(ManagerQuickPreviewResult {
+            selected_agent_count: installed_provider_ids.len(),
+            total_count: preview.total_count,
+            total_size_bytes: preview.total_size_bytes,
+            items: preview.items,
+        })
+        .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn manager_stats(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
+    let filter = crate::core::manager::ManagerFilter {
+        providers: body.providers,
+        older_than_days: body.older_than_days,
+        older_than_ms: body.older_than_ms,
+        larger_than_mb: body.larger_than_mb,
+        larger_than_bytes: body.larger_than_bytes,
+        smaller_than_bytes: body.smaller_than_bytes,
+        workspace: body.workspace,
+        sort: body.sort,
+        limit: None,
+    };
+    match crate::core::manager::stats(&filter) {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct ManagerItemsBody {
     items: Vec<crate::core::manager::ManagerItem>,
@@ -2209,6 +2407,8 @@ mod tests {
     struct ArchiveFixture {
         archive_ref: String,
         group_dir: std::path::PathBuf,
+        _home: ConfigTestHome,
+        _root: tempfile::TempDir,
     }
 
     impl Drop for ArchiveFixture {
@@ -2218,6 +2418,8 @@ mod tests {
     }
 
     fn write_api_retrieve_archive_fixture() -> ArchiveFixture {
+        let root = tempfile::tempdir().unwrap();
+        let home = ConfigTestHome::new(root.path());
         let now = Utc::now();
         let group = format!("api-retrieve-{}", uuid::Uuid::new_v4());
         let archive_dir = config::memorph_dir()
@@ -2245,6 +2447,7 @@ mod tests {
             canonical_id: group.clone(),
             source_provider_id: "claude".to_string(),
             target_provider_id: "codex".to_string(),
+            workspace_dir: None,
             summary_event_id: "summary-event".to_string(),
             source_event_ids: vec!["needle-event".to_string(), "other-event".to_string()],
             events: vec![
@@ -2281,6 +2484,8 @@ mod tests {
         ArchiveFixture {
             archive_ref: format!("memorph-archive://{}/archive.json", group),
             group_dir: archive_dir,
+            _home: home,
+            _root: root,
         }
     }
 
@@ -2591,6 +2796,15 @@ mod tests {
     #[tokio::test]
     async fn compression_retrieve_route_returns_query_matches_from_archive() {
         let fixture = write_api_retrieve_archive_fixture();
+        eprintln!("fixture created: {}", fixture.archive_ref);
+        let direct = core::retrieve_compression_archive(
+            &core::RetrieveCompressionArchiveParams {
+                archive_ref: fixture.archive_ref.clone(),
+                query: Some("needle".to_string()),
+                max_results: Some(5),
+            },
+        );
+        eprintln!("direct retrieve ok={}", direct.is_ok());
         let request = Request::builder()
             .method("POST")
             .uri("/api/v1/compression/retrieve")

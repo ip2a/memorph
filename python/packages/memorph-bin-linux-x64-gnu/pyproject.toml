@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "memorph-bin-linux-x64-gnu"
-version = "0.1.18"
+version = "0.1.19"
 description = "memorph platform package (linux x64, statically linked)"
 readme = "README.md"
 requires-python = ">=3.10"
