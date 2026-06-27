@@ -32,10 +32,6 @@ impl RuntimeCleanupOptions {
     pub fn orphan_after(&self) -> Duration {
         Duration::seconds(self.orphan_after_seconds.max(1))
     }
-
-
-
-
 }
 
 pub fn pid_is_alive(pid: u32) -> bool {

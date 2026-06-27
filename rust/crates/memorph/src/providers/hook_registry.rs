@@ -114,7 +114,7 @@ mod tests {
     use crate::hooks::model::{HookEventType, HookHealthStatus};
     use crate::hooks::protocol::HookIngestRequest;
     use crate::hooks::test_support::TestHookHomeGuard;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
 
     fn basic_tool_started_payload(provider: &str) -> (&'static str, Value) {
         match provider {

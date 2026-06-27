@@ -833,7 +833,6 @@ fn draw_session_summary(
             ]),
         ];
 
-
         Text::from(lines)
     } else {
         Text::from(Line::from("No session selected."))
@@ -880,7 +879,6 @@ fn draw_detail_metadata(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
             Span::raw(format!("  {}", session.provider_name)),
         ]),
     ];
-
 
     let text = Text::from(lines);
 

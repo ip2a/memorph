@@ -266,7 +266,9 @@ pub fn write_session_export_files(
         }
     }
 
-    let base = output_dir.map(Path::to_path_buf).unwrap_or_else(PathBuf::new);
+    let base = output_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(PathBuf::new);
 
     if write_morph {
         let path = base.join(format!("{}.morph", prefix));

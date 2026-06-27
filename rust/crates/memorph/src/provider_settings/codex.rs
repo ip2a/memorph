@@ -8,7 +8,8 @@ pub struct CodexSettingModule;
 const SETTINGS: &[SettingDefinition] = &[SettingDefinition {
     id: "repair_workspace_sessions",
     title: "Sync workspace sessions",
-    description: "Sync Codex sessions for the current workspace when provider filtering hides them.",
+    description:
+        "Sync Codex sessions for the current workspace when provider filtering hides them.",
     scope: SettingScope::Workspace,
     kind: SettingKind::Action,
 }];

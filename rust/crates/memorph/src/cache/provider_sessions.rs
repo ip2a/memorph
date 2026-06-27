@@ -1,35 +1,28 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Result;
 use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 
+use crate::cache::{CacheEntry, CachePolicy, CacheStore};
 use crate::provider::ProviderSessionSummary;
 
-#[derive(Clone, Debug)]
-pub struct CachedSessions {
-    pub sessions: Vec<ProviderSessionSummary>,
-    pub refreshed_at: Instant,
-}
+pub type CachedSessions = CacheEntry<Vec<ProviderSessionSummary>>;
 
 pub struct SessionCache {
-    data: RwLock<HashMap<String, CachedSessions>>,
-    ttl: Duration,
+    store: CacheStore<String, Vec<ProviderSessionSummary>>,
 }
 
 impl SessionCache {
-    pub fn new(ttl: Duration) -> Self {
+    pub fn new(policy: CachePolicy) -> Self {
         Self {
-            data: RwLock::new(HashMap::new()),
-            ttl,
+            store: CacheStore::new(policy),
         }
     }
 
     pub fn get(&self, provider_id: &str) -> Option<CachedSessions> {
-        let data = self.data.read().unwrap();
-        data.get(provider_id).cloned()
+        self.store.get(&provider_id.to_string())
     }
 
     pub fn get_or_refresh<F>(
@@ -40,56 +33,28 @@ impl SessionCache {
     where
         F: FnOnce() -> Result<Vec<ProviderSessionSummary>>,
     {
-        {
-            let data = self.data.read().unwrap();
-            if let Some(cached) = data.get(provider_id) {
-                if cached.refreshed_at.elapsed() < self.ttl {
-                    return Ok(cached.sessions.clone());
-                }
-            }
-        }
-
-        let sessions = refresh_fn()?;
-
-        let mut data = self.data.write().unwrap();
-        if let Some(cached) = data.get(provider_id) {
-            if cached.refreshed_at.elapsed() < self.ttl {
-                return Ok(cached.sessions.clone());
-            }
-        }
-        let cached = CachedSessions {
-            sessions: sessions.clone(),
-            refreshed_at: Instant::now(),
-        };
-        data.insert(provider_id.to_string(), cached);
-        Ok(sessions)
+        self.store
+            .get_or_refresh(provider_id.to_string(), refresh_fn)
     }
 
     pub fn set(&self, provider_id: &str, sessions: Vec<ProviderSessionSummary>) {
-        let cached = CachedSessions {
-            sessions,
-            refreshed_at: Instant::now(),
-        };
-        self.data
-            .write()
-            .unwrap()
-            .insert(provider_id.to_string(), cached);
+        self.store.set(provider_id.to_string(), sessions);
     }
 
     pub fn invalidate(&self, provider_id: &str) {
-        self.data.write().unwrap().remove(provider_id);
+        self.store.invalidate(&provider_id.to_string());
     }
 
     pub fn invalidate_all(&self) {
-        self.data.write().unwrap().clear();
+        self.store.clear();
     }
 }
 
-static CACHE: std::sync::OnceLock<Arc<SessionCache>> = std::sync::OnceLock::new();
+static CACHE: OnceLock<Arc<SessionCache>> = OnceLock::new();
 
 pub fn global_cache() -> Arc<SessionCache> {
     CACHE
-        .get_or_init(|| Arc::new(SessionCache::new(Duration::from_secs(5))))
+        .get_or_init(|| Arc::new(SessionCache::new(CachePolicy::ttl_seconds(5))))
         .clone()
 }
 

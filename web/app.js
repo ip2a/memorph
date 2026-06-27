@@ -4,7 +4,6 @@ import {
   closeModal as closeChromeModal,
   closeToast as closeChromeToast,
   fatal as renderFatal,
-  githubIcon,
   renderAppShell,
   renderLoadingMarkup,
   renderModalMarkup,
@@ -22,13 +21,16 @@ import { createSessionSyncModule } from "./app/session_sync.js";
 import { createFormatHelpers } from "./app/helpers.js";
 import { api } from "./app/http.js";
 import { createI18n } from "./app/i18n.js";
+import { createNavigation } from "./app/navigation.js";
 import { createProviders } from "./app/providers.js";
-import { parseRoute } from "./app/router.js";
+import { parseRoute, routeBackTarget, routeScrollClass } from "./app/router.js";
 import { createState, randomAsciiBannerColor } from "./app/state.js";
 
 const state = createState();
 const providers = createProviders(state);
 const HOME_HERO_MODE_STORAGE_KEY = "memorph.homeHeroMode";
+const CATALOG_CLIENT_CACHE_TTL_MS = 60_000;
+const catalogClientCache = new Map();
 restoreHomeHeroMode();
 const { lang, t, loadI18n, setDocumentLanguage } = createI18n(
   () => state.meta?.settings?.language
@@ -150,11 +152,25 @@ const { renderHooksCenterPage } = createHooksCenterModule({
 
 const appEl = document.getElementById("app");
 const modalRoot = document.getElementById("modal-root");
-
-window.addEventListener("popstate", () => {
-  state.route = parseRoute(window.location.pathname, new URLSearchParams(window.location.search));
-  void loadRoute();
+const navigation = createNavigation({
+  parseRoute,
+  getRoute: () => state.route,
+  setRoute: (route) => {
+    state.route = route;
+  },
+  fallbackPath: routeBackTarget,
+  onBeforeNavigation: () => {
+    state.modal = null;
+  },
+  onHomeRoute: () => {
+    state.ui.asciiBannerColor = randomAsciiBannerColor();
+  },
+  loadRoute: () => loadRoute(),
+  readPageState: (route) => readPageState(route),
+  applyPageState: (route, pageState) => applyPageState(route, pageState),
 });
+
+navigation.init();
 
 window.addEventListener("resize", () => {
   scheduleHomeProviderLayout();
@@ -162,9 +178,14 @@ window.addEventListener("resize", () => {
 
 document.addEventListener("click", (event) => {
   const nav = event.target.closest("[data-nav]");
-  if (nav) {
+  if (nav?.dataset.nav) {
     event.preventDefault();
     navigate(nav.dataset.nav);
+    return;
+  }
+
+  const rowAction = event.target.closest(".manager-row-actions");
+  if (rowAction && !event.target.closest("[data-action], [data-nav]")) {
     return;
   }
 
@@ -257,9 +278,22 @@ function autoCollapseHomeHero() {
   state.ui.homeHeroTransientCollapsed = true;
 }
 
-async function refreshCatalog(workspace = state.home.workspace) {
+async function refreshCatalog(workspace = state.home.workspace, options = {}) {
+  const key = workspace || "";
+  const cached = catalogClientCache.get(key);
+  if (!options.force && cached && Date.now() - cached.createdAt < CATALOG_CLIENT_CACHE_TTL_MS) {
+    state.catalog = cached.catalog;
+    return state.catalog;
+  }
   const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
   state.catalog = await api(`/api/v1/providers/catalog${query}`);
+  catalogClientCache.set(key, { catalog: state.catalog, createdAt: Date.now() });
+  return state.catalog;
+}
+
+function invalidateCatalogClientCache(workspace = null) {
+  if (workspace === null) catalogClientCache.clear();
+  else catalogClientCache.delete(workspace || "");
 }
 
 function homeProviderCandidates() {
@@ -303,6 +337,7 @@ async function bootstrap() {
     fatal(error);
   } finally {
     setLoading(false);
+    navigation.restorePageState();
   }
 }
 
@@ -350,20 +385,24 @@ async function loadRoute() {
     } else if (route.name === "manager") {
       state.home.syncGroups = await api("/api/v1/sync/status");
       state.manager.viewMode = route.view === "workspaces" ? "workspaces" : "sessions";
-      if (!state.manager.quickPreview) {
-        await loadDefaultManagerPreview();
-      }
-      // If landing directly on workspaces view but quick workspace data not loaded yet, fetch it
-      if (state.manager.viewMode === "workspaces" && !state.manager.quickWorkspacePreview && state.manager.isDefaultPreview) {
-        const draft = state.manager.draft || defaultManagerDraft();
-        if (draft.providers.length) {
-          const providerQuery = draft.providers.join(",");
-          api(`/api/v1/manager/quick-workspaces?providers=${encodeURIComponent(providerQuery)}`)
-            .then((quickWorkspacePreview) => {
-              state.manager.quickWorkspacePreview = quickWorkspacePreview;
-              render();
-            })
-            .catch((error) => toast(t("error"), error.message, true));
+      if (route.provider || route.workspace) {
+        await loadManagerRoutePreview(route);
+      } else {
+        if (!state.manager.quickPreview) {
+          await loadDefaultManagerPreview();
+        }
+        // If landing directly on workspaces view but quick workspace data not loaded yet, fetch it
+        if (state.manager.viewMode === "workspaces" && !state.manager.quickWorkspacePreview && state.manager.isDefaultPreview) {
+          const draft = state.manager.draft || defaultManagerDraft();
+          if (draft.providers.length) {
+            const providerQuery = draft.providers.join(",");
+            api(`/api/v1/manager/quick-workspaces?providers=${encodeURIComponent(providerQuery)}`)
+              .then((quickWorkspacePreview) => {
+                state.manager.quickWorkspacePreview = quickWorkspacePreview;
+                render();
+              })
+              .catch((error) => toast(t("error"), error.message, true));
+          }
         }
       }
     } else if (route.name === "compression") {
@@ -473,7 +512,7 @@ async function loadMoreSessionEvents() {
 
 async function loadAgentManagement() {
   const [payload, runtimeSessions] = await Promise.all([
-    api("/api/v1/agents"),
+    api("/api/v1/agents/summary"),
     api("/api/v1/hooks/runtime-sessions").catch(() => []),
   ]);
   state.agents.providers = payload.providers || [];
@@ -483,6 +522,40 @@ async function loadAgentManagement() {
     !state.agents.providers.some((item) => item.provider_id === state.agents.selectedProvider)
   ) {
     state.agents.selectedProvider = state.agents.providers[0]?.provider_id || "";
+  }
+  loadSelectedAgentProviderDetail();
+}
+
+async function loadAgentProviderDetail(providerId, options = {}) {
+  if (!providerId) return null;
+  if (!options.refresh && state.agents.providerDetails[providerId]) {
+    return state.agents.providerDetails[providerId];
+  }
+  state.agents.providerDetailLoading[providerId] = true;
+  render();
+  try {
+    const provider = await api(`/api/v1/agents/${encodeURIComponent(providerId)}`);
+    state.agents.providerDetails[provider.provider_id] = provider;
+    mergeAgentProvider(provider);
+    return provider;
+  } finally {
+    delete state.agents.providerDetailLoading[providerId];
+    render();
+  }
+}
+
+function loadSelectedAgentProviderDetail() {
+  const providerId = state.agents.selectedProvider;
+  if (!providerId || state.agents.providerDetails[providerId] || state.agents.providerDetailLoading[providerId]) return;
+  loadAgentProviderDetail(providerId).catch((error) => toast(t("error"), error.message, true));
+}
+
+function mergeAgentProvider(provider) {
+  const index = state.agents.providers.findIndex((item) => item.provider_id === provider.provider_id);
+  if (index >= 0) {
+    state.agents.providers[index] = { ...state.agents.providers[index], ...provider };
+  } else {
+    state.agents.providers.push(provider);
   }
 }
 
@@ -557,13 +630,10 @@ async function detectAgentProvider(providerId) {
   const provider = await api(`/api/v1/agents/${encodeURIComponent(providerId)}/detect`, {
     method: "POST",
   });
-  const index = state.agents.providers.findIndex((item) => item.provider_id === provider.provider_id);
-  if (index >= 0) {
-    state.agents.providers[index] = provider;
-  } else {
-    state.agents.providers.push(provider);
-  }
+  state.agents.providerDetails[provider.provider_id] = provider;
+  mergeAgentProvider(provider);
   state.agents.selectedProvider = provider.provider_id;
+  invalidateCatalogClientCache();
   render();
 }
 
@@ -633,23 +703,43 @@ async function runUpdateCheck() {
 }
 
 function navigate(path) {
-  const url = new URL(path, window.location.href);
-  const samePath = window.location.pathname === url.pathname;
-  state.modal = null;
-  if (!samePath) {
-    history.pushState({}, "", path);
-  }
-  state.route = parseRoute(url.pathname, url.searchParams);
-  if (state.route.name === "home") {
-    state.ui.asciiBannerColor = randomAsciiBannerColor();
-  }
-  void loadRoute();
+  navigation.navigate(path);
+}
+
+function goBack() {
+  navigation.goBack();
 }
 
 function replacePath(path) {
-  const url = new URL(path, window.location.href);
-  history.replaceState({}, "", path);
-  state.route = parseRoute(url.pathname, url.searchParams);
+  navigation.replacePath(path);
+}
+
+function replaceNavigate(path) {
+  navigation.replaceNavigate(path);
+}
+
+function pageStateContainer() {
+  return document.querySelector(".page-scroll") || document.querySelector(".page-home");
+}
+
+function readPageState(route) {
+  const container = pageStateContainer();
+  return {
+    routeName: route?.name || "home",
+    scrollTop: container?.scrollTop || 0,
+    homeHeroTransientCollapsed: state.ui.homeHeroTransientCollapsed,
+  };
+}
+
+function applyPageState(route, pageState) {
+  if (!pageState || pageState.routeName !== route?.name) return;
+  const container = pageStateContainer();
+  if (container) {
+    container.scrollTop = Number(pageState.scrollTop || 0);
+  }
+  if (route?.name === "home") {
+    state.ui.homeHeroTransientCollapsed = !!pageState.homeHeroTransientCollapsed;
+  }
 }
 
 async function updateLanguage(language) {
@@ -664,11 +754,12 @@ async function updateLanguage(language) {
   }
 }
 
-async function setWorkspace(workspace) {
+async function setWorkspace(workspace, options = {}) {
   setLoading(true, { label: t("loadingWorkspace"), detail: workspaceName(workspace) });
   state.home.workspace = workspace;
   try {
-    const reloadManager = state.route.name === "manager";
+    const reloadManager = options.reloadManager ?? state.route.name === "manager";
+    const loadHomeSessions = options.loadHome ?? true;
     if (reloadManager) {
       state.manager = {
         draft: null,
@@ -683,6 +774,7 @@ async function setWorkspace(workspace) {
         report: null,
         pendingItems: [],
         viewMode: state.manager.viewMode || "sessions",
+        selectionMode: false,
         selectedItems: new Set(),
         selectedWorkspaceItems: new Set(),
       };
@@ -690,8 +782,9 @@ async function setWorkspace(workspace) {
     await refreshCatalog(workspace);
     if (!workspace) {
       state.home.providers = [];
-      await loadHome();
+      if (loadHomeSessions) await loadHome();
       await refreshWorkspaceMeta();
+      state.meta = { ...state.meta, ...(await api("/api/v1/meta")) };
       if (reloadManager) {
         await loadDefaultManagerPreview();
       } else {
@@ -700,14 +793,15 @@ async function setWorkspace(workspace) {
       return;
     }
     state.home.providers = await resolveHomeProviders(workspace);
-    await loadHome();
-    if (state.route.name === "agents") {
+    if (loadHomeSessions) await loadHome();
+    if (loadHomeSessions && state.route.name === "agents") {
       await loadAgentManagement();
     }
-    if (state.route.name === "hooks") {
+    if (loadHomeSessions && state.route.name === "hooks") {
       await loadHooksCenter();
     }
     await refreshWorkspaceMeta();
+    state.meta = { ...state.meta, ...(await api("/api/v1/meta")) };
     if (reloadManager) {
       await loadDefaultManagerPreview();
     } else {
@@ -770,6 +864,7 @@ async function updateManagerProvider(provider, checked, trigger = null) {
       statsRequestId: "",
       report: null,
       pendingItems: [],
+      selectionMode: false,
       selectedItems: new Set(),
       selectedWorkspaceItems: new Set(),
     };
@@ -801,14 +896,16 @@ async function updateManagerProvider(provider, checked, trigger = null) {
       };
     } else {
       // Filtered view mode: re-run full scan with updated providers
-      const { preview, workspacePreview } = await loadManagerData(nextDraft);
-      applyManagerDraftFilters(preview, nextDraft);
-      preview.output_dir = "";
+      const refreshResult = await refreshManagerData(nextDraft);
+      if (refreshResult.preview) {
+        applyManagerDraftFilters(refreshResult.preview, nextDraft);
+        refreshResult.preview.output_dir = "";
+      }
       state.manager = {
         ...state.manager,
         draft: nextDraft,
-        preview,
-        workspacePreview,
+        preview: state.manager.viewMode === "sessions" ? refreshResult.preview : null,
+        workspacePreview: state.manager.viewMode === "workspaces" ? refreshResult.workspacePreview : null,
         stats: null,
         statsLoading: true,
         statsRequestId: "",
@@ -849,7 +946,8 @@ async function persistProvidersAndReload() {
         workspace: state.home.workspace,
       },
     });
-    await refreshCatalog(state.home.workspace);
+    invalidateCatalogClientCache(state.home.workspace);
+    await refreshCatalog(state.home.workspace, { force: true });
     await loadHome();
     render();
   } catch (error) {
@@ -881,6 +979,7 @@ async function handleAction(action, data, trigger = null) {
       await detectAgentProvider(data.provider);
       break;
     case "refresh-agents":
+      state.agents.providerDetails = {};
       await loadAgentManagement();
       render();
       break;
@@ -913,6 +1012,7 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "select-agent-provider":
       state.agents.selectedProvider = data.provider || "";
+      loadSelectedAgentProviderDetail();
       render();
       break;
     case "run-agent-setting":
@@ -998,6 +1098,12 @@ async function handleAction(action, data, trigger = null) {
     case "copy-detail-message":
       await copyDetailMessage(Number(data.messageIndex));
       break;
+    case "copy-session-id":
+      await copySessionId(data.copyText || "");
+      break;
+    case "open-manager-workspace":
+      openManagerWorkspace(data.provider || "", data.workspace || "");
+      break;
     case "toggle-detail-message":
       toggleDetailMessage(trigger);
       break;
@@ -1034,17 +1140,50 @@ async function handleAction(action, data, trigger = null) {
     case "open-manager-backup-confirm":
       openManagerBackupConfirmModal();
       break;
+    case "open-manager-session-more":
+      openManagerSessionMoreModal(JSON.parse(decodeURIComponent(data.value || "")));
+      break;
+    case "open-manager-workspace-more":
+      openManagerWorkspaceMoreModal(managerWorkspaceItemFromValue(data.value || ""));
+      break;
+    case "open-manager-convert-workspace":
+      openActionResultModal({
+        title: t("convertWorkspaceWhole"),
+        summary: t("workspaceConvertNotAvailable"),
+      });
+      break;
+    case "run-codex-workspace-restore":
+      await runCodexWorkspaceRestore(managerWorkspaceItemFromValue(data.value || ""));
+      break;
     case "open-manager-clean-workspace-confirm":
       openManagerCleanWorkspaceConfirmModal();
       break;
     case "open-manager-backup-workspace-confirm":
       openManagerBackupWorkspaceConfirmModal();
       break;
+    case "open-manager-clean-workspace-row-confirm":
+      openManagerCleanWorkspaceConfirmModal(managerWorkspaceItemFromValue(data.value || ""));
+      break;
+    case "open-manager-backup-workspace-row-confirm":
+      openManagerBackupWorkspaceConfirmModal(managerWorkspaceItemFromValue(data.value || ""));
+      break;
+    case "toggle-manager-selection-mode":
+      state.manager.selectionMode = !state.manager.selectionMode;
+      if (!state.manager.selectionMode) {
+        state.manager.selectedItems = new Set();
+      }
+      render();
+      break;
     case "toggle-manager-item":
       {
+        const row = trigger.closest('.manager-row[data-action="toggle-manager-item"]');
+        if (!state.manager.selectionMode) {
+          const href = row?.dataset.href || "";
+          if (href) navigate(href);
+          break;
+        }
         const value = data.value || "";
         const set = state.manager.selectedItems;
-        const row = trigger.closest('.manager-row[data-action="toggle-manager-item"]');
         if (set.has(value)) {
           set.delete(value);
           row?.classList.remove("is-selected");
@@ -1072,6 +1211,7 @@ async function handleAction(action, data, trigger = null) {
       break;
     case "select-all-manager":
       {
+        state.manager.selectionMode = true;
         const rows = [...document.querySelectorAll('.manager-row[data-action="toggle-manager-item"]')];
         const allSelected = rows.length > 0 && rows.every((el) => state.manager.selectedItems.has(el.dataset.value));
         rows.forEach((el) => {
@@ -1083,7 +1223,7 @@ async function handleAction(action, data, trigger = null) {
             el.classList.add("is-selected");
           }
         });
-        updateManagerSelectionStats();
+        render();
       }
       break;
     case "select-all-manager-workspace":
@@ -1113,9 +1253,9 @@ async function handleAction(action, data, trigger = null) {
           params.delete("view");
         }
         replacePath(`/manager?${params.toString()}`);
+        const draft = state.manager.draft || defaultManagerDraft();
         if (view === "workspaces" && !state.manager.quickWorkspacePreview && state.manager.isDefaultPreview) {
           // Lazy-load the quick workspace view on first switch
-          const draft = state.manager.draft || defaultManagerDraft();
           if (draft.providers.length) {
             render(); // show loading state immediately
             const providerQuery = draft.providers.join(",");
@@ -1128,8 +1268,35 @@ async function handleAction(action, data, trigger = null) {
             return;
           }
         }
+        if (!state.manager.isDefaultPreview) {
+          if (view === "workspaces" && !state.manager.workspacePreview) {
+            render();
+            loadManagerWorkspacePreview(draft)
+              .then((workspacePreview) => {
+                state.manager.workspacePreview = workspacePreview;
+                render();
+              })
+              .catch((error) => toast(t("error"), error.message, true));
+            return;
+          }
+          if (view === "sessions" && !state.manager.preview) {
+            render();
+            loadManagerSessionPreview(draft)
+              .then((preview) => {
+                applyManagerDraftFilters(preview, draft);
+                preview.output_dir = "";
+                state.manager.preview = preview;
+                render();
+              })
+              .catch((error) => toast(t("error"), error.message, true));
+            return;
+          }
+        }
         render();
       }
+      break;
+    case "go-back":
+      goBack();
       break;
     case "go-home":
       navigate("/");
@@ -1142,7 +1309,7 @@ async function handleAction(action, data, trigger = null) {
       await deleteWorkspaceHistory(data.workspace || "");
       break;
     case "close-toast":
-      closeToast(Number(data.toastIndex));
+      closeToast(Number(data.toastId));
       break;
     case "browse-folder":
       await browseFolderForField(trigger);
@@ -1327,8 +1494,17 @@ function openManagerBackupConfirmModal() {
   render();
 }
 
-function openManagerCleanWorkspaceConfirmModal() {
-  const items = selectedManagerWorkspaceItems();
+function managerWorkspaceItemFromValue(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(decodeURIComponent(value));
+  } catch (_error) {
+    return null;
+  }
+}
+
+function openManagerCleanWorkspaceConfirmModal(item = null) {
+  const items = item ? [item] : selectedManagerWorkspaceItems();
   if (!items.length) {
     toast(t("error"), t("noSelection"), true);
     return;
@@ -1351,8 +1527,8 @@ function openManagerCleanWorkspaceConfirmModal() {
   render();
 }
 
-function openManagerBackupWorkspaceConfirmModal() {
-  const items = selectedManagerWorkspaceItems();
+function openManagerBackupWorkspaceConfirmModal(item = null) {
+  const items = item ? [item] : selectedManagerWorkspaceItems();
   if (!items.length) {
     toast(t("error"), t("noSelection"), true);
     return;
@@ -1748,7 +1924,8 @@ async function saveSettings(body) {
     },
   });
   state.meta = await api("/api/v1/meta");
-  await refreshCatalog(state.home.workspace);
+  invalidateCatalogClientCache();
+  await refreshCatalog(state.home.workspace, { force: true });
   setDocumentLanguage();
   state.home.visible = state.meta.settings.sessions_per_provider;
   toast(t("saved"), t("settingsTitle"));
@@ -1764,6 +1941,59 @@ async function loadManagerData(draft) {
   return { preview, workspacePreview };
 }
 
+async function loadManagerSessionPreview(draft) {
+  return api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) });
+}
+
+async function loadManagerWorkspacePreview(draft) {
+  return api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) });
+}
+
+async function loadManagerRoutePreview(route) {
+  if (route.workspace && route.workspace !== state.home.workspace) {
+    await setWorkspace(route.workspace, { reloadManager: false, loadHome: false });
+  }
+
+  const baseDraft = defaultManagerDraft();
+  const providers = route.provider ? [route.provider] : baseDraft.providers;
+  const draft = {
+    ...baseDraft,
+    workspace: route.workspace || state.home.workspace || "",
+    providers,
+  };
+  const viewMode = route.view === "workspaces" ? "workspaces" : "sessions";
+  const [preview, workspacePreview] = await Promise.all([
+    viewMode === "sessions" ? loadManagerSessionPreview(draft) : Promise.resolve(null),
+    viewMode === "workspaces" ? loadManagerWorkspacePreview(draft) : Promise.resolve(null),
+  ]);
+  state.manager = {
+    ...state.manager,
+    draft,
+    preview,
+    workspacePreview,
+    quickPreview: null,
+    quickWorkspacePreview: null,
+    isDefaultPreview: false,
+    stats: null,
+    statsLoading: true,
+    statsRequestId: "",
+    report: null,
+    pendingItems: [],
+    viewMode,
+    selectedItems: new Set(),
+    selectedWorkspaceItems: new Set(),
+  };
+  render();
+  queueManagerStatsLoad(draft);
+}
+
+function openManagerWorkspace(provider, workspace) {
+  const params = new URLSearchParams({ view: "sessions" });
+  if (provider) params.set("provider", provider);
+  if (workspace) params.set("workspace", workspace);
+  navigate(`/manager?${params.toString()}`);
+}
+
 async function refreshManagerData(draft) {
   if (state.manager.isDefaultPreview) {
     const providerQuery = draft.providers.join(",");
@@ -1775,17 +2005,26 @@ async function refreshManagerData(draft) {
     ]);
     return { quickPreview, quickWorkspacePreview, isDefaultPreview: true };
   }
-  const { preview, workspacePreview } = await loadManagerData(draft);
-  return { preview, workspacePreview, isDefaultPreview: false };
+  if (state.manager.viewMode === "workspaces") {
+    const workspacePreview = await loadManagerWorkspacePreview(draft);
+    return { preview: state.manager.preview, workspacePreview, isDefaultPreview: false };
+  }
+  const preview = await loadManagerSessionPreview(draft);
+  return { preview, workspacePreview: state.manager.workspacePreview, isDefaultPreview: false };
 }
 
 function queueManagerStatsLoad(draft) {
+  const body = managerPreviewBody(draft);
+  const requestKey = JSON.stringify(body);
+  if (state.manager.statsLoading && state.manager.statsRequestId && state.manager.statsRequestKey === requestKey) return;
+  if (state.manager.stats && state.manager.statsRequestKey === requestKey) return;
+
   const requestId = `${Date.now()}:${Math.random()}`;
   state.manager.stats = null;
   state.manager.statsLoading = true;
   state.manager.statsRequestId = requestId;
+  state.manager.statsRequestKey = requestKey;
 
-  const body = managerPreviewBody(draft);
   void api("/api/v1/manager/stats", { method: "POST", body })
     .then((stats) => {
       if (state.manager.statsRequestId !== requestId) return;
@@ -1816,6 +2055,7 @@ async function loadDefaultManagerPreview() {
       statsRequestId: "",
       report: null,
       pendingItems: [],
+      selectionMode: false,
       selectedItems: new Set(),
       selectedWorkspaceItems: new Set(),
     };
@@ -1848,21 +2088,27 @@ async function runManagerPreview(formData) {
   if (!draft.providers.length) throw new Error(t("noTargetAgentSelected"));
   setLoading(true, { label: t("managerPreview"), detail: t("scanningSessions") });
   try {
-    const { preview, workspacePreview } = await loadManagerData(draft);
-    applyManagerDraftFilters(preview, draft);
-    preview.output_dir = "";
+    const viewMode = state.manager.viewMode || "sessions";
+    const [preview, workspacePreview] = await Promise.all([
+      viewMode === "sessions" ? loadManagerSessionPreview(draft) : Promise.resolve(state.manager.preview),
+      viewMode === "workspaces" ? loadManagerWorkspacePreview(draft) : Promise.resolve(state.manager.workspacePreview),
+    ]);
+    if (preview) {
+      applyManagerDraftFilters(preview, draft);
+      preview.output_dir = "";
+    }
     state.manager = {
       ...state.manager,
       draft,
-      preview,
-      workspacePreview,
+      preview: viewMode === "sessions" ? preview : null,
+      workspacePreview: viewMode === "workspaces" ? workspacePreview : null,
       isDefaultPreview: false,
       stats: null,
       statsLoading: true,
       statsRequestId: "",
       report: null,
       pendingItems: [],
-      viewMode: state.manager.viewMode || "sessions",
+      viewMode,
       selectedItems: new Set(),
       selectedWorkspaceItems: new Set(),
     };
@@ -1958,24 +2204,29 @@ function applyRefreshResult(refreshResult, draft, { outputDir = "", report = nul
       statsRequestId: "",
       report,
       pendingItems: [],
+      selectionMode: false,
       selectedItems: new Set(),
       selectedWorkspaceItems: new Set(),
     };
   } else {
     const preview = refreshResult.preview;
-    applyManagerDraftFilters(preview, draft);
-    preview.output_dir = outputDir;
+    const viewMode = state.manager.viewMode || "sessions";
+    if (preview) {
+      applyManagerDraftFilters(preview, draft);
+      preview.output_dir = outputDir;
+    }
     state.manager = {
       ...state.manager,
       draft,
-      preview,
-      workspacePreview: refreshResult.workspacePreview,
+      preview: viewMode === "sessions" ? preview : null,
+      workspacePreview: viewMode === "workspaces" ? refreshResult.workspacePreview : null,
       isDefaultPreview: false,
       stats: null,
       statsLoading: true,
       statsRequestId: "",
       report,
       pendingItems: [],
+      selectionMode: false,
       selectedItems: new Set(),
       selectedWorkspaceItems: new Set(),
     };
@@ -2220,10 +2471,10 @@ function render() {
     renderLoading,
     renderToasts,
     renderTopbarContext,
-    githubIcon,
   });
   modalRoot.innerHTML = renderModalMarkup(state, t, escapeHtml, escapeAttr);
   bindLocalButtons();
+  navigation.restorePageState();
 }
 
 function renderTopbarContext() {
@@ -2241,23 +2492,24 @@ function bindLocalButtons() {
 }
 
 function renderPage() {
+  const wrapPage = (markup) => `<div class="${routeScrollClass(state.route)}">${markup}</div>`;
   switch (state.route.name) {
     case "home":
       return renderHome();
     case "session":
-      return `<div class="page-scroll">${renderSessionDetail()}</div>`;
+      return wrapPage(renderSessionDetail());
     case "sync-list":
-      return `<div class="page-scroll manager-page-scroll">${renderSyncList()}</div>`;
+      return wrapPage(renderSyncList());
     case "sync-detail":
-      return `<div class="page-scroll">${renderSyncDetail()}</div>`;
+      return wrapPage(renderSyncDetail());
     case "manager":
-      return `<div class="page-scroll manager-page-scroll">${renderManagerPage()}</div>`;
+      return wrapPage(renderManagerPage());
     case "compression":
-      return `<div class="page-scroll manager-page-scroll">${renderCompressionPage()}</div>`;
+      return wrapPage(renderCompressionPage());
     case "hooks":
-      return `<div class="page-scroll manager-page-scroll">${renderHooksCenterPage()}</div>`;
+      return wrapPage(renderHooksCenterPage());
     case "agents":
-      return `<div class="page-scroll manager-page-scroll">${renderAgentManagementPage()}</div>`;
+      return wrapPage(renderAgentManagementPage());
     default:
       return `<div class="page-scroll"><div class="empty-state">${t("notFound")}</div></div>`;
   }
@@ -2272,7 +2524,7 @@ async function updateAgentSetting(providerId, settingId, value) {
     if (providerId === "opencode" && settingId === "show_subagents") {
       state.meta.settings.show_opencode_subagents = value;
     }
-    await loadAgentManagement();
+    await loadAgentProviderDetail(providerId, { refresh: true });
     toast(t("saved"), agentSettingLabel({ id: settingId, title: settingId }));
     render();
   } catch (error) {
@@ -2363,7 +2615,12 @@ async function runAgentSetting(providerId, settingId) {
     if (state.route.name === "hooks") {
       await loadHooksCenter();
     } else {
-      await loadAgentManagement();
+      await Promise.all([
+        loadAgentProviderDetail(providerId, { refresh: true }),
+        api("/api/v1/hooks/runtime-sessions").then((sessions) => {
+          state.agents.hookRuntimeSessions = sessions || [];
+        }).catch(() => {}),
+      ]);
     }
     if (providerId === "codex" && settingId === "repair_workspace_sessions" && state.home.workspace) {
       updateLoading({ detail: t("refreshingSessions") });
@@ -2381,6 +2638,72 @@ async function runAgentSetting(providerId, settingId) {
   }
 }
 
+async function runCodexWorkspaceRestore(item) {
+  if (!item?.workspace) return;
+  if (item.provider_id !== "codex") {
+    toast(t("error"), t("codexRestoreWorkspaceOnly"), true);
+    return;
+  }
+  const settingId = "repair_workspace_sessions";
+  const key = `codex:${settingId}:${item.workspace}`;
+  if (state.agents.pendingSettings[key]) return;
+  state.agents.pendingSettings[key] = true;
+  closeModal();
+  setLoading(true, {
+    label: t("codexRestoreWorkspaceSessions"),
+    detail: workspaceName(item.workspace) || item.workspace,
+  });
+  try {
+    const result = await api(`/api/v1/providers/codex/settings/${encodeURIComponent(settingId)}`, {
+      method: "POST",
+      body: {
+        workspace: item.workspace,
+      },
+    });
+    state.agents.settingResults[key] = result;
+    updateLoading({ detail: t("refreshingSessions") });
+    const draft = readManagerDraft();
+    const refreshResult = await refreshManagerData(draft);
+    applyRefreshResult(refreshResult, draft);
+    const report = result?.data || result;
+    openActionResultModal({
+      title: t("codexRestoreWorkspaceSessions"),
+      summary: t("codexRestoreWorkspaceComplete"),
+      lines: codexWorkspaceRestoreLines(report),
+    });
+    queueManagerStatsLoad(draft);
+  } catch (error) {
+    toast(t("error"), error.message, true);
+  } finally {
+    delete state.agents.pendingSettings[key];
+    setLoading(false);
+    render();
+  }
+}
+
+function codexWorkspaceRestoreLines(report) {
+  const data = report?.type === "codex_workspace_repair" ? report.data : report;
+  if (!data || typeof data !== "object") return [];
+  const lines = [
+    `Workspace: ${data.workspace_dir || "—"}`,
+    `Current provider: ${data.current_model_provider || "—"}`,
+    `Scanned rollout files: ${data.scanned_rollouts ?? 0}`,
+    `Workspace sessions: ${data.workspace_session_count ?? 0}`,
+    `Hidden sessions: ${data.hidden_session_count ?? 0}`,
+    `Repaired sessions: ${data.repaired_session_count ?? 0}`,
+    `Reindexed sessions: ${data.reindexed_session_count ?? 0}`,
+    `Updated SQLite rows: ${data.sqlite_rows_updated ?? 0}`,
+  ];
+  if (data.backup_dir) lines.push(`Backup: ${data.backup_dir}`);
+  if (Array.isArray(data.touched_sessions) && data.touched_sessions.length) {
+    lines.push("");
+    data.touched_sessions.slice(0, 20).forEach((session) => {
+      lines.push(`${session.session_id || "—"} | ${session.title || "(untitled)"}`);
+    });
+  }
+  return lines;
+}
+
 async function runHookOperation(providerId, settingId) {
   const key = `${providerId}:${settingId}`;
   if (state.agents.pendingSettings[key]) return;
@@ -2396,7 +2719,11 @@ async function runHookOperation(providerId, settingId) {
       { method: "POST" }
     );
     state.agents.settingResults[key] = { type: "hook_operation", data: result };
-    await loadHooksCenter();
+    if (state.route.name === "hooks") {
+      await loadHooksCenter();
+    } else {
+      await loadAgentProviderDetail(providerId, { refresh: true });
+    }
     toast(t("done"), hookOperationLabel(settingId));
   } catch (error) {
     toast(t("error"), error.message, true);
@@ -2525,7 +2852,17 @@ async function copyDetailMessage(index) {
     await navigator.clipboard.writeText(text);
     toast(t("copied"), t("copy"));
   } catch (error) {
-    toast(t("error"), template(t("clipboardCopyFailed"), { error: error.message || String(error) }), true);
+    toast(t("error"), t("clipboardCopyFailed") + ": " + (error.message || String(error)), true);
+  }
+}
+
+async function copySessionId(text) {
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(t("copied"), text);
+  } catch (error) {
+    toast(t("error"), t("clipboardCopyFailed") + ": " + (error.message || String(error)), true);
   }
 }
 
@@ -2631,6 +2968,8 @@ const {
   openDeleteModal,
   openExportModal,
   openImportModal,
+  openManagerSessionMoreModal,
+  openManagerWorkspaceMoreModal,
   openPushSyncModal,
   openRenameModal,
   openSyncCreateModal,
@@ -2650,6 +2989,7 @@ const {
   escapeHtml,
   escapeAttr,
   formatDate,
+  formatBytes,
   workspaceName,
   render: () => render(),
   getOrderedProviders,

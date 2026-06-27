@@ -10,10 +10,10 @@ use crate::canonical::{
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
-    CompressionProjection, Provider, ProviderCapabilities, ProviderSessionSummary,
     canonical_event_is_visible_message, canonical_event_visible_message_role,
     canonical_export_result, canonical_session_title, canonical_visible_block_text,
-    compression_retrieval_hint,
+    compression_retrieval_hint, CompressionProjection, Provider, ProviderCapabilities,
+    ProviderSessionSummary,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -1687,16 +1687,14 @@ mod tests {
             payload: serde_json::json!({"id": "hidden"}),
         };
 
-        assert!(
-            canonical_block_to_opencode_part(
-                "ses_test",
-                "msg_test",
-                "prt_test",
-                &block,
-                1_700_000_000_001,
-            )
-            .is_none()
-        );
+        assert!(canonical_block_to_opencode_part(
+            "ses_test",
+            "msg_test",
+            "prt_test",
+            &block,
+            1_700_000_000_001,
+        )
+        .is_none());
     }
 
     #[test]

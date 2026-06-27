@@ -213,6 +213,10 @@ fn home_dir() -> Result<PathBuf> {
     dirs::home_dir().context("Unable to locate user home directory")
 }
 
+pub(crate) fn effective_home_dir() -> Result<PathBuf> {
+    home_dir()
+}
+
 pub fn config_path() -> Result<PathBuf> {
     let home = home_dir()?;
     Ok(home.join(".memorph").join("config.json"))

@@ -8,9 +8,9 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
 use crate::provider::{
-    Provider, ProviderCapabilities, ProviderSessionSummary, canonical_event_visible_message_role,
-    canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
-    canonical_visible_block_text,
+    canonical_event_visible_message_role, canonical_event_visible_message_text,
+    canonical_export_result, canonical_session_title, canonical_visible_block_text, Provider,
+    ProviderCapabilities, ProviderSessionSummary,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -1037,12 +1037,10 @@ mod tests {
         assert!(assistant.blocks.iter().any(
             |block| matches!(block, EventBlock::Thinking { text, .. } if text == "reasoning")
         ));
-        assert!(
-            assistant
-                .blocks
-                .iter()
-                .any(|block| matches!(block, EventBlock::Text { text } if text == "answer"))
-        );
+        assert!(assistant
+            .blocks
+            .iter()
+            .any(|block| matches!(block, EventBlock::Text { text } if text == "answer")));
         assert!(assistant.blocks.iter().any(
             |block| matches!(block, EventBlock::ProviderPayload { kind, .. } if kind == "custom")
         ));

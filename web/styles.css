@@ -236,6 +236,11 @@ button[disabled] {
   font-weight: 700;
 }
 
+.topbar-back {
+  min-height: 30px;
+  padding: 0 10px;
+}
+
 .topbar-divider {
   width: 1px;
   height: 20px;
@@ -1015,6 +1020,21 @@ button[disabled] {
   color: var(--muted);
 }
 
+.copyable-id {
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--line-soft);
+  padding: 0 5px;
+  border-radius: 999px;
+}
+
+.copyable-id:hover {
+  color: var(--ink);
+  background: var(--line);
+}
+
 .msg-role {
   font-weight: 700;
   text-transform: uppercase;
@@ -1358,6 +1378,67 @@ button[disabled] {
   gap: 8px;
 }
 
+.manager-row {
+  cursor: pointer;
+}
+
+.manager-row.is-selected {
+  border-color: var(--ink);
+  background: var(--mist);
+}
+
+.manager-row-copy {
+  min-width: 0;
+}
+
+.manager-title-link {
+  color: inherit;
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.manager-title-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.manager-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.manager-row-actions {
+  flex-shrink: 0;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.manager-session-more-modal .status-box,
+.manager-workspace-more-modal .status-box {
+  border: 1px solid var(--line);
+}
+
+.manager-action-divider {
+  height: 1px;
+  background: var(--line);
+}
+
+.manager-session-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.manager-session-action-grid .button,
+.manager-session-action-grid button {
+  justify-content: center;
+}
+
 .row-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1381,6 +1462,10 @@ button[disabled] {
 .empty-state,
 .status-box {
   padding: 18px;
+}
+
+.agent-provider-items-empty {
+  border: 0;
 }
 
 .copy-modal-grid {
@@ -1481,7 +1566,7 @@ button[disabled] {
   width: 20px;
   height: 100%;
   border: 1px solid var(--line);
-  border-radius: 2px;
+  border-radius: 0;
   background: var(--paper);
   overflow: hidden;
 }
@@ -1492,7 +1577,8 @@ button[disabled] {
   width: 100%;
   padding: 0;
   border: 0;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.9);
+  border-radius: 0;
   background: rgba(0, 0, 0, var(--timeline-depth, 0.25));
   cursor: pointer;
 }
@@ -1948,7 +2034,7 @@ button[disabled] {
 
 .agent-detail-row {
   grid-template-columns: minmax(140px, 0.45fr) minmax(0, 1.55fr);
-  align-items: start;
+  align-items: center;
 }
 
 .agent-detail-row .path-line {
@@ -2520,11 +2606,14 @@ button.manager-stat-card:hover strong {
 }
 
 .loading-spinner {
+  display: inline-block;
+  flex: 0 0 auto;
   width: 14px;
   height: 14px;
   border-radius: 50%;
   border: 2px solid var(--line);
   border-right-color: transparent;
+  vertical-align: -2px;
   animation: spin 0.9s linear infinite;
 }
 
@@ -2570,28 +2659,41 @@ button.manager-stat-card:hover strong {
 
 .toast-stack {
   position: fixed;
-  right: 16px;
-  bottom: 16px;
+  left: 50%;
+  top: 50%;
   display: grid;
   gap: 10px;
+  width: min(420px, calc(100vw - 32px));
+  transform: translate(-50%, -50%);
   z-index: 45;
+  pointer-events: none;
 }
 
 .toast {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  min-width: 260px;
-  max-width: 420px;
-  padding: 12px 10px 12px 14px;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: start;
+  gap: 12px;
+  padding: 14px 12px 14px 16px;
   border: 1px solid var(--line);
-  border-radius: var(--radius);
+  border-radius: calc(var(--radius) + 4px);
   background: var(--paper);
+  box-shadow: 0 18px 48px rgb(0 0 0 / 18%);
+  pointer-events: auto;
+  animation: toast-in 180ms ease-out both;
+}
+
+.toast.closing {
+  animation: toast-out 180ms ease-in both;
 }
 
 .toast.error {
   border-color: var(--danger);
+}
+
+.toast-content {
+  min-width: 0;
 }
 
 .toast h4,
@@ -2604,11 +2706,39 @@ button.manager-stat-card:hover strong {
   font-size: 14px;
 }
 
+.toast p {
+  color: var(--muted);
+}
+
 .toast-close {
-  height: 30px;
-  min-height: 30px;
-  padding: 0 10px;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 999px;
   line-height: 1;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes toast-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
 }
 
 @keyframes spin {

@@ -1,8 +1,11 @@
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
+
+const VERSION_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AgentEnvironmentStatus {
@@ -18,6 +21,45 @@ pub struct AgentEnvironmentStatus {
 }
 
 pub fn detect_provider_environment(provider_id: &str) -> AgentEnvironmentStatus {
+    detect_provider_environment_cached(provider_id, false)
+}
+
+pub fn detect_provider_environment_fast(provider_id: &str) -> AgentEnvironmentStatus {
+    detect_provider_environment_fast_cached(provider_id)
+}
+
+pub fn refresh_provider_environment(provider_id: &str) -> AgentEnvironmentStatus {
+    detect_provider_environment_cached(provider_id, true)
+}
+
+fn detect_provider_environment_fast_cached(provider_id: &str) -> AgentEnvironmentStatus {
+    let cache = crate::cache::agent_environment_cache();
+    if let Some(status) = cache.get_fast(provider_id) {
+        return status;
+    }
+
+    let status = detect_provider_environment_uncached(provider_id, false);
+    cache.set_fast(provider_id, status.clone());
+    status
+}
+
+fn detect_provider_environment_cached(provider_id: &str, refresh: bool) -> AgentEnvironmentStatus {
+    if !refresh {
+        let cache = crate::cache::agent_environment_cache();
+        if let Some(status) = cache.get_full(provider_id) {
+            return status;
+        }
+    }
+
+    let status = detect_provider_environment_uncached(provider_id, true);
+    crate::cache::agent_environment_cache().set_full(provider_id, status.clone());
+    status
+}
+
+fn detect_provider_environment_uncached(
+    provider_id: &str,
+    include_version: bool,
+) -> AgentEnvironmentStatus {
     let executable_path = find_executable_path(
         crate::providers::environment_profiles::executable_candidates(provider_id),
     )
@@ -25,9 +67,13 @@ pub fn detect_provider_environment(provider_id: &str) -> AgentEnvironmentStatus 
     let executable_dir = executable_path
         .as_ref()
         .and_then(|path| path.parent().map(Path::to_path_buf));
-    let executable_version = executable_path
-        .as_deref()
-        .and_then(detect_executable_version);
+    let executable_version = if include_version {
+        executable_path
+            .as_deref()
+            .and_then(detect_executable_version)
+    } else {
+        None
+    };
 
     AgentEnvironmentStatus {
         installed: executable_path.is_some(),
@@ -42,14 +88,35 @@ pub fn detect_provider_environment(provider_id: &str) -> AgentEnvironmentStatus 
 }
 
 fn detect_executable_version(executable_path: &Path) -> Option<String> {
-    let output = Command::new(executable_path)
+    let mut child = Command::new(executable_path)
         .arg("--version")
-        .output()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .ok()?;
-    if !output.status.success() {
-        return None;
+
+    let started_at = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().ok()? {
+            if !status.success() {
+                return None;
+            }
+            break;
+        }
+        if started_at.elapsed() >= VERSION_COMMAND_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(10));
     }
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+    let mut output = Vec::new();
+    let Some(mut stdout) = child.stdout.take() else {
+        return None;
+    };
+    std::io::Read::read_to_end(&mut stdout, &mut output).ok()?;
+    let stdout = String::from_utf8_lossy(&output).trim().to_string();
     if stdout.is_empty() {
         return None;
     }

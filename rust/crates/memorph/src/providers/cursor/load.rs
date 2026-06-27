@@ -4,7 +4,7 @@ use crate::canonical::{
     ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
     SessionProvenance,
 };
-use crate::providers::cursor::db::{BubbleData, ComposerData, list_bubbles, list_composers};
+use crate::providers::cursor::db::{list_bubbles, list_composers, BubbleData, ComposerData};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde_json::Value;

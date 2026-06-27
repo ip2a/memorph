@@ -15,6 +15,10 @@ export function createManagerCompressionModule({
   selectedManagerItems,
   defaultManagerDraft,
 }) {
+  function inlineSpinner() {
+    return `<span class="loading-spinner"></span>`;
+  }
+
   function managerSelectionSummary(total, selected, bytes) {
     return t("managerSelectionSummary")
       .replace("{count}", String(total))
@@ -31,21 +35,27 @@ export function createManagerCompressionModule({
 
   function renderManagerPreview(preview, report = null) {
     const selected = state.manager?.selectedItems || new Set();
+    const isSelectionMode = !!state.manager?.selectionMode;
     const rows = preview.items
       .map((item) => {
         const encoded = escapeAttr(encodeURIComponent(JSON.stringify(item)));
         const isSelected = selected.has(encoded);
         const href = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
         return `
-          <article class="manager-row ${isSelected ? "is-selected" : ""}" data-action="toggle-manager-item" data-value="${encoded}">
+          <article class="manager-row ${isSelected ? "is-selected" : ""} ${isSelectionMode ? "is-selecting" : ""}" data-action="toggle-manager-item" data-value="${encoded}" data-href="${escapeAttr(href)}">
             <div class="manager-row-head">
               <div class="manager-row-copy">
-                <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(item.title || item.session_id)}</a>
+                <a class="manager-title-link" href="${href}" data-nav="${isSelectionMode ? "" : href}">${escapeHtml(item.title || item.session_id)}</a>
                 <div class="manager-meta">
                   <span>${escapeHtml(providers.displayName(item.provider_id))}</span>
                   <span>${escapeHtml(formatBytes(item.size_bytes))}</span>
                   <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(item.last_active_at)))}</span>
                 </div>
+              </div>
+              <div class="session-actions manager-row-actions">
+                <a class="button" href="${href}" data-nav="${href}">${t("view")}</a>
+                <button type="button" class="danger" data-action="open-delete" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}">${t("remove")}</button>
+                <button type="button" data-action="open-manager-session-more" data-value="${encoded}">${t("more")}</button>
               </div>
             </div>
           </article>`;
@@ -80,7 +90,8 @@ export function createManagerCompressionModule({
           <button type="button" class="invert" data-action="open-manager-filter">${t("filters")}</button>
           <button type="button" class="danger" data-action="open-manager-clean-confirm">${t("cleanSelected")}</button>
           <button type="button" data-action="open-manager-backup-confirm">${t("backupSelected")}</button>
-          <button type="button" class="button-small" data-action="select-all-manager">${t("selectAll")}</button>
+          <button type="button" class="${isSelectionMode ? "invert" : ""}" data-action="toggle-manager-selection-mode">${isSelectionMode ? t("exitMultiSelect") : t("multiSelect")}</button>
+          <button type="button" data-action="select-all-manager">${t("selectAll")}</button>
         </div>
       </div>
       <div class="manager-list">${rows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>`;
@@ -92,19 +103,19 @@ export function createManagerCompressionModule({
         <div class="section-heading manager-section-head">
           <div><strong>${t("managerWorkspacePreview")}</strong></div>
         </div>
-        <div class="manager-list"><div class="empty-state">${inlineSpinner()}</div></div>`;
+        <div class="manager-list"><div class="empty-state">${inlineSpinner()}<span>${t("loading")}</span></div></div>`;
     }
     const selected = state.manager?.selectedWorkspaceItems || new Set();
     const rows = (preview?.items || [])
       .map((item) => {
         const encoded = escapeAttr(encodeURIComponent(JSON.stringify(item)));
         const isSelected = selected.has(encoded);
-        const href = `/manager?provider=${encodeURIComponent(item.provider_id)}&workspace=${encodeURIComponent(item.workspace)}`;
+        const href = `/manager?view=sessions&provider=${encodeURIComponent(item.provider_id)}&workspace=${encodeURIComponent(item.workspace)}`;
         return `
           <article class="manager-row ${isSelected ? "is-selected" : ""}" data-action="toggle-manager-workspace-item" data-value="${encoded}">
             <div class="manager-row-head">
               <div class="manager-row-copy">
-                <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(workspaceName(item.workspace) || item.workspace)}</a>
+                <a class="manager-title-link" href="${href}" data-action="open-manager-workspace" data-provider="${escapeAttr(item.provider_id)}" data-workspace="${escapeAttr(item.workspace)}">${escapeHtml(workspaceName(item.workspace) || item.workspace)}</a>
                 <div class="manager-meta">
                   <span>${escapeHtml(providers.displayName(item.provider_id))}</span>
                   <span>${escapeHtml(t("workspaceSessionCount").replace("{count}", String(item.session_count || 0)))}</span>
@@ -112,6 +123,11 @@ export function createManagerCompressionModule({
                   <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(item.last_active_at)))}</span>
                 </div>
                 <div class="path-line">${escapeHtml(item.workspace)}</div>
+              </div>
+              <div class="session-actions manager-row-actions">
+                <a class="button" href="${href}" data-action="open-manager-workspace" data-provider="${escapeAttr(item.provider_id)}" data-workspace="${escapeAttr(item.workspace)}">${t("view")}</a>
+                <button type="button" class="danger" data-action="open-manager-clean-workspace-row-confirm" data-value="${encoded}">${t("remove")}</button>
+                <button type="button" data-action="open-manager-workspace-more" data-value="${encoded}">${t("more")}</button>
               </div>
             </div>
           </article>`;
@@ -128,14 +144,14 @@ export function createManagerCompressionModule({
           <button type="button" class="invert" data-action="open-manager-filter">${t("filters")}</button>
           <button type="button" class="danger" data-action="open-manager-clean-workspace-confirm">${t("cleanSelected")}</button>
           <button type="button" data-action="open-manager-backup-workspace-confirm">${t("backupSelected")}</button>
-          <button type="button" class="button-small" data-action="select-all-manager-workspace">${t("selectAll")}</button>
+          <button type="button" data-action="select-all-manager-workspace">${t("selectAll")}</button>
         </div>
       </div>
       <div class="manager-list">${rows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>`;
   }
 
   function updateManagerSelectionStats() {
-    const preview = state.manager.preview;
+    const preview = state.manager.preview || state.manager.quickPreview;
     const summary = document.querySelector('[data-role="manager-selection-summary"]');
     if (preview && summary) {
       const selected = typeof selectedManagerItems === "function" ? selectedManagerItems() : [];
@@ -149,7 +165,7 @@ export function createManagerCompressionModule({
       }
     }
 
-    const workspacePreview = state.manager.workspacePreview;
+    const workspacePreview = state.manager.workspacePreview || state.manager.quickWorkspacePreview;
     const workspaceSummary = document.querySelector('[data-role="manager-workspace-selection-summary"]');
     if (workspacePreview && workspaceSummary) {
       const selected = selectedManagerWorkspaceItems();

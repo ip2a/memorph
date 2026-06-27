@@ -1,6 +1,12 @@
 use anyhow::{Context, Result};
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    mpsc,
+};
+
+const AGENT_BUILD_PARALLELISM: usize = 6;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentManagementEntry {
@@ -11,6 +17,19 @@ pub struct AgentManagementEntry {
     pub hook_strategy: Option<crate::hooks::strategies::HookConfigStrategyKind>,
     pub hook_capabilities: crate::hooks::capabilities::HookProviderCapabilities,
     pub hook_diagnosis: crate::hooks::augmentation::ProviderHookDiagnosisAggregate,
+    pub hook_profile: Option<crate::hooks::profiles::HookProviderProfile>,
+    pub hook_required_events: Vec<&'static str>,
+    pub settings: Vec<crate::provider_settings::ProviderSettingItem>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AgentManagementSummaryEntry {
+    pub provider_id: String,
+    pub name: String,
+    pub environment: crate::agent_environment::AgentEnvironmentStatus,
+    pub hook: crate::hooks::model::HookInstallStatus,
+    pub hook_strategy: Option<crate::hooks::strategies::HookConfigStrategyKind>,
+    pub hook_capabilities: crate::hooks::capabilities::HookProviderCapabilities,
     pub hook_profile: Option<crate::hooks::profiles::HookProviderProfile>,
     pub hook_required_events: Vec<&'static str>,
     pub settings: Vec<crate::provider_settings::ProviderSettingItem>,
@@ -47,25 +66,105 @@ impl Serialize for AgentManagementEntry {
 
 pub fn list_agent_management_entries() -> Result<Vec<AgentManagementEntry>> {
     let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-    crate::providers::all_provider_ids()
-        .iter()
-        .map(|provider_id| build_agent_management_entry(provider_id, &runtime_snapshot))
-        .collect()
+    build_entries_parallel(&runtime_snapshot)
+}
+
+pub fn list_agent_management_summaries() -> Result<Vec<AgentManagementSummaryEntry>> {
+    build_provider_results_parallel(
+        build_agent_management_summary,
+        "agent management summary worker did not return an entry",
+    )
 }
 
 pub fn get_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntry> {
     let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-    build_agent_management_entry(provider_id, &runtime_snapshot)
+    build_agent_management_entry(provider_id, &runtime_snapshot, false)
 }
 
 pub fn detect_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntry> {
     let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-    build_agent_management_entry(provider_id, &runtime_snapshot)
+    build_agent_management_entry(provider_id, &runtime_snapshot, true)
+}
+
+fn build_entries_parallel(
+    runtime_snapshot: &[crate::hooks::model::RuntimeSession],
+) -> Result<Vec<AgentManagementEntry>> {
+    build_provider_results_parallel(
+        |provider_id| build_agent_management_entry(provider_id, runtime_snapshot, false),
+        "agent management worker did not return an entry",
+    )
+}
+
+fn build_provider_results_parallel<T, F>(build: F, missing_context: &'static str) -> Result<Vec<T>>
+where
+    T: Send,
+    F: Fn(&str) -> Result<T> + Sync,
+{
+    let provider_ids = crate::providers::all_provider_ids();
+    let mut entries: Vec<Option<T>> = std::iter::repeat_with(|| None)
+        .take(provider_ids.len())
+        .collect();
+    let workers = AGENT_BUILD_PARALLELISM.min(provider_ids.len()).max(1);
+    let next_index = AtomicUsize::new(0);
+    let (tx, rx) = mpsc::channel();
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let tx = tx.clone();
+            let build = &build;
+            let next_index = &next_index;
+            scope.spawn(move || loop {
+                let index = next_index.fetch_add(1, Ordering::Relaxed);
+                if index >= provider_ids.len() {
+                    return;
+                }
+                let result = build(provider_ids[index]);
+                if tx.send((index, result)).is_err() {
+                    return;
+                }
+            });
+        }
+    });
+    drop(tx);
+
+    for (index, result) in rx {
+        entries[index] = Some(result?);
+    }
+
+    entries
+        .into_iter()
+        .map(|entry| entry.context(missing_context))
+        .collect()
+}
+
+fn build_agent_management_summary(provider_id: &str) -> Result<AgentManagementSummaryEntry> {
+    let provider = crate::providers::find_provider(provider_id)
+        .with_context(|| format!("Unknown provider: {}", provider_id))?;
+    let settings = crate::provider_settings::list_provider_settings(provider_id)?;
+    let hook = crate::hooks::operations::status(provider_id)?;
+    let hook_descriptor = crate::hooks::registry::find(provider_id);
+
+    Ok(AgentManagementSummaryEntry {
+        provider_id: provider_id.to_string(),
+        name: provider.name().to_string(),
+        environment: crate::agent_environment::detect_provider_environment_fast(provider_id),
+        hook,
+        hook_strategy: hook_descriptor.map(|descriptor| descriptor.strategy_kind),
+        hook_capabilities: hook_descriptor
+            .map(|descriptor| descriptor.capabilities)
+            .unwrap_or_else(crate::hooks::capabilities::HookProviderCapabilities::unsupported),
+        hook_profile: hook_descriptor.map(|descriptor| *descriptor.profile),
+        hook_required_events: hook_descriptor
+            .map(|descriptor| descriptor.required_events.to_vec())
+            .unwrap_or_default(),
+        settings,
+    })
 }
 
 fn build_agent_management_entry(
     provider_id: &str,
     runtime_snapshot: &[crate::hooks::model::RuntimeSession],
+    refresh_environment: bool,
 ) -> Result<AgentManagementEntry> {
     let provider = crate::providers::find_provider(provider_id)
         .with_context(|| format!("Unknown provider: {}", provider_id))?;
@@ -88,7 +187,11 @@ fn build_agent_management_entry(
     Ok(AgentManagementEntry {
         provider_id: provider_id.to_string(),
         name: provider.name().to_string(),
-        environment: crate::agent_environment::detect_provider_environment(provider_id),
+        environment: if refresh_environment {
+            crate::agent_environment::refresh_provider_environment(provider_id)
+        } else {
+            crate::agent_environment::detect_provider_environment(provider_id)
+        },
         hook,
         hook_strategy: hook_descriptor.map(|descriptor| descriptor.strategy_kind),
         hook_capabilities: hook_descriptor
@@ -110,20 +213,20 @@ mod tests {
     #[test]
     fn agent_management_entry_exposes_hook_status() {
         let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-        let claude = build_agent_management_entry("claude", &runtime_snapshot).unwrap();
+        let claude = build_agent_management_entry("claude", &runtime_snapshot, false).unwrap();
         assert_eq!(claude.hook.provider, "claude");
     }
 
     #[test]
     fn agent_management_entry_exposes_settings() {
         let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-        let codex = build_agent_management_entry("codex", &runtime_snapshot).unwrap();
+        let codex = build_agent_management_entry("codex", &runtime_snapshot, false).unwrap();
         assert!(codex
             .settings
             .iter()
             .any(|setting| setting.id == "repair_workspace_sessions"));
 
-        let opencode = build_agent_management_entry("opencode", &runtime_snapshot).unwrap();
+        let opencode = build_agent_management_entry("opencode", &runtime_snapshot, false).unwrap();
         assert!(opencode
             .settings
             .iter()
@@ -175,7 +278,7 @@ mod tests {
     #[test]
     fn agent_management_entry_groups_common_environment_fields() {
         let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-        let codex = build_agent_management_entry("codex", &runtime_snapshot).unwrap();
+        let codex = build_agent_management_entry("codex", &runtime_snapshot, false).unwrap();
         let environment = crate::agent_environment::detect_provider_environment("codex");
         assert_eq!(codex.environment.config_path, environment.config_path);
         assert!(!codex.environment.install_method.trim().is_empty());
@@ -184,7 +287,7 @@ mod tests {
     #[test]
     fn agent_management_entry_serializes_environment_block_and_flat_compat_fields() {
         let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-        let codex = build_agent_management_entry("codex", &runtime_snapshot).unwrap();
+        let codex = build_agent_management_entry("codex", &runtime_snapshot, false).unwrap();
         let value = serde_json::to_value(&codex).unwrap();
 
         assert_eq!(value["provider_id"], "codex");

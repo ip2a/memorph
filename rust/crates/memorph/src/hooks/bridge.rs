@@ -276,5 +276,4 @@ mod tests {
         assert!(provider_response_json("generic", "PreToolUse", &response).is_none());
         assert!(provider_response_json("claude", "PermissionRequest", &response).is_none());
     }
-
 }

@@ -7,7 +7,7 @@ mod write;
 
 use crate::canonical::{CanonicalSession, ExportedSession, ImportedSession};
 use crate::provider::{
-    Provider, ProviderCapabilities, ProviderSessionSummary, canonical_export_result,
+    canonical_export_result, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use anyhow::Result;
 use std::collections::HashMap;

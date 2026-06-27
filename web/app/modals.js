@@ -5,6 +5,7 @@ export function createModalModule({
   escapeHtml,
   escapeAttr,
   formatDate,
+  formatBytes,
   workspaceName,
   render,
   getOrderedProviders,
@@ -140,6 +141,80 @@ export function createModalModule({
           </label>
         </div>`,
       submitLabel: t("apply"),
+    };
+    render();
+  }
+
+  function openManagerSessionMoreModal(item) {
+    if (!item) return;
+    const providerId = item.provider_id || "";
+    const sessionId = item.session_id || "";
+    const title = item.title || sessionId;
+    const href = `/sessions/${encodeURIComponent(providerId)}/${encodeURIComponent(sessionId)}`;
+    state.modal = {
+      kind: "custom",
+      title: t("sessionMoreActions"),
+      body: `
+        <div class="stack manager-session-more-modal">
+          <div class="status-box stack">
+            <strong>${escapeHtml(title || t("session"))}</strong>
+            <div class="manager-meta">
+              <span>${escapeHtml(providers.displayName(providerId) || providerId)}</span>
+              ${item.size_bytes != null ? `<span>${escapeHtml(formatBytes(item.size_bytes))}</span>` : ""}
+              ${item.last_active_at ? `<span>${escapeHtml(formatDate(item.last_active_at))}</span>` : ""}
+            </div>
+          </div>
+          <div class="manager-session-action-grid">
+            <a class="button invert" href="${href}" data-nav="${href}">${t("view")}</a>
+            <button type="button" class="danger" data-action="open-delete" data-provider="${escapeAttr(providerId)}" data-session-id="${escapeAttr(sessionId)}">${t("remove")}</button>
+            <button type="button" data-action="open-export" data-provider="${escapeAttr(providerId)}" data-session-id="${escapeAttr(sessionId)}">${t("export")}</button>
+            <button type="button" data-action="compress-session" data-provider="${escapeAttr(providerId)}" data-session-id="${escapeAttr(sessionId)}">${t("compression")}</button>
+            <button type="button" data-action="open-sync-create" data-provider="${escapeAttr(providerId)}" data-session-id="${escapeAttr(sessionId)}" data-title="${escapeAttr(title || "")}">${t("syncAction")}</button>
+            <button type="button" data-action="open-rename" data-provider="${escapeAttr(providerId)}" data-session-id="${escapeAttr(sessionId)}" data-title="${escapeAttr(title || "")}">${t("rename")}</button>
+          </div>
+          <div class="modal-actions">
+            <button type="button" data-action="close-modal">${t("close")}</button>
+          </div>
+        </div>`,
+    };
+    render();
+  }
+
+  function openManagerWorkspaceMoreModal(item) {
+    if (!item) return;
+    const providerId = item.provider_id || "";
+    const workspace = item.workspace || "";
+    const href = `/manager?view=sessions&provider=${encodeURIComponent(providerId)}&workspace=${encodeURIComponent(workspace)}`;
+    const encoded = escapeAttr(encodeURIComponent(JSON.stringify(item)));
+    state.modal = {
+      kind: "custom",
+      title: t("workspaceMoreActions"),
+      body: `
+        <div class="stack manager-workspace-more-modal">
+          <div class="status-box stack">
+            <strong>${escapeHtml(workspaceName(workspace) || workspace || t("workspace"))}</strong>
+            <div class="manager-meta">
+              <span>${escapeHtml(providers.displayName(providerId) || providerId)}</span>
+              <span>${escapeHtml(t("workspaceSessionCount").replace("{count}", String(item.session_count || 0)))}</span>
+              ${item.total_size_bytes != null ? `<span>${escapeHtml(formatBytes(item.total_size_bytes))}</span>` : ""}
+              ${item.last_active_at ? `<span>${escapeHtml(formatDate(item.last_active_at))}</span>` : ""}
+            </div>
+            ${workspace ? `<div class="path-line">${escapeHtml(workspace)}</div>` : ""}
+          </div>
+          <div class="manager-session-action-grid">
+            <a class="button invert" href="${href}" data-action="open-manager-workspace" data-provider="${escapeAttr(providerId)}" data-workspace="${escapeAttr(workspace)}">${t("view")}</a>
+            <button type="button" class="danger" data-action="open-manager-clean-workspace-row-confirm" data-value="${encoded}">${t("remove")}</button>
+            <button type="button" data-action="open-manager-backup-workspace-row-confirm" data-value="${encoded}">${t("backupWorkspaceWhole")}</button>
+            <button type="button" data-action="open-manager-convert-workspace" data-value="${encoded}">${t("convertWorkspaceWhole")}</button>
+          </div>
+          <div class="manager-action-divider"></div>
+          <div class="manager-session-action-grid">
+            <button type="button" class="invert" data-action="run-codex-workspace-restore" data-value="${encoded}" ${providerId === "codex" ? "" : "disabled"}>${t("codexRestoreWorkspaceSessions")}</button>
+          </div>
+          <div class="modal-actions">
+            <button type="button" data-action="close-modal">${t("close")}</button>
+          </div>
+        </div>`,
     };
     render();
   }
@@ -569,6 +644,8 @@ export function createModalModule({
     openDeleteModal,
     openExportModal,
     openImportModal,
+    openManagerSessionMoreModal,
+    openManagerWorkspaceMoreModal,
     openPushSyncModal,
     openRenameModal,
     openSyncCreateModal,

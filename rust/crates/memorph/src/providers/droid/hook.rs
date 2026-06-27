@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::hooks::contract::ProviderHook;
-use crate::hooks::json_settings_hook::{JsonSettingsHookEvent, JsonSettingsHookSpec, event};
+use crate::hooks::json_settings_hook::{event, JsonSettingsHookEvent, JsonSettingsHookSpec};
 use crate::hooks::model::{HookHealthStatus, HookInstallStatus, HookOperationReport};
 
 pub struct DroidHook;

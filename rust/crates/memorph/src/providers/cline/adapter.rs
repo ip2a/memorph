@@ -20,7 +20,6 @@ impl HookAdapter for ClineHookAdapter {
         "cline"
     }
 
-
     fn normalize(&self, request: &HookIngestRequest) -> Result<Vec<HookEvent>> {
         let raw = request.raw.clone();
         let event_name = string_at(
@@ -256,7 +255,6 @@ mod tests {
     use super::*;
     use crate::hooks::protocol::HookIngestRequest;
     use serde_json::json;
-
 
     #[test]
     fn maps_cline_pre_tool_use() {

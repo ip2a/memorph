@@ -1,6 +1,6 @@
 mod aliases;
-pub mod catalog;
 pub mod antigravity;
+pub mod catalog;
 pub mod claude;
 pub mod cline;
 pub mod codebuddy;

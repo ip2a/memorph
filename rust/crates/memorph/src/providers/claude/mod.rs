@@ -8,9 +8,9 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
 };
 use crate::provider::{
-    Provider, ProviderCapabilities, ProviderSessionSummary, canonical_block_text,
-    canonical_event_visible_message_role, canonical_event_visible_text, canonical_export_result,
-    canonical_session_title,
+    canonical_block_text, canonical_event_visible_message_role, canonical_event_visible_text,
+    canonical_export_result, canonical_session_title, Provider, ProviderCapabilities,
+    ProviderSessionSummary,
 };
 use crate::utils::{
     encode_project_dir, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,

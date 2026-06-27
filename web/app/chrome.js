@@ -1,24 +1,14 @@
-let toastTimer = 0;
+import { routeShellClass, routeTitleKey } from "./router.js";
+
+let toastId = 0;
+const toastDismissTimers = new Map();
 
 function pageTitle(state, providers, t) {
-  switch (state.route.name) {
-    case "manager":
-      return t("managerTitle");
-    case "compression":
-      return t("compressionTitle");
-    case "agents":
-      return t("agentManagementTitle");
-    case "hooks":
-      return t("hooksTitle");
-    case "sync-list":
-      return t("syncTitle");
-    case "sync-detail":
-      return t("syncTitle");
-    case "session":
-      return providers.displayName(state.session?.view?.provider_id) || t("details");
-    default:
-      return "";
+  if (state.route.name === "session") {
+    return providers.displayName(state.session?.view?.provider_id) || t("details");
   }
+  const titleKey = routeTitleKey(state.route);
+  return titleKey ? t(titleKey) : "";
 }
 
 export function renderTopbarContext(state, providers, t, escapeHtml) {
@@ -37,7 +27,6 @@ export function renderAppShell({
   renderLoading,
   renderToasts,
   renderTopbarContext,
-  githubIcon,
 }) {
   if (!state.meta) {
     return `
@@ -50,22 +39,19 @@ export function renderAppShell({
   }
 
   return `
-    <div class="app-shell ${state.route.name === "manager" || state.route.name === "compression" || state.route.name === "agents" || state.route.name === "hooks" ? "manager-shell" : ""}">
+    <div class="app-shell ${routeShellClass(state.route)}">
       <nav class="topbar">
         <div class="brand-cluster">
           <a class="brand" href="/" data-nav="/">memorph</a>
           ${renderTopbarContext()}
         </div>
         <div class="top-actions">
-          ${state.route.name === "home" ? "" : `<a class="button" href="/" data-nav="/">${state.route.name === "session" ? t("back") : t("openHome")}</a>`}
+          ${state.route.name === "home" ? "" : `<button type="button" class="topbar-back" data-action="go-back">${t("back")}</button>`}
           <button type="button" data-action="open-workspace-switch">${t("switchWorkspace")}</button>
           ${state.route.name === "hooks" ? "" : `<a class="button" href="/hooks" data-nav="/hooks">${t("hooks")}</a>`}
           ${state.route.name === "agents" ? "" : `<a class="button" href="/agents" data-nav="/agents">${t("agentManagement")}</a>`}
           ${state.route.name === "manager" ? `<button type="button" data-action="open-compression">${t("compressSessions")}</button><a class="button" href="/sync" data-nav="/sync">${t("syncGroups")}</a><button type="button" data-action="open-import">${t("importSession")}</button>` : `<a class="button" href="/manager" data-nav="/manager">${t("manage")}</a>`}
           <button type="button" data-action="open-settings">${t("settings")}</button>
-          <a class="icon-button" href="https://github.com/ip2a/memorph" target="_blank" rel="noopener noreferrer" data-action="open-external" data-url="https://github.com/ip2a/memorph" aria-label="GitHub repository" title="GitHub">
-            ${githubIcon()}
-          </a>
         </div>
       </nav>
       <main class="app-main">${renderPage()}</main>
@@ -147,28 +133,53 @@ export function renderLoadingMarkup(state, t, escapeHtml) {
 
 export function renderToastsMarkup(state, t, escapeHtml, escapeAttr) {
   return `
-    <div class="toast-stack">
+    <div class="toast-stack" aria-live="polite" aria-atomic="false">
       ${state.toasts
         .map(
-          (item, index) => `
-          <div class="toast ${item.error ? "error" : ""}">
-            <div>
+          (item) => `
+          <div class="toast ${item.error ? "error" : ""} ${item.closing ? "closing" : ""}">
+            <div class="toast-content">
               <h4>${escapeHtml(item.title)}</h4>
               <p>${escapeHtml(item.message)}</p>
             </div>
-            <button type="button" class="toast-close" data-action="close-toast" data-toast-index="${index}" aria-label="${escapeAttr(
-              t("close")
-            )}">${t("close")}</button>
+            <button type="button" class="toast-close" data-action="close-toast" data-toast-id="${escapeAttr(
+              String(item.id)
+            )}" aria-label="${escapeAttr(t("close"))}">×</button>
           </div>`
         )
         .join("")}
     </div>`;
 }
 
-export function closeToast(state, index, rerender) {
-  if (!Number.isInteger(index)) return;
-  state.toasts = state.toasts.filter((_, itemIndex) => itemIndex !== index);
+function removeToast(state, id, rerender) {
+  if (!Number.isInteger(id)) return;
+  const nextToasts = state.toasts.filter((item) => item.id !== id);
+  if (nextToasts.length === state.toasts.length) return;
+  state.toasts = nextToasts;
+  window.clearTimeout(toastDismissTimers.get(id));
+  toastDismissTimers.delete(id);
   rerender();
+}
+
+function dismissToast(state, id, rerender) {
+  if (!Number.isInteger(id)) return;
+  let didUpdate = false;
+  state.toasts = state.toasts.map((item) => {
+    if (item.id !== id || item.closing) return item;
+    didUpdate = true;
+    return { ...item, closing: true };
+  });
+  if (!didUpdate) return;
+  rerender();
+  window.clearTimeout(toastDismissTimers.get(id));
+  toastDismissTimers.set(
+    id,
+    window.setTimeout(() => removeToast(state, id, rerender), 180)
+  );
+}
+
+export function closeToast(state, id, rerender) {
+  dismissToast(state, id, rerender);
 }
 
 export function closeModal(state, rerender) {
@@ -176,18 +187,19 @@ export function closeModal(state, rerender) {
   rerender();
 }
 
-export function githubIcon() {
-  return `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.6 7.6 0 0 1 8 3.86c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>`;
-}
-
 export function toast(state, title, message, error, rerender) {
-  state.toasts = [...state.toasts, { title, message, error }].slice(-4);
+  const item = { id: ++toastId, title, message, error, closing: false };
+  const removedItems = Math.max(0, state.toasts.length + 1 - 4);
+  state.toasts.slice(0, removedItems).forEach((toastItem) => {
+    window.clearTimeout(toastDismissTimers.get(toastItem.id));
+    toastDismissTimers.delete(toastItem.id);
+  });
+  state.toasts = [...state.toasts, item].slice(-4);
   rerender();
-  window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => {
-    state.toasts = state.toasts.slice(-1);
-    rerender();
-  }, 3200);
+  toastDismissTimers.set(
+    item.id,
+    window.setTimeout(() => dismissToast(state, item.id, rerender), 3200)
+  );
 }
 
 export function fatal(appEl, error, t, escapeHtml) {

@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = ROOT / "web" / "app.js"
 CHROME_JS = ROOT / "web" / "app" / "chrome.js"
+ROUTER_JS = ROOT / "web" / "app" / "router.js"
+NAVIGATION_JS = ROOT / "web" / "app" / "navigation.js"
 AGENTS_SETTINGS_JS = ROOT / "web" / "app" / "agents_settings.js"
 CONSTANTS_JS = ROOT / "web" / "app" / "constants.js"
 GITHUB_REPO_URL = "https://github.com/ip2a/memorph"
@@ -16,7 +18,7 @@ NPM_PACKAGE_URL = "https://www.npmjs.com/package/memorph"
 
 def read_sources() -> str:
     parts = []
-    for path in (APP_JS, CHROME_JS, AGENTS_SETTINGS_JS, CONSTANTS_JS):
+    for path in (APP_JS, CHROME_JS, ROUTER_JS, NAVIGATION_JS, AGENTS_SETTINGS_JS, CONSTANTS_JS):
         if path.exists():
             parts.append(path.read_text(encoding="utf-8"))
     return "\n".join(parts)
@@ -58,9 +60,49 @@ class WebUiInvariantTest(unittest.TestCase):
     def test_known_external_links_use_expected_destinations(self) -> None:
         source = read_sources()
         self.assertIn(GITHUB_REPO_URL, source)
-        self.assertIn(f'data-url="{GITHUB_REPO_URL}"', source)
         self.assertIn('data-action="open-external"', source)
         self.assertIn(NPM_PACKAGE_URL, source)
+
+    def test_topbar_back_uses_route_navigation_metadata(self) -> None:
+        source = read_sources()
+        self.assertIn('data-action="go-back"', source)
+        self.assertIn('class="topbar-back" data-action="go-back"', source)
+        self.assertIn("createNavigation", source)
+        self.assertIn("fallbackPath: routeBackTarget", source)
+        self.assertIn("routeScrollClass(state.route)", source)
+        self.assertIn("saveCurrentPageState", source)
+        self.assertIn("restorePageState", source)
+
+        chrome = CHROME_JS.read_text(encoding="utf-8")
+        brand_cluster = re.search(r'<div class="brand-cluster">(?P<body>.*?)</div>\s*<div class="top-actions">', chrome, re.DOTALL)
+        self.assertIsNotNone(brand_cluster)
+        self.assertNotIn('data-action="go-back"', brand_cluster.group("body"))
+        top_actions = re.search(r'<div class="top-actions">(?P<body>.*?)</div>\s*</nav>', chrome, re.DOTALL)
+        self.assertIsNotNone(top_actions)
+        top_actions_body = top_actions.group("body").strip()
+        self.assertIn('data-action="go-back"', top_actions_body)
+        self.assertTrue(top_actions_body.startswith('${state.route.name === "home" ? "" : `<button type="button" class="topbar-back" data-action="go-back"'))
+        self.assertNotIn('title="GitHub"', top_actions_body)
+
+    def test_agent_management_loads_summary_before_provider_detail(self) -> None:
+        app = APP_JS.read_text(encoding="utf-8")
+        summary_match = re.search(
+            r"async function loadAgentManagement\(\) \{(?P<body>.*?)\n\}\n\nasync function loadAgentProviderDetail",
+            app,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(summary_match)
+        summary_body = summary_match.group("body")
+        self.assertIn('api("/api/v1/agents/summary")', summary_body)
+        self.assertNotIn('api("/api/v1/agents")', summary_body)
+
+        detail_match = re.search(
+            r"async function loadAgentProviderDetail\(providerId, options = \{\}\) \{(?P<body>.*?)\n\}\n\nfunction loadSelectedAgentProviderDetail",
+            app,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(detail_match)
+        self.assertIn('api(`/api/v1/agents/${encodeURIComponent(providerId)}`)', detail_match.group("body"))
 
 
 if __name__ == "__main__":

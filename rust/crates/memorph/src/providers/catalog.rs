@@ -333,7 +333,11 @@ mod tests {
         catalog.providers[2].sort_order.workspace = 0; // opencode
 
         sort_catalog(&mut catalog);
-        let ids: Vec<_> = catalog.providers.iter().map(|p| p.provider_id.clone()).collect();
+        let ids: Vec<_> = catalog
+            .providers
+            .iter()
+            .map(|p| p.provider_id.clone())
+            .collect();
         assert_eq!(ids, vec!["opencode", "claude", "codex"]);
     }
 
@@ -357,7 +361,11 @@ mod tests {
         });
 
         sort_catalog(&mut catalog);
-        let ids: Vec<_> = catalog.providers.iter().map(|p| p.provider_id.clone()).collect();
+        let ids: Vec<_> = catalog
+            .providers
+            .iter()
+            .map(|p| p.provider_id.clone())
+            .collect();
         // Both have sessions; opencode is more recent; both installed; codex is neither.
         assert_eq!(ids, vec!["opencode", "claude", "codex"]);
     }

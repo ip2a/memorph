@@ -54,6 +54,7 @@ export function createAgentsSettingsModule({
 
   function openSettingsModal(draft = null) {
     const settings = draft || state.meta.settings;
+    const settingsPaths = state.meta?.settings_paths || {};
     const activeSection = state.ui.settingsSection || "general";
     const settingsSectionClass = (section) => `settings-section ${activeSection === section ? "is-active" : "is-hidden"}`;
     const settingsNavClass = (section) => `settings-nav-item ${activeSection === section ? "is-active" : ""}`;
@@ -121,6 +122,7 @@ export function createAgentsSettingsModule({
                   <div class="settings-copy">
                     <strong>${t("defaultBackupDir")}</strong>
                     <span>${t("defaultBackupDirHint")}</span>
+                    <span>${escapeHtml(settingsPaths.backup_dir_resolved || settings.default_backup_dir || "./backups")}</span>
                   </div>
                   <div class="path-picker">
                     <input name="default_backup_dir" list="known-workspaces" value="${escapeAttr(
@@ -129,6 +131,36 @@ export function createAgentsSettingsModule({
                     <button type="button" class="ghost" data-action="browse-folder" data-target-field="default_backup_dir">${t(
                       "browse"
                     )}</button>
+                  </div>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-copy">
+                    <strong>${t("backupDirBase")}</strong>
+                    <span>${t("backupDirBaseHint")}</span>
+                    <span>${escapeHtml(settingsPaths.backup_dir_base || "—")}</span>
+                  </div>
+                  <div class="settings-copy settings-copy-inline">
+                    <strong>${escapeHtml(settingsPaths.backup_dir_input || settings.default_backup_dir || "./backups")}</strong>
+                  </div>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-copy">
+                    <strong>${t("logDir")}</strong>
+                    <span>${t("logDirHint")}</span>
+                    <span>${escapeHtml(settingsPaths.log_dir || "~/.memorph/logs")}</span>
+                  </div>
+                  <div class="settings-copy settings-copy-inline">
+                    <strong>${escapeHtml(settingsPaths.log_dir || "~/.memorph/logs")}</strong>
+                  </div>
+                </div>
+                <div class="settings-row">
+                  <div class="settings-copy">
+                    <strong>${t("logFileName")}</strong>
+                    <span>${t("logFileNameHint")}</span>
+                    <span>${escapeHtml(settingsPaths.log_file_path || "~/.memorph/logs/memorph.log")}</span>
+                  </div>
+                  <div class="settings-copy settings-copy-inline">
+                    <strong>${escapeHtml(settingsPaths.log_file_name || "memorph.log")}</strong>
                   </div>
                 </div>
                 <div class="settings-row">
@@ -410,11 +442,12 @@ export function createAgentsSettingsModule({
   }
 
   function currentAgentProvider() {
-    return (
+    const summary =
       state.agents.providers.find((item) => item.provider_id === state.agents.selectedProvider) ||
       state.agents.providers[0] ||
-      null
-    );
+      null;
+    if (!summary) return null;
+    return state.agents.providerDetails?.[summary.provider_id] || summary;
   }
 
   function sortProviderListByInstall(providerList) {
@@ -464,6 +497,8 @@ export function createAgentsSettingsModule({
   }
 
   function renderAgentProviderDetail(provider) {
+    const detailLoading = !!state.agents.providerDetailLoading?.[provider.provider_id];
+    const hasDetail = !!state.agents.providerDetails?.[provider.provider_id];
     const settings = provider.settings || [];
     const items = settings.filter(
       (setting) =>
@@ -474,6 +509,7 @@ export function createAgentsSettingsModule({
     const environment = agentProviderEnvironment(provider);
     return `
       <div class="agent-provider-detail-scroll">
+      ${detailLoading && !hasDetail ? `<div class="empty-state agent-detail-loading">${t("loading")}</div>` : ""}
       <header class="manager-section-head agent-provider-detail-header">
         <div class="stack agent-provider-detail-head">
           <strong>${escapeHtml(agentProviderDisplayName(provider))}</strong>
@@ -523,7 +559,7 @@ export function createAgentsSettingsModule({
                     : renderAgentActionRow(provider, setting)
                 )
                 .join("")}</div>`
-            : `<div class="empty-state">${t("agentProviderItemsEmpty")}</div>`
+            : `<div class="settings-list"><div class="empty-state agent-provider-items-empty">${t("agentProviderItemsEmpty")}</div></div>`
         }
         ${actionItems.map((setting) => renderAgentSettingResult(provider.provider_id, setting.id)).join("")}
       </div>
@@ -558,7 +594,9 @@ export function createAgentsSettingsModule({
     const events = Array.isArray(profile?.events) ? profile.events : [];
     const blockingCount = events.filter((event) => event.blocking).length;
     const status = hook.status || "unsupported";
-    const lastEvent = hook.last_event_at ? formatDate(hook.last_event_at) : "—";
+    const attentionCount = (diagnosis.hook_needs_attention || 0) + (diagnosis.no_session_match || 0) + (diagnosis.no_active_runtime || 0) + (diagnosis.no_events_yet || 0) + (diagnosis.hook_not_installed || 0);
+    const version = hook.installed_version || hook.current_version || "—";
+    const versionLabel = hook.installed_version && hook.current_version && hook.installed_version !== hook.current_version ? `${hook.installed_version} → ${hook.current_version}` : version;
     return `
       <div class="stack">
         <div class="section-heading">
@@ -570,20 +608,23 @@ export function createAgentsSettingsModule({
         </div>
         <div class="manager-summary-grid agent-environment-grid">
           ${renderMetaLine("Hook status", status)}
-          ${renderMetaLine("Hook format", profile ? hookFormatLabel(profile.format) : "—")}
-          ${renderMetaLine("Events", events.length ? `${events.length} total / ${blockingCount} blocking` : "—")}
-          ${renderMetaLine("Installed version", hook.installed_version || "—")}
-          ${renderMetaLine("Current version", hook.current_version || "—")}
+          ${renderMetaLine("Version", versionLabel)}
           ${renderMetaLine("Sessions", String(diagnosis.total_sessions || 0))}
-          ${renderMetaLine("Linked", String(diagnosis.linked || 0))}
-          ${renderMetaLine("Weak", String(diagnosis.weakly_linked || 0))}
-          ${renderMetaLine("Attention", String((diagnosis.hook_needs_attention || 0) + (diagnosis.no_session_match || 0) + (diagnosis.no_active_runtime || 0) + (diagnosis.no_events_yet || 0) + (diagnosis.hook_not_installed || 0)))}
           ${renderMetaLine("Active runtime", String(diagnosis.active_runtime_sessions || 0))}
+          ${attentionCount ? renderMetaLine("Attention", String(attentionCount)) : ""}
         </div>
+        ${events.length ? `
         <div class="settings-list agent-environment-paths">
-          ${renderHookDiagnosisSummaryRow(diagnosis)}
-          ${events.length ? renderHookEventProfileRow(events) : ""}
+          <div class="settings-row agent-detail-row">
+            <div class="settings-copy settings-copy-inline">
+              <strong>Hook events</strong>
+            </div>
+            <div class="pill-row hook-event-pill-row">
+              ${events.map((event) => `<span class="pill" title="${escapeAttr(event.blocking ? "blocking" : "record-only")}">${escapeHtml(event.name)}${event.blocking ? " *" : ""}</span>`).join("")}
+            </div>
+          </div>
         </div>
+        ` : ""}
       </div>`;
   }
 

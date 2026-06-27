@@ -86,8 +86,6 @@ impl HookIngestResponse {
             message: None,
         }
     }
-
-
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

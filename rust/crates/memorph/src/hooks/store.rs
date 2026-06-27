@@ -300,9 +300,7 @@ fn append_json_line<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::model::{
-        HookEvent, HookEventType, RuntimeSessionId, RuntimeSessionStatus,
-    };
+    use crate::hooks::model::{HookEvent, HookEventType, RuntimeSessionId, RuntimeSessionStatus};
     use serde_json::Value;
 
     #[test]
@@ -417,5 +415,4 @@ mod tests {
         assert!(loaded.sessions[0].workspace_roots.is_empty());
         assert_eq!(loaded.sessions[0].tool_call_count, 0);
     }
-
 }

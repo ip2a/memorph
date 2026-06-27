@@ -9,19 +9,18 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
-use std::sync::{Arc, OnceLock, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use crate::{
-    agent_management, config, core, hooks, logging, provider_features, provider_settings,
+    agent_management, cache, config, core, hooks, logging, provider_features, provider_settings,
     providers::catalog::{build_catalog, sort_catalog, CatalogInput, ProviderCatalog},
     sync as session_sync,
 };
 
 type FolderPicker =
     dyn Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static;
-type FilePicker =
-    dyn Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static;
+type FilePicker = dyn Fn(Option<String>) -> anyhow::Result<Option<String>> + Send + Sync + 'static;
 
 static FOLDER_PICKER: OnceLock<Arc<FolderPicker>> = OnceLock::new();
 static FILE_PICKER: OnceLock<Arc<FilePicker>> = OnceLock::new();
@@ -63,6 +62,7 @@ pub fn router() -> Router {
         .route("/api/v1/meta", get(get_meta))
         .route("/api/v1/update-check", get(check_for_update))
         .route("/api/v1/agents", get(list_agent_management))
+        .route("/api/v1/agents/summary", get(list_agent_management_summary))
         .route(
             "/api/v1/agents/{provider}",
             get(get_agent_management_provider),
@@ -131,10 +131,7 @@ pub fn router() -> Router {
             "/api/v1/compression/archives",
             get(list_compression_archives),
         )
-        .route(
-            "/api/v1/compression/archive",
-            get(get_compression_archive),
-        )
+        .route("/api/v1/compression/archive", get(get_compression_archive))
         .route(
             "/api/v1/compression/providers",
             get(list_compression_providers),
@@ -190,13 +187,22 @@ pub fn router() -> Router {
         )
         .route("/api/v1/manager/preview", post(manager_preview))
         .route("/api/v1/manager/quick-preview", get(manager_quick_preview))
-        .route("/api/v1/manager/quick-workspaces", get(manager_quick_workspaces))
+        .route(
+            "/api/v1/manager/quick-workspaces",
+            get(manager_quick_workspaces),
+        )
         .route("/api/v1/manager/workspaces", post(manager_workspaces))
         .route("/api/v1/manager/stats", post(manager_stats))
         .route("/api/v1/manager/clean", post(manager_clean))
-        .route("/api/v1/manager/clean-workspace", post(manager_clean_workspace))
+        .route(
+            "/api/v1/manager/clean-workspace",
+            post(manager_clean_workspace),
+        )
         .route("/api/v1/manager/backup", post(manager_backup))
-        .route("/api/v1/manager/backup-workspace", post(manager_backup_workspace))
+        .route(
+            "/api/v1/manager/backup-workspace",
+            post(manager_backup_workspace),
+        )
         .merge(hooks::server::router())
 }
 
@@ -250,6 +256,11 @@ struct AgentManagementPayload {
 }
 
 #[derive(Debug, Serialize)]
+struct AgentManagementSummaryPayload {
+    providers: Vec<agent_management::AgentManagementSummaryEntry>,
+}
+
+#[derive(Debug, Serialize)]
 struct SettingsPayload {
     sessions_per_provider: usize,
     language: config::UiLanguage,
@@ -271,11 +282,22 @@ struct ConfigFilePayload {
 }
 
 #[derive(Debug, Serialize)]
+struct SettingsPathsPayload {
+    backup_dir_input: String,
+    backup_dir_resolved: String,
+    backup_dir_base: String,
+    log_dir: String,
+    log_file_name: &'static str,
+    log_file_path: String,
+}
+
+#[derive(Debug, Serialize)]
 struct MetaPayload {
     version: &'static str,
     selected_workspace: Option<String>,
     workspaces: Vec<config::WorkspaceEntry>,
     settings: SettingsPayload,
+    settings_paths: SettingsPathsPayload,
     config_file: ConfigFilePayload,
 }
 
@@ -288,6 +310,53 @@ struct SessionDetailPayload {
     has_more_events: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     hook_runtime_sessions: Vec<hooks::model::RuntimeSession>,
+}
+
+fn fallback_backup_dir_base() -> std::path::PathBuf {
+    std::env::current_dir()
+        .or_else(|_| dirs::home_dir().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound)))
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
+
+fn backup_dir_base_path(workspace: Option<&str>) -> std::path::PathBuf {
+    workspace
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            config::selected_workspace()
+                .ok()
+                .flatten()
+                .map(std::path::PathBuf::from)
+        })
+        .unwrap_or_else(fallback_backup_dir_base)
+}
+
+fn resolve_backup_output_dir(output_dir: &str, workspace: Option<&str>) -> std::path::PathBuf {
+    let output_path = std::path::PathBuf::from(output_dir);
+    if output_path.is_absolute() {
+        return output_path;
+    }
+
+    backup_dir_base_path(workspace).join(output_path)
+}
+
+fn display_settings_path(path: &std::path::Path) -> String {
+    let visible = crate::utils::user_visible_path(&path.to_string_lossy());
+    let Ok(home_dir) = config::effective_home_dir() else {
+        return visible;
+    };
+    let home_visible = crate::utils::user_visible_path(&home_dir.to_string_lossy());
+    if visible == home_visible {
+        return "~".to_string();
+    }
+    if let Some(stripped) = visible.strip_prefix(&(home_visible.clone() + "/")) {
+        return format!("~/{}", stripped);
+    }
+    if let Some(stripped) = visible.strip_prefix(&(home_visible + "\\")) {
+        return format!("~/{}", stripped.replace('\\', "/"));
+    }
+    visible
 }
 
 #[derive(Debug, Serialize)]
@@ -459,70 +528,9 @@ fn filter_sessions_by_workspace(
         .collect()
 }
 
-struct CatalogCacheEntry {
-    workspace: Option<String>,
-    catalog: ProviderCatalog,
-    generated_at: Instant,
-}
-
-struct ActiveCatalogCacheEntry {
-    workspace: Option<String>,
-    providers: Vec<ProviderActiveInfo>,
-    generated_at: Instant,
-}
-
-static CATALOG_CACHE: OnceLock<Arc<RwLock<CatalogCacheEntry>>> = OnceLock::new();
-static ACTIVE_CATALOG_CACHE: OnceLock<Arc<RwLock<ActiveCatalogCacheEntry>>> = OnceLock::new();
-
-const CATALOG_CACHE_TTL: Duration = Duration::from_secs(5);
-const ACTIVE_CATALOG_CACHE_TTL: Duration = Duration::from_secs(15);
-
-#[derive(Debug, Clone, Serialize)]
-struct ProviderActiveInfo {
-    provider_id: String,
-    has_sessions: bool,
-    active_time: crate::providers::catalog::ActiveTime,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ProviderActiveCatalog {
-    providers: Vec<ProviderActiveInfo>,
-}
-
-fn catalog_cache() -> Arc<RwLock<CatalogCacheEntry>> {
-    CATALOG_CACHE
-        .get_or_init(|| Arc::new(RwLock::new(CatalogCacheEntry {
-            workspace: None,
-            catalog: ProviderCatalog { providers: Vec::new() },
-            generated_at: Instant::now() - CATALOG_CACHE_TTL * 2,
-        })))
-        .clone()
-}
-
-fn active_catalog_cache() -> Arc<RwLock<ActiveCatalogCacheEntry>> {
-    ACTIVE_CATALOG_CACHE
-        .get_or_init(|| Arc::new(RwLock::new(ActiveCatalogCacheEntry {
-            workspace: None,
-            providers: Vec::new(),
-            generated_at: Instant::now() - ACTIVE_CATALOG_CACHE_TTL * 2,
-        })))
-        .clone()
-}
-
-fn cache_key(workspace: Option<&str>) -> Option<String> {
-    workspace.map(|value| value.to_string())
-}
-
 async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result<ProviderCatalog> {
-    // Try cache first.
-    {
-        let cache_handle = catalog_cache();
-        let cache = cache_handle
-            .read()
-            .map_err(|_| anyhow::anyhow!("Catalog cache poisoned"))?;
-        if cache.generated_at.elapsed() < CATALOG_CACHE_TTL && cache.workspace == cache_key(workspace) {
-            return Ok(cache.catalog.clone());
-        }
+    if let Some(catalog) = cache::catalog_cache().get(workspace) {
+        return Ok(catalog);
     }
 
     let prefs = config::web_preferences()?;
@@ -538,12 +546,14 @@ async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result
         env_handles.push(tokio::task::spawn_blocking(move || {
             (
                 id.clone(),
-                crate::agent_environment::detect_provider_environment(&id),
+                crate::agent_environment::detect_provider_environment_fast(&id),
             )
         }));
     }
-    let mut env_by_provider: std::collections::HashMap<String, crate::agent_environment::AgentEnvironmentStatus> =
-        std::collections::HashMap::new();
+    let mut env_by_provider: std::collections::HashMap<
+        String,
+        crate::agent_environment::AgentEnvironmentStatus,
+    > = std::collections::HashMap::new();
     for handle in env_handles {
         if let Ok((id, env)) = handle.await {
             env_by_provider.insert(id, env);
@@ -598,30 +608,16 @@ async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result
 
     sort_catalog(&mut catalog);
 
-    // Update cache.
-    {
-        let cache_handle = catalog_cache();
-        let mut cache = cache_handle
-            .write()
-            .map_err(|_| anyhow::anyhow!("Catalog cache poisoned"))?;
-        cache.workspace = cache_key(workspace);
-        cache.catalog = catalog.clone();
-        cache.generated_at = Instant::now();
-    }
+    cache::catalog_cache().set(workspace, catalog.clone());
 
     Ok(catalog)
 }
 
-async fn build_provider_catalog_active(workspace: Option<&str>) -> anyhow::Result<ProviderActiveCatalog> {
-    // Try cache first.
-    {
-        let cache_handle = active_catalog_cache();
-        let cache = cache_handle
-            .read()
-            .map_err(|_| anyhow::anyhow!("Active catalog cache poisoned"))?;
-        if cache.generated_at.elapsed() < ACTIVE_CATALOG_CACHE_TTL && cache.workspace == cache_key(workspace) {
-            return Ok(ProviderActiveCatalog { providers: cache.providers.clone() });
-        }
+async fn build_provider_catalog_active(
+    workspace: Option<&str>,
+) -> anyhow::Result<cache::ProviderActiveCatalog> {
+    if let Some(catalog) = cache::active_catalog_cache().get(workspace) {
+        return Ok(catalog);
     }
 
     let ordered_ids = config::ordered_provider_ids(&config::web_preferences()?);
@@ -632,11 +628,16 @@ async fn build_provider_catalog_active(workspace: Option<&str>) -> anyhow::Resul
     for id in &ordered_ids {
         let id = id.clone();
         scan_handles.push(tokio::task::spawn_blocking(move || {
-            (id.clone(), scan_provider_sessions(&id, None).unwrap_or_default())
+            (
+                id.clone(),
+                scan_provider_sessions(&id, None).unwrap_or_default(),
+            )
         }));
     }
-    let mut sessions_by_provider: std::collections::HashMap<String, Vec<crate::provider::ProviderSessionSummary>> =
-        std::collections::HashMap::new();
+    let mut sessions_by_provider: std::collections::HashMap<
+        String,
+        Vec<crate::provider::ProviderSessionSummary>,
+    > = std::collections::HashMap::new();
     for handle in scan_handles {
         if let Ok((id, sessions)) = handle.await {
             sessions_by_provider.insert(id, sessions);
@@ -658,7 +659,7 @@ async fn build_provider_catalog_active(workspace: Option<&str>) -> anyhow::Resul
                 .filter_map(|session| session.last_active_at)
                 .max()
                 .unwrap_or(0);
-            Some(ProviderActiveInfo {
+            Some(cache::ProviderActiveInfo {
                 provider_id: id.clone(),
                 has_sessions: !workspace_sessions.is_empty(),
                 active_time: crate::providers::catalog::ActiveTime {
@@ -669,29 +670,15 @@ async fn build_provider_catalog_active(workspace: Option<&str>) -> anyhow::Resul
         })
         .collect();
 
-    let result = ProviderActiveCatalog { providers };
+    let result = cache::ProviderActiveCatalog { providers };
 
-    // Update cache.
-    {
-        let cache_handle = active_catalog_cache();
-        let mut cache = cache_handle
-            .write()
-            .map_err(|_| anyhow::anyhow!("Active catalog cache poisoned"))?;
-        cache.workspace = cache_key(workspace);
-        cache.providers = result.providers.clone();
-        cache.generated_at = Instant::now();
-    }
+    cache::active_catalog_cache().set(workspace, result.clone());
 
     Ok(result)
 }
 
 fn invalidate_catalog_cache() {
-    if let Ok(mut cache) = catalog_cache().try_write() {
-        cache.generated_at = Instant::now() - CATALOG_CACHE_TTL * 2;
-    }
-    if let Ok(mut cache) = active_catalog_cache().try_write() {
-        cache.generated_at = Instant::now() - ACTIVE_CATALOG_CACHE_TTL * 2;
-    }
+    cache::invalidate_catalog_caches();
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -948,27 +935,49 @@ fn config_file_payload() -> anyhow::Result<ConfigFilePayload> {
     })
 }
 
+fn settings_paths_payload() -> anyhow::Result<SettingsPathsPayload> {
+    let prefs = config::web_preferences()?;
+    let memorph_dir = config::memorph_dir()?;
+    let log_dir = memorph_dir.join("logs");
+    let log_file_name = "memorph.log";
+    let backup_dir_input = prefs.default_backup_dir.clone();
+    let backup_dir_base = backup_dir_base_path(None);
+    let backup_dir_resolved = resolve_backup_output_dir(&backup_dir_input, None);
+
+    Ok(SettingsPathsPayload {
+        backup_dir_input,
+        backup_dir_resolved: display_settings_path(&backup_dir_resolved),
+        backup_dir_base: display_settings_path(&backup_dir_base),
+        log_dir: display_settings_path(&log_dir),
+        log_file_name,
+        log_file_path: display_settings_path(&log_dir.join(log_file_name)),
+    })
+}
+
 async fn get_meta() -> impl IntoResponse {
     match (
         settings_payload(),
         config::selected_workspace(),
         config::known_workspaces(),
+        settings_paths_payload(),
         config_file_payload(),
     ) {
-        (Ok(settings), Ok(selected_workspace), Ok(workspaces), Ok(config_file)) => {
+        (Ok(settings), Ok(selected_workspace), Ok(workspaces), Ok(settings_paths), Ok(config_file)) => {
             ApiResponse::success(MetaPayload {
                 version: env!("CARGO_PKG_VERSION"),
                 selected_workspace,
                 workspaces,
                 settings,
+                settings_paths,
                 config_file,
             })
             .into_response()
         }
-        (Err(e), _, _, _)
-        | (_, Err(e), _, _)
-        | (_, _, Err(e), _)
-        | (_, _, _, Err(e)) => {
+        (Err(e), _, _, _, _)
+        | (_, Err(e), _, _, _)
+        | (_, _, Err(e), _, _)
+        | (_, _, _, Err(e), _)
+        | (_, _, _, _, Err(e)) => {
             api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
         }
     }
@@ -988,6 +997,15 @@ async fn list_agent_management() -> impl IntoResponse {
     }
 }
 
+async fn list_agent_management_summary() -> impl IntoResponse {
+    match agent_management::list_agent_management_summaries() {
+        Ok(providers) => {
+            ApiResponse::success(AgentManagementSummaryPayload { providers }).into_response()
+        }
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
 async fn get_agent_management_provider(Path(provider): Path<String>) -> impl IntoResponse {
     match agent_management::get_agent_management_entry(&provider) {
         Ok(provider) => ApiResponse::success(provider).into_response(),
@@ -997,7 +1015,10 @@ async fn get_agent_management_provider(Path(provider): Path<String>) -> impl Int
 
 async fn detect_agent_management_provider(Path(provider): Path<String>) -> impl IntoResponse {
     match agent_management::detect_agent_management_entry(&provider) {
-        Ok(provider) => ApiResponse::success(provider).into_response(),
+        Ok(provider) => {
+            invalidate_catalog_cache();
+            ApiResponse::success(provider).into_response()
+        }
         Err(error) => api_error(StatusCode::NOT_FOUND, error).into_response(),
     }
 }
@@ -1333,10 +1354,9 @@ async fn get_session(
 async fn get_session_stats(
     Path((provider, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let result = tokio::task::spawn_blocking(move || {
-        core::compute_session_stats(&provider, &session_id)
-    })
-    .await;
+    let result =
+        tokio::task::spawn_blocking(move || core::compute_session_stats(&provider, &session_id))
+            .await;
 
     match result {
         Ok(Ok(stats)) => ApiResponse::success(stats).into_response(),
@@ -1498,44 +1518,13 @@ async fn export_session(Json(body): Json<ExportBody>) -> impl IntoResponse {
     }
 }
 
-struct CompressionArchivesCacheEntry {
-    workspace: Option<String>,
-    items: Vec<core::compression::CompressionArchiveSummary>,
-    generated_at: Instant,
-}
-
-static COMPRESSION_ARCHIVES_CACHE: OnceLock<Arc<RwLock<CompressionArchivesCacheEntry>>> =
-    OnceLock::new();
-
-const COMPRESSION_ARCHIVES_CACHE_TTL: Duration = Duration::from_secs(5);
-
-fn compression_archives_cache() -> Arc<RwLock<CompressionArchivesCacheEntry>> {
-    COMPRESSION_ARCHIVES_CACHE
-        .get_or_init(|| {
-            Arc::new(RwLock::new(CompressionArchivesCacheEntry {
-                workspace: None,
-                items: Vec::new(),
-                generated_at: Instant::now() - COMPRESSION_ARCHIVES_CACHE_TTL * 2,
-            }))
-        })
-        .clone()
-}
-
 async fn list_compression_archives_cached(
     workspace: Option<String>,
 ) -> anyhow::Result<Vec<core::compression::CompressionArchiveSummary>> {
     let workspace_key = workspace.filter(|value| !value.is_empty());
 
-    {
-        let cache_handle = compression_archives_cache();
-        let cache = cache_handle
-            .read()
-            .map_err(|_| anyhow!("Compression archives cache poisoned"))?;
-        if cache.generated_at.elapsed() < COMPRESSION_ARCHIVES_CACHE_TTL
-            && cache.workspace == workspace_key
-        {
-            return Ok(cache.items.clone());
-        }
+    if let Some(items) = cache::compression_archives_cache().get(workspace_key.as_deref()) {
+        return Ok(items);
     }
 
     let workspace_for_spawn = workspace_key.clone();
@@ -1545,15 +1534,7 @@ async fn list_compression_archives_cached(
     .await
     .map_err(|err| anyhow!("Failed to list compression archives: {err}"))??;
 
-    {
-        let cache_handle = compression_archives_cache();
-        let mut cache = cache_handle
-            .write()
-            .map_err(|_| anyhow!("Compression archives cache poisoned"))?;
-        cache.workspace = workspace_key;
-        cache.items = items.clone();
-        cache.generated_at = Instant::now();
-    }
+    cache::compression_archives_cache().set(workspace_key.as_deref(), items.clone());
 
     Ok(items)
 }
@@ -1574,7 +1555,10 @@ async fn list_compression_archives(Query(q): Query<CompressionArchivesQuery>) ->
             let total = items.len();
             let offset = q.offset.unwrap_or(0).min(total);
             let remaining = total.saturating_sub(offset);
-            let limit = q.limit.map(|value| value.min(remaining)).unwrap_or(remaining);
+            let limit = q
+                .limit
+                .map(|value| value.min(remaining))
+                .unwrap_or(remaining);
             let page: Vec<_> = items.into_iter().skip(offset).take(limit).collect();
 
             let mut response = ApiResponse::success(page).into_response();
@@ -2086,19 +2070,39 @@ struct ManagerPreviewBody {
     limit: Option<usize>,
 }
 
-async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
-    let filter = crate::core::manager::ManagerFilter {
+fn manager_filter_from_body(
+    body: ManagerPreviewBody,
+    workspace: Option<String>,
+    limit: Option<usize>,
+) -> crate::core::manager::ManagerFilter {
+    crate::core::manager::ManagerFilter {
         providers: body.providers,
         older_than_days: body.older_than_days,
         older_than_ms: body.older_than_ms,
         larger_than_mb: body.larger_than_mb,
         larger_than_bytes: body.larger_than_bytes,
         smaller_than_bytes: body.smaller_than_bytes,
-        workspace: body.workspace,
+        workspace,
         sort: body.sort,
-        limit: body.limit,
-    };
-    match crate::core::manager::preview(&filter) {
+        limit,
+    }
+}
+
+async fn run_manager_blocking<T, F>(task: F) -> Result<T, anyhow::Error>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, anyhow::Error> + Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|e| anyhow!("manager task failed: {}", e))?
+}
+
+async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
+    let workspace = body.workspace.clone();
+    let limit = body.limit;
+    let filter = manager_filter_from_body(body, workspace, limit);
+    match run_manager_blocking(move || crate::core::manager::preview(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -2177,7 +2181,7 @@ async fn manager_quick_preview(
     let selected_agent_count = provider_ids.len();
     let filter = quick_filter(provider_ids);
 
-    match crate::core::manager::preview(&filter) {
+    match run_manager_blocking(move || crate::core::manager::preview(&filter)).await {
         Ok(preview) => ApiResponse::success(ManagerQuickPreviewResult {
             selected_agent_count,
             total_count: preview.total_count,
@@ -2207,25 +2211,16 @@ async fn manager_quick_workspaces(
     }
 
     let filter = quick_filter(provider_ids);
-    match crate::core::manager::workspaces(&filter) {
+    match run_manager_blocking(move || crate::core::manager::workspaces(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
 async fn manager_stats(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
-    let filter = crate::core::manager::ManagerFilter {
-        providers: body.providers,
-        older_than_days: body.older_than_days,
-        older_than_ms: body.older_than_ms,
-        larger_than_mb: body.larger_than_mb,
-        larger_than_bytes: body.larger_than_bytes,
-        smaller_than_bytes: body.smaller_than_bytes,
-        workspace: body.workspace,
-        sort: body.sort,
-        limit: None,
-    };
-    match crate::core::manager::stats(&filter) {
+    let workspace = body.workspace.clone();
+    let filter = manager_filter_from_body(body, workspace, None);
+    match run_manager_blocking(move || crate::core::manager::stats(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -2251,30 +2246,24 @@ async fn manager_clean(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse 
 
 async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
     let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
-    let result = crate::core::manager::backup(&body.items, std::path::Path::new(&output_dir));
+    let resolved_output_dir = resolve_backup_output_dir(&output_dir, None);
+    let result = crate::core::manager::backup(&body.items, &resolved_output_dir);
     logging::info(
         "manager_backup",
         format!(
             "success={} failed={} output_dir={}",
-            result.success, result.failed, output_dir
+            result.success,
+            result.failed,
+            resolved_output_dir.display()
         ),
     );
     ApiResponse::success(result).into_response()
 }
 
 async fn manager_workspaces(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
-    let filter = crate::core::manager::ManagerFilter {
-        providers: body.providers,
-        older_than_days: body.older_than_days,
-        older_than_ms: body.older_than_ms,
-        larger_than_mb: body.larger_than_mb,
-        larger_than_bytes: body.larger_than_bytes,
-        smaller_than_bytes: body.smaller_than_bytes,
-        workspace: None,
-        sort: body.sort,
-        limit: body.limit,
-    };
-    match crate::core::manager::workspaces(&filter) {
+    let limit = body.limit;
+    let filter = manager_filter_from_body(body, None, limit);
+    match run_manager_blocking(move || crate::core::manager::workspaces(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -2301,13 +2290,21 @@ async fn manager_clean_workspace(Json(body): Json<ManagerWorkspaceBody>) -> impl
 
 async fn manager_backup_workspace(Json(body): Json<ManagerWorkspaceBody>) -> impl IntoResponse {
     let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
-    let result =
-        crate::core::manager::backup_workspace(&body.provider_id, &body.workspace, std::path::Path::new(&output_dir));
+    let resolved_output_dir = resolve_backup_output_dir(&output_dir, Some(&body.workspace));
+    let result = crate::core::manager::backup_workspace(
+        &body.provider_id,
+        &body.workspace,
+        &resolved_output_dir,
+    );
     logging::info(
         "manager_backup_workspace",
         format!(
             "provider={} workspace={} success={} failed={} output_dir={}",
-            body.provider_id, body.workspace, result.success, result.failed, output_dir
+            body.provider_id,
+            body.workspace,
+            result.success,
+            result.failed,
+            resolved_output_dir.display()
         ),
     );
     ApiResponse::success(result).into_response()
@@ -2855,13 +2852,11 @@ mod tests {
     async fn compression_retrieve_route_returns_query_matches_from_archive() {
         let fixture = write_api_retrieve_archive_fixture();
         eprintln!("fixture created: {}", fixture.archive_ref);
-        let direct = core::retrieve_compression_archive(
-            &core::RetrieveCompressionArchiveParams {
-                archive_ref: fixture.archive_ref.clone(),
-                query: Some("needle".to_string()),
-                max_results: Some(5),
-            },
-        );
+        let direct = core::retrieve_compression_archive(&core::RetrieveCompressionArchiveParams {
+            archive_ref: fixture.archive_ref.clone(),
+            query: Some("needle".to_string()),
+            max_results: Some(5),
+        });
         eprintln!("direct retrieve ok={}", direct.is_ok());
         let request = Request::builder()
             .method("POST")
@@ -3147,6 +3142,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn meta_route_exposes_resolved_backup_and_log_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let workspace_dir = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace_dir).unwrap();
+        crate::config::remember_workspace(&workspace_dir).unwrap();
+
+        let update_request = Request::builder()
+            .method("PUT")
+            .uri("/api/v1/settings")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "sessions_per_provider": 12,
+                    "language": "en",
+                    "show_opencode_subagents": false,
+                    "sort_providers_by_session_count": true,
+                    "default_backup_dir": "./backups",
+                    "logging": {
+                        "max_size_bytes": 5 * 1024 * 1024,
+                        "retention_days": null
+                    },
+                    "home_buttons": {
+                        "switch": true,
+                        "view": true,
+                        "compress": true,
+                        "export": true,
+                        "sync": false,
+                        "delete": false
+                    },
+                    "agent_order": [],
+                    "primary_agents": []
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        let (update_status, _) = read_json(router(), update_request).await;
+        assert_eq!(update_status, StatusCode::OK);
+
+        let meta_request = Request::builder()
+            .uri("/api/v1/meta")
+            .body(Body::empty())
+            .unwrap();
+        let (meta_status, meta_value) = read_json(router(), meta_request).await;
+
+        assert_eq!(meta_status, StatusCode::OK);
+        assert_eq!(meta_value["data"]["settings_paths"]["backup_dir_input"], "./backups");
+        let expected_base = workspace_dir.canonicalize().unwrap();
+        let expected_resolved = expected_base.join("./backups");
+        assert_eq!(
+            meta_value["data"]["settings_paths"]["backup_dir_base"],
+            expected_base.display().to_string()
+        );
+        assert_eq!(
+            meta_value["data"]["settings_paths"]["backup_dir_resolved"],
+            expected_resolved.display().to_string()
+        );
+        assert_eq!(meta_value["data"]["settings_paths"]["log_dir"], "~/.memorph/logs");
+        assert_eq!(meta_value["data"]["settings_paths"]["log_file_name"], "memorph.log");
+        assert_eq!(
+            meta_value["data"]["settings_paths"]["log_file_path"],
+            "~/.memorph/logs/memorph.log"
+        );
+    }
+
+    #[test]
+    fn resolve_backup_output_dir_uses_workspace_for_relative_paths() {
+        let path = resolve_backup_output_dir("./backups", Some("/tmp/current-workspace"));
+        assert_eq!(path, std::path::PathBuf::from("/tmp/current-workspace").join("./backups"));
+
+        let absolute = resolve_backup_output_dir("/tmp/exports", Some("/tmp/current-workspace"));
+        assert_eq!(absolute, std::path::PathBuf::from("/tmp/exports"));
+    }
+
+    #[tokio::test]
     async fn catalog_route_returns_classified_providers() {
         let request = Request::builder()
             .uri("/api/v1/providers/catalog")
@@ -3193,6 +3263,29 @@ mod tests {
         assert!(codex.get("environment").is_some());
         assert!(codex.get("features").is_none());
     }
+
+    #[tokio::test]
+    async fn agents_summary_route_omits_expensive_session_diagnosis() {
+        let request = Request::builder()
+            .uri("/api/v1/agents/summary")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["ok"], true);
+
+        let providers = value["data"]["providers"].as_array().unwrap();
+        let codex = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "codex")
+            .expect("missing codex agent summary");
+        assert!(codex.get("settings").is_some());
+        assert!(codex.get("environment").is_some());
+        assert!(codex.get("hook").is_some());
+        assert!(codex.get("hook_diagnosis").is_none());
+    }
+
     #[tokio::test]
     async fn agents_route_exposes_all_hook_profile_providers() {
         let request = Request::builder()

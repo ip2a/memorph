@@ -8,14 +8,14 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
 };
 use crate::provider::{
-    Provider, ProviderCapabilities, ProviderSessionSummary, canonical_event_visible_message_role,
-    canonical_export_result, canonical_session_title, canonical_visible_block_text,
+    canonical_event_visible_message_role, canonical_export_result, canonical_session_title,
+    canonical_visible_block_text, Provider, ProviderCapabilities, ProviderSessionSummary,
 };
 use crate::utils::truncate_summary;
 use anyhow::{Context, Result};
-use base64::{Engine as _, engine::general_purpose::STANDARD};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -833,24 +833,20 @@ mod tests {
             imported.session.events[0].blocks.first(),
             Some(EventBlock::Text { text }) if text == "hi"
         ));
-        assert!(
-            imported.session.events[1]
-                .blocks
-                .iter()
-                .any(|block| matches!(
-                    block,
-                    EventBlock::Thinking { text, .. } if text == "checking"
-                ))
-        );
-        assert!(
-            imported.session.events[1]
-                .blocks
-                .iter()
-                .any(|block| matches!(
-                    block,
-                    EventBlock::ProviderPayload { kind, .. } if kind == "kiro_extra"
-                ))
-        );
+        assert!(imported.session.events[1]
+            .blocks
+            .iter()
+            .any(|block| matches!(
+                block,
+                EventBlock::Thinking { text, .. } if text == "checking"
+            )));
+        assert!(imported.session.events[1]
+            .blocks
+            .iter()
+            .any(|block| matches!(
+                block,
+                EventBlock::ProviderPayload { kind, .. } if kind == "kiro_extra"
+            )));
 
         Ok(())
     }

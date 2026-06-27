@@ -234,7 +234,9 @@ pub fn list_archives() -> Result<Vec<CompressionArchiveSummary>> {
     list_archives_in_dir(&archive_base_dir()?, None)
 }
 
-pub fn list_archives_for_workspace(workspace: Option<&str>) -> Result<Vec<CompressionArchiveSummary>> {
+pub fn list_archives_for_workspace(
+    workspace: Option<&str>,
+) -> Result<Vec<CompressionArchiveSummary>> {
     list_archives_in_dir(&archive_base_dir()?, workspace)
 }
 
@@ -938,7 +940,10 @@ impl From<ArchiveSummaryIndexEntry> for CompressionArchiveSummary {
             source_event_count: entry.source_event_count,
             original_size_bytes: entry.original_size_bytes,
             stored_size_bytes: entry.stored_size_bytes,
-            compression_ratio: compression_ratio(entry.original_size_bytes, entry.stored_size_bytes),
+            compression_ratio: compression_ratio(
+                entry.original_size_bytes,
+                entry.stored_size_bytes,
+            ),
         }
     }
 }
@@ -953,20 +958,28 @@ fn read_summary_index(archive_dir: &Path) -> Option<ArchiveSummaryIndex> {
     serde_json::from_str(&raw).ok()
 }
 
-fn write_summary_index(
-    archive_dir: &Path,
-    summaries: &[CompressionArchiveSummary],
-) -> Result<()> {
+fn write_summary_index(archive_dir: &Path, summaries: &[CompressionArchiveSummary]) -> Result<()> {
     let path = archive_summary_index_path(archive_dir);
     let index = ArchiveSummaryIndex {
         generated_at: Utc::now(),
-        entries: summaries.iter().map(ArchiveSummaryIndexEntry::from).collect(),
+        entries: summaries
+            .iter()
+            .map(ArchiveSummaryIndexEntry::from)
+            .collect(),
     };
     let raw = serde_json::to_vec_pretty(&index)?;
-    let mut file = tempfile::NamedTempFile::new_in(archive_dir)
-        .with_context(|| format!("Failed to create temporary index file in {}", archive_dir.display()))?;
-    file.write_all(&raw)
-        .with_context(|| format!("Failed to write temporary index file for {}", path.display()))?;
+    let mut file = tempfile::NamedTempFile::new_in(archive_dir).with_context(|| {
+        format!(
+            "Failed to create temporary index file in {}",
+            archive_dir.display()
+        )
+    })?;
+    file.write_all(&raw).with_context(|| {
+        format!(
+            "Failed to write temporary index file for {}",
+            path.display()
+        )
+    })?;
     file.as_file()
         .sync_all()
         .with_context(|| format!("Failed to sync temporary index file for {}", path.display()))?;
@@ -976,7 +989,10 @@ fn write_summary_index(
     Ok(())
 }
 
-fn read_archive_summary_from_path(path: &Path, group_name: &str) -> Option<CompressionArchiveSummary> {
+fn read_archive_summary_from_path(
+    path: &Path,
+    group_name: &str,
+) -> Option<CompressionArchiveSummary> {
     let prefix = read_archive_header_text(path, ARCHIVE_HEADER_READ_LIMIT).ok()?;
     let header = parse_summary_header(&prefix).ok()?;
     let stored_size_bytes = path.metadata().ok()?.len();
@@ -1031,7 +1047,9 @@ fn list_archives_in_dir(
         return Ok(Vec::new());
     }
 
-    let requested_workspace = workspace_filter.map(str::trim).filter(|value| !value.is_empty());
+    let requested_workspace = workspace_filter
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
 
     // 1. Try the in-memory cache first. The cache always holds the unfiltered
     //    set so that different workspace filters can share it.
@@ -1044,7 +1062,10 @@ fn list_archives_in_dir(
         let summaries: Vec<CompressionArchiveSummary> =
             index.entries.into_iter().map(Into::into).collect();
         set_cached_summaries_for_dir(archive_dir, summaries.clone());
-        return Ok(filter_summaries_by_workspace(summaries, requested_workspace));
+        return Ok(filter_summaries_by_workspace(
+            summaries,
+            requested_workspace,
+        ));
     }
 
     // 3. Fall back to scanning files, using header-only reads and parallelism.
@@ -1073,7 +1094,10 @@ fn list_archives_in_dir(
     }
     set_cached_summaries_for_dir(archive_dir, summaries.clone());
 
-    Ok(filter_summaries_by_workspace(summaries, requested_workspace))
+    Ok(filter_summaries_by_workspace(
+        summaries,
+        requested_workspace,
+    ))
 }
 
 fn filter_summaries_by_workspace(

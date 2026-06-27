@@ -44,6 +44,7 @@ export function createState() {
       report: null,
       pendingItems: [],
       viewMode: "sessions",
+      selectionMode: false,
       selectedItems: new Set(),          // encoded session item values
       selectedWorkspaceItems: new Set(), // encoded workspace item values
     },
@@ -54,6 +55,8 @@ export function createState() {
     },
     agents: {
       providers: [],
+      providerDetails: {},
+      providerDetailLoading: {},
       selectedProvider: "",
       settingResults: {},
       pendingSettings: {},

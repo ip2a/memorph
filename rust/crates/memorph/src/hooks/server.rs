@@ -18,9 +18,7 @@ use std::sync::{OnceLock, RwLock};
 use uuid::Uuid;
 
 use crate::hooks::identity::runtime_session_id_for_event;
-use crate::hooks::model::{
-    HookEvent, RuntimeSession, RuntimeSessionStatus,
-};
+use crate::hooks::model::{HookEvent, RuntimeSession, RuntimeSessionStatus};
 use crate::hooks::normalizer;
 use crate::hooks::protocol::{HookIngestRequest, HookIngestResponse, HookRuntimeEndpoint};
 use crate::hooks::runtime::{RuntimeCleanupReport, RuntimeState};
@@ -318,7 +316,6 @@ fn build_overview() -> Result<HookOverviewPayload> {
         .iter()
         .map(|provider| provider.hook_diagnosis.no_session_match)
         .sum();
-
 
     Ok(HookOverviewPayload {
         generated_at: Utc::now(),
@@ -1263,7 +1260,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value["data"]["accepted"], true);
         let data = value["data"].as_object().unwrap();
-        assert_eq!(data.keys().cloned().collect::<Vec<_>>(), vec!["accepted", "event_ids"]);
+        assert_eq!(
+            data.keys().cloned().collect::<Vec<_>>(),
+            vec!["accepted", "event_ids"]
+        );
     }
 
     #[tokio::test]
@@ -1292,5 +1292,4 @@ mod tests {
             assert_eq!(status, StatusCode::NOT_FOUND, "{method} {uri}");
         }
     }
-
 }

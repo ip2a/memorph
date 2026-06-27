@@ -1,5 +1,5 @@
 use anyhow::Result;
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 use crossterm::event::KeyEvent;
 use ratatui::widgets::TableState;
 use serde_json::Value;

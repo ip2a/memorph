@@ -1,5 +1,5 @@
 use crate::provider::ProviderSessionSummary;
-use crate::providers::cursor::db::{ComposerData, global_state_db_path, list_composers};
+use crate::providers::cursor::db::{global_state_db_path, list_composers, ComposerData};
 use anyhow::Result;
 use std::path::Path;
 

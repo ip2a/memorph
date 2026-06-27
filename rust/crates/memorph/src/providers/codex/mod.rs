@@ -9,11 +9,11 @@ use crate::canonical::{
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
-    CompressionProjection, Provider, ProviderCapabilities, ProviderSessionImportPage,
-    ProviderSessionSummary, canonical_event_visible_message_role,
-    canonical_event_visible_message_text, canonical_event_visible_text, canonical_export_result,
+    canonical_event_visible_message_role, canonical_event_visible_message_text,
+    canonical_event_visible_text, canonical_export_result,
     canonical_session_instruction_context_text, canonical_session_title,
-    canonical_visible_block_text, compression_retrieval_hint,
+    canonical_visible_block_text, compression_retrieval_hint, CompressionProjection, Provider,
+    ProviderCapabilities, ProviderSessionImportPage, ProviderSessionSummary,
 };
 use crate::storage::{event_index, session_state};
 use crate::utils;
@@ -3513,11 +3513,11 @@ fn get_git_branch(dir: &Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::core::active_compression::{
-        ActiveCompressionApplyParams, ActiveCompressionMode, ActiveCompressionPolicy,
-        apply_active_compression_with_archive_dir,
+        apply_active_compression_with_archive_dir, ActiveCompressionApplyParams,
+        ActiveCompressionMode, ActiveCompressionPolicy,
     };
     use serde_json::json;
-    use tempfile::{NamedTempFile, tempdir};
+    use tempfile::{tempdir, NamedTempFile};
 
     #[test]
     fn import_canonical_session_preserves_codex_runtime_and_message_events() {

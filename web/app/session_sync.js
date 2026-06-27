@@ -363,7 +363,7 @@ export function createSessionSyncModule({
           <p class="eyebrow">${escapeHtml(providers.displayName(view.provider_id))}</p>
           <h1>${escapeHtml(view.title || view.session_id || state.route.sessionId)}</h1>
           <div class="meta-line">
-            <span>id=<code>${escapeHtml(view.session_id || state.route.sessionId)}</code></span>
+            <span>id=<code data-action="copy-session-id" data-copy-text="${escapeAttr(view.session_id || state.route.sessionId)}" class="copyable-id">${escapeHtml(view.session_id || state.route.sessionId)}</code></span>
             <span>${t("messageCount")}=${view.message_count}</span>
             ${view.last_active_at ? `<span>${t("lastActiveAt")}=${escapeHtml(formatDate(view.last_active_at))}</span>` : ""}
             ${sizeBytes != null ? `<span>${t("size")}=${escapeHtml(formatBytes(sizeBytes))}</span>` : ""}

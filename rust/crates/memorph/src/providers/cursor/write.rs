@@ -5,7 +5,7 @@ use crate::provider::{
 };
 use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
 use anyhow::{Context, Result};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{params, OptionalExtension};
 use serde_json::json;
 use std::path::Path;
 use uuid::Uuid;
@@ -27,7 +27,7 @@ fn prosemirror_rich_text(text: &str) -> serde_json::Value {
 
 /// Generate a random base64 key matching Cursor's format.
 fn random_base64_key() -> String {
-    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
     use rand::Rng;
     let mut rng = rand::thread_rng();
     let bytes: [u8; 32] = rng.r#gen();

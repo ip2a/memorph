@@ -92,14 +92,12 @@ mod tests {
     fn registry_routes_legacy_update_to_provider_setting() {
         let mut prefs = crate::config::WebPreferences::default();
 
-        assert!(
-            super::apply_legacy_web_preference(
-                &mut prefs,
-                "show_opencode_subagents",
-                &Value::Bool(true),
-            )
-            .unwrap()
-        );
+        assert!(super::apply_legacy_web_preference(
+            &mut prefs,
+            "show_opencode_subagents",
+            &Value::Bool(true),
+        )
+        .unwrap());
 
         assert_eq!(
             crate::config::provider_preference_from_prefs(&prefs, "opencode", "show_subagents")

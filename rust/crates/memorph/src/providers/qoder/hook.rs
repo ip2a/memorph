@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::hooks::contract::ProviderHook;
 use crate::hooks::model::{HookHealthStatus, HookInstallStatus, HookOperationReport};
@@ -255,7 +255,7 @@ fn uninstall() -> Result<HookOperationReport> {
 mod tests {
     use super::*;
     use crate::hooks::test_support::TestHookHomeGuard;
-    use serde_json::{Value, json};
+    use serde_json::{json, Value};
 
     #[test]
     fn descriptor_matches_hook_registry() {

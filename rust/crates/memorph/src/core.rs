@@ -1573,8 +1573,12 @@ fn active_compression_apply_session(
 
     let default_prefix = format!("{}_active_compressed", session.identity.canonical_id);
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
-    let export =
-        session_management::write_session_export_files(&applied.session, prefix, &params.format, None)?;
+    let export = session_management::write_session_export_files(
+        &applied.session,
+        prefix,
+        &params.format,
+        None,
+    )?;
 
     Ok(ActiveCompressionApplyCommandResult {
         files: export.files,
