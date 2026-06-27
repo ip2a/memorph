@@ -2336,7 +2336,10 @@ mod tests {
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     struct ConfigTestHome {
@@ -2848,7 +2851,7 @@ mod tests {
             .contains("Unsupported compression archive ref"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn compression_retrieve_route_returns_query_matches_from_archive() {
         let fixture = write_api_retrieve_archive_fixture();
         eprintln!("fixture created: {}", fixture.archive_ref);
@@ -3063,7 +3066,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn provider_setting_update_syncs_legacy_settings_payload() {
         let dir = tempfile::tempdir().unwrap();
         let _home = ConfigTestHome::new(dir.path());
@@ -3091,7 +3094,7 @@ mod tests {
         assert_eq!(settings_value["data"]["show_opencode_subagents"], true);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn legacy_settings_update_syncs_provider_setting_payload() {
         let dir = tempfile::tempdir().unwrap();
         let _home = ConfigTestHome::new(dir.path());
@@ -3141,11 +3144,12 @@ mod tests {
         assert_eq!(setting_value["data"]["value"], true);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn meta_route_exposes_resolved_backup_and_log_paths() {
-        let dir = tempfile::tempdir().unwrap();
-        let _home = ConfigTestHome::new(dir.path());
-        let workspace_dir = dir.path().join("workspace");
+        let home_dir = tempfile::tempdir().unwrap();
+        let workspace_root = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(home_dir.path());
+        let workspace_dir = workspace_root.path().join("workspace");
         std::fs::create_dir_all(&workspace_dir).unwrap();
         crate::config::remember_workspace(&workspace_dir).unwrap();
 
