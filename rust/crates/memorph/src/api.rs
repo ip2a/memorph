@@ -681,6 +681,10 @@ fn invalidate_catalog_cache() {
     cache::invalidate_catalog_caches();
 }
 
+fn invalidate_compression_archives_cache() {
+    cache::compression_archives_cache().invalidate_all();
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallSource {
     Npm,
@@ -1724,7 +1728,10 @@ async fn apply_active_compression(
         format: body.format,
     };
     match core::active_compression_apply(&params) {
-        Ok(result) => ApiResponse::success(result).into_response(),
+        Ok(result) => {
+            invalidate_compression_archives_cache();
+            ApiResponse::success(result).into_response()
+        }
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }

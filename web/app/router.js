@@ -61,7 +61,13 @@ export function parseRoute(pathname, searchParams = null) {
       view: params.get("view") || undefined,
     };
   }
-  if (pathname === "/compression") return { name: "compression" };
+  if (pathname === "/compression") {
+    const params = searchParams || new URLSearchParams();
+    return {
+      name: "compression",
+      archiveRef: params.get("archive_ref") || undefined,
+    };
+  }
   if (pathname === "/sync") return { name: "sync-list" };
   const sessionMatch = pathname.match(/^\/sessions\/([^/]+)\/([^/]+)$/);
   if (sessionMatch) {

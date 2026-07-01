@@ -116,7 +116,7 @@ const {
 });
 const {
   renderCompressionPage,
-  renderCompressionArchiveDetail,
+  renderCompressionArchiveDetailPage,
   renderManagerPage,
   unitOption,
   updateManagerSelectionStats,
@@ -406,15 +406,14 @@ async function loadRoute() {
         }
       }
     } else if (route.name === "compression") {
-      const workspaceQuery = state.home.workspace
-        ? `?workspace=${encodeURIComponent(state.home.workspace)}`
-        : "";
-      const [archives, providers] = await Promise.all([
-        api(`/api/v1/compression/archives${workspaceQuery}`),
-        api("/api/v1/compression/providers"),
-      ]);
-      state.compression.archives = archives;
-      state.compression.providers = providers;
+      await loadCompressionData();
+      if (route.archiveRef) {
+        await loadCompressionArchiveDetail(route.archiveRef);
+      } else {
+        state.compression.selectedArchive = null;
+        state.compression.selectedArchiveRef = "";
+        state.compression.selectedArchiveError = "";
+      }
     } else if (route.name === "hooks") {
       await loadHooksCenter();
     } else if (route.name === "agents") {
@@ -460,23 +459,41 @@ async function refreshHomeSessions(options = {}) {
 
 async function loadCompressionArchiveDetail(archiveRef) {
   if (!archiveRef) return;
+  state.compression.selectedArchiveRef = archiveRef;
+  state.compression.selectedArchive = null;
+  state.compression.selectedArchiveError = "";
   setLoading(true, { label: t("loading"), detail: archiveRef });
   try {
     const archive = await api(
       `/api/v1/compression/archive?archive_ref=${encodeURIComponent(archiveRef)}`
     );
     state.compression.selectedArchive = archive;
-    state.modal = {
-      kind: "custom",
-      title: t("compressionArchiveDetail"),
-      body: renderCompressionArchiveDetail(archive),
-    };
+    state.compression.selectedArchiveError = "";
     render();
   } catch (error) {
+    state.compression.selectedArchive = null;
+    state.compression.selectedArchiveError = error.message;
     toast(t("error"), error.message, true);
   } finally {
     setLoading(false);
   }
+}
+
+async function loadCompressionData() {
+  const compressionDraft = compressionManagerDraft();
+  const workspaceQuery = state.home.workspace
+    ? `?workspace=${encodeURIComponent(state.home.workspace)}`
+    : "";
+  const [sessionPreview, archives, providers] = await Promise.all([
+    compressionDraft.providers.length
+      ? loadManagerSessionPreview(compressionDraft)
+      : Promise.resolve(emptyManagerPreview()),
+    api(`/api/v1/compression/archives${workspaceQuery}`),
+    api("/api/v1/compression/providers"),
+  ]);
+  state.compression.sessionPreview = sessionPreview;
+  state.compression.archives = archives;
+  state.compression.providers = providers;
 }
 
 async function loadMoreSessionEvents() {
@@ -785,6 +802,11 @@ async function setWorkspace(workspace, options = {}) {
       if (loadHomeSessions) await loadHome();
       await refreshWorkspaceMeta();
       state.meta = { ...state.meta, ...(await api("/api/v1/meta")) };
+      if (state.route.name === "compression") {
+        await loadCompressionData();
+        render();
+        return;
+      }
       if (reloadManager) {
         await loadDefaultManagerPreview();
       } else {
@@ -802,6 +824,11 @@ async function setWorkspace(workspace, options = {}) {
     }
     await refreshWorkspaceMeta();
     state.meta = { ...state.meta, ...(await api("/api/v1/meta")) };
+    if (state.route.name === "compression") {
+      await loadCompressionData();
+      render();
+      return;
+    }
     if (reloadManager) {
       await loadDefaultManagerPreview();
     } else {
@@ -949,6 +976,9 @@ async function persistProvidersAndReload() {
     invalidateCatalogClientCache(state.home.workspace);
     await refreshCatalog(state.home.workspace, { force: true });
     await loadHome();
+    if (state.route.name === "compression") {
+      await loadCompressionData();
+    }
     render();
   } catch (error) {
     toast(t("error"), error.message, true);
@@ -1040,23 +1070,15 @@ async function handleAction(action, data, trigger = null) {
       openCompressionRestoreModal(data.archiveRef || "");
       break;
     case "open-compression-detail":
-      await loadCompressionArchiveDetail(data.archiveRef || "");
+      if (data.archiveRef) {
+        navigate(`/compression?archive_ref=${encodeURIComponent(data.archiveRef)}`);
+      }
       break;
     case "open-compression-expand":
       openCompressionExpandModal();
       break;
     case "refresh-compression":
-      {
-        const workspaceQuery = state.home.workspace
-          ? `?workspace=${encodeURIComponent(state.home.workspace)}`
-          : "";
-        const [archives, providers] = await Promise.all([
-          api(`/api/v1/compression/archives${workspaceQuery}`),
-          api("/api/v1/compression/providers"),
-        ]);
-        state.compression.archives = archives;
-        state.compression.providers = providers;
-      }
+      await loadCompressionData();
       toast(t("refreshed"), t("compressionArchives"));
       render();
       break;
@@ -1945,6 +1967,24 @@ async function loadManagerSessionPreview(draft) {
   return api("/api/v1/manager/preview", { method: "POST", body: managerPreviewBody(draft) });
 }
 
+function emptyManagerPreview() {
+  return {
+    items: [],
+    total_count: 0,
+    total_size_bytes: 0,
+  };
+}
+
+function compressionManagerDraft() {
+  const base = defaultManagerDraft();
+  return {
+    ...base,
+    workspace: state.home.workspace || "",
+    max_results: String(state.home.visible || state.meta.settings.sessions_per_provider || 10),
+    providers: state.home.providers.length ? state.home.providers : base.providers,
+  };
+}
+
 async function loadManagerWorkspacePreview(draft) {
   return api("/api/v1/manager/workspaces", { method: "POST", body: managerPreviewBody(draft) });
 }
@@ -2505,7 +2545,7 @@ function renderPage() {
     case "manager":
       return wrapPage(renderManagerPage());
     case "compression":
-      return wrapPage(renderCompressionPage());
+      return wrapPage(state.route.archiveRef ? renderCompressionArchiveDetailPage() : renderCompressionPage());
     case "hooks":
       return wrapPage(renderHooksCenterPage());
     case "agents":

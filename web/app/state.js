@@ -49,9 +49,12 @@ export function createState() {
       selectedWorkspaceItems: new Set(), // encoded workspace item values
     },
     compression: {
+      sessionPreview: null,
       archives: [],
       providers: [],
       selectedArchive: null,
+      selectedArchiveRef: "",
+      selectedArchiveError: "",
     },
     agents: {
       providers: [],

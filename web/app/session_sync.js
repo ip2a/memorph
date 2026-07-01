@@ -346,7 +346,9 @@ export function createSessionSyncModule({
   function renderCompressionArchiveRef(view) {
     const refs = collectCompressedArchiveRefs(view);
     if (!refs.size) return "";
-    return `<a class="button" href="/compression" data-nav="/compression">${t("viewCompression")}</a>`;
+    const archiveRef = [...refs][0];
+    const href = `/compression?archive_ref=${encodeURIComponent(archiveRef)}`;
+    return `<a class="button" href="${href}" data-nav="${href}">${t("viewCompression")}</a>`;
   }
 
   function renderSessionDetailView(detail, view) {

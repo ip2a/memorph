@@ -394,16 +394,89 @@ export function createManagerCompressionModule({
       </div>`;
   }
 
+  function renderCompressionArchiveDetailPage() {
+    const archive = state.compression.selectedArchive;
+    const archiveRef = state.compression.selectedArchiveRef || state.route.archiveRef || "";
+    const error = state.compression.selectedArchiveError || "";
+    if (!archive) {
+      return `
+        <section class="session-header">
+          <div>
+            <p class="eyebrow">${escapeHtml(t("compressionArchiveDetail"))}</p>
+            <h1>${escapeHtml(error ? t("error") : t("loading"))}</h1>
+            ${archiveRef ? `<div class="meta-line"><span>${t("archiveRef")}=<code>${escapeHtml(archiveRef)}</code></span></div>` : ""}
+          </div>
+          <div class="session-actions">
+            <a class="button" href="/compression" data-nav="/compression">${t("back")}</a>
+          </div>
+        </section>
+        ${error ? `<div class="empty-state">${escapeHtml(error)}</div>` : ""}`;
+    }
+    const events = archive.events || [];
+    const title = archive.canonical_id || archive.archive_ref || t("compressionArchive");
+    return `
+      <section class="session-header">
+        <div>
+          <p class="eyebrow">${escapeHtml(t("compressionArchiveDetail"))}</p>
+          <h1>${escapeHtml(title)}</h1>
+          <div class="meta-line">
+            <span>${t("archiveRef")}=<code>${escapeHtml(archive.archive_ref || archiveRef)}</code></span>
+            <span>${escapeHtml(archive.source_provider_id || "—")} → ${escapeHtml(archive.target_provider_id || "—")}</span>
+            <span>${t("sourceEvents")}=${escapeHtml(String(archive.source_event_ids?.length ?? archive.source_event_count ?? events.length))}</span>
+            <span>${t("storedSize")}=${escapeHtml(formatBytes(archive.stored_size_bytes))}</span>
+            <span>${t("createdAt")}=${escapeHtml(formatDate(archive.created_at))}</span>
+            ${archive.workspace_dir ? `<span>${t("workspace")}=<code>${escapeHtml(archive.workspace_dir)}</code></span>` : ""}
+          </div>
+        </div>
+        <div class="session-actions">
+          <a class="button" href="/compression" data-nav="/compression">${t("back")}</a>
+          <button type="button" data-action="open-compression-restore" data-archive-ref="${escapeAttr(archive.archive_ref || archiveRef)}">${t("restore")}</button>
+        </div>
+      </section>
+      <div class="detail-layout compression-detail-layout">
+        <aside class="detail-timeline" aria-label="${escapeAttr(t("timeline") || "Timeline")}">
+          ${events.length ? events.map(() => `<span class="timeline-segment"></span>`).join("") : ""}
+        </aside>
+        <section>
+          ${renderCompressionArchiveDetail(archive)}
+        </section>
+      </div>`;
+  }
+
   function renderCompressionPage() {
+    const sessionPreview = state.compression.sessionPreview || emptyManagerPreview();
+    const sessionRows = (sessionPreview.items || [])
+      .map((item) => {
+        const href = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
+        return `
+          <article class="manager-row">
+            <div class="manager-row-head">
+              <div class="manager-row-copy">
+                <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(item.title || item.session_id)}</a>
+                <div class="manager-meta">
+                  <span>${escapeHtml(providers.displayName(item.provider_id))}</span>
+                  <span>${escapeHtml(formatBytes(item.size_bytes))}</span>
+                  <span>${escapeHtml(t("managerUpdatedAt").replace("{time}", formatDate(item.last_active_at)))}</span>
+                </div>
+              </div>
+              <div class="session-actions manager-row-actions">
+                <a class="button" href="${href}" data-nav="${href}">${t("view")}</a>
+                <button type="button" data-action="compress-session" data-provider="${escapeAttr(item.provider_id)}" data-session-id="${escapeAttr(item.session_id)}" data-title="${escapeAttr(item.title || "")}">${t("compression")}</button>
+              </div>
+            </div>
+          </article>`;
+      })
+      .join("");
     const archives = state.compression.archives || [];
     const rows = archives
       .map((archive) => {
         const archiveRef = archive.archive_ref || "";
+        const href = `/compression?archive_ref=${encodeURIComponent(archiveRef)}`;
         return `
-          <article class="manager-row" data-action="open-compression-detail" data-archive-ref="${escapeAttr(archiveRef)}">
+          <article class="manager-row" data-action="open-compression-detail" data-archive-ref="${escapeAttr(archiveRef)}" data-href="${escapeAttr(href)}">
             <div class="manager-row-head">
               <div class="manager-row-copy">
-                <div class="session-title">${escapeHtml(archive.canonical_id || t("compressionArchive"))}</div>
+                <a class="manager-title-link" href="${href}" data-nav="${href}">${escapeHtml(archive.canonical_id || t("compressionArchive"))}</a>
                 <div class="manager-meta">
                   <span>${escapeHtml(archive.source_provider_id || "—")} → ${escapeHtml(archive.target_provider_id || "—")}</span>
                   <span>${t("sourceEvents")}=${escapeHtml(String(archive.source_event_count ?? 0))}</span>
@@ -415,7 +488,7 @@ export function createManagerCompressionModule({
                 <div class="path-line">${escapeHtml(archiveRef)}</div>
               </div>
               <div class="session-actions">
-                <button type="button" data-action="open-compression-detail" data-archive-ref="${escapeAttr(archiveRef)}">${t("view")}</button>
+                <a class="button" href="${href}" data-nav="${href}">${t("view")}</a>
                 <button type="button" data-action="open-compression-restore" data-archive-ref="${escapeAttr(archiveRef)}">${t("restore")}</button>
               </div>
             </div>
@@ -429,6 +502,13 @@ export function createManagerCompressionModule({
           ${renderCompressionWorkspaceSummary()}
         </section>
         <section class="section-panel manager-result-panel">
+          <div class="section-heading manager-section-head">
+            <div>
+              <strong>${t("compressSessions")}</strong>
+              <span>${sessionPreview.total_count || sessionPreview.items?.length || 0}</span>
+            </div>
+          </div>
+          <div class="manager-list">${sessionRows || `<div class="empty-state">${t("emptySessions")}</div>`}</div>
           <div class="section-heading manager-section-head">
             <div>
               <strong>${t("compressionArchives")}</strong>
@@ -447,6 +527,7 @@ export function createManagerCompressionModule({
   return {
     renderCompressionPage,
     renderCompressionArchiveDetail,
+    renderCompressionArchiveDetailPage,
     renderManagerPage,
     unitOption,
     updateManagerSelectionStats,

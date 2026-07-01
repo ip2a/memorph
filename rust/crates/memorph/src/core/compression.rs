@@ -713,6 +713,7 @@ fn write_archive(
     };
     let content = serde_json::to_vec(&record)?;
     write_gzip_atomic(&path, &content)?;
+    invalidate_summary_cache_for_dir(archive_dir);
     Ok(format!("{}{}/{}", ARCHIVE_SCHEME, canonical_id, filename))
 }
 
@@ -772,7 +773,9 @@ fn read_archive_header_text(path: &Path, limit: usize) -> Result<String> {
 /// keys we care about. We append `,"events":[]}` to terminate the object if it is incomplete.
 fn parse_summary_header(prefix: &str) -> Result<ArchiveSummaryHeader> {
     let trimmed = prefix.trim_end();
-    let json = if trimmed.ends_with('}') {
+    let json = if let Some((header, _)) = trimmed.split_once(",\"events\":") {
+        format!("{header},\"events\":[]}}")
+    } else if trimmed.ends_with('}') {
         trimmed.to_string()
     } else {
         // Object was truncated after a field; ensure it is valid JSON for the fields we need.
@@ -889,6 +892,25 @@ fn set_cached_summaries_for_dir(archive_dir: &Path, summaries: Vec<CompressionAr
     }
 }
 
+fn invalidate_summary_cache_for_dir(archive_dir: &Path) {
+    if let Ok(mut cache) = index_cache().write() {
+        cache.remove(archive_dir);
+    }
+
+    let index_path = archive_summary_index_path(archive_dir);
+    match std::fs::remove_file(&index_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => logging::error(
+            "compression_summary_index",
+            &format!(
+                "Failed to remove stale summary index {}: {err}",
+                index_path.display()
+            ),
+        ),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ArchiveSummaryIndexEntry {
     archive_ref: String,
@@ -955,7 +977,11 @@ fn read_summary_index(archive_dir: &Path) -> Option<ArchiveSummaryIndex> {
         return None;
     }
     let raw = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&raw).ok()
+    let index: ArchiveSummaryIndex = serde_json::from_str(&raw).ok()?;
+    if collect_archive_paths(archive_dir).ok()?.len() != index.entries.len() {
+        return None;
+    }
+    Some(index)
 }
 
 fn write_summary_index(archive_dir: &Path, summaries: &[CompressionArchiveSummary]) -> Result<()> {
@@ -1356,6 +1382,91 @@ mod tests {
         assert!(archives[0].original_size_bytes > 0);
         assert!(archives[0].stored_size_bytes > 0);
         assert!(archives[0].compression_ratio > 0.0);
+    }
+
+    #[test]
+    fn list_archives_sees_new_archive_after_cached_workspace_miss() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = "/Volumes/data0/data4work/2026_5/warp_web";
+        write_test_archive(
+            temp.path(),
+            "canonical-a",
+            "a.json",
+            Utc.timestamp_millis_opt(1_700_000_000_000)
+                .single()
+                .unwrap(),
+            "summary-a",
+            vec!["event-a".to_string()],
+        );
+
+        assert!(list_archives_in_dir(temp.path(), Some(workspace))
+            .unwrap()
+            .is_empty());
+
+        let mut session = sample_opencode_compacted_session();
+        session.context.workspace_dir = Some(workspace.to_string());
+        let policy = CompressionPolicy::preserve("opencode", "codex");
+        let (_, report) =
+            prepare_for_export_with_archive_dir(&session, &policy, temp.path()).unwrap();
+
+        let archives = list_archives_in_dir(temp.path(), Some(workspace)).unwrap();
+
+        assert_eq!(archives.len(), 1);
+        assert_eq!(archives[0].archive_ref, report.archive_refs[0]);
+        assert_eq!(archives[0].workspace_dir.as_deref(), Some(workspace));
+    }
+
+    #[test]
+    fn list_archives_ignores_incomplete_persistent_summary_index() {
+        let temp = tempfile::tempdir().unwrap();
+        write_test_archive(
+            temp.path(),
+            "canonical-a",
+            "a.json",
+            Utc.timestamp_millis_opt(1_700_000_000_000)
+                .single()
+                .unwrap(),
+            "summary-a",
+            vec!["event-a".to_string()],
+        );
+        let archives = list_archives_in_dir(temp.path(), None).unwrap();
+        assert_eq!(archives.len(), 1);
+
+        write_test_archive(
+            temp.path(),
+            "canonical-b",
+            "b.json",
+            Utc.timestamp_millis_opt(1_800_000_000_000)
+                .single()
+                .unwrap(),
+            "summary-b",
+            vec!["event-b".to_string()],
+        );
+        if let Ok(mut cache) = index_cache().write() {
+            cache.remove(temp.path());
+        }
+
+        let archives = list_archives_in_dir(temp.path(), None).unwrap();
+
+        assert_eq!(archives.len(), 2);
+        assert_eq!(archives[0].canonical_id, "canonical-b");
+        assert_eq!(archives[1].canonical_id, "canonical-a");
+    }
+
+    #[test]
+    fn parse_summary_header_handles_prefix_truncated_inside_events() {
+        let prefix = r#"{"version":1,"created_at":"2026-06-29T08:37:38.021282Z","canonical_id":"2eccc56c-c263-48e3-8f56-e1f1456b6926","source_provider_id":"claude","target_provider_id":"claude","workspace_dir":"/Volumes/data0/data4work/2026_5/warp_web","summary_event_id":"memorph-active-compressed-candidate-0001","source_event_ids":["22d4016b-45d6-4926-ac7a-e98e6b9d94a8"],"events":[{"id":"22d4016b-45d6-4926-ac7a-e98e6b9d94a8","kind":"tool_result","role":"tool","links":{"parent_eve"#;
+
+        let header = parse_summary_header(prefix).unwrap();
+
+        assert_eq!(header.canonical_id, "2eccc56c-c263-48e3-8f56-e1f1456b6926");
+        assert_eq!(header.source_provider_id, "claude");
+        assert_eq!(header.target_provider_id, "claude");
+        assert_eq!(
+            header.workspace_dir.as_deref(),
+            Some("/Volumes/data0/data4work/2026_5/warp_web")
+        );
+        assert_eq!(header.source_event_count, 1);
     }
 
     #[test]
