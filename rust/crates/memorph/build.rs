@@ -9,7 +9,13 @@ fn main() -> io::Result<()> {
 
     let manifest_dir =
         PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by Cargo"));
-    let web_dir = manifest_dir.join("../../../web");
+    let repo_web_dir = manifest_dir.join("../../../apps/web/dist");
+    let packaged_web_dir = manifest_dir.join("assets/web");
+    let web_dir = if repo_web_dir.exists() {
+        repo_web_dir
+    } else {
+        packaged_web_dir
+    };
 
     println!("cargo:rerun-if-changed={}", web_dir.display());
 
@@ -103,6 +109,7 @@ fn mime_for_path(path: &str) -> &'static str {
         Some("png") => "image/png",
         Some("svg") => "image/svg+xml",
         Some("wasm") => "application/wasm",
+        Some("woff2") => "font/woff2",
         _ => "application/octet-stream",
     }
 }

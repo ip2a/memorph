@@ -24,6 +24,19 @@ jobs:
       - name: Validate release metadata
         run: python3 scripts/release_preflight.py
 
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix apps/web
+
+      - name: Build frontend assets
+        run: ./scripts/build_web_assets.sh
+
       - name: Test release scripts
         run: python3 scripts/test_release_scripts.py
 
@@ -38,6 +51,7 @@ jobs:
         run: |
           cargo package --list --allow-dirty --manifest-path rust/crates/memorph/Cargo.toml > cargo-package-files.txt
           grep -Fx "assets/i18n.json" cargo-package-files.txt
+          grep -Fx "assets/web/index.html" cargo-package-files.txt
           grep -Fx "src/bin/memorph.rs" cargo-package-files.txt
           grep -Fx "src/bin/memo.rs" cargo-package-files.txt
 

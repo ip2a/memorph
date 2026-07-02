@@ -16,6 +16,8 @@ SRC_BIN="${REPO_ROOT}/target/${TARGET_TRIPLE}/release/${ARTIFACT_BINARY}"
 DST_DIR="${REPO_ROOT}/dist/${PLATFORM_ID}"
 DST_BIN="${DST_DIR}/${ARTIFACT_BINARY}"
 
+"${SCRIPT_DIR}/build_web_assets.sh"
+
 echo "[run] Building target=${TARGET_TRIPLE}"
 export CARGO_TARGET_DIR="${REPO_ROOT}/target"
 cargo build --release --target "${TARGET_TRIPLE}" --manifest-path "${REPO_ROOT}/rust/Cargo.toml" --bin memorph
