@@ -1,21 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowDownIcon, ArrowUpIcon, ExternalLinkIcon, FolderOpenIcon, RefreshCwIcon } from "lucide-react";
+import { RefreshCwIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
+import { PathText } from "@/components/shared/path-text";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
+import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
@@ -26,7 +25,6 @@ import {
   getMeta,
   getProviderCatalog,
   openExternal,
-  selectFolder,
   updateProviderCatalog,
   updateSettings,
 } from "@/lib/api";
@@ -34,7 +32,7 @@ import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
 import { queryKeys } from "@/lib/query-keys";
 import type { ProviderCatalogEntry, SettingsPayload, UiLanguage, UpdateCheckPayload, UpdateSettingsPayload } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { AgentOrderList } from "@/features/settings/agent-order-list";
 
 const SECTIONS = [
   { id: "general", labelKey: "general" },
@@ -55,10 +53,10 @@ const HOME_BUTTONS = [
 ] as const;
 
 const ABOUT_LINKS = [
-  ["GitHub", "https://github.com/ip2a/memorph"],
-  ["npm", "https://www.npmjs.com/package/memorph"],
-  ["crates.io", "https://crates.io/crates/memorph"],
-  ["PyPI", "https://pypi.org/project/memorph/"],
+  { label: "GitHub", url: "https://github.com/ip2a/memorph", iconUrl: "https://github.com/favicon.ico" },
+  { label: "npm", url: "https://www.npmjs.com/package/memorph", iconUrl: "https://www.npmjs.com/favicon.ico" },
+  { label: "crates.io", url: "https://crates.io/crates/memorph", iconUrl: "https://crates.io/favicon.ico" },
+  { label: "PyPI", url: "https://pypi.org/project/memorph/", iconUrl: "https://pypi.org/favicon.ico" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -98,14 +96,6 @@ function logSizeMb(draft: SettingsDraft) {
   return String((bytes > 0 ? bytes : 5 * 1024 * 1024) / 1024 / 1024).replace(/\.0$/, "");
 }
 
-function providerName(provider: ProviderCatalogEntry | undefined, id: string) {
-  return provider?.display_name || id;
-}
-
-function providerInstalled(provider: ProviderCatalogEntry | undefined) {
-  return Boolean(provider?.install_state?.is_installed || provider?.filter_tags?.includes("is_installed"));
-}
-
 async function openUrl(url: string) {
   try {
     await openExternal({ url });
@@ -114,11 +104,6 @@ async function openUrl(url: string) {
     const opened = window.open(url, "_blank", "noopener,noreferrer");
     if (!opened) window.location.href = url;
   }
-}
-
-function pickerUnavailableMessage(error: unknown, fallback: string) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /only available in the desktop app/i.test(message) ? fallback : message;
 }
 
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -214,26 +199,19 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     });
   }
 
-  function shiftAgent(index: number, direction: "up" | "down") {
+  function setAgentOrder(next: string[]) {
     setDraftOverride((current) => {
       const base = current ?? initialDraft;
-      if (!base) return base;
-      const next = [...orderedProviderIds];
-      const target = direction === "up" ? index - 1 : index + 1;
-      if (target < 0 || target >= next.length) return base;
-      [next[index], next[target]] = [next[target], next[index]];
-      return { ...base, agent_order: next };
+      return base ? { ...base, agent_order: next } : base;
     });
   }
 
-  async function browseBackupDir() {
-    if (!draft) return;
-    try {
-      const result = await selectFolder({ start_path: draft.default_backup_dir || meta.data?.selected_workspace || null });
-      if (result.path) patchDraft({ default_backup_dir: result.path });
-    } catch (error) {
-      toast.error(t("error"), { description: pickerUnavailableMessage(error, t("folderPickerDesktopOnly")) });
-    }
+  function shiftAgent(index: number, direction: "up" | "down") {
+    const next = [...orderedProviderIds];
+    const target = direction === "up" ? index - 1 : index + 1;
+    if (target < 0 || target >= next.length) return;
+    [next[index], next[target]] = [next[target], next[index]];
+    setAgentOrder(next);
   }
 
   const settingsPaths = meta.data?.settings_paths;
@@ -251,23 +229,9 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="h-[min(760px,calc(100dvh-32px))] p-0 sm:max-w-5xl" data-settings-dialog>
-        <DialogHeader className="border-b px-4 py-3 sm:px-5">
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <DialogTitle>{t("settings")}</DialogTitle>
-              <DialogDescription>{t("settingsDescription")}</DialogDescription>
-            </div>
-            <div className="flex shrink-0 items-center gap-2 pr-8">
-              <Button type="button" variant="outline" size="sm" onClick={() => handleOpenChange(false)}>
-                {t("cancel")}
-              </Button>
-              <Button type="button" size="sm" disabled={!draft || saveMutation.isPending} onClick={() => draft && saveMutation.mutate(draft)}>
-                {saveMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-                {t("save")}
-              </Button>
-            </div>
-          </div>
+      <DialogContent className="flex h-[min(760px,calc(100dvh-32px))] flex-col gap-0 p-0 sm:max-w-3xl" data-settings-dialog>
+        <DialogHeader className="flex-row items-center border-b px-4 py-2.5 sm:px-5">
+          <DialogTitle className="flex-1">{t("settings")}</DialogTitle>
         </DialogHeader>
 
         <div className="grid min-h-0 flex-1 grid-cols-[164px_minmax(0,1fr)]" data-settings-layout>
@@ -305,23 +269,25 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                     </Field>
                     <Field orientation="responsive">
                       <FieldContent>
-                        <FieldTitle>{t("defaultBackupDir")}</FieldTitle>
-                        <FieldDescription>{settingsPaths?.backup_dir_resolved || draft.default_backup_dir || "./backups"}</FieldDescription>
+                        <FieldTitle>{t("backupDir")}</FieldTitle>
                       </FieldContent>
                       <InputGroup className="max-w-xl">
-                        <InputGroupInput value={draft.default_backup_dir} onChange={(event) => patchDraft({ default_backup_dir: event.target.value })} placeholder="./backups" />
-                        <InputGroupAddon align="inline-end"><InputGroupButton type="button" onClick={browseBackupDir}><FolderOpenIcon data-icon="inline-start" />{t("browse")}</InputGroupButton></InputGroupAddon>
+                        <InputGroupAddon align="inline-start" className="min-w-0 max-w-[min(100%,14rem)] shrink pointer-events-none">
+                          <PathText value={settingsPaths?.backup_dir_base} wrap="truncate" title={settingsPaths?.backup_dir_base || undefined} />
+                        </InputGroupAddon>
+                        <InputGroupAddon align="inline-start" className="pointer-events-none px-1 text-muted-foreground" aria-hidden="true">+</InputGroupAddon>
+                        <InputGroupInput value={draft.default_backup_dir} onChange={(event) => patchDraft({ default_backup_dir: event.target.value })} placeholder="./backups" aria-label={t("backupDir")} />
                       </InputGroup>
                     </Field>
-                    <ReadOnlyRow title={t("backupDirBase")} value={settingsPaths?.backup_dir_base || "-"} description={t("backupDirBaseHint")} />
                     <ReadOnlyRow title={t("logDir")} value={settingsPaths?.log_dir || "~/.memorph/logs"} description={t("logDirHint")} />
                     <ReadOnlyRow title={t("logFileName")} value={settingsPaths?.log_file_name || "memorph.log"} description={settingsPaths?.log_file_path || "~/.memorph/logs/memorph.log"} />
                     <Field orientation="responsive">
-                      <FieldContent><FieldTitle>{t("logSettings")}</FieldTitle><FieldDescription>{t("logSettingsHint")}</FieldDescription></FieldContent>
-                      <div className="grid w-full max-w-md grid-cols-2 gap-2">
-                        <Input value={logSizeMb(draft)} inputMode="decimal" onChange={(event) => patchDraft({ logging: { ...draft.logging, max_size_bytes: Math.max(0, Number(event.target.value || 0) * 1024 * 1024) } })} aria-label="Log max size MB" />
-                        <Input value={draft.logging.retention_days ?? ""} inputMode="numeric" placeholder={t("unlimited")} onChange={(event) => patchDraft({ logging: { ...draft.logging, retention_days: event.target.value === "" ? null : Math.max(0, Number(event.target.value)) } })} aria-label="Log retention days" />
-                      </div>
+                      <FieldContent><FieldTitle>{t("logMaxSizeMb")}</FieldTitle><FieldDescription>{t("logMaxSizeMbHint")}</FieldDescription></FieldContent>
+                      <Input className="w-32" value={logSizeMb(draft)} inputMode="decimal" onChange={(event) => patchDraft({ logging: { ...draft.logging, max_size_bytes: Math.max(0, Number(event.target.value || 0) * 1024 * 1024) } })} aria-label={t("logMaxSizeMb")} />
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("logRetentionDays")}</FieldTitle><FieldDescription>{t("logRetentionDaysHint")}</FieldDescription></FieldContent>
+                      <Input className="w-32" value={draft.logging.retention_days ?? ""} inputMode="numeric" placeholder={t("unlimited")} onChange={(event) => patchDraft({ logging: { ...draft.logging, retention_days: event.target.value === "" ? null : Math.max(0, Number(event.target.value)) } })} aria-label={t("logRetentionDays")} />
                     </Field>
                   </FieldGroup>
                 </section>
@@ -354,25 +320,15 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               {draft && section === "order" ? (
                 <section className="flex flex-col gap-4" data-settings-section="order">
                   <SectionHead title={t("order")} />
-                  <div className="flex flex-col gap-2">
-                    {orderedProviderIds.map((id, index) => {
-                      const provider = providerMap.get(id);
-                      const hidden = draft.hidden_agents.includes(id);
-                      return (
-                        <div key={id} className={cn("grid gap-3 rounded-md border p-3 sm:grid-cols-[minmax(0,1fr)_auto]", hidden ? "opacity-70" : "")}> 
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2"><strong>{providerName(provider, id)}</strong><Badge variant={providerInstalled(provider) ? "secondary" : "outline"}>{providerInstalled(provider) ? t("installed") : t("notDetected")}</Badge></div>
-                            <div className={cn("truncate font-mono text-xs text-muted-foreground", hidden ? "line-through" : "")}>{id}</div>
-                          </div>
-                          <div className="flex flex-wrap items-center justify-end gap-2">
-                            <label className="flex items-center gap-2 text-sm"><Checkbox checked={hidden} onCheckedChange={(checked) => setHiddenAgent(id, checked === true)} />{t("hidden")}</label>
-                            <Button type="button" variant="ghost" size="sm" onClick={() => shiftAgent(index, "up")}><ArrowUpIcon data-icon="inline-start" />{t("moveUp")}</Button>
-                            <Button type="button" variant="ghost" size="sm" onClick={() => shiftAgent(index, "down")}><ArrowDownIcon data-icon="inline-start" />{t("moveDown")}</Button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <AgentOrderList
+                    orderedProviderIds={orderedProviderIds}
+                    providerMap={providerMap}
+                    hiddenAgents={draft.hidden_agents}
+                    onReorder={setAgentOrder}
+                    onHiddenChange={setHiddenAgent}
+                    onShift={shiftAgent}
+                    t={t}
+                  />
                 </section>
               ) : null}
 
@@ -387,7 +343,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               {section === "config" ? (
                 <section className="flex flex-col gap-4" data-settings-section="config">
                   <SectionHead title={t("configFile")} />
-                  <ReadOnlyRow title={configFile?.path || t("configFile")} value={configFile?.format || "json"} description={t("readOnlyConfigSnapshot")} />
+                  <ReadOnlyRow title={t("configFileLocation")} value={configFile?.path || "-"} />
                   <Textarea className="min-h-80 font-mono text-xs" readOnly value={configFile?.content || ""} />
                 </section>
               ) : null}
@@ -401,10 +357,12 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                   </div>
                   {updateResult ? <UpdateResult result={updateResult} t={t} /> : null}
                   {updateError ? <div className="rounded-md border p-3 text-sm text-destructive">{t("updateCheckFailed", { error: updateError })}</div> : null}
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {ABOUT_LINKS.map(([label, url]) => (
-                      <Button key={url} type="button" variant="outline" className="h-auto justify-start py-3" onClick={() => openUrl(url)}>
-                        <ExternalLinkIcon data-icon="inline-start" />
+                  <div className="flex flex-col gap-2">
+                    {ABOUT_LINKS.map(({ label, url, iconUrl }) => (
+                      <Button key={url} type="button" variant="outline" className="h-auto justify-start gap-3 py-3" onClick={() => openUrl(url)}>
+                        <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg border bg-background" aria-hidden="true">
+                          <img src={iconUrl} alt="" className="size-4 object-contain" loading="lazy" />
+                        </span>
                         <span className="min-w-0 truncate text-left"><strong>{label}</strong><span className="block truncate text-xs text-muted-foreground">{url}</span></span>
                       </Button>
                     ))}
@@ -415,7 +373,15 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           </ScrollArea>
         </div>
 
-        <DialogFooter className="hidden" />
+        <DialogFooter className="-mx-0 -mb-0 gap-2 border-t px-4 py-2.5 sm:px-5">
+          <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
+            {t("cancel")}
+          </Button>
+          <Button type="button" disabled={!draft || saveMutation.isPending} onClick={() => draft && saveMutation.mutate(draft)}>
+            {saveMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
+            {t("save")}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

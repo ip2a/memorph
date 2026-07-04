@@ -6,12 +6,11 @@ import { useForm, useWatch } from "react-hook-form";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
-import { Button } from "@/components/ui/button";
+import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -30,7 +29,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Spinner } from "@/components/ui/spinner";
 import { getMeta, importSession, listProviders, selectFile, selectFolder } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import { useUiStore } from "@/stores/ui-store";
@@ -133,7 +131,7 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
           <DialogDescription>Import a file or session id into the selected target provider.</DialogDescription>
         </DialogHeader>
 
-        <form className="flex flex-col gap-5" onSubmit={form.handleSubmit(submitImport)}>
+        <DialogForm onSubmit={form.handleSubmit(submitImport)}>
           <FieldGroup className="grid gap-4 sm:grid-cols-[minmax(0,0.7fr)_minmax(0,1.3fr)]" data-import-modal-grid>
             <Field data-invalid={Boolean(form.formState.errors.provider)}>
               <FieldLabel htmlFor="import-provider">Target Provider</FieldLabel>
@@ -199,16 +197,13 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
             ))}
           </datalist>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={importMutation.isPending || !importProviders.length}>
-              {importMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-              Import
-            </Button>
-          </DialogFooter>
-        </form>
+          <DialogFormFooter
+            onCancel={() => onOpenChange(false)}
+            submitDisabled={!importProviders.length}
+            submitLabel="Import"
+            submitting={importMutation.isPending}
+          />
+        </DialogForm>
       </DialogContent>
     </Dialog>
   );

@@ -1,19 +1,9 @@
-import {
-  BoxIcon,
-  BrainIcon,
-  CodeIcon,
-  FileIcon,
-  FileTextIcon,
-  ImageIcon,
-  PackageIcon,
-  TerminalIcon,
-  WrenchIcon,
-} from "lucide-react";
-import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { renderHighlightedJson } from "@/lib/format-content";
+import { cn } from "@/lib/utils";
 import type { EventBlock } from "@/lib/types";
 
 function formatJson(value: unknown) {
@@ -22,39 +12,28 @@ function formatJson(value: unknown) {
   return JSON.stringify(value, null, 2);
 }
 
-function CodeBlock({ value }: { value: unknown }) {
+function CodeBlock({ value, variant = "default" }: { value: unknown; variant?: "default" | "tool" }) {
   const text = formatJson(value);
   if (!text) return <span className="text-muted-foreground">-</span>;
 
-  return (
-    <ScrollArea className="max-h-80 rounded-md bg-muted">
-      <pre className="whitespace-pre-wrap break-words p-3 font-mono text-xs">{text}</pre>
-    </ScrollArea>
-  );
-}
+  const highlighted = renderHighlightedJson(value);
 
-function BlockCard({
-  icon,
-  title,
-  description,
-  children,
-}: {
-  icon: ReactNode;
-  title: string;
-  description?: ReactNode;
-  children: ReactNode;
-}) {
   return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          {icon}
-          {title}
-        </CardTitle>
-        {description ? <CardDescription>{description}</CardDescription> : null}
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
+    <ScrollArea
+      className={cn(
+        "max-h-80 rounded-md border border-border bg-muted/40",
+        variant === "tool" && "bg-sky-50 dark:bg-sky-950/30",
+      )}
+    >
+      {highlighted ? (
+        <pre
+          className="json-block whitespace-pre-wrap break-words p-3 font-mono text-xs"
+          dangerouslySetInnerHTML={{ __html: `<code>${highlighted}</code>` }}
+        />
+      ) : (
+        <pre className="whitespace-pre-wrap break-words p-3 font-mono text-xs">{text}</pre>
+      )}
+    </ScrollArea>
   );
 }
 
@@ -77,136 +56,134 @@ function imageSource(block: Extract<EventBlock, { type: "image" }>) {
   return `data:${block.mime_type};base64,${block.data}`;
 }
 
+function compressionArchiveHref(archiveRef: string) {
+  return `/compression?archive_ref=${encodeURIComponent(archiveRef)}`;
+}
+
+export function getBlockLabel(block: EventBlock): string {
+  switch (block.type) {
+    case "text":
+      return "";
+    case "thinking":
+      return "Thinking";
+    case "tool_call":
+      return `Tool: ${block.name || ""}`.replace(/:\s$/, "");
+    case "tool_result":
+      return "Tool Result";
+    case "patch":
+      return "Patch";
+    case "command":
+      return "Command";
+    case "command_result":
+      return "Command Result";
+    case "file":
+      return "File";
+    case "image":
+      return "Image";
+    case "provider_payload":
+      return block.kind || "payload";
+    case "compressed":
+      return "Compressed";
+    case "unknown":
+      return "Details";
+    default:
+      return "";
+  }
+}
+
 export function SessionBlock({ block }: { block: EventBlock }) {
   switch (block.type) {
     case "text":
-      return (
-        <BlockCard icon={<FileTextIcon />} title="Text">
-          <CodeBlock value={block.text} />
-        </BlockCard>
-      );
+      return <CodeBlock value={block.text} />;
     case "thinking":
-      return (
-        <BlockCard
-          icon={<BrainIcon />}
-          title="Thinking"
-          description={block.signature ? `Signature: ${block.signature}` : undefined}
-        >
-          <CodeBlock value={block.text} />
-        </BlockCard>
-      );
+      return <CodeBlock value={block.text} />;
     case "tool_call":
-      return (
-        <BlockCard
-          icon={<WrenchIcon />}
-          title={block.name}
-          description={block.tool_call_id}
-        >
-          <CodeBlock value={block.input} />
-        </BlockCard>
-      );
+      return <CodeBlock variant="tool" value={{ tool_call_id: block.tool_call_id, name: block.name, input: block.input }} />;
     case "tool_result":
       return (
-        <BlockCard
-          icon={<BoxIcon />}
-          title="Tool Result"
-          description={
-            <span className="inline-flex items-center gap-2">
-              <span>{block.tool_call_id}</span>
-              {block.is_error ? <Badge variant="destructive">Error</Badge> : <Badge variant="secondary">OK</Badge>}
-            </span>
-          }
-        >
-          <CodeBlock value={block.content} />
-        </BlockCard>
+        <div className="flex flex-col gap-2">
+          {block.is_error ? <Badge variant="destructive">Error</Badge> : null}
+          <CodeBlock variant="tool" value={block.content} />
+        </div>
       );
     case "patch":
       return (
-        <BlockCard
-          icon={<CodeIcon />}
-          title="Patch"
-          description={block.hash ? `Hash: ${block.hash}` : undefined}
-        >
-          <div className="flex flex-col gap-3">
-            {block.summary ? <p>{block.summary}</p> : null}
-            <FileList files={block.files} />
-            {block.diff_text ? <CodeBlock value={block.diff_text} /> : null}
-          </div>
-        </BlockCard>
+        <div className="flex flex-col gap-3">
+          {block.summary ? <p className="text-sm">{block.summary}</p> : null}
+          <FileList files={block.files} />
+          {block.diff_text ? <CodeBlock value={block.diff_text} /> : null}
+        </div>
       );
     case "command":
       return (
-        <BlockCard icon={<TerminalIcon />} title="Command" description={block.cwd ?? undefined}>
-          <div className="flex flex-col gap-3">
-            <CodeBlock value={block.command} />
-            {block.argv && block.argv.length > 0 ? <CodeBlock value={block.argv} /> : null}
-          </div>
-        </BlockCard>
+        <div className="flex flex-col gap-3">
+          {block.cwd ? <p className="font-mono text-xs text-muted-foreground">{block.cwd}</p> : null}
+          <CodeBlock value={{ command: block.command, argv: block.argv, cwd: block.cwd }} />
+        </div>
       );
     case "command_result":
       return (
-        <BlockCard
-          icon={<TerminalIcon />}
-          title="Command Result"
-          description={block.exit_code === null || block.exit_code === undefined ? undefined : `Exit ${block.exit_code}`}
-        >
-          <div className="flex flex-col gap-3">
-            {block.command ? <CodeBlock value={block.command} /> : null}
-            {block.stdout ? <CodeBlock value={block.stdout} /> : null}
-            {block.stderr ? (
-              <>
-                <Separator />
-                <CodeBlock value={block.stderr} />
-              </>
-            ) : null}
-          </div>
-        </BlockCard>
+        <div className="flex flex-col gap-3">
+          {block.command ? <CodeBlock value={block.command} /> : null}
+          {block.stdout ? <CodeBlock value={block.stdout} /> : null}
+          {block.stderr ? (
+            <>
+              <Separator />
+              <CodeBlock value={block.stderr} />
+            </>
+          ) : null}
+        </div>
       );
     case "file":
       return (
-        <BlockCard icon={<FileIcon />} title={block.path} description={block.mime_type ?? undefined}>
+        <div className="flex flex-col gap-2">
+          <code className="break-all font-mono text-xs">{block.path}</code>
           <CodeBlock value={block.content} />
-        </BlockCard>
+        </div>
       );
     case "image": {
       const src = imageSource(block);
-      return (
-        <BlockCard icon={<ImageIcon />} title="Image" description={block.path ?? block.mime_type}>
-          {src ? <img alt={block.path ?? "Session image"} className="max-h-96 rounded-md object-contain" src={src} /> : <CodeBlock value={block} />}
-        </BlockCard>
+      return src ? (
+        <div className="flex flex-col gap-2">
+          {block.path || block.mime_type ? (
+            <code className="break-all font-mono text-xs text-muted-foreground">{block.path ?? block.mime_type}</code>
+          ) : null}
+          <img alt={block.path ?? "Session image"} className="max-h-96 rounded-md object-contain" src={src} />
+        </div>
+      ) : (
+        <CodeBlock value={block} />
       );
     }
     case "provider_payload":
+      return <CodeBlock value={block.payload} />;
+    case "compressed": {
+      const archiveRef = block.archive_ref || "";
       return (
-        <BlockCard icon={<PackageIcon />} title="Provider Payload" description={block.kind}>
-          <CodeBlock value={block.payload} />
-        </BlockCard>
+        <div className="flex flex-col gap-3">
+          {archiveRef ? (
+            <Link
+              to={compressionArchiveHref(archiveRef)}
+              className="rounded-md border bg-muted/30 p-3 transition-colors hover:bg-muted"
+              data-compression-detail-link
+            >
+              <p className="text-sm font-medium">{block.summary}</p>
+              <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{archiveRef}</p>
+            </Link>
+          ) : (
+            <p className="text-sm">{block.summary}</p>
+          )}
+          {block.source_event_count === null || block.source_event_count === undefined ? null : (
+            <Badge variant="secondary">{block.source_event_count} source events</Badge>
+          )}
+          <FileList files={block.source_event_ids} />
+        </div>
       );
-    case "compressed":
-      return (
-        <BlockCard icon={<PackageIcon />} title="Compressed" description={block.archive_ref ?? block.source_provider_id}>
-          <div className="flex flex-col gap-3">
-            <p>{block.summary}</p>
-            {block.source_event_count === null || block.source_event_count === undefined ? null : (
-              <Badge variant="secondary">{block.source_event_count} source events</Badge>
-            )}
-            <FileList files={block.source_event_ids} />
-          </div>
-        </BlockCard>
-      );
+    }
     case "unknown":
-      return (
-        <BlockCard icon={<BoxIcon />} title="Unknown">
-          <CodeBlock value={block.raw} />
-        </BlockCard>
-      );
+      return <CodeBlock value={block.raw} />;
     default: {
       const unknownBlock = block as { type?: string } & Record<string, unknown>;
-      return (
-        <BlockCard icon={<BoxIcon />} title={unknownBlock.type || "Block"}>
-          <CodeBlock value={unknownBlock} />
-        </BlockCard>
-      );
+      return <CodeBlock value={unknownBlock} />;
     }
   }
 }

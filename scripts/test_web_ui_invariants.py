@@ -25,9 +25,12 @@ SYNC_DETAIL_PAGE_TSX = SRC_ROOT / "features" / "sync" / "sync-detail-page.tsx"
 WORKSPACE_SWITCH_DIALOG_TSX = SRC_ROOT / "features" / "workspaces" / "workspace-switch-dialog.tsx"
 IMPORT_SESSION_DIALOG_TSX = SRC_ROOT / "features" / "import" / "import-session-dialog.tsx"
 SETTINGS_DIALOG_TSX = SRC_ROOT / "features" / "settings" / "settings-dialog.tsx"
+AGENT_ORDER_LIST_TSX = SRC_ROOT / "features" / "settings" / "agent-order-list.tsx"
 HOME_PAGE_TSX = SRC_ROOT / "features" / "home" / "home-page.tsx"
 SESSION_ACTION_TARGET_TS = SRC_ROOT / "features" / "sessions" / "session-action-target.ts"
 SESSION_ACTIONS_TSX = SRC_ROOT / "features" / "sessions" / "session-actions.tsx"
+SESSION_ACTIONS_DIR = SRC_ROOT / "features" / "sessions" / "actions"
+SESSION_ACTION_SCHEMAS_TS = SRC_ROOT / "features" / "sessions" / "model" / "schemas.ts"
 SESSION_DETAIL_PAGE_TSX = SRC_ROOT / "features" / "sessions" / "session-detail-page.tsx"
 API_TS = SRC_ROOT / "lib" / "api.ts"
 TYPES_TS = SRC_ROOT / "lib" / "types.ts"
@@ -41,6 +44,19 @@ def read_sources() -> str:
         if path.exists():
             parts.append(path.read_text(encoding="utf-8"))
     return "\n".join(parts)
+
+
+def read_session_actions() -> str:
+    paths = [
+        SESSION_ACTIONS_DIR / "switch-session-dialog.tsx",
+        SESSION_ACTIONS_DIR / "export-session-dialog.tsx",
+        SESSION_ACTIONS_DIR / "create-sync-dialog.tsx",
+        SESSION_ACTIONS_DIR / "rename-session-dialog.tsx",
+        SESSION_ACTIONS_DIR / "delete-session-dialog.tsx",
+        SESSION_ACTIONS_DIR / "index.ts",
+        SESSION_ACTION_SCHEMAS_TS,
+    ]
+    return "\n".join(path.read_text(encoding="utf-8") for path in paths)
 
 
 class WebUiInvariantTest(unittest.TestCase):
@@ -144,8 +160,7 @@ class WebUiInvariantTest(unittest.TestCase):
         ]:
             self.assertIn(marker, shell)
         self.assertIn("w-[min(1280px,calc(100vw-24px))]", shell)
-        for component in ["DropdownMenu", "Button"]:
-            self.assertIn(component, shell)
+        self.assertIn("Button", shell)
         self.assertNotIn("Sheet", shell)
         for sidebar_component in ["SidebarProvider", "SidebarInset", "<Sidebar"]:
             self.assertNotIn(sidebar_component, shell)
@@ -230,6 +245,7 @@ class WebUiInvariantTest(unittest.TestCase):
     def test_settings_preserves_legacy_wide_modal_workflow(self) -> None:
         shell = APP_SHELL_TSX.read_text(encoding="utf-8")
         dialog = SETTINGS_DIALOG_TSX.read_text(encoding="utf-8")
+        order_list = AGENT_ORDER_LIST_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
         query_keys = QUERY_KEYS_TS.read_text(encoding="utf-8")
@@ -243,7 +259,7 @@ class WebUiInvariantTest(unittest.TestCase):
 
         for marker in [
             "data-settings-dialog",
-            "sm:max-w-5xl",
+            "sm:max-w-3xl",
             "data-settings-layout",
             "data-settings-sidebar",
             'data-settings-section="general"',
@@ -257,22 +273,20 @@ class WebUiInvariantTest(unittest.TestCase):
             't("order")',
             't("hooks")',
             't("configFile")',
+            't("configFileLocation")',
             't("about")',
-            't("defaultBackupDir")',
-            't("backupDirBase")',
+            't("backupDir")',
             't("logDir")',
             't("logFileName")',
-            't("logSettings")',
+            't("logMaxSizeMb")',
+            't("logRetentionDays")',
             't("sessionsPerProvider")',
             't("homeButtons")',
-            't("hidden")',
-            't("moveUp")',
-            't("moveDown")',
             't("hookDoctor")',
             't("hookCleanup")',
             't("checkUpdate")',
-            "ExternalLinkIcon",
-            "selectFolder",
+            "PathText",
+            "backup_dir_base",
             "updateSettings",
             "updateProviderCatalog",
             "getProviderCatalog",
@@ -282,6 +296,16 @@ class WebUiInvariantTest(unittest.TestCase):
             "window.open",
         ]:
             self.assertIn(marker, dialog)
+
+        for marker in [
+            "AgentOrderList",
+            't("hidden")',
+            't("moveUp")',
+            't("moveDown")',
+            't("dragToReorder")',
+            "SortableList",
+        ]:
+            self.assertIn(marker, dialog + order_list)
 
         for marker in [
             "UpdateSettingsPayload",
@@ -328,15 +352,17 @@ class WebUiInvariantTest(unittest.TestCase):
         self.assertIn("Folder picker is only available in the desktop app.", import_dialog)
         self.assertNotIn("disabled>Browse", import_dialog)
 
-        self.assertIn("selectFolder({ start_path", settings_dialog)
-        self.assertIn('t("folderPickerDesktopOnly")', settings_dialog)
+        self.assertIn('t("backupDir")', settings_dialog)
+        self.assertIn("backup_dir_base", settings_dialog)
+        self.assertIn("PathText", settings_dialog)
+        self.assertNotIn("selectFolder({ start_path", settings_dialog)
         self.assertIn("mutationFn: checkForUpdate", settings_dialog)
         self.assertIn("await openExternal({ url })", settings_dialog)
 
     def test_session_rename_delete_preserve_legacy_row_and_detail_workflows(self) -> None:
         home = HOME_PAGE_TSX.read_text(encoding="utf-8")
         action_target = SESSION_ACTION_TARGET_TS.read_text(encoding="utf-8")
-        actions = SESSION_ACTIONS_TSX.read_text(encoding="utf-8")
+        actions = read_session_actions()
         detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
@@ -399,7 +425,7 @@ class WebUiInvariantTest(unittest.TestCase):
 
     def test_session_copy_export_preserve_legacy_row_and_detail_workflows(self) -> None:
         home = HOME_PAGE_TSX.read_text(encoding="utf-8")
-        actions = SESSION_ACTIONS_TSX.read_text(encoding="utf-8")
+        actions = read_session_actions()
         detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
@@ -470,7 +496,7 @@ class WebUiInvariantTest(unittest.TestCase):
 
     def test_create_sync_preserves_legacy_session_action_workflow(self) -> None:
         home = HOME_PAGE_TSX.read_text(encoding="utf-8")
-        actions = SESSION_ACTIONS_TSX.read_text(encoding="utf-8")
+        actions = read_session_actions()
         detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
@@ -849,7 +875,8 @@ class WebUiInvariantTest(unittest.TestCase):
 
     def test_old_legacy_web_source_is_not_active(self) -> None:
         self.assertFalse((ROOT / "web").exists())
-        self.assertTrue((ROOT / "web-legacy").exists())
+        self.assertFalse((ROOT / "web-legacy").exists())
+        self.assertTrue((ROOT / "归档" / "web-legacy").exists())
         source = read_sources()
         self.assertNotIn("web-legacy", source)
 

@@ -1,16 +1,7 @@
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { lazy, Suspense, useState } from "react";
-import { MoreHorizontalIcon, SettingsIcon } from "lucide-react";
+import { ArrowLeftIcon, SettingsIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
 import { cn } from "@/lib/utils";
@@ -70,63 +61,45 @@ export function AppShell() {
 
         <nav className="flex flex-wrap items-center justify-end gap-2">
           {!isHome ? (
-            <Button type="button" variant="outline" size="sm" onClick={() => navigate(-1)}>
+            <Button type="button" variant="outline" onClick={() => navigate(-1)}>
+              <ArrowLeftIcon data-icon="inline-start" />
               {t("back")}
             </Button>
           ) : null}
-          <Button type="button" variant="outline" size="sm" onClick={() => setWorkspaceSwitchOpen(true)}>
+          <Button type="button" variant="outline" onClick={() => setWorkspaceSwitchOpen(true)}>
             {t("switchWorkspace")}
           </Button>
           {!isHooks ? (
-            <Button asChild variant="outline" size="sm">
+            <Button asChild variant="outline">
               <Link to="/hooks">{t("hooks")}</Link>
             </Button>
           ) : null}
           {!isAgents ? (
-            <Button asChild variant="outline" size="sm">
+            <Button asChild variant="outline">
               <Link to="/agents">{t("agentManagement")}</Link>
             </Button>
           ) : null}
           {isManager ? (
             <>
-              <Button asChild variant="outline" size="sm">
+              <Button asChild variant="outline">
                 <Link to="/compression">{t("compressSessions")}</Link>
               </Button>
-              <Button asChild variant="outline" size="sm">
+              <Button asChild variant="outline">
                 <Link to="/sync">{t("syncGroups")}</Link>
               </Button>
-              <Button type="button" variant="outline" size="sm" onClick={() => setImportSessionOpen(true)}>
+              <Button type="button" variant="outline" onClick={() => setImportSessionOpen(true)}>
                 {t("importSession")}
               </Button>
             </>
           ) : (
-            <Button asChild variant="outline" size="sm">
+            <Button asChild variant="outline">
               <Link to="/manager">{t("manage")}</Link>
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={() => setSettingsOpen(true)}>
+          <Button variant="outline" onClick={() => setSettingsOpen(true)}>
             <SettingsIcon data-icon="inline-start" />
             {t("settings")}
           </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label={t("openMoreActions")}>
-                <MoreHorizontalIcon />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuLabel>{t("actions")}</DropdownMenuLabel>
-              <DropdownMenuGroup>
-                <DropdownMenuItem onSelect={() => setImportSessionOpen(true)}>{t("importSession")}</DropdownMenuItem>
-                <DropdownMenuItem>{t("exportSession")}</DropdownMenuItem>
-                <DropdownMenuItem>{t("checkUpdate")}</DropdownMenuItem>
-              </DropdownMenuGroup>
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuItem>{t("openRepository")}</DropdownMenuItem>
-              </DropdownMenuGroup>
-            </DropdownMenuContent>
-          </DropdownMenu>
         </nav>
       </header>
 

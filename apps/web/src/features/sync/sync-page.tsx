@@ -6,6 +6,9 @@ import { useForm } from "react-hook-form";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
+import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
+import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
+import { SectionHeading } from "@/components/shared/section-heading";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,7 +27,6 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -33,7 +35,8 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
-import { compactPath, formatDateTime } from "@/lib/format";
+import { PathText } from "@/components/shared/path-text";
+import { formatDateTime } from "@/lib/format";
 import { removeSyncGroup, renameSyncGroup, runSyncGroup } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import type { SyncGroup, SyncReport } from "@/lib/types";
@@ -92,20 +95,11 @@ export function SyncPage() {
             <CardDescription>Legacy sync group controls and status summary.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="rounded-md border p-2">
-                <div className="text-lg font-semibold">{groups.length}</div>
-                <div className="text-xs text-muted-foreground">Groups</div>
-              </div>
-              <div className="rounded-md border p-2">
-                <div className="text-lg font-semibold">{holdings}</div>
-                <div className="text-xs text-muted-foreground">Holdings</div>
-              </div>
-              <div className="rounded-md border p-2">
-                <div className="text-lg font-semibold">{errorCount(groups)}</div>
-                <div className="text-xs text-muted-foreground">Errors</div>
-              </div>
-            </div>
+            <MetricGrid columns="three">
+              <MetricTile label="Groups" value={groups.length} variant="bordered" />
+              <MetricTile label="Holdings" value={holdings} variant="bordered" />
+              <MetricTile label="Errors" value={errorCount(groups)} variant="bordered" />
+            </MetricGrid>
 
             <Separator />
 
@@ -138,13 +132,13 @@ export function SyncPage() {
       </aside>
 
       <section className="flex min-w-0 flex-col gap-4" data-sync-result-panel>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-col gap-1">
-            <Badge variant="secondary" className="w-fit">Sync Groups</Badge>
-            <h1 className="text-2xl font-semibold">Groups</h1>
-            <p className="text-sm text-muted-foreground">Rows preserve the legacy View, Sync Latest, Rename, and Remove action placement.</p>
-          </div>
-        </div>
+        <SectionHeading
+          variant="page"
+          titleAs="h1"
+          eyebrow="Sync Groups"
+          title="Groups"
+          description="Rows preserve the legacy View, Sync Latest, Rename, and Remove action placement."
+        />
 
         {groups.length === 0 ? (
           <PageEmpty title="No sync groups" description="Create a sync group from a session row or detail action." />
@@ -166,7 +160,7 @@ export function SyncPage() {
                         <div className="truncate">{group.id}</div>
                         <div>Updated {formatDateTime(group.updated_at)}</div>
                         <div className="truncate">Latest {latest ? `${latest.provider}:${latest.session_id}` : "-"}</div>
-                        <div className="truncate">{latest?.target_dir ? compactPath(latest.target_dir) : "No target dir"}</div>
+                        <PathText value={latest?.target_dir} fallback="No target dir" wrap="all" />
                       </div>
                       {group.holdings.some((holding) => holding.last_error) ? (
                         <div className="flex flex-wrap gap-2">
@@ -180,20 +174,20 @@ export function SyncPage() {
                     </div>
 
                     <div className="flex flex-wrap justify-end gap-2" data-sync-row-actions>
-                      <Button asChild variant="outline" size="sm">
+                      <Button asChild variant="outline">
                         <Link to={`/sync/${encodeURIComponent(group.id)}`}>
                           View
                           <ArrowRightIcon data-icon="inline-end" />
                         </Link>
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => runMutation.mutate(group)} disabled={runMutation.isPending}>
+                      <Button variant="outline" onClick={() => runMutation.mutate(group)} disabled={runMutation.isPending}>
                         {runMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
                         Sync Latest
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => setRenameTarget(group)}>
+                      <Button variant="outline" onClick={() => setRenameTarget(group)}>
                         Rename
                       </Button>
-                      <Button variant="destructive" size="sm" onClick={() => setRemoveTarget(group)}>
+                      <Button variant="destructive" onClick={() => setRemoveTarget(group)}>
                         Remove
                       </Button>
                     </div>
@@ -253,7 +247,7 @@ function RenameSyncGroupDialog({
           <DialogTitle>Rename</DialogTitle>
           <DialogDescription>Update the sync group title from the legacy row action.</DialogDescription>
         </DialogHeader>
-        <form className="flex flex-col gap-5" onSubmit={form.handleSubmit((values) => renameMutation.mutate(values))}>
+        <DialogForm onSubmit={form.handleSubmit((values) => renameMutation.mutate(values))}>
           <input type="hidden" name="group_id" value={target?.id || ""} />
           <FieldGroup>
             <Field data-invalid={Boolean(form.formState.errors.title)}>
@@ -262,16 +256,13 @@ function RenameSyncGroupDialog({
               {form.formState.errors.title ? <FieldDescription>{form.formState.errors.title.message}</FieldDescription> : null}
             </Field>
           </FieldGroup>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!target || renameMutation.isPending}>
-              {renameMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-              Save
-            </Button>
-          </DialogFooter>
-        </form>
+          <DialogFormFooter
+            onCancel={() => onOpenChange(false)}
+            submitDisabled={!target}
+            submitLabel="Save"
+            submitting={renameMutation.isPending}
+          />
+        </DialogForm>
       </DialogContent>
     </Dialog>
   );

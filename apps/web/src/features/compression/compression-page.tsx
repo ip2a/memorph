@@ -3,7 +3,16 @@ import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowLeftIcon, ArchiveRestoreIcon, BoxIcon, FileArchiveIcon } from "lucide-react";
+import { DetailHeader } from "@/components/shared/detail-header";
+import { EntityRow } from "@/components/shared/entity-row";
+import { MetaLine } from "@/components/shared/meta-line";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
+import { PanelCard } from "@/components/shared/panel-card";
+import { PathText } from "@/components/shared/path-text";
+import { SectionHeading } from "@/components/shared/section-heading";
+import { SelectableRowButton } from "@/components/shared/selectable-row-button";
+import { TwoPanePage } from "@/components/shared/two-pane-page";
+import { WorkspaceIdentity } from "@/components/shared/workspace-identity";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -24,22 +33,17 @@ import {
 } from "@/components/ui/dialog";
 import { useManagerMeta, useManagerPreview } from "@/features/manager/queries";
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
-import { useCompressionArchive, useCompressionArchives, useCompressionProviders, useRestoreCompressionArchive } from "@/features/compression/queries";
+import { useCompressionArchive, useCompressionProviders, useRestoreCompressionArchive } from "@/features/compression/queries";
 import { SessionBlock } from "@/features/sessions/session-block";
-import { compactPath, formatBytes, formatDateTime } from "@/lib/format";
-import type { CompressionArchive, CompressionArchiveSummary, CompressionFormat, CompressionProviderSupport, ManagerItem, SessionEvent } from "@/lib/types";
+import { formatBytes, formatDateTime } from "@/lib/format";
+import type { CompressionArchive, CompressionFormat, CompressionProviderSupport, ManagerItem, SessionEvent } from "@/lib/types";
 
 type RestoreTarget = {
   archiveRef: string;
   title: string;
 };
 
-function formatRatio(value: number | null | undefined) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "-";
-  return `${(value * 100).toFixed(value < 0.1 ? 1 : 0)}%`;
-}
-
-function archiveTitle(archive: CompressionArchiveSummary | CompressionArchive, fallback: string) {
+function archiveTitle(archive: CompressionArchive, fallback: string) {
   return archive.canonical_id || fallback || "Compression Archive";
 }
 
@@ -49,16 +53,6 @@ function defaultRestorePrefix(archiveRef: string) {
     .replace(/[^a-zA-Z0-9_-]+/g, "_")
     .replace(/^_+|_+$/g, "");
   return prefix || "compression_archive";
-}
-
-function WorkspaceSummary({ workspace }: { workspace: string | null | undefined }) {
-  return (
-    <section className="flex flex-col gap-2 border-b pb-4" data-compression-workspace-summary>
-      <span className="font-mono text-xs uppercase text-muted-foreground">Workspace</span>
-      <strong className="break-words text-lg font-semibold">{workspace ? compactPath(workspace) : "Current workspace"}</strong>
-      <span className="break-words font-mono text-xs text-muted-foreground">{workspace || "-"}</span>
-    </section>
-  );
 }
 
 function ProviderSupportList({ providers }: { providers: CompressionProviderSupport[] }) {
@@ -74,34 +68,16 @@ function ProviderSupportList({ providers }: { providers: CompressionProviderSupp
   }
 
   return (
-    <section className="flex min-h-0 flex-col gap-3" data-compression-provider-support>
-      <div className="flex items-center justify-between gap-3">
-        <strong className="text-sm font-medium">Providers</strong>
-        <Badge variant="outline">{providers.length}</Badge>
+    <ScrollArea className="min-h-0 flex-1 pr-3" data-compression-provider-support>
+      <div className="flex flex-col gap-2">
+        {providers.map((provider) => (
+          <SelectableRowButton
+            key={provider.provider_id}
+            title={provider.provider_id}
+          />
+        ))}
       </div>
-      <ScrollArea className="min-h-0 flex-1 pr-3">
-        <div className="flex flex-col gap-2">
-          {providers.map((provider) => (
-            <div key={provider.provider_id} className="rounded-md border px-3 py-2">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">{provider.provider_id}</div>
-                  <div className="mt-1 flex flex-wrap gap-2">
-                    <Badge variant={provider.detects_native_source ? "secondary" : "outline"}>
-                      {provider.detects_native_source ? "Detects native" : "Portable only"}
-                    </Badge>
-                    <Badge variant={provider.native_target_projection ? "secondary" : "outline"}>
-                      {provider.native_target_projection ? "Native target" : "Portable target"}
-                    </Badge>
-                  </div>
-                </div>
-                <Badge variant="outline">{provider.default_projection}</Badge>
-              </div>
-            </div>
-          ))}
-        </div>
-      </ScrollArea>
-    </section>
+    </ScrollArea>
   );
 }
 
@@ -113,29 +89,36 @@ function CompressionControlPanel({
   providers: CompressionProviderSupport[];
 }) {
   return (
-    <Card className="min-h-0" data-manager-control-panel>
-      <CardContent className="flex h-full min-h-0 flex-col gap-4">
-        <WorkspaceSummary workspace={workspace} />
-        <ProviderSupportList providers={providers} />
-      </CardContent>
-    </Card>
+    <PanelCard className="min-h-0" data-manager-control-panel>
+      <section className="flex flex-col gap-3 border-b pb-4" data-compression-workspace-summary>
+        <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
+      </section>
+      <ProviderSupportList providers={providers} />
+    </PanelCard>
   );
 }
 
 function SectionHeader({ title, count }: { title: string; count: number }) {
-  return (
-    <div className="flex items-center justify-between gap-3 border-b pb-2" data-compression-section-head>
-      <strong className="text-sm font-medium">{title}</strong>
-      <Badge variant="outline">{count}</Badge>
-    </div>
-  );
+  return <SectionHeading data-compression-section-head title={title} badge={count} />;
 }
 
 function CandidateRow({ item, onCompress }: { item: ManagerItem; onCompress: (item: ManagerItem) => void }) {
   const href = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
   return (
-    <article className="rounded-md border px-3 py-3" data-compression-candidate-row>
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
+    <EntityRow
+      data-compression-candidate-row
+      actionsProps={{ "data-compression-row-actions": true }}
+      actions={(
+        <>
+          <Button asChild variant="outline">
+            <Link to={href}>View</Link>
+          </Button>
+          <Button type="button" variant="outline" onClick={() => onCompress(item)}>
+            Compression
+          </Button>
+        </>
+      )}
+    >
         <div className="flex min-w-0 flex-col gap-2">
           <Link to={href} className="truncate text-sm font-medium hover:underline">
             {item.title || item.session_id}
@@ -145,52 +128,9 @@ function CandidateRow({ item, onCompress }: { item: ManagerItem; onCompress: (it
             <span>{formatBytes(item.size_bytes)}</span>
             <span>Updated {formatDateTime(item.last_active_at)}</span>
           </div>
-          <span className="truncate font-mono text-xs text-muted-foreground">{compactPath(item.project_dir || item.source_path)}</span>
+          <PathText value={item.project_dir || item.source_path} fallback="-" wrap="all" />
         </div>
-        <div className="flex flex-wrap justify-start gap-2 md:justify-end" data-compression-row-actions>
-          <Button asChild variant="outline" size="sm">
-            <Link to={href}>View</Link>
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => onCompress(item)}>
-            Compression
-          </Button>
-        </div>
-      </div>
-    </article>
-  );
-}
-
-function ArchiveRow({ archive, onRestore }: { archive: CompressionArchiveSummary; onRestore: (archive: CompressionArchiveSummary) => void }) {
-  const archiveRef = archive.archive_ref || "";
-  const href = `/compression?archive_ref=${encodeURIComponent(archiveRef)}`;
-  return (
-    <article className="rounded-md border px-3 py-3" data-compression-archive-row>
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
-        <div className="flex min-w-0 flex-col gap-2">
-          <Link to={href} className="truncate text-sm font-medium hover:underline">
-            {archive.canonical_id || "Compression Archive"}
-          </Link>
-          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            <span>{archive.source_provider_id || "-"} -&gt; {archive.target_provider_id || "-"}</span>
-            <span>sourceEvents={archive.source_event_count ?? 0}</span>
-            <span>storedSize={formatBytes(archive.stored_size_bytes)}</span>
-            <span>originalSize={formatBytes(archive.original_size_bytes)}</span>
-            <span>compressionRatio={formatRatio(archive.compression_ratio)}</span>
-            <span>createdAt={formatDateTime(archive.created_at)}</span>
-          </div>
-          <span className="break-all font-mono text-xs text-muted-foreground">{archiveRef}</span>
-          {archive.workspace_dir ? <span className="truncate font-mono text-xs text-muted-foreground">{compactPath(archive.workspace_dir)}</span> : null}
-        </div>
-        <div className="flex flex-wrap justify-start gap-2 md:justify-end" data-compression-row-actions>
-          <Button asChild variant="outline" size="sm">
-            <Link to={href}>View</Link>
-          </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => onRestore(archive)}>
-            Restore
-          </Button>
-        </div>
-      </div>
-    </article>
+    </EntityRow>
   );
 }
 
@@ -250,7 +190,7 @@ function RestoreCompressionDialog({
             <input type="hidden" name="archive_ref" value={target?.archiveRef || ""} />
             <FieldLabel>Archive Ref</FieldLabel>
             <div className="break-all rounded-md border p-3 font-mono text-xs" data-compression-restore-archive-ref>
-              {target?.archiveRef || "-"}
+              <PathText value={target?.archiveRef} fallback="-" tone="default" wrap="all" />
             </div>
           </Field>
           <Field>
@@ -303,27 +243,22 @@ function RestoreCompressionDialog({
 
 function CompressionOverview() {
   const [compressTarget, setCompressTarget] = useState<ManagerItem | null>(null);
-  const [restoreTarget, setRestoreTarget] = useState<RestoreTarget | null>(null);
   const meta = useManagerMeta();
-  const archives = useCompressionArchives({ limit: 100 });
   const providers = useCompressionProviders();
   const candidates = useManagerPreview({ sort: "size", limit: 50 });
 
-  if (archives.isLoading || providers.isLoading || candidates.isLoading || meta.isLoading) return <PageSkeleton />;
-  if (archives.error) return <PageError title="Compression archives failed to load" message={archives.error.message} />;
+  if (providers.isLoading || candidates.isLoading || meta.isLoading) return <PageSkeleton />;
   if (providers.error) return <PageError title="Compression providers failed to load" message={providers.error.message} />;
   if (candidates.error) return <PageError title="Compression candidates failed to load" message={candidates.error.message} />;
   if (meta.error) return <PageError title="Compression workspace failed to load" message={meta.error.message} />;
 
-  const archiveRows = archives.data ?? [];
   const providerRows = providers.data ?? [];
   const candidateRows = candidates.data?.items ?? [];
 
   return (
-    <div className="grid min-h-[calc(100vh-124px)] grid-cols-1 gap-4 lg:grid-cols-[minmax(280px,0.44fr)_minmax(0,1fr)]" data-manager-page-layout>
+    <TwoPanePage data-manager-page-layout>
       <CompressionControlPanel workspace={meta.data?.selected_workspace} providers={providerRows} />
-      <Card className="min-h-0" data-manager-result-panel>
-        <CardContent className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto_minmax(0,1fr)] gap-3">
+      <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3" data-manager-result-panel>
           <SectionHeader title="Compress Sessions" count={candidates.data?.total_count ?? candidateRows.length} />
           <ScrollArea className="min-h-0 pr-3">
             <div className="flex flex-col gap-2">
@@ -334,24 +269,7 @@ function CompressionOverview() {
               )}
             </div>
           </ScrollArea>
-          <SectionHeader title="Compression Archives" count={archiveRows.length} />
-          <ScrollArea className="min-h-0 pr-3">
-            <div className="flex flex-col gap-2">
-              {archiveRows.length ? (
-                archiveRows.map((archive) => (
-                  <ArchiveRow
-                    key={archive.archive_ref}
-                    archive={archive}
-                    onRestore={(item) => setRestoreTarget({ archiveRef: item.archive_ref, title: item.canonical_id || "Compression Archive" })}
-                  />
-                ))
-              ) : (
-                <PageEmpty title="No archives" description="No compression archives have been created yet." />
-              )}
-            </div>
-          </ScrollArea>
-        </CardContent>
-      </Card>
+      </PanelCard>
       <CompressSessionDialog
         open={Boolean(compressTarget)}
         target={compressTarget ? {
@@ -364,23 +282,7 @@ function CompressionOverview() {
           if (!open) setCompressTarget(null);
         }}
       />
-      <RestoreCompressionDialog
-        open={Boolean(restoreTarget)}
-        target={restoreTarget}
-        onOpenChange={(open) => {
-          if (!open) setRestoreTarget(null);
-        }}
-      />
-    </div>
-  );
-}
-
-function MetadataRow({ label, value }: { label: string; value: string | number | null | undefined }) {
-  return (
-    <div className="grid gap-1 md:grid-cols-[10rem_1fr]">
-      <span className="text-muted-foreground">{label}</span>
-      <span className="break-words font-medium">{value === null || value === undefined || value === "" ? "-" : value}</span>
-    </div>
+    </TwoPanePage>
   );
 }
 
@@ -430,19 +332,22 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
 
   return (
     <div className="flex min-h-[calc(100vh-124px)] flex-col gap-4">
-      <section className="grid gap-3 border-b pb-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start" data-session-header>
-        <div className="min-w-0">
-          <p className="font-mono text-xs uppercase text-muted-foreground">Compression Archive Detail</p>
-          <h1 className="break-words text-2xl font-semibold">{title}</h1>
-          <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted-foreground">
+      <DetailHeader
+        data-session-header
+        separated
+        eyebrow="Compression Archive Detail"
+        title={title}
+        meta={(
+          <>
             <span>archiveRef=<code>{archiveRef}</code></span>
             <span>{data.source_provider_id || "-"} -&gt; {data.target_provider_id || "-"}</span>
             <span>sourceEvents={sourceEventCount}</span>
             <span>createdAt={formatDateTime(data.created_at)}</span>
             {data.workspace_dir ? <span>workspace=<code>{data.workspace_dir}</code></span> : null}
-          </div>
-        </div>
-        <div className="flex flex-wrap justify-start gap-2 md:justify-end">
+          </>
+        )}
+        actions={(
+          <>
           <Button asChild variant="outline">
             <Link to="/compression">
               <ArrowLeftIcon data-icon="inline-start" />
@@ -453,8 +358,9 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
             <ArchiveRestoreIcon data-icon="inline-start" />
             Restore
           </Button>
-        </div>
-      </section>
+          </>
+        )}
+      />
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[4rem_minmax(0,1fr)]" data-detail-layout data-compression-detail-layout>
         <aside className="hidden min-h-0 rounded-md border p-2 lg:flex lg:flex-col lg:gap-1" aria-label="Timeline" data-detail-timeline>
           {data.events.length ? data.events.map((event) => <span key={event.id} className="min-h-3 flex-1 rounded-sm bg-muted" />) : null}
@@ -477,13 +383,13 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
                 <FileArchiveIcon aria-hidden="true" />
                 <strong>Archive Metadata</strong>
               </div>
-              <MetadataRow label="Archive Ref" value={archiveRef} />
-              <MetadataRow label="Canonical ID" value={data.canonical_id} />
-              <MetadataRow label="Source Provider" value={data.source_provider_id} />
-              <MetadataRow label="Target Provider" value={data.target_provider_id} />
-              <MetadataRow label="Workspace" value={data.workspace_dir} />
-              <MetadataRow label="Summary Event" value={data.summary_event_id} />
-              <MetadataRow label="Created" value={formatDateTime(data.created_at)} />
+              <MetaLine columns="wide" className="gap-1" label="Archive Ref" value={<PathText value={archiveRef} tone="default" weight="medium" wrap="all" className="text-sm" />} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Canonical ID" value={data.canonical_id} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Source Provider" value={data.source_provider_id} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Target Provider" value={data.target_provider_id} />
+              <MetaLine columns="wide" className="gap-1" label="Workspace" value={<PathText value={data.workspace_dir} tone="default" weight="medium" wrap="words" className="text-sm" />} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Summary Event" value={data.summary_event_id} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Created" value={formatDateTime(data.created_at)} />
               <Separator />
               <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-2 text-sm font-medium">

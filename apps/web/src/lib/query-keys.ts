@@ -4,6 +4,7 @@ export const queryKeys = {
   home: ["home"] as const,
   meta: ["meta"] as const,
   workspaces: ["workspaces"] as const,
+  workspaceProviders: (workspace: string) => ["workspaces", "providers", workspace] as const,
   providers: ["providers"] as const,
   providerCatalog: (workspace?: string | null) => ["providers", "catalog", workspace ?? "global"] as const,
   sessionsRoot: ["sessions"] as const,

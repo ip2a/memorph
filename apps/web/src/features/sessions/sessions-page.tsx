@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRightIcon, EyeIcon, PinIcon, SearchIcon } from "lucide-react";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
+import { PathText } from "@/components/shared/path-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,7 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { compactPath, formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
+import { formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
 import type { SessionHookFilter, SessionItem, SessionListSort } from "@/lib/types";
 import { useSessions } from "@/features/sessions/queries";
 
@@ -157,12 +158,12 @@ export function SessionsPage() {
                           {session.hook_runtime_summary ? <Badge variant="outline">Hook</Badge> : null}
                         </div>
                       </TableCell>
-                      <TableCell>{compactPath(session.project_dir)}</TableCell>
+                      <TableCell><PathText value={session.project_dir} wrap="all" /></TableCell>
                       <TableCell>{formatDateTime(session.last_active_at)}</TableCell>
                       <TableCell className="text-right">{session.message_count ?? "-"}</TableCell>
                       <TableCell className="text-right">{formatBytes(session.size_bytes)}</TableCell>
                       <TableCell className="text-right">
-                        <Button asChild variant="ghost" size="sm">
+                        <Button asChild variant="ghost">
                           <Link to={`/sessions/${encodeURIComponent(session.provider_id)}/${encodeURIComponent(session.session_id)}`}>
                             Detail
                             <ArrowRightIcon data-icon="inline-end" />

@@ -168,6 +168,17 @@ export function deleteWorkspaceHistory(workspace: string) {
   });
 }
 
+export function getWorkspaceProviders(workspace: string) {
+  return api<string[]>(`/api/v1/workspaces/providers${buildQuery({ workspace })}`);
+}
+
+export function updateWorkspaceProviders(workspace: string, providers: string[]) {
+  return api<string[]>("/api/v1/workspaces/providers", {
+    method: "PUT",
+    body: JSON.stringify({ workspace, providers }),
+  });
+}
+
 export function listAgents() {
   return api<AgentManagementPayload>("/api/v1/agents");
 }

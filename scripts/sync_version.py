@@ -140,18 +140,10 @@ def update_memorph_python_dependencies(version: str, check: bool) -> None:
 
 
 def sync_i18n_asset(check: bool) -> None:
-    source = ROOT / "web" / "i18n.json"
     dest = ROOT / "rust" / "crates" / "memorph" / "assets" / "i18n.json"
-    if check:
-        if not dest.exists():
-            raise RuntimeError(f"Missing i18n asset: {dest.relative_to(ROOT)}")
-        if source.read_bytes() != dest.read_bytes():
-            raise RuntimeError(f"i18n asset out of sync: {dest.relative_to(ROOT)}")
-        print("[ok] i18n asset is synced")
-        return
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, dest)
-    print(f"[ok] i18n asset synced: {dest.relative_to(ROOT)}")
+    if not dest.exists():
+        raise RuntimeError(f"Missing i18n asset: {dest.relative_to(ROOT)}")
+    print(f"[ok] i18n asset exists: {dest.relative_to(ROOT)}")
 
 
 def sync_cargo_lockfile(check: bool, check_lockfile: bool) -> None:

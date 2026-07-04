@@ -132,4 +132,24 @@
   html {
     @apply font-sans;
   }
+
+  .json-key {
+    color: oklch(0.51 0.22 292);
+  }
+
+  .json-string {
+    color: oklch(0.52 0.12 166);
+  }
+
+  .json-number {
+    color: oklch(0.5 0.12 245);
+  }
+
+  .json-literal {
+    color: oklch(0.55 0.2 15);
+  }
+
+  .json-colon {
+    color: var(--muted-foreground);
+  }
 }

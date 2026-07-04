@@ -35,3 +35,7 @@ export function compactPath(value: string | null | undefined) {
   if (segments.length <= 3) return value;
   return `.../${segments.slice(-3).join("/")}`;
 }
+
+export function formatDetailTitle(value: string) {
+  return value.replaceAll("/", "/\u200b");
+}

@@ -1,7 +1,18 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRightIcon, PlayIcon, RefreshCwIcon } from "lucide-react";
+import { EntityRow } from "@/components/shared/entity-row";
+import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
+import { PanelCard } from "@/components/shared/panel-card";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
+import {
+  providerListInstallStatus,
+  ProviderListInstallStatusBadge,
+  ProviderListStatusTrailing,
+} from "@/components/shared/provider-list-status";
+import { SelectableRowButton } from "@/components/shared/selectable-row-button";
+import { TwoPanePage } from "@/components/shared/two-pane-page";
+import { WorkspaceIdentity } from "@/components/shared/workspace-identity";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,7 +22,6 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
-import { compactPath } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { AgentEnvironmentStatus, AgentManagementEntry, ProviderHookDiagnosisAggregate, ProviderSettingItem } from "@/lib/types";
 import {
@@ -25,12 +35,6 @@ import {
 
 const HOOK_SETTING_IDS = new Set(["install_hook", "verify_hook", "repair_hook", "uninstall_hook"]);
 
-function workspaceName(path: string | null | undefined) {
-  if (!path) return "No workspace";
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.at(-1) || path;
-}
-
 function environmentOf(provider: AgentManagementEntry): AgentEnvironmentStatus {
   return provider.environment || {
     installed: !!provider.installed,
@@ -39,10 +43,6 @@ function environmentOf(provider: AgentManagementEntry): AgentEnvironmentStatus {
     config_path: provider.config_path || "",
     install_method: provider.install_method || "unknown",
   };
-}
-
-function installedBadge(installed: boolean) {
-  return <Badge variant={installed ? "secondary" : "outline"}>{installed ? "Installed" : "Not detected"}</Badge>;
 }
 
 function providerSettings(provider: AgentManagementEntry) {
@@ -82,14 +82,9 @@ function DetailRow({ label, value, hint }: { label: string; value: string | numb
 
 function SummaryGrid({ items }: { items: Array<{ label: string; value: string | number | null | undefined }> }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {items.map((item) => (
-        <div key={item.label} className="flex min-w-0 flex-col gap-1 border-b pb-3">
-          <span className="text-muted-foreground font-mono text-xs uppercase">{item.label}</span>
-          <strong className="truncate text-sm font-medium">{item.value || "-"}</strong>
-        </div>
-      ))}
-    </div>
+    <MetricGrid>
+      {items.map((item) => <MetricTile key={item.label} label={item.label} value={item.value || "-"} />)}
+    </MetricGrid>
   );
 }
 
@@ -103,7 +98,13 @@ function ProviderList({
   onSelect: (provider: string) => void;
 }) {
   const ordered = useMemo(
-    () => [...providers].sort((left, right) => Number(environmentOf(right).installed) - Number(environmentOf(left).installed)),
+    () =>
+      [...providers].sort((left, right) => {
+        const leftInstalled = providerListInstallStatus(left, "agent") === "installed";
+        const rightInstalled = providerListInstallStatus(right, "agent") === "installed";
+        if (leftInstalled !== rightInstalled) return leftInstalled ? -1 : 1;
+        return (left.name || left.provider_id).localeCompare(right.name || right.provider_id);
+      }),
     [providers],
   );
 
@@ -122,21 +123,16 @@ function ProviderList({
     <ScrollArea className="min-h-0 flex-1 pr-3">
       <div className="flex flex-col gap-2">
         {ordered.map((provider) => {
-          const installed = environmentOf(provider).installed;
           const selected = provider.provider_id === selectedProvider;
+          const status = providerListInstallStatus(provider, "agent");
           return (
-            <Button
+            <SelectableRowButton
               key={provider.provider_id}
-              type="button"
-              variant={selected ? "secondary" : "outline"}
-              className="h-auto min-h-11 justify-start px-3 py-2 text-left"
+              selected={selected}
+              title={provider.name || provider.provider_id}
+              trailing={<ProviderListStatusTrailing status={status} />}
               onClick={() => onSelect(provider.provider_id)}
-            >
-              <span className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
-                <strong className="truncate text-sm font-medium">{provider.name}</strong>
-                {installedBadge(installed)}
-              </span>
-            </Button>
+            />
           );
         })}
       </div>
@@ -183,7 +179,7 @@ function HooksBlock({ provider }: { provider: AgentManagementEntry }) {
         <CardTitle>Hooks</CardTitle>
         <CardDescription>Provider hook install, runtime, and session diagnosis summary.</CardDescription>
         <CardAction>
-          <Button asChild variant="outline" size="sm">
+          <Button asChild variant="outline">
             <Link to="/hooks">
               Open Hooks
               <ArrowRightIcon data-icon="inline-end" />
@@ -251,29 +247,39 @@ function ProviderItemsBlock({
               if (setting.kind === "toggle") {
                 const checked = setting.value === true;
                 return (
-                  <div key={setting.id} className="grid gap-3 border-b py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                  <EntityRow
+                    key={setting.id}
+                    variant="inline"
+                    actions={(
+                      <div className="flex items-center gap-3">
+                        <span className="text-muted-foreground text-xs">{checked ? "Enabled" : "Disabled"}</span>
+                        <Switch checked={checked} disabled={pending} onCheckedChange={(next) => onToggle(setting, next)} />
+                      </div>
+                    )}
+                  >
                     <div className="flex min-w-0 flex-col gap-1">
                       <strong className="text-sm font-medium">{settingLabel(setting)}</strong>
                       <span className="text-muted-foreground text-sm">{setting.description}</span>
                     </div>
-                    <div className="flex items-center gap-3">
-                      <span className="text-muted-foreground text-xs">{checked ? "Enabled" : "Disabled"}</span>
-                      <Switch checked={checked} disabled={pending} onCheckedChange={(next) => onToggle(setting, next)} />
-                    </div>
-                  </div>
+                  </EntityRow>
                 );
               }
               return (
-                <div key={setting.id} className="grid gap-3 border-b py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                <EntityRow
+                  key={setting.id}
+                  variant="inline"
+                  actions={(
+                    <Button type="button" variant="outline" disabled={pending} onClick={() => onRun(setting)}>
+                      {pending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}
+                      {pending ? "Running" : settingLabel(setting)}
+                    </Button>
+                  )}
+                >
                   <div className="flex min-w-0 flex-col gap-1">
                     <strong className="text-sm font-medium">{settingLabel(setting)}</strong>
                     <span className="text-muted-foreground text-sm">{setting.description}</span>
                   </div>
-                  <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => onRun(setting)}>
-                    {pending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}
-                    {pending ? "Running" : settingLabel(setting)}
-                  </Button>
-                </div>
+                </EntityRow>
               );
             })}
           </div>
@@ -357,11 +363,11 @@ function ProviderDetail({
             <strong className="truncate text-lg font-semibold">{provider.name}</strong>
             <div className="flex flex-wrap gap-2">
               <Badge variant="outline">{provider.provider_id}</Badge>
-              {installedBadge(environment.installed)}
+              <ProviderListInstallStatusBadge status={providerListInstallStatus(provider, "agent")} />
               <Badge variant="outline">{environment.install_method || "unknown"}</Badge>
             </div>
           </div>
-          <Button type="button" variant="outline" size="sm" disabled={detectAgent.isPending} onClick={() => detectAgent.mutate(provider.provider_id)}>
+          <Button type="button" variant="outline" disabled={detectAgent.isPending} onClick={() => detectAgent.mutate(provider.provider_id)}>
             {detectAgent.isPending ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
             Detect
           </Button>
@@ -400,23 +406,19 @@ export function AgentsPage() {
   if (meta.error) return <PageError title="Workspace metadata failed to load" message={meta.error.message} />;
 
   return (
-    <div className="grid h-full min-h-0 gap-[18px] md:grid-cols-[minmax(280px,0.44fr)_minmax(0,1fr)]">
-      <section className="flex min-h-0 flex-col gap-4 overflow-hidden rounded-lg border bg-card p-4">
+    <TwoPanePage>
+      <PanelCard>
         <section className="flex flex-col gap-3 border-b pb-4">
-          <div>
-            <span className="text-muted-foreground font-mono text-xs uppercase">Workspace</span>
-            <strong className="mt-1 block text-lg leading-tight">{workspaceName(workspace)}</strong>
-            <p className="text-muted-foreground mt-1 break-words font-mono text-xs">{compactPath(workspace)}</p>
-          </div>
+          <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
         </section>
         <ProviderList providers={providers} selectedProvider={selected} onSelect={setSelectedProvider} />
-      </section>
+      </PanelCard>
 
-      <section className={cn("min-h-0 overflow-hidden rounded-lg border bg-card p-4", detail.isFetching && detail.data ? "opacity-95" : "")}>
+      <PanelCard variant="plain" className={cn(detail.isFetching && detail.data ? "opacity-95" : "")}>
         {detail.error ? <PageError title="Agent detail failed to load" message={detail.error.message} /> : null}
         <ProviderDetail provider={detail.data} isLoading={detail.isLoading} workspace={workspace} />
-      </section>
+      </PanelCard>
       <Separator className="hidden" />
-    </div>
+    </TwoPanePage>
   );
 }

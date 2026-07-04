@@ -32,7 +32,7 @@ export function PageEmpty({ title, description }: { title: string; description: 
         <EmptyDescription>{description}</EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
-        <Button variant="outline" size="sm">
+        <Button variant="outline">
           <RefreshCwIcon data-icon="inline-start" />
           Refresh
         </Button>

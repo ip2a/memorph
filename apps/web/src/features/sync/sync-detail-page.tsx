@@ -6,6 +6,8 @@ import { useForm, useWatch } from "react-hook-form";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
+import { DetailHeader } from "@/components/shared/detail-header";
+import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -34,9 +36,11 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
+import { MetaLine } from "@/components/shared/meta-line";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
+import { PathText } from "@/components/shared/path-text";
 import { bindSyncGroup, getMeta, listProviders, removeSyncGroup, renameSyncGroup, runSyncGroup, unbindSyncHolding } from "@/lib/api";
-import { compactPath, formatDateTime } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
 import { queryKeys } from "@/lib/query-keys";
 import type { MetaPayload, ProviderInfo, SyncGroup, SyncHolding, SyncReport } from "@/lib/types";
 import { useSyncGroup } from "@/features/sync/queries";
@@ -111,19 +115,19 @@ export function SyncDetailPage() {
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]" data-sync-detail-layout>
       <section className="flex min-w-0 flex-col gap-4" data-sync-holdings-panel>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex min-w-0 flex-col gap-1">
-            <Badge variant="secondary" className="w-fit">Holdings</Badge>
-            <h1 className="truncate text-2xl font-semibold">{group.title}</h1>
-            <p className="text-sm text-muted-foreground">{group.holdings.length} linked sessions</p>
-          </div>
-          <Button asChild variant="outline">
-            <Link to="/sync">
-              <ArrowLeftIcon data-icon="inline-start" />
-              Back
-            </Link>
-          </Button>
-        </div>
+        <DetailHeader
+          title={group.title}
+          badges={<Badge variant="secondary">Holdings</Badge>}
+          description={`${group.holdings.length} linked sessions`}
+          actions={(
+            <Button asChild variant="outline">
+              <Link to="/sync">
+                <ArrowLeftIcon data-icon="inline-start" />
+                Back
+              </Link>
+            </Button>
+          )}
+        />
 
         {group.holdings.length === 0 ? (
           <PageEmpty title="No holdings" description="Add a holding from the status panel to bind this sync group." />
@@ -213,37 +217,28 @@ function HoldingCard({
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <div className="flex flex-col gap-2 text-sm">
-          <MetaLine label="Workspace" value={compactPath(holding.target_dir)} />
+          <MetaLine label="Workspace" value={<PathText value={holding.target_dir} wrap="all" />} />
           <MetaLine label="Last Active At" value={formatDateTime(holding.last_active_at)} />
           <MetaLine label="Last Sync" value={formatDateTime(holding.last_sync_at)} />
           <MetaLine label="Sync From" value={holding.last_sync_from || "-"} />
           <MetaLine label="Error" value={holding.last_error || "-"} destructive={Boolean(holding.last_error)} />
         </div>
         <div className="flex flex-wrap justify-end gap-2" data-sync-holding-actions>
-          <Button asChild variant="outline" size="sm">
+          <Button asChild variant="outline">
             <Link to={sessionHref}>
               Open Session
               <ArrowRightIcon data-icon="inline-end" />
             </Link>
           </Button>
-          <Button variant="outline" size="sm" onClick={onSyncFrom} data-group-id={group.id} data-holding-id={holding.id}>
+          <Button variant="outline" onClick={onSyncFrom} data-group-id={group.id} data-holding-id={holding.id}>
             Sync From This
           </Button>
-          <Button variant="destructive" size="sm" onClick={onUnbind} data-group-id={group.id} data-holding-id={holding.id}>
+          <Button variant="destructive" onClick={onUnbind} data-group-id={group.id} data-holding-id={holding.id}>
             Unbind
           </Button>
         </div>
       </CardContent>
     </Card>
-  );
-}
-
-function MetaLine({ label, value, destructive = false }: { label: string; value?: string | null; destructive?: boolean }) {
-  return (
-    <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-2">
-      <span className="text-muted-foreground">{label}</span>
-      {destructive ? <Badge variant="destructive" className="w-fit max-w-full truncate">{value}</Badge> : <span className="truncate">{value || "-"}</span>}
-    </div>
   );
 }
 
@@ -300,7 +295,7 @@ function BindSyncHoldingDialog({
           <DialogTitle>Add Holding</DialogTitle>
           <DialogDescription>Bind another provider session to this sync group.</DialogDescription>
         </DialogHeader>
-        <form className="flex flex-col gap-5" onSubmit={form.handleSubmit((values) => bindMutation.mutate(values))}>
+        <DialogForm onSubmit={form.handleSubmit((values) => bindMutation.mutate(values))}>
           <input type="hidden" name="group_id" value={group.id} />
           <FieldGroup data-bind-sync-modal-stack>
             <Field data-invalid={Boolean(form.formState.errors.provider)}>
@@ -345,14 +340,13 @@ function BindSyncHoldingDialog({
             {workspaceOptions(meta).map((item) => <option key={item.path} value={item.path} />)}
           </datalist>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={!providers.length || bindMutation.isPending}>
-              {bindMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-              Add Holding
-            </Button>
-          </DialogFooter>
-        </form>
+          <DialogFormFooter
+            onCancel={() => onOpenChange(false)}
+            submitDisabled={!providers.length}
+            submitLabel="Add Holding"
+            submitting={bindMutation.isPending}
+          />
+        </DialogForm>
       </DialogContent>
     </Dialog>
   );
@@ -497,7 +491,7 @@ function RenameSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
           <DialogTitle>Rename</DialogTitle>
           <DialogDescription>Update the sync group title.</DialogDescription>
         </DialogHeader>
-        <form className="flex flex-col gap-5" onSubmit={form.handleSubmit((values) => renameMutation.mutate(values))}>
+        <DialogForm onSubmit={form.handleSubmit((values) => renameMutation.mutate(values))}>
           <input type="hidden" name="group_id" value={group.id} />
           <FieldGroup>
             <Field data-invalid={Boolean(form.formState.errors.title)}>
@@ -506,14 +500,8 @@ function RenameSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
               {form.formState.errors.title ? <FieldDescription>{form.formState.errors.title.message}</FieldDescription> : null}
             </Field>
           </FieldGroup>
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={renameMutation.isPending}>
-              {renameMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-              Save
-            </Button>
-          </DialogFooter>
-        </form>
+          <DialogFormFooter onCancel={() => onOpenChange(false)} submitLabel="Save" submitting={renameMutation.isPending} />
+        </DialogForm>
       </DialogContent>
     </Dialog>
   );

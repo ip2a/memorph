@@ -2,12 +2,14 @@ import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { FolderOpenIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
+import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
+import { PathText } from "@/components/shared/path-text";
+import { workspaceName } from "@/components/shared/workspace-name";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -27,16 +29,10 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
 import { deleteWorkspaceHistory, getMeta, listSessions, listWorkspaces } from "@/lib/api";
-import { compactPath, formatDateTime } from "@/lib/format";
+import { formatDateTime } from "@/lib/format";
 import { queryKeys } from "@/lib/query-keys";
 import type { WorkspaceEntry } from "@/lib/types";
 import { useUiStore } from "@/stores/ui-store";
-
-function workspaceName(path: string | null | undefined) {
-  if (!path) return "memorph";
-  const segments = path.split(/[\\/]/).filter(Boolean);
-  return segments.at(-1) || path;
-}
 
 function WorkspaceHistoryRow({
   workspace,
@@ -59,18 +55,15 @@ function WorkspaceHistoryRow({
       >
         <span className="grid min-w-0 gap-1">
           <span className="flex min-w-0 items-baseline justify-between gap-3">
-            <strong className="truncate">{workspaceName(workspace.path)}</strong>
+            <strong className="truncate">{workspaceName(workspace.path, "memorph")}</strong>
             <span className="shrink-0 font-mono text-xs text-muted-foreground">{formatDateTime(workspace.last_viewed_at)}</span>
           </span>
-          <span className="truncate font-mono text-xs text-muted-foreground" title={workspace.path}>
-            {compactPath(workspace.path)}
-          </span>
+          <PathText value={workspace.path} wrap="all" />
         </span>
       </Button>
       <Button
         type="button"
         variant="ghost"
-        size="sm"
         disabled={isRemoving}
         onClick={() => onRemove(workspace.path)}
       >
@@ -112,7 +105,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
       setSelectedWorkspace(workspace);
       await queryClient.invalidateQueries();
       onOpenChange(false);
-      toast.success("Workspace switched", { description: workspaceName(workspace) });
+      toast.success("Workspace switched", { description: workspaceName(workspace, "memorph") });
     },
   });
 
@@ -131,7 +124,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
           : meta.data,
       );
       if (currentWorkspace === removedWorkspace) setSelectedWorkspace(null);
-      toast.success("Workspace history removed", { description: workspaceName(removedWorkspace) });
+      toast.success("Workspace history removed", { description: workspaceName(removedWorkspace, "memorph") });
     },
   });
 
@@ -161,7 +154,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
           <DialogDescription>Choose a known workspace or enter a path to load its sessions.</DialogDescription>
         </DialogHeader>
 
-        <form className="flex flex-col gap-5" onSubmit={submitWorkspace}>
+        <DialogForm onSubmit={submitWorkspace}>
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="workspace-switch-input">Workspace Path</FieldLabel>
@@ -225,16 +218,13 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
             </ScrollArea>
           </section>
 
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={!draftWorkspace.trim() || switchWorkspace.isPending}>
-              {switchWorkspace.isPending ? <Spinner data-icon="inline-start" /> : null}
-              Go
-            </Button>
-          </DialogFooter>
-        </form>
+          <DialogFormFooter
+            onCancel={() => onOpenChange(false)}
+            submitDisabled={!draftWorkspace.trim()}
+            submitLabel="Go"
+            submitting={switchWorkspace.isPending}
+          />
+        </DialogForm>
       </DialogContent>
     </Dialog>
   );

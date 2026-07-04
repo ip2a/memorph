@@ -205,8 +205,13 @@ jobs:
         shell: bash
         run: |
           tag="${GITHUB_REF_NAME}"
-          if gh release view "${tag}" >/dev/null 2>&1; then
-            gh release upload "${tag}" release-assets/* --clobber
-          else
-            gh release create "${tag}" release-assets/* --title "${tag}" --generate-notes --verify-tag
+          if ! gh release view "${tag}" >/dev/null 2>&1; then
+            if ! gh release create "${tag}" --title "${tag}" --generate-notes --verify-tag; then
+              if gh release view "${tag}" >/dev/null 2>&1; then
+                echo "[info] Release ${tag} was created by another workflow"
+              else
+                exit 1
+              fi
+            fi
           fi
+          gh release upload "${tag}" release-assets/* --clobber

@@ -1,7 +1,10 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronDownIcon, ChevronUpIcon, SearchIcon, SlidersHorizontalIcon } from "lucide-react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { ChevronDownIcon, SearchIcon, SlidersHorizontalIcon } from "lucide-react";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
+import { PathText } from "@/components/shared/path-text";
+import { workspaceName } from "@/components/shared/workspace-name";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,26 +14,26 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { compactPath, formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
+import { updateWorkspaceProviders } from "@/lib/api";
+import { formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
+import { queryKeys } from "@/lib/query-keys";
 import { useUiStore } from "@/stores/ui-store";
 import { useHomeData } from "@/features/home/queries";
+import { homeProviderCandidates, resolveHomeProviders } from "@/features/home/model/providers";
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
 import { targetFromSession } from "@/features/sessions/session-action-target";
-import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/session-actions";
-import type { SessionGroup, SessionItem, SyncGroup } from "@/lib/types";
+import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
+import type { ProviderCatalogEntry, SessionGroup, SessionItem, SyncGroup } from "@/lib/types";
+
+const VISIBLE_PROVIDER_PILLS = 6;
 
 const ASCII = `███    ███   ███████   ███    ███   ██████   ██████   ██████   ██    ██
 ████  ████   ██        ████  ████  ██    ██  ██   ██  ██   ██  ██    ██
 ██ ████ ██   █████     ██ ████ ██  ██    ██  ██████   ██████   ████████
 ██  ██  ██   ██        ██  ██  ██  ██    ██  ██   ██  ██       ██    ██
 ██      ██   ███████   ██      ██   ██████   ██   ██  ██       ██    ██`;
-
-function workspaceName(path: string | null | undefined) {
-  if (!path) return "memorph";
-  const segments = path.split(/[\\/]/).filter(Boolean);
-  return segments.at(-1) || path;
-}
 
 function totalSessions(groups: SessionGroup[]) {
   return groups.reduce((sum, group) => sum + group.sessions.length, 0);
@@ -44,7 +47,7 @@ function HomeHero({ workspace, groups }: { workspace: string | null | undefined;
   const collapsed = useUiStore((state) => state.homeHeroCollapsed);
   const setCollapsed = useUiStore((state) => state.setHomeHeroCollapsed);
   const sessionCount = totalSessions(groups);
-  const title = workspaceName(workspace);
+  const title = workspaceName(workspace, "memorph");
   const path = workspace || "-";
 
   if (collapsed) {
@@ -58,7 +61,7 @@ function HomeHero({ workspace, groups }: { workspace: string | null | undefined;
           <span className="grid min-w-0 grid-cols-[auto_minmax(80px,auto)_minmax(120px,1fr)] items-baseline gap-2">
             <span className="font-mono text-xs uppercase text-muted-foreground">Workspace</span>
             <strong className="truncate">{title}</strong>
-            <span className="truncate font-mono text-xs text-muted-foreground">{path}</span>
+            <PathText value={path} fallback="-" wrap="truncate" className="min-w-0" />
           </span>
           <span className="flex items-center gap-2 font-mono text-xs">
             <Link to="/manager" className="hover:underline" onClick={(event) => event.stopPropagation()}>
@@ -75,7 +78,7 @@ function HomeHero({ workspace, groups }: { workspace: string | null | undefined;
   }
 
   return (
-    <section className="grid grid-cols-1 items-stretch gap-3 overflow-hidden border-y py-3 lg:grid-cols-[minmax(0,7fr)_minmax(220px,3fr)]">
+    <section className="grid grid-cols-1 items-stretch gap-3 overflow-hidden border-y py-3 md:grid-cols-[minmax(0,7fr)_minmax(220px,3fr)]">
       <button
         type="button"
         className="grid min-w-0 place-items-center overflow-hidden rounded-md text-left hover:bg-muted"
@@ -89,8 +92,8 @@ function HomeHero({ workspace, groups }: { workspace: string | null | undefined;
       <div className="grid min-w-0 content-center gap-2 border-l pl-4">
         <p className="m-0 font-mono text-xs uppercase text-muted-foreground">Workspace</p>
         <h1 className="m-0 truncate text-2xl font-semibold leading-none">{title}</h1>
-        <Button type="button" variant="ghost" className="h-auto justify-start truncate px-0 py-0 font-mono text-xs text-muted-foreground">
-          {path}
+        <Button type="button" variant="ghost" className="h-auto justify-start px-0 py-0">
+          <PathText value={path} fallback="-" wrap="words" />
         </Button>
         <div className="flex flex-wrap gap-2 font-mono text-xs">
           <Badge asChild variant="outline">
@@ -101,30 +104,53 @@ function HomeHero({ workspace, groups }: { workspace: string | null | undefined;
           </Badge>
           <Badge variant="outline">shown={sessionCount}</Badge>
         </div>
-        <Button type="button" variant="ghost" size="sm" className="w-fit" onClick={() => setCollapsed(true)}>
-          <ChevronUpIcon data-icon="inline-start" />
-          Collapse
-        </Button>
       </div>
     </section>
   );
 }
 
-function ProviderPills({ groups }: { groups: SessionGroup[] }) {
-  const visible = groups.slice(0, 6);
-  const hidden = Math.max(0, groups.length - visible.length);
+function ProviderPills({
+  candidates,
+  selected,
+  onToggle,
+}: {
+  candidates: ProviderCatalogEntry[];
+  selected: string[];
+  onToggle: (providerId: string) => void;
+}) {
+  const visible = candidates.slice(0, VISIBLE_PROVIDER_PILLS);
+  const hidden = candidates.slice(VISIBLE_PROVIDER_PILLS);
+
+  function renderPill(provider: ProviderCatalogEntry) {
+    const checked = selected.includes(provider.provider_id);
+    return (
+      <Button
+        key={provider.provider_id}
+        type="button"
+        variant={checked ? "default" : "outline"}
+        size="sm"
+        className="rounded-full font-mono"
+        onClick={() => onToggle(provider.provider_id)}
+      >
+        {provider.display_name || provider.provider_id}
+      </Button>
+    );
+  }
 
   return (
     <div className="flex min-w-0 flex-1 flex-wrap items-start justify-center gap-2">
-      {visible.map((group) => (
-        <Badge key={group.provider_id} variant="outline" className="font-mono">
-          {group.provider_name || group.provider_id}
-        </Badge>
-      ))}
-      {hidden > 0 ? (
-        <Button type="button" variant="outline" size="sm" className="rounded-full font-mono">
-          More {hidden}
-        </Button>
+      {visible.map(renderPill)}
+      {hidden.length ? (
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="outline" size="sm" className="rounded-full font-mono">
+              More {hidden.length}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="center" className="w-auto p-2">
+            <div className="flex flex-wrap gap-2">{hidden.map(renderPill)}</div>
+          </PopoverContent>
+        </Popover>
       ) : null}
     </div>
   );
@@ -173,25 +199,25 @@ function SessionRow({
             <span>{formatDateTime(session.last_active_at)}</span>
             <span>{session.message_count ?? "-"} messages</span>
             <span>{formatBytes(session.size_bytes)}</span>
-            {session.project_dir ? <span className="truncate">{compactPath(session.project_dir)}</span> : null}
+            {session.project_dir ? <span className="break-all">{session.project_dir}</span> : null}
           </div>
         </div>
         <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
-          <Button asChild variant="outline" size="sm">
+          <Button asChild variant="outline">
             <Link to={detailHref}>View</Link>
           </Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => onCompress(session)}>Compression</Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => onSwitch(session)}>Switch</Button>
-          <Button type="button" variant="outline" size="sm" onClick={() => onExport(session)}>Export</Button>
+          <Button type="button" variant="outline" onClick={() => onCompress(session)}>Compression</Button>
+          <Button type="button" variant="outline" onClick={() => onSwitch(session)}>Switch</Button>
+          <Button type="button" variant="outline" onClick={() => onExport(session)}>Export</Button>
           {syncRef ? (
-            <Button asChild variant="outline" size="sm">
+            <Button asChild variant="outline">
               <Link to={`/sync/${syncRef}`}>Open Sync</Link>
             </Button>
           ) : (
-            <Button type="button" variant="outline" size="sm" onClick={() => onSync(session)}>Sync</Button>
+            <Button type="button" variant="outline" onClick={() => onSync(session)}>Sync</Button>
           )}
-          <Button type="button" variant="outline" size="sm" onClick={() => onRename(session)}>Rename</Button>
-          <Button type="button" variant="destructive" size="sm" onClick={() => onDelete(session)}>Remove</Button>
+          <Button type="button" variant="outline" onClick={() => onRename(session)}>Rename</Button>
+          <Button type="button" variant="destructive" onClick={() => onDelete(session)}>Remove</Button>
         </div>
       </div>
     </article>
@@ -258,23 +284,79 @@ function SessionGroups({
 }
 
 export function HomePage() {
+  const queryClient = useQueryClient();
   const [renameTarget, setRenameTarget] = useState<SessionItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionItem | null>(null);
   const [compressionTarget, setCompressionTarget] = useState<SessionItem | null>(null);
   const [switchTarget, setSwitchTarget] = useState<SessionItem | null>(null);
   const [exportTarget, setExportTarget] = useState<SessionItem | null>(null);
   const [syncTarget, setSyncTarget] = useState<SessionItem | null>(null);
+  const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
+  const [providersReady, setProvidersReady] = useState(false);
   const selectedWorkspaceOverride = useUiStore((state) => state.selectedWorkspace);
-  const { meta, providers, sessions, syncGroups } = useHomeData(selectedWorkspaceOverride || undefined);
-  const loading = meta.isLoading || providers.isLoading || sessions.isLoading || syncGroups.isLoading;
-  const error = meta.error || providers.error || sessions.error || syncGroups.error;
+  const { meta, providers, catalog, workspaceProviders, sessions, syncGroups } = useHomeData(
+    selectedWorkspaceOverride || undefined,
+    selectedProviders,
+  );
+  const loading =
+    meta.isLoading ||
+    providers.isLoading ||
+    catalog.isLoading ||
+    workspaceProviders.isLoading ||
+    (providersReady && sessions.isLoading) ||
+    syncGroups.isLoading;
+  const error =
+    meta.error || providers.error || catalog.error || workspaceProviders.error || sessions.error || syncGroups.error;
+
+  const selectedWorkspace = selectedWorkspaceOverride || meta.data?.selected_workspace || null;
+  const providerCandidates = useMemo(
+    () => homeProviderCandidates(catalog.data?.providers ?? []),
+    [catalog.data?.providers],
+  );
+
+  useEffect(() => {
+    setProvidersReady(false);
+    setSelectedProviders([]);
+  }, [selectedWorkspace]);
+
+  useEffect(() => {
+    if (providersReady || catalog.isLoading || workspaceProviders.isLoading) return;
+    if (!providerCandidates.length) {
+      setProvidersReady(true);
+      return;
+    }
+    setSelectedProviders(resolveHomeProviders(providerCandidates, workspaceProviders.data));
+    setProvidersReady(true);
+  }, [catalog.isLoading, providerCandidates, providersReady, workspaceProviders.data, workspaceProviders.isLoading]);
+
+  const persistProviders = useMutation({
+    mutationFn: (nextProviders: string[]) => {
+      if (!selectedWorkspace) return Promise.resolve(nextProviders);
+      return updateWorkspaceProviders(selectedWorkspace, nextProviders);
+    },
+    onSuccess: (saved) => {
+      if (selectedWorkspace) {
+        queryClient.setQueryData(queryKeys.workspaceProviders(selectedWorkspace), saved);
+      }
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessionsRoot });
+    },
+  });
+
+  function toggleProvider(providerId: string) {
+    setSelectedProviders((current) => {
+      const next = current.includes(providerId)
+        ? current.filter((id) => id !== providerId)
+        : [...current, providerId];
+      void persistProviders.mutate(next);
+      return next;
+    });
+  }
 
   if (loading) return <PageSkeleton />;
   if (error) return <PageError title="Home data failed to load" message={error.message} />;
 
   const sessionGroups = sessions.data ?? [];
   const syncItems = syncGroups.data ?? [];
-  const selectedWorkspace = selectedWorkspaceOverride || meta.data?.selected_workspace || null;
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
@@ -284,15 +366,14 @@ export function HomePage() {
         <div className="flex items-center gap-3 border-b p-3">
           <div className="min-w-28">
             <strong>Recent Sessions</strong>
-            <div className="font-mono text-xs uppercase text-muted-foreground">Filters</div>
           </div>
-          <ProviderPills groups={sessionGroups} />
+          <ProviderPills candidates={providerCandidates} selected={selectedProviders} onToggle={toggleProvider} />
           <div className="relative min-w-52 flex-[0_1_300px]">
             <SearchIcon className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
             <Input className="pl-8" placeholder="Search sessions" />
           </div>
-          <Button type="button" variant="outline" size="sm">Sort</Button>
-          <Button type="button" variant="outline" size="sm">
+          <Button type="button" variant="outline">Sort</Button>
+          <Button type="button" variant="outline">
             <SlidersHorizontalIcon data-icon="inline-start" />
             Filters
           </Button>
