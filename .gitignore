@@ -40,26 +40,20 @@
 !/rust/crates/**/*.rs
 !/rust/crates/**/assets/
 !/rust/crates/**/assets/*.json
-!/rust/crates/**/assets/web/
-!/rust/crates/**/assets/web/**
+/rust/crates/**/assets/web/
 
 # GitHub workflows.
 !/.github/
 !/.github/workflows/
 !/.github/workflows/*.yml
 
-# Release documentation.
-!/docs/
-!/docs/*.md
-!/docs/**
+# Local draft documentation.
+/docs/
 
 # Web app source.
 !/apps/
 !/apps/web/
 !/apps/web/**
-!/归档/
-!/归档/web-legacy/
-!/归档/web-legacy/**
 /apps/web/node_modules/
 /apps/web/dist/
 

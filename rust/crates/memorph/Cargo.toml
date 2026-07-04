@@ -10,16 +10,12 @@ readme = "../../../README.md"
 keywords = ["cli", "ai", "claude", "codex", "opencode"]
 categories = ["command-line-utilities"]
 default-run = "memorph"
-exclude = [
-  ".github",
-  ".gitignore",
-  "npm",
-  "platforms.toml",
-  "python",
-  "scripts",
-  "README_en.md",
-  "README_zh.md",
-  "reference-projects",
+include = [
+  "assets/i18n.json",
+  "assets/web/**",
+  "build.rs",
+  "src/**",
+  "Cargo.toml",
 ]
 
 [dependencies]

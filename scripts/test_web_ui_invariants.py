@@ -876,7 +876,6 @@ class WebUiInvariantTest(unittest.TestCase):
     def test_old_legacy_web_source_is_not_active(self) -> None:
         self.assertFalse((ROOT / "web").exists())
         self.assertFalse((ROOT / "web-legacy").exists())
-        self.assertTrue((ROOT / "归档" / "web-legacy").exists())
         source = read_sources()
         self.assertNotIn("web-legacy", source)
 

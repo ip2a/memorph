@@ -33,10 +33,10 @@ import {
 } from "@/components/ui/dialog";
 import { useManagerMeta, useManagerPreview } from "@/features/manager/queries";
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
-import { useCompressionArchive, useCompressionProviders, useRestoreCompressionArchive } from "@/features/compression/queries";
+import { useCompressionArchive, useCompressionArchives, useCompressionProviders, useRestoreCompressionArchive } from "@/features/compression/queries";
 import { SessionBlock } from "@/features/sessions/session-block";
 import { formatBytes, formatDateTime } from "@/lib/format";
-import type { CompressionArchive, CompressionFormat, CompressionProviderSupport, ManagerItem, SessionEvent } from "@/lib/types";
+import type { CompressionArchive, CompressionArchiveSummary, CompressionFormat, CompressionProviderSupport, ManagerItem, SessionEvent } from "@/lib/types";
 
 type RestoreTarget = {
   archiveRef: string;
@@ -130,6 +130,40 @@ function CandidateRow({ item, onCompress }: { item: ManagerItem; onCompress: (it
           </div>
           <PathText value={item.project_dir || item.source_path} fallback="-" wrap="all" />
         </div>
+    </EntityRow>
+  );
+}
+
+function ArchiveSummaryRow({ archive, onRestore }: { archive: CompressionArchiveSummary; onRestore: (target: RestoreTarget) => void }) {
+  const href = `/compression?archive_ref=${encodeURIComponent(archive.archive_ref)}`;
+  const title = archive.canonical_id || archive.archive_ref;
+  return (
+    <EntityRow
+      data-compression-archive-row
+      actionsProps={{ "data-compression-row-actions": true }}
+      actions={(
+        <>
+          <Button asChild variant="outline">
+            <Link to={href}>View</Link>
+          </Button>
+          <Button type="button" variant="outline" onClick={() => onRestore({ archiveRef: archive.archive_ref, title })}>
+            Restore
+          </Button>
+        </>
+      )}
+    >
+      <div className="flex min-w-0 flex-col gap-2">
+        <Link to={href} className="truncate text-sm font-medium hover:underline">
+          {title}
+        </Link>
+        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+          <Badge variant="outline">{archive.source_provider_id || "-"} -&gt; {archive.target_provider_id || "-"}</Badge>
+          <span>{archive.source_event_count} events</span>
+          <span>{formatBytes(archive.stored_size_bytes)}</span>
+          <span>Created {formatDateTime(archive.created_at)}</span>
+        </div>
+        <PathText value={archive.workspace_dir || archive.archive_ref} fallback="-" wrap="all" />
+      </div>
     </EntityRow>
   );
 }
@@ -243,22 +277,26 @@ function RestoreCompressionDialog({
 
 function CompressionOverview() {
   const [compressTarget, setCompressTarget] = useState<ManagerItem | null>(null);
+  const [restoreTarget, setRestoreTarget] = useState<RestoreTarget | null>(null);
   const meta = useManagerMeta();
   const providers = useCompressionProviders();
   const candidates = useManagerPreview({ sort: "size", limit: 50 });
+  const archives = useCompressionArchives({ limit: 50 });
 
-  if (providers.isLoading || candidates.isLoading || meta.isLoading) return <PageSkeleton />;
+  if (providers.isLoading || candidates.isLoading || archives.isLoading || meta.isLoading) return <PageSkeleton />;
   if (providers.error) return <PageError title="Compression providers failed to load" message={providers.error.message} />;
   if (candidates.error) return <PageError title="Compression candidates failed to load" message={candidates.error.message} />;
+  if (archives.error) return <PageError title="Compression archives failed to load" message={archives.error.message} />;
   if (meta.error) return <PageError title="Compression workspace failed to load" message={meta.error.message} />;
 
   const providerRows = providers.data ?? [];
   const candidateRows = candidates.data?.items ?? [];
+  const archiveRows = archives.data ?? [];
 
   return (
     <TwoPanePage data-manager-page-layout>
       <CompressionControlPanel workspace={meta.data?.selected_workspace} providers={providerRows} />
-      <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3" data-manager-result-panel>
+      <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto_minmax(0,1fr)] gap-3" data-manager-result-panel>
           <SectionHeader title="Compress Sessions" count={candidates.data?.total_count ?? candidateRows.length} />
           <ScrollArea className="min-h-0 pr-3">
             <div className="flex flex-col gap-2">
@@ -266,6 +304,16 @@ function CompressionOverview() {
                 candidateRows.map((item) => <CandidateRow key={`${item.provider_id}:${item.session_id}`} item={item} onCompress={setCompressTarget} />)
               ) : (
                 <PageEmpty title="No sessions" description="No recent sessions are available for compression." />
+              )}
+            </div>
+          </ScrollArea>
+          <SectionHeader title="Compression Archives" count={archiveRows.length} />
+          <ScrollArea className="min-h-0 pr-3">
+            <div className="flex flex-col gap-2">
+              {archiveRows.length ? (
+                archiveRows.map((archive) => <ArchiveSummaryRow key={archive.archive_ref} archive={archive} onRestore={setRestoreTarget} />)
+              ) : (
+                <PageEmpty title="No archives" description="No compression archives have been created yet." />
               )}
             </div>
           </ScrollArea>
@@ -280,6 +328,13 @@ function CompressionOverview() {
         } : null}
         onOpenChange={(open) => {
           if (!open) setCompressTarget(null);
+        }}
+      />
+      <RestoreCompressionDialog
+        open={Boolean(restoreTarget)}
+        target={restoreTarget}
+        onOpenChange={(open) => {
+          if (!open) setRestoreTarget(null);
         }}
       />
     </TwoPanePage>

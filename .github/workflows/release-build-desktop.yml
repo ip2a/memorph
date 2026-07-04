@@ -104,7 +104,13 @@ jobs:
         shell: bash
         run: cargo install tauri-cli --locked --version 2.10.1
 
+      - name: Build macOS desktop bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./scripts/build_macos_dmg.sh "${{ matrix.target }}"
+
       - name: Build desktop bundles
+        if: runner.os != 'macOS'
         shell: bash
         working-directory: desktop/tauri
         run: cargo tauri build --bundles "${{ matrix.bundles }}" --target "${{ matrix.target }}"
