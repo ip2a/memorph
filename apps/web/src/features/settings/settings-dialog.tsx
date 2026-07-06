@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCwIcon } from "lucide-react";
+import { RefreshCwIcon, WrenchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { PathText } from "@/components/shared/path-text";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -22,16 +23,19 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import {
   checkForUpdate,
+  getHooksOverview,
   getMeta,
   getProviderCatalog,
   openExternal,
+  runHookProviderOperation,
   updateProviderCatalog,
   updateSettings,
 } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
 import { queryKeys } from "@/lib/query-keys";
-import type { ProviderCatalogEntry, SettingsPayload, UiLanguage, UpdateCheckPayload, UpdateSettingsPayload } from "@/lib/types";
+import type { AgentManagementEntry, HookOverviewPayload, ProviderCatalogEntry, SettingsPayload, UiLanguage, UpdateCheckPayload, UpdateSettingsPayload } from "@/lib/types";
 import { AgentOrderList } from "@/features/settings/agent-order-list";
 
 const SECTIONS = [
@@ -106,6 +110,45 @@ async function openUrl(url: string) {
   }
 }
 
+function hookStatus(provider: AgentManagementEntry) {
+  return provider.hook?.status || "unknown";
+}
+
+function hookVersion(provider: AgentManagementEntry) {
+  const hook = provider.hook || {};
+  if (hook.installed_version && hook.current_version && hook.installed_version !== hook.current_version) {
+    return `${hook.installed_version} -> ${hook.current_version}`;
+  }
+  return hook.installed_version || hook.current_version || "-";
+}
+
+function hookOperationIds(provider: AgentManagementEntry) {
+  const capabilities = provider.hook_capabilities || {};
+  if (!provider.hook_profile) return [];
+  const available = {
+    install_hook: capabilities.install !== false,
+    verify_hook: capabilities.verify !== false,
+    repair_hook: capabilities.repair !== false,
+    uninstall_hook: capabilities.uninstall !== false,
+  };
+  const keepAvailable = (ids: string[]) => ids.filter((id) => available[id as keyof typeof available]);
+  const status = hookStatus(provider);
+  if (status === "not_installed") return keepAvailable(["install_hook", "verify_hook"]);
+  if (["installed_disabled", "installed_stale_binary", "installed_stale_endpoint", "installed_broken_config", "installed_conflict", "repairable", "needs_user_action"].includes(status)) {
+    return keepAvailable(["repair_hook", "verify_hook", "uninstall_hook"]);
+  }
+  if (status === "installed_ok") return keepAvailable(["verify_hook", "repair_hook", "uninstall_hook"]);
+  return keepAvailable(["verify_hook"]);
+}
+
+function hookOperationLabel(operation: string) {
+  if (operation === "install_hook") return "Install";
+  if (operation === "verify_hook") return "Verify";
+  if (operation === "repair_hook") return "Repair";
+  if (operation === "uninstall_hook") return "Uninstall";
+  return operation;
+}
+
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const queryClient = useQueryClient();
   const { t, setLanguageOverride } = useI18n();
@@ -116,6 +159,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   const meta = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta, enabled: open });
   const catalog = useQuery({ queryKey: queryKeys.providerCatalog(null), queryFn: () => getProviderCatalog(null), enabled: open });
+  const hooksOverview = useQuery({ queryKey: queryKeys.hooks, queryFn: getHooksOverview, enabled: open && section === "hook" });
 
   const catalogProviders = useMemo(() => catalog.data?.providers ?? [], [catalog.data?.providers]);
   const providerMap = useMemo(() => new Map(catalogProviders.map((provider) => [provider.provider_id, provider])), [catalogProviders]);
@@ -171,6 +215,21 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     },
     onSuccess: setUpdateResult,
     onError: (error) => setUpdateError(error instanceof Error ? error.message : String(error)),
+  });
+
+  const hookOperationMutation = useMutation({
+    mutationFn: ({ provider, operation }: { provider: string; operation: string }) =>
+      runHookProviderOperation(provider, operation),
+    onSuccess: async (report, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.hooks }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.hookProvider(variables.provider) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agent(variables.provider) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.agentsSummary }),
+      ]);
+      toast.success(hookOperationLabel(variables.operation), { description: report.message || variables.provider });
+    },
+    onError: (error) => toast.error(t("error"), { description: error instanceof Error ? error.message : String(error) }),
   });
 
   function patchDraft(patch: Partial<SettingsDraft>) {
@@ -335,8 +394,14 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               {section === "hook" ? (
                 <section className="flex flex-col gap-4" data-settings-section="hook">
                   <SectionHead title={t("hooks")} />
-                  <ReadOnlyRow title={t("hookDoctor")} value={t("hookDoctorHint")} description={t("settingsDescription")} />
-                  <ReadOnlyRow title={t("hookCleanup")} value={t("hookCleanupHint")} description={t("hookCleanupHint")} />
+                  <HookSettingsSection
+                    overview={hooksOverview.data}
+                    isLoading={hooksOverview.isLoading}
+                    error={hooksOverview.error}
+                    pendingProvider={hookOperationMutation.variables?.provider ?? null}
+                    pendingOperation={hookOperationMutation.isPending ? hookOperationMutation.variables?.operation ?? null : null}
+                    onRun={(provider, operation) => hookOperationMutation.mutate({ provider, operation })}
+                  />
                 </section>
               ) : null}
 
@@ -400,6 +465,94 @@ function ReadOnlyRow({ title, value, description }: { title: string; value: stri
       </Field>
       <Separator className="last:hidden" />
     </>
+  );
+}
+
+function HookSettingsSection({
+  overview,
+  isLoading,
+  error,
+  pendingProvider,
+  pendingOperation,
+  onRun,
+}: {
+  overview: HookOverviewPayload | undefined;
+  isLoading: boolean;
+  error: Error | null;
+  pendingProvider: string | null;
+  pendingOperation: string | null;
+  onRun: (provider: string, operation: string) => void;
+}) {
+  if (isLoading && !overview) return <SettingsLoading label="Loading hooks" />;
+  if (error) return <div className="rounded-md border p-3 text-sm text-destructive">{error.message}</div>;
+
+  const providers = (overview?.providers ?? [])
+    .filter((provider) => provider.hook_profile)
+    .sort((left, right) => (left.name || left.provider_id).localeCompare(right.name || right.provider_id));
+
+  if (!providers.length) {
+    return <div className="rounded-md border p-3 text-sm text-muted-foreground">No managed hook providers were returned by the backend.</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      {overview ? (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <HookSummaryTile label="Providers" value={overview.summary.supported_providers} />
+          <HookSummaryTile label="Installed" value={overview.summary.installed_ok} />
+          <HookSummaryTile label="Active Runtime" value={overview.summary.active_runtime_sessions} />
+        </div>
+      ) : null}
+
+      <div className="flex flex-col rounded-md border">
+        {providers.map((provider, index) => {
+          const operations = hookOperationIds(provider);
+          const pending = pendingProvider === provider.provider_id;
+          return (
+            <div key={provider.provider_id} className="flex flex-col gap-3 border-b p-3 last:border-b-0">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong className="text-sm font-medium">{provider.name || provider.provider_id}</strong>
+                    <Badge variant={hookStatus(provider) === "installed_ok" ? "secondary" : "outline"}>{hookStatus(provider)}</Badge>
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <span className="font-mono">{provider.provider_id}</span>
+                    <span>Version {hookVersion(provider)}</span>
+                    <span>Last event {formatDateTime(provider.hook?.last_event_at)}</span>
+                  </div>
+                  {provider.hook?.message ? <p className="mt-2 text-sm text-muted-foreground">{provider.hook.message}</p> : null}
+                </div>
+                <div className="flex flex-wrap justify-end gap-2">
+                  {operations.map((operation) => (
+                    <Button
+                      key={operation}
+                      type="button"
+                      size="sm"
+                      variant={operation === "uninstall_hook" ? "destructive" : index === 0 && operation === "install_hook" ? "default" : "outline"}
+                      disabled={Boolean(pendingOperation)}
+                      onClick={() => onRun(provider.provider_id, operation)}
+                    >
+                      {pending && pendingOperation === operation ? <Spinner data-icon="inline-start" /> : <WrenchIcon data-icon="inline-start" />}
+                      {pending && pendingOperation === operation ? "Running" : hookOperationLabel(operation)}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function HookSummaryTile({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="rounded-md border p-3">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 text-lg font-semibold">{value}</div>
+    </div>
   );
 }
 

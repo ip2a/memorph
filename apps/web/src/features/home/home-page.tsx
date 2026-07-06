@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDownIcon, SearchIcon, SlidersHorizontalIcon } from "lucide-react";
+import { ChevronDownIcon } from "lucide-react";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
 import { workspaceName } from "@/components/shared/workspace-name";
@@ -13,21 +13,64 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty";
-import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { updateWorkspaceProviders } from "@/lib/api";
+import { updateSettings, updateWorkspaceProviders } from "@/lib/api";
 import { formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
 import { queryKeys } from "@/lib/query-keys";
 import { useUiStore } from "@/stores/ui-store";
 import { useHomeData } from "@/features/home/queries";
 import { homeProviderCandidates, resolveHomeProviders } from "@/features/home/model/providers";
+import { randomAsciiBannerColor } from "@/features/home/ascii-banner";
+import { HomeSessionListPanel, HomeSessionToolbar } from "@/features/home/home-session-controls";
+import { HomeSessionGroupRail } from "@/features/home/home-session-group-rail";
+import { ProviderActivitySparkline } from "@/features/home/provider-activity-sparkline";
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
 import { targetFromSession } from "@/features/sessions/session-action-target";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
-import type { ProviderCatalogEntry, SessionGroup, SessionItem, SyncGroup } from "@/lib/types";
+import type { HomeButtonSettingsPayload, SessionGroup, SessionHookFilter, SessionItem, SessionListSort, SettingsPayload, SyncGroup, UpdateSettingsPayload } from "@/lib/types";
 
-const VISIBLE_PROVIDER_PILLS = 6;
+type HomeButtons = Record<string, unknown> | undefined;
+
+function homeButtonEnabled(homeButtons: HomeButtons, key: keyof HomeButtonSettingsPayload) {
+  return homeButtons?.[key] !== false;
+}
+
+function clampSessionsPerProvider(value: number) {
+  return Math.max(1, Math.min(200, Number(value || 6)));
+}
+
+function settingsPayloadFromMeta(settings: SettingsPayload, sessionsPerProvider: number): UpdateSettingsPayload {
+  return {
+    sessions_per_provider: clampSessionsPerProvider(sessionsPerProvider),
+    language: settings.language ?? "auto",
+    show_opencode_subagents: settings.show_opencode_subagents ?? false,
+    sort_providers_by_session_count: settings.sort_providers_by_session_count ?? false,
+    default_backup_dir: settings.default_backup_dir || "./backups",
+    logging: {
+      max_size_bytes: Number(settings.logging?.max_size_bytes ?? 5 * 1024 * 1024),
+      retention_days: settings.logging?.retention_days == null ? null : Number(settings.logging.retention_days),
+    },
+    home_buttons: {
+      view: settings.home_buttons?.view !== false,
+      compress: settings.home_buttons?.compress !== false,
+      switch: settings.home_buttons?.switch !== false,
+      export: settings.home_buttons?.export !== false,
+      sync: settings.home_buttons?.sync !== false,
+      delete: settings.home_buttons?.delete !== false,
+    },
+    agent_order: settings.agent_order ?? [],
+    primary_agents: settings.primary_agents ?? [],
+  };
+}
+
+function matchesSearch(session: SessionItem, query: string) {
+  if (!query) return true;
+  const text = [session.session_id, session.title, session.native_title, session.display_title, session.project_dir]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return text.includes(query.toLowerCase());
+}
 
 const ASCII = `███    ███   ███████   ███    ███   ██████   ██████   ██████   ██    ██
 ████  ████   ██        ████  ████  ██    ██  ██   ██  ██   ██  ██    ██
@@ -43,12 +86,22 @@ function findSyncRef(syncGroups: SyncGroup[], providerId: string, sessionId: str
   return syncGroups.find((group) => group.holdings.some((holding) => holding.provider === providerId && holding.session_id === sessionId))?.id ?? null;
 }
 
-function HomeHero({ workspace, groups }: { workspace: string | null | undefined; groups: SessionGroup[] }) {
+function HomeHero({ workspace }: { workspace: string | null | undefined }) {
   const collapsed = useUiStore((state) => state.homeHeroCollapsed);
   const setCollapsed = useUiStore((state) => state.setHomeHeroCollapsed);
-  const sessionCount = totalSessions(groups);
+  const setWorkspaceSwitchOpen = useUiStore((state) => state.setWorkspaceSwitchOpen);
+  const [bannerColor, setBannerColor] = useState(randomAsciiBannerColor);
   const title = workspaceName(workspace, "memorph");
   const path = workspace || "-";
+
+  function setHeroCollapsed(next: boolean) {
+    setBannerColor(randomAsciiBannerColor());
+    setCollapsed(next);
+  }
+
+  function openWorkspaceSwitch() {
+    setWorkspaceSwitchOpen(true);
+  }
 
   if (collapsed) {
     return (
@@ -56,109 +109,54 @@ function HomeHero({ workspace, groups }: { workspace: string | null | undefined;
         <button
           type="button"
           className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1 text-left hover:bg-muted"
-          onClick={() => setCollapsed(false)}
+          onClick={() => setHeroCollapsed(false)}
+          aria-label="Expand workspace banner"
         >
           <span className="grid min-w-0 grid-cols-[auto_minmax(80px,auto)_minmax(120px,1fr)] items-baseline gap-2">
             <span className="font-mono text-xs uppercase text-muted-foreground">Workspace</span>
             <strong className="truncate">{title}</strong>
             <PathText value={path} fallback="-" wrap="truncate" className="min-w-0" />
           </span>
-          <span className="flex items-center gap-2 font-mono text-xs">
-            <Link to="/manager" className="hover:underline" onClick={(event) => event.stopPropagation()}>
-              sessions={sessionCount}
-            </Link>
-            <Link to="/agents" className="hover:underline" onClick={(event) => event.stopPropagation()}>
-              agents={groups.length}
-            </Link>
-            <ChevronDownIcon aria-hidden="true" />
-          </span>
+          <ChevronDownIcon aria-hidden="true" className="shrink-0" />
         </button>
       </section>
     );
   }
 
   return (
-    <section className="grid grid-cols-1 items-stretch gap-3 overflow-hidden border-y py-3 md:grid-cols-[minmax(0,7fr)_minmax(220px,3fr)]">
+    <section className="grid grid-cols-1 items-start gap-3 overflow-hidden border-y py-3 md:grid-cols-[minmax(0,7fr)_minmax(220px,3fr)]">
       <button
         type="button"
-        className="grid min-w-0 place-items-center overflow-hidden rounded-md text-left hover:bg-muted"
-        onClick={() => setCollapsed(true)}
+        className="group grid min-w-0 place-items-center overflow-hidden rounded-md text-left hover:bg-muted/30"
+        onClick={() => setHeroCollapsed(true)}
         title="Collapse"
+        style={{ ["--ascii-banner-color" as string]: bannerColor }}
       >
-        <pre className="m-0 overflow-hidden whitespace-pre font-mono text-[clamp(11px,1.18vw,16px)] font-black leading-none text-primary">
+        <pre
+          className="m-0 overflow-hidden whitespace-pre font-mono text-[clamp(11px,1.18vw,16px)] font-black leading-none text-[var(--ascii-banner-color)] transition-opacity duration-150 group-hover:opacity-90"
+          style={{ textShadow: "0 0 14px color-mix(in srgb, var(--ascii-banner-color) 28%, transparent)" }}
+        >
           {ASCII}
         </pre>
       </button>
-      <div className="grid min-w-0 content-center gap-2 border-l pl-4">
-        <p className="m-0 font-mono text-xs uppercase text-muted-foreground">Workspace</p>
-        <h1 className="m-0 truncate text-2xl font-semibold leading-none">{title}</h1>
-        <Button type="button" variant="ghost" className="h-auto justify-start px-0 py-0">
-          <PathText value={path} fallback="-" wrap="words" />
-        </Button>
-        <div className="flex flex-wrap gap-2 font-mono text-xs">
-          <Badge asChild variant="outline">
-            <Link to="/manager">sessions={sessionCount}</Link>
-          </Badge>
-          <Badge asChild variant="outline">
-            <Link to="/agents">agents={groups.length}</Link>
-          </Badge>
-          <Badge variant="outline">shown={sessionCount}</Badge>
-        </div>
+      <div className="flex min-w-0 flex-col items-start justify-start gap-2 self-stretch border-l pl-4">
+        <h1 className="m-0 w-full truncate text-left text-2xl font-semibold leading-none">{title}</h1>
+        <button
+          type="button"
+          className="w-full min-w-0 text-left hover:text-foreground hover:underline"
+          onClick={openWorkspaceSwitch}
+        >
+          <PathText value={path} fallback="-" wrap="all" className="block w-full min-w-0 text-left" />
+        </button>
       </div>
     </section>
-  );
-}
-
-function ProviderPills({
-  candidates,
-  selected,
-  onToggle,
-}: {
-  candidates: ProviderCatalogEntry[];
-  selected: string[];
-  onToggle: (providerId: string) => void;
-}) {
-  const visible = candidates.slice(0, VISIBLE_PROVIDER_PILLS);
-  const hidden = candidates.slice(VISIBLE_PROVIDER_PILLS);
-
-  function renderPill(provider: ProviderCatalogEntry) {
-    const checked = selected.includes(provider.provider_id);
-    return (
-      <Button
-        key={provider.provider_id}
-        type="button"
-        variant={checked ? "default" : "outline"}
-        size="sm"
-        className="rounded-full font-mono"
-        onClick={() => onToggle(provider.provider_id)}
-      >
-        {provider.display_name || provider.provider_id}
-      </Button>
-    );
-  }
-
-  return (
-    <div className="flex min-w-0 flex-1 flex-wrap items-start justify-center gap-2">
-      {visible.map(renderPill)}
-      {hidden.length ? (
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button type="button" variant="outline" size="sm" className="rounded-full font-mono">
-              More {hidden.length}
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="center" className="w-auto p-2">
-            <div className="flex flex-wrap gap-2">{hidden.map(renderPill)}</div>
-          </PopoverContent>
-        </Popover>
-      ) : null}
-    </div>
   );
 }
 
 function SessionRow({
   session,
   syncGroups,
+  homeButtons,
   onRename,
   onDelete,
   onCompress,
@@ -168,6 +166,7 @@ function SessionRow({
 }: {
   session: SessionItem;
   syncGroups: SyncGroup[];
+  homeButtons?: HomeButtons;
   onRename: (session: SessionItem) => void;
   onDelete: (session: SessionItem) => void;
   onCompress: (session: SessionItem) => void;
@@ -177,47 +176,51 @@ function SessionRow({
 }) {
   const syncRef = findSyncRef(syncGroups, session.provider_id, session.session_id);
   const detailHref = `/sessions/${encodeURIComponent(session.provider_id)}/${encodeURIComponent(session.session_id)}`;
+  const showSync = homeButtonEnabled(homeButtons, "sync");
 
   return (
     <article className="grid min-h-14 border-b py-2.5 hover:bg-muted/60">
-      <div className="grid min-w-0 grid-cols-1 items-start gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
         <div className="min-w-0">
-          <div className="flex min-w-0 items-baseline gap-2">
-            <Link to={detailHref} className="truncate font-semibold hover:underline">
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+            <Link to={detailHref} className="min-w-0 truncate font-semibold hover:underline">
               {sessionTitle(session)}
             </Link>
+            {syncRef ? (
+              <Badge asChild className="shrink-0">
+                <Link to={`/sync/${syncRef}`}>Active Sync</Link>
+              </Badge>
+            ) : null}
           </div>
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
             <Badge variant="outline" className="max-w-full font-mono">
               <span className="truncate">{session.session_id}</span>
             </Badge>
-            {syncRef ? (
-              <Badge asChild>
-                <Link to={`/sync/${syncRef}`}>Active Sync</Link>
-              </Badge>
-            ) : null}
-            <span>{formatDateTime(session.last_active_at)}</span>
-            <span>{session.message_count ?? "-"} messages</span>
-            <span>{formatBytes(session.size_bytes)}</span>
-            {session.project_dir ? <span className="break-all">{session.project_dir}</span> : null}
+            <span className="shrink-0">{formatDateTime(session.last_active_at)}</span>
+            <span className="shrink-0">{session.message_count ?? "-"} messages</span>
+            <span className="shrink-0">{formatBytes(session.size_bytes)}</span>
           </div>
         </div>
-        <div className="flex flex-wrap justify-start gap-2 lg:justify-end">
-          <Button asChild variant="outline">
-            <Link to={detailHref}>View</Link>
-          </Button>
-          <Button type="button" variant="outline" onClick={() => onCompress(session)}>Compression</Button>
-          <Button type="button" variant="outline" onClick={() => onSwitch(session)}>Switch</Button>
-          <Button type="button" variant="outline" onClick={() => onExport(session)}>Export</Button>
-          {syncRef ? (
-            <Button asChild variant="outline">
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">
+          {homeButtonEnabled(homeButtons, "view") ? (
+            <Button asChild variant="outline" size="sm">
+              <Link to={detailHref}>View</Link>
+            </Button>
+          ) : null}
+          {homeButtonEnabled(homeButtons, "compress") ? <Button type="button" variant="outline" size="sm" onClick={() => onCompress(session)}>Compression</Button> : null}
+          {homeButtonEnabled(homeButtons, "switch") ? <Button type="button" variant="outline" size="sm" onClick={() => onSwitch(session)}>Switch</Button> : null}
+          {homeButtonEnabled(homeButtons, "export") ? <Button type="button" variant="outline" size="sm" onClick={() => onExport(session)}>Export</Button> : null}
+          {showSync && syncRef ? (
+            <Button asChild variant="outline" size="sm">
               <Link to={`/sync/${syncRef}`}>Open Sync</Link>
             </Button>
-          ) : (
-            <Button type="button" variant="outline" onClick={() => onSync(session)}>Sync</Button>
-          )}
-          <Button type="button" variant="outline" onClick={() => onRename(session)}>Rename</Button>
-          <Button type="button" variant="destructive" onClick={() => onDelete(session)}>Remove</Button>
+          ) : showSync ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => onSync(session)}>Sync</Button>
+          ) : null}
+          <Button type="button" variant="outline" size="sm" onClick={() => onRename(session)}>Rename</Button>
+          {homeButtonEnabled(homeButtons, "delete") ? (
+            <Button type="button" variant="destructive" size="sm" onClick={() => onDelete(session)}>Remove</Button>
+          ) : null}
         </div>
       </div>
     </article>
@@ -227,6 +230,8 @@ function SessionRow({
 function SessionGroups({
   groups,
   syncGroups,
+  homeButtons,
+  workspace,
   onRename,
   onDelete,
   onCompress,
@@ -236,6 +241,8 @@ function SessionGroups({
 }: {
   groups: SessionGroup[];
   syncGroups: SyncGroup[];
+  homeButtons?: HomeButtons;
+  workspace?: string | null;
   onRename: (session: SessionItem) => void;
   onDelete: (session: SessionItem) => void;
   onCompress: (session: SessionItem) => void;
@@ -255,12 +262,12 @@ function SessionGroups({
   }
 
   return (
-    <div className="grid">
+    <div className="grid divide-y">
       {groups.map((group) => (
-        <details key={group.provider_id} className="border-t" open>
-          <summary className="flex min-h-11 cursor-pointer items-center justify-between gap-3 font-mono font-bold">
-            <span>{group.provider_name || group.provider_id}</span>
-            <span>{group.sessions.length}/{group.sessions.length}</span>
+        <details key={group.provider_id} open data-home-session-group={group.provider_id}>
+          <summary className="flex min-h-11 cursor-pointer items-center gap-3 px-1 font-mono font-bold">
+            <span className="min-w-0 flex-1 truncate">{group.provider_name || group.provider_id}</span>
+            <ProviderActivitySparkline providerId={group.provider_id} workspace={workspace} />
           </summary>
           <div className="grid border-t">
             {group.sessions.map((session) => (
@@ -268,6 +275,7 @@ function SessionGroups({
                 key={`${group.provider_id}:${session.session_id}`}
                 session={session}
                 syncGroups={syncGroups}
+                homeButtons={homeButtons}
                 onRename={onRename}
                 onDelete={onDelete}
                 onCompress={onCompress}
@@ -293,26 +301,36 @@ export function HomePage() {
   const [syncTarget, setSyncTarget] = useState<SessionItem | null>(null);
   const [selectedProviders, setSelectedProviders] = useState<string[]>([]);
   const [providersReady, setProvidersReady] = useState(false);
+  const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<SessionListSort>("recent");
+  const [hookFilter, setHookFilter] = useState<SessionHookFilter>("all");
+  const [sessionsPerProvider, setSessionsPerProvider] = useState(6);
   const selectedWorkspaceOverride = useUiStore((state) => state.selectedWorkspace);
   const { meta, providers, catalog, workspaceProviders, sessions, syncGroups } = useHomeData(
     selectedWorkspaceOverride || undefined,
     selectedProviders,
+    { sort, hookFilter, sessionLimit: sessionsPerProvider },
   );
   const loading =
     meta.isLoading ||
     providers.isLoading ||
     catalog.isLoading ||
     workspaceProviders.isLoading ||
-    (providersReady && sessions.isLoading) ||
     syncGroups.isLoading;
-  const error =
-    meta.error || providers.error || catalog.error || workspaceProviders.error || sessions.error || syncGroups.error;
+  const shellError =
+    meta.error || providers.error || catalog.error || workspaceProviders.error || syncGroups.error;
 
   const selectedWorkspace = selectedWorkspaceOverride || meta.data?.selected_workspace || null;
   const providerCandidates = useMemo(
     () => homeProviderCandidates(catalog.data?.providers ?? []),
     [catalog.data?.providers],
   );
+  const defaultSessionsPerProvider = clampSessionsPerProvider(meta.data?.settings.sessions_per_provider ?? 12);
+
+  useEffect(() => {
+    if (meta.data?.settings.sessions_per_provider === undefined) return;
+    setSessionsPerProvider(clampSessionsPerProvider(meta.data.settings.sessions_per_provider));
+  }, [meta.data?.settings.sessions_per_provider]);
 
   useEffect(() => {
     setProvidersReady(false);
@@ -342,56 +360,116 @@ export function HomePage() {
     },
   });
 
-  function toggleProvider(providerId: string) {
+  const persistSessionsPerProvider = useMutation({
+    mutationFn: (nextLimit: number) => {
+      const settings = meta.data?.settings;
+      if (!settings) return Promise.resolve(nextLimit);
+      return updateSettings(settingsPayloadFromMeta(settings, nextLimit));
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.meta });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessionsRoot });
+    },
+  });
+
+  function applyFilters(next: {
+    hookFilter: SessionHookFilter;
+    selectedProviders: string[];
+    sessionsPerProvider: number;
+  }) {
+    setHookFilter(next.hookFilter);
+    const nextLimit = clampSessionsPerProvider(next.sessionsPerProvider);
+    setSessionsPerProvider(nextLimit);
+    const savedLimit = clampSessionsPerProvider(meta.data?.settings.sessions_per_provider ?? defaultSessionsPerProvider);
+    if (meta.data?.settings && nextLimit !== savedLimit) {
+      void persistSessionsPerProvider.mutate(nextLimit);
+    }
     setSelectedProviders((current) => {
-      const next = current.includes(providerId)
-        ? current.filter((id) => id !== providerId)
-        : [...current, providerId];
-      void persistProviders.mutate(next);
-      return next;
+      if (
+        current.length === next.selectedProviders.length &&
+        current.every((id) => next.selectedProviders.includes(id))
+      ) {
+        return current;
+      }
+      void persistProviders.mutate(next.selectedProviders);
+      return next.selectedProviders;
     });
   }
 
-  if (loading) return <PageSkeleton />;
-  if (error) return <PageError title="Home data failed to load" message={error.message} />;
+  const sessionGroups = useMemo(
+    () =>
+      (sessions.data ?? [])
+        .map((group) => ({
+          ...group,
+          sessions: group.sessions.filter((session) => matchesSearch(session, search)),
+        }))
+        .filter((group) => group.sessions.length > 0),
+    [search, sessions.data],
+  );
 
-  const sessionGroups = sessions.data ?? [];
+  const listLoading = !providersReady || (Boolean(selectedProviders.length) && sessions.isLoading && !sessions.data);
+  const listRefreshing = Boolean(selectedProviders.length) && sessions.isFetching && Boolean(sessions.data);
+  const sessionCount = totalSessions(sessionGroups);
+  const agentCount = sessionGroups.length;
+
+  if (loading) return <PageSkeleton />;
+  if (shellError) return <PageError title="Home data failed to load" message={shellError.message} />;
+
   const syncItems = syncGroups.data ?? [];
+  const homeButtons = meta.data?.settings.home_buttons;
 
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
-      <HomeHero workspace={selectedWorkspace} groups={sessionGroups} />
+      <HomeHero workspace={selectedWorkspace} />
 
       <section className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] rounded-md border bg-background">
         <div className="flex items-center gap-3 border-b p-3">
-          <div className="min-w-28">
-            <strong>Recent Sessions</strong>
+          <strong className="shrink-0">Recent Sessions</strong>
+          <HomeSessionToolbar
+            className="min-w-0 flex-1"
+            search={search}
+            sort={sort}
+            hookFilter={hookFilter}
+            selectedProviders={selectedProviders}
+            sessionsPerProvider={sessionsPerProvider}
+            defaultSessionsPerProvider={defaultSessionsPerProvider}
+            providerCandidates={providerCandidates}
+            onSearchChange={setSearch}
+            onSortChange={setSort}
+            onFiltersApply={applyFilters}
+          />
+          <div className="flex shrink-0 items-center gap-2">
+            <Button asChild variant="outline">
+              <Link to="/manager">sessions={sessionCount}</Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link to="/agents">agents={agentCount}</Link>
+            </Button>
           </div>
-          <ProviderPills candidates={providerCandidates} selected={selectedProviders} onToggle={toggleProvider} />
-          <div className="relative min-w-52 flex-[0_1_300px]">
-            <SearchIcon className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-            <Input className="pl-8" placeholder="Search sessions" />
-          </div>
-          <Button type="button" variant="outline">Sort</Button>
-          <Button type="button" variant="outline">
-            <SlidersHorizontalIcon data-icon="inline-start" />
-            Filters
-          </Button>
         </div>
-        <ScrollArea className="min-h-0">
-          <div className="px-3 pb-3">
-            <SessionGroups
-              groups={sessionGroups}
-              syncGroups={syncItems}
-              onRename={setRenameTarget}
-              onDelete={setDeleteTarget}
-              onCompress={setCompressionTarget}
-              onSwitch={setSwitchTarget}
-              onExport={setExportTarget}
-              onSync={setSyncTarget}
-            />
-          </div>
-        </ScrollArea>
+        <div className="grid min-h-0 grid-cols-[auto_minmax(0,1fr)] overflow-hidden">
+          <HomeSessionGroupRail groups={sessionGroups} />
+          <ScrollArea className="min-h-0" data-home-session-scroll>
+            <HomeSessionListPanel
+              loading={listLoading}
+              refreshing={listRefreshing}
+              errorMessage={sessions.error?.message}
+            >
+              <SessionGroups
+                groups={sessionGroups}
+                syncGroups={syncItems}
+                homeButtons={homeButtons}
+                workspace={selectedWorkspace}
+                onRename={setRenameTarget}
+                onDelete={setDeleteTarget}
+                onCompress={setCompressionTarget}
+                onSwitch={setSwitchTarget}
+                onExport={setExportTarget}
+                onSync={setSyncTarget}
+              />
+            </HomeSessionListPanel>
+          </ScrollArea>
+        </div>
       </section>
       <RenameSessionDialog
         open={Boolean(renameTarget)}

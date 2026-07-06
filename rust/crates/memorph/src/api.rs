@@ -85,6 +85,10 @@ pub fn router() -> Router {
             get(list_legacy_provider_features),
         )
         .route(
+            "/api/v1/providers/{provider}/activity",
+            get(get_provider_activity),
+        )
+        .route(
             "/api/v1/providers/{provider}/settings",
             get(list_provider_settings),
         )
@@ -119,6 +123,10 @@ pub fn router() -> Router {
         .route(
             "/api/v1/sessions/{provider}/{session_id}/stats",
             get(get_session_stats),
+        )
+        .route(
+            "/api/v1/sessions/{provider}/{session_id}/activity",
+            get(get_session_activity),
         )
         .route(
             "/api/v1/sessions/{provider}/{session_id}",
@@ -1244,6 +1252,13 @@ struct ListQuery {
 }
 
 #[derive(Deserialize)]
+struct ProviderActivityQuery {
+    workspace: Option<String>,
+    hours: Option<i64>,
+    all: Option<bool>,
+}
+
+#[derive(Deserialize)]
 struct SessionDetailQuery {
     event_limit: Option<usize>,
     event_offset: Option<usize>,
@@ -1368,6 +1383,53 @@ async fn get_session_stats(
         Err(e) => api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to compute session stats: {}", e),
+        )
+        .into_response(),
+    }
+}
+
+async fn get_provider_activity(
+    Path(provider): Path<String>,
+    Query(q): Query<ProviderActivityQuery>,
+) -> impl IntoResponse {
+    let hours = q.hours.unwrap_or(core::PROVIDER_ACTIVITY_DEFAULT_HOURS);
+    let workspace = q.workspace;
+    let all_workspaces = q.all.unwrap_or(false);
+    let result = tokio::task::spawn_blocking(move || {
+        core::compute_provider_activity_timeline(
+            &provider,
+            workspace.as_deref(),
+            hours,
+            all_workspaces,
+        )
+    })
+    .await;
+
+    match result {
+        Ok(Ok(timeline)) => ApiResponse::success(timeline).into_response(),
+        Ok(Err(e)) => api_error(StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to compute provider activity: {}", e),
+        )
+        .into_response(),
+    }
+}
+
+async fn get_session_activity(
+    Path((provider, session_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || {
+        core::compute_session_activity_timeline(&provider, &session_id)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(timeline)) => ApiResponse::success(timeline).into_response(),
+        Ok(Err(e)) => api_error(StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to compute session activity: {}", e),
         )
         .into_response(),
     }

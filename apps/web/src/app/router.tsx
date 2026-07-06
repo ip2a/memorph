@@ -1,7 +1,7 @@
 import { createBrowserRouter } from "react-router-dom";
 import { AppShell } from "@/components/layout/app-shell";
 import { migrationPages } from "@/features/migration/migration-pages";
-import { AgentsPage, CompressionPage, HomePage, HooksPage, LazyRoute, ManagerPage, MigrationPage, SessionDetailPage, SessionsPage, SyncDetailPage, SyncPage } from "@/app/route-elements";
+import { AgentsPage, CompressionPage, HomePage, HooksPage, LazyRoute, ManagerPage, MigrationPage, SessionDetailPage, SessionsPage, StatsPage, SyncDetailPage, SyncPage } from "@/app/route-elements";
 
 export const router = createBrowserRouter([
   {
@@ -47,6 +47,10 @@ export const router = createBrowserRouter([
       {
         path: "hooks",
         element: <LazyRoute><HooksPage /></LazyRoute>,
+      },
+      {
+        path: "stats",
+        element: <LazyRoute><StatsPage /></LazyRoute>,
       },
       {
         path: "*",

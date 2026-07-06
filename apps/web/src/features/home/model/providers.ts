@@ -23,3 +23,21 @@ export function resolveHomeProviders(candidates: ProviderCatalogEntry[], savedPr
   const selected = savedProviders.filter((id) => candidateIds.includes(id));
   return selected.length ? selected : candidateIds;
 }
+
+export function orderProviderPills(candidates: ProviderCatalogEntry[], selected: string[]) {
+  if (!selected.length) return candidates;
+
+  const selectedSet = new Set(selected);
+  const prioritized: ProviderCatalogEntry[] = [];
+  const remainder: ProviderCatalogEntry[] = [];
+
+  for (const candidate of candidates) {
+    if (selectedSet.has(candidate.provider_id)) {
+      prioritized.push(candidate);
+    } else {
+      remainder.push(candidate);
+    }
+  }
+
+  return [...prioritized, ...remainder];
+}

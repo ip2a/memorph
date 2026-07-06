@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { WrenchIcon } from "lucide-react";
 import { EntityRow } from "@/components/shared/entity-row";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PanelCard } from "@/components/shared/panel-card";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
+import { SectionHeading } from "@/components/shared/section-heading";
 import {
   providerHookAttention,
   providerListInstallStatus,
@@ -14,9 +15,9 @@ import { TwoPanePage } from "@/components/shared/two-pane-page";
 import { WorkspaceIdentity } from "@/components/shared/workspace-identity";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { formatDateTime } from "@/lib/format";
@@ -83,7 +84,73 @@ function operationLabel(operation: string) {
 }
 
 function SummaryItem({ label, value }: { label: string; value: string | number | null | undefined }) {
-  return <MetricTile label={label} value={value ?? "-"} />;
+  return <MetricTile label={label} value={value ?? "-"} variant="compact" />;
+}
+
+function DetailSection({
+  title,
+  description,
+  actions,
+  children,
+}: {
+  title: string;
+  description?: string;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-4 border-t pt-5">
+      <SectionHeading title={title} description={description} actions={actions} className="border-b-0 pb-0" />
+      {children}
+    </section>
+  );
+}
+
+function HookStatsStrip({
+  provider,
+  runtimeCount,
+  loading,
+}: {
+  provider: AgentManagementEntry | undefined;
+  runtimeCount: number;
+  loading: boolean;
+}) {
+  const hook = provider?.hook || {};
+  const diagnosis = provider?.hook_diagnosis || {};
+  const version = hook.installed_version && hook.current_version && hook.installed_version !== hook.current_version
+    ? `${hook.installed_version} -> ${hook.current_version}`
+    : hook.installed_version || hook.current_version || null;
+  const placeholder = loading ? <Skeleton className="h-5 w-20" /> : "-";
+
+  return (
+    <MetricGrid columns="four" data-hook-stats>
+      <MetricTile
+        label="Hook Status"
+        value={provider ? hook.status || "unknown" : placeholder}
+        hint="install state"
+        title={hook.message || undefined}
+        variant="compact"
+      />
+      <MetricTile
+        label="Sessions"
+        value={provider ? diagnosis.total_sessions ?? 0 : placeholder}
+        hint="total sessions"
+        variant="compact"
+      />
+      <MetricTile
+        label="Active Runtime"
+        value={provider ? runtimeCount : placeholder}
+        hint="live sessions"
+        variant="compact"
+      />
+      <MetricTile
+        label="Version"
+        value={version || placeholder}
+        hint="hook package"
+        variant="compact"
+      />
+    </MetricGrid>
+  );
 }
 
 function HooksProviderList({
@@ -239,18 +306,6 @@ function ErrorRows({ errors }: { errors: HookErrorRecord[] }) {
   );
 }
 
-function DetailCard({ title, description, children }: { title: string; description: string; children: React.ReactNode }) {
-  return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{description}</CardDescription>
-      </CardHeader>
-      <CardContent>{children}</CardContent>
-    </Card>
-  );
-}
-
 function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPayload | undefined; isLoading: boolean }) {
   const runOperation = useRunHookProviderOperation();
 
@@ -278,12 +333,12 @@ function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPay
   const provider = detail.provider;
   const hook = provider.hook || {};
   const profileEvents = provider.hook_profile?.events || [];
-  const requiredEvents = provider.hook_required_events || [];
+  const diagnosis = provider.hook_diagnosis || {};
   const pendingOperation = runOperation.isPending ? runOperation.variables?.operation : null;
 
   return (
-    <ScrollArea className="h-full pr-3">
-      <div className="flex flex-col gap-4">
+    <ScrollArea className="min-h-0 h-full pr-3">
+      <div className="flex flex-col gap-6 pb-2">
         <header className="flex flex-wrap items-start justify-between gap-3">
           <div className="flex min-w-0 flex-col gap-2">
             <strong className="truncate text-lg font-semibold">{providerName(provider)}</strong>
@@ -313,27 +368,31 @@ function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPay
         {runOperation.error ? <PageError title="Hook operation failed" message={runOperation.error.message} /> : null}
         {runOperation.data?.message ? <PageError title="Hook operation result" message={runOperation.data.message} /> : null}
 
-        <Card size="sm">
-          <CardHeader>
-            <CardTitle>Hook Summary</CardTitle>
-            <CardDescription>Provider hook status, event requirements, and session diagnosis.</CardDescription>
-            <CardAction>{hook.message ? <Badge variant="outline">{hook.message}</Badge> : null}</CardAction>
-          </CardHeader>
-          <CardContent>
-            <MetricGrid>
-              <SummaryItem label="Hook status" value={hook.status || "unknown"} />
-              <SummaryItem label="Required events" value={requiredEvents.length || profileEvents.length} />
-              <SummaryItem label="Last event" value={formatDateTime(hook.last_event_at)} />
-              <SummaryItem label="Linked sessions" value={provider.hook_diagnosis?.linked || 0} />
-              <SummaryItem label="Weak sessions" value={provider.hook_diagnosis?.weakly_linked || 0} />
-              <SummaryItem label="No match" value={provider.hook_diagnosis?.no_session_match || 0} />
-              <SummaryItem label="Active runtime" value={detail.runtime_sessions.length} />
-              <SummaryItem label="Recent errors" value={detail.recent_errors.length} />
-            </MetricGrid>
-          </CardContent>
-        </Card>
+        <DetailSection
+          title="Hook Summary"
+          description="Provider hook status, event requirements, and session diagnosis."
+        >
+          {hook.message ? (
+            <p className="text-muted-foreground text-sm break-words">{hook.message}</p>
+          ) : null}
+          <MetricGrid columns="auto">
+            <SummaryItem label="Linked sessions" value={diagnosis.linked || 0} />
+            <SummaryItem label="Weak sessions" value={diagnosis.weakly_linked || 0} />
+            <SummaryItem label="No match" value={diagnosis.no_session_match || 0} />
+            <SummaryItem label="Recent errors" value={detail.recent_errors.length} />
+            <SummaryItem label="Last event" value={formatDateTime(hook.last_event_at)} />
+            <SummaryItem
+              label="Hook version"
+              value={
+                hook.installed_version && hook.current_version && hook.installed_version !== hook.current_version
+                  ? `${hook.installed_version} -> ${hook.current_version}`
+                  : hook.installed_version || hook.current_version
+              }
+            />
+          </MetricGrid>
+        </DetailSection>
 
-        <DetailCard title="Hook Event Profile" description="Provider events that memorph records or blocks for runtime correlation.">
+        <DetailSection title="Hook Event Profile" description="Provider events that memorph records or blocks for runtime correlation.">
           {profileEvents.length ? (
             <div className="flex flex-wrap gap-2">
               {profileEvents.map((event) => (
@@ -350,19 +409,19 @@ function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPay
               </EmptyHeader>
             </Empty>
           )}
-        </DetailCard>
+        </DetailSection>
 
-        <DetailCard title="Runtime Sessions" description="Active or recently observed hook runtime sessions for this provider.">
+        <DetailSection title="Runtime Sessions" description="Active or recently observed hook runtime sessions for this provider.">
           <RuntimeRows sessions={detail.runtime_sessions} />
-        </DetailCard>
+        </DetailSection>
 
-        <DetailCard title="Recent Events" description="Latest hook events recorded for this provider.">
+        <DetailSection title="Recent Events" description="Latest hook events recorded for this provider.">
           <EventRows events={detail.recent_events} />
-        </DetailCard>
+        </DetailSection>
 
-        <DetailCard title="Recent Errors" description="Latest hook errors that mention this provider.">
+        <DetailSection title="Recent Errors" description="Latest hook errors that mention this provider.">
           <ErrorRows errors={detail.recent_errors} />
-        </DetailCard>
+        </DetailSection>
       </div>
     </ScrollArea>
   );
@@ -383,24 +442,26 @@ export function HooksPage() {
   if (overview.error) return <PageError title="Hooks failed to load" message={overview.error.message} />;
   if (meta.error) return <PageError title="Workspace metadata failed to load" message={meta.error.message} />;
 
-  const summary = overview.data?.summary;
-
   return (
     <TwoPanePage>
       <PanelCard>
         <section className="flex flex-col gap-3 border-b pb-4">
           <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
-          <MetricGrid columns="two">
-            <SummaryItem label="Providers" value={summary?.providers || 0} />
-            <SummaryItem label="Attention" value={summary?.needs_attention || 0} />
-            <SummaryItem label="Runtime" value={summary?.active_runtime_sessions || 0} />
-            <SummaryItem label="Errors" value={summary?.recent_errors || 0} />
-          </MetricGrid>
         </section>
         <HooksProviderList providers={providers} selectedProvider={selected} onSelect={setSelectedProvider} />
       </PanelCard>
 
-      <PanelCard variant="plain" className={cn(detail.isFetching && detail.data ? "opacity-95" : "")}>
+      <PanelCard
+        variant="plain"
+        className={cn("grid min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] gap-4", detail.isFetching && detail.data ? "opacity-95" : "")}
+        data-hook-detail-panel
+      >
+        <HookStatsStrip
+          provider={detail.data?.provider}
+          runtimeCount={detail.data?.runtime_sessions.length ?? 0}
+          loading={detail.isLoading}
+        />
+        <Separator />
         {detail.error ? <PageError title="Hook provider detail failed to load" message={detail.error.message} /> : null}
         <ProviderDetail detail={detail.data} isLoading={detail.isLoading} />
       </PanelCard>

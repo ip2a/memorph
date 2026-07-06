@@ -72,12 +72,8 @@ export function DetailHeader({
           >
             {title}
           </h1>
-          {description ? <p className="text-muted-foreground [overflow-wrap:anywhere]">{description}</p> : null}
-          {meta ? (
-            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-xs leading-5 text-muted-foreground [&>span]:inline-flex [&>span]:max-w-full [&>span]:shrink-0 [&>span]:items-center [&>span]:whitespace-nowrap [&_code]:max-w-[28rem] [&_code]:truncate">
-              {meta}
-            </div>
-          ) : null}
+          {description ? <div className="text-muted-foreground [overflow-wrap:anywhere]">{description}</div> : null}
+          {meta ? <div className="w-full">{meta}</div> : null}
         </div>
         {actionsPlacement === "inline" ? actionsNode : null}
       </div>

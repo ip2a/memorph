@@ -937,6 +937,323 @@ pub fn compute_session_stats(provider_id: &str, session_id: &str) -> Result<Sess
     })
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionActivityBucketUnit {
+    Minute,
+    Hour,
+    TwelveHour,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionActivityBucket {
+    pub start: chrono::DateTime<chrono::Utc>,
+    pub end: chrono::DateTime<chrono::Utc>,
+    pub event_count: usize,
+    pub message_count: usize,
+    pub activity_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionActivityTimeline {
+    pub provider_id: String,
+    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_active_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub bucket_unit: SessionActivityBucketUnit,
+    pub bucket_seconds: i64,
+    pub buckets: Vec<SessionActivityBucket>,
+    pub total_events: usize,
+    pub total_messages: usize,
+    pub total_activity: f64,
+}
+
+pub fn compute_session_activity_timeline(
+    provider_id: &str,
+    session_id: &str,
+) -> Result<SessionActivityTimeline> {
+    use chrono::TimeDelta;
+
+    let imported = get_canonical_session(provider_id, session_id)?;
+    let session = &imported.session;
+    let mut event_timestamps = Vec::with_capacity(session.events.len());
+
+    for event in &session.events {
+        event_timestamps.push(event.timestamp);
+    }
+
+    let created_at = session
+        .context
+        .created_at
+        .or_else(|| event_timestamps.iter().copied().min());
+    let last_active_at = session
+        .context
+        .last_active_at
+        .or_else(|| event_timestamps.iter().copied().max());
+
+    let range_start = created_at
+        .or_else(|| event_timestamps.first().copied())
+        .unwrap_or_else(chrono::Utc::now);
+    let range_end = last_active_at
+        .or_else(|| event_timestamps.last().copied())
+        .unwrap_or(range_start);
+    let range_end = if range_end < range_start {
+        range_start
+    } else {
+        range_end
+    };
+
+    let span = range_end.signed_duration_since(range_start);
+    let (bucket_unit, mut bucket_seconds) = choose_activity_bucket(span);
+    let bucket_count = activity_bucket_count(span, &mut bucket_seconds);
+    let mut buckets = Vec::with_capacity(bucket_count);
+    for index in 0..bucket_count {
+        let start = range_start + TimeDelta::seconds(index as i64 * bucket_seconds);
+        let end = if index + 1 == bucket_count {
+            range_end
+        } else {
+            range_start + TimeDelta::seconds((index as i64 + 1) * bucket_seconds)
+        };
+        buckets.push(SessionActivityBucket {
+            start,
+            end,
+            event_count: 0,
+            message_count: 0,
+            activity_score: 0.0,
+        });
+    }
+
+    let mut total_activity = 0.0;
+    let mut total_messages = 0usize;
+    for event in &session.events {
+        let weight = event_activity_weight(event);
+        total_activity += weight;
+        if provider::canonical_event_is_visible_message(event) {
+            total_messages += 1;
+        }
+        if let Some(bucket) = bucket_for_timestamp(
+            event.timestamp,
+            range_start,
+            range_end,
+            bucket_seconds,
+            &mut buckets,
+        ) {
+            bucket.event_count += 1;
+            bucket.activity_score += weight;
+            if provider::canonical_event_is_visible_message(event) {
+                bucket.message_count += 1;
+            }
+        }
+    }
+
+    Ok(SessionActivityTimeline {
+        provider_id: provider_id.to_string(),
+        session_id: session_id.to_string(),
+        created_at,
+        last_active_at,
+        bucket_unit,
+        bucket_seconds,
+        buckets,
+        total_events: session.events.len(),
+        total_messages,
+        total_activity,
+    })
+}
+
+pub const PROVIDER_ACTIVITY_DEFAULT_HOURS: i64 = 72;
+const PROVIDER_ACTIVITY_MAX_HOURS: i64 = 168;
+const PROVIDER_ACTIVITY_MAX_SESSIONS: usize = 64;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProviderActivityTimeline {
+    pub provider_id: String,
+    pub hours: i64,
+    pub bucket_seconds: i64,
+    pub range_start: chrono::DateTime<chrono::Utc>,
+    pub range_end: chrono::DateTime<chrono::Utc>,
+    pub buckets: Vec<SessionActivityBucket>,
+    pub total_activity: f64,
+    pub sessions_scanned: usize,
+    pub sessions_considered: usize,
+}
+
+pub fn compute_provider_activity_timeline(
+    provider_id: &str,
+    workspace: Option<&str>,
+    hours: i64,
+    all_workspaces: bool,
+) -> Result<ProviderActivityTimeline> {
+    use chrono::TimeDelta;
+
+    let prov = providers::find_provider(provider_id)
+        .with_context(|| format!("Unknown provider: {}", provider_id))?;
+    let capabilities = prov.capabilities();
+    if !capabilities.scan || !capabilities.import {
+        anyhow::bail!(
+            "Provider does not support activity timeline: {}",
+            provider_id
+        );
+    }
+
+    let hours = hours.clamp(1, PROVIDER_ACTIVITY_MAX_HOURS);
+    let bucket_seconds = 60 * 60;
+    let range_end = chrono::Utc::now();
+    let range_start = range_end - TimeDelta::hours(hours);
+    let bucket_count = hours as usize;
+
+    let mut buckets = Vec::with_capacity(bucket_count);
+    for index in 0..bucket_count {
+        let start = range_start + TimeDelta::seconds(index as i64 * bucket_seconds);
+        let end = if index + 1 == bucket_count {
+            range_end
+        } else {
+            range_start + TimeDelta::seconds((index as i64 + 1) * bucket_seconds)
+        };
+        buckets.push(SessionActivityBucket {
+            start,
+            end,
+            event_count: 0,
+            message_count: 0,
+            activity_score: 0.0,
+        });
+    }
+
+    let Some(sessions) = scan_sessions_for_aggregate(prov.as_ref(), true)? else {
+        return Ok(ProviderActivityTimeline {
+            provider_id: provider_id.to_string(),
+            hours,
+            bucket_seconds,
+            range_start,
+            range_end,
+            buckets,
+            total_activity: 0.0,
+            sessions_scanned: 0,
+            sessions_considered: 0,
+        });
+    };
+
+    let mut candidates: Vec<&ProviderSessionSummary> = if all_workspaces {
+        sessions.iter().collect()
+    } else {
+        let requested_workspace_key = prov.normalized_workspace_key(workspace);
+        sessions
+            .iter()
+            .filter(|session| {
+                requested_workspace_key.as_deref()
+                    == prov
+                        .normalized_workspace_key(session.project_dir.as_deref())
+                        .as_deref()
+            })
+            .collect()
+    };
+    candidates.sort_by_key(|session| std::cmp::Reverse(session.last_active_at));
+    let sessions_considered = candidates.len();
+
+    let mut sessions_scanned = 0usize;
+    let mut total_activity = 0.0f64;
+    let range_start_ms = range_start.timestamp_millis();
+    for meta in candidates.into_iter().take(PROVIDER_ACTIVITY_MAX_SESSIONS) {
+        if meta
+            .last_active_at
+            .is_some_and(|last_active| last_active < range_start_ms)
+        {
+            continue;
+        }
+        let imported = match get_canonical_session(provider_id, &meta.session_id) {
+            Ok(imported) => imported,
+            Err(_) => continue,
+        };
+        sessions_scanned += 1;
+        for event in &imported.session.events {
+            if event.timestamp < range_start || event.timestamp > range_end {
+                continue;
+            }
+            let weight = event_activity_weight(event);
+            total_activity += weight;
+            if let Some(bucket) = bucket_for_timestamp(
+                event.timestamp,
+                range_start,
+                range_end,
+                bucket_seconds,
+                &mut buckets,
+            ) {
+                bucket.event_count += 1;
+                bucket.activity_score += weight;
+                if provider::canonical_event_is_visible_message(event) {
+                    bucket.message_count += 1;
+                }
+            }
+        }
+    }
+
+    Ok(ProviderActivityTimeline {
+        provider_id: provider_id.to_string(),
+        hours,
+        bucket_seconds,
+        range_start,
+        range_end,
+        buckets,
+        total_activity,
+        sessions_scanned,
+        sessions_considered,
+    })
+}
+
+fn event_activity_weight(event: &SessionEvent) -> f64 {
+    use crate::canonical::SessionEventKind;
+
+    match event.kind {
+        SessionEventKind::Lifecycle => 0.25,
+        SessionEventKind::Message if provider::canonical_event_is_visible_message(event) => 3.0,
+        SessionEventKind::Message => 1.5,
+        SessionEventKind::ToolCall | SessionEventKind::ToolResult => 2.0,
+        SessionEventKind::Command | SessionEventKind::CommandResult => 1.75,
+        SessionEventKind::Patch | SessionEventKind::Artifact => 1.25,
+        SessionEventKind::Unknown => 0.5,
+    }
+}
+
+fn choose_activity_bucket(span: chrono::TimeDelta) -> (SessionActivityBucketUnit, i64) {
+    if span < chrono::TimeDelta::hours(1) {
+        (SessionActivityBucketUnit::Minute, 60)
+    } else if span < chrono::TimeDelta::days(1) {
+        (SessionActivityBucketUnit::Hour, 60 * 60)
+    } else {
+        (SessionActivityBucketUnit::TwelveHour, 12 * 60 * 60)
+    }
+}
+
+fn activity_bucket_count(span: chrono::TimeDelta, bucket_seconds: &mut i64) -> usize {
+    const MAX_BUCKETS: i64 = 96;
+    let span_seconds = span.num_seconds().max(0);
+    if span_seconds == 0 {
+        return 1;
+    }
+    let mut count = (span_seconds + *bucket_seconds - 1) / *bucket_seconds;
+    while count > MAX_BUCKETS {
+        *bucket_seconds *= 2;
+        count = (span_seconds + *bucket_seconds - 1) / *bucket_seconds;
+    }
+    count.max(1) as usize
+}
+
+fn bucket_for_timestamp(
+    timestamp: chrono::DateTime<chrono::Utc>,
+    range_start: chrono::DateTime<chrono::Utc>,
+    range_end: chrono::DateTime<chrono::Utc>,
+    bucket_seconds: i64,
+    buckets: &mut [SessionActivityBucket],
+) -> Option<&mut SessionActivityBucket> {
+    if timestamp < range_start || timestamp > range_end {
+        return None;
+    }
+    let offset = timestamp.signed_duration_since(range_start).num_seconds().max(0);
+    let index = (offset / bucket_seconds).min(buckets.len().saturating_sub(1) as i64) as usize;
+    buckets.get_mut(index)
+}
+
 fn load_canonical_session_from_meta(
     provider: &dyn provider::Provider,
     provider_id: &str,
@@ -2767,5 +3084,21 @@ mod tests {
         let mut file = Builder::new().suffix(".json").tempfile().unwrap();
         write!(file, "{}", serde_json::to_string(session).unwrap()).unwrap();
         file
+    }
+
+    #[test]
+    fn activity_bucket_selection_follows_span_thresholds() {
+        assert_eq!(
+            choose_activity_bucket(chrono::TimeDelta::minutes(20)),
+            (SessionActivityBucketUnit::Minute, 60)
+        );
+        assert_eq!(
+            choose_activity_bucket(chrono::TimeDelta::hours(6)),
+            (SessionActivityBucketUnit::Hour, 60 * 60)
+        );
+        assert_eq!(
+            choose_activity_bucket(chrono::TimeDelta::days(3)),
+            (SessionActivityBucketUnit::TwelveHour, 12 * 60 * 60)
+        );
     }
 }

@@ -39,10 +39,11 @@ export function useManagerQuickWorkspaces(providers: string[]) {
   });
 }
 
-export function useManagerStats(filter: ManagerFilter) {
+export function useManagerStats(filter: ManagerFilter, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.managerStats(filter),
     queryFn: () => getManagerStats(filter),
+    enabled: options?.enabled ?? true,
   });
 }
 

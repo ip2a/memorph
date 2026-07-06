@@ -1,27 +1,30 @@
-import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { useMemo, useState, type ReactNode } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import { ArrowRightIcon, PlayIcon, RefreshCwIcon } from "lucide-react";
 import { EntityRow } from "@/components/shared/entity-row";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PanelCard } from "@/components/shared/panel-card";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
+import { SelectableRowButton } from "@/components/shared/selectable-row-button";
+import { SectionHeading } from "@/components/shared/section-heading";
 import {
   providerListInstallStatus,
   ProviderListInstallStatusBadge,
   ProviderListStatusTrailing,
 } from "@/components/shared/provider-list-status";
-import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { TwoPanePage } from "@/components/shared/two-pane-page";
 import { WorkspaceIdentity } from "@/components/shared/workspace-identity";
+import { workspaceName } from "@/components/shared/workspace-name";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
+import { formatBytes, formatExecutableVersion } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { AgentEnvironmentStatus, AgentManagementEntry, ProviderHookDiagnosisAggregate, ProviderSettingItem } from "@/lib/types";
 import {
@@ -32,6 +35,8 @@ import {
   useRunProviderSetting,
   useUpdateProviderSetting,
 } from "@/features/agents/queries";
+import { useManagerStats } from "@/features/manager/queries";
+import { AgentActionResultPanel } from "@/features/agents/agent-action-result";
 
 const HOOK_SETTING_IDS = new Set(["install_hook", "verify_hook", "repair_hook", "uninstall_hook"]);
 
@@ -65,6 +70,25 @@ function attentionCount(diagnosis: ProviderHookDiagnosisAggregate | undefined) {
     Number(diagnosis.no_active_runtime || 0) +
     Number(diagnosis.no_events_yet || 0) +
     Number(diagnosis.hook_not_installed || 0)
+  );
+}
+
+function DetailSection({
+  title,
+  description,
+  actions,
+  children,
+}: {
+  title: string;
+  description?: string;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-4 border-t pt-5">
+      <SectionHeading title={title} description={description} actions={actions} className="border-b-0 pb-0" />
+      {children}
+    </section>
   );
 }
 
@@ -143,74 +167,97 @@ function ProviderList({
 function EnvironmentBlock({ provider }: { provider: AgentManagementEntry }) {
   const environment = environmentOf(provider);
   return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle>Agent Management Environment</CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <SummaryGrid
-          items={[
-            { label: "Install status", value: environment.installed ? "Installed" : "Not detected" },
-            { label: "Install method", value: environment.install_method || "unknown" },
-          ]}
-        />
-        <div className="flex flex-col">
-          <DetailRow label="Executable path" value={environment.executable_path} />
-          <DetailRow label="Executable dir" value={environment.executable_dir} />
-          <DetailRow label="Executable version" value={environment.executable_version} />
-          <DetailRow label="Config path" value={environment.config_path} />
-        </div>
-      </CardContent>
-    </Card>
+    <DetailSection title="Agent Management Environment">
+      <div className="flex flex-col">
+        <DetailRow label="Executable path" value={environment.executable_path} />
+        <DetailRow label="Executable dir" value={environment.executable_dir} />
+        <DetailRow label="Executable version" value={formatExecutableVersion(environment.executable_version)} />
+        <DetailRow label="Config path" value={environment.config_path} />
+      </div>
+    </DetailSection>
+  );
+}
+
+function AgentStatsStrip({
+  provider,
+  loading,
+}: {
+  provider: AgentManagementEntry | undefined;
+  loading: boolean;
+}) {
+  const navigate = useNavigate();
+  const providerId = provider?.provider_id;
+  const filter = useMemo(() => ({ providers: providerId ? [providerId] : [] }), [providerId]);
+  const stats = useManagerStats(filter, { enabled: !!providerId });
+  const environment = provider ? environmentOf(provider) : null;
+  const sessionCount = provider?.hook_diagnosis?.total_sessions ?? 0;
+  const version = formatExecutableVersion(environment?.executable_version);
+  const placeholder = loading || stats.isLoading ? <Skeleton className="h-5 w-20" /> : "-";
+
+  return (
+    <MetricGrid columns="four" data-agent-stats>
+      <MetricTile
+        label="Sessions"
+        value={provider ? sessionCount : placeholder}
+        hint="all workspaces"
+        variant="compact"
+        onClick={() => {
+          if (!providerId) return;
+          navigate(`/manager?provider=${encodeURIComponent(providerId)}&view=sessions`);
+        }}
+      />
+      <MetricTile
+        label="Size"
+        value={stats.data ? formatBytes(stats.data.all_workspace_size_bytes) : placeholder}
+        hint="indexed storage"
+        variant="compact"
+      />
+      <MetricTile
+        label="Version"
+        value={version || placeholder}
+        hint="executable"
+        variant="compact"
+        title={version ?? undefined}
+      />
+      <MetricTile
+        label="Install Method"
+        value={environment?.install_method || placeholder}
+        variant="compact"
+      />
+    </MetricGrid>
   );
 }
 
 function HooksBlock({ provider }: { provider: AgentManagementEntry }) {
   const hook = provider.hook || {};
   const diagnosis = provider.hook_diagnosis || {};
-  const events = provider.hook_profile?.events || [];
   const version = hook.installed_version && hook.current_version && hook.installed_version !== hook.current_version
     ? `${hook.installed_version} -> ${hook.current_version}`
     : hook.installed_version || hook.current_version || "-";
 
   return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle>Hooks</CardTitle>
-        <CardDescription>Provider hook install, runtime, and session diagnosis summary.</CardDescription>
-        <CardAction>
-          <Button asChild variant="outline">
-            <Link to="/hooks">
-              Open Hooks
-              <ArrowRightIcon data-icon="inline-end" />
-            </Link>
-          </Button>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <SummaryGrid
-          items={[
-            { label: "Hook status", value: hook.status || "unsupported" },
-            { label: "Version", value: version },
-            { label: "Sessions", value: diagnosis.total_sessions || 0 },
-            { label: "Active runtime", value: diagnosis.active_runtime_sessions || 0 },
-            { label: "Attention", value: attentionCount(diagnosis) },
-          ]}
-        />
-        {events.length ? (
-          <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
-            <strong className="text-sm font-medium">Hook events</strong>
-            <div className="flex flex-wrap gap-2">
-              {events.map((event) => (
-                <Badge key={`${event.name}-${String(event.blocking)}`} variant="outline">
-                  {event.name}{event.blocking ? " *" : ""}
-                </Badge>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </CardContent>
-    </Card>
+    <DetailSection
+      title="Hooks"
+      description="Provider hook install, runtime, and session diagnosis summary."
+      actions={(
+        <Button asChild variant="outline">
+          <Link to="/hooks">
+            Open Hooks
+            <ArrowRightIcon data-icon="inline-end" />
+          </Link>
+        </Button>
+      )}
+    >
+      <SummaryGrid
+        items={[
+          { label: "Hook status", value: hook.status || "unsupported" },
+          { label: "Version", value: version },
+          { label: "Sessions", value: diagnosis.total_sessions || 0 },
+          { label: "Active runtime", value: diagnosis.active_runtime_sessions || 0 },
+          { label: "Attention", value: attentionCount(diagnosis) },
+        ]}
+      />
+    </DetailSection>
   );
 }
 
@@ -218,61 +265,38 @@ function ProviderItemsBlock({
   provider,
   workspace,
   onToggle,
-  onRun,
+  onRequestRun,
   pendingKey,
-  result,
 }: {
   provider: AgentManagementEntry;
   workspace: string | null | undefined;
   onToggle: (setting: ProviderSettingItem, checked: boolean) => void;
-  onRun: (setting: ProviderSettingItem) => void;
+  onRequestRun: (setting: ProviderSettingItem) => void;
   pendingKey: string | null;
-  result: unknown;
 }) {
   const items = providerSettings(provider);
-  const actionItems = items.filter((setting) => setting.kind === "action");
 
   return (
-    <Card size="sm">
-      <CardHeader>
-        <CardTitle>Agent Provider Items</CardTitle>
-        <CardDescription>Provider-specific toggles and repair actions.</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        {items.length ? (
-          <div className="flex flex-col">
-            {items.map((setting) => {
-              const key = `${provider.provider_id}:${setting.id}`;
-              const pending = pendingKey === key;
-              if (setting.kind === "toggle") {
-                const checked = setting.value === true;
-                return (
-                  <EntityRow
-                    key={setting.id}
-                    variant="inline"
-                    actions={(
-                      <div className="flex items-center gap-3">
-                        <span className="text-muted-foreground text-xs">{checked ? "Enabled" : "Disabled"}</span>
-                        <Switch checked={checked} disabled={pending} onCheckedChange={(next) => onToggle(setting, next)} />
-                      </div>
-                    )}
-                  >
-                    <div className="flex min-w-0 flex-col gap-1">
-                      <strong className="text-sm font-medium">{settingLabel(setting)}</strong>
-                      <span className="text-muted-foreground text-sm">{setting.description}</span>
-                    </div>
-                  </EntityRow>
-                );
-              }
+    <DetailSection
+      title="Agent Provider Items"
+      description="Provider-specific toggles and repair actions."
+    >
+      {items.length ? (
+        <div className="flex flex-col">
+          {items.map((setting) => {
+            const key = `${provider.provider_id}:${setting.id}`;
+            const pending = pendingKey === key;
+            if (setting.kind === "toggle") {
+              const checked = setting.value === true;
               return (
                 <EntityRow
                   key={setting.id}
                   variant="inline"
                   actions={(
-                    <Button type="button" variant="outline" disabled={pending} onClick={() => onRun(setting)}>
-                      {pending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}
-                      {pending ? "Running" : settingLabel(setting)}
-                    </Button>
+                    <div className="flex items-center gap-3">
+                      <span className="text-muted-foreground text-xs">{checked ? "Enabled" : "Disabled"}</span>
+                      <Switch checked={checked} disabled={pending} onCheckedChange={(next) => onToggle(setting, next)} />
+                    </div>
                   )}
                 >
                   <div className="flex min-w-0 flex-col gap-1">
@@ -281,24 +305,36 @@ function ProviderItemsBlock({
                   </div>
                 </EntityRow>
               );
-            })}
-          </div>
-        ) : (
-          <Empty>
-            <EmptyHeader>
-              <EmptyTitle>No provider items</EmptyTitle>
-              <EmptyDescription>This provider has no non-hook controls.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        )}
-        {actionItems.length && result ? (
-          <pre className="bg-muted text-muted-foreground max-h-80 overflow-auto rounded-md p-3 text-xs">
-            {JSON.stringify(result, null, 2)}
-          </pre>
-        ) : null}
-        <div className="text-muted-foreground text-xs">Actions run with workspace {workspace || "-"}.</div>
-      </CardContent>
-    </Card>
+            }
+            return (
+              <EntityRow
+                key={setting.id}
+                variant="inline"
+                actions={(
+                  <Button type="button" variant="outline" disabled={pending} onClick={() => onRequestRun(setting)}>
+                    {pending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}
+                    {pending ? "Running" : settingLabel(setting)}
+                  </Button>
+                )}
+              >
+                <div className="flex min-w-0 flex-col gap-1">
+                  <strong className="text-sm font-medium">{settingLabel(setting)}</strong>
+                  <span className="text-muted-foreground text-sm">{setting.description}</span>
+                </div>
+              </EntityRow>
+            );
+          })}
+        </div>
+      ) : (
+        <Empty>
+          <EmptyHeader>
+            <EmptyTitle>No provider items</EmptyTitle>
+            <EmptyDescription>This provider has no non-hook controls.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      )}
+      <div className="text-muted-foreground text-xs">Actions run with workspace {workspace || "-"}.</div>
+    </DetailSection>
   );
 }
 
@@ -314,7 +350,8 @@ function ProviderDetail({
   const detectAgent = useDetectAgent();
   const updateSetting = useUpdateProviderSetting();
   const runSetting = useRunProviderSetting();
-  const [lastResult, setLastResult] = useState<unknown>(null);
+  const [confirmAction, setConfirmAction] = useState<ProviderSettingItem | null>(null);
+  const [actionResult, setActionResult] = useState<{ title: string; providerId: string; result: unknown } | null>(null);
 
   if (isLoading && !provider) {
     return (
@@ -348,45 +385,102 @@ function ProviderDetail({
     updateSetting.mutate({ provider: provider!.provider_id, settingId: setting.id, value: checked });
   }
 
-  function handleRun(setting: ProviderSettingItem) {
+  function handleRequestRun(setting: ProviderSettingItem) {
+    setConfirmAction(setting);
+  }
+
+  function handleConfirmRun() {
+    if (!confirmAction) return;
+    const setting = confirmAction;
+    setConfirmAction(null);
     runSetting.mutate(
       { provider: provider!.provider_id, settingId: setting.id, workspace },
-      { onSuccess: (output) => setLastResult(output) },
+      {
+        onSuccess: (output) => {
+          setActionResult({
+            title: settingLabel(setting),
+            providerId: provider!.provider_id,
+            result: output,
+          });
+        },
+      },
     );
   }
 
   return (
-    <ScrollArea className="h-full pr-3">
-      <div className="flex flex-col gap-4">
+    <>
+      <ScrollArea className="min-h-0 h-full pr-3">
+      <div className="flex flex-col gap-6 pb-2">
         <header className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex min-w-0 flex-col gap-2">
-            <strong className="truncate text-lg font-semibold">{provider.name}</strong>
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="outline">{provider.provider_id}</Badge>
-              <ProviderListInstallStatusBadge status={providerListInstallStatus(provider, "agent")} />
-              <Badge variant="outline">{environment.install_method || "unknown"}</Badge>
+            <div className="flex min-w-0 flex-col gap-2">
+              <strong className="truncate text-lg font-semibold">{provider.name}</strong>
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline">{provider.provider_id}</Badge>
+                <ProviderListInstallStatusBadge status={providerListInstallStatus(provider, "agent")} />
+                <Badge variant="outline">{environment.install_method || "unknown"}</Badge>
+              </div>
             </div>
+            <Button type="button" variant="outline" disabled={detectAgent.isPending} onClick={() => detectAgent.mutate(provider.provider_id)}>
+              {detectAgent.isPending ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
+              Detect
+            </Button>
+          </header>
+          {detectAgent.error ? <PageError title="Detect failed" message={detectAgent.error.message} /> : null}
+          {updateSetting.error ? <PageError title="Setting update failed" message={updateSetting.error.message} /> : null}
+          {runSetting.error ? <PageError title="Provider action failed" message={runSetting.error.message} /> : null}
+          <EnvironmentBlock provider={provider} />
+          <HooksBlock provider={provider} />
+          <ProviderItemsBlock
+            provider={provider}
+            workspace={workspace}
+            onToggle={handleToggle}
+            onRequestRun={handleRequestRun}
+            pendingKey={pendingKey}
+          />
+        </div>
+      </ScrollArea>
+
+      <Dialog open={Boolean(confirmAction)} onOpenChange={(open) => !open && setConfirmAction(null)}>
+        <DialogContent className="sm:max-w-lg" data-agent-action-confirm>
+          <DialogHeader>
+            <DialogTitle>{confirmAction ? settingLabel(confirmAction) : "Confirm action"}</DialogTitle>
+            <DialogDescription>{confirmAction?.description}</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2 rounded-md border p-3 font-mono text-xs">
+            <span>Provider: {provider.provider_id}</span>
+            <span>Workspace: {workspaceName(workspace)}</span>
+            {workspace ? <span className="text-muted-foreground break-all">{workspace}</span> : null}
           </div>
-          <Button type="button" variant="outline" disabled={detectAgent.isPending} onClick={() => detectAgent.mutate(provider.provider_id)}>
-            {detectAgent.isPending ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
-            Detect
-          </Button>
-        </header>
-        {detectAgent.error ? <PageError title="Detect failed" message={detectAgent.error.message} /> : null}
-        {updateSetting.error ? <PageError title="Setting update failed" message={updateSetting.error.message} /> : null}
-        {runSetting.error ? <PageError title="Provider action failed" message={runSetting.error.message} /> : null}
-        <EnvironmentBlock provider={provider} />
-        <HooksBlock provider={provider} />
-        <ProviderItemsBlock
-          provider={provider}
-          workspace={workspace}
-          onToggle={handleToggle}
-          onRun={handleRun}
-          pendingKey={pendingKey}
-          result={lastResult}
-        />
-      </div>
-    </ScrollArea>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setConfirmAction(null)} disabled={runSetting.isPending}>
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleConfirmRun} disabled={runSetting.isPending}>
+              Confirm
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(actionResult)} onOpenChange={(open) => !open && setActionResult(null)}>
+        <DialogContent className="sm:max-w-2xl" data-agent-action-result>
+          <DialogHeader>
+            <DialogTitle>{actionResult?.title}</DialogTitle>
+            <DialogDescription>Workspace session repair completed.</DialogDescription>
+          </DialogHeader>
+          {actionResult ? (
+            <ScrollArea className="max-h-[min(70vh,32rem)] pr-3">
+              <AgentActionResultPanel providerId={actionResult.providerId} result={actionResult.result} />
+            </ScrollArea>
+          ) : null}
+          <DialogFooter>
+            <Button type="button" onClick={() => setActionResult(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -414,7 +508,13 @@ export function AgentsPage() {
         <ProviderList providers={providers} selectedProvider={selected} onSelect={setSelectedProvider} />
       </PanelCard>
 
-      <PanelCard variant="plain" className={cn(detail.isFetching && detail.data ? "opacity-95" : "")}>
+      <PanelCard
+        variant="plain"
+        className={cn("grid min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] gap-4", detail.isFetching && detail.data ? "opacity-95" : "")}
+        data-agent-detail-panel
+      >
+        <AgentStatsStrip provider={detail.data} loading={detail.isLoading} />
+        <Separator />
         {detail.error ? <PageError title="Agent detail failed to load" message={detail.error.message} /> : null}
         <ProviderDetail provider={detail.data} isLoading={detail.isLoading} workspace={workspace} />
       </PanelCard>

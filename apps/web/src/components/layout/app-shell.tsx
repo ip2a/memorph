@@ -6,6 +6,7 @@ import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
 import { cn } from "@/lib/utils";
 import { WorkspaceSwitchDialog } from "@/features/workspaces/workspace-switch-dialog";
+import { useUiStore } from "@/stores/ui-store";
 
 const ImportSessionDialog = lazy(() =>
   import("@/features/import/import-session-dialog").then((module) => ({ default: module.ImportSessionDialog })),
@@ -28,6 +29,7 @@ function routeTitleKey(pathname: string): I18nKey {
   if (pathname.startsWith("/compression")) return "compression";
   if (pathname.startsWith("/agents")) return "agentManagement";
   if (pathname.startsWith("/hooks")) return "hooks";
+  if (pathname.startsWith("/stats")) return "stats";
   return "home";
 }
 
@@ -35,13 +37,15 @@ export function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const { t } = useI18n();
-  const [workspaceSwitchOpen, setWorkspaceSwitchOpen] = useState(false);
+  const workspaceSwitchOpen = useUiStore((state) => state.workspaceSwitchOpen);
+  const setWorkspaceSwitchOpen = useUiStore((state) => state.setWorkspaceSwitchOpen);
   const [importSessionOpen, setImportSessionOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const isHome = location.pathname === "/";
   const isManager = isRoute(location.pathname, "/manager");
   const isHooks = isRoute(location.pathname, "/hooks");
   const isAgents = isRoute(location.pathname, "/agents");
+  const isStats = isRoute(location.pathname, "/stats");
   const title = t(routeTitleKey(location.pathname));
 
   return (
@@ -69,6 +73,11 @@ export function AppShell() {
           <Button type="button" variant="outline" onClick={() => setWorkspaceSwitchOpen(true)}>
             {t("switchWorkspace")}
           </Button>
+          {!isStats ? (
+            <Button asChild variant="outline">
+              <Link to="/stats">{t("stats")}</Link>
+            </Button>
+          ) : null}
           {!isHooks ? (
             <Button asChild variant="outline">
               <Link to="/hooks">{t("hooks")}</Link>

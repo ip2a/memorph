@@ -1,8 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
 import { getMeta, getProviderCatalog, getWorkspaceProviders, listProviders, listSessions, listSyncGroups } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
+import type { SessionHookFilter, SessionListSort } from "@/lib/types";
 
-export function useHomeData(workspace?: string | null, selectedProviders?: string[]) {
+type HomeSessionOptions = {
+  hookFilter?: SessionHookFilter;
+  sort?: SessionListSort;
+  sessionLimit?: number;
+};
+
+export function useHomeData(
+  workspace?: string | null,
+  selectedProviders?: string[],
+  sessionOptions: HomeSessionOptions = {},
+) {
   const meta = useQuery({
     queryKey: queryKeys.meta,
     queryFn: getMeta,
@@ -10,11 +21,20 @@ export function useHomeData(workspace?: string | null, selectedProviders?: strin
 
   const selectedWorkspace = workspace || meta.data?.selected_workspace || undefined;
   const providerFilter = selectedProviders?.length ? selectedProviders.join(",") : undefined;
+  const sessionLimit = Math.max(
+    1,
+    Math.min(
+      200,
+      Number(sessionOptions.sessionLimit ?? (meta.data?.settings.sessions_per_provider || 6)),
+    ),
+  );
   const sessionParams = {
     all: false,
     details: true,
-    limit: 6,
+    limit: sessionLimit,
     workspace: selectedWorkspace,
+    sort: sessionOptions.sort ?? "recent",
+    hook_filter: sessionOptions.hookFilter ?? "all",
     ...(providerFilter ? { provider: providerFilter } : {}),
   } as const;
 
@@ -39,6 +59,7 @@ export function useHomeData(workspace?: string | null, selectedProviders?: strin
     queryKey: queryKeys.sessions(sessionParams),
     queryFn: () => listSessions(sessionParams),
     enabled: !meta.isLoading && Boolean(selectedProviders?.length),
+    placeholderData: (previous) => previous,
   });
 
   const syncGroups = useQuery({

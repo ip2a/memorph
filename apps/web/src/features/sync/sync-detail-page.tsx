@@ -8,6 +8,17 @@ import { toast } from "sonner";
 import { z } from "zod";
 import { DetailHeader } from "@/components/shared/detail-header";
 import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
+import { EntityRow } from "@/components/shared/entity-row";
+import { MetaLine } from "@/components/shared/meta-line";
+import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
+import { PanelCard } from "@/components/shared/panel-card";
+import { PathText } from "@/components/shared/path-text";
+import { TwoPanePage } from "@/components/shared/two-pane-page";
+import { bindSyncGroup, getMeta, listProviders, removeSyncGroup, renameSyncGroup, runSyncGroup, unbindSyncHolding } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
+import { queryKeys } from "@/lib/query-keys";
+import type { MetaPayload, ProviderInfo, SyncGroup, SyncHolding, SyncReport } from "@/lib/types";
+import { useSyncGroup } from "@/features/sync/queries";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,7 +31,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
@@ -33,17 +43,10 @@ import {
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
-import { MetaLine } from "@/components/shared/meta-line";
-import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
-import { PathText } from "@/components/shared/path-text";
-import { bindSyncGroup, getMeta, listProviders, removeSyncGroup, renameSyncGroup, runSyncGroup, unbindSyncHolding } from "@/lib/api";
-import { formatDateTime } from "@/lib/format";
-import { queryKeys } from "@/lib/query-keys";
-import type { MetaPayload, ProviderInfo, SyncGroup, SyncHolding, SyncReport } from "@/lib/types";
-import { useSyncGroup } from "@/features/sync/queries";
 
 const bindSchema = z.object({
   provider: z.string().min(1, "Choose a provider."),
@@ -113,72 +116,75 @@ export function SyncDetailPage() {
   if (!group) return <PageEmpty title="Sync group not found" description="Return to the sync list and choose another group." />;
 
   return (
-    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]" data-sync-detail-layout>
-      <section className="flex min-w-0 flex-col gap-4" data-sync-holdings-panel>
-        <DetailHeader
-          title={group.title}
-          badges={<Badge variant="secondary">Holdings</Badge>}
-          description={`${group.holdings.length} linked sessions`}
-          actions={(
-            <Button asChild variant="outline">
-              <Link to="/sync">
-                <ArrowLeftIcon data-icon="inline-start" />
-                Back
-              </Link>
-            </Button>
-          )}
-        />
-
-        {group.holdings.length === 0 ? (
-          <PageEmpty title="No holdings" description="Add a holding from the status panel to bind this sync group." />
-        ) : (
-          <div className="grid gap-3 md:grid-cols-2" data-sync-holding-grid>
-            {group.holdings.map((holding) => (
-              <HoldingCard
-                key={holding.id}
-                group={group}
-                holding={holding}
-                providerName={providerLabel(providerItems, holding.provider)}
-                onSyncFrom={() => setSyncSource(holding)}
-                onUnbind={() => setUnbindTarget(holding)}
-              />
-            ))}
-          </div>
-        )}
-      </section>
-
-      <aside className="flex flex-col gap-4" data-sync-detail-actions>
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <GitBranchIcon />
-              {group.title || group.id}
-            </CardTitle>
-            <CardDescription>{group.id}</CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2 text-sm">
-              <MetaLine label="Provider" value={providerLabel(providerItems, group.source_provider)} />
-              <MetaLine label="Sync Title" value={group.title} />
-              <MetaLine label="Holdings" value={String(group.holdings.length)} />
-              <MetaLine label="Created At" value={formatDateTime(group.created_at)} />
-              <MetaLine label="Updated At" value={formatDateTime(group.updated_at)} />
+    <>
+      <TwoPanePage data-sync-detail-layout>
+        <PanelCard className="min-h-0" data-sync-detail-actions>
+          <section className="flex flex-col gap-3 border-b pb-4">
+            <div className="flex items-center gap-2">
+              <GitBranchIcon aria-hidden />
+              <h2 className="truncate text-lg font-semibold">{group.title || group.id}</h2>
             </div>
+            <p className="break-all font-mono text-xs text-muted-foreground">{group.id}</p>
+          </section>
 
-            <Separator />
+          <ScrollArea className="min-h-0 flex-1 pr-3">
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2 text-sm">
+                <MetaLine label="Provider" value={providerLabel(providerItems, group.source_provider)} />
+                <MetaLine label="Sync Title" value={group.title} />
+                <MetaLine label="Holdings" value={String(group.holdings.length)} />
+                <MetaLine label="Created At" value={formatDateTime(group.created_at)} />
+                <MetaLine label="Updated At" value={formatDateTime(group.updated_at)} />
+              </div>
 
-            <div className="flex flex-col gap-2" data-sync-detail-row-actions>
-              <Button variant="default" onClick={() => runLatestMutation.mutate()} disabled={runLatestMutation.isPending}>
-                {runLatestMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-                Start Execution
-              </Button>
-              <Button variant="outline" onClick={() => setBindOpen(true)}>Add Holding</Button>
-              <Button variant="outline" onClick={() => setRenameOpen(true)}>Rename</Button>
-              <Button variant="destructive" onClick={() => setRemoveOpen(true)}>Remove</Button>
+              <Separator />
+
+              <div className="flex flex-col gap-2" data-sync-detail-row-actions>
+                <Button variant="default" onClick={() => runLatestMutation.mutate()} disabled={runLatestMutation.isPending}>
+                  {runLatestMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
+                  Start Execution
+                </Button>
+                <Button variant="outline" onClick={() => setBindOpen(true)}>Add Holding</Button>
+                <Button variant="outline" onClick={() => setRenameOpen(true)}>Rename</Button>
+                <Button variant="destructive" onClick={() => setRemoveOpen(true)}>Remove</Button>
+                <Button asChild variant="outline">
+                  <Link to="/sync">
+                    <ArrowLeftIcon data-icon="inline-start" />
+                    Back
+                  </Link>
+                </Button>
+              </div>
             </div>
-          </CardContent>
-        </Card>
-      </aside>
+          </ScrollArea>
+        </PanelCard>
+
+        <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4" data-sync-holdings-panel>
+          <DetailHeader
+            title={group.title}
+            badges={<Badge variant="secondary">Holdings</Badge>}
+            description={`${group.holdings.length} linked sessions`}
+          />
+
+          <ScrollArea className="min-h-0 pr-3">
+            {group.holdings.length === 0 ? (
+              <PageEmpty title="No holdings" description="Add a holding from the status panel to bind this sync group." />
+            ) : (
+              <div className="flex flex-col gap-2" data-sync-holding-grid>
+                {group.holdings.map((holding) => (
+                  <HoldingCard
+                    key={holding.id}
+                    group={group}
+                    holding={holding}
+                    providerName={providerLabel(providerItems, holding.provider)}
+                    onSyncFrom={() => setSyncSource(holding)}
+                    onUnbind={() => setUnbindTarget(holding)}
+                  />
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+        </PanelCard>
+      </TwoPanePage>
 
       <BindSyncHoldingDialog
         group={group}
@@ -191,7 +197,7 @@ export function SyncDetailPage() {
       <UnbindHoldingDialog group={group} holding={unbindTarget} open={Boolean(unbindTarget)} onOpenChange={(open) => !open && setUnbindTarget(null)} />
       <RenameSyncGroupDialog group={group} open={renameOpen} onOpenChange={setRenameOpen} />
       <RemoveSyncGroupDialog group={group} open={removeOpen} onOpenChange={setRemoveOpen} />
-    </div>
+    </>
   );
 }
 
@@ -210,20 +216,11 @@ function HoldingCard({
 }) {
   const sessionHref = `/sessions/${encodeURIComponent(holding.provider)}/${encodeURIComponent(holding.session_id)}`;
   return (
-    <Card data-sync-holding-card>
-      <CardHeader>
-        <CardTitle className="truncate">{providerName}</CardTitle>
-        <CardDescription className="truncate">{holding.session_id}</CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <div className="flex flex-col gap-2 text-sm">
-          <MetaLine label="Workspace" value={<PathText value={holding.target_dir} wrap="all" />} />
-          <MetaLine label="Last Active At" value={formatDateTime(holding.last_active_at)} />
-          <MetaLine label="Last Sync" value={formatDateTime(holding.last_sync_at)} />
-          <MetaLine label="Sync From" value={holding.last_sync_from || "-"} />
-          <MetaLine label="Error" value={holding.last_error || "-"} destructive={Boolean(holding.last_error)} />
-        </div>
-        <div className="flex flex-wrap justify-end gap-2" data-sync-holding-actions>
+    <EntityRow
+      data-sync-holding-card
+      actionsProps={{ "data-sync-holding-actions": true }}
+      actions={(
+        <>
           <Button asChild variant="outline">
             <Link to={sessionHref}>
               Open Session
@@ -236,9 +233,23 @@ function HoldingCard({
           <Button variant="destructive" onClick={onUnbind} data-group-id={group.id} data-holding-id={holding.id}>
             Unbind
           </Button>
+        </>
+      )}
+    >
+      <div className="flex min-w-0 flex-col gap-2">
+        <Link to={sessionHref} className="truncate text-sm font-medium hover:underline">
+          {providerName}
+        </Link>
+        <p className="truncate font-mono text-xs text-muted-foreground">{holding.session_id}</p>
+        <div className="flex flex-col gap-1 text-sm">
+          <MetaLine label="Workspace" value={<PathText value={holding.target_dir} wrap="all" />} />
+          <MetaLine label="Last Active At" value={formatDateTime(holding.last_active_at)} />
+          <MetaLine label="Last Sync" value={formatDateTime(holding.last_sync_at)} />
+          <MetaLine label="Sync From" value={holding.last_sync_from || "-"} />
+          <MetaLine label="Error" value={holding.last_error || "-"} destructive={Boolean(holding.last_error)} />
         </div>
-      </CardContent>
-    </Card>
+      </div>
+    </EntityRow>
   );
 }
 

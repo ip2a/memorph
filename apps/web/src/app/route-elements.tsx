@@ -22,6 +22,7 @@ export const AgentsPage = lazy(() =>
   import("@/features/agents/agents-page").then((module) => ({ default: module.AgentsPage })),
 );
 export const HooksPage = lazy(() => import("@/features/hooks/hooks-page").then((module) => ({ default: module.HooksPage })));
+export const StatsPage = lazy(() => import("@/features/stats/stats-page").then((module) => ({ default: module.StatsPage })));
 export const MigrationPage = lazy(() =>
   import("@/features/migration/migration-page").then((module) => ({ default: module.MigrationPage })),
 );

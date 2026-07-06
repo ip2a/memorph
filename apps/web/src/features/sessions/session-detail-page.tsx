@@ -1,19 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArchiveIcon, PinIcon } from "lucide-react";
+import { ArchiveIcon, CopyIcon, InfoIcon, PinIcon, SearchIcon } from "lucide-react";
+import { toast } from "sonner";
 import { DetailHeader } from "@/components/shared/detail-header";
 import { DetailTimeline, scrollToDetailMessage } from "@/components/shared/detail-timeline";
+import { MetaLine } from "@/components/shared/meta-line";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { formatDateTime, compactPath, formatDetailTitle } from "@/lib/format";
+import { formatDateTime, formatDetailTitle, formatNumericDateTime } from "@/lib/format";
 import type { SessionArtifact, SessionDetailView, SessionEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { useSession } from "@/features/sessions/queries";
+import { useSession, useSessionActivity } from "@/features/sessions/queries";
+import { SessionActivityChart } from "@/features/sessions/session-activity-chart";
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
 import { getBlockLabel, SessionBlock } from "@/features/sessions/session-block";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
@@ -24,17 +28,175 @@ function detailTitle(view: SessionDetailView) {
   return view.display_title || view.title || view.native_title || view.session_id;
 }
 
-function MetaField({ name, value, compact = false }: { name: string; value: string; compact?: boolean }) {
-  const display = compact ? compactPath(value) : value;
+async function copyText(text: string, label: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.success(`Copied ${label}`);
+  } catch {
+    toast.error(`Failed to copy ${label}`);
+  }
+}
+
+function SessionDetailsDialog({
+  open,
+  onOpenChange,
+  view,
+  returnedEventCount,
+  hasMoreEvents,
+  archives,
+  localState,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  view: SessionDetailView;
+  returnedEventCount: number;
+  hasMoreEvents: boolean;
+  archives: number;
+  localState: NonNullable<SessionDetailView["local_state"]>;
+}) {
   return (
-    <span title={`${name}=${value}`}>
-      {name}=<code>{display}</code>
-    </span>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg" data-session-details-dialog>
+        <DialogHeader>
+          <DialogTitle>Session details</DialogTitle>
+          <DialogDescription>Counts, paths, and metadata for this canonical session.</DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-2 text-sm">
+          <MetaLine columns="wide" label="Messages" value={String(view.message_count)} />
+          <MetaLine columns="wide" label="Events" value={String(view.event_count)} />
+          <MetaLine
+            columns="wide"
+            label="Loaded"
+            value={hasMoreEvents ? `${returnedEventCount} (more available)` : String(returnedEventCount)}
+          />
+          <MetaLine columns="wide" label="Artifacts" value={String(view.artifact_count)} />
+          <MetaLine columns="wide" label="Archives" value={String(archives)} />
+          <MetaLine columns="wide" label="Session ID" value={<span className="break-all font-mono text-xs">{view.session_id}</span>} />
+          <MetaLine columns="wide" label="Created" value={formatDateTime(view.created_at)} />
+          <MetaLine columns="wide" label="Last active" value={formatDateTime(view.last_active_at)} />
+          {view.source_path ? (
+            <MetaLine
+              columns="wide"
+              label="Source path"
+              value={<PathText value={view.source_path} tone="default" wrap="all" className="text-sm" />}
+            />
+          ) : null}
+          {localState.notes ? <MetaLine columns="wide" label="Notes" value={localState.notes} /> : null}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function StatItem({ label, value, title }: { label: string; value: number | string; title?: string }) {
+  return (
+    <div className="flex min-w-0 items-baseline justify-between gap-1 text-sm" title={title}>
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="font-semibold tabular-nums">{value}</span>
+    </div>
+  );
+}
+
+function SessionHeaderSubtitle({ sessionId, createdAt, lastActiveAt }: { sessionId: string; createdAt?: string | null; lastActiveAt?: string | null }) {
+  const created = formatNumericDateTime(createdAt);
+  const active = formatNumericDateTime(lastActiveAt);
+  const timeLabel = lastActiveAt && active !== created ? `${created} · ${active}` : created;
+
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" data-session-header-subtitle>
+      <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">{timeLabel}</span>
+      <code className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={sessionId}>
+        {sessionId}
+      </code>
+      <Button type="button" variant="ghost" size="sm" className="h-6 shrink-0 px-2" onClick={() => copyText(sessionId, "session ID")}>
+        <CopyIcon className="size-3.5" />
+        Copy
+      </Button>
+    </div>
+  );
+}
+
+function SessionDetailMeta({
+  view,
+  returnedEventCount,
+  hasMoreEvents,
+  localState,
+}: {
+  view: SessionDetailView;
+  returnedEventCount: number;
+  hasMoreEvents: boolean;
+  localState: NonNullable<SessionDetailView["local_state"]>;
+}) {
+  const tags = localState.tags ?? [];
+  const preferredTargets = localState.preferred_targets ?? [];
+  const activity = useSessionActivity(view.provider_id, view.session_id);
+
+  return (
+    <div className="flex w-full flex-col gap-2.5" data-session-detail-meta>
+      <div className="grid gap-y-3 border-y py-2.5 lg:grid-cols-[minmax(0,0.34fr)_auto_minmax(0,1fr)] lg:items-center lg:gap-x-0">
+        <div className="flex min-w-0 flex-col justify-center gap-2.5 px-4 py-1 lg:px-5 lg:pr-3">
+          <StatItem label="Messages" value={view.message_count} />
+          <StatItem label="Events" value={view.event_count} />
+          <StatItem label="Loaded" value={returnedEventCount} title={hasMoreEvents ? "More events available beyond this page" : undefined} />
+        </div>
+
+        <div className="hidden w-px self-stretch bg-border lg:mx-5 lg:block" aria-hidden />
+
+        <SessionActivityChart
+          className="min-h-[104px] min-w-0 overflow-visible lg:pl-1"
+          isLoading={activity.isLoading}
+          timeline={activity.data}
+        />
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {view.resume_command ? (
+          <Button type="button" variant="outline" size="sm" onClick={() => copyText(view.resume_command!, "resume command")}>
+            <CopyIcon data-icon="inline-start" />
+            Copy resume command
+          </Button>
+        ) : null}
+        {localState.hidden ? <Badge variant="outline">Hidden</Badge> : null}
+        {localState.pinned ? (
+          <Badge variant="secondary">
+            <PinIcon className="size-3" />
+            Pinned
+          </Badge>
+        ) : null}
+        {localState.archived ? (
+          <Badge variant="secondary">
+            <ArchiveIcon className="size-3" />
+            Archived
+          </Badge>
+        ) : null}
+        {tags.map((tag) => (
+          <Badge key={tag} variant="outline">{tag}</Badge>
+        ))}
+        {preferredTargets.map((target) => (
+          <Badge key={target} variant="outline">{target}</Badge>
+        ))}
+      </div>
+    </div>
   );
 }
 
 function getBlockLabels(blocks: SessionEvent["blocks"]) {
   return (blocks ?? []).map(getBlockLabel).filter(Boolean);
+}
+
+function matchesEventSearch(event: SessionEvent, query: string) {
+  if (!query.trim()) return true;
+  const haystack = [
+    event.id,
+    event.role,
+    event.kind,
+    event.metadata?.model,
+    JSON.stringify(event.blocks ?? []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(query.trim().toLowerCase());
 }
 
 function SessionArtifactsDialog({
@@ -128,6 +290,8 @@ export function SessionDetailPage() {
   const [exportOpen, setExportOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [eventSearch, setEventSearch] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
   const { provider = "", sessionId = "" } = useParams();
@@ -153,9 +317,10 @@ export function SessionDetailPage() {
   const { view, returned_event_count, has_more_events } = session.data;
   const localState = view.local_state ?? { archived: false, hidden: false, pinned: false, tags: [], preferred_targets: [], compressed_archive_refs: [] };
   const events = view.events ?? [];
+  const visibleEvents = events
+    .map((event, index) => ({ event, index }))
+    .filter(({ event }) => matchesEventSearch(event, eventSearch));
   const artifacts = view.artifacts ?? [];
-  const tags = localState.tags ?? [];
-  const preferredTargets = localState.preferred_targets ?? [];
   const archives = (view.compressed_archive_refs ?? []).length || (localState.compressed_archive_refs ?? []).length;
   const actionTarget = { providerId: view.provider_id, sessionId: view.session_id, title: detailTitle(view), workspace: view.workspace_dir };
   const title = detailTitle(view);
@@ -168,50 +333,61 @@ export function SessionDetailPage() {
             data-session-header
             separated
             actionsPlacement="below"
-            eyebrow={view.provider_name}
             title={formatDetailTitle(title)}
+            description={(
+              <SessionHeaderSubtitle
+                sessionId={view.session_id}
+                createdAt={view.created_at}
+                lastActiveAt={view.last_active_at}
+              />
+            )}
             meta={(
-              <>
-                <MetaField name="id" value={view.session_id} />
-                <MetaField name="messages" value={String(view.message_count)} />
-                <MetaField name="events" value={String(view.event_count)} />
-                <MetaField name="loaded" value={String(returned_event_count)} />
-                <MetaField name="artifacts" value={String(view.artifact_count)} />
-                <MetaField name="archives" value={String(archives)} />
-                <MetaField name="created" value={formatDateTime(view.created_at)} />
-                <MetaField name="lastActive" value={formatDateTime(view.last_active_at)} />
-                {view.workspace_dir ? <MetaField compact name="workspace" value={view.workspace_dir} /> : null}
-                {view.source_path ? <MetaField compact name="sourcePath" value={view.source_path} /> : null}
-                {view.resume_command ? <MetaField compact name="resumeCommand" value={view.resume_command} /> : null}
-                {localState.notes ? <MetaField name="notes" value={localState.notes} /> : null}
-                {localState.hidden ? <span>hidden</span> : null}
-                {localState.pinned ? <span><PinIcon className="inline size-3" /> pinned</span> : null}
-                {localState.archived ? <span><ArchiveIcon className="inline size-3" /> archived</span> : null}
-                {tags.length ? <MetaField name="tags" value={tags.join(",")} /> : null}
-                {preferredTargets.length ? <MetaField name="preferredTargets" value={preferredTargets.join(",")} /> : null}
-                {has_more_events ? <span>more events available</span> : null}
-              </>
+              <SessionDetailMeta
+                view={view}
+                returnedEventCount={returned_event_count}
+                hasMoreEvents={has_more_events}
+                localState={localState}
+              />
             )}
             actions={(
-              <>
-              <Button type="button" variant="outline" onClick={() => setArtifactsOpen(true)}>Artifacts</Button>
-              <Button type="button" variant="outline" onClick={() => setCompressionOpen(true)}>Compression</Button>
-              <Button type="button" variant="outline" onClick={() => setSyncOpen(true)}>Sync</Button>
-              <Button type="button" variant="outline" onClick={() => setSwitchOpen(true)}>Switch</Button>
-              <Button type="button" variant="outline" onClick={() => setExportOpen(true)}>Export</Button>
-              <Button type="button" variant="outline" onClick={() => setRenameOpen(true)}>Rename</Button>
-              <Button type="button" variant="destructive" onClick={() => setDeleteOpen(true)}>Remove</Button>
-              </>
+              <div className="flex w-full min-w-0 items-center gap-3">
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" onClick={() => setDetailsOpen(true)}>
+                    <InfoIcon data-icon="inline-start" />
+                    Details
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => setArtifactsOpen(true)}>Artifacts</Button>
+                  <Button type="button" variant="outline" onClick={() => setCompressionOpen(true)}>Compression</Button>
+                  <Button type="button" variant="outline" onClick={() => setSyncOpen(true)}>Sync</Button>
+                  <Button type="button" variant="outline" onClick={() => setSwitchOpen(true)}>Switch</Button>
+                  <Button type="button" variant="outline" onClick={() => setExportOpen(true)}>Export</Button>
+                  <Button type="button" variant="outline" onClick={() => setRenameOpen(true)}>Rename</Button>
+                  <Button type="button" variant="destructive" onClick={() => setDeleteOpen(true)}>Remove</Button>
+                </div>
+                <div className="relative min-w-[10rem] flex-1">
+                  <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    className="h-8 pl-8"
+                    value={eventSearch}
+                    onChange={(event) => setEventSearch(event.target.value)}
+                    placeholder="Search events"
+                    data-session-event-search
+                  />
+                </div>
+              </div>
             )}
+            actionsProps={{ className: "w-full" }}
           />
 
           <div className="grid min-h-0 gap-4 lg:grid-cols-[1.25rem_minmax(0,1fr)]" data-detail-layout>
-            <DetailTimeline events={events} onScrollToMessage={handleTimelineSelect} />
+            <DetailTimeline events={visibleEvents.map(({ event }) => event)} onScrollToMessage={(index) => handleTimelineSelect(visibleEvents[index]?.index ?? index)} />
             <div className="grid min-h-0 gap-2" data-session-message-list>
               {events.length === 0 ? (
                 <PageEmpty title="No events" description="This session has no canonical events to render." />
+              ) : visibleEvents.length === 0 ? (
+                <PageEmpty title="No matching events" description="Try a different search term." />
               ) : (
-                events.map((event, index) => (
+                visibleEvents.map(({ event, index }) => (
                   <DetailEventItem
                     key={event.id}
                     event={event}
@@ -264,6 +440,15 @@ export function SessionDetailPage() {
         artifacts={artifacts}
         open={artifactsOpen}
         onOpenChange={setArtifactsOpen}
+      />
+      <SessionDetailsDialog
+        open={detailsOpen}
+        onOpenChange={setDetailsOpen}
+        view={view}
+        returnedEventCount={returned_event_count}
+        hasMoreEvents={has_more_events}
+        archives={archives}
+        localState={localState}
       />
     </>
   );

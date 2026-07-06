@@ -572,6 +572,41 @@ export type SessionDetailPayload = {
   hook_runtime_sessions: unknown[];
 };
 
+export type SessionActivityBucketUnit = "minute" | "hour" | "twelve_hour";
+
+export type SessionActivityBucket = {
+  start: string;
+  end: string;
+  event_count: number;
+  message_count: number;
+  activity_score: number;
+};
+
+export type SessionActivityTimeline = {
+  provider_id: string;
+  session_id: string;
+  created_at?: string | null;
+  last_active_at?: string | null;
+  bucket_unit: SessionActivityBucketUnit;
+  bucket_seconds: number;
+  buckets: SessionActivityBucket[];
+  total_events: number;
+  total_messages: number;
+  total_activity: number;
+};
+
+export type ProviderActivityTimeline = {
+  provider_id: string;
+  hours: number;
+  bucket_seconds: number;
+  range_start: string;
+  range_end: string;
+  buckets: SessionActivityBucket[];
+  total_activity: number;
+  sessions_scanned: number;
+  sessions_considered: number;
+};
+
 export type SessionGroup = {
   provider_id: string;
   provider_name: string;
@@ -768,6 +803,37 @@ export type ProviderSettingOutput = {
   type?: string;
   data?: unknown;
   [key: string]: unknown;
+};
+
+export type CodexWorkspaceRepairItem = {
+  session_id: string;
+  title?: string | null;
+  rollout_path: string;
+  workspace_dir?: string | null;
+  previous_model_provider?: string | null;
+  current_model_provider: string;
+  updated_model_provider: boolean;
+  added_to_index: boolean;
+  updated_index_title: boolean;
+};
+
+export type CodexWorkspaceRepairReport = {
+  workspace_dir: string;
+  current_model_provider: string;
+  scanned_rollouts: number;
+  workspace_session_count: number;
+  hidden_session_count: number;
+  repaired_session_count: number;
+  reindexed_session_count: number;
+  retitled_session_count?: number;
+  backup_dir?: string | null;
+  sqlite_rows_updated: number;
+  sqlite_provider_rows_updated: number;
+  sqlite_user_event_rows_updated: number;
+  sqlite_cwd_rows_updated: number;
+  pruned_backup_count: number;
+  skipped_rollout_files?: string[];
+  touched_sessions: CodexWorkspaceRepairItem[];
 };
 
 export type AgentManagementEntry = {

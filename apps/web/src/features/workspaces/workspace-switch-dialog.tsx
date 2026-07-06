@@ -28,19 +28,34 @@ import {
 } from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
-import { deleteWorkspaceHistory, getMeta, listSessions, listWorkspaces } from "@/lib/api";
+import { deleteWorkspaceHistory, getManagerQuickWorkspaces, getMeta, listSessions, listWorkspaces } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { queryKeys } from "@/lib/query-keys";
-import type { WorkspaceEntry } from "@/lib/types";
+import type { ManagerWorkspaceItem, WorkspaceEntry } from "@/lib/types";
 import { useUiStore } from "@/stores/ui-store";
+
+function normalizeWorkspacePath(path: string) {
+  return path.replace(/[\\/]+$/, "");
+}
+
+function workspaceSessionCounts(items: ManagerWorkspaceItem[] | undefined) {
+  const counts = new Map<string, number>();
+  for (const item of items ?? []) {
+    const key = normalizeWorkspacePath(item.workspace);
+    counts.set(key, (counts.get(key) ?? 0) + item.session_count);
+  }
+  return counts;
+}
 
 function WorkspaceHistoryRow({
   workspace,
+  sessionCount,
   isRemoving,
   onPick,
   onRemove,
 }: {
   workspace: WorkspaceEntry;
+  sessionCount?: number;
   isRemoving: boolean;
   onPick: (workspace: string) => void;
   onRemove: (workspace: string) => void;
@@ -50,13 +65,16 @@ function WorkspaceHistoryRow({
       <Button
         type="button"
         variant="ghost"
-        className="h-auto min-w-0 justify-start px-2 py-2 text-left"
+        className="h-auto min-w-0 w-full justify-start px-2 py-2 text-left"
         onClick={() => onPick(workspace.path)}
       >
-        <span className="grid min-w-0 gap-1">
-          <span className="flex min-w-0 items-baseline justify-between gap-3">
+        <span className="grid min-w-0 w-full gap-1">
+          <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
             <strong className="truncate">{workspaceName(workspace.path, "memorph")}</strong>
-            <span className="shrink-0 font-mono text-xs text-muted-foreground">{formatDateTime(workspace.last_viewed_at)}</span>
+            <span className="flex shrink-0 items-center gap-3 font-mono text-xs text-muted-foreground">
+              {sessionCount !== undefined ? <span>{sessionCount} sessions</span> : null}
+              <span>{formatDateTime(workspace.last_viewed_at)}</span>
+            </span>
           </span>
           <PathText value={workspace.path} wrap="all" />
         </span>
@@ -92,9 +110,16 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
     initialData: () => meta.data?.workspaces,
   });
 
+  const managerWorkspaces = useQuery({
+    queryKey: queryKeys.managerQuickWorkspaces([]),
+    queryFn: () => getManagerQuickWorkspaces([]),
+    enabled: open,
+  });
+
   const currentWorkspace = selectedWorkspace || meta.data?.selected_workspace || "";
   const draftWorkspace = draft ?? currentWorkspace;
   const workspaceItems = useMemo(() => workspaces.data ?? meta.data?.workspaces ?? [], [meta.data?.workspaces, workspaces.data]);
+  const sessionCounts = useMemo(() => workspaceSessionCounts(managerWorkspaces.data?.items), [managerWorkspaces.data?.items]);
 
   const switchWorkspace = useMutation({
     mutationFn: async (workspace: string) => {
@@ -201,6 +226,11 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                     <WorkspaceHistoryRow
                       key={workspace.path}
                       workspace={workspace}
+                      sessionCount={
+                        managerWorkspaces.data
+                          ? sessionCounts.get(normalizeWorkspacePath(workspace.path)) ?? 0
+                          : undefined
+                      }
                       isRemoving={removeWorkspace.isPending && removeWorkspace.variables === workspace.path}
                       onPick={pickWorkspace}
                       onRemove={(path) => removeWorkspace.mutate(path)}

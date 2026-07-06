@@ -42,6 +42,8 @@ import type {
   SelectPathResult,
   SessionDetailParams,
   SessionDetailPayload,
+  SessionActivityTimeline,
+  ProviderActivityTimeline,
   SessionGroup,
   SessionListParams,
   SwitchSessionPayload,
@@ -387,6 +389,21 @@ export function listSessions(params: SessionListParams = {}) {
 export function getSession(provider: string, sessionId: string, params: SessionDetailParams = {}) {
   return api<SessionDetailPayload>(
     `/api/v1/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}${buildQuery(params)}`,
+  );
+}
+
+export function getProviderActivity(
+  provider: string,
+  params: { all?: boolean; hours?: number; workspace?: string } = {},
+) {
+  return api<ProviderActivityTimeline>(
+    `/api/v1/providers/${encodeURIComponent(provider)}/activity${buildQuery(params)}`,
+  );
+}
+
+export function getSessionActivity(provider: string, sessionId: string) {
+  return api<SessionActivityTimeline>(
+    `/api/v1/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}/activity`,
   );
 }
 

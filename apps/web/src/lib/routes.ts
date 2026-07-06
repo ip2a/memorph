@@ -5,6 +5,7 @@ import {
   GitBranchIcon,
   HomeIcon,
   LayersIcon,
+  LineChartIcon,
   Settings2Icon,
 } from "lucide-react";
 
@@ -43,6 +44,13 @@ export const appRoutes: AppRoute[] = [
     description: "Session and workspace management with filters and bulk actions.",
     href: "/manager",
     icon: BoxesIcon,
+    phase: "Phase 4",
+  },
+  {
+    title: "Overview",
+    description: "Cross-provider stats, activity trends, and operational health.",
+    href: "/stats",
+    icon: LineChartIcon,
     phase: "Phase 4",
   },
   {
