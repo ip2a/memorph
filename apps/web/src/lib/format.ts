@@ -72,6 +72,7 @@ export function formatDetailTitle(value: string) {
 }
 
 export function stripAnsi(value: string) {
+  // eslint-disable-next-line no-control-regex
   return value.replace(/\u001b\[[0-9;]*m/g, "");
 }
 

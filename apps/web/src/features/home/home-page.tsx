@@ -329,21 +329,27 @@ export function HomePage() {
 
   useEffect(() => {
     if (meta.data?.settings.sessions_per_provider === undefined) return;
+    // Sync external settings into local UI state. This effect only runs when the
+    // backing setting changes, so it does not cause a render loop.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSessionsPerProvider(clampSessionsPerProvider(meta.data.settings.sessions_per_provider));
   }, [meta.data?.settings.sessions_per_provider]);
 
   useEffect(() => {
+    // Workspace switch resets provider selection state. The flag is intentionally
+    // reset before data refetches to avoid stale selections from showing.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setProvidersReady(false);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedProviders([]);
   }, [selectedWorkspace]);
 
   useEffect(() => {
     if (providersReady || catalog.isLoading || workspaceProviders.isLoading) return;
-    if (!providerCandidates.length) {
-      setProvidersReady(true);
-      return;
-    }
+    // Derive the initial provider selection from workspace + catalog data once.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedProviders(resolveHomeProviders(providerCandidates, workspaceProviders.data));
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setProvidersReady(true);
   }, [catalog.isLoading, providerCandidates, providersReady, workspaceProviders.data, workspaceProviders.isLoading]);
 
@@ -360,10 +366,10 @@ export function HomePage() {
     },
   });
 
-  const persistSessionsPerProvider = useMutation({
+  const persistSessionsPerProvider = useMutation<SettingsPayload, Error, number>({
     mutationFn: (nextLimit: number) => {
       const settings = meta.data?.settings;
-      if (!settings) return Promise.resolve(nextLimit);
+      if (!settings) return Promise.reject(new Error("Settings not loaded"));
       return updateSettings(settingsPayloadFromMeta(settings, nextLimit));
     },
     onSuccess: () => {

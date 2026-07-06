@@ -2486,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "memorph"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "axum",
@@ -2515,7 +2515,7 @@ dependencies = [
 
 [[package]]
 name = "memorph-tauri"
-version = "0.1.22"
+version = "0.1.23"
 dependencies = [
  "anyhow",
  "axum",
