@@ -1,6 +1,6 @@
 {
   "name": "memorph",
-  "version": "0.1.24",
+  "version": "0.1.26",
   "description": "memorph CLI entry package; loads a prebuilt binary per platform",
   "license": "MIT",
   "repository": {
@@ -16,11 +16,11 @@
     "README.md"
   ],
   "optionalDependencies": {
-    "memorph-bin-darwin-arm64": "0.1.24",
-    "memorph-bin-darwin-x64": "0.1.24",
-    "memorph-bin-linux-x64-gnu": "0.1.24",
-    "memorph-bin-linux-arm64-gnu": "0.1.24",
-    "memorph-bin-win32-x64-msvc": "0.1.24"
+    "memorph-bin-darwin-arm64": "0.1.26",
+    "memorph-bin-darwin-x64": "0.1.26",
+    "memorph-bin-linux-x64-gnu": "0.1.26",
+    "memorph-bin-linux-arm64-gnu": "0.1.26",
+    "memorph-bin-win32-x64-msvc": "0.1.26"
   },
   "keywords": [
     "cli",
