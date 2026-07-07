@@ -93,12 +93,8 @@ export function HomeFiltersDialog({
 
   useEffect(() => {
     if (!open) return;
-    // Reset draft state to the current applied filters whenever the dialog opens.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDraftHookFilter(hookFilter);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDraftProviders(selectedProviders);
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setDraftSessionsPerProvider(sessionsPerProvider);
   }, [hookFilter, open, selectedProviders, sessionsPerProvider]);
 

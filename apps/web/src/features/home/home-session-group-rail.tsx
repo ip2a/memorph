@@ -14,7 +14,7 @@ const GROUP_SHADES = [
   "bg-muted-foreground/60",
 ] as const;
 
-export function scrollToHomeSessionGroup(providerId: string) {
+function scrollToHomeSessionGroup(providerId: string) {
   const item = document.querySelector(`[data-home-session-group="${providerId}"]`);
   if (!item) return false;
   item.scrollIntoView({ behavior: "smooth", block: "start" });
