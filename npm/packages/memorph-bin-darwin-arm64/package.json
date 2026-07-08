@@ -1,6 +1,6 @@
 {
   "name": "memorph-bin-darwin-arm64",
-  "version": "0.1.29",
+  "version": "0.1.31",
   "description": "memorph platform package (darwin arm64)",
   "license": "MIT",
   "repository": {

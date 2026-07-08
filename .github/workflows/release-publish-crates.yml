@@ -40,7 +40,7 @@ jobs:
 
       - name: Install frontend dependencies
         shell: bash
-        run: npm ci --prefix apps/web
+        run: npx -y npm@11.18.0 ci --prefix apps/web
 
       - name: Build frontend assets
         shell: bash

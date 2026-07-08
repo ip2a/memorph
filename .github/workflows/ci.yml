@@ -32,7 +32,7 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
 
       - name: Install frontend dependencies
-        run: npm ci --prefix apps/web
+        run: npx -y npm@11.18.0 ci --prefix apps/web
 
       - name: Build frontend assets
         run: ./scripts/build_web_assets.sh

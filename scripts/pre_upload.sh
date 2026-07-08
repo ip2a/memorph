@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MEMORPH_MANIFEST="$ROOT_DIR/rust/crates/memorph/Cargo.toml"
 TAURI_MANIFEST="$ROOT_DIR/desktop/tauri/Cargo.toml"
 WEB_DIR="$ROOT_DIR/apps/web"
+NPM_VERSION="${NPM_VERSION:-11.18.0}"
 
 for bin_dir in /usr/local/bin /opt/homebrew/bin; do
   if [ -d "$bin_dir" ] && [[ ":$PATH:" != *":$bin_dir:"* ]]; then
@@ -26,6 +27,10 @@ run_step() {
   echo ""
   echo "[step] $title"
   "$@"
+}
+
+npm_ci() {
+  npx -y "npm@$NPM_VERSION" ci "$@"
 }
 
 read_current_version() {
@@ -118,11 +123,14 @@ print_next_git_steps() {
   echo "  git commit -m \"Release v$version\""
   echo "  git tag v$version"
   echo "  git push && git push origin v$version"
+  echo ""
+  echo "注意：tag 必须打在包含这些检查结果的最新 commit 上；不要重跑旧 tag 的 workflow。"
 }
 
 main() {
   require_command python3
   require_command npm
+  require_command npx
   require_command cargo
   require_command git
 
@@ -135,8 +143,8 @@ main() {
   run_step "同步所有包版本和锁文件" python3 "$ROOT_DIR/scripts/sync_version.py"
   run_step "检查版本同步结果" python3 "$ROOT_DIR/scripts/sync_version.py" --check
   run_step "运行 release_preflight 检查" python3 "$ROOT_DIR/scripts/release_preflight.py"
-  run_step "验证 GitHub Linux npm ci 依赖树" npm ci --prefix "$WEB_DIR" --include=optional --os=linux --cpu=x64 --dry-run
-  run_step "前端本机 clean install" npm ci --prefix "$WEB_DIR"
+  run_step "验证 GitHub Linux npm ci 依赖树（npm ${NPM_VERSION}）" npm_ci --prefix "$WEB_DIR" --include=optional --os=linux --cpu=x64 --dry-run
+  run_step "前端本机 clean install（npm ${NPM_VERSION}）" npm_ci --prefix "$WEB_DIR"
   run_step "前端 lint" npm --prefix "$WEB_DIR" run lint
   run_step "构建并同步前端资源到 crate" "$ROOT_DIR/scripts/build_web_assets.sh"
   run_step "运行 web UI 不变量检查" python3 "$ROOT_DIR/scripts/test_web_ui_invariants.py"
