@@ -337,10 +337,12 @@ export function HomeSessionListPanel({
   }
 
   return (
-    <div className="relative min-h-48 px-3 pb-3">
+    <div className="relative flex min-h-full flex-col px-3 pb-3">
       {loading ? <SessionListLoadingOverlay label="Loading sessions..." /> : null}
       {!loading && refreshing ? <SessionListLoadingOverlay label="Updating sessions..." /> : null}
-      <div className={cn((loading || refreshing) && "pointer-events-none opacity-60")}>{children}</div>
+      <div className={cn("flex min-h-0 flex-1 flex-col", (loading || refreshing) && "pointer-events-none opacity-60")}>
+        {children}
+      </div>
     </div>
   );
 }

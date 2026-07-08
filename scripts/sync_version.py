@@ -54,6 +54,14 @@ def update_json_version(path: Path, version: str, repository_url: str, check: bo
     write_or_check(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", check)
 
 
+def update_web_package_version(version: str, check: bool) -> None:
+    path = ROOT / "apps" / "web" / "package.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["version"] = version
+    write_or_check(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", check)
+    print(f"[ok] Version aligned: {path.relative_to(ROOT)}")
+
+
 def update_pyproject_version(path: Path, version: str, check: bool) -> None:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     in_project = False
@@ -193,6 +201,8 @@ def main() -> None:
     for json_file in json_files:
         update_json_version(json_file, version, repository_url, args.check)
         print(f"[ok] Version aligned: {json_file.relative_to(ROOT)}")
+
+    update_web_package_version(version, args.check)
 
     pyproject_files = sorted((ROOT / "python" / "packages").rglob("pyproject.toml"))
     for pyproject_file in pyproject_files:

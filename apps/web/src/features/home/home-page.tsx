@@ -252,7 +252,7 @@ function SessionGroups({
 }) {
   if (!groups.length) {
     return (
-      <Empty className="min-h-48 border">
+      <Empty className="border">
         <EmptyHeader>
           <EmptyTitle>No sessions found</EmptyTitle>
           <EmptyDescription>Scan providers or switch workspace to show sessions here.</EmptyDescription>
@@ -445,7 +445,10 @@ export function HomePage() {
         </div>
         <div className="grid min-h-0 grid-cols-[auto_minmax(0,1fr)] overflow-hidden">
           <HomeSessionGroupRail groups={sessionGroups} />
-          <ScrollArea className="min-h-0" data-home-session-scroll>
+          <ScrollArea
+            className="h-full min-h-0 [&_[data-slot=scroll-area-viewport]>div]:flex [&_[data-slot=scroll-area-viewport]>div]:min-h-full [&_[data-slot=scroll-area-viewport]>div]:flex-col"
+            data-home-session-scroll
+          >
             <HomeSessionListPanel
               loading={listLoading}
               refreshing={listRefreshing}

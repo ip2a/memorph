@@ -416,20 +416,20 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               {section === "about" ? (
                 <section className="flex flex-col gap-4" data-settings-section="about">
                   <SectionHead title={t("about")} />
-                  <div className="flex items-center justify-between gap-3 rounded-md border p-3">
-                    <div><strong>{t("version")}</strong><div className="text-muted-foreground text-sm">v{meta.data?.version || ""}</div></div>
-                    <Button type="button" variant="outline" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}><RefreshCwIcon data-icon="inline-start" />{t("checkUpdate")}</Button>
-                  </div>
-                  {updateResult ? <UpdateResult result={updateResult} t={t} /> : null}
-                  {updateError ? <div className="rounded-md border p-3 text-sm text-destructive">{t("updateCheckFailed", { error: updateError })}</div> : null}
-                  <div className="flex flex-col gap-2">
+                  <div className="divide-y">
+                    <div className="flex items-center justify-between gap-3 py-3">
+                      <div><strong>{t("version")}</strong><div className="text-muted-foreground text-sm">v{meta.data?.version || ""}</div></div>
+                      <Button type="button" variant="outline" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}><RefreshCwIcon data-icon="inline-start" />{t("checkUpdate")}</Button>
+                    </div>
+                    {updateResult ? <UpdateResult result={updateResult} t={t} /> : null}
+                    {updateError ? <div className="py-3 text-sm text-destructive">{t("updateCheckFailed", { error: updateError })}</div> : null}
                     {ABOUT_LINKS.map(({ label, url, iconUrl }) => (
-                      <Button key={url} type="button" variant="outline" className="h-auto justify-start gap-3 py-3" onClick={() => openUrl(url)}>
-                        <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg border bg-background" aria-hidden="true">
+                      <button key={url} type="button" className="flex w-full items-center gap-3 py-3 text-left transition-colors hover:bg-muted/60" onClick={() => openUrl(url)}>
+                        <span className="inline-flex size-8 shrink-0 items-center justify-center" aria-hidden="true">
                           <img src={iconUrl} alt="" className="size-4 object-contain" loading="lazy" />
                         </span>
-                        <span className="min-w-0 truncate text-left"><strong>{label}</strong><span className="block truncate text-xs text-muted-foreground">{url}</span></span>
-                      </Button>
+                        <span className="min-w-0 truncate"><strong>{label}</strong><span className="block truncate text-xs text-muted-foreground">{url}</span></span>
+                      </button>
                     ))}
                   </div>
                 </section>
@@ -459,9 +459,9 @@ function SectionHead({ title }: { title: string }) {
 function ReadOnlyRow({ title, value, description }: { title: string; value: string; description?: string }) {
   return (
     <>
-      <Field orientation="responsive">
+      <Field orientation="horizontal">
         <FieldContent><FieldTitle>{title}</FieldTitle>{description ? <FieldDescription>{description}</FieldDescription> : null}</FieldContent>
-        <div className="max-w-xl truncate rounded-md border px-3 py-2 font-mono text-xs text-muted-foreground">{value}</div>
+        <div className="min-w-0 max-w-xl flex-1 truncate rounded-md border px-3 py-2 font-mono text-xs text-muted-foreground">{value}</div>
       </Field>
       <Separator className="last:hidden" />
     </>
@@ -562,7 +562,7 @@ function SettingsLoading({ label }: { label: string }) {
 
 function UpdateResult({ result, t }: { result: UpdateCheckPayload; t: (key: I18nKey, vars?: Record<string, string | number | null | undefined>) => string }) {
   return (
-    <div className="flex flex-col gap-1 rounded-md border p-3 text-sm">
+    <div className="flex flex-col gap-1 py-3 text-sm">
       <strong>{result.has_update ? t("updateAvailable") : t("upToDate")}</strong>
       <span className="text-muted-foreground">Install Source: {result.install_source_label} · Latest Version: v{result.latest_version}</span>
       <span className="font-mono text-xs text-muted-foreground">{t("updateCommand", { command: result.update_command })}</span>

@@ -61,11 +61,13 @@ function WorkspaceHistoryRow({
   onRemove: (workspace: string) => void;
 }) {
   return (
-    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-stretch gap-2 border-b py-2 last:border-b-0" data-workspace-switch-item>
-      <Button
+    <div
+      className="grid grid-cols-[minmax(0,1fr)_auto] items-stretch border-b last:border-b-0 rounded-md transition-all hover:bg-muted has-[button:active]:translate-y-px has-[button:active]:bg-muted/80"
+      data-workspace-switch-item
+    >
+      <button
         type="button"
-        variant="ghost"
-        className="h-auto min-w-0 w-full justify-start px-2 py-2 text-left"
+        className="min-w-0 w-full cursor-pointer rounded-l-md px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
         onClick={() => onPick(workspace.path)}
       >
         <span className="grid min-w-0 w-full gap-1">
@@ -78,10 +80,11 @@ function WorkspaceHistoryRow({
           </span>
           <PathText value={workspace.path} wrap="all" />
         </span>
-      </Button>
+      </button>
       <Button
         type="button"
         variant="ghost"
+        className="h-auto shrink-0 self-stretch rounded-none rounded-r-md active:translate-y-0 hover:bg-destructive/10 hover:text-destructive"
         disabled={isRemoving}
         onClick={() => onRemove(workspace.path)}
       >
