@@ -32,6 +32,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { ScrollPane } from "@/components/shared/scroll-pane";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -171,22 +172,20 @@ function ProviderControls({
   }
 
   return (
-    <ScrollArea className="min-h-0 flex-1 pr-3" data-manager-provider-controls>
-      <div className="flex flex-col gap-2">
-        {providers.map((provider) => {
-          const checked = selected.length === 0 || selected.includes(provider.id);
-          return (
-            <SelectableRowButton
-              key={provider.id}
-              selected={checked}
-              title={provider.name}
-              trailing={checked ? <CheckIcon className="text-muted-foreground size-4" aria-hidden /> : null}
-              onClick={() => onToggle(provider.id)}
-            />
-          );
-        })}
-      </div>
-    </ScrollArea>
+    <ScrollPane className="min-h-0 flex-1" data-manager-provider-controls innerClassName="flex flex-col gap-2">
+      {providers.map((provider) => {
+        const checked = selected.length === 0 || selected.includes(provider.id);
+        return (
+          <SelectableRowButton
+            key={provider.id}
+            selected={checked}
+            title={provider.name}
+            trailing={checked ? <CheckIcon className="text-muted-foreground size-4" aria-hidden /> : null}
+            onClick={() => onToggle(provider.id)}
+          />
+        );
+      })}
+    </ScrollPane>
   );
 }
 
@@ -202,7 +201,7 @@ function ControlPanel({
   onToggleProvider: (providerId: string) => void;
 }) {
   return (
-    <PanelCard className="min-h-0" data-manager-control-panel>
+    <PanelCard className="flex h-full min-h-0 flex-col overflow-hidden" data-manager-control-panel>
       <section className="flex flex-col gap-3 border-b pb-4" data-manager-workspace-summary>
         <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
       </section>
@@ -566,94 +565,91 @@ function ResultPanel({
   const searchActive = search.trim().length > 0;
 
   return (
-    <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] gap-4" data-manager-result-panel>
-        <StatsStrip view={view} onViewChange={setView} stats={stats.data} providerCount={providerCount} loading={statsLoading} />
+    <PanelCard variant="plain" className="flex h-full min-h-0 flex-col gap-4 overflow-hidden" data-manager-result-panel>
+        {view === "sessions" ? (
+          <PreviewHeader
+            title="Manager Preview"
+            summary={selectionSummary(
+              sessions.data?.total_count,
+              filteredSessionRows.length,
+              selectedSessions.size,
+              selectedSessionBytes,
+              searchActive,
+            )}
+            search={search}
+            searchPlaceholder="Search title, id, provider, or path"
+            canSelect={sessionRows.length > 0}
+            canSelectFiltered={searchActive && filteredSessionRows.length > 0}
+            canAct={selectedSessions.size > 0}
+            onSearchChange={onSearchChange}
+            onClean={() => onOpenAction({ kind: "clean-sessions", items: sessionRows.filter((item) => selectedSessions.has(sessionKey(item))) })}
+            onBackup={() => onOpenAction({ kind: "backup-sessions", items: sessionRows.filter((item) => selectedSessions.has(sessionKey(item))) })}
+            onCopyPaths={onCopySessionPaths}
+            onSelectAll={onSelectAllSessions}
+            onDeselectAll={onDeselectAllSessions}
+            onInvertSelection={onInvertSessions}
+            onSelectFiltered={onSelectFilteredSessions}
+          />
+        ) : (
+          <PreviewHeader
+            title="Workspace Preview"
+            summary={selectionSummary(
+              workspaces.data?.total_count,
+              filteredWorkspaceRows.length,
+              selectedWorkspaces.size,
+              selectedWorkspaceBytes,
+              searchActive,
+            )}
+            search={search}
+            searchPlaceholder="Search workspace, provider, or path"
+            canSelect={workspaceRows.length > 0}
+            canSelectFiltered={searchActive && filteredWorkspaceRows.length > 0}
+            canAct={selectedWorkspaces.size > 0}
+            onSearchChange={onSearchChange}
+            onClean={() =>
+              onOpenAction({ kind: "clean-workspaces", items: workspaceRows.filter((item) => selectedWorkspaces.has(workspaceKey(item))) })
+            }
+            onBackup={() =>
+              onOpenAction({ kind: "backup-workspaces", items: workspaceRows.filter((item) => selectedWorkspaces.has(workspaceKey(item))) })
+            }
+            onCopyPaths={onCopyWorkspacePaths}
+            onSelectAll={onSelectAllWorkspaces}
+            onDeselectAll={onDeselectAllWorkspaces}
+            onInvertSelection={onInvertWorkspaces}
+            onSelectFiltered={onSelectFilteredWorkspaces}
+          />
+        )}
         <Separator />
-        <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3">
-          {view === "sessions" ? (
-            <>
-              <PreviewHeader
-                title="Manager Preview"
-                summary={selectionSummary(
-                  sessions.data?.total_count,
-                  filteredSessionRows.length,
-                  selectedSessions.size,
-                  selectedSessionBytes,
-                  searchActive,
-                )}
-                search={search}
-                searchPlaceholder="Search title, id, provider, or path"
-                canSelect={sessionRows.length > 0}
-                canSelectFiltered={searchActive && filteredSessionRows.length > 0}
-                canAct={selectedSessions.size > 0}
-                onSearchChange={onSearchChange}
-                onClean={() => onOpenAction({ kind: "clean-sessions", items: sessionRows.filter((item) => selectedSessions.has(sessionKey(item))) })}
-                onBackup={() => onOpenAction({ kind: "backup-sessions", items: sessionRows.filter((item) => selectedSessions.has(sessionKey(item))) })}
-                onCopyPaths={onCopySessionPaths}
-                onSelectAll={onSelectAllSessions}
-                onDeselectAll={onDeselectAllSessions}
-                onInvertSelection={onInvertSessions}
-                onSelectFiltered={onSelectFilteredSessions}
+        <StatsStrip view={view} onViewChange={setView} stats={stats.data} providerCount={providerCount} loading={statsLoading} />
+        {view === "sessions" ? (
+          <ScrollPane className="flex-1" data-manager-session-list>
+            {sessions.isLoading ? (
+              <PageSkeleton />
+            ) : (
+              <SessionRows
+                items={filteredSessionRows}
+                selected={selectedSessions}
+                onToggle={onToggleSession}
+                onCleanRow={(item) => onOpenAction({ kind: "clean-sessions", items: [item] })}
+                onBackupRow={(item) => onOpenAction({ kind: "backup-sessions", items: [item] })}
               />
-              <ScrollArea className="min-h-0 pr-3">
-                {sessions.isLoading ? (
-                  <PageSkeleton />
-                ) : (
-                  <SessionRows
-                    items={filteredSessionRows}
-                    selected={selectedSessions}
-                    onToggle={onToggleSession}
-                    onCleanRow={(item) => onOpenAction({ kind: "clean-sessions", items: [item] })}
-                    onBackupRow={(item) => onOpenAction({ kind: "backup-sessions", items: [item] })}
-                  />
-                )}
-              </ScrollArea>
-            </>
-          ) : (
-            <>
-              <PreviewHeader
-                title="Workspace Preview"
-                summary={selectionSummary(
-                  workspaces.data?.total_count,
-                  filteredWorkspaceRows.length,
-                  selectedWorkspaces.size,
-                  selectedWorkspaceBytes,
-                  searchActive,
-                )}
-                search={search}
-                searchPlaceholder="Search workspace, provider, or path"
-                canSelect={workspaceRows.length > 0}
-                canSelectFiltered={searchActive && filteredWorkspaceRows.length > 0}
-                canAct={selectedWorkspaces.size > 0}
-                onSearchChange={onSearchChange}
-                onClean={() =>
-                  onOpenAction({ kind: "clean-workspaces", items: workspaceRows.filter((item) => selectedWorkspaces.has(workspaceKey(item))) })
-                }
-                onBackup={() =>
-                  onOpenAction({ kind: "backup-workspaces", items: workspaceRows.filter((item) => selectedWorkspaces.has(workspaceKey(item))) })
-                }
-                onCopyPaths={onCopyWorkspacePaths}
-                onSelectAll={onSelectAllWorkspaces}
-                onDeselectAll={onDeselectAllWorkspaces}
-                onInvertSelection={onInvertWorkspaces}
-                onSelectFiltered={onSelectFilteredWorkspaces}
+            )}
+          </ScrollPane>
+        ) : (
+          <ScrollPane className="flex-1" data-manager-workspace-list>
+            {workspaces.isLoading ? (
+              <PageSkeleton />
+            ) : (
+              <WorkspaceRows
+                items={filteredWorkspaceRows}
+                selected={selectedWorkspaces}
+                onToggle={onToggleWorkspace}
+                onCleanRow={(item) => onOpenAction({ kind: "clean-workspaces", items: [item] })}
+                onBackupRow={(item) => onOpenAction({ kind: "backup-workspaces", items: [item] })}
               />
-              <ScrollArea className="min-h-0 pr-3">
-                {workspaces.isLoading ? (
-                  <PageSkeleton />
-                ) : (
-                  <WorkspaceRows
-                    items={filteredWorkspaceRows}
-                    selected={selectedWorkspaces}
-                    onToggle={onToggleWorkspace}
-                    onCleanRow={(item) => onOpenAction({ kind: "clean-workspaces", items: [item] })}
-                    onBackupRow={(item) => onOpenAction({ kind: "backup-workspaces", items: [item] })}
-                  />
-                )}
-              </ScrollArea>
-            </>
-          )}
-        </div>
+            )}
+          </ScrollPane>
+        )}
     </PanelCard>
   );
 }
@@ -905,7 +901,7 @@ export function ManagerPage() {
 
   return (
     <>
-      <TwoPanePage data-manager-page-layout>
+      <TwoPanePage className="h-full min-h-0 flex-1" data-manager-page-layout>
         <ControlPanel
           workspace={meta.data?.selected_workspace}
           providers={options}

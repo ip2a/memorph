@@ -127,7 +127,9 @@ export function AppShell() {
       <main
         className={cn(
           "min-h-0 overflow-hidden",
-          isRoute(location.pathname, "/manager") || isRoute(location.pathname, "/agents") ? "pb-0" : "",
+          isRoute(location.pathname, "/manager") || isRoute(location.pathname, "/agents")
+            ? "flex h-full flex-col pb-0"
+            : "",
         )}
       >
         <Outlet />

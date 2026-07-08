@@ -62,6 +62,18 @@ def update_web_package_version(version: str, check: bool) -> None:
     print(f"[ok] Version aligned: {path.relative_to(ROOT)}")
 
 
+def update_web_lockfile_version(version: str, check: bool) -> None:
+    path = ROOT / "apps" / "web" / "package-lock.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["version"] = version
+    root_package = data.get("packages", {}).get("")
+    if not isinstance(root_package, dict):
+        raise RuntimeError(f"Missing root package entry in file: {path}")
+    root_package["version"] = version
+    write_or_check(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n", check)
+    print(f"[ok] Version aligned: {path.relative_to(ROOT)}")
+
+
 def update_pyproject_version(path: Path, version: str, check: bool) -> None:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     in_project = False
@@ -203,6 +215,7 @@ def main() -> None:
         print(f"[ok] Version aligned: {json_file.relative_to(ROOT)}")
 
     update_web_package_version(version, args.check)
+    update_web_lockfile_version(version, args.check)
 
     pyproject_files = sorted((ROOT / "python" / "packages").rglob("pyproject.toml"))
     for pyproject_file in pyproject_files:
