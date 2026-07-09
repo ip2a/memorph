@@ -20,6 +20,7 @@ pub mod provider_features;
 pub mod provider_settings;
 pub mod providers;
 pub mod server;
+pub mod session_projection;
 pub mod storage;
 pub mod sync;
 pub mod tui;
