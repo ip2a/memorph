@@ -12,6 +12,7 @@ use crate::provider::{
     canonical_export_result, canonical_session_title, Provider, ProviderCapabilities,
     ProviderSessionSummary,
 };
+use crate::storage::projection_store::{ProjectionStore, StoredProjection};
 use crate::utils::{
     encode_project_dir, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,
 };
@@ -259,6 +260,14 @@ impl Provider for ClaudeProvider {
     fn data_source_paths(&self) -> Vec<PathBuf> {
         vec![get_claude_config_dir()]
     }
+}
+
+pub fn project_session_to_store(
+    source_path: &Path,
+    store: &mut ProjectionStore<'_>,
+) -> Result<StoredProjection> {
+    let imported = import_canonical_session(source_path)?;
+    store.write_imported_session(source_path, &imported)
 }
 
 fn get_claude_config_dir() -> PathBuf {
@@ -1028,7 +1037,9 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::local_store;
     use chrono::Utc;
+    use rusqlite::Connection;
     use std::collections::BTreeMap;
     use tempfile::NamedTempFile;
 
@@ -1229,6 +1240,57 @@ mod tests {
     }
 
     #[test]
+    fn project_session_to_store_writes_claude_projection_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        write_claude_projection_sample(&mut file);
+
+        let first =
+            project_session_to_store(file.path(), &mut ProjectionStore::new(&mut conn)).unwrap();
+        let second =
+            project_session_to_store(file.path(), &mut ProjectionStore::new(&mut conn)).unwrap();
+
+        assert_eq!(first.session_id, second.session_id);
+        assert_eq!(first.source_id, second.source_id);
+        assert_eq!(first.event_count, 6);
+        assert_eq!(first.turn_count, 2);
+        assert_eq!(count_rows(&conn, "session_sources"), 1);
+        assert_eq!(count_rows(&conn, "sessions"), 1);
+        assert_eq!(count_rows(&conn, "session_snapshots"), 1);
+        assert_eq!(count_rows(&conn, "session_events"), 6);
+        assert_eq!(count_rows(&conn, "session_event_blocks"), 8);
+        assert_eq!(count_rows(&conn, "session_turns"), 2);
+        assert_eq!(count_rows(&conn, "projection_reports"), 2);
+        assert_eq!(count_rows(&conn, "projection_report_items"), 2);
+
+        let snapshot: (String, String) = conn
+            .query_row(
+                "SELECT title, workspace_dir FROM session_snapshots",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(snapshot.0, "Claude Projection Title");
+        assert_eq!(snapshot.1, "/tmp/project");
+
+        assert_eq!(count_blocks(&conn, "thinking"), 1);
+        assert_eq!(count_blocks(&conn, "tool_call"), 1);
+        assert_eq!(count_blocks(&conn, "tool_result"), 1);
+        assert_eq!(count_blocks(&conn, "provider_payload"), 3);
+
+        let first_turn_confidence: String = conn
+            .query_row(
+                "SELECT confidence FROM session_turns ORDER BY turn_order LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_turn_confidence, "inferred");
+    }
+
+    #[test]
     fn compressed_segment_exports_as_portable_claude_text_block() {
         let block = EventBlock::Compressed {
             source_provider_id: "opencode".to_string(),
@@ -1353,5 +1415,141 @@ mod tests {
 
         let content = canonical_event_to_claude_message_content(&event).unwrap();
         assert_eq!(content.as_str(), Some("Build this"));
+    }
+
+    fn write_claude_projection_sample(file: &mut NamedTempFile) {
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom-title",
+                "customTitle": "Claude Projection Title",
+                "sessionId": "session-projection-1",
+                "timestamp": "2026-01-01T00:00:00Z"
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "user-1",
+                "sessionId": "session-projection-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "message": {
+                    "role": "user",
+                    "content": "Build this"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "assistant-1",
+                "parentUuid": "user-1",
+                "sessionId": "session-projection-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:02Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": "Thinking",
+                            "signature": "sig"
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_1",
+                            "name": "Read",
+                            "input": { "file_path": "Cargo.toml" }
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "tool-result-1",
+                "parentUuid": "assistant-1",
+                "sessionId": "session-projection-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:03Z",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_1",
+                            "content": "contents",
+                            "is_error": false
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "user-2",
+                "sessionId": "session-projection-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:04Z",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Search this"
+                        },
+                        {
+                            "type": "server_tool_use",
+                            "name": "WebSearch",
+                            "input": { "query": "memorph" }
+                        }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "file-history-snapshot",
+                "sessionId": "session-projection-1",
+                "timestamp": "2026-01-01T00:00:05Z",
+                "files": [{ "path": "Cargo.toml" }]
+            })
+        )
+        .unwrap();
+    }
+
+    fn count_rows(conn: &Connection, table: &str) -> i64 {
+        conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
+    }
+
+    fn count_blocks(conn: &Connection, block_kind: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM session_event_blocks WHERE block_kind = ?1",
+            [block_kind],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 }
