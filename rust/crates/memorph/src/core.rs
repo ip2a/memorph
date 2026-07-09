@@ -9,6 +9,7 @@ use crate::core::active_compression::{
 };
 use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state::{self, SessionStateStore};
+use crate::storage::snapshot_store::ProjectedSessionSnapshotRow;
 use crate::{provider, providers, utils};
 
 pub mod active_compression;
@@ -174,6 +175,112 @@ pub fn resolve_providers(filter: &[String]) -> Vec<String> {
 }
 
 pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
+    if let Some(groups) = list_projected_session_snapshots(params)? {
+        return Ok(groups);
+    }
+
+    list_provider_sessions(params)
+}
+
+fn list_projected_session_snapshots(
+    params: &SessionListParams,
+) -> Result<Option<Vec<SessionGroup>>> {
+    if params.sort != SessionListSort::Recent || params.hook_filter != SessionHookFilter::All {
+        return Ok(None);
+    }
+
+    let conn = crate::storage::local_store::open_database()?;
+    let snapshots =
+        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
+    let groups = projected_snapshot_groups(snapshots, params);
+    Ok(Some(groups))
+}
+
+fn projected_snapshot_groups(
+    snapshots: Vec<ProjectedSessionSnapshotRow>,
+    params: &SessionListParams,
+) -> Vec<SessionGroup> {
+    let provider_ids = resolve_providers(&params.providers);
+    let requested_workspace = if params.all {
+        None
+    } else {
+        params.cwd.as_deref()
+    };
+    let offset = params.offset.unwrap_or(0);
+    let limit = params.limit.unwrap_or(usize::MAX);
+
+    provider_ids
+        .into_iter()
+        .filter_map(|provider_id| {
+            let provider_name = providers::find_provider(&provider_id)
+                .map(|provider| provider.name().to_string())
+                .unwrap_or_else(|| provider_id.clone());
+            let requested_workspace_key = requested_workspace.and_then(|workspace| {
+                session_management::normalized_workspace_key(&provider_id, Some(workspace))
+            });
+            let mut sessions: Vec<SessionItem> = snapshots
+                .iter()
+                .filter(|snapshot| snapshot.provider_id == provider_id)
+                .filter(|snapshot| {
+                    let Some(requested_workspace_key) = requested_workspace_key.as_deref() else {
+                        return true;
+                    };
+                    let session_workspace_key = session_management::normalized_workspace_key(
+                        &provider_id,
+                        snapshot.workspace_dir.as_deref(),
+                    );
+                    session_workspace_key.as_deref() == Some(requested_workspace_key)
+                })
+                .map(projected_snapshot_item)
+                .collect();
+
+            sessions.sort_by(compare_recent_then_title);
+            let sessions: Vec<SessionItem> =
+                sessions.into_iter().skip(offset).take(limit).collect();
+            if sessions.is_empty() {
+                None
+            } else {
+                Some(SessionGroup {
+                    provider_id,
+                    provider_name,
+                    sessions,
+                })
+            }
+        })
+        .collect()
+}
+
+fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) -> SessionItem {
+    let provider_session_id = snapshot
+        .provider_session_id
+        .as_deref()
+        .unwrap_or(&snapshot.canonical_session_id);
+    SessionItem {
+        session_id: provider_session_id.to_string(),
+        title: snapshot.title.clone(),
+        native_title: snapshot.title.clone(),
+        display_title: snapshot.display_title.clone(),
+        hidden: snapshot.hidden,
+        pinned: snapshot.pinned,
+        preferred_targets: snapshot.preferred_targets.clone(),
+        project_dir: snapshot
+            .workspace_dir
+            .as_deref()
+            .map(utils::user_visible_path),
+        last_active_at: snapshot.last_active_at_ms,
+        source_path: snapshot
+            .source_path
+            .as_deref()
+            .map(utils::user_visible_path),
+        provider_id: snapshot.provider_id.clone(),
+        message_count: Some(snapshot.message_count),
+        size_bytes: snapshot.size_bytes,
+        hook_runtime_summary: None,
+        hook_diagnosis: None,
+    }
+}
+
+fn list_provider_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
     let provider_ids = resolve_providers(&params.providers);
     let explicit_provider_filter = !params.providers.is_empty();
     let session_states = session_state::load_state_store().unwrap_or_default();
@@ -637,6 +744,64 @@ mod session_list_hook_tests {
         assert_eq!(items[0].session_id, "attention-older");
         assert_eq!(items[1].session_id, "weak-middle");
         assert_eq!(items[2].session_id, "linked-newer");
+    }
+
+    #[test]
+    fn projected_snapshot_groups_filter_workspace_and_apply_limit() {
+        let params = SessionListParams {
+            all: false,
+            providers: vec!["claude".to_string()],
+            cwd: Some("/tmp/project".to_string()),
+            include_message_counts: true,
+            limit: Some(1),
+            offset: None,
+            sort: SessionListSort::Recent,
+            hook_filter: SessionHookFilter::All,
+        };
+        let groups = projected_snapshot_groups(
+            vec![
+                projected_row("canonical-new", "native-new", "/tmp/project", 30),
+                projected_row("canonical-old", "native-old", "/tmp/project", 20),
+                projected_row("canonical-other", "native-other", "/tmp/other", 40),
+            ],
+            &params,
+        );
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].provider_id, "claude");
+        assert_eq!(groups[0].sessions.len(), 1);
+        assert_eq!(groups[0].sessions[0].session_id, "native-new");
+        assert_eq!(groups[0].sessions[0].message_count, Some(3));
+        assert_eq!(
+            groups[0].sessions[0].project_dir.as_deref(),
+            Some("/tmp/project")
+        );
+    }
+
+    fn projected_row(
+        canonical_session_id: &str,
+        provider_session_id: &str,
+        workspace_dir: &str,
+        last_active_at_ms: i64,
+    ) -> ProjectedSessionSnapshotRow {
+        ProjectedSessionSnapshotRow {
+            canonical_session_id: canonical_session_id.to_string(),
+            provider_id: "claude".to_string(),
+            provider_session_id: Some(provider_session_id.to_string()),
+            title: Some(provider_session_id.to_string()),
+            display_title: None,
+            workspace_dir: Some(workspace_dir.to_string()),
+            last_active_at_ms: Some(last_active_at_ms),
+            source_path: Some(format!("/tmp/{provider_session_id}.jsonl")),
+            message_count: 3,
+            event_count: 5,
+            turn_count: 2,
+            size_bytes: Some(128),
+            hidden: false,
+            pinned: false,
+            preferred_targets: Vec::new(),
+            stale: false,
+        }
     }
 }
 
