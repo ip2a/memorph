@@ -32,19 +32,11 @@ pub struct IndexedEventLocation {
 }
 
 pub fn database_path() -> Result<PathBuf> {
-    Ok(crate::config::memorph_dir()?.join("memorph.db"))
+    crate::storage::local_store::database_path()
 }
 
 pub fn open_database() -> Result<Connection> {
-    let path = database_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create memorph data dir: {}", parent.display()))?;
-    }
-    let conn = Connection::open(&path)
-        .with_context(|| format!("Failed to open memorph index DB: {}", path.display()))?;
-    ensure_schema(&conn)?;
-    Ok(conn)
+    crate::storage::local_store::open_database()
 }
 
 pub fn source_file_fingerprint(path: &Path) -> Result<SourceFileFingerprint> {
@@ -225,45 +217,6 @@ pub fn load_event_locations(
     Ok(locations)
 }
 
-fn ensure_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "
-        CREATE TABLE IF NOT EXISTS session_index_state (
-            provider_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            source_path TEXT NOT NULL,
-            file_mtime_ms INTEGER NOT NULL,
-            file_size_bytes INTEGER NOT NULL,
-            workspace_dir TEXT,
-            created_at_ms INTEGER,
-            last_active_at_ms INTEGER,
-            source_title TEXT,
-            event_count INTEGER NOT NULL,
-            message_count INTEGER NOT NULL,
-            indexed_at_ms INTEGER NOT NULL,
-            PRIMARY KEY (provider_id, source_path)
-        );
-
-        CREATE TABLE IF NOT EXISTS session_event_index (
-            provider_id TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            source_path TEXT NOT NULL,
-            file_mtime_ms INTEGER NOT NULL,
-            file_size_bytes INTEGER NOT NULL,
-            event_index INTEGER NOT NULL,
-            byte_offset INTEGER NOT NULL,
-            byte_length INTEGER NOT NULL,
-            line_no INTEGER NOT NULL,
-            PRIMARY KEY (provider_id, source_path, file_mtime_ms, file_size_bytes, event_index)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_session_event_index_page
-            ON session_event_index(provider_id, source_path, file_mtime_ms, file_size_bytes, event_index);
-        ",
-    )
-    .context("Failed to initialize event index schema")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,7 +224,7 @@ mod tests {
     #[test]
     fn replace_and_load_event_index_page() {
         let mut conn = Connection::open_in_memory().unwrap();
-        ensure_schema(&conn).unwrap();
+        crate::storage::local_store::apply_schema(&mut conn).unwrap();
         let fingerprint = SourceFileFingerprint {
             modified_ms: 42,
             size_bytes: 99,
