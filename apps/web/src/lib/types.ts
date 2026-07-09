@@ -276,6 +276,7 @@ export type SettingsPayload = {
   home_buttons: Record<string, unknown>;
   agent_order: string[];
   primary_agents: string[];
+  server?: ServerSettingsPayload;
 };
 
 export type LogSettingsPayload = {
@@ -292,6 +293,11 @@ export type HomeButtonSettingsPayload = {
   delete?: boolean;
 };
 
+export type ServerSettingsPayload = {
+  web_port: number;
+  api_port: number;
+};
+
 export type UpdateSettingsPayload = {
   sessions_per_provider: number;
   language: UiLanguage;
@@ -302,6 +308,7 @@ export type UpdateSettingsPayload = {
   home_buttons: HomeButtonSettingsPayload;
   agent_order: string[];
   primary_agents: string[];
+  server: ServerSettingsPayload;
 };
 
 export type ProviderCatalogPreferenceList = {

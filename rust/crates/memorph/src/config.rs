@@ -163,6 +163,34 @@ pub struct ProviderDisplayHidden {
     pub workspace: Vec<String>,
 }
 
+pub const DEFAULT_WEB_PORT: u16 = 3737;
+pub const DEFAULT_API_PORT: u16 = 3223;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerPreferences {
+    #[serde(default = "default_web_port")]
+    pub web_port: u16,
+    #[serde(default = "default_api_port")]
+    pub api_port: u16,
+}
+
+impl Default for ServerPreferences {
+    fn default() -> Self {
+        Self {
+            web_port: default_web_port(),
+            api_port: default_api_port(),
+        }
+    }
+}
+
+fn default_web_port() -> u16 {
+    DEFAULT_WEB_PORT
+}
+
+fn default_api_port() -> u16 {
+    DEFAULT_API_PORT
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DesktopWindowState {
     pub width: u32,
@@ -185,6 +213,8 @@ pub struct MemorphConfig {
     pub web: WebPreferences,
     #[serde(default)]
     pub desktop: DesktopPreferences,
+    #[serde(default)]
+    pub server: ServerPreferences,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,6 +368,16 @@ pub fn selected_workspace() -> Result<Option<String>> {
 
 pub fn desktop_window_state() -> Result<Option<DesktopWindowState>> {
     Ok(load_config()?.desktop.window)
+}
+
+pub fn server_preferences() -> Result<ServerPreferences> {
+    Ok(load_config()?.server)
+}
+
+pub fn update_server_preferences(server: ServerPreferences) -> Result<()> {
+    let mut config = load_config()?;
+    config.server = server;
+    save_config(&config)
 }
 
 pub fn set_desktop_window_state(state: DesktopWindowState) -> Result<()> {

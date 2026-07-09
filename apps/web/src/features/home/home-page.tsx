@@ -60,6 +60,10 @@ function settingsPayloadFromMeta(settings: SettingsPayload, sessionsPerProvider:
     },
     agent_order: settings.agent_order ?? [],
     primary_agents: settings.primary_agents ?? [],
+    server: {
+      web_port: settings.server?.web_port ?? 3737,
+      api_port: settings.server?.api_port ?? 3223,
+    },
   };
 }
 

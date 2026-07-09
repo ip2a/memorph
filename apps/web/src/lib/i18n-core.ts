@@ -5,6 +5,8 @@ export const dictionaries = {
     about: "关于",
     actions: "操作",
     agentManagement: "助手管理",
+    apiPort: "API 端口",
+    apiPortHint: "memorph api 默认监听端口。",
     auto: "自动",
     back: "返回",
     backupDir: "备份目录",
@@ -72,11 +74,15 @@ export const dictionaries = {
     updateCommand: "更新命令：{command}",
     upToDate: "已是最新",
     version: "版本",
+    webPort: "Web 端口",
+    webPortHint: "memorph web 默认监听端口。",
   },
   en: {
     about: "About",
     actions: "Actions",
     agentManagement: "Agent Management",
+    apiPort: "API Port",
+    apiPortHint: "Default listen port for memorph api.",
     auto: "Auto",
     back: "Back",
     backupDir: "Backup Directory",
@@ -144,6 +150,8 @@ export const dictionaries = {
     updateCommand: "Update Command: {command}",
     upToDate: "Up to date",
     version: "Version",
+    webPort: "Web Port",
+    webPortHint: "Default listen port for memorph web.",
   },
 } as const;
 

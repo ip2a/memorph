@@ -280,6 +280,7 @@ struct SettingsPayload {
     home_buttons: config::HomeButtonConfig,
     agent_order: Vec<String>,
     primary_agents: Vec<String>,
+    server: config::ServerPreferences,
 }
 
 #[derive(Debug, Serialize)]
@@ -413,6 +414,7 @@ struct SettingsBody {
     #[serde(default)]
     #[allow(dead_code)]
     primary_agents: Vec<String>,
+    server: Option<config::ServerPreferences>,
 }
 
 #[derive(Deserialize)]
@@ -919,6 +921,7 @@ async fn update_check_payload() -> anyhow::Result<UpdateCheckPayload> {
 
 fn settings_payload() -> anyhow::Result<SettingsPayload> {
     let prefs = config::web_preferences()?;
+    let server = config::server_preferences()?;
     Ok(SettingsPayload {
         sessions_per_provider: prefs.sessions_per_provider,
         language: prefs.language,
@@ -929,6 +932,7 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
         home_buttons: prefs.home_buttons.clone(),
         agent_order: config::ordered_provider_ids(&prefs),
         primary_agents: config::primary_provider_ids(&prefs),
+        server,
     })
 }
 
@@ -1219,6 +1223,13 @@ async fn update_settings(Json(body): Json<SettingsBody>) -> impl IntoResponse {
         Some(body.logging),
     )
     .and_then(|_| config::update_home_button_config(body.home_buttons))
+    .and_then(|_| {
+        if let Some(server) = body.server {
+            config::update_server_preferences(server)
+        } else {
+            Ok(())
+        }
+    })
     .and_then(|_| {
         config::update_agent_display_preferences(
             config::ProviderDisplayOrder {

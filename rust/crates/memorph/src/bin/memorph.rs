@@ -7,7 +7,7 @@ use memorph::{
         Cli, Commands, CompressionCommands, LegacyCodexToolCommands, LegacyToolCommands,
         SyncCommands,
     },
-    core, provider_features, providers, server, sync as session_sync, tui, web_assets,
+    config, core, provider_features, providers, server, sync as session_sync, tui, web_assets,
 };
 use std::path::Path;
 use std::process::Command;
@@ -174,12 +174,40 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::Compression { command } => run_compression_command(command)?,
 
         Commands::Web { port, no_open } => {
+            let port = port.unwrap_or_else(|| {
+                config::server_preferences()
+                    .map(|s| s.web_port)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Warning: failed to load config: {e}");
+                        config::DEFAULT_WEB_PORT
+                    })
+            });
             run_web_server(port, no_open, WebCommandKind::Recommended)?
         }
 
-        Commands::Serve { port, no_open } => run_web_server(port, no_open, WebCommandKind::Legacy)?,
+        Commands::Serve { port, no_open } => {
+            let port = port.unwrap_or_else(|| {
+                config::server_preferences()
+                    .map(|s| s.web_port)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Warning: failed to load config: {e}");
+                        config::DEFAULT_WEB_PORT
+                    })
+            });
+            run_web_server(port, no_open, WebCommandKind::Legacy)?
+        }
 
-        Commands::Api { port } => run_api_server(port)?,
+        Commands::Api { port } => {
+            let port = port.unwrap_or_else(|| {
+                config::server_preferences()
+                    .map(|s| s.api_port)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Warning: failed to load config: {e}");
+                        config::DEFAULT_API_PORT
+                    })
+            });
+            run_api_server(port)?
+        }
 
         Commands::Tui => {
             tui::run_tui()?;
@@ -728,14 +756,14 @@ enum WebCommandKind {
 fn run_web_server(port: u16, no_open: bool, kind: WebCommandKind) -> Result<()> {
     print_web_banner(kind);
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(server::run(port, no_open))
+    rt.block_on(server::run(port, no_open, true))
 }
 
 fn run_api_server(port: u16) -> Result<()> {
     println!("Starting memorph API server.");
     println!("Use `memorph web` for the Web UI.");
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(server::run_api(port))
+    rt.block_on(server::run_api(port, true))
 }
 
 fn update_memorph() -> Result<()> {

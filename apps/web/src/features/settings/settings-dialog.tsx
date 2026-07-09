@@ -20,7 +20,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
-import { Textarea } from "@/components/ui/textarea";
 import {
   checkForUpdate,
   getHooksOverview,
@@ -32,6 +31,7 @@ import {
   updateSettings,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import { looksLikeJson } from "@/lib/format-content";
 import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
 import { queryKeys } from "@/lib/query-keys";
@@ -91,8 +91,16 @@ function defaultDraft(settings: SettingsPayload | undefined, catalog: ProviderCa
     },
     agent_order: agentOrder,
     primary_agents: settings?.primary_agents ?? [],
+    server: {
+      web_port: settings?.server?.web_port ?? 3737,
+      api_port: settings?.server?.api_port ?? 3223,
+    },
     hidden_agents: catalog.filter((provider) => provider.hidden_state?.global).map((provider) => provider.provider_id),
   };
+}
+
+function clampPort(port: number, fallback: number) {
+  return Math.max(1, Math.min(65535, Number(port || fallback)));
 }
 
 function logSizeMb(draft: SettingsDraft) {
@@ -183,6 +191,10 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         home_buttons: current.home_buttons,
         agent_order: current.agent_order,
         primary_agents: current.primary_agents,
+        server: {
+          web_port: clampPort(current.server.web_port, 3737),
+          api_port: clampPort(current.server.api_port, 3223),
+        },
       };
       await updateSettings(settingsBody);
       await updateProviderCatalog({
@@ -338,6 +350,14 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                         <InputGroupInput value={draft.default_backup_dir} onChange={(event) => patchDraft({ default_backup_dir: event.target.value })} placeholder="./backups" aria-label={t("backupDir")} />
                       </InputGroup>
                     </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("webPort")}</FieldTitle><FieldDescription>{t("webPortHint")}</FieldDescription></FieldContent>
+                      <Input className="w-32" type="number" min={1} max={65535} value={draft.server.web_port} onChange={(event) => patchDraft({ server: { ...draft.server, web_port: Number(event.target.value || 0) } })} aria-label={t("webPort")} />
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("apiPort")}</FieldTitle><FieldDescription>{t("apiPortHint")}</FieldDescription></FieldContent>
+                      <Input className="w-32" type="number" min={1} max={65535} value={draft.server.api_port} onChange={(event) => patchDraft({ server: { ...draft.server, api_port: Number(event.target.value || 0) } })} aria-label={t("apiPort")} />
+                    </Field>
                     <ReadOnlyRow title={t("logDir")} value={settingsPaths?.log_dir || "~/.memorph/logs"} description={t("logDirHint")} />
                     <ReadOnlyRow title={t("logFileName")} value={settingsPaths?.log_file_name || "memorph.log"} description={settingsPaths?.log_file_path || "~/.memorph/logs/memorph.log"} />
                     <Field orientation="responsive">
@@ -408,8 +428,8 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               {section === "config" ? (
                 <section className="flex flex-col gap-4" data-settings-section="config">
                   <SectionHead title={t("configFile")} />
+                  <ConfigFilePreview content={configFile?.content || ""} />
                   <ReadOnlyRow title={t("configFileLocation")} value={configFile?.path || "-"} />
-                  <Textarea className="min-h-80 font-mono text-xs" readOnly value={configFile?.content || ""} />
                 </section>
               ) : null}
 
@@ -456,12 +476,33 @@ function SectionHead({ title }: { title: string }) {
   return <div className="border-b pb-2"><h3 className="text-base font-semibold">{title}</h3></div>;
 }
 
+function ConfigFilePreview({ content }: { content: string }) {
+  if (!content) {
+    return <p className="text-sm text-muted-foreground">-</p>;
+  }
+
+  let text = content;
+  if (looksLikeJson(content)) {
+    try {
+      text = JSON.stringify(JSON.parse(content), null, 2);
+    } catch {
+      text = content;
+    }
+  }
+
+  return (
+    <ScrollArea className="h-80 rounded-md border border-border bg-muted/40">
+      <pre className="whitespace-pre-wrap break-words p-3 font-mono text-xs text-foreground">{text}</pre>
+    </ScrollArea>
+  );
+}
+
 function ReadOnlyRow({ title, value, description }: { title: string; value: string; description?: string }) {
   return (
     <>
       <Field orientation="horizontal">
         <FieldContent><FieldTitle>{title}</FieldTitle>{description ? <FieldDescription>{description}</FieldDescription> : null}</FieldContent>
-        <div className="min-w-0 max-w-xl flex-1 truncate rounded-md border px-3 py-2 font-mono text-xs text-muted-foreground">{value}</div>
+        <p className="min-w-0 max-w-xl flex-1 truncate font-mono text-xs text-muted-foreground">{value}</p>
       </Field>
       <Separator className="last:hidden" />
     </>

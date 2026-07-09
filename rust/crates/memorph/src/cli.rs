@@ -112,27 +112,27 @@ pub enum Commands {
     },
     /// Start the web UI server (recommended)
     Web {
-        /// Port to listen on
-        #[arg(short, long, default_value = "3737")]
-        port: u16,
+        /// Port to listen on (defaults to 3737; override via server.web_port in ~/.memorph/config.json)
+        #[arg(short, long)]
+        port: Option<u16>,
         /// Don't auto-open browser
         #[arg(long)]
         no_open: bool,
     },
     /// Start the web UI server (legacy alias for `memorph web`)
     Serve {
-        /// Port to listen on
-        #[arg(short, long, default_value = "3737")]
-        port: u16,
+        /// Port to listen on (defaults to 3737; override via server.web_port in ~/.memorph/config.json)
+        #[arg(short, long)]
+        port: Option<u16>,
         /// Don't auto-open browser
         #[arg(long)]
         no_open: bool,
     },
     /// Start the API server only
     Api {
-        /// Port to listen on
-        #[arg(short, long, default_value = "3737")]
-        port: u16,
+        /// Port to listen on (defaults to 3223; override via server.api_port in ~/.memorph/config.json)
+        #[arg(short, long)]
+        port: Option<u16>,
     },
     /// Start the interactive TUI
     Tui,
