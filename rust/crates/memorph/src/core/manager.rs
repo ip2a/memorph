@@ -11,6 +11,12 @@ use crate::{
     core,
     provider::{Provider, ProviderSessionSummary},
     providers,
+    storage::{
+        activity_store::{
+            ActivityActor, ActivityCompletion, ActivityOperationKind, ActivityStore, NewActivity,
+        },
+        local_store,
+    },
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,7 +268,7 @@ pub fn stats(filter: &ManagerFilter) -> Result<ManagerStatsResult> {
 }
 
 /// Clean (delete) the specified sessions.
-pub fn clean(items: &[ManagerItem]) -> ManagerCleanResult {
+pub fn clean(items: &[ManagerItem], actor: ActivityActor) -> ManagerCleanResult {
     let mut success = 0usize;
     let mut failed = 0usize;
     let mut freed_bytes: u64 = 0;
@@ -281,7 +287,7 @@ pub fn clean(items: &[ManagerItem]) -> ManagerCleanResult {
             .iter()
             .map(|idx| items[*idx].session_id.as_str())
             .collect();
-        let mut results = core::delete_sessions(provider_id, &session_ids).into_iter();
+        let mut results = core::delete_sessions(provider_id, &session_ids, actor).into_iter();
         let mut provider_deleted = false;
         for idx in indices {
             let item = &items[idx];
@@ -323,66 +329,128 @@ pub fn clean(items: &[ManagerItem]) -> ManagerCleanResult {
 }
 
 /// Backup (export) the specified sessions to a directory.
-pub fn backup(items: &[ManagerItem], output_dir: &Path) -> ManagerBackupResult {
+pub fn backup(
+    items: &[ManagerItem],
+    output_dir: &Path,
+    actor: ActivityActor,
+) -> ManagerBackupResult {
     let mut success = 0usize;
     let mut failed = 0usize;
     let mut files = Vec::new();
     let mut errors = Vec::new();
 
-    if !output_dir.exists() {
-        if let Err(e) = std::fs::create_dir_all(output_dir) {
-            return ManagerBackupResult {
-                success: 0,
-                failed: items.len(),
-                files: Vec::new(),
-                errors: vec![format!("Failed to create output directory: {}", e)],
-            };
-        }
-    }
-
     for item in items {
-        let session = match crate::core::get_canonical_session(&item.provider_id, &item.session_id)
-        {
-            Ok(imported) => imported.session,
-            Err(e) => {
+        let input_details = serde_json::json!({
+            "provider_session_id": item.session_id,
+            "output_dir": output_dir,
+        });
+        let activity_conn = match local_store::open_database() {
+            Ok(conn) => conn,
+            Err(error) => {
                 failed += 1;
                 errors.push(format!(
-                    "Failed to load {} ({}): {}",
+                    "Failed to start backup for {} ({}): {:#}",
                     item.session_id,
                     item.title.as_deref().unwrap_or("untitled"),
-                    e
+                    error
                 ));
                 continue;
             }
         };
-
-        let safe_title = item
-            .title
-            .as_deref()
-            .unwrap_or("untitled")
-            .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_")
-            .replace("__", "_");
-        let filename = format!(
-            "{}_{}_{}.json",
-            item.provider_id,
-            safe_title,
-            &item.session_id[..8.min(item.session_id.len())]
-        );
-        let output_path = output_dir.join(&filename);
-
-        match export_session_to_json(&session, &output_path) {
-            Ok(()) => {
-                success += 1;
-                files.push(output_path.display().to_string());
-            }
-            Err(e) => {
+        let activity_id = match ActivityStore::new(&activity_conn).start(NewActivity {
+            provider_id: Some(item.provider_id.clone()),
+            provider_session_id: Some(item.session_id.clone()),
+            workspace_dir: item.project_dir.clone(),
+            operation_kind: ActivityOperationKind::Backup,
+            actor,
+            summary: "Backing up session".to_string(),
+            details: input_details.clone(),
+        }) {
+            Ok(activity_id) => activity_id,
+            Err(error) => {
                 failed += 1;
                 errors.push(format!(
+                    "Failed to start backup for {} ({}): {:#}",
+                    item.session_id,
+                    item.title.as_deref().unwrap_or("untitled"),
+                    error
+                ));
+                continue;
+            }
+        };
+        let result: Result<String> = (|| {
+            std::fs::create_dir_all(output_dir).with_context(|| {
+                format!(
+                    "Failed to create output directory: {}",
+                    output_dir.display()
+                )
+            })?;
+            let session =
+                crate::core::get_canonical_session(&item.provider_id, &item.session_id)?.session;
+            let safe_title = item
+                .title
+                .as_deref()
+                .unwrap_or("untitled")
+                .replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "_")
+                .replace("__", "_");
+            let filename = format!(
+                "{}_{}_{}.json",
+                item.provider_id,
+                safe_title,
+                &item.session_id[..8.min(item.session_id.len())]
+            );
+            let output_path = output_dir.join(&filename);
+            export_session_to_json(&session, &output_path)?;
+            Ok(output_path.display().to_string())
+        })();
+
+        match result {
+            Ok(file) => {
+                if let Err(error) = ActivityStore::new(&activity_conn).finish(
+                    &activity_id,
+                    ActivityCompletion::success(
+                        "Backed up session",
+                        serde_json::json!({
+                            "provider_session_id": item.session_id,
+                            "file": file,
+                        }),
+                    ),
+                ) {
+                    failed += 1;
+                    errors.push(format!(
+                        "Backed up {} but failed to finish its activity record: {:#}",
+                        item.session_id, error
+                    ));
+                    continue;
+                }
+                success += 1;
+                files.push(file);
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                let audit_error = ActivityStore::new(&activity_conn)
+                    .finish(
+                        &activity_id,
+                        ActivityCompletion::failed(
+                            "Failed to back up session",
+                            input_details,
+                            &message,
+                        ),
+                    )
+                    .err();
+                failed += 1;
+                let mut error_message = format!(
                     "Failed to export {} ({}): {}",
                     item.session_id,
                     item.title.as_deref().unwrap_or("untitled"),
-                    e
-                ));
+                    message
+                );
+                if let Some(audit_error) = audit_error {
+                    error_message.push_str(&format!(
+                        "; failed to finish activity record: {audit_error:#}"
+                    ));
+                }
+                errors.push(error_message);
             }
         }
     }
@@ -582,7 +650,11 @@ fn list_workspace_sessions(provider_id: &str, workspace: &str) -> Result<Vec<Man
 }
 
 /// Delete all sessions in a provider workspace.
-pub fn clean_workspace(provider_id: &str, workspace: &str) -> ManagerCleanResult {
+pub fn clean_workspace(
+    provider_id: &str,
+    workspace: &str,
+    actor: ActivityActor,
+) -> ManagerCleanResult {
     let items = match list_workspace_sessions(provider_id, workspace) {
         Ok(items) => items,
         Err(e) => {
@@ -594,7 +666,7 @@ pub fn clean_workspace(provider_id: &str, workspace: &str) -> ManagerCleanResult
             };
         }
     };
-    clean(&items)
+    clean(&items, actor)
 }
 
 /// Backup all sessions in a provider workspace.
@@ -602,6 +674,7 @@ pub fn backup_workspace(
     provider_id: &str,
     workspace: &str,
     output_dir: &Path,
+    actor: ActivityActor,
 ) -> ManagerBackupResult {
     let items = match list_workspace_sessions(provider_id, workspace) {
         Ok(items) => items,
@@ -614,5 +687,5 @@ pub fn backup_workspace(
             };
         }
     };
-    backup(&items, output_dir)
+    backup(&items, output_dir, actor)
 }

@@ -9,12 +9,17 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::cmp::Ordering;
+use std::fmt::Display;
+use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::{
     agent_management, cache, config, core, hooks, logging, provider_features, provider_settings,
     providers::catalog::{build_catalog, sort_catalog, CatalogInput, ProviderCatalog},
+    storage::activity_store::{
+        ActivityActor, ActivityOperationKind, ActivityQuery, ActivityStatus,
+    },
     sync as session_sync,
 };
 
@@ -118,6 +123,7 @@ pub fn router() -> Router {
         .route("/api/v1/system/select-folder", post(select_folder))
         .route("/api/v1/system/select-file", post(select_file))
         .route("/api/v1/system/open-external", post(open_external))
+        .route("/api/v1/management/activity", get(list_management_activity))
         .route("/api/v1/sessions", get(list_sessions))
         .route(
             "/api/v1/sessions/refresh-stale",
@@ -355,7 +361,9 @@ struct SessionReprojectionPayload {
 
 fn fallback_backup_dir_base() -> std::path::PathBuf {
     std::env::current_dir()
-        .or_else(|_| dirs::home_dir().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound)))
+        .or_else(|_| {
+            dirs::home_dir().ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
 }
 
@@ -1010,24 +1018,26 @@ async fn get_meta() -> impl IntoResponse {
         settings_paths_payload(),
         config_file_payload(),
     ) {
-        (Ok(settings), Ok(selected_workspace), Ok(workspaces), Ok(settings_paths), Ok(config_file)) => {
-            ApiResponse::success(MetaPayload {
-                version: env!("CARGO_PKG_VERSION"),
-                selected_workspace,
-                workspaces,
-                settings,
-                settings_paths,
-                config_file,
-            })
-            .into_response()
-        }
+        (
+            Ok(settings),
+            Ok(selected_workspace),
+            Ok(workspaces),
+            Ok(settings_paths),
+            Ok(config_file),
+        ) => ApiResponse::success(MetaPayload {
+            version: env!("CARGO_PKG_VERSION"),
+            selected_workspace,
+            workspaces,
+            settings,
+            settings_paths,
+            config_file,
+        })
+        .into_response(),
         (Err(e), _, _, _, _)
         | (_, Err(e), _, _, _)
         | (_, _, Err(e), _, _)
         | (_, _, _, Err(e), _)
-        | (_, _, _, _, Err(e)) => {
-            api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response()
-        }
+        | (_, _, _, _, Err(e)) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
@@ -1338,8 +1348,73 @@ async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
     }
 }
 
+#[derive(Deserialize)]
+struct ManagementActivityQuery {
+    session_id: Option<String>,
+    provider: Option<String>,
+    workspace: Option<String>,
+    operation: Option<String>,
+    status: Option<String>,
+    actor: Option<String>,
+    started_after_ms: Option<i64>,
+    started_before_ms: Option<i64>,
+    limit: Option<usize>,
+}
+
+fn parse_management_activity_filter<T>(name: &str, value: Option<&str>) -> Result<Option<T>, String>
+where
+    T: FromStr,
+    T::Err: Display,
+{
+    value
+        .map(|value| {
+            value
+                .parse::<T>()
+                .map_err(|error| format!("Invalid {name}: {error}"))
+        })
+        .transpose()
+}
+
+async fn list_management_activity(
+    Query(query): Query<ManagementActivityQuery>,
+) -> impl IntoResponse {
+    let operation_kind = match parse_management_activity_filter::<ActivityOperationKind>(
+        "operation",
+        query.operation.as_deref(),
+    ) {
+        Ok(value) => value,
+        Err(error) => return api_error(StatusCode::BAD_REQUEST, error).into_response(),
+    };
+    let status =
+        match parse_management_activity_filter::<ActivityStatus>("status", query.status.as_deref())
+        {
+            Ok(value) => value,
+            Err(error) => return api_error(StatusCode::BAD_REQUEST, error).into_response(),
+        };
+    let actor =
+        match parse_management_activity_filter::<ActivityActor>("actor", query.actor.as_deref()) {
+            Ok(value) => value,
+            Err(error) => return api_error(StatusCode::BAD_REQUEST, error).into_response(),
+        };
+    let query = ActivityQuery {
+        session_id: query.session_id,
+        provider_id: query.provider,
+        workspace_dir: query.workspace,
+        operation_kind,
+        status,
+        actor,
+        started_after_ms: query.started_after_ms,
+        started_before_ms: query.started_before_ms,
+        limit: query.limit,
+    };
+    match core::list_management_activity(&query) {
+        Ok(activities) => ApiResponse::success(activities).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
 async fn refresh_session_staleness() -> impl IntoResponse {
-    match core::refresh_projected_session_staleness() {
+    match core::refresh_projected_session_staleness(ActivityActor::Api) {
         Ok(report) => ApiResponse::success(SessionStalenessRefreshPayload {
             checked_sources: report.checked_sources,
             fresh_snapshots: report.fresh_snapshots,
@@ -1355,7 +1430,7 @@ async fn refresh_session_staleness() -> impl IntoResponse {
 async fn reproject_stale_sessions(
     Json(request): Json<SessionReprojectStaleRequest>,
 ) -> impl IntoResponse {
-    match core::reproject_stale_sessions(request.provider.as_deref()) {
+    match core::reproject_stale_sessions(request.provider.as_deref(), ActivityActor::Api) {
         Ok(report) => ApiResponse::success(SessionReprojectionPayload {
             candidate_snapshots: report.candidate_snapshots,
             reprojected_snapshots: report.reprojected_snapshots,
@@ -1510,7 +1585,7 @@ async fn get_session_activity(
 }
 
 async fn delete_session(Path((provider, session_id)): Path<(String, String)>) -> impl IntoResponse {
-    match core::delete_session(&provider, &session_id) {
+    match core::delete_session(&provider, &session_id, ActivityActor::Api) {
         Ok(()) => ApiResponse::success("deleted").into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -1535,7 +1610,7 @@ async fn rename_session(
     Path((provider, session_id)): Path<(String, String)>,
     Json(body): Json<RenameBody>,
 ) -> impl IntoResponse {
-    match core::rename_session(&provider, &session_id, &body.title) {
+    match core::rename_session(&provider, &session_id, &body.title, ActivityActor::Api) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -1545,7 +1620,7 @@ async fn update_session_local_state(
     Path((provider, session_id)): Path<(String, String)>,
     Json(body): Json<crate::storage::session_state::SessionLocalStateUpdate>,
 ) -> impl IntoResponse {
-    match core::update_session_local_state(&provider, &session_id, &body) {
+    match core::update_session_local_state(&provider, &session_id, &body, ActivityActor::Api) {
         Ok(state) => ApiResponse::success(state).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -1652,7 +1727,7 @@ async fn export_session(Json(body): Json<ExportBody>) -> impl IntoResponse {
         format: body.format,
         output_dir: body.output_dir,
     };
-    match core::export_session(&params) {
+    match core::export_session(&params, ActivityActor::Api) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -1863,7 +1938,7 @@ async fn apply_active_compression(
         output_prefix: body.output_prefix,
         format: body.format,
     };
-    match core::active_compression_apply(&params) {
+    match core::active_compression_apply(&params, ActivityActor::Api) {
         Ok(result) => {
             invalidate_compression_archives_cache();
             ApiResponse::success(result).into_response()
@@ -1885,7 +1960,7 @@ async fn import_session(Json(body): Json<ImportBody>) -> impl IntoResponse {
         file_or_id: body.file_or_id,
         to_dir: body.to_dir,
     };
-    match core::import_session(&params) {
+    match core::import_session(&params, ActivityActor::Api) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -2162,7 +2237,7 @@ async fn sync_session_groups(Json(body): Json<SyncGroupBody>) -> impl IntoRespon
         .into_response();
     }
 
-    let result = session_sync::push_sync(&body.group_id, &source_id);
+    let result = session_sync::push_sync(&body.group_id, &source_id, ActivityActor::Api);
     match result {
         Ok(report) => ApiResponse::success(report).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -2376,7 +2451,7 @@ struct ManagerItemsBody {
 }
 
 async fn manager_clean(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
-    let result = crate::core::manager::clean(&body.items);
+    let result = crate::core::manager::clean(&body.items, ActivityActor::Api);
     logging::info(
         "manager_clean",
         format!(
@@ -2390,7 +2465,8 @@ async fn manager_clean(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse 
 async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
     let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
     let resolved_output_dir = resolve_backup_output_dir(&output_dir, None);
-    let result = crate::core::manager::backup(&body.items, &resolved_output_dir);
+    let result =
+        crate::core::manager::backup(&body.items, &resolved_output_dir, ActivityActor::Api);
     logging::info(
         "manager_backup",
         format!(
@@ -2420,7 +2496,11 @@ struct ManagerWorkspaceBody {
 }
 
 async fn manager_clean_workspace(Json(body): Json<ManagerWorkspaceBody>) -> impl IntoResponse {
-    let result = crate::core::manager::clean_workspace(&body.provider_id, &body.workspace);
+    let result = crate::core::manager::clean_workspace(
+        &body.provider_id,
+        &body.workspace,
+        ActivityActor::Api,
+    );
     logging::info(
         "manager_clean_workspace",
         format!(
@@ -2438,6 +2518,7 @@ async fn manager_backup_workspace(Json(body): Json<ManagerWorkspaceBody>) -> imp
         &body.provider_id,
         &body.workspace,
         &resolved_output_dir,
+        ActivityActor::Api,
     );
     logging::info(
         "manager_backup_workspace",
@@ -2645,6 +2726,241 @@ mod tests {
         assert_eq!(value["data"]["unsupported_providers"], 0);
         assert_eq!(value["data"]["failed_snapshots"], 0);
         assert_eq!(value["data"]["failures"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn management_activity_route_filters_activity_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let conn = crate::storage::local_store::open_database().unwrap();
+        let store = crate::storage::activity_store::ActivityStore::new(&conn);
+        let activity_id = store
+            .start(crate::storage::activity_store::NewActivity {
+                provider_id: Some("claude".to_string()),
+                provider_session_id: Some("native-activity".to_string()),
+                workspace_dir: Some("/tmp/project".to_string()),
+                operation_kind: ActivityOperationKind::Export,
+                actor: ActivityActor::Cli,
+                summary: "Exporting session".to_string(),
+                details: serde_json::json!({"format": "json"}),
+            })
+            .unwrap();
+        store
+            .finish(
+                &activity_id,
+                crate::storage::activity_store::ActivityCompletion::success(
+                    "Exported session",
+                    serde_json::json!({"files": ["/tmp/session.json"]}),
+                ),
+            )
+            .unwrap();
+        drop(conn);
+
+        let request = Request::builder()
+            .uri(
+                "/api/v1/management/activity?session_id=native-activity&provider=claude\
+                 &operation=export&status=success&actor=cli&limit=10",
+            )
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let activities = value["data"].as_array().unwrap();
+        assert_eq!(activities.len(), 1);
+        assert_eq!(activities[0]["id"], activity_id);
+        assert_eq!(activities[0]["provider_id"], "claude");
+        assert_eq!(activities[0]["provider_session_id"], "native-activity");
+        assert_eq!(activities[0]["operation_kind"], "export");
+        assert_eq!(activities[0]["status"], "success");
+        assert_eq!(activities[0]["actor"], "cli");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn management_activity_route_rejects_invalid_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let request = Request::builder()
+            .uri("/api/v1/management/activity?operation=unknown")
+            .body(Body::empty())
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid operation"));
+    }
+
+    #[test]
+    fn failed_sync_and_backup_operations_remain_queryable() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+
+        assert!(
+            session_sync::push_sync("missing-group", "missing-holding", ActivityActor::Api)
+                .is_err()
+        );
+        let backup = crate::core::manager::backup(
+            &[crate::core::manager::ManagerItem {
+                provider_id: "missing-provider".to_string(),
+                provider_name: "Missing".to_string(),
+                session_id: "missing-session".to_string(),
+                source_path: None,
+                title: Some("Missing session".to_string()),
+                project_dir: Some("/tmp/project".to_string()),
+                last_active_at: None,
+                size_bytes: 0,
+            }],
+            &dir.path().join("backups"),
+            ActivityActor::Api,
+        );
+        assert_eq!(backup.failed, 1);
+
+        let sync_activities = core::list_management_activity(&ActivityQuery {
+            operation_kind: Some(ActivityOperationKind::Sync),
+            status: Some(ActivityStatus::Failed),
+            actor: Some(ActivityActor::Api),
+            ..ActivityQuery::default()
+        })
+        .unwrap();
+        assert_eq!(sync_activities.len(), 1);
+        assert!(sync_activities[0]
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("Sync group not found"));
+
+        let backup_activities = core::list_management_activity(&ActivityQuery {
+            session_id: Some("missing-session".to_string()),
+            operation_kind: Some(ActivityOperationKind::Backup),
+            status: Some(ActivityStatus::Failed),
+            actor: Some(ActivityActor::Api),
+            ..ActivityQuery::default()
+        })
+        .unwrap();
+        assert_eq!(backup_activities.len(), 1);
+        assert_eq!(
+            backup_activities[0].workspace_dir.as_deref(),
+            Some("/tmp/project")
+        );
+        assert!(backup_activities[0].error.is_some());
+    }
+
+    #[test]
+    fn management_operations_record_terminal_activity() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let missing_provider = "missing-provider";
+        let missing_session = "missing-session";
+
+        core::refresh_projected_session_staleness(ActivityActor::Api).unwrap();
+        assert!(core::export_session(
+            &core::ExportParams {
+                provider: missing_provider.to_string(),
+                session_id: missing_session.to_string(),
+                output_prefix: None,
+                output_dir: None,
+                format: "json".to_string(),
+            },
+            ActivityActor::Api,
+        )
+        .is_err());
+        assert!(core::import_session(
+            &core::ImportParams {
+                provider: missing_provider.to_string(),
+                file_or_id: "missing.json".to_string(),
+                to_dir: None,
+            },
+            ActivityActor::Api,
+        )
+        .is_err());
+        assert!(
+            core::delete_session(missing_provider, missing_session, ActivityActor::Api).is_err()
+        );
+        assert!(core::rename_session(
+            missing_provider,
+            missing_session,
+            "Renamed",
+            ActivityActor::Api,
+        )
+        .is_err());
+        assert!(core::update_session_local_state(
+            missing_provider,
+            missing_session,
+            &crate::storage::session_state::SessionLocalStateUpdate {
+                hidden: Some(true),
+                ..Default::default()
+            },
+            ActivityActor::Api,
+        )
+        .is_err());
+        assert!(core::update_session_local_state(
+            missing_provider,
+            missing_session,
+            &crate::storage::session_state::SessionLocalStateUpdate {
+                pinned: Some(true),
+                ..Default::default()
+            },
+            ActivityActor::Api,
+        )
+        .is_err());
+        assert!(core::update_session_local_state(
+            missing_provider,
+            missing_session,
+            &crate::storage::session_state::SessionLocalStateUpdate {
+                notes: Some(Some("note".to_string())),
+                ..Default::default()
+            },
+            ActivityActor::Api,
+        )
+        .is_err());
+        assert!(core::active_compression_apply(
+            &core::ActiveCompressionApplyCommandParams {
+                source_provider_id: missing_provider.to_string(),
+                target_provider_id: "codex".to_string(),
+                session_id: Some(missing_session.to_string()),
+                file: None,
+                policy: Default::default(),
+                candidate_ids: Vec::new(),
+                output_prefix: None,
+                format: "json".to_string(),
+            },
+            ActivityActor::Api,
+        )
+        .is_err());
+
+        let expected = [
+            (ActivityOperationKind::Scan, ActivityStatus::Success),
+            (ActivityOperationKind::Export, ActivityStatus::Failed),
+            (ActivityOperationKind::Import, ActivityStatus::Failed),
+            (ActivityOperationKind::Delete, ActivityStatus::Failed),
+            (ActivityOperationKind::Rename, ActivityStatus::Failed),
+            (ActivityOperationKind::Hide, ActivityStatus::Failed),
+            (ActivityOperationKind::Pin, ActivityStatus::Failed),
+            (
+                ActivityOperationKind::LocalStateUpdate,
+                ActivityStatus::Failed,
+            ),
+            (ActivityOperationKind::Compress, ActivityStatus::Failed),
+        ];
+        for (operation_kind, status) in expected {
+            let activities = core::list_management_activity(&ActivityQuery {
+                operation_kind: Some(operation_kind),
+                status: Some(status),
+                actor: Some(ActivityActor::Api),
+                ..ActivityQuery::default()
+            })
+            .unwrap();
+            assert_eq!(
+                activities.len(),
+                1,
+                "missing terminal activity for {operation_kind}"
+            );
+            assert!(activities[0].finished_at_ms.is_some());
+        }
     }
 
     struct ArchiveFixture {
@@ -2922,7 +3238,7 @@ mod tests {
 
     #[test]
     fn sync_holding_payload_serializes_hook_runtime_sessions() {
-        let _guard = test_guard();
+        let _guard = crate::hooks::test_support::test_runtime_guard();
         let dir = tempfile::tempdir().unwrap();
         crate::hooks::store::set_test_store_root(dir.path().to_path_buf());
         crate::hooks::server::reset_for_tests();
@@ -3378,7 +3694,10 @@ mod tests {
         let (meta_status, meta_value) = read_json(router(), meta_request).await;
 
         assert_eq!(meta_status, StatusCode::OK);
-        assert_eq!(meta_value["data"]["settings_paths"]["backup_dir_input"], "./backups");
+        assert_eq!(
+            meta_value["data"]["settings_paths"]["backup_dir_input"],
+            "./backups"
+        );
         let expected_base = workspace_dir.canonicalize().unwrap();
         let expected_resolved = expected_base.join("./backups");
         assert_eq!(
@@ -3389,8 +3708,14 @@ mod tests {
             meta_value["data"]["settings_paths"]["backup_dir_resolved"],
             expected_resolved.display().to_string()
         );
-        assert_eq!(meta_value["data"]["settings_paths"]["log_dir"], "~/.memorph/logs");
-        assert_eq!(meta_value["data"]["settings_paths"]["log_file_name"], "memorph.log");
+        assert_eq!(
+            meta_value["data"]["settings_paths"]["log_dir"],
+            "~/.memorph/logs"
+        );
+        assert_eq!(
+            meta_value["data"]["settings_paths"]["log_file_name"],
+            "memorph.log"
+        );
         assert_eq!(
             meta_value["data"]["settings_paths"]["log_file_path"],
             "~/.memorph/logs/memorph.log"
@@ -3400,7 +3725,10 @@ mod tests {
     #[test]
     fn resolve_backup_output_dir_uses_workspace_for_relative_paths() {
         let path = resolve_backup_output_dir("./backups", Some("/tmp/current-workspace"));
-        assert_eq!(path, std::path::PathBuf::from("/tmp/current-workspace").join("./backups"));
+        assert_eq!(
+            path,
+            std::path::PathBuf::from("/tmp/current-workspace").join("./backups")
+        );
 
         let absolute = resolve_backup_output_dir("/tmp/exports", Some("/tmp/current-workspace"));
         assert_eq!(absolute, std::path::PathBuf::from("/tmp/exports"));

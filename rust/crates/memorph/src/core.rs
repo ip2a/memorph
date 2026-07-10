@@ -14,6 +14,13 @@ use crate::storage::snapshot_store::{
     ProjectedSessionReportSummary, ProjectedSessionSnapshotRow, SnapshotStaleScanReport,
     StaleSnapshotSourceRow,
 };
+use crate::storage::{
+    activity_store::{
+        ActivityActor, ActivityCompletion, ActivityOperationKind, ActivityQuery, ActivityRecord,
+        ActivityStatus, ActivityStore, NewActivity,
+    },
+    local_store,
+};
 use crate::{provider, providers, utils};
 
 pub mod active_compression;
@@ -234,9 +241,54 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
     list_provider_sessions(params)
 }
 
-pub fn refresh_projected_session_staleness() -> Result<SnapshotStaleScanReport> {
-    let conn = crate::storage::local_store::open_database()?;
-    crate::storage::snapshot_store::SnapshotStore::new(&conn).refresh_session_snapshot_staleness()
+pub fn refresh_projected_session_staleness(
+    actor: ActivityActor,
+) -> Result<SnapshotStaleScanReport> {
+    let activity_conn = local_store::open_database()?;
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: None,
+        provider_session_id: None,
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Scan,
+        actor,
+        summary: "Scanning projected session source fingerprints".to_string(),
+        details: serde_json::json!({"scan_kind": "snapshot_staleness"}),
+    })?;
+    let result = (|| {
+        let conn = local_store::open_database()?;
+        crate::storage::snapshot_store::SnapshotStore::new(&conn)
+            .refresh_session_snapshot_staleness()
+    })();
+    match result {
+        Ok(report) => {
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::success(
+                    "Scanned projected session source fingerprints",
+                    serde_json::json!({
+                        "checked_sources": report.checked_sources,
+                        "fresh_snapshots": report.fresh_snapshots,
+                        "stale_snapshots": report.stale_snapshots,
+                        "missing_sources": report.missing_sources,
+                        "unknown_sources": report.unknown_sources,
+                    }),
+                ),
+            )?;
+            Ok(report)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to scan projected session source fingerprints",
+                    serde_json::json!({"scan_kind": "snapshot_staleness"}),
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -259,12 +311,77 @@ pub struct SessionReprojectionFailure {
 
 pub fn reproject_stale_sessions(
     provider_filter: Option<&str>,
+    actor: ActivityActor,
 ) -> Result<SessionReprojectionReport> {
     let provider_filter = provider_filter.map(providers::canonical_provider_id);
-    let mut conn = crate::storage::local_store::open_database()?;
-    let sources = crate::storage::snapshot_store::SnapshotStore::new(&conn)
-        .list_stale_snapshot_sources(provider_filter.as_deref())?;
-    reproject_stale_snapshot_sources(&mut conn, sources)
+    let activity_conn = local_store::open_database()?;
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: provider_filter.clone(),
+        provider_session_id: None,
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Scan,
+        actor,
+        summary: "Reprojecting stale session snapshots".to_string(),
+        details: serde_json::json!({
+            "scan_kind": "stale_reprojection",
+            "provider_filter": provider_filter,
+        }),
+    })?;
+    let result = (|| {
+        let mut conn = local_store::open_database()?;
+        let sources = crate::storage::snapshot_store::SnapshotStore::new(&conn)
+            .list_stale_snapshot_sources(provider_filter.as_deref())?;
+        reproject_stale_snapshot_sources(&mut conn, sources)
+    })();
+    match result {
+        Ok(report) => {
+            let status = if report.failed_snapshots == 0
+                && report.missing_sources == 0
+                && report.unsupported_providers == 0
+            {
+                ActivityStatus::Success
+            } else if report.reprojected_snapshots == 0 {
+                ActivityStatus::Failed
+            } else {
+                ActivityStatus::Partial
+            };
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion {
+                    status,
+                    provider_id: provider_filter.clone(),
+                    provider_session_id: None,
+                    workspace_dir: None,
+                    summary: "Reprojected stale session snapshots".to_string(),
+                    details: serde_json::to_value(&report)?,
+                    error: (!report.failures.is_empty()).then(|| {
+                        report
+                            .failures
+                            .iter()
+                            .map(|failure| failure.reason.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }),
+                },
+            )?;
+            Ok(report)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to reproject stale session snapshots",
+                    serde_json::json!({
+                        "scan_kind": "stale_reprojection",
+                        "provider_filter": provider_filter,
+                    }),
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 fn reproject_stale_snapshot_sources(
@@ -1628,7 +1745,10 @@ fn bucket_for_timestamp(
     if timestamp < range_start || timestamp > range_end {
         return None;
     }
-    let offset = timestamp.signed_duration_since(range_start).num_seconds().max(0);
+    let offset = timestamp
+        .signed_duration_since(range_start)
+        .num_seconds()
+        .max(0);
     let index = (offset / bucket_seconds).min(buckets.len().saturating_sub(1) as i64) as usize;
     buckets.get_mut(index)
 }
@@ -1724,20 +1844,61 @@ pub struct ExportResult {
     pub files: Vec<String>,
 }
 
-pub fn export_session(params: &ExportParams) -> Result<ExportResult> {
-    let imported = get_canonical_session(&params.provider, &params.session_id)?;
-
-    let prefix = params
-        .output_prefix
-        .as_deref()
-        .unwrap_or(&params.session_id);
-    let output_dir = params.output_dir.as_deref().map(std::path::Path::new);
-    session_management::write_session_export_files(
-        &imported.session,
-        prefix,
-        &params.format,
-        output_dir,
-    )
+pub fn export_session(params: &ExportParams, actor: ActivityActor) -> Result<ExportResult> {
+    let activity_conn = local_store::open_database()?;
+    let input_details = serde_json::json!({
+        "provider_session_id": params.session_id,
+        "format": params.format,
+        "output_prefix": params.output_prefix,
+        "output_dir": params.output_dir,
+    });
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: Some(params.provider.clone()),
+        provider_session_id: Some(params.session_id.clone()),
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Export,
+        actor,
+        summary: "Exporting session".to_string(),
+        details: input_details.clone(),
+    })?;
+    let result = (|| {
+        let imported = get_canonical_session(&params.provider, &params.session_id)?;
+        let prefix = params
+            .output_prefix
+            .as_deref()
+            .unwrap_or(&params.session_id);
+        let output_dir = params.output_dir.as_deref().map(std::path::Path::new);
+        session_management::write_session_export_files(
+            &imported.session,
+            prefix,
+            &params.format,
+            output_dir,
+        )
+    })();
+    match result {
+        Ok(export) => {
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::success(
+                    "Exported session",
+                    serde_json::json!({
+                        "provider_session_id": params.session_id,
+                        "format": params.format,
+                        "files": export.files,
+                    }),
+                ),
+            )?;
+            Ok(export)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed("Failed to export session", input_details, &message),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2223,13 +2384,65 @@ pub struct ActiveCompressionApplyCommandResult {
 
 pub fn active_compression_apply(
     params: &ActiveCompressionApplyCommandParams,
+    actor: ActivityActor,
 ) -> Result<ActiveCompressionApplyCommandResult> {
-    let session = load_active_compression_source_session(
-        &params.source_provider_id,
-        params.session_id.as_deref(),
-        params.file.as_deref(),
-    )?;
-    active_compression_apply_session(params, &session, None)
+    let activity_conn = local_store::open_database()?;
+    let input_details = serde_json::json!({
+        "provider_session_id": params.session_id,
+        "source_file": params.file,
+        "source_provider_id": params.source_provider_id,
+        "target_provider_id": params.target_provider_id,
+        "candidate_ids": params.candidate_ids,
+        "format": params.format,
+    });
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: Some(params.source_provider_id.clone()),
+        provider_session_id: params.session_id.clone(),
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Compress,
+        actor,
+        summary: "Applying active session compression".to_string(),
+        details: input_details.clone(),
+    })?;
+    let result = (|| {
+        let session = load_active_compression_source_session(
+            &params.source_provider_id,
+            params.session_id.as_deref(),
+            params.file.as_deref(),
+        )?;
+        active_compression_apply_session(params, &session, None)
+    })();
+    match result {
+        Ok(applied) => {
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::success(
+                    "Applied active session compression",
+                    serde_json::json!({
+                        "provider_session_id": params.session_id,
+                        "source_provider_id": params.source_provider_id,
+                        "target_provider_id": params.target_provider_id,
+                        "files": applied.files,
+                        "archive_refs": applied.archive_refs,
+                        "candidate_count": applied.report.candidates.len(),
+                    }),
+                ),
+            )?;
+            Ok(applied)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to apply active session compression",
+                    input_details,
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 fn active_compression_apply_session(
@@ -2325,44 +2538,175 @@ pub struct ImportResult {
     pub resume_command: Option<String>,
 }
 
-pub fn import_session(params: &ImportParams) -> Result<ImportResult> {
-    let session = if params.file_or_id.ends_with(".morph")
-        || params.file_or_id.ends_with(".json")
-        || params.file_or_id.ends_with(".md")
-        || params.file_or_id.ends_with(".html")
-    {
-        session_management::read_session_export_file(&params.file_or_id)?
-    } else {
-        get_canonical_session(&params.provider, &params.file_or_id)?.session
-    };
+pub fn import_session(params: &ImportParams, actor: ActivityActor) -> Result<ImportResult> {
+    let activity_conn = local_store::open_database()?;
+    let input_details = serde_json::json!({
+        "source_ref": params.file_or_id,
+        "target_provider_id": params.provider,
+        "target_dir": params.to_dir,
+    });
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: Some(params.provider.clone()),
+        provider_session_id: None,
+        workspace_dir: params.to_dir.clone(),
+        operation_kind: ActivityOperationKind::Import,
+        actor,
+        summary: "Importing session".to_string(),
+        details: input_details.clone(),
+    })?;
+    let result = (|| {
+        let session = if params.file_or_id.ends_with(".morph")
+            || params.file_or_id.ends_with(".json")
+            || params.file_or_id.ends_with(".md")
+            || params.file_or_id.ends_with(".html")
+        {
+            session_management::read_session_export_file(&params.file_or_id)?
+        } else {
+            get_canonical_session(&params.provider, &params.file_or_id)?.session
+        };
 
-    let target_prov = providers::find_provider(&params.provider)
-        .with_context(|| format!("Target provider not available: {}", params.provider))?;
-    let target_capabilities = target_prov.capabilities();
-    if !target_capabilities.export {
-        anyhow::bail!(
-            "Provider does not support writing sessions: {}",
-            params.provider
-        );
+        let target_prov = providers::find_provider(&params.provider)
+            .with_context(|| format!("Target provider not available: {}", params.provider))?;
+        let target_capabilities = target_prov.capabilities();
+        if !target_capabilities.export {
+            anyhow::bail!(
+                "Provider does not support writing sessions: {}",
+                params.provider
+            );
+        }
+        let target_dir = target_prov.resolve_workspace_dir(params.to_dir.as_deref())?;
+        let (session, _) =
+            session_management::prepare_session_for_target_provider(&session, &params.provider)?;
+        let exported = target_prov.export_session(&session, &target_dir)?;
+
+        Ok((
+            ImportResult {
+                provider_name: target_prov.name().to_string(),
+                new_session_id: exported.session_id,
+                resume_command: exported.resume_command,
+            },
+            target_dir,
+        ))
+    })();
+    match result {
+        Ok((imported, target_dir)) => {
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion {
+                    status: ActivityStatus::Success,
+                    provider_id: Some(params.provider.clone()),
+                    provider_session_id: Some(imported.new_session_id.clone()),
+                    workspace_dir: Some(target_dir.to_string_lossy().to_string()),
+                    summary: "Imported session".to_string(),
+                    details: serde_json::json!({
+                        "source_ref": params.file_or_id,
+                        "target_provider_id": params.provider,
+                        "new_session_id": imported.new_session_id,
+                        "target_dir": target_dir,
+                        "resume_command": imported.resume_command,
+                    }),
+                    error: None,
+                },
+            )?;
+            Ok(imported)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed("Failed to import session", input_details, &message),
+            )?;
+            Err(error)
+        }
     }
-    let target_dir = target_prov.resolve_workspace_dir(params.to_dir.as_deref())?;
-    let (session, _) =
-        session_management::prepare_session_for_target_provider(&session, &params.provider)?;
-    let exported = target_prov.export_session(&session, &target_dir)?;
-
-    Ok(ImportResult {
-        provider_name: target_prov.name().to_string(),
-        new_session_id: exported.session_id,
-        resume_command: exported.resume_command,
-    })
 }
 
-pub fn delete_session(provider_id: &str, session_id: &str) -> Result<()> {
-    session_management::delete_session(provider_id, session_id)
+pub fn delete_session(provider_id: &str, session_id: &str, actor: ActivityActor) -> Result<()> {
+    delete_sessions(provider_id, &[session_id], actor)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| Err(anyhow::anyhow!("No delete result for session {session_id}")))
 }
 
-pub fn delete_sessions(provider_id: &str, session_ids: &[&str]) -> Vec<Result<()>> {
-    session_management::delete_sessions(provider_id, session_ids)
+pub fn delete_sessions(
+    provider_id: &str,
+    session_ids: &[&str],
+    actor: ActivityActor,
+) -> Vec<Result<()>> {
+    let activity_conn = match local_store::open_database() {
+        Ok(conn) => conn,
+        Err(error) => {
+            let message = format!("Failed to open activity store before delete: {error:#}");
+            return session_ids
+                .iter()
+                .map(|_| Err(anyhow::anyhow!(message.clone())))
+                .collect();
+        }
+    };
+    let mut activities = Vec::with_capacity(session_ids.len());
+    for session_id in session_ids {
+        match ActivityStore::new(&activity_conn).start(NewActivity {
+            provider_id: Some(provider_id.to_string()),
+            provider_session_id: Some((*session_id).to_string()),
+            workspace_dir: None,
+            operation_kind: ActivityOperationKind::Delete,
+            actor,
+            summary: "Deleting session".to_string(),
+            details: serde_json::json!({"provider_session_id": session_id}),
+        }) {
+            Ok(activity_id) => activities.push(activity_id),
+            Err(error) => {
+                let message = format!("Failed to start delete activity: {error:#}");
+                for (started_session_id, activity_id) in session_ids.iter().zip(activities.iter()) {
+                    let _ = ActivityStore::new(&activity_conn).finish(
+                        activity_id,
+                        ActivityCompletion::failed(
+                            "Delete cancelled before provider write",
+                            serde_json::json!({
+                                "provider_session_id": started_session_id,
+                            }),
+                            &message,
+                        ),
+                    );
+                }
+                return session_ids
+                    .iter()
+                    .map(|_| Err(anyhow::anyhow!(message.clone())))
+                    .collect();
+            }
+        }
+    }
+
+    let results = session_management::delete_sessions(provider_id, session_ids);
+    results
+        .into_iter()
+        .zip(activities)
+        .zip(session_ids)
+        .map(|((result, activity_id), session_id)| match result {
+            Ok(()) => {
+                ActivityStore::new(&activity_conn).finish(
+                    &activity_id,
+                    ActivityCompletion::success(
+                        "Deleted session",
+                        serde_json::json!({"provider_session_id": session_id}),
+                    ),
+                )?;
+                Ok(())
+            }
+            Err(error) => {
+                let message = format!("{error:#}");
+                ActivityStore::new(&activity_conn).finish(
+                    &activity_id,
+                    ActivityCompletion::failed(
+                        "Failed to delete session",
+                        serde_json::json!({"provider_session_id": session_id}),
+                        &message,
+                    ),
+                )?;
+                Err(error)
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2378,37 +2722,175 @@ pub fn rename_session(
     provider_id: &str,
     session_id: &str,
     new_title: &str,
+    actor: ActivityActor,
 ) -> Result<RenameResult> {
-    session_management::rename_session(provider_id, session_id, new_title)
+    let activity_conn = local_store::open_database()?;
+    let details = serde_json::json!({
+        "provider_session_id": session_id,
+        "new_title": new_title,
+    });
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: Some(provider_id.to_string()),
+        provider_session_id: Some(session_id.to_string()),
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Rename,
+        actor,
+        summary: "Renaming session".to_string(),
+        details: details.clone(),
+    })?;
+    match session_management::rename_session(provider_id, session_id, new_title) {
+        Ok(renamed) => {
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::success(
+                    "Renamed session",
+                    serde_json::json!({
+                        "provider_session_id": session_id,
+                        "display_title": renamed.display_title,
+                        "native_updated": renamed.native_updated,
+                        "warning": renamed.warning,
+                    }),
+                ),
+            )?;
+            Ok(renamed)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed("Failed to rename session", details, &message),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 pub fn update_session_local_state(
     provider_id: &str,
     session_id: &str,
     update: &session_state::SessionLocalStateUpdate,
+    actor: ActivityActor,
 ) -> Result<session_state::ResolvedLocalSessionState> {
-    let prov = providers::find_provider(provider_id)
-        .with_context(|| format!("Unknown provider: {}", provider_id))?;
-    let capabilities = prov.capabilities();
-    if capabilities.scan {
-        let exists = prov.get_session_meta(session_id)?.is_some();
-        if !exists {
-            anyhow::bail!("Session not found: {}", session_id);
+    let operation_kind = local_state_activity_kind(update);
+    let activity_conn = local_store::open_database()?;
+    let input_details = serde_json::to_value(update)?;
+    let workspace_dir = update
+        .workspace_override
+        .as_ref()
+        .map(|workspace| workspace.workspace_dir.clone());
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: Some(provider_id.to_string()),
+        provider_session_id: Some(session_id.to_string()),
+        workspace_dir,
+        operation_kind,
+        actor,
+        summary: "Updating session local state".to_string(),
+        details: input_details.clone(),
+    })?;
+    let result = (|| {
+        let prov = providers::find_provider(provider_id)
+            .with_context(|| format!("Unknown provider: {}", provider_id))?;
+        let capabilities = prov.capabilities();
+        if capabilities.scan {
+            let exists = prov.get_session_meta(session_id)?.is_some();
+            if !exists {
+                anyhow::bail!("Session not found: {}", session_id);
+            }
+        }
+
+        let mut normalized_update = update.clone();
+        if let Some(workspace_override) = normalized_update.workspace_override.as_mut() {
+            let workspace = workspace_override.workspace_dir.trim();
+            if workspace.is_empty() {
+                anyhow::bail!("Workspace path cannot be empty");
+            }
+            workspace_override.workspace_dir = prov
+                .normalized_workspace_key(Some(workspace))
+                .with_context(|| format!("Failed to normalize workspace: {}", workspace))?;
+        }
+
+        session_state::update_session_state(provider_id, session_id, &normalized_update)
+    })();
+    match result {
+        Ok(state) => {
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::success(
+                    "Updated session local state",
+                    serde_json::to_value(&state)?,
+                ),
+            )?;
+            Ok(state)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to update session local state",
+                    input_details,
+                    &message,
+                ),
+            )?;
+            Err(error)
         }
     }
+}
 
-    let mut normalized_update = update.clone();
-    if let Some(workspace_override) = normalized_update.workspace_override.as_mut() {
-        let workspace = workspace_override.workspace_dir.trim();
-        if workspace.is_empty() {
-            anyhow::bail!("Workspace path cannot be empty");
-        }
-        workspace_override.workspace_dir = prov
-            .normalized_workspace_key(Some(workspace))
-            .with_context(|| format!("Failed to normalize workspace: {}", workspace))?;
+fn local_state_activity_kind(
+    update: &session_state::SessionLocalStateUpdate,
+) -> ActivityOperationKind {
+    let only_hidden = update.hidden.is_some()
+        && update.pinned.is_none()
+        && update.display_title.is_none()
+        && update.notes.is_none()
+        && update.tags.is_none()
+        && update.preferred_targets.is_none()
+        && update.compressed_archive_refs.is_none()
+        && update.workspace_override.is_none();
+    if only_hidden {
+        return ActivityOperationKind::Hide;
     }
+    let only_pinned = update.pinned.is_some()
+        && update.hidden.is_none()
+        && update.display_title.is_none()
+        && update.notes.is_none()
+        && update.tags.is_none()
+        && update.preferred_targets.is_none()
+        && update.compressed_archive_refs.is_none()
+        && update.workspace_override.is_none();
+    if only_pinned {
+        return ActivityOperationKind::Pin;
+    }
+    let only_workspace_override = update.workspace_override.is_some()
+        && update.hidden.is_none()
+        && update.pinned.is_none()
+        && update.display_title.is_none()
+        && update.notes.is_none()
+        && update.tags.is_none()
+        && update.preferred_targets.is_none()
+        && update.compressed_archive_refs.is_none();
+    if only_workspace_override {
+        let workspace = update.workspace_override.as_ref().unwrap();
+        let only_workspace_hidden = workspace.hidden.is_some()
+            && workspace.pinned.is_none()
+            && workspace.preferred_targets.is_none();
+        if only_workspace_hidden {
+            return ActivityOperationKind::Hide;
+        }
+        let only_workspace_pinned = workspace.pinned.is_some()
+            && workspace.hidden.is_none()
+            && workspace.preferred_targets.is_none();
+        if only_workspace_pinned {
+            return ActivityOperationKind::Pin;
+        }
+    }
+    ActivityOperationKind::LocalStateUpdate
+}
 
-    session_state::update_session_state(provider_id, session_id, &normalized_update)
+pub fn list_management_activity(query: &ActivityQuery) -> Result<Vec<ActivityRecord>> {
+    let conn = local_store::open_database()?;
+    ActivityStore::new(&conn).query(query)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3281,6 +3763,40 @@ mod tests {
             .contains("Try a broader query"));
         assert!(no_match.events.is_empty());
         assert!(no_match.matches.is_empty());
+    }
+
+    #[test]
+    fn local_state_activity_kind_only_uses_specific_hide_or_pin_operations() {
+        assert_eq!(
+            local_state_activity_kind(&session_state::SessionLocalStateUpdate {
+                hidden: Some(true),
+                ..Default::default()
+            }),
+            ActivityOperationKind::Hide
+        );
+        assert_eq!(
+            local_state_activity_kind(&session_state::SessionLocalStateUpdate {
+                workspace_override: Some(session_state::WorkspaceLocalStateUpdate {
+                    workspace_dir: "/tmp/project".to_string(),
+                    pinned: Some(Some(true)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ActivityOperationKind::Pin
+        );
+        assert_eq!(
+            local_state_activity_kind(&session_state::SessionLocalStateUpdate {
+                notes: Some(Some("note".to_string())),
+                workspace_override: Some(session_state::WorkspaceLocalStateUpdate {
+                    workspace_dir: "/tmp/project".to_string(),
+                    hidden: Some(Some(true)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ActivityOperationKind::LocalStateUpdate
+        );
     }
 
     #[test]

@@ -754,13 +754,10 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
-    use std::sync::{Mutex, OnceLock};
     use tower::util::ServiceExt;
 
-    static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+        crate::hooks::test_support::test_runtime_guard()
     }
 
     async fn read_json(app: Router, request: Request<Body>) -> (StatusCode, serde_json::Value) {

@@ -7,7 +7,9 @@ use memorph::{
         Cli, Commands, CompressionCommands, LegacyCodexToolCommands, LegacyToolCommands,
         SessionCommands, SyncCommands,
     },
-    config, core, provider_features, providers, server, sync as session_sync, tui, web_assets,
+    config, core, provider_features, providers, server,
+    storage::activity_store::ActivityActor,
+    sync as session_sync, tui, web_assets,
 };
 use std::path::Path;
 use std::process::Command;
@@ -47,13 +49,16 @@ fn run_command(command: Commands) -> Result<()> {
             format,
             output,
         } => {
-            let result = core::export_session(&core::ExportParams {
-                provider,
-                session_id,
-                output_prefix: output,
-                output_dir: None,
-                format: format.clone(),
-            })?;
+            let result = core::export_session(
+                &core::ExportParams {
+                    provider,
+                    session_id,
+                    output_prefix: output,
+                    output_dir: None,
+                    format: format.clone(),
+                },
+                ActivityActor::Cli,
+            )?;
 
             for file in result.files {
                 println!("Exported: {}", file);
@@ -65,11 +70,14 @@ fn run_command(command: Commands) -> Result<()> {
             file_or_id,
             to_dir,
         } => {
-            let result = core::import_session(&core::ImportParams {
-                provider,
-                file_or_id,
-                to_dir,
-            })?;
+            let result = core::import_session(
+                &core::ImportParams {
+                    provider,
+                    file_or_id,
+                    to_dir,
+                },
+                ActivityActor::Cli,
+            )?;
             println!(
                 "Imported session into {}: {}",
                 result.provider_name, result.new_session_id
@@ -84,7 +92,7 @@ fn run_command(command: Commands) -> Result<()> {
             session_id,
         } => {
             let provider_name = provider_name(&provider)?;
-            core::delete_session(&provider, &session_id)?;
+            core::delete_session(&provider, &session_id, ActivityActor::Cli)?;
             println!("Removed session from {}: {}", provider_name, session_id);
         }
 
@@ -93,7 +101,8 @@ fn run_command(command: Commands) -> Result<()> {
             session_id,
             new_title,
         } => {
-            let result = core::rename_session(&provider, &session_id, &new_title)?;
+            let result =
+                core::rename_session(&provider, &session_id, &new_title, ActivityActor::Cli)?;
             println!(
                 "Renamed session in {}: {} -> {}",
                 result.provider_name, result.session_id, result.display_title
@@ -261,7 +270,7 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
             println!("{}", session_projection_report_text(&view));
         }
         SessionCommands::RefreshStale => {
-            let report = core::refresh_projected_session_staleness()?;
+            let report = core::refresh_projected_session_staleness(ActivityActor::Cli)?;
             println!("Checked sources: {}", report.checked_sources);
             println!("Fresh snapshots: {}", report.fresh_snapshots);
             println!("Stale snapshots: {}", report.stale_snapshots);
@@ -269,7 +278,7 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
             println!("Unknown sources: {}", report.unknown_sources);
         }
         SessionCommands::ReprojectStale { provider } => {
-            let report = core::reproject_stale_sessions(provider.as_deref())?;
+            let report = core::reproject_stale_sessions(provider.as_deref(), ActivityActor::Cli)?;
             println!("Candidate snapshots: {}", report.candidate_snapshots);
             println!("Reprojected snapshots: {}", report.reprojected_snapshots);
             println!("Missing sources: {}", report.missing_sources);
@@ -622,8 +631,8 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             if let Some(value) = min_savings_ratio_percent {
                 policy.min_savings_ratio_percent = value;
             }
-            let result =
-                core::active_compression_apply(&core::ActiveCompressionApplyCommandParams {
+            let result = core::active_compression_apply(
+                &core::ActiveCompressionApplyCommandParams {
                     source_provider_id,
                     target_provider_id,
                     session_id,
@@ -632,7 +641,9 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
                     candidate_ids,
                     output_prefix: output,
                     format,
-                })?;
+                },
+                ActivityActor::Cli,
+            )?;
             for file in &result.files {
                 println!("Wrote active compression session: {}", file);
             }
@@ -830,9 +841,9 @@ fn run_sync_command(command: SyncCommands) -> Result<()> {
             from_holding,
         } => {
             let report = if let Some(holding_id) = from_holding {
-                session_sync::push_sync(&group_id, &holding_id)?
+                session_sync::push_sync(&group_id, &holding_id, ActivityActor::Cli)?
             } else {
-                session_sync::sync_to_latest(&group_id)?
+                session_sync::sync_to_latest(&group_id, ActivityActor::Cli)?
             };
             println!(
                 "Sync complete: source={} | success={:?} | errors={}",
@@ -848,7 +859,7 @@ fn run_sync_command(command: SyncCommands) -> Result<()> {
             group_id,
             holding_id,
         } => {
-            let report = session_sync::push_sync(&group_id, &holding_id)?;
+            let report = session_sync::push_sync(&group_id, &holding_id, ActivityActor::Cli)?;
             println!(
                 "Push sync complete: source={} | success={:?} | errors={}",
                 report.source_provider,

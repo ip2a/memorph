@@ -5,7 +5,7 @@
 //! data and are stored in the local SQLite database.
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 #[cfg(test)]
@@ -210,7 +210,7 @@ fn save_runtime_sessions_in(
     runtime_store: &RuntimeSessionStore,
 ) -> Result<()> {
     let tx = conn
-        .transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .context("Failed to start runtime session snapshot transaction")?;
     let current_ids = runtime_store
         .sessions
@@ -566,6 +566,45 @@ mod tests {
         .unwrap();
         let loaded = load_runtime_sessions_in(store.connection()).unwrap();
         assert_eq!(loaded.sessions, vec![first]);
+    }
+
+    #[test]
+    fn runtime_snapshot_waits_for_concurrent_writer_before_reading() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memorph.db");
+        let mut blocker = LocalSqliteStore::open(&path).unwrap();
+        let mut writer = LocalSqliteStore::open(&path).unwrap();
+        let blocker_tx = blocker
+            .connection_mut()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        blocker_tx
+            .execute(
+                "INSERT INTO hook_errors
+                 (id, scope, message, observed_at_ms, details_json)
+                 VALUES ('blocker', 'test', 'blocking write', 0, '{}')",
+                [],
+            )
+            .unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let writer_barrier = barrier.clone();
+        let handle = std::thread::spawn(move || {
+            writer_barrier.wait();
+            save_runtime_sessions_in(
+                writer.connection_mut(),
+                &RuntimeSessionStore {
+                    version: 1,
+                    sessions: vec![runtime_session("runtime-concurrent", chrono::Utc::now())],
+                },
+            )
+        });
+
+        barrier.wait();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        blocker_tx.commit().unwrap();
+
+        handle.join().unwrap().unwrap();
     }
 
     #[test]

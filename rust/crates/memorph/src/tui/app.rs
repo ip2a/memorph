@@ -13,6 +13,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use crate::config::UiLanguage;
 use crate::core::{self, ExportParams, SessionDetailView, SessionGroup, SessionItem, SwitchParams};
 use crate::i18n;
+use crate::storage::activity_store::ActivityActor;
 use crate::{config, provider_settings, providers};
 
 pub const ACTION_OPTIONS: [SessionAction; 6] = [
@@ -1734,7 +1735,7 @@ impl App {
             format: "json".to_string(),
         };
 
-        match core::active_compression_apply(&params) {
+        match core::active_compression_apply(&params, ActivityActor::Tui) {
             Ok(result) => {
                 let mut lines = vec![
                     format!("Applied candidates: {}", result.report.candidates.len()),
@@ -1787,7 +1788,7 @@ impl App {
             output_dir: None,
         };
 
-        match core::export_session(&params) {
+        match core::export_session(&params, ActivityActor::Tui) {
             Ok(result) => self.set_action_success(self.t("exportComplete"), result.files),
             Err(e) => self.set_action_error(self.t("exportFailed"), vec![e.to_string()]),
         }
@@ -1810,7 +1811,12 @@ impl App {
             return;
         }
 
-        match core::rename_session(&selected.provider_id, &selected.session_id, &new_title) {
+        match core::rename_session(
+            &selected.provider_id,
+            &selected.session_id,
+            &new_title,
+            ActivityActor::Tui,
+        ) {
             Ok(result) => {
                 let mut lines = vec![
                     format!("Display title: {}", result.display_title),
@@ -1835,7 +1841,11 @@ impl App {
             return;
         };
 
-        match core::delete_session(&selected.provider_id, &selected.session_id) {
+        match core::delete_session(
+            &selected.provider_id,
+            &selected.session_id,
+            ActivityActor::Tui,
+        ) {
             Ok(()) => {
                 self.set_action_success(self.t("deleteComplete"), vec![selected.session_id]);
                 self.reload_after_action();

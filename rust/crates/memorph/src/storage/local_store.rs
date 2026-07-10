@@ -1,11 +1,11 @@
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, TransactionBehavior};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 pub struct LocalSqliteStore {
     path: PathBuf,
@@ -68,22 +68,36 @@ pub(crate) fn configure_connection(conn: &Connection) -> Result<()> {
 pub(crate) fn apply_schema(conn: &mut Connection) -> Result<()> {
     create_schema_migrations_table(conn)?;
     let applied = applied_migrations(conn)?;
-    if !applied.contains(&SCHEMA_VERSION) {
-        let tx = conn
-            .transaction()
-            .context("Failed to start memorph DB schema migration")?;
+    if applied.contains(&SCHEMA_VERSION) {
+        return Ok(());
+    }
+
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("Failed to start memorph DB schema migration")?;
+    let applied = applied_migrations(&tx)?;
+    if !applied.contains(&1) {
         tx.execute_batch(V1_SCHEMA)
             .context("Failed to apply memorph DB schema v1")?;
         tx.execute(
             "INSERT INTO schema_migrations (version, name, applied_at_ms)
              VALUES (?1, ?2, strftime('%s','now') * 1000)",
-            params![SCHEMA_VERSION, "local_session_store_v1"],
+            params![1, "local_session_store_v1"],
         )
         .context("Failed to record memorph DB schema migration")?;
-        tx.commit()
-            .context("Failed to commit memorph DB schema migration")?;
     }
-    Ok(())
+    if !applied.contains(&SCHEMA_VERSION) {
+        tx.execute_batch(V2_SCHEMA)
+            .context("Failed to apply memorph DB schema v2")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![SCHEMA_VERSION, "session_activity_query_fields_v2"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    tx.commit()
+        .context("Failed to commit memorph DB schema migration")
 }
 
 fn create_schema_migrations_table(conn: &Connection) -> Result<()> {
@@ -524,6 +538,23 @@ CREATE INDEX IF NOT EXISTS idx_backups_session_created
     ON backups(session_id, created_at_ms DESC);
 "#;
 
+const V2_SCHEMA: &str = r#"
+ALTER TABLE session_activity ADD COLUMN provider_session_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_session_activity_provider_session_started
+    ON session_activity(provider_id, provider_session_id, started_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_session_activity_workspace_started
+    ON session_activity(workspace_dir, started_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_session_activity_operation_started
+    ON session_activity(operation_kind, started_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_session_activity_status_started
+    ON session_activity(status, started_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_session_activity_actor_started
+    ON session_activity(actor, started_at_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_session_activity_started
+    ON session_activity(started_at_ms DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,8 +618,74 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(migration_count, 1);
+        assert_eq!(migration_count, 2);
         assert_eq!(max_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn concurrent_initialization_applies_schema_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memorph.db");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    LocalSqliteStore::open(path)
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        let store = LocalSqliteStore::open(path).unwrap();
+        let migration_count: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(migration_count, 2);
+    }
+
+    #[test]
+    fn migrates_existing_v1_schema_to_v2() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema_migrations_table(&conn).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (1, 'local_session_store_v1', 0)",
+            [],
+        )
+        .unwrap();
+
+        apply_schema(&mut conn).unwrap();
+
+        let provider_session_id_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM pragma_table_info('session_activity')
+                    WHERE name = 'provider_session_id'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let migration_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert!(provider_session_id_exists);
+        assert_eq!(migration_count, 2);
     }
 
     #[test]

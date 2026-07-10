@@ -8,7 +8,13 @@ use crate::canonical::CanonicalSession;
 #[cfg(test)]
 use crate::core::compression;
 use crate::providers;
-use crate::storage::{local_store, sync_store};
+use crate::storage::{
+    activity_store::{
+        ActivityActor, ActivityCompletion, ActivityOperationKind, ActivityStatus, ActivityStore,
+        NewActivity,
+    },
+    local_store, sync_store,
+};
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -191,7 +197,9 @@ fn cleanup_created_targets(created_targets: &[(String, String)]) {
         if !provider.capabilities().delete {
             continue;
         }
-        if let Err(error) = crate::core::delete_session(provider_id, session_id) {
+        if let Err(error) =
+            crate::core::delete_session(provider_id, session_id, ActivityActor::Sync)
+        {
             eprintln!(
                 "Warning: failed to clean up created sync target {}:{}: {}",
                 provider_id, session_id, error
@@ -276,7 +284,11 @@ pub fn delete_group(group_id: &str, delete_provider_sessions: bool) -> Result<()
     if delete_provider_sessions {
         if let Ok(group) = load_group(group_id) {
             for holding in &group.holdings {
-                let _ = crate::core::delete_session(&holding.provider, &holding.session_id);
+                let _ = crate::core::delete_session(
+                    &holding.provider,
+                    &holding.session_id,
+                    ActivityActor::Sync,
+                );
             }
         }
     }
@@ -297,108 +309,217 @@ pub fn rename_group(group_id: &str, title: &str) -> Result<()> {
 // Sync
 // ---------------------------------------------------------------------------
 
-pub fn push_sync(group_id: &str, source_holding_id: &str) -> Result<SyncReport> {
-    let mut group = load_group(group_id)?;
-    let source = group
-        .holdings
-        .iter()
-        .find(|h| h.id == source_holding_id)
-        .with_context(|| format!("Source holding not found: {}", source_holding_id))?
-        .clone();
+pub fn push_sync(
+    group_id: &str,
+    source_holding_id: &str,
+    actor: ActivityActor,
+) -> Result<SyncReport> {
+    let activity_conn = local_store::open_database()?;
+    let input_details = serde_json::json!({
+        "group_id": group_id,
+        "source_holding_id": source_holding_id,
+    });
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: None,
+        provider_session_id: None,
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Sync,
+        actor,
+        summary: "Synchronizing session group".to_string(),
+        details: input_details.clone(),
+    })?;
+    let mut source_identity: Option<(String, String, Option<String>)> = None;
+    let result = (|| {
+        let mut group = load_group(group_id)?;
+        let source = group
+            .holdings
+            .iter()
+            .find(|h| h.id == source_holding_id)
+            .with_context(|| format!("Source holding not found: {}", source_holding_id))?
+            .clone();
+        source_identity = Some((
+            source.provider.clone(),
+            source.session_id.clone(),
+            source.target_dir.clone(),
+        ));
 
-    let session = crate::core::get_canonical_session(&source.provider, &source.session_id)
-        .with_context(|| format!("Failed to load source session from {}", source.provider))?;
-
-    let mut report = SyncReport {
-        source_provider: source.provider.clone(),
-        source_holding_id: source_holding_id.to_string(),
-        success: Vec::new(),
-        errors: Vec::new(),
-    };
-
-    let now = Utc::now().timestamp_millis();
-
-    for holding in &mut group.holdings {
-        if holding.id == source_holding_id {
-            holding.last_sync_at = Some(now);
-            holding.last_sync_from = Some(source.provider.clone());
-            holding.last_error = None;
-            continue;
+        let session = crate::core::get_canonical_session(&source.provider, &source.session_id)
+            .with_context(|| format!("Failed to load source session from {}", source.provider))?;
+        if let Some((_, _, workspace_dir)) = source_identity.as_mut() {
+            if workspace_dir.is_none() {
+                *workspace_dir = session.session.context.workspace_dir.clone();
+            }
         }
 
-        let provider = match providers::find_provider(&holding.provider) {
-            Some(p) => p,
-            None => {
-                let msg = format!("Unknown provider: {}", holding.provider);
-                holding.last_error = Some(msg.clone());
-                report.errors.push(msg);
-                continue;
-            }
+        let mut report = SyncReport {
+            source_provider: source.provider.clone(),
+            source_holding_id: source_holding_id.to_string(),
+            success: Vec::new(),
+            errors: Vec::new(),
         };
+        let now = Utc::now().timestamp_millis();
 
-        let target_dir = holding
-            .target_dir
-            .as_deref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-
-        let old_session_id = holding.session_id.clone();
-        let target_session =
-            prepare_session_for_export(&session.session, &source.provider, &holding.provider)?;
-        match provider.export_session(&target_session, &target_dir) {
-            Ok(exported) => {
-                holding.session_id = exported.session_id;
+        for holding in &mut group.holdings {
+            if holding.id == source_holding_id {
                 holding.last_sync_at = Some(now);
                 holding.last_sync_from = Some(source.provider.clone());
                 holding.last_error = None;
-                report.success.push(holding.provider.clone());
+                continue;
+            }
 
-                if provider.capabilities().delete && old_session_id != holding.session_id {
-                    if let Err(e) = crate::core::delete_session(&holding.provider, &old_session_id)
-                    {
-                        eprintln!(
-                            "Warning: failed to delete old session {} after sync: {}",
-                            old_session_id, e
-                        );
+            let provider = match providers::find_provider(&holding.provider) {
+                Some(provider) => provider,
+                None => {
+                    let message = format!("Unknown provider: {}", holding.provider);
+                    holding.last_error = Some(message.clone());
+                    report.errors.push(message);
+                    continue;
+                }
+            };
+            let target_dir = holding
+                .target_dir
+                .as_deref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let old_session_id = holding.session_id.clone();
+            let target_session =
+                prepare_session_for_export(&session.session, &source.provider, &holding.provider)?;
+            match provider.export_session(&target_session, &target_dir) {
+                Ok(exported) => {
+                    holding.session_id = exported.session_id;
+                    holding.last_sync_at = Some(now);
+                    holding.last_sync_from = Some(source.provider.clone());
+                    holding.last_error = None;
+                    report.success.push(holding.provider.clone());
+
+                    if provider.capabilities().delete && old_session_id != holding.session_id {
+                        if let Err(error) = crate::core::delete_session(
+                            &holding.provider,
+                            &old_session_id,
+                            ActivityActor::Sync,
+                        ) {
+                            let message = format!(
+                                "Synchronized to {} but failed to delete old session {}: {error:#}",
+                                holding.provider, old_session_id
+                            );
+                            holding.last_error = Some(message.clone());
+                            report.errors.push(message);
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                let msg = format!("Failed to sync to {}: {:#}", holding.provider, e);
-                holding.last_error = Some(msg.clone());
-                report.errors.push(msg);
+                Err(error) => {
+                    let message = format!("Failed to sync to {}: {error:#}", holding.provider);
+                    holding.last_error = Some(message.clone());
+                    report.errors.push(message);
+                }
             }
         }
-    }
 
-    group.updated_at = now;
-    save_group(&group)?;
-    let conn = local_store::open_database()?;
-    sync_store::record_sync_run(
-        &conn,
-        group_id,
-        source_holding_id,
-        now,
-        Utc::now().timestamp_millis(),
-        &report,
-    )?;
-    Ok(report)
+        group.updated_at = now;
+        save_group(&group)?;
+        let conn = local_store::open_database()?;
+        sync_store::record_sync_run(
+            &conn,
+            group_id,
+            source_holding_id,
+            now,
+            Utc::now().timestamp_millis(),
+            &report,
+        )?;
+        Ok(report)
+    })();
+
+    let (provider_id, provider_session_id, workspace_dir) = source_identity
+        .clone()
+        .map(|(provider_id, provider_session_id, workspace_dir)| {
+            (Some(provider_id), Some(provider_session_id), workspace_dir)
+        })
+        .unwrap_or((None, None, None));
+    match result {
+        Ok(report) => {
+            let status = if report.errors.is_empty() {
+                ActivityStatus::Success
+            } else if report.success.is_empty() {
+                ActivityStatus::Failed
+            } else {
+                ActivityStatus::Partial
+            };
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion {
+                    status,
+                    provider_id,
+                    provider_session_id,
+                    workspace_dir,
+                    summary: "Synchronized session group".to_string(),
+                    details: serde_json::json!({
+                        "group_id": group_id,
+                        "source_holding_id": source_holding_id,
+                        "source_provider": report.source_provider,
+                        "success": report.success,
+                        "errors": report.errors,
+                    }),
+                    error: (!report.errors.is_empty()).then(|| report.errors.join("\n")),
+                },
+            )?;
+            Ok(report)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion {
+                    status: ActivityStatus::Failed,
+                    provider_id,
+                    provider_session_id,
+                    workspace_dir,
+                    summary: "Failed to synchronize session group".to_string(),
+                    details: input_details,
+                    error: Some(message),
+                },
+            )?;
+            Err(error)
+        }
+    }
 }
 
-pub fn sync_to_latest(group_id: &str) -> Result<SyncReport> {
-    let mut group = load_group(group_id)?;
-    refresh_active_times(&mut group)?;
-
-    let source_id = group
-        .holdings
-        .iter()
-        .filter(|h| h.last_active_at.is_some())
-        .max_by_key(|h| h.last_active_at.unwrap_or(0))
-        .map(|h| h.id.clone())
-        .with_context(|| "No holding with active time found")?;
-
-    // Re-load because push_sync also loads the group
-    push_sync(group_id, &source_id)
+pub fn sync_to_latest(group_id: &str, actor: ActivityActor) -> Result<SyncReport> {
+    let source_result = (|| {
+        let mut group = load_group(group_id)?;
+        refresh_active_times(&mut group)?;
+        group
+            .holdings
+            .iter()
+            .filter(|holding| holding.last_active_at.is_some())
+            .max_by_key(|holding| holding.last_active_at.unwrap_or(0))
+            .map(|holding| holding.id.clone())
+            .with_context(|| "No holding with active time found")
+    })();
+    match source_result {
+        Ok(source_id) => push_sync(group_id, &source_id, actor),
+        Err(error) => {
+            let conn = local_store::open_database()?;
+            let activity_id = ActivityStore::new(&conn).start(NewActivity {
+                provider_id: None,
+                provider_session_id: None,
+                workspace_dir: None,
+                operation_kind: ActivityOperationKind::Sync,
+                actor,
+                summary: "Selecting latest session sync source".to_string(),
+                details: serde_json::json!({"group_id": group_id}),
+            })?;
+            let message = format!("{error:#}");
+            ActivityStore::new(&conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to select latest session sync source",
+                    serde_json::json!({"group_id": group_id}),
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
