@@ -882,6 +882,30 @@ mod tests {
     }
 
     #[test]
+    fn list_session_snapshots_does_not_read_provider_source_file() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let file = NamedTempFile::new().unwrap();
+        let source_path = file.path().to_string_lossy().to_string();
+        insert_projected_snapshot_with_source_path(
+            &conn,
+            "canonical-1",
+            "claude",
+            "native-1",
+            "/tmp/project",
+            &source_path,
+            20,
+        );
+        drop(file);
+
+        let rows = SnapshotStore::new(&conn).list_session_snapshots().unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source_path.as_deref(), Some(source_path.as_str()));
+        assert_eq!(rows[0].provider_session_id.as_deref(), Some("native-1"));
+    }
+
+    #[test]
     fn reads_projected_session_detail_page() {
         let mut conn = Connection::open_in_memory().unwrap();
         local_store::apply_schema(&mut conn).unwrap();
@@ -990,6 +1014,44 @@ mod tests {
         );
         match &page.events[0].blocks[0] {
             EventBlock::Text { text } => assert_eq!(text, "Second"),
+            block => panic!("unexpected block: {block:?}"),
+        }
+    }
+
+    #[test]
+    fn get_session_detail_page_does_not_read_provider_source_file() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let file = NamedTempFile::new().unwrap();
+        let source_path = file.path().to_string_lossy().to_string();
+        insert_projected_snapshot_with_source_path(
+            &conn,
+            "canonical-1",
+            "claude",
+            "native-1",
+            "/tmp/project",
+            &source_path,
+            20,
+        );
+        conn.execute(
+            "INSERT INTO session_turns
+             (id, session_id, status, confidence, turn_order)
+             VALUES ('turn-1', 'canonical-1', 'completed', 'exact', 0)",
+            [],
+        )
+        .unwrap();
+        insert_event(&conn, "event-1", "turn-1", "user", 1000, 0, "Cached only");
+        drop(file);
+
+        let page = SnapshotStore::new(&conn)
+            .get_session_detail_page("claude", "native-1", 0, None)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(page.source_path.as_deref(), Some(source_path.as_str()));
+        assert_eq!(page.events.len(), 1);
+        match &page.events[0].blocks[0] {
+            EventBlock::Text { text } => assert_eq!(text, "Cached only"),
             block => panic!("unexpected block: {block:?}"),
         }
     }
@@ -1108,15 +1170,36 @@ mod tests {
         workspace_dir: &str,
         file_size_bytes: i64,
     ) {
+        insert_projected_snapshot_with_source_path(
+            conn,
+            session_id,
+            provider_id,
+            provider_session_id,
+            workspace_dir,
+            "/tmp/source.jsonl",
+            file_size_bytes,
+        );
+    }
+
+    fn insert_projected_snapshot_with_source_path(
+        conn: &Connection,
+        session_id: &str,
+        provider_id: &str,
+        provider_session_id: &str,
+        workspace_dir: &str,
+        source_path: &str,
+        file_size_bytes: i64,
+    ) {
         conn.execute(
             "INSERT INTO session_sources
              (id, provider_id, provider_session_id, source_path, workspace_dir, file_size_bytes,
               first_seen_at_ms, last_seen_at_ms)
-             VALUES (?1, ?2, ?3, '/tmp/source.jsonl', ?4, ?5, 10, 10)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 10, 10)",
             params![
                 format!("source-{session_id}"),
                 provider_id,
                 provider_session_id,
+                source_path,
                 workspace_dir,
                 file_size_bytes,
             ],
