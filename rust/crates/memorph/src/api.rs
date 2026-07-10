@@ -1665,6 +1665,7 @@ async fn run_legacy_provider_feature(
         &feature_id,
         provider_features::ProviderFeatureContext {
             workspace: body.workspace,
+            actor: ActivityActor::Api,
         },
     ) {
         Ok(output) => ApiResponse::success(output).into_response(),
@@ -1681,6 +1682,7 @@ async fn run_provider_setting(
         &setting_id,
         provider_settings::ProviderSettingContext {
             workspace: body.workspace,
+            actor: ActivityActor::Api,
         },
     ) {
         Ok(output) => ApiResponse::success(output).into_response(),
@@ -1697,6 +1699,7 @@ async fn run_legacy_provider_control(
         &control_id,
         provider_settings::ProviderSettingContext {
             workspace: body.workspace,
+            actor: ActivityActor::Api,
         },
     ) {
         Ok(output) => ApiResponse::success(output).into_response(),

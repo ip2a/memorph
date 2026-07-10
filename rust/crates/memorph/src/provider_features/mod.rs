@@ -64,15 +64,17 @@ impl From<crate::provider_settings::ProviderSettingItem> for ResolvedProviderFea
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ProviderFeatureContext {
     pub workspace: Option<String>,
+    pub actor: crate::storage::activity_store::ActivityActor,
 }
 
 impl From<ProviderFeatureContext> for crate::provider_settings::ProviderSettingContext {
     fn from(context: ProviderFeatureContext) -> Self {
         Self {
             workspace: context.workspace,
+            actor: context.actor,
         }
     }
 }

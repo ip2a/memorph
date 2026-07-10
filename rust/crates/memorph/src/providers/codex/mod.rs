@@ -17,8 +17,15 @@ use crate::provider::{
     ProviderContentFidelity, ProviderSessionImportPage, ProviderSessionSummary, ProviderWriteRisk,
     ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
-use crate::storage::projection_store::{ProjectionStore, StoredProjection};
-use crate::storage::{event_index, session_state};
+use crate::storage::{
+    activity_store::{
+        ActivityActor, ActivityCompletion, ActivityOperationKind, ActivityStore, NewActivity,
+    },
+    artifact_store::{ArtifactStore, BackupRecord, NewBackupRecord},
+    event_index, local_store,
+    projection_store::{ProjectionStore, StoredProjection},
+    session_state,
+};
 use crate::utils;
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -128,6 +135,10 @@ pub struct CodexWorkspaceRepairReport {
     pub retitled_session_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backup_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_artifact_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_id: Option<String>,
     pub sqlite_rows_updated: usize,
     pub sqlite_provider_rows_updated: usize,
     pub sqlite_user_event_rows_updated: usize,
@@ -162,7 +173,9 @@ struct CodexSessionFileMeta {
 struct CodexSyncBackupMetadata {
     version: u8,
     namespace: String,
+    operation_id: String,
     codex_home: String,
+    workspace_dir: String,
     target_provider: String,
     created_at: String,
     session_index_present: bool,
@@ -601,18 +614,78 @@ pub fn sync_workspace_sessions(
     workspace: Option<&str>,
     codex_home: Option<&Path>,
     keep_backups: usize,
+    actor: ActivityActor,
 ) -> Result<CodexWorkspaceRepairReport> {
     let codex_dir = codex_home
         .map(Path::to_path_buf)
         .unwrap_or_else(get_codex_dir);
-    sync_workspace_sessions_in_codex_home(&codex_dir, workspace, keep_backups)
+    let backup_root = crate::config::memorph_dir()?
+        .join("artifacts")
+        .join("backups")
+        .join("codex-sync");
+    let mut activity_conn = local_store::open_database()?;
+    let input_details = serde_json::json!({
+        "workspace": workspace,
+        "codex_home": utils::user_visible_path(&codex_dir.to_string_lossy()),
+        "keep_backups": keep_backups,
+    });
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: Some(PROVIDER_ID.to_string()),
+        provider_session_id: None,
+        workspace_dir: workspace.map(str::to_string),
+        operation_kind: ActivityOperationKind::Sync,
+        actor,
+        summary: "Synchronizing Codex workspace sessions".to_string(),
+        details: input_details.clone(),
+    })?;
+    let result = sync_workspace_sessions_in_codex_home(
+        &mut activity_conn,
+        &activity_id,
+        &backup_root,
+        &codex_dir,
+        workspace,
+        keep_backups,
+    );
+    match result {
+        Ok(report) => {
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion {
+                    workspace_dir: Some(report.workspace_dir.clone()),
+                    ..ActivityCompletion::success(
+                        "Synchronized Codex workspace sessions",
+                        serde_json::json!({"report": &report}),
+                    )
+                },
+            )?;
+            Ok(report)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to synchronize Codex workspace sessions",
+                    input_details,
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
 }
 
-pub fn repair_workspace_sessions(workspace: Option<&str>) -> Result<CodexWorkspaceRepairReport> {
-    sync_workspace_sessions(workspace, None, DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT)
+pub fn repair_workspace_sessions(
+    workspace: Option<&str>,
+    actor: ActivityActor,
+) -> Result<CodexWorkspaceRepairReport> {
+    sync_workspace_sessions(workspace, None, DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT, actor)
 }
 
 fn sync_workspace_sessions_in_codex_home(
+    activity_conn: &mut Connection,
+    operation_id: &str,
+    backup_root: &Path,
     codex_dir: &Path,
     workspace: Option<&str>,
     keep_backups: usize,
@@ -640,6 +713,8 @@ fn sync_workspace_sessions_in_codex_home(
         reindexed_session_count: 0,
         retitled_session_count: 0,
         backup_dir: None,
+        backup_artifact_id: None,
+        backup_id: None,
         sqlite_rows_updated: 0,
         sqlite_provider_rows_updated: 0,
         sqlite_user_event_rows_updated: 0,
@@ -704,20 +779,43 @@ fn sync_workspace_sessions_in_codex_home(
         }
     }
 
-    if candidates.is_empty() {
-        update_codex_global_state_file_if_exists(codex_dir, &workspace_root)?;
+    if candidates.is_empty() && !codex_dir.join(CODEX_GLOBAL_STATE_FILE_BASENAME).exists() {
         return Ok(report);
     }
 
+    let provider_session_ids = candidates
+        .iter()
+        .map(|candidate| candidate.session.session_id.clone())
+        .collect::<Vec<_>>();
     let backup_dir = create_codex_sync_backup(
+        backup_root,
+        operation_id,
         codex_dir,
+        &workspace_key,
         &current_model_provider,
         &candidates
             .iter()
             .map(|candidate| candidate.rollout_path.clone())
             .collect::<Vec<_>>(),
     )?;
+    let backup = register_codex_sync_backup(
+        activity_conn,
+        operation_id,
+        codex_dir,
+        &backup_dir,
+        &workspace_key,
+        &current_model_provider,
+        &provider_session_ids,
+    )
+    .with_context(|| {
+        format!(
+            "Failed to register Codex pre-write backup: {}",
+            backup_dir.display()
+        )
+    })?;
     report.backup_dir = Some(utils::user_visible_path(&backup_dir.to_string_lossy()));
+    report.backup_artifact_id = Some(backup.artifact.id);
+    report.backup_id = Some(backup.id);
 
     let sync_result: Result<()> = (|| {
         let mut synced_sessions = Vec::new();
@@ -829,7 +927,13 @@ fn sync_workspace_sessions_in_codex_home(
         return Err(error);
     }
 
-    report.pruned_backup_count = prune_codex_sync_backups(codex_dir, keep_backups)?;
+    report.pruned_backup_count = prune_codex_sync_backups(
+        activity_conn,
+        backup_root,
+        codex_dir,
+        operation_id,
+        keep_backups,
+    )?;
     Ok(report)
 }
 
@@ -933,12 +1037,26 @@ fn sync_workspace_sqlite_metadata(
 }
 
 fn create_codex_sync_backup(
+    backup_root: &Path,
+    operation_id: &str,
     codex_dir: &Path,
+    workspace_dir: &str,
     target_provider: &str,
     rollout_paths: &[PathBuf],
 ) -> Result<PathBuf> {
-    let backup_root = codex_sync_backup_root(codex_dir);
-    let backup_dir = backup_root.join(codex_sync_backup_slug());
+    std::fs::create_dir_all(backup_root).with_context(|| {
+        format!(
+            "Failed to create Codex sync backup root: {}",
+            backup_root.display()
+        )
+    })?;
+    let backup_dir = backup_root.join(operation_id);
+    std::fs::create_dir(&backup_dir).with_context(|| {
+        format!(
+            "Failed to create Codex sync backup directory: {}",
+            backup_dir.display()
+        )
+    })?;
     let rollouts_dir = backup_dir.join("rollouts");
     let db_dir = backup_dir.join("db");
     std::fs::create_dir_all(&rollouts_dir)?;
@@ -997,7 +1115,9 @@ fn create_codex_sync_backup(
     let metadata = CodexSyncBackupMetadata {
         version: 1,
         namespace: CODEX_SYNC_BACKUP_NAMESPACE.to_string(),
+        operation_id: operation_id.to_string(),
         codex_home: codex_dir.to_string_lossy().to_string(),
+        workspace_dir: workspace_dir.to_string(),
         target_provider: target_provider.to_string(),
         created_at: Utc::now().to_rfc3339(),
         session_index_present,
@@ -1011,6 +1131,41 @@ fn create_codex_sync_backup(
     )?;
 
     Ok(backup_dir)
+}
+
+fn register_codex_sync_backup(
+    conn: &mut Connection,
+    operation_id: &str,
+    codex_dir: &Path,
+    backup_dir: &Path,
+    workspace_dir: &str,
+    target_provider: &str,
+    provider_session_ids: &[String],
+) -> Result<BackupRecord> {
+    ArtifactStore::new(conn).register_backup(NewBackupRecord {
+        operation_id: Some(operation_id.to_string()),
+        provider_id: Some(PROVIDER_ID.to_string()),
+        provider_session_id: None,
+        session_id: None,
+        source_path: Some(codex_dir.to_path_buf()),
+        backup_path: backup_dir.to_path_buf(),
+        restore_hint: Some(
+            "Restore this backup with memorph's Codex sync restore flow before reopening Codex."
+                .to_string(),
+        ),
+        mime_type: Some("application/vnd.memorph.codex-sync-backup".to_string()),
+        format: Some("codex-sync-backup-v1".to_string()),
+        artifact_metadata: serde_json::json!({
+            "role": "codex_prewrite_sync_backup",
+            "workspace_dir": workspace_dir,
+            "target_provider": target_provider,
+            "provider_session_ids": provider_session_ids,
+        }),
+        backup_metadata: serde_json::json!({
+            "restore_mode": "codex_sync_restore",
+            "metadata_file": "metadata.json",
+        }),
+    })
 }
 
 fn restore_codex_sync_backup(codex_dir: &Path, backup_dir: &Path) -> Result<()> {
@@ -1101,8 +1256,13 @@ fn restore_codex_sync_backup(codex_dir: &Path, backup_dir: &Path) -> Result<()> 
     Ok(())
 }
 
-fn prune_codex_sync_backups(codex_dir: &Path, keep_backups: usize) -> Result<usize> {
-    let backup_root = codex_sync_backup_root(codex_dir);
+fn prune_codex_sync_backups(
+    conn: &mut Connection,
+    backup_root: &Path,
+    codex_dir: &Path,
+    current_operation_id: &str,
+    keep_backups: usize,
+) -> Result<usize> {
     if !backup_root.exists() {
         return Ok(0);
     }
@@ -1110,53 +1270,51 @@ fn prune_codex_sync_backups(codex_dir: &Path, keep_backups: usize) -> Result<usi
     let mut managed_dirs = std::fs::read_dir(&backup_root)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| path.is_dir() && is_managed_codex_sync_backup(path))
+        .filter_map(|path| {
+            let metadata = load_managed_codex_sync_backup(&path)?;
+            (metadata.codex_home == codex_dir.to_string_lossy()).then_some((path, metadata))
+        })
         .collect::<Vec<_>>();
     managed_dirs.sort_by(|left, right| {
+        if left.1.operation_id == current_operation_id {
+            return std::cmp::Ordering::Less;
+        }
+        if right.1.operation_id == current_operation_id {
+            return std::cmp::Ordering::Greater;
+        }
         right
-            .file_name()
-            .and_then(|name| name.to_str())
-            .cmp(&left.file_name().and_then(|name| name.to_str()))
+            .1
+            .created_at
+            .cmp(&left.1.created_at)
+            .then_with(|| right.0.cmp(&left.0))
     });
 
     let mut deleted = 0;
-    for stale in managed_dirs.into_iter().skip(keep_backups) {
+    for (stale, _) in managed_dirs.into_iter().skip(keep_backups) {
+        let backup_record = ArtifactStore::new(conn).find_backup_by_artifact_path(&stale)?;
         std::fs::remove_dir_all(&stale).with_context(|| {
             format!(
                 "Failed to remove stale Codex sync backup: {}",
                 stale.display()
             )
         })?;
+        if let Some(backup_record) = backup_record {
+            ArtifactStore::new(conn).delete_backup_metadata(&backup_record.id)?;
+        }
         deleted += 1;
     }
 
     Ok(deleted)
 }
 
-fn is_managed_codex_sync_backup(path: &Path) -> bool {
+fn load_managed_codex_sync_backup(path: &Path) -> Option<CodexSyncBackupMetadata> {
+    if !path.is_dir() {
+        return None;
+    }
     let metadata_path = path.join("metadata.json");
-    let Ok(content) = std::fs::read_to_string(metadata_path) else {
-        return false;
-    };
-    let Ok(metadata) = serde_json::from_str::<CodexSyncBackupMetadata>(&content) else {
-        return false;
-    };
-    metadata.namespace == CODEX_SYNC_BACKUP_NAMESPACE
-}
-
-fn codex_sync_backup_root(codex_dir: &Path) -> PathBuf {
-    codex_dir
-        .join("backups_state")
-        .join(CODEX_SYNC_BACKUP_NAMESPACE)
-}
-
-fn codex_sync_backup_slug() -> String {
-    let now = Utc::now();
-    format!(
-        "{}{:03}Z",
-        now.format("%Y%m%dT%H%M%S"),
-        now.timestamp_subsec_millis()
-    )
+    let content = std::fs::read_to_string(metadata_path).ok()?;
+    let metadata = serde_json::from_str::<CodexSyncBackupMetadata>(&content).ok()?;
+    (metadata.version == 1 && metadata.namespace == CODEX_SYNC_BACKUP_NAMESPACE).then_some(metadata)
 }
 
 fn copy_if_present(source: &Path, destination: &Path) -> Result<bool> {
@@ -3580,8 +3738,51 @@ mod tests {
         apply_active_compression_with_archive_dir, ActiveCompressionApplyParams,
         ActiveCompressionMode, ActiveCompressionPolicy,
     };
+    use crate::storage::artifact_store::{ArtifactManifestKind, ArtifactStorageKind};
     use serde_json::json;
     use tempfile::{tempdir, NamedTempFile};
+
+    fn test_sync_context(codex_dir: &Path, workspace: &Path) -> (Connection, PathBuf, String) {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let activity_id = ActivityStore::new(&conn)
+            .start(NewActivity {
+                provider_id: Some(PROVIDER_ID.to_string()),
+                provider_session_id: None,
+                workspace_dir: Some(workspace.to_string_lossy().to_string()),
+                operation_kind: ActivityOperationKind::Sync,
+                actor: ActivityActor::System,
+                summary: "Synchronizing Codex workspace sessions".to_string(),
+                details: serde_json::json!({}),
+            })
+            .unwrap();
+        let backup_root = codex_dir
+            .parent()
+            .unwrap()
+            .join("memorph-artifacts")
+            .join("backups")
+            .join("codex-sync");
+        (conn, backup_root, activity_id)
+    }
+
+    fn run_test_workspace_sync(
+        codex_dir: &Path,
+        workspace: &Path,
+        keep_backups: usize,
+    ) -> (CodexWorkspaceRepairReport, Connection, PathBuf, String) {
+        let (mut conn, backup_root, activity_id) = test_sync_context(codex_dir, workspace);
+        let report = sync_workspace_sessions_in_codex_home(
+            &mut conn,
+            &activity_id,
+            &backup_root,
+            codex_dir,
+            Some(workspace.to_str().unwrap()),
+            keep_backups,
+        )
+        .unwrap();
+        (report, conn, backup_root, activity_id)
+    }
 
     #[test]
     fn project_session_to_store_writes_codex_projection_rows() {
@@ -3614,7 +3815,11 @@ mod tests {
                  WHERE session_id = ?1
                    AND provider_id = ?2
                    AND alias_value = ?3",
-                [stored.session_id.as_str(), PROVIDER_ID, "codex-projection-1"],
+                [
+                    stored.session_id.as_str(),
+                    PROVIDER_ID,
+                    "codex-projection-1",
+                ],
                 |row| row.get(0),
             )
             .unwrap();
@@ -4672,7 +4877,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_workspace_sessions_updates_provider_and_reindexes_matching_workspace() {
+    fn sync_workspace_sessions_registers_prewrite_backup_with_activity_identity() {
         let temp = tempdir().unwrap();
         let codex_dir = temp.path().join(".codex");
         let workspace = temp.path().join("repo");
@@ -4726,12 +4931,8 @@ mod tests {
         )
         .unwrap();
 
-        let report = sync_workspace_sessions_in_codex_home(
-            &codex_dir,
-            Some(workspace.to_str().unwrap()),
-            DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT,
-        )
-        .unwrap();
+        let (report, mut activity_conn, backup_root, activity_id) =
+            run_test_workspace_sync(&codex_dir, &workspace, DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT);
 
         assert_eq!(report.current_model_provider, "custom-provider");
         assert_eq!(report.workspace_session_count, 1);
@@ -4747,6 +4948,60 @@ mod tests {
                 .as_deref(),
             Some("openai")
         );
+
+        let backup_id = report.backup_id.as_deref().unwrap();
+        let backup = ArtifactStore::new(&mut activity_conn)
+            .get_backup(backup_id)
+            .unwrap()
+            .unwrap();
+        let canonical_codex_dir = codex_dir.canonicalize().unwrap();
+        let canonical_workspace = workspace.canonicalize().unwrap();
+        let canonical_backup_root = backup_root.canonicalize().unwrap();
+        assert_eq!(backup.operation_id.as_deref(), Some(activity_id.as_str()));
+        assert_eq!(
+            backup.artifact.operation_id.as_deref(),
+            Some(activity_id.as_str())
+        );
+        assert_eq!(
+            backup.artifact.artifact_kind,
+            ArtifactManifestKind::SessionBackup
+        );
+        assert_eq!(backup.artifact.storage_kind, ArtifactStorageKind::Directory);
+        assert!(backup.artifact.content_hash.starts_with("sha256-tree-v1:"));
+        assert_eq!(
+            backup.source_path.as_deref(),
+            Some(canonical_codex_dir.as_path())
+        );
+        assert!(backup.artifact.path.starts_with(&canonical_backup_root));
+        assert_eq!(
+            backup.artifact.mime_type.as_deref(),
+            Some("application/vnd.memorph.codex-sync-backup")
+        );
+        assert_eq!(
+            backup.artifact.format.as_deref(),
+            Some("codex-sync-backup-v1")
+        );
+        assert_eq!(
+            backup.artifact.metadata,
+            json!({
+                "role": "codex_prewrite_sync_backup",
+                "workspace_dir": canonical_workspace.to_string_lossy(),
+                "target_provider": "custom-provider",
+                "provider_session_ids": ["session-1"],
+            })
+        );
+        assert_eq!(
+            backup.metadata,
+            json!({
+                "restore_mode": "codex_sync_restore",
+                "metadata_file": "metadata.json",
+            })
+        );
+        assert_eq!(
+            report.backup_artifact_id.as_deref(),
+            Some(backup.artifact.id.as_str())
+        );
+        assert_eq!(report.backup_id.as_deref(), Some(backup.id.as_str()));
 
         let updated_rollout = std::fs::read_to_string(&session_path).unwrap();
         assert!(updated_rollout.contains("\"model_provider\":\"custom-provider\""));
@@ -4764,8 +5019,74 @@ mod tests {
             .iter()
             .filter_map(Value::as_str)
             .collect::<Vec<_>>();
-        let canonical_workspace = workspace.canonicalize().unwrap();
         assert_eq!(saved, vec![canonical_workspace.to_string_lossy().as_ref()]);
+    }
+
+    #[test]
+    fn codex_sync_backup_registration_conflict_keeps_backup_and_source_unchanged() {
+        let temp = tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        let workspace = temp.path().join("repo");
+        let sessions_dir = codex_dir.join("sessions/2026/05/27");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::create_dir_all(&workspace).unwrap();
+        let session_path = sessions_dir.join("rollout-2026-05-27T12-00-00-session-1.jsonl");
+        let original_rollout = serde_json::to_string(&json!({
+            "timestamp": "2026-05-27T12:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "session-1",
+                "timestamp": "2026-05-27T12:00:00Z",
+                "cwd": workspace.to_string_lossy(),
+                "model_provider": "openai",
+                "title": "Unchanged"
+            }
+        }))
+        .unwrap()
+            + "\n";
+        std::fs::write(&session_path, &original_rollout).unwrap();
+
+        let (mut activity_conn, backup_root, activity_id) =
+            test_sync_context(&codex_dir, &workspace);
+        let canonical_workspace = workspace.canonicalize().unwrap();
+        let backup_dir = create_codex_sync_backup(
+            &backup_root,
+            &activity_id,
+            &codex_dir,
+            canonical_workspace.to_string_lossy().as_ref(),
+            "custom-provider",
+            std::slice::from_ref(&session_path),
+        )
+        .unwrap();
+        register_codex_sync_backup(
+            &mut activity_conn,
+            &activity_id,
+            &codex_dir,
+            &backup_dir,
+            canonical_workspace.to_string_lossy().as_ref(),
+            "custom-provider",
+            &["different-session".to_string()],
+        )
+        .unwrap();
+
+        let error = register_codex_sync_backup(
+            &mut activity_conn,
+            &activity_id,
+            &codex_dir,
+            &backup_dir,
+            canonical_workspace.to_string_lossy().as_ref(),
+            "custom-provider",
+            &["session-1".to_string()],
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}")
+            .contains("Artifact path was already registered with conflicting context"));
+        assert!(backup_dir.exists());
+        assert_eq!(
+            std::fs::read_to_string(&session_path).unwrap(),
+            original_rollout
+        );
     }
 
     #[test]
@@ -4838,12 +5159,8 @@ mod tests {
         )
         .unwrap();
 
-        let report = sync_workspace_sessions_in_codex_home(
-            &codex_dir,
-            Some(workspace.to_str().unwrap()),
-            DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT,
-        )
-        .unwrap();
+        let (report, _, _, _) =
+            run_test_workspace_sync(&codex_dir, &workspace, DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT);
 
         assert_eq!(report.reindexed_session_count, 1);
         assert_eq!(
@@ -4981,31 +5298,48 @@ mod tests {
         )
         .unwrap();
 
-        let stale_backup_dir = codex_dir
-            .join("backups_state")
-            .join(CODEX_SYNC_BACKUP_NAMESPACE)
-            .join("20200101T000000000Z");
-        std::fs::create_dir_all(&stale_backup_dir).unwrap();
-        std::fs::write(
-            stale_backup_dir.join("metadata.json"),
-            serde_json::to_string_pretty(&CodexSyncBackupMetadata {
-                version: 1,
-                namespace: CODEX_SYNC_BACKUP_NAMESPACE.to_string(),
-                codex_home: codex_dir.to_string_lossy().to_string(),
-                target_provider: "openai".to_string(),
-                created_at: "2020-01-01T00:00:00Z".to_string(),
-                session_index_present: false,
-                session_files: Vec::new(),
-                db_files: Vec::new(),
-                global_state_files: Vec::new(),
+        let (mut activity_conn, backup_root, current_activity_id) =
+            test_sync_context(&codex_dir, &workspace);
+        let stale_activity_id = ActivityStore::new(&activity_conn)
+            .start(NewActivity {
+                provider_id: Some(PROVIDER_ID.to_string()),
+                provider_session_id: None,
+                workspace_dir: Some(workspace.to_string_lossy().to_string()),
+                operation_kind: ActivityOperationKind::Sync,
+                actor: ActivityActor::System,
+                summary: "Previous Codex workspace sync".to_string(),
+                details: serde_json::json!({}),
             })
-            .unwrap(),
+            .unwrap();
+        let canonical_workspace = workspace.canonicalize().unwrap();
+        let stale_backup_dir = create_codex_sync_backup(
+            &backup_root,
+            &stale_activity_id,
+            &codex_dir,
+            canonical_workspace.to_string_lossy().as_ref(),
+            "openai",
+            &[],
         )
         .unwrap();
-
-        let report =
-            sync_workspace_sessions_in_codex_home(&codex_dir, Some(workspace.to_str().unwrap()), 1)
-                .unwrap();
+        let stale_backup = register_codex_sync_backup(
+            &mut activity_conn,
+            &stale_activity_id,
+            &codex_dir,
+            &stale_backup_dir,
+            canonical_workspace.to_string_lossy().as_ref(),
+            "openai",
+            &[],
+        )
+        .unwrap();
+        let report = sync_workspace_sessions_in_codex_home(
+            &mut activity_conn,
+            &current_activity_id,
+            &backup_root,
+            &codex_dir,
+            Some(workspace.to_str().unwrap()),
+            1,
+        )
+        .unwrap();
 
         assert_eq!(report.scanned_rollouts, 2);
         assert_eq!(report.workspace_session_count, 2);
@@ -5021,6 +5355,19 @@ mod tests {
 
         let backup_dir = PathBuf::from(report.backup_dir.clone().unwrap());
         assert!(backup_dir.exists());
+        assert!(!stale_backup_dir.exists());
+        assert!(ArtifactStore::new(&mut activity_conn)
+            .get_backup(&stale_backup.id)
+            .unwrap()
+            .is_none());
+        assert!(ArtifactStore::new(&mut activity_conn)
+            .get(&stale_backup.artifact.id)
+            .unwrap()
+            .is_none());
+        assert!(ArtifactStore::new(&mut activity_conn)
+            .get_backup(report.backup_id.as_deref().unwrap())
+            .unwrap()
+            .is_some());
 
         let active_rollout = std::fs::read_to_string(&active_path).unwrap();
         assert!(active_rollout.contains("\"model_provider\":\"custom-provider\""));
@@ -5060,14 +5407,10 @@ mod tests {
         assert_eq!(archived_row.1, workspace.to_string_lossy().to_string());
         assert_eq!(archived_row.2, 1);
 
-        let backup_entries = std::fs::read_dir(
-            codex_dir
-                .join("backups_state")
-                .join(CODEX_SYNC_BACKUP_NAMESPACE),
-        )
-        .unwrap()
-        .filter_map(|entry| entry.ok())
-        .collect::<Vec<_>>();
+        let backup_entries = std::fs::read_dir(&backup_root)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .collect::<Vec<_>>();
         assert_eq!(backup_entries.len(), 1);
     }
 
@@ -5154,12 +5497,8 @@ mod tests {
         )
         .unwrap();
 
-        let report = sync_workspace_sessions_in_codex_home(
-            &codex_dir,
-            Some(workspace.to_str().unwrap()),
-            DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT,
-        )
-        .unwrap();
+        let (report, _, _, _) =
+            run_test_workspace_sync(&codex_dir, &workspace, DEFAULT_CODEX_SYNC_BACKUP_KEEP_COUNT);
 
         assert_eq!(report.workspace_session_count, 1);
         assert_eq!(report.repaired_session_count, 0);

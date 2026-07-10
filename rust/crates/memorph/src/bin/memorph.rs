@@ -548,7 +548,10 @@ fn run_legacy_tool_command(command: LegacyToolCommands) -> Result<()> {
                 let output = provider_features::run_provider_feature(
                     "codex",
                     "repair_workspace_sessions",
-                    provider_features::ProviderFeatureContext { workspace },
+                    provider_features::ProviderFeatureContext {
+                        workspace,
+                        actor: ActivityActor::Cli,
+                    },
                 )?;
                 match output {
                     provider_features::ProviderFeatureOutput::CodexWorkspaceRepair(report) => {
@@ -580,6 +583,7 @@ fn run_codex_sync_workspace_sessions(
         workspace.as_deref(),
         codex_home.as_deref().map(Path::new),
         keep,
+        ActivityActor::Cli,
     )?;
     print_codex_repair_report(report);
     Ok(())

@@ -707,6 +707,7 @@ impl App {
                     &action.id,
                     provider_settings::ProviderSettingContext {
                         workspace: self.workspace.clone(),
+                        actor: crate::storage::activity_store::ActivityActor::Tui,
                     },
                 ) {
                     Ok(provider_settings::ProviderSettingOutput::HookOperation(report)) => {

@@ -273,6 +273,62 @@ impl<'a> ArtifactStore<'a> {
         load_backup_by_id(self.conn, backup_id)
     }
 
+    pub fn find_backup_by_artifact_path(&self, path: &Path) -> Result<Option<BackupRecord>> {
+        let path = std::fs::canonicalize(path).with_context(|| {
+            format!("Failed to resolve backup artifact path: {}", path.display())
+        })?;
+        let path_text = path.to_string_lossy().to_string();
+        let backup_id = self
+            .conn
+            .query_row(
+                "SELECT backup.id
+                 FROM backups backup
+                 JOIN artifact_manifests artifact ON artifact.id = backup.artifact_id
+                 WHERE artifact.path = ?1
+                 ORDER BY backup.created_at_ms DESC, backup.id
+                 LIMIT 1",
+                [path_text],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("Failed to find backup by artifact path")?;
+        backup_id
+            .as_deref()
+            .map(|backup_id| load_backup_by_id(self.conn, backup_id))
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    pub fn delete_backup_metadata(&mut self, backup_id: &str) -> Result<bool> {
+        let tx = self
+            .conn
+            .transaction()
+            .context("Failed to start backup deletion transaction")?;
+        let artifact_id = tx
+            .query_row(
+                "SELECT artifact_id FROM backups WHERE id = ?1",
+                [backup_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("Failed to load backup artifact for deletion")?;
+        let Some(artifact_id) = artifact_id else {
+            tx.commit()
+                .context("Failed to commit empty backup deletion transaction")?;
+            return Ok(false);
+        };
+        tx.execute("DELETE FROM backups WHERE id = ?1", [backup_id])
+            .context("Failed to delete backup record")?;
+        tx.execute(
+            "DELETE FROM artifact_manifests WHERE id = ?1",
+            [artifact_id],
+        )
+        .context("Failed to delete backup artifact manifest")?;
+        tx.commit()
+            .context("Failed to commit backup deletion transaction")?;
+        Ok(true)
+    }
+
     pub fn query(&self, query: ArtifactQuery) -> Result<Vec<ArtifactManifest>> {
         let limit = query
             .limit
@@ -1331,6 +1387,53 @@ mod tests {
         );
         assert_eq!(stored.artifact.operation_id.as_deref(), Some("operation-1"));
         assert_eq!(stored.operation_id.as_deref(), Some("operation-1"));
+    }
+
+    #[test]
+    fn finds_and_deletes_backup_metadata_without_deleting_artifact_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source");
+        let backup_path = dir.path().join("backup");
+        std::fs::create_dir_all(&source_path).unwrap();
+        std::fs::create_dir_all(&backup_path).unwrap();
+        std::fs::write(backup_path.join("metadata.json"), b"{}").unwrap();
+        let mut conn = test_connection();
+        let stored = ArtifactStore::new(&mut conn)
+            .register_backup(NewBackupRecord {
+                operation_id: Some("operation-1".to_string()),
+                provider_id: Some("codex".to_string()),
+                provider_session_id: None,
+                session_id: None,
+                source_path: Some(source_path),
+                backup_path: backup_path.clone(),
+                restore_hint: Some("restore directory".to_string()),
+                mime_type: Some("application/vnd.memorph.codex-sync-backup".to_string()),
+                format: Some("codex-sync-backup-v1".to_string()),
+                artifact_metadata: json!({"role": "codex_prewrite_sync_backup"}),
+                backup_metadata: json!({"restore_mode": "codex_sync_restore"}),
+            })
+            .unwrap();
+
+        let found = ArtifactStore::new(&mut conn)
+            .find_backup_by_artifact_path(&backup_path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, stored.id);
+        assert!(ArtifactStore::new(&mut conn)
+            .delete_backup_metadata(&stored.id)
+            .unwrap());
+        assert!(backup_path.exists());
+        assert!(ArtifactStore::new(&mut conn)
+            .get_backup(&stored.id)
+            .unwrap()
+            .is_none());
+        assert!(ArtifactStore::new(&mut conn)
+            .get(&stored.artifact.id)
+            .unwrap()
+            .is_none());
+        assert!(!ArtifactStore::new(&mut conn)
+            .delete_backup_metadata(&stored.id)
+            .unwrap());
     }
 
     #[test]

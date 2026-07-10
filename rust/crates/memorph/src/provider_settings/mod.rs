@@ -28,9 +28,10 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ProviderSettingContext {
     pub workspace: Option<String>,
+    pub actor: crate::storage::activity_store::ActivityActor,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
