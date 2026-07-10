@@ -11,7 +11,7 @@ use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state::{self, SessionStateStore};
 use crate::storage::snapshot_store::{
     ProjectedSessionDetailPage, ProjectedSessionReport, ProjectedSessionReportItem,
-    ProjectedSessionReportSummary, ProjectedSessionSnapshotRow,
+    ProjectedSessionReportSummary, ProjectedSessionSnapshotRow, SnapshotStaleScanReport,
 };
 use crate::{provider, providers, utils};
 
@@ -77,6 +77,8 @@ pub struct SessionItem {
     pub hidden: bool,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
+    pub stale: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preferred_targets: Vec<String>,
     pub project_dir: Option<String>,
@@ -198,6 +200,7 @@ impl From<(&ProviderSessionSummary, &str)> for SessionItem {
             display_title: None,
             hidden: false,
             pinned: false,
+            stale: false,
             preferred_targets: Vec::new(),
             project_dir: meta.project_dir.as_deref().map(utils::user_visible_path),
             last_active_at: meta.last_active_at,
@@ -228,6 +231,11 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
     }
 
     list_provider_sessions(params)
+}
+
+pub fn refresh_projected_session_staleness() -> Result<SnapshotStaleScanReport> {
+    let conn = crate::storage::local_store::open_database()?;
+    crate::storage::snapshot_store::SnapshotStore::new(&conn).refresh_session_snapshot_staleness()
 }
 
 fn list_projected_session_snapshots(
@@ -310,6 +318,7 @@ fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) -> SessionIte
         display_title: snapshot.display_title.clone(),
         hidden: snapshot.hidden,
         pinned: snapshot.pinned,
+        stale: snapshot.stale,
         preferred_targets: snapshot.preferred_targets.clone(),
         project_dir: snapshot
             .workspace_dir
@@ -690,6 +699,7 @@ mod session_list_hook_tests {
             display_title: None,
             hidden: false,
             pinned: false,
+            stale: false,
             preferred_targets: Vec::new(),
             project_dir: Some("/tmp/project".to_string()),
             last_active_at,
@@ -824,6 +834,16 @@ mod session_list_hook_tests {
             groups[0].sessions[0].project_dir.as_deref(),
             Some("/tmp/project")
         );
+    }
+
+    #[test]
+    fn projected_snapshot_item_exposes_stale_snapshot_state() {
+        let mut row = projected_row("canonical-1", "native-1", "/tmp/project", 30);
+        row.stale = true;
+
+        let item = projected_snapshot_item(&row);
+
+        assert!(item.stale);
     }
 
     fn projected_row(

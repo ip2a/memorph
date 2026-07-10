@@ -15,6 +15,15 @@ use crate::storage::session_state::ResolvedLocalSessionState;
 
 const DETAIL_REPORT_ITEM_LIMIT: i64 = 20;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SnapshotStaleScanReport {
+    pub checked_sources: usize,
+    pub fresh_snapshots: usize,
+    pub stale_snapshots: usize,
+    pub missing_sources: usize,
+    pub unknown_sources: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedSessionSnapshotRow {
     pub canonical_session_id: String,
@@ -95,6 +104,49 @@ pub struct SnapshotStore<'a> {
 impl<'a> SnapshotStore<'a> {
     pub fn new(conn: &'a Connection) -> Self {
         Self { conn }
+    }
+
+    pub fn refresh_session_snapshot_staleness(&self) -> Result<SnapshotStaleScanReport> {
+        let rows = self.session_snapshot_sources()?;
+        let mut report = SnapshotStaleScanReport::default();
+        for row in rows {
+            let Some(source_path) = row.source_path.as_deref().filter(|value| !value.is_empty())
+            else {
+                report.unknown_sources += 1;
+                report.stale_snapshots += 1;
+                self.set_session_snapshot_stale(&row.session_id, true)?;
+                continue;
+            };
+            let Some(stored_fingerprint) = row
+                .source_fingerprint
+                .as_deref()
+                .filter(|value| !value.is_empty())
+            else {
+                report.unknown_sources += 1;
+                report.stale_snapshots += 1;
+                self.set_session_snapshot_stale(&row.session_id, true)?;
+                continue;
+            };
+
+            let Some(current_fingerprint) =
+                source_fingerprint_for_path(std::path::Path::new(source_path))?
+            else {
+                report.missing_sources += 1;
+                report.stale_snapshots += 1;
+                self.set_session_snapshot_stale(&row.session_id, true)?;
+                continue;
+            };
+
+            report.checked_sources += 1;
+            let stale = current_fingerprint != stored_fingerprint;
+            if stale {
+                report.stale_snapshots += 1;
+            } else {
+                report.fresh_snapshots += 1;
+            }
+            self.set_session_snapshot_stale(&row.session_id, stale)?;
+        }
+        Ok(report)
     }
 
     pub fn list_session_snapshots(&self) -> Result<Vec<ProjectedSessionSnapshotRow>> {
@@ -506,6 +558,54 @@ impl<'a> SnapshotStore<'a> {
         }
         Ok(blocks_by_event)
     }
+
+    fn session_snapshot_sources(&self) -> Result<Vec<SnapshotSourceRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT ss.session_id, src.source_path, ss.source_fingerprint
+                 FROM session_snapshots ss
+                 JOIN sessions s ON s.id = ss.session_id
+                 LEFT JOIN session_sources src ON src.id = s.primary_source_id
+                 WHERE s.deleted_at_ms IS NULL
+                 ORDER BY ss.session_id",
+            )
+            .context("Failed to prepare projected session source staleness scan")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SnapshotSourceRow {
+                    session_id: row.get(0)?,
+                    source_path: row.get(1)?,
+                    source_fingerprint: row.get(2)?,
+                })
+            })
+            .context("Failed to query projected session source staleness scan")?;
+
+        let mut sources = Vec::new();
+        for row in rows {
+            sources.push(row.context("Failed to decode projected session source staleness row")?);
+        }
+        Ok(sources)
+    }
+
+    fn set_session_snapshot_stale(&self, session_id: &str, stale: bool) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE session_snapshots SET stale = ?1 WHERE session_id = ?2",
+                (if stale { 1_i64 } else { 0_i64 }, session_id),
+            )
+            .with_context(|| {
+                format!("Failed to update projected session staleness: {session_id}")
+            })?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SnapshotSourceRow {
+    session_id: String,
+    source_path: Option<String>,
+    source_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -690,6 +790,39 @@ fn timestamp_from_ms(value: Option<i64>) -> DateTime<Utc> {
         .unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
 }
 
+fn source_fingerprint_for_path(path: &std::path::Path) -> Result<Option<String>> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("Failed to read session source metadata: {}", path.display())
+            })
+        }
+    };
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!("Failed to read session source content: {}", path.display())
+            })
+        }
+    };
+    Ok(Some(format!(
+        "{}:{}:{:x}",
+        modified_ms,
+        metadata.len(),
+        md5::compute(&bytes)
+    )))
+}
+
 fn sql_bool(value: i64) -> bool {
     value != 0
 }
@@ -699,6 +832,8 @@ mod tests {
     use super::*;
     use crate::storage::local_store;
     use rusqlite::params;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn reads_projected_session_snapshots() {
@@ -859,6 +994,112 @@ mod tests {
         }
     }
 
+    #[test]
+    fn refresh_session_snapshot_staleness_marks_fresh_source_not_stale() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "one").unwrap();
+        file.flush().unwrap();
+        let fingerprint = source_fingerprint_for_path(file.path()).unwrap().unwrap();
+        insert_projected_snapshot_source(
+            &conn,
+            "canonical-1",
+            "claude",
+            "native-1",
+            file.path().to_str().unwrap(),
+            &fingerprint,
+            true,
+        );
+
+        let report = SnapshotStore::new(&conn)
+            .refresh_session_snapshot_staleness()
+            .unwrap();
+
+        assert_eq!(
+            report,
+            SnapshotStaleScanReport {
+                checked_sources: 1,
+                fresh_snapshots: 1,
+                stale_snapshots: 0,
+                missing_sources: 0,
+                unknown_sources: 0,
+            }
+        );
+        assert!(!snapshot_stale(&conn, "canonical-1"));
+    }
+
+    #[test]
+    fn refresh_session_snapshot_staleness_marks_modified_source_stale() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "one").unwrap();
+        file.flush().unwrap();
+        let fingerprint = source_fingerprint_for_path(file.path()).unwrap().unwrap();
+        insert_projected_snapshot_source(
+            &conn,
+            "canonical-1",
+            "claude",
+            "native-1",
+            file.path().to_str().unwrap(),
+            &fingerprint,
+            false,
+        );
+        writeln!(file, "two").unwrap();
+        file.flush().unwrap();
+
+        let report = SnapshotStore::new(&conn)
+            .refresh_session_snapshot_staleness()
+            .unwrap();
+
+        assert_eq!(report.checked_sources, 1);
+        assert_eq!(report.fresh_snapshots, 0);
+        assert_eq!(report.stale_snapshots, 1);
+        assert_eq!(report.missing_sources, 0);
+        assert!(snapshot_stale(&conn, "canonical-1"));
+        let stored_fingerprint: String = conn
+            .query_row(
+                "SELECT source_fingerprint FROM session_snapshots WHERE session_id = 'canonical-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored_fingerprint, fingerprint);
+    }
+
+    #[test]
+    fn refresh_session_snapshot_staleness_marks_missing_source_stale() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "one").unwrap();
+        file.flush().unwrap();
+        let source_path = file.path().to_string_lossy().to_string();
+        let fingerprint = source_fingerprint_for_path(file.path()).unwrap().unwrap();
+        insert_projected_snapshot_source(
+            &conn,
+            "canonical-1",
+            "claude",
+            "native-1",
+            &source_path,
+            &fingerprint,
+            false,
+        );
+        drop(file);
+
+        let report = SnapshotStore::new(&conn)
+            .refresh_session_snapshot_staleness()
+            .unwrap();
+
+        assert_eq!(report.checked_sources, 0);
+        assert_eq!(report.fresh_snapshots, 0);
+        assert_eq!(report.stale_snapshots, 1);
+        assert_eq!(report.missing_sources, 1);
+        assert_eq!(report.unknown_sources, 0);
+        assert!(snapshot_stale(&conn, "canonical-1"));
+    }
+
     fn insert_projected_snapshot(
         conn: &Connection,
         session_id: &str,
@@ -904,6 +1145,66 @@ mod tests {
             params![session_id, provider_id, workspace_dir],
         )
         .unwrap();
+    }
+
+    fn insert_projected_snapshot_source(
+        conn: &Connection,
+        session_id: &str,
+        provider_id: &str,
+        provider_session_id: &str,
+        source_path: &str,
+        source_fingerprint: &str,
+        stale: bool,
+    ) {
+        conn.execute(
+            "INSERT INTO session_sources
+             (id, provider_id, provider_session_id, source_path, first_seen_at_ms, last_seen_at_ms)
+             VALUES (?1, ?2, ?3, ?4, 10, 10)",
+            params![
+                format!("source-{session_id}"),
+                provider_id,
+                provider_session_id,
+                source_path,
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+             (id, provider_id, provider_session_id, primary_source_id, title,
+              status, created_at_ms, last_active_at_ms, event_count, turn_count)
+             VALUES (?1, ?2, ?3, ?4, 'Native title', 'completed', 10, 20, 2, 1)",
+            params![
+                session_id,
+                provider_id,
+                provider_session_id,
+                format!("source-{session_id}"),
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_snapshots
+             (session_id, provider_id, title, status, last_active_at_ms, event_count, turn_count,
+              flags_json, projection_version, source_fingerprint, stale, updated_at_ms)
+             VALUES (?1, ?2, 'Native title', 'completed', 20, 2, 1, '{}', 1, ?3, ?4, 20)",
+            params![
+                session_id,
+                provider_id,
+                source_fingerprint,
+                if stale { 1 } else { 0 }
+            ],
+        )
+        .unwrap();
+    }
+
+    fn snapshot_stale(conn: &Connection, session_id: &str) -> bool {
+        let stale: i64 = conn
+            .query_row(
+                "SELECT stale FROM session_snapshots WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        stale != 0
     }
 
     fn insert_projection_report(
