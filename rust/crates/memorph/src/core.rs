@@ -288,16 +288,16 @@ fn reproject_stale_snapshot_sources(
             ));
             continue;
         };
-        if !std::path::Path::new(source_path).exists() {
-            report.missing_sources += 1;
-            report.failures.push(reprojection_failure(
-                &source,
-                format!("source file not found: {source_path}"),
-            ));
-            continue;
-        }
         match source.provider_id.as_str() {
             "claude" => {
+                if !projection_source_file_exists(source_path) {
+                    report.missing_sources += 1;
+                    report.failures.push(reprojection_failure(
+                        &source,
+                        format!("source file not found: {source_path}"),
+                    ));
+                    continue;
+                }
                 let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
                 match crate::providers::claude::project_session_to_store(
                     std::path::Path::new(source_path),
@@ -313,8 +313,52 @@ fn reproject_stale_snapshot_sources(
                 }
             }
             "codex" => {
+                if !projection_source_file_exists(source_path) {
+                    report.missing_sources += 1;
+                    report.failures.push(reprojection_failure(
+                        &source,
+                        format!("source file not found: {source_path}"),
+                    ));
+                    continue;
+                }
                 let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
                 match crate::providers::codex::project_session_to_store(
+                    std::path::Path::new(source_path),
+                    &mut store,
+                ) {
+                    Ok(_) => report.reprojected_snapshots += 1,
+                    Err(err) => {
+                        report.failed_snapshots += 1;
+                        report
+                            .failures
+                            .push(reprojection_failure(&source, err.to_string()));
+                    }
+                }
+            }
+            "opencode" => {
+                let Some(provider_session_id) = source
+                    .provider_session_id
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                else {
+                    report.failed_snapshots += 1;
+                    report.failures.push(reprojection_failure(
+                        &source,
+                        "projected OpenCode session has no provider session id".to_string(),
+                    ));
+                    continue;
+                };
+                if !projection_source_file_exists(source_path) {
+                    report.missing_sources += 1;
+                    report.failures.push(reprojection_failure(
+                        &source,
+                        format!("source file not found: {source_path}"),
+                    ));
+                    continue;
+                }
+                let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
+                match crate::providers::opencode::project_session_to_store(
+                    provider_session_id,
                     std::path::Path::new(source_path),
                     &mut store,
                 ) {
@@ -340,6 +384,11 @@ fn reproject_stale_snapshot_sources(
         }
     }
     Ok(report)
+}
+
+fn projection_source_file_exists(source_path: &str) -> bool {
+    crate::storage::projection_store::projection_source_file_path(std::path::Path::new(source_path))
+        .exists()
 }
 
 fn reprojection_failure(
@@ -3545,6 +3594,64 @@ mod tests {
     }
 
     #[test]
+    fn reproject_stale_snapshot_sources_rebuilds_opencode_projection() {
+        let opencode_dir = tempfile::tempdir().unwrap();
+        let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
+        let source_path = write_opencode_projection_sample(
+            opencode_dir.path(),
+            "ses_projection",
+            "Old OpenCode title",
+        );
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+
+        let stored = crate::providers::opencode::project_session_to_store(
+            "ses_projection",
+            &source_path,
+            &mut ProjectionStore::new(&mut conn),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE session_snapshots SET stale = 1 WHERE session_id = ?1",
+            [stored.session_id.as_str()],
+        )
+        .unwrap();
+        write_opencode_projection_sample(
+            opencode_dir.path(),
+            "ses_projection",
+            "New OpenCode title",
+        );
+
+        let report = reproject_stale_snapshot_sources(
+            &mut conn,
+            vec![StaleSnapshotSourceRow {
+                canonical_session_id: stored.session_id.clone(),
+                provider_id: "opencode".to_string(),
+                provider_session_id: Some("ses_projection".to_string()),
+                source_path: Some(source_path.to_string_lossy().to_string()),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(report.candidate_snapshots, 1);
+        assert_eq!(report.reprojected_snapshots, 1);
+        assert_eq!(report.missing_sources, 0);
+        assert_eq!(report.failed_snapshots, 0);
+        assert!(report.failures.is_empty());
+
+        let snapshot: (String, i64) = conn
+            .query_row(
+                "SELECT title, stale FROM session_snapshots WHERE session_id = ?1",
+                [stored.session_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(snapshot.0, "New OpenCode title");
+        assert_eq!(snapshot.1, 0);
+    }
+
+    #[test]
     fn reproject_stale_snapshot_sources_reports_missing_source() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
@@ -3651,5 +3758,78 @@ mod tests {
         )
         .unwrap();
         file.flush().unwrap();
+    }
+
+    struct TestOpenCodeDirGuard;
+
+    impl TestOpenCodeDirGuard {
+        fn new(path: std::path::PathBuf) -> Self {
+            crate::providers::opencode::set_test_opencode_dir(Some(path));
+            Self
+        }
+    }
+
+    impl Drop for TestOpenCodeDirGuard {
+        fn drop(&mut self) {
+            crate::providers::opencode::set_test_opencode_dir(None);
+        }
+    }
+
+    fn write_opencode_projection_sample(
+        opencode_dir: &std::path::Path,
+        session_id: &str,
+        title: &str,
+    ) -> std::path::PathBuf {
+        let storage_dir = opencode_dir.join("storage");
+        let session_dir = storage_dir.join("session").join("project-1");
+        let message_dir = storage_dir.join("message").join(session_id);
+        let part_dir = storage_dir.join("part").join("msg_projection");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::create_dir_all(&message_dir).unwrap();
+        std::fs::create_dir_all(&part_dir).unwrap();
+
+        let session_path = session_dir.join(format!("{session_id}.json"));
+        std::fs::write(
+            &session_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": session_id,
+                "projectID": "project-1",
+                "directory": "/tmp/project",
+                "title": title,
+                "time": {
+                    "created": 1_790_000_000_000_i64,
+                    "updated": 1_790_000_000_001_i64
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            message_dir.join("msg_projection.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "msg_projection",
+                "sessionID": session_id,
+                "role": "user",
+                "time": {
+                    "created": 1_790_000_000_000_i64,
+                    "updated": 1_790_000_000_000_i64
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            part_dir.join("prt_projection.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "prt_projection",
+                "messageID": "msg_projection",
+                "sessionID": session_id,
+                "type": "text",
+                "text": "Build this"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        session_path
     }
 }

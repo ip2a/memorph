@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +156,15 @@ impl<'a> ProjectionStore<'a> {
     }
 }
 
+pub fn projection_source_file_path(path: &Path) -> PathBuf {
+    let path_text = path.to_string_lossy();
+    let file_path = match path_text.split_once('#') {
+        Some((file_path, fragment)) if fragment.starts_with("session=") => file_path,
+        _ => path_text.as_ref(),
+    };
+    PathBuf::from(file_path)
+}
+
 #[derive(Debug, Clone)]
 struct SourceFileProjection {
     source_id: String,
@@ -170,8 +179,12 @@ struct SourceFileProjection {
 
 impl SourceFileProjection {
     fn read(provider_id: &str, provider_session_id: Option<&str>, path: &Path) -> Result<Self> {
-        let metadata = std::fs::metadata(path).with_context(|| {
-            format!("Failed to read session source metadata: {}", path.display())
+        let file_path = projection_source_file_path(path);
+        let metadata = std::fs::metadata(&file_path).with_context(|| {
+            format!(
+                "Failed to read session source metadata: {}",
+                file_path.display()
+            )
         })?;
         let modified_ms = metadata
             .modified()
@@ -179,8 +192,11 @@ impl SourceFileProjection {
             .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
             .unwrap_or(0);
-        let bytes = std::fs::read(path).with_context(|| {
-            format!("Failed to read session source content: {}", path.display())
+        let bytes = std::fs::read(&file_path).with_context(|| {
+            format!(
+                "Failed to read session source content: {}",
+                file_path.display()
+            )
         })?;
         let content_hash = format!("{:x}", md5::compute(&bytes));
         let source_path = path.to_string_lossy().to_string();
@@ -843,6 +859,18 @@ mod tests {
 
         assert_eq!(visibility, "visible");
         assert_eq!(block_kind, "text");
+    }
+
+    #[test]
+    fn projection_source_file_path_only_strips_session_fragments() {
+        assert_eq!(
+            projection_source_file_path(Path::new("/tmp/opencode.db#session=ses_1")),
+            PathBuf::from("/tmp/opencode.db")
+        );
+        assert_eq!(
+            projection_source_file_path(Path::new("/tmp/session#1.jsonl")),
+            PathBuf::from("/tmp/session#1.jsonl")
+        );
     }
 
     fn count_rows(conn: &Connection, table: &str) -> i64 {

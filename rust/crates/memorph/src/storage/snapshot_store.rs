@@ -847,12 +847,16 @@ fn timestamp_from_ms(value: Option<i64>) -> DateTime<Utc> {
 }
 
 fn source_fingerprint_for_path(path: &std::path::Path) -> Result<Option<String>> {
-    let metadata = match std::fs::metadata(path) {
+    let file_path = crate::storage::projection_store::projection_source_file_path(path);
+    let metadata = match std::fs::metadata(&file_path) {
         Ok(metadata) => metadata,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
             return Err(err).with_context(|| {
-                format!("Failed to read session source metadata: {}", path.display())
+                format!(
+                    "Failed to read session source metadata: {}",
+                    file_path.display()
+                )
             })
         }
     };
@@ -862,12 +866,15 @@ fn source_fingerprint_for_path(path: &std::path::Path) -> Result<Option<String>>
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
         .unwrap_or(0);
-    let bytes = match std::fs::read(path) {
+    let bytes = match std::fs::read(&file_path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
             return Err(err).with_context(|| {
-                format!("Failed to read session source content: {}", path.display())
+                format!(
+                    "Failed to read session source content: {}",
+                    file_path.display()
+                )
             })
         }
     };

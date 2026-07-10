@@ -15,6 +15,7 @@ use crate::provider::{
     compression_retrieval_hint, CompressionProjection, Provider, ProviderCapabilities,
     ProviderSessionSummary,
 };
+use crate::storage::projection_store::{ProjectionStore, StoredProjection};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
@@ -29,6 +30,10 @@ pub struct OpenCodeProvider;
 
 const PROVIDER_ID: &str = "opencode";
 const OPENCODE_VERSION: &str = "1.3.17";
+
+#[cfg(test)]
+static TEST_OPENCODE_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
 
 impl Provider for OpenCodeProvider {
     fn id(&self) -> &'static str {
@@ -316,6 +321,15 @@ impl Provider for OpenCodeProvider {
     fn data_source_paths(&self) -> Vec<PathBuf> {
         vec![get_db_path(), get_opencode_dir()]
     }
+}
+
+pub fn project_session_to_store(
+    session_id: &str,
+    source_path: &Path,
+    store: &mut ProjectionStore<'_>,
+) -> Result<StoredProjection> {
+    let imported = import_canonical_session(session_id)?;
+    store.write_imported_session(source_path, &imported)
 }
 
 fn import_canonical_session(session_id: &str) -> Result<ImportedSession> {
@@ -740,10 +754,28 @@ fn derive_event_kind(blocks: &[EventBlock]) -> SessionEventKind {
 // ---------------------------------------------------------------------------
 
 fn get_opencode_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_OPENCODE_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test opencode dir lock")
+        .clone()
+    {
+        return path;
+    }
+
     // OpenCode uses ~/.local/share/opencode even on macOS
     dirs::home_dir()
         .map(|h| h.join(".local/share/opencode"))
         .unwrap_or_else(|| PathBuf::from(".local/share/opencode"))
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_opencode_dir(path: Option<PathBuf>) {
+    *TEST_OPENCODE_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test opencode dir lock") = path;
 }
 
 fn generate_opencode_id(prefix: &str) -> String {
@@ -1619,7 +1651,79 @@ fn write_to_filesystem(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{local_store, projection_store::ProjectionStore};
     use chrono::TimeZone;
+    use rusqlite::Connection;
+    use tempfile::tempdir;
+
+    struct TestOpenCodeDirGuard;
+
+    impl Drop for TestOpenCodeDirGuard {
+        fn drop(&mut self) {
+            set_test_opencode_dir(None);
+        }
+    }
+
+    fn use_test_opencode_dir(path: PathBuf) -> TestOpenCodeDirGuard {
+        set_test_opencode_dir(Some(path));
+        TestOpenCodeDirGuard
+    }
+
+    #[test]
+    fn project_session_to_store_writes_opencode_projection_rows() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        let source_path = write_opencode_projection_sample(
+            opencode_dir.path(),
+            "ses_projection",
+            "OpenCode Projection Title",
+        );
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+
+        let stored = project_session_to_store(
+            "ses_projection",
+            &source_path,
+            &mut ProjectionStore::new(&mut conn),
+        )
+        .unwrap();
+
+        let snapshot: (String, String, i64) = conn
+            .query_row(
+                "SELECT provider_id, title, event_count
+                 FROM session_snapshots
+                 WHERE session_id = ?1",
+                [stored.session_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(snapshot.0, PROVIDER_ID);
+        assert_eq!(snapshot.1, "OpenCode Projection Title");
+        assert_eq!(snapshot.2, 1);
+
+        let alias_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM session_aliases
+                 WHERE session_id = ?1
+                   AND provider_id = ?2
+                   AND alias_value = ?3",
+                [stored.session_id.as_str(), PROVIDER_ID, "ses_projection"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(alias_count, 1);
+
+        let report_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM projection_reports WHERE session_id = ?1",
+                [stored.session_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(report_count, 1);
+    }
 
     #[test]
     fn opencode_message_data_preserves_model_provider_metadata() {
@@ -1812,5 +1916,63 @@ mod tests {
             parts[1].3.get("text").and_then(Value::as_str),
             Some("portable summary")
         );
+    }
+
+    fn write_opencode_projection_sample(
+        opencode_dir: &Path,
+        session_id: &str,
+        title: &str,
+    ) -> PathBuf {
+        let storage_dir = opencode_dir.join("storage");
+        let session_dir = storage_dir.join("session").join("project-1");
+        let message_dir = storage_dir.join("message").join(session_id);
+        let part_dir = storage_dir.join("part").join("msg_projection");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::create_dir_all(&message_dir).unwrap();
+        std::fs::create_dir_all(&part_dir).unwrap();
+
+        let session_path = session_dir.join(format!("{session_id}.json"));
+        std::fs::write(
+            &session_path,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": session_id,
+                "projectID": "project-1",
+                "directory": "/tmp/project",
+                "title": title,
+                "time": {
+                    "created": 1_790_000_000_000_i64,
+                    "updated": 1_790_000_000_001_i64
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            message_dir.join("msg_projection.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "msg_projection",
+                "sessionID": session_id,
+                "role": "user",
+                "time": {
+                    "created": 1_790_000_000_000_i64,
+                    "updated": 1_790_000_000_000_i64
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            part_dir.join("prt_projection.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": "prt_projection",
+                "messageID": "msg_projection",
+                "sessionID": session_id,
+                "type": "text",
+                "text": "Build this"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        session_path
     }
 }
