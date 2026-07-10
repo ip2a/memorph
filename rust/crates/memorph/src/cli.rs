@@ -99,6 +99,15 @@ pub enum Commands {
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Vec<String>,
     },
+    /// Show provider capability quality and risk
+    Providers {
+        /// Show complete details for one provider
+        #[arg(value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// Print the capability model as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage projected session snapshots
     Sessions {
         #[command(subcommand)]
@@ -482,6 +491,18 @@ mod tests {
             Some(Commands::Sessions {
                 command: SessionCommands::RefreshStale,
             }) => {}
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn providers_command_parses_provider_and_json_output() {
+        let cli = Cli::parse_from(["memorph", "providers", "codex", "--json"]);
+        match cli.command {
+            Some(Commands::Providers { provider, json }) => {
+                assert_eq!(provider.as_deref(), Some("codex"));
+                assert!(json);
+            }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
     }

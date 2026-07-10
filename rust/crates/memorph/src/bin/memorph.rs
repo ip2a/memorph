@@ -7,7 +7,9 @@ use memorph::{
         Cli, Commands, CompressionCommands, LegacyCodexToolCommands, LegacyToolCommands,
         SessionCommands, SyncCommands,
     },
-    config, core, provider_features, providers, server,
+    config, core,
+    provider::{ProviderCapabilities, ProviderContentFidelity},
+    provider_features, providers, server,
     storage::activity_store::ActivityActor,
     sync as session_sync, tui, web_assets,
 };
@@ -178,6 +180,10 @@ fn run_command(command: Commands) -> Result<()> {
             }
         }
 
+        Commands::Providers { provider, json } => {
+            print_provider_capabilities(provider.as_deref(), json)?;
+        }
+
         Commands::Sessions { command } => run_session_command(command)?,
 
         Commands::Sync { command } => run_sync_command(command)?,
@@ -258,6 +264,163 @@ fn run_command(command: Commands) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_provider_capabilities(provider_id: Option<&str>, json: bool) -> Result<()> {
+    let provider_ids = match provider_id {
+        Some(provider_id) => vec![provider_id.to_string()],
+        None => providers::all_provider_ids()
+            .iter()
+            .map(|provider_id| (*provider_id).to_string())
+            .collect(),
+    };
+    let mut entries = Vec::with_capacity(provider_ids.len());
+
+    for provider_id in provider_ids {
+        let provider = providers::find_provider(&provider_id)
+            .with_context(|| format!("Unknown provider: {provider_id}"))?;
+        entries.push((
+            provider.id().to_string(),
+            providers::catalog::display_name(provider.id()),
+            provider.capabilities(),
+        ));
+    }
+
+    if json {
+        let values = entries
+            .iter()
+            .map(|(provider_id, display_name, capabilities)| {
+                serde_json::json!({
+                    "provider_id": provider_id,
+                    "display_name": display_name,
+                    "capabilities": capabilities,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string_pretty(&values)?);
+        return Ok(());
+    }
+
+    if provider_id.is_some() {
+        let (provider_id, display_name, capabilities) = &entries[0];
+        println!(
+            "{}",
+            provider_capability_detail(provider_id, display_name, *capabilities)
+        );
+    } else {
+        for (provider_id, display_name, capabilities) in entries {
+            println!(
+                "{}",
+                provider_capability_summary(&provider_id, &display_name, capabilities)
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn provider_capability_summary(
+    provider_id: &str,
+    display_name: &str,
+    capabilities: ProviderCapabilities,
+) -> String {
+    format!(
+        "{display_name} ({provider_id}) | scan={} | page={} | storage={} | turn={} | resume={} | risk={} | ops={}",
+        serialized_enum_label(capabilities.scan_strategy),
+        serialized_enum_label(capabilities.page_strategy),
+        serialized_enum_label(capabilities.storage_shape),
+        serialized_enum_label(capabilities.turn_quality),
+        serialized_enum_label(capabilities.resume_quality),
+        serialized_enum_label(capabilities.write_risk.level),
+        provider_operations(capabilities),
+    )
+}
+
+fn provider_capability_detail(
+    provider_id: &str,
+    display_name: &str,
+    capabilities: ProviderCapabilities,
+) -> String {
+    let mut lines = vec![
+        format!("Provider: {display_name} ({provider_id})"),
+        format!("Operations: {}", provider_operations(capabilities)),
+        format!(
+            "Discovery: scan={} page={} storage={}",
+            serialized_enum_label(capabilities.scan_strategy),
+            serialized_enum_label(capabilities.page_strategy),
+            serialized_enum_label(capabilities.storage_shape),
+        ),
+        format!(
+            "Turn quality: {}",
+            serialized_enum_label(capabilities.turn_quality)
+        ),
+        format!(
+            "Resume quality: {}",
+            serialized_enum_label(capabilities.resume_quality)
+        ),
+        format!(
+            "Write risk: level={} multiple_files={} sqlite={} sidecar_files={} index_repair={}",
+            serialized_enum_label(capabilities.write_risk.level),
+            capabilities.write_risk.multiple_files,
+            capabilities.write_risk.sqlite,
+            capabilities.write_risk.sidecar_files,
+            capabilities.write_risk.index_repair,
+        ),
+        format!(
+            "Backup: before_write={} restore={} sync_only={}",
+            capabilities.backup_support.before_write,
+            capabilities.backup_support.restore,
+            capabilities.backup_support.sync_only,
+        ),
+        format!(
+            "Activity: hook_events={} runtime_endpoint={} session_activity={}",
+            capabilities.activity_support.hook_events,
+            capabilities.activity_support.runtime_endpoint,
+            capabilities.activity_support.session_activity,
+        ),
+        "Import fidelity:".to_string(),
+    ];
+    lines.extend(provider_fidelity_lines(capabilities.import_fidelity));
+    lines.push("Export fidelity:".to_string());
+    lines.extend(provider_fidelity_lines(capabilities.export_fidelity));
+    lines.join("\n")
+}
+
+fn provider_operations(capabilities: ProviderCapabilities) -> String {
+    [
+        ("scan", capabilities.scan),
+        ("import", capabilities.import),
+        ("export", capabilities.export),
+        ("delete", capabilities.delete),
+        ("rename", capabilities.rename),
+        ("resume", capabilities.resume),
+    ]
+    .into_iter()
+    .filter_map(|(name, enabled)| enabled.then_some(name))
+    .collect::<Vec<_>>()
+    .join(",")
+}
+
+fn provider_fidelity_lines(fidelity: ProviderContentFidelity) -> Vec<String> {
+    [
+        ("text", fidelity.text),
+        ("thinking", fidelity.thinking),
+        ("tool_call", fidelity.tool_call),
+        ("tool_result", fidelity.tool_result),
+        ("patch", fidelity.patch),
+        ("image", fidelity.image),
+        ("file", fidelity.file),
+        ("compressed", fidelity.compressed),
+        ("provider_payload", fidelity.provider_payload),
+    ]
+    .into_iter()
+    .map(|(content_kind, disposition)| {
+        let disposition = disposition
+            .map(serialized_enum_label)
+            .unwrap_or_else(|| "unknown".to_string());
+        format!("  {content_kind}: {disposition}")
+    })
+    .collect()
 }
 
 fn run_session_command(command: SessionCommands) -> Result<()> {
@@ -1356,5 +1519,21 @@ mod tests {
 
         assert!(output.contains("Title: (untitled)"));
         assert!(output.contains("Projection report: none"));
+    }
+
+    #[test]
+    fn provider_capability_detail_exposes_quality_and_risk() {
+        let capabilities = providers::find_provider("codex").unwrap().capabilities();
+
+        let output = provider_capability_detail("codex", "Codex", capabilities);
+
+        assert!(output.contains("Provider: Codex (codex)"));
+        assert!(output.contains("Discovery: scan=indexed page=indexed_page storage=mixed"));
+        assert!(output.contains("Turn quality: inferred"));
+        assert!(output.contains("Resume quality: native"));
+        assert!(output.contains("Write risk: level=high"));
+        assert!(output.contains("Backup: before_write=true restore=true sync_only=true"));
+        assert!(output.contains("  compressed: normalized"));
+        assert!(output.contains("  provider_payload: dropped"));
     }
 }
