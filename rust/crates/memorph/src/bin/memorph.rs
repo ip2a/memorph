@@ -253,6 +253,13 @@ fn run_command(command: Commands) -> Result<()> {
 
 fn run_session_command(command: SessionCommands) -> Result<()> {
     match command {
+        SessionCommands::Report {
+            provider,
+            session_id,
+        } => {
+            let view = core::get_session_detail_view_page(&provider, &session_id, 0, Some(0))?;
+            println!("{}", session_projection_report_text(&view));
+        }
         SessionCommands::RefreshStale => {
             let report = core::refresh_projected_session_staleness()?;
             println!("Checked sources: {}", report.checked_sources);
@@ -278,6 +285,88 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn session_projection_report_text(view: &core::SessionDetailView) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("Provider: {}", view.provider_id));
+    lines.push(format!("Session: {}", view.session_id));
+    lines.push(format!("Canonical: {}", view.canonical_id));
+    lines.push(format!(
+        "Title: {}",
+        view.title.as_deref().unwrap_or("(untitled)")
+    ));
+    if let Some(workspace_dir) = &view.workspace_dir {
+        lines.push(format!("Workspace: {}", workspace_dir));
+    }
+    if let Some(source_path) = &view.source_path {
+        lines.push(format!("Source: {}", source_path));
+    }
+    lines.push(format!("Events: {}", view.event_count));
+    lines.push(format!("Messages: {}", view.message_count));
+
+    let Some(report) = &view.projection_report else {
+        lines.push("Projection report: none".to_string());
+        return lines.join("\n");
+    };
+
+    lines.push(format!("Projection report: {}", report.id));
+    lines.push(format!(
+        "  Operation: {}",
+        serialized_enum_label(report.operation_kind)
+    ));
+    lines.push(format!(
+        "  Status: {}",
+        serialized_enum_label(report.status)
+    ));
+    lines.push(format!("  Version: {}", report.projection_version));
+    lines.push(format!("  Created at: {}", report.created_at));
+    if let Some(count) = report.summary.canonical_event_count {
+        lines.push(format!("  Canonical events: {}", count));
+    }
+    if let Some(direction) = report.summary.mapping_direction {
+        lines.push(format!(
+            "  Mapping direction: {}",
+            serialized_enum_label(direction)
+        ));
+    }
+    if let Some(overall) = report.summary.mapping_overall {
+        lines.push(format!(
+            "  Mapping overall: {}",
+            serialized_enum_label(overall)
+        ));
+    }
+    lines.push(format!(
+        "  Fidelity: preserved={} normalized={} dropped={}",
+        report.summary.preserved_count,
+        report.summary.normalized_count,
+        report.summary.dropped_count
+    ));
+    lines.push(format!("  Issues: {}", report.item_count));
+    for item in &report.items {
+        let field = item.field_path.as_deref().unwrap_or("(session)");
+        let reason = item.reason.as_deref().unwrap_or("(no reason)");
+        lines.push(format!(
+            "    {}. {} {} {} - {}",
+            item.item_order,
+            serialized_enum_label(item.fidelity),
+            serialized_enum_label(item.scope),
+            field,
+            reason
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn serialized_enum_label<T>(value: T) -> String
+where
+    T: Copy + serde::Serialize + std::fmt::Debug,
+{
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(label)) => label,
+        _ => format!("{:?}", value),
+    }
 }
 
 fn run_legacy_tool_command(command: LegacyToolCommands) -> Result<()> {
@@ -1064,6 +1153,11 @@ fn provider_name(provider: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use memorph::canonical::{MappingDirection, MappingDisposition, SessionEvent};
+    use memorph::session_projection::{
+        ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
+    };
+    use memorph::storage::session_state::ResolvedLocalSessionState;
     use std::path::PathBuf;
 
     #[test]
@@ -1150,5 +1244,106 @@ mod tests {
             update_plan_for_source(InstallSource::PythonPipx, None).display(),
             "pipx upgrade memorph"
         );
+    }
+
+    #[test]
+    fn session_projection_report_text_prints_quality_summary() {
+        let view = core::SessionDetailView {
+            provider_id: "claude".to_string(),
+            provider_name: "Claude Code".to_string(),
+            session_id: "native-1".to_string(),
+            canonical_id: "canonical-1".to_string(),
+            title: Some("Projected title".to_string()),
+            native_title: Some("Native title".to_string()),
+            display_title: None,
+            workspace_dir: Some("/tmp/project".to_string()),
+            created_at: None,
+            last_active_at: None,
+            source_path: Some("/tmp/session.jsonl".to_string()),
+            resume_command: None,
+            local_state: ResolvedLocalSessionState::default(),
+            event_count: 4,
+            message_count: 2,
+            artifact_count: 0,
+            hook_runtime_summary: None,
+            hook_diagnosis: None,
+            hook_runtime_sessions: Vec::new(),
+            projection_report: Some(core::SessionProjectionReportView {
+                id: "report-1".to_string(),
+                provider_id: "claude".to_string(),
+                source_id: Some("source-1".to_string()),
+                operation_kind: ProjectionOperationKind::Import,
+                projection_version: 1,
+                status: ProjectionStatus::CompletedWithLoss,
+                created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                created_at_ms: 0,
+                summary: core::SessionProjectionReportSummaryView {
+                    canonical_event_count: Some(4),
+                    mapping_direction: Some(MappingDirection::Import),
+                    mapping_overall: Some(MappingDisposition::Dropped),
+                    preserved_count: 3,
+                    normalized_count: 1,
+                    dropped_count: 1,
+                },
+                item_count: 1,
+                items: vec![core::SessionProjectionReportItemView {
+                    item_order: 0,
+                    fidelity: ProjectionFidelity::Dropped,
+                    scope: ProjectionItemScope::ProviderPayload,
+                    field_path: Some("events[0].payload".to_string()),
+                    reason: Some("unsupported provider payload".to_string()),
+                    details: None,
+                }],
+            }),
+            events: Vec::<SessionEvent>::new(),
+            artifacts: Vec::new(),
+            compressed_archive_refs: Vec::new(),
+        };
+
+        let output = session_projection_report_text(&view);
+
+        assert!(output.contains("Provider: claude"));
+        assert!(output.contains("Session: native-1"));
+        assert!(output.contains("Projection report: report-1"));
+        assert!(output.contains("  Status: completed_with_loss"));
+        assert!(output.contains("  Mapping overall: dropped"));
+        assert!(output.contains("  Fidelity: preserved=3 normalized=1 dropped=1"));
+        assert!(output.contains(
+            "    0. dropped provider_payload events[0].payload - unsupported provider payload"
+        ));
+    }
+
+    #[test]
+    fn session_projection_report_text_handles_missing_report() {
+        let view = core::SessionDetailView {
+            provider_id: "claude".to_string(),
+            provider_name: "Claude Code".to_string(),
+            session_id: "native-1".to_string(),
+            canonical_id: "canonical-1".to_string(),
+            title: None,
+            native_title: None,
+            display_title: None,
+            workspace_dir: None,
+            created_at: None,
+            last_active_at: None,
+            source_path: None,
+            resume_command: None,
+            local_state: ResolvedLocalSessionState::default(),
+            event_count: 0,
+            message_count: 0,
+            artifact_count: 0,
+            hook_runtime_summary: None,
+            hook_diagnosis: None,
+            hook_runtime_sessions: Vec::new(),
+            projection_report: None,
+            events: Vec::<SessionEvent>::new(),
+            artifacts: Vec::new(),
+            compressed_archive_refs: Vec::new(),
+        };
+
+        let output = session_projection_report_text(&view);
+
+        assert!(output.contains("Title: (untitled)"));
+        assert!(output.contains("Projection report: none"));
     }
 }

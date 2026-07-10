@@ -202,6 +202,15 @@ pub enum LegacyCodexToolCommands {
 
 #[derive(Subcommand)]
 pub enum SessionCommands {
+    /// Show the projected SQLite quality report for one session
+    Report {
+        /// Provider ID
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+        /// Provider session ID
+        #[arg(value_name = "SESSION_ID")]
+        session_id: String,
+    },
     /// Recompute stale flags for projected SQLite session snapshots
     RefreshStale,
     /// Rebuild stale projected SQLite session snapshots from provider sources
@@ -473,6 +482,24 @@ mod tests {
             Some(Commands::Sessions {
                 command: SessionCommands::RefreshStale,
             }) => {}
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn sessions_report_command_parses_provider_and_session() {
+        let cli = Cli::parse_from(["memorph", "sessions", "report", "claude", "native-1"]);
+        match cli.command {
+            Some(Commands::Sessions {
+                command:
+                    SessionCommands::Report {
+                        provider,
+                        session_id,
+                    },
+            }) => {
+                assert_eq!(provider, "claude");
+                assert_eq!(session_id, "native-1");
+            }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
     }
