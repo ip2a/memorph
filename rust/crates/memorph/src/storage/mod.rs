@@ -1,4 +1,5 @@
 pub mod activity_store;
+pub mod artifact_store;
 pub mod atomic_write;
 pub mod event_index;
 pub mod local_store;

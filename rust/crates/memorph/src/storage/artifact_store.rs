@@ -1,0 +1,1231 @@
+use anyhow::{bail, Context, Result};
+use chrono::Utc;
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::fmt;
+use std::fs::File;
+use std::io::{BufReader, Read};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+use uuid::Uuid;
+use walkdir::WalkDir;
+
+const DEFAULT_QUERY_LIMIT: usize = 100;
+const MAX_QUERY_LIMIT: usize = 500;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactManifestKind {
+    CompressionArchive,
+    SessionExport,
+    SessionBackup,
+    EventPayload,
+}
+
+impl ArtifactManifestKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CompressionArchive => "compression_archive",
+            Self::SessionExport => "session_export",
+            Self::SessionBackup => "session_backup",
+            Self::EventPayload => "event_payload",
+        }
+    }
+}
+
+impl fmt::Display for ArtifactManifestKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ArtifactManifestKind {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "compression_archive" => Ok(Self::CompressionArchive),
+            "session_export" => Ok(Self::SessionExport),
+            "session_backup" => Ok(Self::SessionBackup),
+            "event_payload" => Ok(Self::EventPayload),
+            _ => bail!("Unknown artifact manifest kind: {value}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactStorageKind {
+    File,
+    Directory,
+    Unknown,
+}
+
+impl ArtifactStorageKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::File => "file",
+            Self::Directory => "directory",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl fmt::Display for ArtifactStorageKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ArtifactStorageKind {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "file" => Ok(Self::File),
+            "directory" => Ok(Self::Directory),
+            "unknown" => Ok(Self::Unknown),
+            _ => bail!("Unknown artifact storage kind: {value}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NewArtifactManifest {
+    pub artifact_kind: ArtifactManifestKind,
+    pub operation_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub session_id: Option<String>,
+    pub projection_report_id: Option<String>,
+    pub event_id: Option<String>,
+    pub block_id: Option<String>,
+    pub path: PathBuf,
+    pub mime_type: Option<String>,
+    pub format: Option<String>,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArtifactManifest {
+    pub id: String,
+    pub artifact_kind: ArtifactManifestKind,
+    pub storage_kind: ArtifactStorageKind,
+    pub operation_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub session_id: Option<String>,
+    pub projection_report_id: Option<String>,
+    pub event_id: Option<String>,
+    pub block_id: Option<String>,
+    pub path: PathBuf,
+    pub content_hash: String,
+    pub byte_size: i64,
+    pub mime_type: Option<String>,
+    pub format: Option<String>,
+    pub created_at_ms: i64,
+    pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ArtifactQuery {
+    pub artifact_kind: Option<ArtifactManifestKind>,
+    pub operation_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub session_id: Option<String>,
+    pub projection_report_id: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactVerificationStatus {
+    Verified,
+    Missing,
+    Changed,
+    Unverifiable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactVerification {
+    pub artifact_id: String,
+    pub path: PathBuf,
+    pub status: ArtifactVerificationStatus,
+    pub expected_content_hash: String,
+    pub actual_content_hash: Option<String>,
+    pub expected_byte_size: i64,
+    pub actual_byte_size: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewBackupRecord {
+    pub operation_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub session_id: Option<String>,
+    pub source_path: PathBuf,
+    pub backup_path: PathBuf,
+    pub restore_hint: Option<String>,
+    pub format: Option<String>,
+    pub artifact_metadata: Value,
+    pub backup_metadata: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackupRecord {
+    pub id: String,
+    pub artifact: ArtifactManifest,
+    pub operation_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub session_id: Option<String>,
+    pub source_path: PathBuf,
+    pub created_at_ms: i64,
+    pub restore_hint: Option<String>,
+    pub metadata: Value,
+}
+
+pub struct ArtifactStore<'a> {
+    conn: &'a mut Connection,
+}
+
+impl<'a> ArtifactStore<'a> {
+    pub fn new(conn: &'a mut Connection) -> Self {
+        Self { conn }
+    }
+
+    pub fn register_path(&mut self, manifest: NewArtifactManifest) -> Result<ArtifactManifest> {
+        let inspected = inspect_artifact_path(&manifest.path)?;
+        let links = resolve_artifact_links(self.conn, &manifest)?;
+        let tx = self
+            .conn
+            .transaction()
+            .context("Failed to start artifact registration transaction")?;
+        let stored = insert_artifact_manifest(&tx, manifest, links, inspected)?;
+        tx.commit()
+            .context("Failed to commit artifact registration transaction")?;
+        Ok(stored)
+    }
+
+    pub fn register_backup(&mut self, backup: NewBackupRecord) -> Result<BackupRecord> {
+        let source_path = std::fs::canonicalize(&backup.source_path).with_context(|| {
+            format!(
+                "Failed to resolve backup source path: {}",
+                backup.source_path.display()
+            )
+        })?;
+        let inspected = inspect_artifact_path(&backup.backup_path)?;
+        let artifact_input = NewArtifactManifest {
+            artifact_kind: ArtifactManifestKind::SessionBackup,
+            operation_id: backup.operation_id.clone(),
+            provider_id: backup.provider_id.clone(),
+            provider_session_id: backup.provider_session_id.clone(),
+            session_id: backup.session_id.clone(),
+            projection_report_id: None,
+            event_id: None,
+            block_id: None,
+            path: backup.backup_path.clone(),
+            mime_type: None,
+            format: backup.format.clone(),
+            metadata: backup.artifact_metadata.clone(),
+        };
+        let links = resolve_artifact_links(self.conn, &artifact_input)?;
+        let tx = self
+            .conn
+            .transaction()
+            .context("Failed to start backup registration transaction")?;
+        let artifact = insert_artifact_manifest(&tx, artifact_input, links, inspected)?;
+        let record = insert_backup_record(&tx, backup, source_path, artifact)?;
+        tx.commit()
+            .context("Failed to commit backup registration transaction")?;
+        Ok(record)
+    }
+
+    pub fn get(&self, artifact_id: &str) -> Result<Option<ArtifactManifest>> {
+        load_artifact_by_id(self.conn, artifact_id)
+    }
+
+    pub fn get_backup(&self, backup_id: &str) -> Result<Option<BackupRecord>> {
+        load_backup_by_id(self.conn, backup_id)
+    }
+
+    pub fn query(&self, query: ArtifactQuery) -> Result<Vec<ArtifactManifest>> {
+        let limit = query
+            .limit
+            .unwrap_or(DEFAULT_QUERY_LIMIT)
+            .clamp(1, MAX_QUERY_LIMIT) as i64;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    id, artifact_kind, storage_kind, operation_id, provider_id,
+                    provider_session_id, session_id, projection_report_id, event_id, block_id,
+                    path, content_hash, byte_size, mime_type, format, created_at_ms, metadata_json
+                 FROM artifact_manifests
+                 WHERE (?1 IS NULL OR artifact_kind = ?1)
+                   AND (?2 IS NULL OR operation_id = ?2)
+                   AND (?3 IS NULL OR provider_id = ?3)
+                   AND (?4 IS NULL OR provider_session_id = ?4)
+                   AND (?5 IS NULL OR session_id = ?5)
+                   AND (?6 IS NULL OR projection_report_id = ?6)
+                 ORDER BY created_at_ms DESC, id DESC
+                 LIMIT ?7",
+            )
+            .context("Failed to prepare artifact manifest query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    query.artifact_kind.map(|value| value.as_str()),
+                    query.operation_id,
+                    query.provider_id,
+                    query.provider_session_id,
+                    query.session_id,
+                    query.projection_report_id,
+                    limit
+                ],
+                decode_artifact_row,
+            )
+            .context("Failed to query artifact manifests")?;
+        let mut manifests = Vec::new();
+        for row in rows {
+            manifests.push(row.context("Failed to decode artifact manifest")?);
+        }
+        Ok(manifests)
+    }
+
+    pub fn verify(&self, artifact_id: &str) -> Result<Option<ArtifactVerification>> {
+        let Some(manifest) = self.get(artifact_id)? else {
+            return Ok(None);
+        };
+        if !manifest.path.exists() {
+            return Ok(Some(ArtifactVerification {
+                artifact_id: manifest.id,
+                path: manifest.path,
+                status: ArtifactVerificationStatus::Missing,
+                expected_content_hash: manifest.content_hash,
+                actual_content_hash: None,
+                expected_byte_size: manifest.byte_size,
+                actual_byte_size: None,
+            }));
+        }
+        if manifest.storage_kind == ArtifactStorageKind::Unknown
+            || !is_supported_content_hash(&manifest.content_hash)
+        {
+            return Ok(Some(ArtifactVerification {
+                artifact_id: manifest.id,
+                path: manifest.path,
+                status: ArtifactVerificationStatus::Unverifiable,
+                expected_content_hash: manifest.content_hash,
+                actual_content_hash: None,
+                expected_byte_size: manifest.byte_size,
+                actual_byte_size: None,
+            }));
+        }
+
+        let inspected = inspect_artifact_path(&manifest.path)?;
+        let verified = manifest.storage_kind == inspected.storage_kind
+            && manifest.content_hash == inspected.content_hash
+            && manifest.byte_size == inspected.byte_size;
+        Ok(Some(ArtifactVerification {
+            artifact_id: manifest.id,
+            path: manifest.path,
+            status: if verified {
+                ArtifactVerificationStatus::Verified
+            } else {
+                ArtifactVerificationStatus::Changed
+            },
+            expected_content_hash: manifest.content_hash,
+            actual_content_hash: Some(inspected.content_hash),
+            expected_byte_size: manifest.byte_size,
+            actual_byte_size: Some(inspected.byte_size),
+        }))
+    }
+}
+
+#[derive(Debug)]
+struct InspectedArtifact {
+    path: PathBuf,
+    storage_kind: ArtifactStorageKind,
+    content_hash: String,
+    byte_size: i64,
+}
+
+#[derive(Debug)]
+struct ResolvedArtifactLinks {
+    provider_id: Option<String>,
+    provider_session_id: Option<String>,
+    session_id: Option<String>,
+    projection_report_id: Option<String>,
+    event_id: Option<String>,
+    block_id: Option<String>,
+}
+
+fn inspect_artifact_path(path: &Path) -> Result<InspectedArtifact> {
+    let path = std::fs::canonicalize(path)
+        .with_context(|| format!("Failed to resolve artifact path: {}", path.display()))?;
+    let metadata = std::fs::metadata(&path)
+        .with_context(|| format!("Failed to read artifact metadata: {}", path.display()))?;
+    if metadata.is_file() {
+        let (content_hash, byte_size) = hash_file(&path)?;
+        return Ok(InspectedArtifact {
+            path,
+            storage_kind: ArtifactStorageKind::File,
+            content_hash,
+            byte_size,
+        });
+    }
+    if metadata.is_dir() {
+        let (content_hash, byte_size) = hash_directory(&path)?;
+        return Ok(InspectedArtifact {
+            path,
+            storage_kind: ArtifactStorageKind::Directory,
+            content_hash,
+            byte_size,
+        });
+    }
+    bail!(
+        "Artifact path is neither a file nor a directory: {}",
+        path.display()
+    )
+}
+
+fn is_supported_content_hash(content_hash: &str) -> bool {
+    content_hash.starts_with("sha256:") || content_hash.starts_with("sha256-tree-v1:")
+}
+
+fn hash_file(path: &Path) -> Result<(String, i64)> {
+    let file =
+        File::open(path).with_context(|| format!("Failed to open artifact: {}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut byte_size = 0_i64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .with_context(|| format!("Failed to hash artifact: {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        byte_size = byte_size
+            .checked_add(read as i64)
+            .context("Artifact size exceeds SQLite integer range")?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok((format!("sha256:{:x}", hasher.finalize()), byte_size))
+}
+
+fn hash_directory(path: &Path) -> Result<(String, i64)> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"memorph-directory-sha256-v1\0");
+    let mut byte_size = 0_i64;
+
+    for entry in WalkDir::new(path)
+        .follow_links(false)
+        .sort_by_file_name()
+        .into_iter()
+        .skip(1)
+    {
+        let entry = entry
+            .with_context(|| format!("Failed to walk artifact directory: {}", path.display()))?;
+        let relative = entry.path().strip_prefix(path).with_context(|| {
+            format!(
+                "Failed to derive artifact directory entry path: {}",
+                entry.path().display()
+            )
+        })?;
+        let file_type = entry.file_type();
+        if file_type.is_dir() {
+            hasher.update(b"D\0");
+            hash_relative_path(&mut hasher, relative);
+            hasher.update(b"\0");
+            continue;
+        }
+        if file_type.is_symlink() {
+            let target = std::fs::read_link(entry.path()).with_context(|| {
+                format!(
+                    "Failed to read artifact directory symlink: {}",
+                    entry.path().display()
+                )
+            })?;
+            hasher.update(b"L\0");
+            hash_relative_path(&mut hasher, relative);
+            hasher.update(b"\0");
+            hasher.update(target.as_os_str().as_encoded_bytes());
+            hasher.update(b"\0");
+            continue;
+        }
+        if !file_type.is_file() {
+            bail!(
+                "Artifact directory contains unsupported entry: {}",
+                entry.path().display()
+            );
+        }
+
+        let metadata = entry.metadata().with_context(|| {
+            format!(
+                "Failed to read artifact directory entry metadata: {}",
+                entry.path().display()
+            )
+        })?;
+        let entry_size = i64::try_from(metadata.len())
+            .context("Artifact directory entry size exceeds SQLite integer range")?;
+        byte_size = byte_size
+            .checked_add(entry_size)
+            .context("Artifact directory size exceeds SQLite integer range")?;
+        hasher.update(b"F\0");
+        hash_relative_path(&mut hasher, relative);
+        hasher.update(b"\0");
+        hasher.update(metadata.len().to_le_bytes());
+        let file = File::open(entry.path()).with_context(|| {
+            format!(
+                "Failed to open artifact directory entry: {}",
+                entry.path().display()
+            )
+        })?;
+        let mut reader = BufReader::new(file);
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = reader.read(&mut buffer).with_context(|| {
+                format!(
+                    "Failed to hash artifact directory entry: {}",
+                    entry.path().display()
+                )
+            })?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+    }
+
+    Ok((format!("sha256-tree-v1:{:x}", hasher.finalize()), byte_size))
+}
+
+fn hash_relative_path(hasher: &mut Sha256, path: &Path) {
+    for component in path.components() {
+        hasher.update(component.as_os_str().as_encoded_bytes());
+        hasher.update(b"/");
+    }
+}
+
+fn resolve_artifact_links(
+    conn: &Connection,
+    manifest: &NewArtifactManifest,
+) -> Result<ResolvedArtifactLinks> {
+    let mut provider_id = manifest.provider_id.clone();
+    let mut provider_session_id = manifest.provider_session_id.clone();
+    let mut session_id = manifest.session_id.clone();
+    let mut event_id = manifest.event_id.clone();
+
+    if let Some(block_id) = manifest.block_id.as_deref() {
+        let (block_event_id, block_session_id) = conn
+            .query_row(
+                "SELECT block.event_id, event.session_id
+                 FROM session_event_blocks block
+                 JOIN session_events event ON event.id = block.event_id
+                 WHERE block.id = ?1",
+                [block_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .context("Failed to resolve artifact block link")?
+            .with_context(|| format!("Artifact block does not exist: {block_id}"))?;
+        merge_link("event", &mut event_id, Some(block_event_id))?;
+        merge_link("session", &mut session_id, Some(block_session_id))?;
+    }
+
+    if let Some(event_id_value) = event_id.as_deref() {
+        let event_session_id = conn
+            .query_row(
+                "SELECT session_id FROM session_events WHERE id = ?1",
+                [event_id_value],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("Failed to resolve artifact event link")?
+            .with_context(|| format!("Artifact event does not exist: {event_id_value}"))?;
+        merge_link("session", &mut session_id, Some(event_session_id))?;
+    }
+
+    if let Some(report_id) = manifest.projection_report_id.as_deref() {
+        let (report_session_id, report_provider_id) = conn
+            .query_row(
+                "SELECT session_id, provider_id FROM projection_reports WHERE id = ?1",
+                [report_id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .context("Failed to resolve artifact projection report link")?
+            .with_context(|| format!("Artifact projection report does not exist: {report_id}"))?;
+        merge_link("session", &mut session_id, report_session_id)?;
+        merge_link("provider", &mut provider_id, Some(report_provider_id))?;
+    }
+
+    if let Some(session_id_value) = session_id.as_deref() {
+        let (session_provider_id, session_provider_session_id) = conn
+            .query_row(
+                "SELECT provider_id, provider_session_id FROM sessions WHERE id = ?1",
+                [session_id_value],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()
+            .context("Failed to resolve artifact session link")?
+            .with_context(|| format!("Artifact session does not exist: {session_id_value}"))?;
+        merge_link("provider", &mut provider_id, Some(session_provider_id))?;
+        merge_link(
+            "provider session",
+            &mut provider_session_id,
+            session_provider_session_id,
+        )?;
+    }
+
+    Ok(ResolvedArtifactLinks {
+        provider_id,
+        provider_session_id,
+        session_id,
+        projection_report_id: manifest.projection_report_id.clone(),
+        event_id,
+        block_id: manifest.block_id.clone(),
+    })
+}
+
+fn merge_link(label: &str, current: &mut Option<String>, derived: Option<String>) -> Result<()> {
+    let Some(derived) = derived else {
+        return Ok(());
+    };
+    match current {
+        Some(value) if value != &derived => {
+            bail!("Artifact {label} link conflicts with related SQLite records")
+        }
+        Some(_) => Ok(()),
+        None => {
+            *current = Some(derived);
+            Ok(())
+        }
+    }
+}
+
+fn insert_artifact_manifest(
+    conn: &Transaction<'_>,
+    manifest: NewArtifactManifest,
+    links: ResolvedArtifactLinks,
+    inspected: InspectedArtifact,
+) -> Result<ArtifactManifest> {
+    let id = Uuid::new_v4().to_string();
+    let created_at_ms = Utc::now().timestamp_millis();
+    let metadata_json =
+        serde_json::to_string(&manifest.metadata).context("Failed to encode artifact metadata")?;
+    let path_text = inspected.path.to_string_lossy().to_string();
+    let inserted = conn
+        .execute(
+            "INSERT OR IGNORE INTO artifact_manifests
+             (id, artifact_kind, session_id, event_id, block_id, path, content_hash, byte_size,
+              mime_type, format, created_at_ms, metadata_json, operation_id, provider_id,
+              provider_session_id, projection_report_id, storage_kind)
+             VALUES
+             (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            params![
+                id,
+                manifest.artifact_kind.as_str(),
+                links.session_id,
+                links.event_id,
+                links.block_id,
+                path_text,
+                inspected.content_hash,
+                inspected.byte_size,
+                manifest.mime_type,
+                manifest.format,
+                created_at_ms,
+                metadata_json,
+                manifest.operation_id,
+                links.provider_id,
+                links.provider_session_id,
+                links.projection_report_id,
+                inspected.storage_kind.as_str()
+            ],
+        )
+        .context("Failed to insert artifact manifest")?;
+
+    let stored = if inserted == 1 {
+        load_artifact_by_id(conn, &id)?
+    } else {
+        load_artifact_by_registration(
+            conn,
+            manifest.artifact_kind,
+            &path_text,
+            &inspected.content_hash,
+            manifest.operation_id.as_deref(),
+        )?
+    }
+    .context("Artifact registration did not produce a manifest")?;
+
+    let expected = ArtifactManifest {
+        id: stored.id.clone(),
+        artifact_kind: manifest.artifact_kind,
+        storage_kind: inspected.storage_kind,
+        operation_id: manifest.operation_id,
+        provider_id: links.provider_id,
+        provider_session_id: links.provider_session_id,
+        session_id: links.session_id,
+        projection_report_id: links.projection_report_id,
+        event_id: links.event_id,
+        block_id: links.block_id,
+        path: inspected.path,
+        content_hash: inspected.content_hash,
+        byte_size: inspected.byte_size,
+        mime_type: manifest.mime_type,
+        format: manifest.format,
+        created_at_ms: stored.created_at_ms,
+        metadata: manifest.metadata,
+    };
+    if stored != expected {
+        bail!(
+            "Artifact path was already registered with conflicting context: {}",
+            stored.path.display()
+        );
+    }
+    if let Some(block_id) = stored.block_id.as_deref() {
+        let updated = conn.execute(
+            "UPDATE session_event_blocks
+             SET artifact_id = ?1
+             WHERE id = ?2
+               AND (artifact_id IS NULL OR artifact_id = ?1)",
+            params![stored.id, block_id],
+        )?;
+        if updated != 1 {
+            bail!("Artifact block is already linked to another manifest: {block_id}");
+        }
+    }
+    Ok(stored)
+}
+
+fn insert_backup_record(
+    conn: &Transaction<'_>,
+    backup: NewBackupRecord,
+    source_path: PathBuf,
+    artifact: ArtifactManifest,
+) -> Result<BackupRecord> {
+    let id = Uuid::new_v4().to_string();
+    let created_at_ms = Utc::now().timestamp_millis();
+    let metadata_json = serde_json::to_string(&backup.backup_metadata)
+        .context("Failed to encode backup metadata")?;
+    let source_path_text = source_path.to_string_lossy().to_string();
+    conn.execute(
+        "INSERT OR IGNORE INTO backups
+         (id, artifact_id, operation_id, provider_id, provider_session_id, session_id,
+          source_path, created_at_ms, restore_hint, metadata_json)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            id,
+            artifact.id,
+            backup.operation_id,
+            artifact.provider_id,
+            artifact.provider_session_id,
+            artifact.session_id,
+            source_path_text,
+            created_at_ms,
+            backup.restore_hint,
+            metadata_json
+        ],
+    )
+    .context("Failed to insert backup record")?;
+
+    let stored = load_backup_by_artifact_id(conn, &artifact.id)?
+        .context("Backup registration did not produce a record")?;
+    let expected = BackupRecord {
+        id: stored.id.clone(),
+        artifact,
+        operation_id: backup.operation_id,
+        provider_id: stored.provider_id.clone(),
+        provider_session_id: stored.provider_session_id.clone(),
+        session_id: stored.session_id.clone(),
+        source_path,
+        created_at_ms: stored.created_at_ms,
+        restore_hint: backup.restore_hint,
+        metadata: backup.backup_metadata,
+    };
+    if stored != expected {
+        bail!(
+            "Backup artifact was already registered with conflicting restore context: {}",
+            stored.artifact.path.display()
+        );
+    }
+    Ok(stored)
+}
+
+fn load_artifact_by_id(conn: &Connection, artifact_id: &str) -> Result<Option<ArtifactManifest>> {
+    conn.query_row(
+        "SELECT
+            id, artifact_kind, storage_kind, operation_id, provider_id, provider_session_id,
+            session_id, projection_report_id, event_id, block_id, path, content_hash, byte_size,
+            mime_type, format, created_at_ms, metadata_json
+         FROM artifact_manifests
+         WHERE id = ?1",
+        [artifact_id],
+        decode_artifact_row,
+    )
+    .optional()
+    .context("Failed to load artifact manifest")
+}
+
+fn load_artifact_by_registration(
+    conn: &Connection,
+    artifact_kind: ArtifactManifestKind,
+    path: &str,
+    content_hash: &str,
+    operation_id: Option<&str>,
+) -> Result<Option<ArtifactManifest>> {
+    conn.query_row(
+        "SELECT
+            id, artifact_kind, storage_kind, operation_id, provider_id, provider_session_id,
+            session_id, projection_report_id, event_id, block_id, path, content_hash, byte_size,
+            mime_type, format, created_at_ms, metadata_json
+         FROM artifact_manifests
+         WHERE artifact_kind = ?1
+           AND path = ?2
+           AND content_hash = ?3
+           AND operation_id IS ?4",
+        params![artifact_kind.as_str(), path, content_hash, operation_id],
+        decode_artifact_row,
+    )
+    .optional()
+    .context("Failed to load registered artifact manifest")
+}
+
+fn decode_artifact_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ArtifactManifest> {
+    let artifact_kind_text: String = row.get(1)?;
+    let storage_kind_text: String = row.get(2)?;
+    let metadata_json: String = row.get(16)?;
+    let artifact_kind = ArtifactManifestKind::from_str(&artifact_kind_text).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, error.into())
+    })?;
+    let storage_kind = ArtifactStorageKind::from_str(&storage_kind_text).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, error.into())
+    })?;
+    let metadata = serde_json::from_str(&metadata_json).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(16, rusqlite::types::Type::Text, error.into())
+    })?;
+    Ok(ArtifactManifest {
+        id: row.get(0)?,
+        artifact_kind,
+        storage_kind,
+        operation_id: row.get(3)?,
+        provider_id: row.get(4)?,
+        provider_session_id: row.get(5)?,
+        session_id: row.get(6)?,
+        projection_report_id: row.get(7)?,
+        event_id: row.get(8)?,
+        block_id: row.get(9)?,
+        path: PathBuf::from(row.get::<_, String>(10)?),
+        content_hash: row.get(11)?,
+        byte_size: row.get(12)?,
+        mime_type: row.get(13)?,
+        format: row.get(14)?,
+        created_at_ms: row.get(15)?,
+        metadata,
+    })
+}
+
+fn load_backup_by_id(conn: &Connection, backup_id: &str) -> Result<Option<BackupRecord>> {
+    load_backup(conn, "backup.id = ?1", backup_id)
+}
+
+fn load_backup_by_artifact_id(
+    conn: &Connection,
+    artifact_id: &str,
+) -> Result<Option<BackupRecord>> {
+    load_backup(conn, "backup.artifact_id = ?1", artifact_id)
+}
+
+fn load_backup(conn: &Connection, predicate: &str, value: &str) -> Result<Option<BackupRecord>> {
+    let sql = format!(
+        "SELECT
+            backup.id,
+            backup.operation_id,
+            backup.provider_id,
+            backup.provider_session_id,
+            backup.session_id,
+            backup.source_path,
+            backup.created_at_ms,
+            backup.restore_hint,
+            backup.metadata_json,
+            artifact.id,
+            artifact.artifact_kind,
+            artifact.storage_kind,
+            artifact.operation_id,
+            artifact.provider_id,
+            artifact.provider_session_id,
+            artifact.session_id,
+            artifact.projection_report_id,
+            artifact.event_id,
+            artifact.block_id,
+            artifact.path,
+            artifact.content_hash,
+            artifact.byte_size,
+            artifact.mime_type,
+            artifact.format,
+            artifact.created_at_ms,
+            artifact.metadata_json
+         FROM backups backup
+         JOIN artifact_manifests artifact ON artifact.id = backup.artifact_id
+         WHERE {predicate}"
+    );
+    conn.query_row(&sql, [value], |row| {
+        let backup_metadata_json: String = row.get(8)?;
+        let artifact_kind_text: String = row.get(10)?;
+        let storage_kind_text: String = row.get(11)?;
+        let artifact_metadata_json: String = row.get(25)?;
+        let artifact_kind =
+            ArtifactManifestKind::from_str(&artifact_kind_text).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    10,
+                    rusqlite::types::Type::Text,
+                    error.into(),
+                )
+            })?;
+        let storage_kind = ArtifactStorageKind::from_str(&storage_kind_text).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(11, rusqlite::types::Type::Text, error.into())
+        })?;
+        let backup_metadata = serde_json::from_str(&backup_metadata_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, error.into())
+        })?;
+        let artifact_metadata = serde_json::from_str(&artifact_metadata_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(25, rusqlite::types::Type::Text, error.into())
+        })?;
+        Ok(BackupRecord {
+            id: row.get(0)?,
+            operation_id: row.get(1)?,
+            provider_id: row.get(2)?,
+            provider_session_id: row.get(3)?,
+            session_id: row.get(4)?,
+            source_path: PathBuf::from(row.get::<_, String>(5)?),
+            created_at_ms: row.get(6)?,
+            restore_hint: row.get(7)?,
+            metadata: backup_metadata,
+            artifact: ArtifactManifest {
+                id: row.get(9)?,
+                artifact_kind,
+                storage_kind,
+                operation_id: row.get(12)?,
+                provider_id: row.get(13)?,
+                provider_session_id: row.get(14)?,
+                session_id: row.get(15)?,
+                projection_report_id: row.get(16)?,
+                event_id: row.get(17)?,
+                block_id: row.get(18)?,
+                path: PathBuf::from(row.get::<_, String>(19)?),
+                content_hash: row.get(20)?,
+                byte_size: row.get(21)?,
+                mime_type: row.get(22)?,
+                format: row.get(23)?,
+                created_at_ms: row.get(24)?,
+                metadata: artifact_metadata,
+            },
+        })
+    })
+    .optional()
+    .context("Failed to load backup record")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::local_store::{apply_schema, configure_connection};
+    use serde_json::json;
+
+    fn test_connection() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        apply_schema(&mut conn).unwrap();
+        conn
+    }
+
+    fn new_manifest(path: PathBuf, operation_id: Option<&str>) -> NewArtifactManifest {
+        NewArtifactManifest {
+            artifact_kind: ArtifactManifestKind::SessionExport,
+            operation_id: operation_id.map(str::to_string),
+            provider_id: Some("claude".to_string()),
+            provider_session_id: Some("provider-session-1".to_string()),
+            session_id: None,
+            projection_report_id: None,
+            event_id: None,
+            block_id: None,
+            path,
+            mime_type: Some("application/json".to_string()),
+            format: Some("json".to_string()),
+            metadata: json!({"source": "test"}),
+        }
+    }
+
+    #[test]
+    fn registers_file_with_sha256_and_is_idempotent_per_operation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        std::fs::write(&path, b"hello world").unwrap();
+        let mut conn = test_connection();
+        let mut store = ArtifactStore::new(&mut conn);
+
+        let first = store
+            .register_path(new_manifest(path.clone(), Some("operation-1")))
+            .unwrap();
+        let second = store
+            .register_path(new_manifest(path.clone(), Some("operation-1")))
+            .unwrap();
+        let third = store
+            .register_path(new_manifest(path, Some("operation-2")))
+            .unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_ne!(first.id, third.id);
+        assert_eq!(first.storage_kind, ArtifactStorageKind::File);
+        assert_eq!(first.byte_size, 11);
+        assert_eq!(
+            first.content_hash,
+            "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+        assert!(first.path.is_absolute());
+    }
+
+    #[test]
+    fn registers_directory_with_stable_tree_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_dir = dir.path().join("backup");
+        std::fs::create_dir_all(backup_dir.join("nested")).unwrap();
+        std::fs::write(backup_dir.join("a.txt"), b"alpha").unwrap();
+        std::fs::write(backup_dir.join("nested/b.txt"), b"beta").unwrap();
+        let mut conn = test_connection();
+        let mut store = ArtifactStore::new(&mut conn);
+
+        let first = store
+            .register_path(NewArtifactManifest {
+                artifact_kind: ArtifactManifestKind::SessionBackup,
+                path: backup_dir.clone(),
+                ..new_manifest(backup_dir.clone(), None)
+            })
+            .unwrap();
+        let second = store
+            .register_path(NewArtifactManifest {
+                artifact_kind: ArtifactManifestKind::SessionBackup,
+                path: backup_dir.clone(),
+                ..new_manifest(backup_dir.clone(), None)
+            })
+            .unwrap();
+        std::fs::write(backup_dir.join("nested/b.txt"), b"changed").unwrap();
+        let changed = store
+            .register_path(NewArtifactManifest {
+                artifact_kind: ArtifactManifestKind::SessionBackup,
+                path: backup_dir,
+                ..new_manifest(PathBuf::new(), None)
+            })
+            .unwrap();
+
+        assert_eq!(first.id, second.id);
+        assert_ne!(first.id, changed.id);
+        assert_eq!(first.storage_kind, ArtifactStorageKind::Directory);
+        assert_eq!(first.byte_size, 9);
+        assert!(first.content_hash.starts_with("sha256-tree-v1:"));
+    }
+
+    #[test]
+    fn resolves_and_validates_projection_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("payload.json");
+        std::fs::write(&path, b"{}").unwrap();
+        let mut conn = test_connection();
+        conn.execute(
+            "INSERT INTO sessions
+             (id, provider_id, provider_session_id, status, event_count, turn_count, projection_version)
+             VALUES ('session-1', 'claude', 'provider-session-1', 'active', 1, 0, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_events
+             (id, session_id, kind, visibility, source_order, stable_cursor, metadata_json)
+             VALUES ('event-1', 'session-1', 'message', 'visible', 0, 'cursor-1', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_event_blocks
+             (id, event_id, block_order, block_kind, fidelity)
+             VALUES ('block-1', 'event-1', 0, 'provider_payload', 'preserved')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projection_reports
+             (id, session_id, provider_id, operation_kind, projection_version, status,
+              summary_json, created_at_ms)
+             VALUES ('report-1', 'session-1', 'claude', 'projection', 1, 'complete', '{}', 1)",
+            [],
+        )
+        .unwrap();
+        let mut store = ArtifactStore::new(&mut conn);
+
+        let stored = store
+            .register_path(NewArtifactManifest {
+                artifact_kind: ArtifactManifestKind::EventPayload,
+                operation_id: None,
+                provider_id: None,
+                provider_session_id: None,
+                session_id: None,
+                projection_report_id: Some("report-1".to_string()),
+                event_id: None,
+                block_id: Some("block-1".to_string()),
+                path,
+                mime_type: Some("application/json".to_string()),
+                format: Some("json".to_string()),
+                metadata: json!({}),
+            })
+            .unwrap();
+
+        assert_eq!(stored.provider_id.as_deref(), Some("claude"));
+        assert_eq!(
+            stored.provider_session_id.as_deref(),
+            Some("provider-session-1")
+        );
+        assert_eq!(stored.session_id.as_deref(), Some("session-1"));
+        assert_eq!(stored.event_id.as_deref(), Some("event-1"));
+        assert_eq!(stored.block_id.as_deref(), Some("block-1"));
+        assert_eq!(stored.projection_report_id.as_deref(), Some("report-1"));
+        let block_artifact_id: Option<String> = conn
+            .query_row(
+                "SELECT artifact_id FROM session_event_blocks WHERE id = 'block-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(block_artifact_id.as_deref(), Some(stored.id.as_str()));
+    }
+
+    #[test]
+    fn rejects_unknown_canonical_session_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        std::fs::write(&path, b"{}").unwrap();
+        let mut conn = test_connection();
+        let mut store = ArtifactStore::new(&mut conn);
+        let mut manifest = new_manifest(path, None);
+        manifest.session_id = Some("missing-session".to_string());
+
+        let error = store.register_path(manifest).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Artifact session does not exist: missing-session"));
+    }
+
+    #[test]
+    fn registers_backup_as_artifact_backed_restore_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("source.jsonl");
+        let backup_path = dir.path().join("backup.jsonl");
+        std::fs::write(&source_path, b"session").unwrap();
+        std::fs::copy(&source_path, &backup_path).unwrap();
+        let mut conn = test_connection();
+        let stored = {
+            let mut store = ArtifactStore::new(&mut conn);
+            store
+                .register_backup(NewBackupRecord {
+                    operation_id: Some("operation-1".to_string()),
+                    provider_id: Some("codex".to_string()),
+                    provider_session_id: Some("provider-session-1".to_string()),
+                    session_id: None,
+                    source_path: source_path.clone(),
+                    backup_path,
+                    restore_hint: Some("copy over source".to_string()),
+                    format: Some("jsonl".to_string()),
+                    artifact_metadata: json!({"scope": "single_file"}),
+                    backup_metadata: json!({"restore": "replace"}),
+                })
+                .unwrap()
+        };
+
+        let reloaded = ArtifactStore::new(&mut conn)
+            .get_backup(&stored.id)
+            .unwrap()
+            .unwrap();
+        let legacy_backup_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM pragma_table_info('backups')
+                 WHERE name IN ('backup_path', 'content_hash', 'byte_size')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(stored, reloaded);
+        assert_eq!(
+            stored.artifact.artifact_kind,
+            ArtifactManifestKind::SessionBackup
+        );
+        assert_eq!(
+            stored.source_path,
+            std::fs::canonicalize(source_path).unwrap()
+        );
+        assert_eq!(legacy_backup_columns, 0);
+    }
+
+    #[test]
+    fn queries_artifacts_by_provider_session_and_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        std::fs::write(&path, b"{}").unwrap();
+        let mut conn = test_connection();
+        let mut store = ArtifactStore::new(&mut conn);
+        let stored = store
+            .register_path(new_manifest(path, Some("operation-1")))
+            .unwrap();
+
+        let rows = store
+            .query(ArtifactQuery {
+                artifact_kind: Some(ArtifactManifestKind::SessionExport),
+                provider_id: Some("claude".to_string()),
+                provider_session_id: Some("provider-session-1".to_string()),
+                ..ArtifactQuery::default()
+            })
+            .unwrap();
+
+        assert_eq!(rows, vec![stored]);
+    }
+
+    #[test]
+    fn verifies_artifact_content_and_reports_changes_or_missing_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        std::fs::write(&path, b"original").unwrap();
+        let mut conn = test_connection();
+        let mut store = ArtifactStore::new(&mut conn);
+        let stored = store
+            .register_path(new_manifest(path.clone(), Some("operation-1")))
+            .unwrap();
+
+        let verified = store.verify(&stored.id).unwrap().unwrap();
+        assert_eq!(verified.status, ArtifactVerificationStatus::Verified);
+        assert_eq!(
+            verified.actual_content_hash.as_deref(),
+            Some(stored.content_hash.as_str())
+        );
+        assert_eq!(verified.actual_byte_size, Some(stored.byte_size));
+
+        std::fs::write(&path, b"changed").unwrap();
+        let changed = store.verify(&stored.id).unwrap().unwrap();
+        assert_eq!(changed.status, ArtifactVerificationStatus::Changed);
+        assert_ne!(
+            changed.actual_content_hash.as_deref(),
+            Some(stored.content_hash.as_str())
+        );
+
+        std::fs::remove_file(path).unwrap();
+        let missing = store.verify(&stored.id).unwrap().unwrap();
+        assert_eq!(missing.status, ArtifactVerificationStatus::Missing);
+        assert_eq!(missing.actual_content_hash, None);
+        assert_eq!(missing.actual_byte_size, None);
+    }
+}

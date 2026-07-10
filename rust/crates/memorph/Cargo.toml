@@ -42,6 +42,7 @@ base64 = "0.22"
 md5 = "0.7"
 notify = "7"
 flate2 = "1.0"
+sha2 = "0.10"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

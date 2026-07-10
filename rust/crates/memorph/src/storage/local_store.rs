@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 pub struct LocalSqliteStore {
     path: PathBuf,
@@ -103,6 +103,16 @@ pub(crate) fn apply_schema(conn: &mut Connection) -> Result<()> {
             "INSERT INTO schema_migrations (version, name, applied_at_ms)
              VALUES (?1, ?2, strftime('%s','now') * 1000)",
             params![3, "hook_event_retention_index_v3"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    if !applied.contains(&4) {
+        tx.execute_batch(V4_SCHEMA)
+            .context("Failed to apply memorph DB schema v4")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![4, "artifact_manifest_store_v4"],
         )
         .context("Failed to record memorph DB schema migration")?;
     }
@@ -570,6 +580,98 @@ CREATE INDEX IF NOT EXISTS idx_hook_events_seen
     ON hook_events(observed_at_ms DESC);
 "#;
 
+const V4_SCHEMA: &str = r#"
+ALTER TABLE artifact_manifests ADD COLUMN operation_id TEXT;
+ALTER TABLE artifact_manifests ADD COLUMN provider_id TEXT;
+ALTER TABLE artifact_manifests ADD COLUMN provider_session_id TEXT;
+ALTER TABLE artifact_manifests ADD COLUMN projection_report_id TEXT
+    REFERENCES projection_reports(id) ON DELETE SET NULL;
+ALTER TABLE artifact_manifests ADD COLUMN storage_kind TEXT NOT NULL DEFAULT 'unknown';
+
+INSERT OR IGNORE INTO artifact_manifests
+    (id, artifact_kind, session_id, path, content_hash, byte_size, created_at_ms,
+     metadata_json, operation_id, provider_id, storage_kind)
+SELECT
+    'legacy-backup-artifact:' || id,
+    'session_backup',
+    session_id,
+    backup_path,
+    content_hash,
+    byte_size,
+    created_at_ms,
+    metadata_json,
+    operation_id,
+    provider_id,
+    'unknown'
+FROM backups;
+
+ALTER TABLE backups RENAME TO backups_v3;
+DROP INDEX IF EXISTS idx_backups_session_created;
+
+CREATE TABLE backups (
+    id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    operation_id TEXT,
+    provider_id TEXT,
+    provider_session_id TEXT,
+    session_id TEXT,
+    source_path TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    restore_hint TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY(artifact_id) REFERENCES artifact_manifests(id) ON DELETE RESTRICT,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE SET NULL
+);
+
+INSERT INTO backups
+    (id, artifact_id, operation_id, provider_id, provider_session_id, session_id,
+     source_path, created_at_ms, restore_hint, metadata_json)
+SELECT
+    legacy.id,
+    (
+        SELECT artifact.id
+        FROM artifact_manifests artifact
+        WHERE artifact.artifact_kind = 'session_backup'
+          AND artifact.path = legacy.backup_path
+          AND artifact.content_hash = legacy.content_hash
+        ORDER BY artifact.created_at_ms, artifact.id
+        LIMIT 1
+    ),
+    legacy.operation_id,
+    legacy.provider_id,
+    NULL,
+    legacy.session_id,
+    legacy.source_path,
+    legacy.created_at_ms,
+    legacy.restore_hint,
+    legacy.metadata_json
+FROM backups_v3 legacy;
+
+DROP TABLE backups_v3;
+
+CREATE INDEX idx_backups_session_created
+    ON backups(session_id, created_at_ms DESC);
+CREATE INDEX idx_backups_provider_session_created
+    ON backups(provider_id, provider_session_id, created_at_ms DESC);
+CREATE INDEX idx_backups_operation
+    ON backups(operation_id);
+
+DROP INDEX IF EXISTS idx_artifact_manifests_hash_kind;
+CREATE UNIQUE INDEX idx_artifact_manifests_registration
+    ON artifact_manifests(
+        artifact_kind,
+        path,
+        content_hash,
+        COALESCE(operation_id, '')
+    );
+CREATE INDEX idx_artifact_manifests_operation
+    ON artifact_manifests(operation_id);
+CREATE INDEX idx_artifact_manifests_provider_session
+    ON artifact_manifests(provider_id, provider_session_id, created_at_ms DESC);
+CREATE INDEX idx_artifact_manifests_projection_report
+    ON artifact_manifests(projection_report_id);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +699,7 @@ mod tests {
         assert!(table_exists(conn, "session_turns"));
         assert!(table_exists(conn, "session_activity"));
         assert!(table_exists(conn, "artifact_manifests"));
+        assert!(table_exists(conn, "backups"));
 
         let foreign_keys: i64 = conn
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
@@ -633,7 +736,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(migration_count, 3);
+        assert_eq!(migration_count, 4);
         assert_eq!(max_version, SCHEMA_VERSION);
     }
 
@@ -664,7 +767,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 3);
+        assert_eq!(migration_count, 4);
     }
 
     #[test]
@@ -700,7 +803,7 @@ mod tests {
             .unwrap();
 
         assert!(provider_session_id_exists);
-        assert_eq!(migration_count, 3);
+        assert_eq!(migration_count, 4);
     }
 
     #[test]
@@ -739,7 +842,105 @@ mod tests {
             .unwrap();
 
         assert!(retention_index_exists);
-        assert_eq!(migration_count, 3);
+        assert_eq!(migration_count, 4);
+    }
+
+    #[test]
+    fn migrates_existing_v3_artifacts_and_backups_to_v4() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema_migrations_table(&conn).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        conn.execute_batch(V3_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO backups
+             (id, operation_id, provider_id, session_id, source_path, backup_path,
+              content_hash, byte_size, created_at_ms, restore_hint, metadata_json)
+             VALUES
+             ('backup-1', 'operation-1', 'codex', NULL, '/source/session.jsonl',
+              '/backup/session.jsonl', 'legacy-hash', 42, 1000, 'copy back', '{\"v\":1}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES
+             (1, 'local_session_store_v1', 0),
+             (2, 'session_activity_query_fields_v2', 0),
+             (3, 'hook_event_retention_index_v3', 0)",
+            [],
+        )
+        .unwrap();
+
+        apply_schema(&mut conn).unwrap();
+
+        let migrated = conn
+            .query_row(
+                "SELECT
+                    backup.artifact_id,
+                    backup.operation_id,
+                    backup.provider_id,
+                    backup.provider_session_id,
+                    backup.source_path,
+                    artifact.artifact_kind,
+                    artifact.path,
+                    artifact.content_hash,
+                    artifact.byte_size,
+                    artifact.storage_kind
+                 FROM backups backup
+                 JOIN artifact_manifests artifact ON artifact.id = backup.artifact_id
+                 WHERE backup.id = 'backup-1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(9)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let legacy_backup_path_column: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('backups') WHERE name = 'backup_path'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let foreign_key_violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let migration_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(migrated.0, "legacy-backup-artifact:backup-1");
+        assert_eq!(migrated.1.as_deref(), Some("operation-1"));
+        assert_eq!(migrated.2.as_deref(), Some("codex"));
+        assert_eq!(migrated.3, None);
+        assert_eq!(migrated.4, "/source/session.jsonl");
+        assert_eq!(migrated.5, "session_backup");
+        assert_eq!(migrated.6, "/backup/session.jsonl");
+        assert_eq!(migrated.7, "legacy-hash");
+        assert_eq!(migrated.8, 42);
+        assert_eq!(migrated.9, "unknown");
+        assert!(!legacy_backup_path_column);
+        assert_eq!(foreign_key_violations, 0);
+        assert_eq!(migration_count, 4);
     }
 
     #[test]
