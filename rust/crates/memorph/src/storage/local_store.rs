@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 pub struct LocalSqliteStore {
     path: PathBuf,
@@ -86,13 +86,23 @@ pub(crate) fn apply_schema(conn: &mut Connection) -> Result<()> {
         )
         .context("Failed to record memorph DB schema migration")?;
     }
-    if !applied.contains(&SCHEMA_VERSION) {
+    if !applied.contains(&2) {
         tx.execute_batch(V2_SCHEMA)
             .context("Failed to apply memorph DB schema v2")?;
         tx.execute(
             "INSERT INTO schema_migrations (version, name, applied_at_ms)
              VALUES (?1, ?2, strftime('%s','now') * 1000)",
-            params![SCHEMA_VERSION, "session_activity_query_fields_v2"],
+            params![2, "session_activity_query_fields_v2"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    if !applied.contains(&3) {
+        tx.execute_batch(V3_SCHEMA)
+            .context("Failed to apply memorph DB schema v3")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![3, "hook_event_retention_index_v3"],
         )
         .context("Failed to record memorph DB schema migration")?;
     }
@@ -555,6 +565,11 @@ CREATE INDEX IF NOT EXISTS idx_session_activity_started
     ON session_activity(started_at_ms DESC);
 "#;
 
+const V3_SCHEMA: &str = r#"
+CREATE INDEX IF NOT EXISTS idx_hook_events_seen
+    ON hook_events(observed_at_ms DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,7 +633,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(migration_count, 2);
+        assert_eq!(migration_count, 3);
         assert_eq!(max_version, SCHEMA_VERSION);
     }
 
@@ -649,11 +664,11 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 2);
+        assert_eq!(migration_count, 3);
     }
 
     #[test]
-    fn migrates_existing_v1_schema_to_v2() {
+    fn migrates_existing_v1_schema_to_latest() {
         let mut conn = Connection::open_in_memory().unwrap();
         configure_connection(&conn).unwrap();
         create_schema_migrations_table(&conn).unwrap();
@@ -685,7 +700,46 @@ mod tests {
             .unwrap();
 
         assert!(provider_session_id_exists);
-        assert_eq!(migration_count, 2);
+        assert_eq!(migration_count, 3);
+    }
+
+    #[test]
+    fn migrates_existing_v2_schema_to_v3() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema_migrations_table(&conn).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES
+             (1, 'local_session_store_v1', 0),
+             (2, 'session_activity_query_fields_v2', 0)",
+            [],
+        )
+        .unwrap();
+
+        apply_schema(&mut conn).unwrap();
+
+        let retention_index_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'index' AND name = 'idx_hook_events_seen'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let migration_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert!(retention_index_exists);
+        assert_eq!(migration_count, 3);
     }
 
     #[test]

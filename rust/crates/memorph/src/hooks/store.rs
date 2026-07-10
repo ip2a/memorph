@@ -17,9 +17,28 @@ use crate::storage::local_store::LocalSqliteStore;
 
 const HOOK_RUNTIME_ENDPOINT_ID: &str = "hook-server";
 const HOOK_RUNTIME_KIND: &str = "hook_server";
+const RAW_HOOK_EVENT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+const RAW_HOOK_EVENT_MAX_ROWS: i64 = 50_000;
 
 #[cfg(test)]
 static TEST_STORE_ROOT: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy)]
+struct HookEventRetentionPolicy {
+    max_age_ms: i64,
+    max_rows: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct HookEventRetentionReport {
+    expired_rows_deleted: usize,
+    excess_rows_deleted: usize,
+}
+
+const RAW_HOOK_EVENT_RETENTION: HookEventRetentionPolicy = HookEventRetentionPolicy {
+    max_age_ms: RAW_HOOK_EVENT_RETENTION_MS,
+    max_rows: RAW_HOOK_EVENT_MAX_ROWS,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuntimeSessionStore {
@@ -78,18 +97,43 @@ fn test_store_root() -> Option<PathBuf> {
 }
 
 pub fn append_event(event: &HookEvent) -> Result<()> {
-    let store = open_store()?;
-    append_event_in(store.connection(), event)
+    let mut store = open_store()?;
+    append_event_in(store.connection_mut(), event)?;
+    Ok(())
 }
 
-fn append_event_in(conn: &Connection, event: &HookEvent) -> Result<()> {
+fn append_event_in(conn: &mut Connection, event: &HookEvent) -> Result<HookEventRetentionReport> {
+    append_event_with_retention_in(
+        conn,
+        event,
+        chrono::Utc::now().timestamp_millis(),
+        RAW_HOOK_EVENT_RETENTION,
+    )
+}
+
+fn append_event_with_retention_in(
+    conn: &mut Connection,
+    event: &HookEvent,
+    now_ms: i64,
+    policy: HookEventRetentionPolicy,
+) -> Result<HookEventRetentionReport> {
     let payload_json = serde_json::to_string(event).context("Failed to encode hook event")?;
     let event_name =
         serde_json::to_string(&event.event_type).context("Failed to encode hook event type")?;
     let event_name = event_name.trim_matches('"');
+    let cutoff_ms = now_ms.saturating_sub(policy.max_age_ms);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("Failed to start hook event append transaction")?;
+    let expired_rows_deleted = tx
+        .execute(
+            "DELETE FROM hook_events WHERE observed_at_ms < ?1",
+            [cutoff_ms],
+        )
+        .context("Failed to prune expired hook events")?;
     let session_id =
-        resolve_session_id(conn, &event.provider, event.provider_session_id.as_deref())?;
-    conn.execute(
+        resolve_session_id(&tx, &event.provider, event.provider_session_id.as_deref())?;
+    tx.execute(
         "INSERT INTO hook_events
          (id, provider_id, provider_session_id, session_id, event_name, observed_at_ms,
           correlation_id, payload_json)
@@ -106,7 +150,24 @@ fn append_event_in(conn: &Connection, event: &HookEvent) -> Result<()> {
         ],
     )
     .context("Failed to insert hook event")?;
-    Ok(())
+    let excess_rows_deleted = tx
+        .execute(
+            "DELETE FROM hook_events
+             WHERE rowid IN (
+                 SELECT rowid
+                 FROM hook_events
+                 ORDER BY observed_at_ms DESC, rowid DESC
+                 LIMIT -1 OFFSET ?1
+             )",
+            [policy.max_rows],
+        )
+        .context("Failed to enforce hook event row limit")?;
+    tx.commit()
+        .context("Failed to commit hook event append transaction")?;
+    Ok(HookEventRetentionReport {
+        expired_rows_deleted,
+        excess_rows_deleted,
+    })
 }
 
 pub fn load_recent_events(limit: usize) -> Result<Vec<HookEvent>> {
@@ -502,13 +563,13 @@ mod tests {
 
     #[test]
     fn appends_and_loads_recent_events_in_stable_order() {
-        let store = test_store();
+        let mut store = test_store();
         let timestamp = chrono::Utc::now();
         for idx in 0..3 {
             let mut event = HookEvent::new("generic", HookEventType::Heartbeat, Value::Null);
             event.event_id = format!("event-{idx}");
             event.timestamp = timestamp;
-            append_event_in(store.connection(), &event).unwrap();
+            append_event_in(store.connection_mut(), &event).unwrap();
         }
 
         let events = load_recent_events_in(store.connection(), 2).unwrap();
@@ -516,6 +577,203 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_id, "event-1");
         assert_eq!(events[1].event_id, "event-2");
+    }
+
+    #[test]
+    fn event_retention_prunes_expired_rows_only() {
+        let mut store = test_store();
+        let now = chrono::Utc::now();
+        let policy = HookEventRetentionPolicy {
+            max_age_ms: 1_000,
+            max_rows: 10,
+        };
+        let mut expired = HookEvent::new("generic", HookEventType::Heartbeat, Value::Null);
+        expired.event_id = "expired".to_string();
+        expired.timestamp = now - chrono::Duration::seconds(2);
+        append_event_with_retention_in(
+            store.connection_mut(),
+            &expired,
+            expired.timestamp.timestamp_millis(),
+            policy,
+        )
+        .unwrap();
+        append_error_in(
+            store.connection(),
+            "test".to_string(),
+            "keep error".to_string(),
+        )
+        .unwrap();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO runtime_session_observations
+                 (id, provider_id, status, observed_at_ms, details_json)
+                 VALUES ('runtime-keep', 'generic', 'running', ?1, '{}')",
+                [expired.timestamp.timestamp_millis()],
+            )
+            .unwrap();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO session_activity
+                 (id, operation_kind, status, started_at_ms)
+                 VALUES ('activity-keep', 'scan', 'success', ?1)",
+                [expired.timestamp.timestamp_millis()],
+            )
+            .unwrap();
+
+        let mut current = HookEvent::new("generic", HookEventType::Heartbeat, Value::Null);
+        current.event_id = "current".to_string();
+        current.timestamp = now;
+        let report = append_event_with_retention_in(
+            store.connection_mut(),
+            &current,
+            now.timestamp_millis(),
+            policy,
+        )
+        .unwrap();
+
+        assert_eq!(
+            report,
+            HookEventRetentionReport {
+                expired_rows_deleted: 1,
+                excess_rows_deleted: 0,
+            }
+        );
+        assert_eq!(
+            load_recent_events_in(store.connection(), 10)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>(),
+            vec!["current"]
+        );
+        for table in [
+            "hook_errors",
+            "runtime_session_observations",
+            "session_activity",
+        ] {
+            let count: i64 = store
+                .connection()
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 1, "{table} should not be pruned");
+        }
+    }
+
+    #[test]
+    fn event_retention_row_cap_keeps_newest_event_timestamps() {
+        let mut store = test_store();
+        let base = chrono::Utc::now();
+        let policy = HookEventRetentionPolicy {
+            max_age_ms: 60_000,
+            max_rows: 3,
+        };
+        for seconds in [10, 30, 20, 40] {
+            let mut event = HookEvent::new("generic", HookEventType::Heartbeat, Value::Null);
+            event.event_id = format!("event-{seconds}");
+            event.timestamp = base + chrono::Duration::seconds(seconds);
+            append_event_with_retention_in(
+                store.connection_mut(),
+                &event,
+                base.timestamp_millis(),
+                policy,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            load_recent_events_in(store.connection(), 10)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>(),
+            vec!["event-20", "event-30", "event-40"]
+        );
+    }
+
+    #[test]
+    fn event_retention_row_cap_uses_stable_row_order_for_equal_timestamps() {
+        let mut store = test_store();
+        let timestamp = chrono::Utc::now();
+        let policy = HookEventRetentionPolicy {
+            max_age_ms: 60_000,
+            max_rows: 3,
+        };
+        let mut last_report = HookEventRetentionReport::default();
+        for idx in 0..4 {
+            let mut event = HookEvent::new("generic", HookEventType::Heartbeat, Value::Null);
+            event.event_id = format!("event-{idx}");
+            event.timestamp = timestamp;
+            last_report = append_event_with_retention_in(
+                store.connection_mut(),
+                &event,
+                timestamp.timestamp_millis(),
+                policy,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(last_report.excess_rows_deleted, 1);
+        assert_eq!(
+            load_recent_events_in(store.connection(), 10)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.event_id)
+                .collect::<Vec<_>>(),
+            vec!["event-1", "event-2", "event-3"]
+        );
+    }
+
+    #[test]
+    fn failed_event_insert_rolls_back_retention() {
+        let mut store = test_store();
+        let now = chrono::Utc::now();
+        let policy = HookEventRetentionPolicy {
+            max_age_ms: 1_000,
+            max_rows: 10,
+        };
+        let mut duplicate = HookEvent::new("generic", HookEventType::Heartbeat, Value::Null);
+        duplicate.event_id = "duplicate".to_string();
+        duplicate.timestamp = now;
+        append_event_with_retention_in(
+            store.connection_mut(),
+            &duplicate,
+            now.timestamp_millis(),
+            policy,
+        )
+        .unwrap();
+        let mut expired = HookEvent::new("generic", HookEventType::Heartbeat, Value::Null);
+        expired.event_id = "expired".to_string();
+        expired.timestamp = now - chrono::Duration::seconds(2);
+        append_event_with_retention_in(
+            store.connection_mut(),
+            &expired,
+            expired.timestamp.timestamp_millis(),
+            policy,
+        )
+        .unwrap();
+
+        let error = append_event_with_retention_in(
+            store.connection_mut(),
+            &duplicate,
+            now.timestamp_millis(),
+            policy,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Failed to insert hook event"));
+        let expired_exists: bool = store
+            .connection()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM hook_events WHERE id = 'expired')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(expired_exists);
     }
 
     #[test]
@@ -692,7 +950,7 @@ mod tests {
         let now = chrono::Utc::now();
         let event = HookEvent::new("generic", HookEventType::Heartbeat, json!(null));
 
-        append_event_in(store.connection(), &event).unwrap();
+        append_event_in(store.connection_mut(), &event).unwrap();
         append_error_in(store.connection(), "test".to_string(), "error".to_string()).unwrap();
         save_runtime_sessions_in(
             store.connection_mut(),
