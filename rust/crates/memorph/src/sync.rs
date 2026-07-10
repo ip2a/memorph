@@ -8,6 +8,7 @@ use crate::canonical::CanonicalSession;
 #[cfg(test)]
 use crate::core::compression;
 use crate::providers;
+use crate::storage::{local_store, sync_store};
 
 // ---------------------------------------------------------------------------
 // Data model
@@ -66,80 +67,19 @@ pub struct SyncReport {
     pub errors: Vec<String>,
 }
 
-// ---------------------------------------------------------------------------
-// Storage helpers
-// ---------------------------------------------------------------------------
-
-fn sync_dir() -> Result<PathBuf> {
-    let config_dir = crate::config::config_path()?
-        .parent()
-        .context("Config file path has no parent directory")?
-        .to_path_buf();
-    let dir = config_dir.join("sync");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
-
-fn group_path(id: &str) -> Result<PathBuf> {
-    Ok(sync_dir()?.join(format!("{}.json", id)))
-}
-
 pub fn list_groups() -> Result<Vec<SyncGroup>> {
-    let mut groups = Vec::new();
-    let dir = sync_dir()?;
-    if !dir.exists() {
-        return Ok(groups);
-    }
-    for entry in std::fs::read_dir(&dir)? {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("Warning: failed to read directory entry: {}", e);
-                continue;
-            }
-        };
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("json") {
-            continue;
-        }
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Warning: failed to read {}: {}", path.display(), e);
-                continue;
-            }
-        };
-        let group: SyncGroup = match serde_json::from_str(&content) {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!(
-                    "Warning: failed to parse sync group {}: {}",
-                    path.display(),
-                    e
-                );
-                continue;
-            }
-        };
-        groups.push(group);
-    }
-
-    groups.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(groups)
+    let conn = local_store::open_database()?;
+    sync_store::list_groups(&conn)
 }
 
 pub fn load_group(id: &str) -> Result<SyncGroup> {
-    let path = group_path(id)?;
-    let content =
-        std::fs::read_to_string(&path).with_context(|| format!("Sync group not found: {}", id))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse sync group: {}", path.display()))
+    let conn = local_store::open_database()?;
+    sync_store::load_group(&conn, id)
 }
 
 fn save_group(group: &SyncGroup) -> Result<()> {
-    let path = group_path(&group.id)?;
-    let content = serde_json::to_string_pretty(group)? + "\n";
-    crate::storage::atomic_write::write_string_atomic(&path, &content)?;
-    Ok(())
+    let mut conn = local_store::open_database()?;
+    sync_store::save_group(&mut conn, group)
 }
 
 // ---------------------------------------------------------------------------
@@ -341,11 +281,8 @@ pub fn delete_group(group_id: &str, delete_provider_sessions: bool) -> Result<()
         }
     }
 
-    let path = group_path(group_id)?;
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    Ok(())
+    let conn = local_store::open_database()?;
+    sync_store::delete_group(&conn, group_id)
 }
 
 pub fn rename_group(group_id: &str, title: &str) -> Result<()> {
@@ -436,6 +373,15 @@ pub fn push_sync(group_id: &str, source_holding_id: &str) -> Result<SyncReport> 
 
     group.updated_at = now;
     save_group(&group)?;
+    let conn = local_store::open_database()?;
+    sync_store::record_sync_run(
+        &conn,
+        group_id,
+        source_holding_id,
+        now,
+        Utc::now().timestamp_millis(),
+        &report,
+    )?;
     Ok(report)
 }
 

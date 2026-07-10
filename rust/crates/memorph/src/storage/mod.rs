@@ -5,3 +5,4 @@ pub mod projection_store;
 mod session_overrides;
 pub mod session_state;
 pub mod snapshot_store;
+pub mod sync_store;
