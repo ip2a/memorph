@@ -2443,7 +2443,7 @@ pub fn active_compression_apply(
     params: &ActiveCompressionApplyCommandParams,
     actor: ActivityActor,
 ) -> Result<ActiveCompressionApplyCommandResult> {
-    let activity_conn = local_store::open_database()?;
+    let mut activity_conn = local_store::open_database()?;
     let input_details = serde_json::json!({
         "provider_session_id": params.session_id,
         "source_file": params.file,
@@ -2467,10 +2467,27 @@ pub fn active_compression_apply(
             params.session_id.as_deref(),
             params.file.as_deref(),
         )?;
-        active_compression_apply_session(params, &session, None)
+        let archive_dir = compression::archive_base_dir()?;
+        let applied = apply_active_compression_to_session(params, &session, archive_dir.as_path())?;
+        let artifacts = register_active_compression_archive_artifacts(
+            &mut activity_conn,
+            &activity_id,
+            params,
+            &session,
+            archive_dir.as_path(),
+            &applied.report.archive_refs,
+        )?;
+        let result = write_active_compression_application(params, &session, applied)?;
+        Ok((
+            result,
+            artifacts
+                .into_iter()
+                .map(|artifact| artifact.id)
+                .collect::<Vec<_>>(),
+        ))
     })();
     match result {
-        Ok(applied) => {
+        Ok((applied, artifact_ids)) => {
             ActivityStore::new(&activity_conn).finish(
                 &activity_id,
                 ActivityCompletion::success(
@@ -2481,6 +2498,7 @@ pub fn active_compression_apply(
                         "target_provider_id": params.target_provider_id,
                         "files": applied.files,
                         "archive_refs": applied.archive_refs,
+                        "artifact_ids": artifact_ids,
                         "candidate_count": applied.report.candidates.len(),
                     }),
                 ),
@@ -2502,27 +2520,29 @@ pub fn active_compression_apply(
     }
 }
 
-fn active_compression_apply_session(
+fn apply_active_compression_to_session(
     params: &ActiveCompressionApplyCommandParams,
     session: &CanonicalSession,
-    archive_dir: Option<&std::path::Path>,
-) -> Result<ActiveCompressionApplyCommandResult> {
+    archive_dir: &std::path::Path,
+) -> Result<active_compression::ActiveCompressionApplyResult> {
     let apply_params = ActiveCompressionApplyParams {
         source_provider_id: params.source_provider_id.clone(),
         target_provider_id: params.target_provider_id.clone(),
         policy: params.policy.clone(),
         candidate_ids: params.candidate_ids.clone(),
     };
-    let applied = if let Some(archive_dir) = archive_dir {
-        active_compression::apply_active_compression_with_archive_dir(
-            session,
-            apply_params,
-            archive_dir,
-        )?
-    } else {
-        active_compression::apply_active_compression(session, apply_params)?
-    };
+    active_compression::apply_active_compression_with_archive_dir(
+        session,
+        apply_params,
+        archive_dir,
+    )
+}
 
+fn write_active_compression_application(
+    params: &ActiveCompressionApplyCommandParams,
+    session: &CanonicalSession,
+    applied: active_compression::ActiveCompressionApplyResult,
+) -> Result<ActiveCompressionApplyCommandResult> {
     if params.source_provider_id == params.target_provider_id {
         if let Some(session_id) = params.session_id.as_deref() {
             let refs = applied.report.archive_refs.clone();
@@ -2553,6 +2573,42 @@ fn active_compression_apply_session(
     })
 }
 
+fn register_active_compression_archive_artifacts(
+    conn: &mut rusqlite::Connection,
+    operation_id: &str,
+    params: &ActiveCompressionApplyCommandParams,
+    session: &CanonicalSession,
+    archive_dir: &std::path::Path,
+    archive_refs: &[String],
+) -> Result<Vec<crate::storage::artifact_store::ArtifactManifest>> {
+    let manifests = archive_refs
+        .iter()
+        .map(|archive_ref| {
+            Ok(NewArtifactManifest {
+                artifact_kind: ArtifactManifestKind::CompressionArchive,
+                operation_id: Some(operation_id.to_string()),
+                provider_id: Some(params.source_provider_id.clone()),
+                provider_session_id: params.session_id.clone(),
+                session_id: None,
+                projection_report_id: None,
+                event_id: None,
+                block_id: None,
+                path: compression::archive_path_from_ref_in_dir(archive_dir, archive_ref)?,
+                mime_type: Some("application/gzip".to_string()),
+                format: Some("json.gz".to_string()),
+                metadata: serde_json::json!({
+                    "role": "active_compression_recovery_archive",
+                    "archive_ref": archive_ref,
+                    "canonical_id": session.identity.canonical_id,
+                    "source_provider_id": params.source_provider_id,
+                    "target_provider_id": params.target_provider_id,
+                }),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ArtifactStore::new(conn).register_paths(manifests)
+}
+
 #[cfg(test)]
 fn active_compression_apply_with_archive_dir(
     params: &ActiveCompressionApplyCommandParams,
@@ -2563,7 +2619,8 @@ fn active_compression_apply_with_archive_dir(
         params.session_id.as_deref(),
         params.file.as_deref(),
     )?;
-    active_compression_apply_session(params, &session, Some(archive_dir))
+    let applied = apply_active_compression_to_session(params, &session, archive_dir)?;
+    write_active_compression_application(params, &session, applied)
 }
 
 fn load_active_compression_source_session(
@@ -3868,6 +3925,181 @@ mod tests {
             .contains("Try a broader query"));
         assert!(no_match.events.is_empty());
         assert!(no_match.matches.is_empty());
+    }
+
+    #[test]
+    fn registers_active_compression_archives_with_operation_identity() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let session = active_compression_source_session();
+        let params = ActiveCompressionApplyCommandParams {
+            source_provider_id: "claude".to_string(),
+            target_provider_id: "codex".to_string(),
+            session_id: Some("provider-session-1".to_string()),
+            file: None,
+            policy: active_compression::ActiveCompressionPolicy {
+                protect_recent_message_events: 1,
+                min_candidate_bytes: 16,
+                min_savings_ratio_percent: 20,
+                mode: active_compression::ActiveCompressionMode::Auto,
+            },
+            candidate_ids: vec!["candidate-0001".to_string()],
+            output_prefix: None,
+            format: "json".to_string(),
+        };
+        let applied =
+            apply_active_compression_to_session(&params, &session, archive_dir.path()).unwrap();
+        assert_eq!(applied.report.archive_refs.len(), 1);
+
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+             (id, provider_id, provider_session_id, status, event_count, turn_count,
+              projection_version, updated_at_ms)
+             VALUES
+             ('session-1', 'claude', 'provider-session-1', 'active', 0, 0, 1, 1)",
+            [],
+        )
+        .unwrap();
+        let activity_id = ActivityStore::new(&conn)
+            .start(NewActivity {
+                provider_id: Some("claude".to_string()),
+                provider_session_id: Some("provider-session-1".to_string()),
+                workspace_dir: None,
+                operation_kind: ActivityOperationKind::Compress,
+                actor: ActivityActor::System,
+                summary: "Applying active session compression".to_string(),
+                details: serde_json::json!({}),
+            })
+            .unwrap();
+
+        let artifacts = register_active_compression_archive_artifacts(
+            &mut conn,
+            &activity_id,
+            &params,
+            &session,
+            archive_dir.path(),
+            &applied.report.archive_refs,
+        )
+        .unwrap();
+
+        assert_eq!(artifacts.len(), 1);
+        let artifact = &artifacts[0];
+        assert_eq!(
+            artifact.artifact_kind,
+            ArtifactManifestKind::CompressionArchive
+        );
+        assert_eq!(artifact.operation_id.as_deref(), Some(activity_id.as_str()));
+        assert_eq!(artifact.provider_id.as_deref(), Some("claude"));
+        assert_eq!(
+            artifact.provider_session_id.as_deref(),
+            Some("provider-session-1")
+        );
+        assert_eq!(artifact.session_id.as_deref(), Some("session-1"));
+        assert_eq!(artifact.mime_type.as_deref(), Some("application/gzip"));
+        assert_eq!(artifact.format.as_deref(), Some("json.gz"));
+        assert_eq!(
+            artifact.metadata["role"],
+            "active_compression_recovery_archive"
+        );
+        assert_eq!(
+            artifact.metadata["archive_ref"],
+            applied.report.archive_refs[0]
+        );
+        assert_eq!(artifact.metadata["canonical_id"], "dry-run-file");
+        assert!(artifact.path.exists());
+        assert!(artifact.content_hash.starts_with("sha256:"));
+        assert!(artifact.byte_size > 0);
+    }
+
+    #[test]
+    fn registration_failure_keeps_written_active_compression_archive() {
+        let archive_dir = tempfile::tempdir().unwrap();
+        let session = active_compression_source_session();
+        let params = ActiveCompressionApplyCommandParams {
+            source_provider_id: "claude".to_string(),
+            target_provider_id: "codex".to_string(),
+            session_id: Some("provider-session-1".to_string()),
+            file: None,
+            policy: active_compression::ActiveCompressionPolicy {
+                protect_recent_message_events: 1,
+                min_candidate_bytes: 16,
+                min_savings_ratio_percent: 20,
+                mode: active_compression::ActiveCompressionMode::Auto,
+            },
+            candidate_ids: vec!["candidate-0001".to_string()],
+            output_prefix: None,
+            format: "json".to_string(),
+        };
+        let applied =
+            apply_active_compression_to_session(&params, &session, archive_dir.path()).unwrap();
+        let archive_ref = &applied.report.archive_refs[0];
+        let archive_path =
+            compression::archive_path_from_ref_in_dir(archive_dir.path(), archive_ref).unwrap();
+
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+             (id, provider_id, provider_session_id, status, event_count, turn_count,
+              projection_version, updated_at_ms)
+             VALUES
+             ('session-1', 'claude', 'provider-session-1', 'active', 0, 0, 1, 1)",
+            [],
+        )
+        .unwrap();
+        let activity_id = ActivityStore::new(&conn)
+            .start(NewActivity {
+                provider_id: Some("claude".to_string()),
+                provider_session_id: Some("provider-session-1".to_string()),
+                workspace_dir: None,
+                operation_kind: ActivityOperationKind::Compress,
+                actor: ActivityActor::System,
+                summary: "Applying active session compression".to_string(),
+                details: serde_json::json!({}),
+            })
+            .unwrap();
+        ArtifactStore::new(&mut conn)
+            .register_path(NewArtifactManifest {
+                artifact_kind: ArtifactManifestKind::CompressionArchive,
+                operation_id: Some(activity_id.clone()),
+                provider_id: Some("claude".to_string()),
+                provider_session_id: Some("provider-session-1".to_string()),
+                session_id: None,
+                projection_report_id: None,
+                event_id: None,
+                block_id: None,
+                path: archive_path.clone(),
+                mime_type: Some("application/gzip".to_string()),
+                format: Some("json.gz".to_string()),
+                metadata: serde_json::json!({"role": "conflicting_archive"}),
+            })
+            .unwrap();
+
+        let error = register_active_compression_archive_artifacts(
+            &mut conn,
+            &activity_id,
+            &params,
+            &session,
+            archive_dir.path(),
+            &applied.report.archive_refs,
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("already registered with conflicting context"));
+        assert!(archive_path.exists());
+        let artifact_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artifact_manifests WHERE operation_id = ?1",
+                [&activity_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(artifact_count, 1);
     }
 
     #[test]

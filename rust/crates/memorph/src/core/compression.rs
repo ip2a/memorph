@@ -825,11 +825,14 @@ fn write_gzip_atomic(path: &Path, content: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn archive_base_dir() -> Result<PathBuf> {
+pub(crate) fn archive_base_dir() -> Result<PathBuf> {
     Ok(config::memorph_dir()?.join("compression_archives"))
 }
 
-fn archive_path_from_ref_in_dir(archive_dir: &Path, archive_ref: &str) -> Result<PathBuf> {
+pub(crate) fn archive_path_from_ref_in_dir(
+    archive_dir: &Path,
+    archive_ref: &str,
+) -> Result<PathBuf> {
     let relative = archive_ref
         .strip_prefix(ARCHIVE_SCHEME)
         .with_context(|| format!("Unsupported compression archive ref: {}", archive_ref))?;
