@@ -11,8 +11,8 @@ use crate::provider::{
     canonical_block_text, canonical_event_visible_message_role, canonical_event_visible_text,
     canonical_export_result, canonical_session_title, PageStrategy, Provider,
     ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity,
-    ProviderSessionSummary, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
-    TurnQuality, WriteRiskLevel,
+    ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk,
+    ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
 use crate::storage::projection_store::{ProjectionStore, StoredProjection};
 use crate::utils::{
@@ -20,6 +20,7 @@ use crate::utils::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -32,6 +33,21 @@ pub struct ClaudeProvider;
 
 const PROVIDER_ID: &str = "claude";
 const TITLE_MAX_CHARS: usize = 80;
+const CLAUDE_BACKUP_FORMAT: &str = "claude-session-backup-v1";
+const CLAUDE_BACKUP_MIME: &str = "application/vnd.memorph.claude-session-backup";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ClaudeSessionBackupMetadata {
+    version: u32,
+    provider_id: String,
+    mutation: ProviderSourceMutation,
+    operation_id: String,
+    provider_session_id: String,
+    session_path: PathBuf,
+    sidecar_path: PathBuf,
+    capture_sidecar: bool,
+    sidecar_present: bool,
+}
 
 impl Provider for ClaudeProvider {
     fn id(&self) -> &'static str {
@@ -85,8 +101,8 @@ impl Provider for ClaudeProvider {
                 index_repair: false,
             },
             backup_support: ProviderBackupSupport {
-                before_write: false,
-                restore: false,
+                before_write: true,
+                restore: true,
                 sync_only: false,
             },
             activity_support: ProviderActivitySupport {
@@ -299,6 +315,26 @@ impl Provider for ClaudeProvider {
         Ok(())
     }
 
+    fn create_session_backup(
+        &self,
+        mutation: ProviderSourceMutation,
+        operation_id: &str,
+        session_id: &str,
+        backup_root: &Path,
+    ) -> Result<ProviderSessionBackup> {
+        create_claude_session_backup(
+            &get_claude_config_dir().join("projects"),
+            mutation,
+            operation_id,
+            session_id,
+            backup_root,
+        )
+    }
+
+    fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
+        restore_claude_session_backup(backup)
+    }
+
     fn resume_command(&self, session_id: &str) -> Option<String> {
         Some(format!("claude --resume {}", session_id))
     }
@@ -326,9 +362,230 @@ pub fn project_session_to_store(
 }
 
 fn get_claude_config_dir() -> PathBuf {
-    dirs::home_dir()
+    crate::config::effective_home_dir()
         .map(|h| h.join(".claude"))
-        .unwrap_or_else(|| PathBuf::from(".claude"))
+        .unwrap_or_else(|_| PathBuf::from(".claude"))
+}
+
+fn create_claude_session_backup(
+    projects_dir: &Path,
+    mutation: ProviderSourceMutation,
+    operation_id: &str,
+    session_id: &str,
+    backup_root: &Path,
+) -> Result<ProviderSessionBackup> {
+    let session_path = find_claude_session_file(projects_dir, session_id)?
+        .with_context(|| format!("Claude session not found: {session_id}"))?
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve Claude session source: {session_id}"))?;
+    let sidecar_path = session_path
+        .parent()
+        .context("Claude session source has no parent directory")?
+        .join(session_id);
+    let capture_sidecar = mutation == ProviderSourceMutation::Delete;
+    let sidecar_present = capture_sidecar && sidecar_path.exists();
+
+    let provider_backup_root = backup_root.join(PROVIDER_ID);
+    std::fs::create_dir_all(&provider_backup_root).with_context(|| {
+        format!(
+            "Failed to create Claude backup root: {}",
+            provider_backup_root.display()
+        )
+    })?;
+    let backup_path = provider_backup_root.join(operation_id);
+    std::fs::create_dir(&backup_path).with_context(|| {
+        format!(
+            "Failed to create Claude session backup: {}",
+            backup_path.display()
+        )
+    })?;
+    std::fs::copy(&session_path, backup_path.join("session.jsonl")).with_context(|| {
+        format!(
+            "Failed to back up Claude session file: {}",
+            session_path.display()
+        )
+    })?;
+    if sidecar_present {
+        copy_claude_sidecar(&sidecar_path, &backup_path.join("sidecar"))?;
+    }
+
+    let metadata = ClaudeSessionBackupMetadata {
+        version: 1,
+        provider_id: PROVIDER_ID.to_string(),
+        mutation,
+        operation_id: operation_id.to_string(),
+        provider_session_id: session_id.to_string(),
+        session_path: session_path.clone(),
+        sidecar_path: sidecar_path.clone(),
+        capture_sidecar,
+        sidecar_present,
+    };
+    std::fs::write(
+        backup_path.join("metadata.json"),
+        serde_json::to_string_pretty(&metadata)?,
+    )
+    .with_context(|| {
+        format!(
+            "Failed to write Claude backup metadata: {}",
+            backup_path.display()
+        )
+    })?;
+
+    Ok(ProviderSessionBackup {
+        mutation,
+        operation_id: operation_id.to_string(),
+        provider_session_id: session_id.to_string(),
+        source_path: session_path,
+        backup_path,
+        restore_hint:
+            "Restore this backup with memorph's Claude native session restore flow before reopening Claude."
+                .to_string(),
+        mime_type: CLAUDE_BACKUP_MIME.to_string(),
+        format: CLAUDE_BACKUP_FORMAT.to_string(),
+        artifact_metadata: serde_json::json!({
+            "role": "claude_prewrite_session_backup",
+            "mutation": mutation,
+            "sidecar_captured": capture_sidecar,
+            "sidecar_present": sidecar_present,
+        }),
+        restore_metadata: serde_json::json!({
+            "restore_mode": "claude_session_restore",
+            "metadata_file": "metadata.json",
+            "mutation": mutation,
+        }),
+    })
+}
+
+fn restore_claude_session_backup(backup: &ProviderSessionBackup) -> Result<()> {
+    if backup.format != CLAUDE_BACKUP_FORMAT {
+        anyhow::bail!(
+            "Unsupported Claude session backup format: {}",
+            backup.format
+        );
+    }
+    let metadata_path = backup.backup_path.join("metadata.json");
+    let metadata: ClaudeSessionBackupMetadata =
+        serde_json::from_str(&std::fs::read_to_string(&metadata_path).with_context(|| {
+            format!(
+                "Failed to read Claude backup metadata: {}",
+                metadata_path.display()
+            )
+        })?)?;
+    if metadata.version != 1
+        || metadata.provider_id != PROVIDER_ID
+        || metadata.operation_id != backup.operation_id
+        || metadata.provider_session_id != backup.provider_session_id
+        || metadata.mutation != backup.mutation
+        || metadata.session_path != backup.source_path
+    {
+        anyhow::bail!(
+            "Claude backup metadata does not match the registered restore context: {}",
+            backup.backup_path.display()
+        );
+    }
+
+    if let Some(parent) = metadata.session_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(
+        backup.backup_path.join("session.jsonl"),
+        &metadata.session_path,
+    )
+    .with_context(|| {
+        format!(
+            "Failed to restore Claude session file: {}",
+            metadata.session_path.display()
+        )
+    })?;
+
+    if metadata.capture_sidecar {
+        if metadata.sidecar_path.exists() {
+            std::fs::remove_dir_all(&metadata.sidecar_path).with_context(|| {
+                format!(
+                    "Failed to replace Claude sidecar during restore: {}",
+                    metadata.sidecar_path.display()
+                )
+            })?;
+        }
+        if metadata.sidecar_present {
+            copy_claude_sidecar(&backup.backup_path.join("sidecar"), &metadata.sidecar_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn find_claude_session_file(projects_dir: &Path, session_id: &str) -> Result<Option<PathBuf>> {
+    if !projects_dir.exists() {
+        return Ok(None);
+    }
+    for entry in WalkDir::new(projects_dir)
+        .max_depth(3)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl")
+            && path.file_stem().and_then(|stem| stem.to_str()) == Some(session_id)
+        {
+            return Ok(Some(path.to_path_buf()));
+        }
+    }
+    Ok(None)
+}
+
+fn copy_claude_sidecar(source: &Path, destination: &Path) -> Result<()> {
+    std::fs::create_dir(destination).with_context(|| {
+        format!(
+            "Failed to create Claude sidecar copy: {}",
+            destination.display()
+        )
+    })?;
+    for entry in WalkDir::new(source).follow_links(false).into_iter().skip(1) {
+        let entry = entry
+            .with_context(|| format!("Failed to walk Claude sidecar: {}", source.display()))?;
+        let relative = entry.path().strip_prefix(source)?;
+        let target = destination.join(relative);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir(&target)?;
+        } else if entry.file_type().is_file() {
+            std::fs::copy(entry.path(), &target).with_context(|| {
+                format!(
+                    "Failed to copy Claude sidecar file: {}",
+                    entry.path().display()
+                )
+            })?;
+        } else if entry.file_type().is_symlink() {
+            copy_claude_sidecar_symlink(entry.path(), &target)?;
+        } else {
+            anyhow::bail!(
+                "Claude sidecar contains unsupported entry: {}",
+                entry.path().display()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn copy_claude_sidecar_symlink(source: &Path, destination: &Path) -> Result<()> {
+    let target = std::fs::read_link(source)?;
+    std::os::unix::fs::symlink(target, destination)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn copy_claude_sidecar_symlink(source: &Path, destination: &Path) -> Result<()> {
+    let target = std::fs::read_link(source)?;
+    let resolved_target = source
+        .parent()
+        .map(|parent| parent.join(&target))
+        .unwrap_or_else(|| target.clone());
+    if resolved_target.is_dir() {
+        std::os::windows::fs::symlink_dir(target, destination)?;
+    } else {
+        std::os::windows::fs::symlink_file(target, destination)?;
+    }
+    Ok(())
 }
 
 fn get_git_branch(dir: &Path) -> Option<String> {
@@ -1097,6 +1354,153 @@ mod tests {
     use rusqlite::Connection;
     use std::collections::BTreeMap;
     use tempfile::NamedTempFile;
+
+    fn write_native_claude_session(
+        projects_dir: &Path,
+        session_id: &str,
+        content: &[u8],
+    ) -> PathBuf {
+        let project_dir = projects_dir.join("-tmp-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let session_path = project_dir.join(format!("{session_id}.jsonl"));
+        std::fs::write(&session_path, content).unwrap();
+        session_path
+    }
+
+    #[test]
+    fn delete_backup_restores_exact_claude_session_and_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let backup_root = dir.path().join("backups");
+        let session_id = "session-delete-1";
+        let original_session = b"{\"type\":\"user\",\"message\":\"exact bytes\"}\n\n";
+        let session_path = write_native_claude_session(&projects_dir, session_id, original_session);
+        let sidecar_path = session_path.parent().unwrap().join(session_id);
+        std::fs::create_dir_all(sidecar_path.join("nested")).unwrap();
+        std::fs::write(sidecar_path.join("index.json"), b"{\"version\":1}\n").unwrap();
+        std::fs::write(
+            sidecar_path.join("nested").join("state.bin"),
+            [0, 1, 2, 255],
+        )
+        .unwrap();
+
+        let backup = create_claude_session_backup(
+            &projects_dir,
+            ProviderSourceMutation::Delete,
+            "operation-delete-1",
+            session_id,
+            &backup_root,
+        )
+        .unwrap();
+
+        std::fs::remove_file(&session_path).unwrap();
+        std::fs::remove_dir_all(&sidecar_path).unwrap();
+        std::fs::write(&session_path, b"partial provider rewrite").unwrap();
+        std::fs::create_dir_all(&sidecar_path).unwrap();
+        std::fs::write(sidecar_path.join("unexpected"), b"remove me").unwrap();
+
+        restore_claude_session_backup(&backup).unwrap();
+
+        assert_eq!(std::fs::read(&session_path).unwrap(), original_session);
+        assert_eq!(
+            std::fs::read(sidecar_path.join("index.json")).unwrap(),
+            b"{\"version\":1}\n"
+        );
+        assert_eq!(
+            std::fs::read(sidecar_path.join("nested").join("state.bin")).unwrap(),
+            [0, 1, 2, 255]
+        );
+        assert!(!sidecar_path.join("unexpected").exists());
+    }
+
+    #[test]
+    fn rename_backup_restores_jsonl_without_replacing_claude_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let backup_root = dir.path().join("backups");
+        let session_id = "session-rename-1";
+        let original_session = b"{\"type\":\"custom-title\",\"customTitle\":\"Before\"}\n";
+        let session_path = write_native_claude_session(&projects_dir, session_id, original_session);
+        let sidecar_path = session_path.parent().unwrap().join(session_id);
+        std::fs::create_dir_all(&sidecar_path).unwrap();
+        std::fs::write(sidecar_path.join("live-state"), b"before").unwrap();
+
+        let backup = create_claude_session_backup(
+            &projects_dir,
+            ProviderSourceMutation::Rename,
+            "operation-rename-1",
+            session_id,
+            &backup_root,
+        )
+        .unwrap();
+
+        std::fs::write(&session_path, b"renamed bytes").unwrap();
+        std::fs::write(sidecar_path.join("live-state"), b"changed after backup").unwrap();
+        std::fs::write(sidecar_path.join("new-state"), b"keep me").unwrap();
+
+        restore_claude_session_backup(&backup).unwrap();
+
+        assert_eq!(std::fs::read(&session_path).unwrap(), original_session);
+        assert_eq!(
+            std::fs::read(sidecar_path.join("live-state")).unwrap(),
+            b"changed after backup"
+        );
+        assert_eq!(
+            std::fs::read(sidecar_path.join("new-state")).unwrap(),
+            b"keep me"
+        );
+        assert!(!backup.backup_path.join("sidecar").exists());
+    }
+
+    #[test]
+    fn claude_backup_contract_and_capabilities_are_truthful() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects_dir = dir.path().join("projects");
+        let backup_root = dir.path().join("backups");
+        let session_id = "session-contract-1";
+        let session_path =
+            write_native_claude_session(&projects_dir, session_id, b"{\"type\":\"user\"}\n");
+
+        let backup = create_claude_session_backup(
+            &projects_dir,
+            ProviderSourceMutation::Delete,
+            "operation-contract-1",
+            session_id,
+            &backup_root,
+        )
+        .unwrap();
+
+        let capabilities = ClaudeProvider.capabilities();
+        assert!(capabilities.backup_support.before_write);
+        assert!(capabilities.backup_support.restore);
+        assert!(!capabilities.backup_support.sync_only);
+        assert_eq!(backup.mutation, ProviderSourceMutation::Delete);
+        assert_eq!(backup.operation_id, "operation-contract-1");
+        assert_eq!(backup.provider_session_id, session_id);
+        assert_eq!(backup.source_path, session_path.canonicalize().unwrap());
+        assert_eq!(backup.format, CLAUDE_BACKUP_FORMAT);
+        assert_eq!(backup.mime_type, CLAUDE_BACKUP_MIME);
+        assert_eq!(
+            backup
+                .restore_metadata
+                .get("restore_mode")
+                .and_then(Value::as_str),
+            Some("claude_session_restore")
+        );
+
+        let metadata: ClaudeSessionBackupMetadata = serde_json::from_str(
+            &std::fs::read_to_string(backup.backup_path.join("metadata.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata.version, 1);
+        assert_eq!(metadata.provider_id, PROVIDER_ID);
+        assert_eq!(metadata.mutation, ProviderSourceMutation::Delete);
+        assert_eq!(metadata.operation_id, "operation-contract-1");
+        assert_eq!(metadata.provider_session_id, session_id);
+        assert_eq!(metadata.session_path, backup.source_path);
+        assert!(metadata.capture_sidecar);
+        assert!(!metadata.sidecar_present);
+    }
 
     fn test_event(
         kind: SessionEventKind,

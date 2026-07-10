@@ -5,6 +5,7 @@ use crate::canonical::{
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -22,6 +23,27 @@ pub struct ProviderSessionImportPage {
     pub imported: ImportedSession,
     pub event_count: usize,
     pub message_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderSourceMutation {
+    Delete,
+    Rename,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderSessionBackup {
+    pub mutation: ProviderSourceMutation,
+    pub operation_id: String,
+    pub provider_session_id: String,
+    pub source_path: PathBuf,
+    pub backup_path: PathBuf,
+    pub restore_hint: String,
+    pub mime_type: String,
+    pub format: String,
+    pub artifact_metadata: Value,
+    pub restore_metadata: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -375,6 +397,35 @@ pub trait Provider: Send + Sync {
         let _ = session_id;
         let _ = new_title;
         anyhow::bail!("Rename not supported for provider: {}", self.id())
+    }
+
+    /// Capture the exact provider-native source that a delete or rename can modify.
+    ///
+    /// Core registers the returned artifact before invoking the provider mutation.
+    fn create_session_backup(
+        &self,
+        mutation: ProviderSourceMutation,
+        operation_id: &str,
+        session_id: &str,
+        backup_root: &Path,
+    ) -> Result<ProviderSessionBackup> {
+        let _ = mutation;
+        let _ = operation_id;
+        let _ = session_id;
+        let _ = backup_root;
+        anyhow::bail!(
+            "Native session backup is not supported for provider: {}",
+            self.id()
+        )
+    }
+
+    /// Restore an exact provider-native backup created by `create_session_backup`.
+    fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
+        let _ = backup;
+        anyhow::bail!(
+            "Native session backup restore is not supported for provider: {}",
+            self.id()
+        )
     }
 
     /// Build the provider-specific command used to resume a session.

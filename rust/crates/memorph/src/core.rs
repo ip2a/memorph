@@ -2747,10 +2747,21 @@ pub fn delete_sessions(
     session_ids: &[&str],
     actor: ActivityActor,
 ) -> Vec<Result<()>> {
-    let activity_conn = match local_store::open_database() {
+    let mut activity_conn = match local_store::open_database() {
         Ok(conn) => conn,
         Err(error) => {
             let message = format!("Failed to open activity store before delete: {error:#}");
+            return session_ids
+                .iter()
+                .map(|_| Err(anyhow::anyhow!(message.clone())))
+                .collect();
+        }
+    };
+    let backup_root = match crate::config::memorph_dir() {
+        Ok(path) => path.join("artifacts").join("backups"),
+        Err(error) => {
+            let message =
+                format!("Failed to resolve provider backup root before delete: {error:#}");
             return session_ids
                 .iter()
                 .map(|_| Err(anyhow::anyhow!(message.clone())))
@@ -2791,7 +2802,13 @@ pub fn delete_sessions(
         }
     }
 
-    let results = session_management::delete_sessions(provider_id, session_ids);
+    let results = session_management::delete_sessions(
+        provider_id,
+        session_ids,
+        &activities,
+        &backup_root,
+        &mut activity_conn,
+    );
     results
         .into_iter()
         .zip(activities)
@@ -2838,7 +2855,10 @@ pub fn rename_session(
     new_title: &str,
     actor: ActivityActor,
 ) -> Result<RenameResult> {
-    let activity_conn = local_store::open_database()?;
+    let mut activity_conn = local_store::open_database()?;
+    let backup_root = crate::config::memorph_dir()?
+        .join("artifacts")
+        .join("backups");
     let details = serde_json::json!({
         "provider_session_id": session_id,
         "new_title": new_title,
@@ -2852,7 +2872,14 @@ pub fn rename_session(
         summary: "Renaming session".to_string(),
         details: details.clone(),
     })?;
-    match session_management::rename_session(provider_id, session_id, new_title) {
+    match session_management::rename_session(
+        provider_id,
+        session_id,
+        new_title,
+        &activity_id,
+        &backup_root,
+        &mut activity_conn,
+    ) {
         Ok(renamed) => {
             ActivityStore::new(&activity_conn).finish(
                 &activity_id,
