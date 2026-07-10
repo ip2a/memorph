@@ -9,7 +9,7 @@ use crate::core::active_compression::{
 };
 use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state::{self, SessionStateStore};
-use crate::storage::snapshot_store::ProjectedSessionSnapshotRow;
+use crate::storage::snapshot_store::{ProjectedSessionDetailPage, ProjectedSessionSnapshotRow};
 use crate::{provider, providers, utils};
 
 pub mod active_compression;
@@ -824,36 +824,7 @@ pub fn get_canonical_session(provider_id: &str, session_id: &str) -> Result<Impo
 }
 
 pub fn get_session_detail_view(provider_id: &str, session_id: &str) -> Result<SessionDetailView> {
-    let prov = providers::find_provider(provider_id)
-        .with_context(|| format!("Unknown provider: {}", provider_id))?;
-    let capabilities = prov.capabilities();
-    if !capabilities.scan || !capabilities.import {
-        anyhow::bail!(
-            "Provider does not support loading sessions: {}",
-            provider_id
-        );
-    }
-
-    let meta = prov
-        .get_session_meta(session_id)?
-        .with_context(|| format!("Session not found: {}", session_id))?;
-    let source_path = meta.source_path.clone();
-    let workspace_dir = meta.project_dir.clone();
-    let native_title = meta.title.clone();
-    let imported = load_canonical_session_from_meta(prov.as_ref(), provider_id, meta)?;
-    let local_state =
-        get_resolved_local_session_state(provider_id, session_id, workspace_dir.as_deref());
-
-    Ok(build_session_detail_view(
-        provider_id,
-        prov.name(),
-        session_id,
-        source_path,
-        prov.resume_command(session_id),
-        native_title,
-        local_state,
-        imported,
-    ))
+    get_session_detail_view_page(provider_id, session_id, 0, None)
 }
 
 pub fn get_session_detail_view_page(
@@ -862,42 +833,61 @@ pub fn get_session_detail_view_page(
     event_offset: usize,
     event_limit: Option<usize>,
 ) -> Result<SessionDetailView> {
-    let prov = providers::find_provider(provider_id)
-        .with_context(|| format!("Unknown provider: {}", provider_id))?;
-    let capabilities = prov.capabilities();
-    if !capabilities.scan || !capabilities.import {
-        anyhow::bail!(
-            "Provider does not support loading sessions: {}",
-            provider_id
-        );
-    }
+    let conn = crate::storage::local_store::open_database()?;
+    let page = crate::storage::snapshot_store::SnapshotStore::new(&conn)
+        .get_session_detail_page(provider_id, session_id, event_offset, event_limit)?
+        .with_context(|| format!("Session not found in projected store: {session_id}"))?;
+    Ok(projected_detail_view(page))
+}
 
-    let meta = prov
-        .get_session_meta(session_id)?
-        .with_context(|| format!("Session not found: {}", session_id))?;
-    let source_path = meta
-        .source_path
+fn projected_detail_view(page: ProjectedSessionDetailPage) -> SessionDetailView {
+    let provider_name = providers::find_provider(&page.provider_id)
+        .map(|provider| provider.name().to_string())
+        .unwrap_or_else(|| page.provider_id.clone());
+    let resume_command = providers::find_provider(&page.provider_id).and_then(|provider| {
+        page.provider_session_id
+            .as_deref()
+            .and_then(|session_id| provider.resume_command(session_id))
+    });
+    let session_id = page
+        .provider_session_id
         .clone()
-        .context("Session has no source path")?;
-    let workspace_dir = meta.project_dir.clone();
-    let native_title = meta.title.clone();
-    let mut page = prov.import_session_page(&source_path, event_offset, event_limit)?;
-    enrich_imported_session_from_meta(&mut page.imported, provider_id, &meta);
-    let local_state =
-        get_resolved_local_session_state(provider_id, session_id, workspace_dir.as_deref());
-    let mut view = build_session_detail_view(
-        provider_id,
-        prov.name(),
+        .unwrap_or_else(|| page.canonical_session_id.clone());
+    let display_title = page
+        .local_state
+        .display_title
+        .clone()
+        .or(page.display_title);
+    let title = display_title.clone().or_else(|| page.title.clone());
+
+    SessionDetailView {
+        provider_id: page.provider_id,
+        provider_name,
         session_id,
-        Some(source_path),
-        prov.resume_command(session_id),
-        native_title,
-        local_state,
-        page.imported,
-    );
-    view.event_count = page.event_count;
-    view.message_count = page.message_count;
-    Ok(view)
+        canonical_id: page.canonical_session_id,
+        title,
+        native_title: page.title,
+        display_title,
+        workspace_dir: page.workspace_dir.as_deref().map(utils::user_visible_path),
+        created_at: page
+            .created_at_ms
+            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis),
+        last_active_at: page
+            .last_active_at_ms
+            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis),
+        source_path: page.source_path.as_deref().map(utils::user_visible_path),
+        resume_command,
+        local_state: page.local_state.clone(),
+        event_count: page.event_count,
+        message_count: page.message_count,
+        artifact_count: 0,
+        hook_runtime_summary: None,
+        hook_diagnosis: None,
+        hook_runtime_sessions: Vec::new(),
+        events: page.events,
+        artifacts: Vec::new(),
+        compressed_archive_refs: page.local_state.compressed_archive_refs.clone(),
+    }
 }
 
 pub fn get_resolved_local_session_state(
@@ -913,64 +903,6 @@ pub fn get_resolved_local_session_state(
         session_id,
         workspace_dir.as_deref(),
     )
-}
-
-fn build_session_detail_view(
-    provider_id: &str,
-    provider_name: &str,
-    session_id: &str,
-    source_path: Option<String>,
-    resume_command: Option<String>,
-    native_title: Option<String>,
-    local_state: session_state::ResolvedLocalSessionState,
-    imported: ImportedSession,
-) -> SessionDetailView {
-    let session = imported.session;
-    let display_title = local_state.display_title.clone();
-    let title = display_title
-        .clone()
-        .or_else(|| native_title.clone())
-        .or_else(|| session.identity.source_title.clone());
-    let message_count = session_message_count(&session);
-    let raw_workspace_dir = session.context.workspace_dir.clone();
-    let source_path = source_path
-        .or_else(|| session.provenance.primary_source.source_path.clone())
-        .as_deref()
-        .map(utils::user_visible_path);
-    let hook_augmentation = crate::hooks::augmentation::augment_session(
-        provider_id,
-        session_id,
-        raw_workspace_dir.as_deref(),
-    );
-
-    SessionDetailView {
-        provider_id: provider_id.to_string(),
-        provider_name: provider_name.to_string(),
-        session_id: session_id.to_string(),
-        canonical_id: session.identity.canonical_id.clone(),
-        title,
-        native_title,
-        display_title,
-        workspace_dir: session
-            .context
-            .workspace_dir
-            .as_deref()
-            .map(utils::user_visible_path),
-        created_at: session.context.created_at,
-        last_active_at: session.context.last_active_at,
-        source_path,
-        resume_command,
-        local_state: local_state.clone(),
-        event_count: session.events.len(),
-        message_count,
-        artifact_count: session.artifacts.len(),
-        hook_runtime_summary: hook_augmentation.runtime_summary,
-        hook_diagnosis: hook_augmentation.diagnosis,
-        hook_runtime_sessions: hook_augmentation.runtime_sessions,
-        events: session.events,
-        artifacts: session.artifacts,
-        compressed_archive_refs: local_state.compressed_archive_refs.clone(),
-    }
 }
 
 fn resolve_session_state(
@@ -2618,90 +2550,21 @@ mod tests {
     }
 
     #[test]
-    fn session_detail_view_prefers_local_display_title_and_counts_non_lifecycle_messages() {
-        let imported = ImportedSession {
-            session: crate::canonical::CanonicalSession {
-                schema: CanonicalSchema::default(),
-                identity: SessionIdentity {
-                    canonical_id: "canonical-1".to_string(),
-                    source_title: Some("Native".to_string()),
-                },
-                provenance: SessionProvenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("test".to_string()),
-                    primary_source: ProviderSessionRef {
-                        provider_id: "codex".to_string(),
-                        session_id: "session-1".to_string(),
-                        source_path: Some("/tmp/session.jsonl".to_string()),
-                    },
-                    aliases: Vec::new(),
-                },
-                context: SessionContext {
-                    workspace_dir: Some("/tmp/project".to_string()),
-                    created_at: Some(Utc::now()),
-                    last_active_at: Some(Utc::now()),
-                    tags: Vec::new(),
-                },
-                events: vec![
-                    SessionEvent {
-                        id: "e1".to_string(),
-                        kind: SessionEventKind::Lifecycle,
-                        role: EventRole::System,
-                        timestamp: Utc::now(),
-                        links: EventLinks::default(),
-                        blocks: vec![EventBlock::Text {
-                            text: "started".to_string(),
-                        }],
-                        metadata: EventMetadata {
-                            source: EventSource {
-                                provider_id: "codex".to_string(),
-                                original_id: None,
-                                original_role: None,
-                                phase: None,
-                            },
-                            model: None,
-                            usage: None,
-                            fidelity: MappingDisposition::Preserved,
-                            provider_ext: BTreeMap::new(),
-                        },
-                    },
-                    SessionEvent {
-                        id: "e2".to_string(),
-                        kind: SessionEventKind::Message,
-                        role: EventRole::Assistant,
-                        timestamp: Utc::now(),
-                        links: EventLinks::default(),
-                        blocks: vec![EventBlock::Text {
-                            text: "hello".to_string(),
-                        }],
-                        metadata: EventMetadata {
-                            source: EventSource {
-                                provider_id: "codex".to_string(),
-                                original_id: None,
-                                original_role: None,
-                                phase: None,
-                            },
-                            model: None,
-                            usage: None,
-                            fidelity: MappingDisposition::Preserved,
-                            provider_ext: BTreeMap::new(),
-                        },
-                    },
-                ],
-                artifacts: Vec::new(),
-                extensions: BTreeMap::new(),
-            },
-            report: MappingReport::new("codex", MappingDirection::Import),
-        };
-
-        let view = build_session_detail_view(
-            "codex",
-            "codex",
-            "session-1",
-            Some("/tmp/session.jsonl".to_string()),
-            Some("codex resume session-1".to_string()),
-            Some("Native".to_string()),
-            session_state::ResolvedLocalSessionState {
+    fn projected_session_detail_view_uses_sqlite_projection_fields() {
+        let view = projected_detail_view(ProjectedSessionDetailPage {
+            canonical_session_id: "canonical-1".to_string(),
+            provider_id: "codex".to_string(),
+            provider_session_id: Some("session-1".to_string()),
+            title: Some("Native".to_string()),
+            display_title: None,
+            workspace_dir: Some("/tmp/project".to_string()),
+            created_at_ms: Some(1_700_000_000_000),
+            last_active_at_ms: Some(1_700_000_001_000),
+            source_path: Some("/tmp/session.jsonl".to_string()),
+            event_count: 2,
+            message_count: 1,
+            turn_count: 1,
+            local_state: session_state::ResolvedLocalSessionState {
                 display_title: Some("Display".to_string()),
                 archived: false,
                 hidden: false,
@@ -2709,17 +2572,42 @@ mod tests {
                 notes: None,
                 tags: Vec::new(),
                 preferred_targets: Vec::new(),
-                compressed_archive_refs: Vec::new(),
+                compressed_archive_refs: vec!["archive-1".to_string()],
             },
-            imported,
-        );
+            events: vec![SessionEvent {
+                id: "e2".to_string(),
+                kind: SessionEventKind::Message,
+                role: EventRole::Assistant,
+                timestamp: Utc::now(),
+                links: EventLinks::default(),
+                blocks: vec![EventBlock::Text {
+                    text: "hello".to_string(),
+                }],
+                metadata: EventMetadata {
+                    source: EventSource {
+                        provider_id: "codex".to_string(),
+                        original_id: None,
+                        original_role: None,
+                        phase: None,
+                    },
+                    model: None,
+                    usage: None,
+                    fidelity: MappingDisposition::Preserved,
+                    provider_ext: BTreeMap::new(),
+                },
+            }],
+        });
 
         assert_eq!(view.title.as_deref(), Some("Display"));
         assert_eq!(view.native_title.as_deref(), Some("Native"));
         assert_eq!(view.display_title.as_deref(), Some("Display"));
+        assert_eq!(view.canonical_id, "canonical-1");
+        assert_eq!(view.session_id, "session-1");
         assert_eq!(view.event_count, 2);
         assert_eq!(view.message_count, 1);
         assert_eq!(view.source_path.as_deref(), Some("/tmp/session.jsonl"));
+        assert_eq!(view.events.len(), 1);
+        assert_eq!(view.compressed_archive_refs, vec!["archive-1"]);
     }
 
     #[test]
