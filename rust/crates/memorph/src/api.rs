@@ -123,6 +123,10 @@ pub fn router() -> Router {
             "/api/v1/sessions/refresh-stale",
             post(refresh_session_staleness),
         )
+        .route(
+            "/api/v1/sessions/reproject-stale",
+            post(reproject_stale_sessions),
+        )
         .route("/api/v1/sessions/{provider}/{session_id}", get(get_session))
         .route(
             "/api/v1/sessions/{provider}/{session_id}/stats",
@@ -332,6 +336,21 @@ struct SessionStalenessRefreshPayload {
     stale_snapshots: usize,
     missing_sources: usize,
     unknown_sources: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionReprojectStaleRequest {
+    provider: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionReprojectionPayload {
+    candidate_snapshots: usize,
+    reprojected_snapshots: usize,
+    missing_sources: usize,
+    unsupported_providers: usize,
+    failed_snapshots: usize,
+    failures: Vec<core::SessionReprojectionFailure>,
 }
 
 fn fallback_backup_dir_base() -> std::path::PathBuf {
@@ -1327,6 +1346,23 @@ async fn refresh_session_staleness() -> impl IntoResponse {
             stale_snapshots: report.stale_snapshots,
             missing_sources: report.missing_sources,
             unknown_sources: report.unknown_sources,
+        })
+        .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn reproject_stale_sessions(
+    Json(request): Json<SessionReprojectStaleRequest>,
+) -> impl IntoResponse {
+    match core::reproject_stale_sessions(request.provider.as_deref()) {
+        Ok(report) => ApiResponse::success(SessionReprojectionPayload {
+            candidate_snapshots: report.candidate_snapshots,
+            reprojected_snapshots: report.reprojected_snapshots,
+            missing_sources: report.missing_sources,
+            unsupported_providers: report.unsupported_providers,
+            failed_snapshots: report.failed_snapshots,
+            failures: report.failures,
         })
         .into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -2587,6 +2623,28 @@ mod tests {
         assert_eq!(value["data"]["stale_snapshots"], 0);
         assert_eq!(value["data"]["missing_sources"], 0);
         assert_eq!(value["data"]["unknown_sources"], 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_reproject_stale_route_returns_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/sessions/reproject-stale")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"provider":"claude"}"#))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"]["candidate_snapshots"], 0);
+        assert_eq!(value["data"]["reprojected_snapshots"], 0);
+        assert_eq!(value["data"]["missing_sources"], 0);
+        assert_eq!(value["data"]["unsupported_providers"], 0);
+        assert_eq!(value["data"]["failed_snapshots"], 0);
+        assert_eq!(value["data"]["failures"].as_array().unwrap().len(), 0);
     }
 
     struct ArchiveFixture {

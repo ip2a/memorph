@@ -25,6 +25,14 @@ pub struct SnapshotStaleScanReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleSnapshotSourceRow {
+    pub canonical_session_id: String,
+    pub provider_id: String,
+    pub provider_session_id: Option<String>,
+    pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedSessionSnapshotRow {
     pub canonical_session_id: String,
     pub provider_id: String,
@@ -228,6 +236,54 @@ impl<'a> SnapshotStore<'a> {
             snapshots.push(row.context("Failed to decode projected session snapshot")?);
         }
         Ok(snapshots)
+    }
+
+    pub fn list_stale_snapshot_sources(
+        &self,
+        provider_id: Option<&str>,
+    ) -> Result<Vec<StaleSnapshotSourceRow>> {
+        let mut sql = String::from(
+            "SELECT
+                ss.session_id,
+                ss.provider_id,
+                COALESCE(s.provider_session_id, src.provider_session_id),
+                src.source_path
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             LEFT JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE s.deleted_at_ms IS NULL
+               AND ss.stale = 1",
+        );
+        if provider_id.is_some() {
+            sql.push_str(" AND ss.provider_id = ?1");
+        }
+        sql.push_str(" ORDER BY ss.provider_id, ss.session_id");
+
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .context("Failed to prepare stale projected session sources query")?;
+        let mut rows = if let Some(provider_id) = provider_id {
+            stmt.query([provider_id])
+                .context("Failed to query stale projected session sources")?
+        } else {
+            stmt.query([])
+                .context("Failed to query stale projected session sources")?
+        };
+
+        let mut sources = Vec::new();
+        while let Some(row) = rows
+            .next()
+            .context("Failed to decode stale projected session source row")?
+        {
+            sources.push(StaleSnapshotSourceRow {
+                canonical_session_id: row.get(0)?,
+                provider_id: row.get(1)?,
+                provider_session_id: row.get(2)?,
+                source_path: row.get(3)?,
+            });
+        }
+        Ok(sources)
     }
 
     pub fn get_session_detail_page(
@@ -1160,6 +1216,49 @@ mod tests {
         assert_eq!(report.missing_sources, 1);
         assert_eq!(report.unknown_sources, 0);
         assert!(snapshot_stale(&conn, "canonical-1"));
+    }
+
+    #[test]
+    fn list_stale_snapshot_sources_filters_provider() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        insert_projected_snapshot_source(
+            &conn,
+            "canonical-1",
+            "claude",
+            "native-1",
+            "/tmp/claude.jsonl",
+            "fingerprint-1",
+            true,
+        );
+        insert_projected_snapshot_source(
+            &conn,
+            "canonical-2",
+            "codex",
+            "native-2",
+            "/tmp/codex.jsonl",
+            "fingerprint-2",
+            true,
+        );
+        insert_projected_snapshot_source(
+            &conn,
+            "canonical-3",
+            "claude",
+            "native-3",
+            "/tmp/fresh.jsonl",
+            "fingerprint-3",
+            false,
+        );
+
+        let rows = SnapshotStore::new(&conn)
+            .list_stale_snapshot_sources(Some("claude"))
+            .unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].canonical_session_id, "canonical-1");
+        assert_eq!(rows[0].provider_id, "claude");
+        assert_eq!(rows[0].provider_session_id.as_deref(), Some("native-1"));
+        assert_eq!(rows[0].source_path.as_deref(), Some("/tmp/claude.jsonl"));
     }
 
     fn insert_projected_snapshot(

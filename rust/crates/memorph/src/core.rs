@@ -12,6 +12,7 @@ use crate::storage::session_state::{self, SessionStateStore};
 use crate::storage::snapshot_store::{
     ProjectedSessionDetailPage, ProjectedSessionReport, ProjectedSessionReportItem,
     ProjectedSessionReportSummary, ProjectedSessionSnapshotRow, SnapshotStaleScanReport,
+    StaleSnapshotSourceRow,
 };
 use crate::{provider, providers, utils};
 
@@ -236,6 +237,109 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
 pub fn refresh_projected_session_staleness() -> Result<SnapshotStaleScanReport> {
     let conn = crate::storage::local_store::open_database()?;
     crate::storage::snapshot_store::SnapshotStore::new(&conn).refresh_session_snapshot_staleness()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionReprojectionReport {
+    pub candidate_snapshots: usize,
+    pub reprojected_snapshots: usize,
+    pub missing_sources: usize,
+    pub unsupported_providers: usize,
+    pub failed_snapshots: usize,
+    pub failures: Vec<SessionReprojectionFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionReprojectionFailure {
+    pub provider_id: String,
+    pub session_id: String,
+    pub source_path: Option<String>,
+    pub reason: String,
+}
+
+pub fn reproject_stale_sessions(
+    provider_filter: Option<&str>,
+) -> Result<SessionReprojectionReport> {
+    let provider_filter = provider_filter.map(providers::canonical_provider_id);
+    let mut conn = crate::storage::local_store::open_database()?;
+    let sources = crate::storage::snapshot_store::SnapshotStore::new(&conn)
+        .list_stale_snapshot_sources(provider_filter.as_deref())?;
+    reproject_stale_snapshot_sources(&mut conn, sources)
+}
+
+fn reproject_stale_snapshot_sources(
+    conn: &mut rusqlite::Connection,
+    sources: Vec<StaleSnapshotSourceRow>,
+) -> Result<SessionReprojectionReport> {
+    let mut report = SessionReprojectionReport {
+        candidate_snapshots: sources.len(),
+        ..SessionReprojectionReport::default()
+    };
+    for source in sources {
+        let Some(source_path) = source
+            .source_path
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        else {
+            report.missing_sources += 1;
+            report.failures.push(reprojection_failure(
+                &source,
+                "projected session has no source path".to_string(),
+            ));
+            continue;
+        };
+        if !std::path::Path::new(source_path).exists() {
+            report.missing_sources += 1;
+            report.failures.push(reprojection_failure(
+                &source,
+                format!("source file not found: {source_path}"),
+            ));
+            continue;
+        }
+        match source.provider_id.as_str() {
+            "claude" => {
+                let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
+                match crate::providers::claude::project_session_to_store(
+                    std::path::Path::new(source_path),
+                    &mut store,
+                ) {
+                    Ok(_) => report.reprojected_snapshots += 1,
+                    Err(err) => {
+                        report.failed_snapshots += 1;
+                        report
+                            .failures
+                            .push(reprojection_failure(&source, err.to_string()));
+                    }
+                }
+            }
+            _ => {
+                report.unsupported_providers += 1;
+                report.failures.push(reprojection_failure(
+                    &source,
+                    format!(
+                        "provider does not support projected store reprojection yet: {}",
+                        source.provider_id
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn reprojection_failure(
+    source: &StaleSnapshotSourceRow,
+    reason: String,
+) -> SessionReprojectionFailure {
+    SessionReprojectionFailure {
+        provider_id: source.provider_id.clone(),
+        session_id: source
+            .provider_session_id
+            .clone()
+            .unwrap_or_else(|| source.canonical_session_id.clone()),
+        source_path: source.source_path.clone(),
+        reason,
+    }
 }
 
 fn list_projected_session_snapshots(
@@ -2463,10 +2567,12 @@ mod tests {
     use crate::session_projection::{
         ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
     };
+    use crate::storage::projection_store::ProjectionStore;
     use crate::storage::session_state::SessionStateStore;
+    use crate::storage::{local_store, snapshot_store::StaleSnapshotSourceRow};
     use chrono::Utc;
     use std::collections::BTreeMap;
-    use std::io::Write;
+    use std::io::{Seek, SeekFrom, Write};
     use tempfile::Builder;
 
     struct FailingProvider;
@@ -3321,5 +3427,128 @@ mod tests {
             choose_activity_bucket(chrono::TimeDelta::days(3)),
             (SessionActivityBucketUnit::TwelveHour, 12 * 60 * 60)
         );
+    }
+
+    #[test]
+    fn reproject_stale_snapshot_sources_rebuilds_claude_projection() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write_claude_projection_sample(&mut file, "Old title");
+
+        let stored = crate::providers::claude::project_session_to_store(
+            file.path(),
+            &mut ProjectionStore::new(&mut conn),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE session_snapshots SET stale = 1 WHERE session_id = ?1",
+            [stored.session_id.as_str()],
+        )
+        .unwrap();
+        file.as_file_mut().set_len(0).unwrap();
+        file.as_file_mut().seek(SeekFrom::Start(0)).unwrap();
+        write_claude_projection_sample(&mut file, "New title");
+
+        let report = reproject_stale_snapshot_sources(
+            &mut conn,
+            vec![StaleSnapshotSourceRow {
+                canonical_session_id: stored.session_id.clone(),
+                provider_id: "claude".to_string(),
+                provider_session_id: Some("session-projection-1".to_string()),
+                source_path: Some(file.path().to_string_lossy().to_string()),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(report.candidate_snapshots, 1);
+        assert_eq!(report.reprojected_snapshots, 1);
+        assert_eq!(report.missing_sources, 0);
+        assert_eq!(report.failed_snapshots, 0);
+        assert!(report.failures.is_empty());
+
+        let snapshot: (String, i64) = conn
+            .query_row(
+                "SELECT title, stale FROM session_snapshots WHERE session_id = ?1",
+                [stored.session_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(snapshot.0, "New title");
+        assert_eq!(snapshot.1, 0);
+    }
+
+    #[test]
+    fn reproject_stale_snapshot_sources_reports_missing_source() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+
+        let report = reproject_stale_snapshot_sources(
+            &mut conn,
+            vec![StaleSnapshotSourceRow {
+                canonical_session_id: "canonical-1".to_string(),
+                provider_id: "claude".to_string(),
+                provider_session_id: Some("native-1".to_string()),
+                source_path: Some("/tmp/memorph-missing-source.jsonl".to_string()),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(report.candidate_snapshots, 1);
+        assert_eq!(report.reprojected_snapshots, 0);
+        assert_eq!(report.missing_sources, 1);
+        assert_eq!(report.failed_snapshots, 0);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].session_id, "native-1");
+    }
+
+    fn write_claude_projection_sample(file: &mut tempfile::NamedTempFile, title: &str) {
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom-title",
+                "customTitle": title,
+                "sessionId": "session-projection-1",
+                "timestamp": "2026-01-01T00:00:00Z"
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "user-1",
+                "sessionId": "session-projection-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "message": {
+                    "role": "user",
+                    "content": "Build this"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "assistant-1",
+                "parentUuid": "user-1",
+                "sessionId": "session-projection-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:02Z",
+                "message": {
+                    "role": "assistant",
+                    "content": "Done"
+                }
+            })
+        )
+        .unwrap();
+        file.flush().unwrap();
     }
 }

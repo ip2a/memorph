@@ -204,6 +204,12 @@ pub enum LegacyCodexToolCommands {
 pub enum SessionCommands {
     /// Recompute stale flags for projected SQLite session snapshots
     RefreshStale,
+    /// Rebuild stale projected SQLite session snapshots from provider sources
+    ReprojectStale {
+        /// Limit reprojection to one provider
+        #[arg(short, long, value_name = "PROVIDER")]
+        provider: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -467,6 +473,23 @@ mod tests {
             Some(Commands::Sessions {
                 command: SessionCommands::RefreshStale,
             }) => {}
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn sessions_reproject_stale_command_parses_provider() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "sessions",
+            "reproject-stale",
+            "--provider",
+            "claude",
+        ]);
+        match cli.command {
+            Some(Commands::Sessions {
+                command: SessionCommands::ReprojectStale { provider },
+            }) => assert_eq!(provider.as_deref(), Some("claude")),
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
     }

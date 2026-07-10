@@ -261,6 +261,21 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
             println!("Missing sources: {}", report.missing_sources);
             println!("Unknown sources: {}", report.unknown_sources);
         }
+        SessionCommands::ReprojectStale { provider } => {
+            let report = core::reproject_stale_sessions(provider.as_deref())?;
+            println!("Candidate snapshots: {}", report.candidate_snapshots);
+            println!("Reprojected snapshots: {}", report.reprojected_snapshots);
+            println!("Missing sources: {}", report.missing_sources);
+            println!("Unsupported providers: {}", report.unsupported_providers);
+            println!("Failed snapshots: {}", report.failed_snapshots);
+            for failure in report.failures {
+                let source = failure.source_path.as_deref().unwrap_or("(no source)");
+                println!(
+                    "  {}:{} | {} | {}",
+                    failure.provider_id, failure.session_id, source, failure.reason
+                );
+            }
+        }
     }
     Ok(())
 }
