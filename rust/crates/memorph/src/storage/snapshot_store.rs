@@ -5,10 +5,15 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 
 use crate::canonical::{
-    EventBlock, EventLinks, EventMetadata, EventRole, EventSource, MappingDisposition,
-    SessionEvent, SessionEventKind,
+    EventBlock, EventLinks, EventMetadata, EventRole, EventSource, MappingDirection,
+    MappingDisposition, SessionEvent, SessionEventKind,
+};
+use crate::session_projection::{
+    ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
 };
 use crate::storage::session_state::ResolvedLocalSessionState;
+
+const DETAIL_REPORT_ITEM_LIMIT: i64 = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedSessionSnapshotRow {
@@ -45,7 +50,42 @@ pub struct ProjectedSessionDetailPage {
     pub message_count: usize,
     pub turn_count: usize,
     pub local_state: ResolvedLocalSessionState,
+    pub projection_report: Option<ProjectedSessionReport>,
     pub events: Vec<SessionEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectedSessionReport {
+    pub id: String,
+    pub provider_id: String,
+    pub source_id: Option<String>,
+    pub operation_kind: ProjectionOperationKind,
+    pub projection_version: i64,
+    pub status: ProjectionStatus,
+    pub created_at_ms: i64,
+    pub summary: ProjectedSessionReportSummary,
+    pub item_count: usize,
+    pub items: Vec<ProjectedSessionReportItem>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectedSessionReportSummary {
+    pub canonical_event_count: Option<usize>,
+    pub mapping_direction: Option<MappingDirection>,
+    pub mapping_overall: Option<MappingDisposition>,
+    pub preserved_count: usize,
+    pub normalized_count: usize,
+    pub dropped_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectedSessionReportItem {
+    pub item_order: i64,
+    pub fidelity: ProjectionFidelity,
+    pub scope: ProjectionItemScope,
+    pub field_path: Option<String>,
+    pub reason: Option<String>,
+    pub details: Option<serde_json::Value>,
 }
 
 pub struct SnapshotStore<'a> {
@@ -154,7 +194,12 @@ impl<'a> SnapshotStore<'a> {
             event_offset,
             event_limit,
         )?;
-        Ok(Some(ProjectedSessionDetailPage { events, ..header }))
+        let projection_report = self.session_projection_report(&header.canonical_session_id)?;
+        Ok(Some(ProjectedSessionDetailPage {
+            projection_report,
+            events,
+            ..header
+        }))
     }
 
     fn session_detail_header(
@@ -263,8 +308,101 @@ impl<'a> SnapshotStore<'a> {
                     row.get::<_, Option<String>>(18)?.as_deref(),
                 ),
             },
+            projection_report: None,
             events: Vec::new(),
         }))
+    }
+
+    fn session_projection_report(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProjectedSessionReport>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    id,
+                    provider_id,
+                    source_id,
+                    operation_kind,
+                    projection_version,
+                    status,
+                    summary_json,
+                    created_at_ms,
+                    (
+                        SELECT COUNT(*)
+                        FROM projection_report_items item
+                        WHERE item.report_id = projection_reports.id
+                    )
+                 FROM projection_reports
+                 WHERE session_id = ?1
+                 ORDER BY created_at_ms DESC, id DESC
+                 LIMIT 1",
+            )
+            .context("Failed to prepare projected session report")?;
+
+        let mut rows = stmt
+            .query([session_id])
+            .context("Failed to query projected session report")?;
+        let Some(row) = rows
+            .next()
+            .context("Failed to decode projected session report")?
+        else {
+            return Ok(None);
+        };
+
+        let report_id: String = row.get(0)?;
+        let summary_json: String = row.get(6)?;
+        let item_count = row.get::<_, i64>(8)?.max(0) as usize;
+        Ok(Some(ProjectedSessionReport {
+            id: report_id.clone(),
+            provider_id: row.get(1)?,
+            source_id: row.get(2)?,
+            operation_kind: parse_projection_operation(row.get::<_, String>(3)?.as_str())?,
+            projection_version: row.get(4)?,
+            status: parse_projection_status(row.get::<_, String>(5)?.as_str())?,
+            created_at_ms: row.get(7)?,
+            summary: parse_projection_report_summary(&summary_json)?,
+            item_count,
+            items: self.projection_report_items(&report_id)?,
+        }))
+    }
+
+    fn projection_report_items(&self, report_id: &str) -> Result<Vec<ProjectedSessionReportItem>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT item_order, disposition, scope, field_path, reason, details_json
+                 FROM projection_report_items
+                 WHERE report_id = ?1
+                 ORDER BY item_order
+                 LIMIT ?2",
+            )
+            .context("Failed to prepare projected session report items")?;
+        let rows = stmt
+            .query_map((report_id, DETAIL_REPORT_ITEM_LIMIT), |row| {
+                let details_json: String = row.get(5)?;
+                Ok(ProjectedReportItemRow {
+                    item_order: row.get(0)?,
+                    disposition: row.get(1)?,
+                    scope: row.get(2)?,
+                    field_path: row.get(3)?,
+                    reason: row.get(4)?,
+                    details_json,
+                })
+            })
+            .with_context(|| format!("Failed to query projected report items for {report_id}"))?;
+
+        let mut items = Vec::new();
+        for row in rows {
+            items.push(
+                row.with_context(|| {
+                    format!("Failed to decode projected report item for {report_id}")
+                })?
+                .into_item()?,
+            );
+        }
+        Ok(items)
     }
 
     fn session_detail_events(
@@ -370,6 +508,42 @@ impl<'a> SnapshotStore<'a> {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct ProjectionReportSummaryJson {
+    canonical_event_count: Option<usize>,
+    mapping_direction: Option<MappingDirection>,
+    mapping_overall: Option<MappingDisposition>,
+    #[serde(default)]
+    preserved_count: usize,
+    #[serde(default)]
+    normalized_count: usize,
+    #[serde(default)]
+    dropped_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ProjectedReportItemRow {
+    item_order: i64,
+    disposition: String,
+    scope: String,
+    field_path: Option<String>,
+    reason: Option<String>,
+    details_json: String,
+}
+
+impl ProjectedReportItemRow {
+    fn into_item(self) -> Result<ProjectedSessionReportItem> {
+        Ok(ProjectedSessionReportItem {
+            item_order: self.item_order,
+            fidelity: parse_projection_fidelity(&self.disposition)?,
+            scope: parse_projection_item_scope(&self.scope)?,
+            field_path: self.field_path,
+            reason: self.reason,
+            details: parse_projection_details(&self.details_json)?,
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ProjectedEventRow {
     id: String,
@@ -448,6 +622,51 @@ fn parse_event_metadata(provider_id: &str, event_id: &str, value: &str) -> Resul
     }
     serde_json::from_str(value)
         .with_context(|| format!("Failed to parse projected event metadata for {event_id}"))
+}
+
+fn parse_projection_report_summary(value: &str) -> Result<ProjectedSessionReportSummary> {
+    if value.trim().is_empty() || value.trim() == "{}" {
+        return Ok(ProjectedSessionReportSummary::default());
+    }
+    let summary: ProjectionReportSummaryJson =
+        serde_json::from_str(value).context("Failed to parse projected session report summary")?;
+    Ok(ProjectedSessionReportSummary {
+        canonical_event_count: summary.canonical_event_count,
+        mapping_direction: summary.mapping_direction,
+        mapping_overall: summary.mapping_overall,
+        preserved_count: summary.preserved_count,
+        normalized_count: summary.normalized_count,
+        dropped_count: summary.dropped_count,
+    })
+}
+
+fn parse_projection_operation(value: &str) -> Result<ProjectionOperationKind> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .with_context(|| format!("Unknown projection operation kind: {value}"))
+}
+
+fn parse_projection_status(value: &str) -> Result<ProjectionStatus> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .with_context(|| format!("Unknown projection status: {value}"))
+}
+
+fn parse_projection_fidelity(value: &str) -> Result<ProjectionFidelity> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .with_context(|| format!("Unknown projection report item fidelity: {value}"))
+}
+
+fn parse_projection_item_scope(value: &str) -> Result<ProjectionItemScope> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .with_context(|| format!("Unknown projection report item scope: {value}"))
+}
+
+fn parse_projection_details(value: &str) -> Result<Option<serde_json::Value>> {
+    if value.trim().is_empty() || value.trim() == "{}" {
+        return Ok(None);
+    }
+    serde_json::from_str(value)
+        .map(Some)
+        .context("Failed to parse projected session report item details")
 }
 
 fn default_event_metadata(provider_id: &str, event_id: &str) -> EventMetadata {
@@ -566,6 +785,8 @@ mod tests {
         insert_event(&conn, "event-1", "turn-1", "user", 1000, 0, "First");
         insert_event(&conn, "event-2", "turn-1", "assistant", 2000, 1, "Second");
         insert_event(&conn, "event-3", "turn-1", "assistant", 3000, 2, "Third");
+        insert_projection_report(&conn, "report-old", "canonical-1", 40, 1, 1, 0);
+        insert_projection_report(&conn, "report-new", "canonical-1", 50, 2, 3, 1);
 
         let page = SnapshotStore::new(&conn)
             .get_session_detail_page("claude", "native-1", 1, Some(1))
@@ -590,6 +811,39 @@ mod tests {
         assert_eq!(page.local_state.tags, vec!["tag-a"]);
         assert_eq!(page.local_state.preferred_targets, vec!["kiro"]);
         assert_eq!(page.local_state.compressed_archive_refs, vec!["archive-1"]);
+        let report = page.projection_report.as_ref().unwrap();
+        assert_eq!(report.id, "report-new");
+        assert_eq!(report.operation_kind, ProjectionOperationKind::Import);
+        assert_eq!(report.status, ProjectionStatus::CompletedWithLoss);
+        assert_eq!(report.created_at_ms, 50);
+        assert_eq!(report.summary.canonical_event_count, Some(3));
+        assert_eq!(
+            report.summary.mapping_direction,
+            Some(MappingDirection::Import)
+        );
+        assert_eq!(
+            report.summary.mapping_overall,
+            Some(MappingDisposition::Dropped)
+        );
+        assert_eq!(report.summary.preserved_count, 2);
+        assert_eq!(report.summary.normalized_count, 3);
+        assert_eq!(report.summary.dropped_count, 1);
+        assert_eq!(report.item_count, 2);
+        assert_eq!(report.items.len(), 2);
+        assert_eq!(report.items[0].fidelity, ProjectionFidelity::Normalized);
+        assert_eq!(report.items[0].scope, ProjectionItemScope::ProviderPayload);
+        assert_eq!(
+            report.items[0].field_path.as_deref(),
+            Some("events[0].content")
+        );
+        assert_eq!(
+            report.items[0].reason.as_deref(),
+            Some("normalized text block")
+        );
+        assert_eq!(
+            report.items[0].details.as_ref().unwrap()["code"],
+            serde_json::Value::String("normalized_text".to_string())
+        );
         assert_eq!(page.events.len(), 1);
         assert_eq!(page.events[0].id, "event-2");
         assert_eq!(page.events[0].role, EventRole::Assistant);
@@ -648,6 +902,53 @@ mod tests {
              VALUES (?1, ?2, 'Native title', ?3, 'completed', 20, 2, 1,
               '{\"hidden\":false,\"pinned\":false}', 1, 0, 20)",
             params![session_id, provider_id, workspace_dir],
+        )
+        .unwrap();
+    }
+
+    fn insert_projection_report(
+        conn: &Connection,
+        report_id: &str,
+        session_id: &str,
+        created_at_ms: i64,
+        preserved_count: usize,
+        normalized_count: usize,
+        dropped_count: usize,
+    ) {
+        conn.execute(
+            "INSERT INTO projection_reports
+             (id, session_id, provider_id, source_id, operation_kind, projection_version,
+              status, summary_json, created_at_ms)
+             VALUES (?1, ?2, 'claude', ?3, 'import', 1, ?4, ?5, ?6)",
+            params![
+                report_id,
+                session_id,
+                format!("source-{session_id}"),
+                if dropped_count > 0 {
+                    "completed_with_loss"
+                } else {
+                    "succeeded"
+                },
+                format!(
+                    "{{\"canonical_event_count\":3,\"mapping_direction\":\"import\",\"mapping_overall\":\"dropped\",\"preserved_count\":{preserved_count},\"normalized_count\":{normalized_count},\"dropped_count\":{dropped_count}}}"
+                ),
+                created_at_ms,
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projection_report_items
+             (id, report_id, item_order, disposition, scope, field_path, reason, details_json)
+             VALUES
+             (?1, ?2, 0, 'normalized', 'provider_payload', 'events[0].content',
+              'normalized text block', '{\"level\":\"warning\",\"code\":\"normalized_text\"}'),
+             (?3, ?2, 1, 'dropped', 'provider_payload', 'events[1].meta',
+              'dropped unsupported field', '{}')",
+            params![
+                format!("{report_id}-item-1"),
+                report_id,
+                format!("{report_id}-item-2"),
+            ],
         )
         .unwrap();
     }

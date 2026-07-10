@@ -2790,6 +2790,7 @@ mod tests {
                 hook_runtime_sessions: vec![runtime_session_for_payload(
                     "claude:session:session-1",
                 )],
+                projection_report: None,
                 events: Vec::new(),
                 artifacts: Vec::new(),
             },

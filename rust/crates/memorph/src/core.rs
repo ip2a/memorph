@@ -9,7 +9,10 @@ use crate::core::active_compression::{
 };
 use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state::{self, SessionStateStore};
-use crate::storage::snapshot_store::{ProjectedSessionDetailPage, ProjectedSessionSnapshotRow};
+use crate::storage::snapshot_store::{
+    ProjectedSessionDetailPage, ProjectedSessionReport, ProjectedSessionReportItem,
+    ProjectedSessionReportSummary, ProjectedSessionSnapshotRow,
+};
 use crate::{provider, providers, utils};
 
 pub mod active_compression;
@@ -120,10 +123,55 @@ pub struct SessionDetailView {
     pub hook_diagnosis: Option<crate::hooks::augmentation::SessionHookDiagnosis>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hook_runtime_sessions: Vec<crate::hooks::model::RuntimeSession>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_report: Option<SessionProjectionReportView>,
     pub events: Vec<SessionEvent>,
     pub artifacts: Vec<SessionArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compressed_archive_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionProjectionReportView {
+    pub id: String,
+    pub provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+    pub operation_kind: crate::session_projection::ProjectionOperationKind,
+    pub projection_version: i64,
+    pub status: crate::session_projection::ProjectionStatus,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub created_at_ms: i64,
+    pub summary: SessionProjectionReportSummaryView,
+    pub item_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<SessionProjectionReportItemView>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionProjectionReportSummaryView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_event_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mapping_direction: Option<crate::canonical::MappingDirection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mapping_overall: Option<crate::canonical::MappingDisposition>,
+    pub preserved_count: usize,
+    pub normalized_count: usize,
+    pub dropped_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionProjectionReportItemView {
+    pub item_order: i64,
+    pub fidelity: crate::session_projection::ProjectionFidelity,
+    pub scope: crate::session_projection::ProjectionItemScope,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -884,9 +932,55 @@ fn projected_detail_view(page: ProjectedSessionDetailPage) -> SessionDetailView 
         hook_runtime_summary: None,
         hook_diagnosis: None,
         hook_runtime_sessions: Vec::new(),
+        projection_report: page.projection_report.map(projected_report_view),
         events: page.events,
         artifacts: Vec::new(),
         compressed_archive_refs: page.local_state.compressed_archive_refs.clone(),
+    }
+}
+
+fn projected_report_view(report: ProjectedSessionReport) -> SessionProjectionReportView {
+    SessionProjectionReportView {
+        id: report.id,
+        provider_id: report.provider_id,
+        source_id: report.source_id,
+        operation_kind: report.operation_kind,
+        projection_version: report.projection_version,
+        status: report.status,
+        created_at: chrono::DateTime::<chrono::Utc>::from_timestamp_millis(report.created_at_ms)
+            .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH),
+        created_at_ms: report.created_at_ms,
+        summary: projected_report_summary_view(report.summary),
+        item_count: report.item_count,
+        items: report
+            .items
+            .into_iter()
+            .map(projected_report_item_view)
+            .collect(),
+    }
+}
+
+fn projected_report_summary_view(
+    summary: ProjectedSessionReportSummary,
+) -> SessionProjectionReportSummaryView {
+    SessionProjectionReportSummaryView {
+        canonical_event_count: summary.canonical_event_count,
+        mapping_direction: summary.mapping_direction,
+        mapping_overall: summary.mapping_overall,
+        preserved_count: summary.preserved_count,
+        normalized_count: summary.normalized_count,
+        dropped_count: summary.dropped_count,
+    }
+}
+
+fn projected_report_item_view(item: ProjectedSessionReportItem) -> SessionProjectionReportItemView {
+    SessionProjectionReportItemView {
+        item_order: item.item_order,
+        fidelity: item.fidelity,
+        scope: item.scope,
+        field_path: item.field_path,
+        reason: item.reason,
+        details: item.details,
     }
 }
 
@@ -2346,6 +2440,9 @@ mod tests {
         HookToolCall, PermissionRequest, QuestionRequest, RuntimeSession, RuntimeSessionId,
         RuntimeSessionStatus,
     };
+    use crate::session_projection::{
+        ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
+    };
     use crate::storage::session_state::SessionStateStore;
     use chrono::Utc;
     use std::collections::BTreeMap;
@@ -2574,6 +2671,32 @@ mod tests {
                 preferred_targets: Vec::new(),
                 compressed_archive_refs: vec!["archive-1".to_string()],
             },
+            projection_report: Some(ProjectedSessionReport {
+                id: "report-1".to_string(),
+                provider_id: "codex".to_string(),
+                source_id: Some("source-1".to_string()),
+                operation_kind: ProjectionOperationKind::Import,
+                projection_version: 1,
+                status: ProjectionStatus::CompletedWithLoss,
+                created_at_ms: 1_700_000_002_000,
+                summary: ProjectedSessionReportSummary {
+                    canonical_event_count: Some(2),
+                    mapping_direction: Some(MappingDirection::Import),
+                    mapping_overall: Some(MappingDisposition::Dropped),
+                    preserved_count: 1,
+                    normalized_count: 1,
+                    dropped_count: 1,
+                },
+                item_count: 1,
+                items: vec![ProjectedSessionReportItem {
+                    item_order: 0,
+                    fidelity: ProjectionFidelity::Dropped,
+                    scope: ProjectionItemScope::ProviderPayload,
+                    field_path: Some("events[0].meta".to_string()),
+                    reason: Some("unsupported field".to_string()),
+                    details: Some(serde_json::json!({ "code": "unsupported_meta" })),
+                }],
+            }),
             events: vec![SessionEvent {
                 id: "e2".to_string(),
                 kind: SessionEventKind::Message,
@@ -2608,6 +2731,31 @@ mod tests {
         assert_eq!(view.source_path.as_deref(), Some("/tmp/session.jsonl"));
         assert_eq!(view.events.len(), 1);
         assert_eq!(view.compressed_archive_refs, vec!["archive-1"]);
+        let report = view.projection_report.as_ref().unwrap();
+        assert_eq!(report.id, "report-1");
+        assert_eq!(report.source_id.as_deref(), Some("source-1"));
+        assert_eq!(report.operation_kind, ProjectionOperationKind::Import);
+        assert_eq!(report.status, ProjectionStatus::CompletedWithLoss);
+        assert_eq!(report.created_at_ms, 1_700_000_002_000);
+        assert_eq!(report.summary.canonical_event_count, Some(2));
+        assert_eq!(
+            report.summary.mapping_direction,
+            Some(MappingDirection::Import)
+        );
+        assert_eq!(
+            report.summary.mapping_overall,
+            Some(MappingDisposition::Dropped)
+        );
+        assert_eq!(report.summary.normalized_count, 1);
+        assert_eq!(report.item_count, 1);
+        assert_eq!(
+            report.items[0].field_path.as_deref(),
+            Some("events[0].meta")
+        );
+        assert_eq!(
+            report.items[0].details.as_ref().unwrap()["code"],
+            serde_json::Value::String("unsupported_meta".to_string())
+        );
     }
 
     #[test]
