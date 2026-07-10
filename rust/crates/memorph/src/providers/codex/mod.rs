@@ -12,8 +12,10 @@ use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
     canonical_event_visible_text, canonical_export_result,
     canonical_session_instruction_context_text, canonical_session_title,
-    canonical_visible_block_text, compression_retrieval_hint, CompressionProjection, Provider,
-    ProviderCapabilities, ProviderSessionImportPage, ProviderSessionSummary,
+    canonical_visible_block_text, compression_retrieval_hint, CompressionProjection, PageStrategy,
+    Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
+    ProviderContentFidelity, ProviderSessionImportPage, ProviderSessionSummary, ProviderWriteRisk,
+    ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
 use crate::storage::projection_store::{ProjectionStore, StoredProjection};
 use crate::storage::{event_index, session_state};
@@ -179,7 +181,58 @@ impl Provider for CodexProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::full_session_management()
+        ProviderCapabilities {
+            scan: true,
+            import: true,
+            export: true,
+            delete: true,
+            rename: true,
+            resume: true,
+            scan_strategy: ScanStrategy::Indexed,
+            page_strategy: PageStrategy::IndexedPage,
+            storage_shape: StorageShape::Mixed,
+            turn_quality: TurnQuality::Inferred,
+            import_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Normalized),
+                tool_call: Some(MappingDisposition::Preserved),
+                tool_result: Some(MappingDisposition::Preserved),
+                patch: Some(MappingDisposition::Unsupported),
+                image: Some(MappingDisposition::Preserved),
+                file: Some(MappingDisposition::Unsupported),
+                compressed: Some(MappingDisposition::Normalized),
+                provider_payload: Some(MappingDisposition::Preserved),
+            },
+            export_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Downgraded),
+                tool_call: Some(MappingDisposition::Downgraded),
+                tool_result: Some(MappingDisposition::Downgraded),
+                patch: Some(MappingDisposition::Downgraded),
+                image: Some(MappingDisposition::Normalized),
+                file: Some(MappingDisposition::Downgraded),
+                compressed: Some(MappingDisposition::Normalized),
+                provider_payload: Some(MappingDisposition::Dropped),
+            },
+            resume_quality: ResumeQuality::Native,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::High,
+                multiple_files: true,
+                sqlite: true,
+                sidecar_files: false,
+                index_repair: true,
+            },
+            backup_support: ProviderBackupSupport {
+                before_write: true,
+                restore: true,
+                sync_only: true,
+            },
+            activity_support: ProviderActivitySupport {
+                hook_events: true,
+                runtime_endpoint: true,
+                session_activity: true,
+            },
+        }
     }
 
     fn detects_native_compression_source(&self) -> bool {
@@ -367,6 +420,8 @@ impl Provider for CodexProvider {
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),
+            session,
+            self.capabilities(),
         ))
     }
 
@@ -539,7 +594,7 @@ pub fn project_session_to_store(
     store: &mut ProjectionStore<'_>,
 ) -> Result<StoredProjection> {
     let imported = import_canonical_session(source_path)?;
-    store.write_imported_session(source_path, &imported)
+    store.write_imported_session(source_path, &imported, CodexProvider.capabilities())
 }
 
 pub fn sync_workspace_sessions(

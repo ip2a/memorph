@@ -184,6 +184,7 @@ pub fn record_sync_run(
         "source_holding_id": report.source_holding_id,
         "success": report.success,
         "errors": report.errors,
+        "target_assessments": report.target_assessments,
     }))
     .context("Failed to encode sync run result")?;
     let error = (!report.errors.is_empty()).then(|| report.errors.join("\n"));
@@ -285,6 +286,14 @@ mod tests {
             source_holding_id: "holding-source".to_string(),
             success: vec!["codex".to_string()],
             errors: Vec::new(),
+            target_assessments: vec![crate::sync::SyncTargetAssessment {
+                provider: "codex".to_string(),
+                fidelity: crate::canonical::MappingDisposition::Normalized,
+                write_risk: crate::providers::find_provider("codex")
+                    .unwrap()
+                    .capabilities()
+                    .write_risk,
+            }],
         };
 
         let run_id = record_sync_run(&conn, "group-1", "holding-source", 10, 20, &report).unwrap();
@@ -299,6 +308,9 @@ mod tests {
         assert_eq!(row.0, "success");
         assert_eq!(row.1, "holding-source");
         assert!(row.2.contains("\"codex\""));
+        assert!(row.2.contains("\"target_assessments\""));
+        assert!(row.2.contains("\"fidelity\":\"normalized\""));
+        assert!(row.2.contains("\"level\":\"high\""));
     }
 
     #[test]
@@ -313,6 +325,7 @@ mod tests {
             source_holding_id: "holding-source".to_string(),
             success: vec!["codex".to_string()],
             errors: Vec::new(),
+            target_assessments: Vec::new(),
         };
         let run_id = record_sync_run(&conn, "group-1", "holding-source", 10, 20, &report).unwrap();
 

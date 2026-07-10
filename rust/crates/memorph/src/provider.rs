@@ -1,10 +1,11 @@
 use crate::canonical::{
     CanonicalSession, EventBlock, EventRole, ExportedSession, ImportedSession, MappingDirection,
-    MappingDisposition, MappingReport, SessionEvent, SessionEventKind,
+    MappingDisposition, MappingIssue, MappingIssueLevel, MappingReport, SessionEvent,
+    SessionEventKind,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -31,6 +32,123 @@ pub struct ProviderCapabilities {
     pub delete: bool,
     pub rename: bool,
     pub resume: bool,
+    pub scan_strategy: ScanStrategy,
+    pub page_strategy: PageStrategy,
+    pub storage_shape: StorageShape,
+    pub turn_quality: TurnQuality,
+    pub import_fidelity: ProviderContentFidelity,
+    pub export_fidelity: ProviderContentFidelity,
+    pub resume_quality: ResumeQuality,
+    pub write_risk: ProviderWriteRisk,
+    pub backup_support: ProviderBackupSupport,
+    pub activity_support: ProviderActivitySupport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScanStrategy {
+    Unknown,
+    FullScan,
+    Indexed,
+    Hybrid,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageStrategy {
+    Unknown,
+    FullImport,
+    IndexedPage,
+    NativePage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageShape {
+    Unknown,
+    Jsonl,
+    Sqlite,
+    Directory,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnQuality {
+    Unknown,
+    Exact,
+    Inferred,
+    Grouped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ProviderContentFidelity {
+    pub text: Option<MappingDisposition>,
+    pub thinking: Option<MappingDisposition>,
+    pub tool_call: Option<MappingDisposition>,
+    pub tool_result: Option<MappingDisposition>,
+    pub patch: Option<MappingDisposition>,
+    pub image: Option<MappingDisposition>,
+    pub file: Option<MappingDisposition>,
+    pub compressed: Option<MappingDisposition>,
+    pub provider_payload: Option<MappingDisposition>,
+}
+
+impl ProviderContentFidelity {
+    pub const fn unknown() -> Self {
+        Self {
+            text: None,
+            thinking: None,
+            tool_call: None,
+            tool_result: None,
+            patch: None,
+            image: None,
+            file: None,
+            compressed: None,
+            provider_payload: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeQuality {
+    None,
+    Native,
+    Imported,
+    TextOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderWriteRisk {
+    pub level: WriteRiskLevel,
+    pub multiple_files: bool,
+    pub sqlite: bool,
+    pub sidecar_files: bool,
+    pub index_repair: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteRiskLevel {
+    Unknown,
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ProviderBackupSupport {
+    pub before_write: bool,
+    pub restore: bool,
+    pub sync_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ProviderActivitySupport {
+    pub hook_events: bool,
+    pub runtime_endpoint: bool,
+    pub session_activity: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -57,6 +175,42 @@ impl ProviderCapabilities {
             delete: true,
             rename: true,
             resume: true,
+            ..Self::unknown_quality()
+        }
+    }
+
+    const fn unknown_quality() -> Self {
+        Self {
+            scan: false,
+            import: false,
+            export: false,
+            delete: false,
+            rename: false,
+            resume: false,
+            scan_strategy: ScanStrategy::Unknown,
+            page_strategy: PageStrategy::Unknown,
+            storage_shape: StorageShape::Unknown,
+            turn_quality: TurnQuality::Unknown,
+            import_fidelity: ProviderContentFidelity::unknown(),
+            export_fidelity: ProviderContentFidelity::unknown(),
+            resume_quality: ResumeQuality::None,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::Unknown,
+                multiple_files: false,
+                sqlite: false,
+                sidecar_files: false,
+                index_repair: false,
+            },
+            backup_support: ProviderBackupSupport {
+                before_write: false,
+                restore: false,
+                sync_only: false,
+            },
+            activity_support: ProviderActivitySupport {
+                hook_events: false,
+                runtime_endpoint: false,
+                session_activity: false,
+            },
         }
     }
 }
@@ -70,6 +224,7 @@ impl Default for ProviderCapabilities {
             delete: false,
             rename: false,
             resume: false,
+            ..Self::unknown_quality()
         }
     }
 }
@@ -260,25 +415,98 @@ pub trait Provider: Send + Sync {
     }
 }
 
-pub fn canonical_export_report(provider_id: &str) -> MappingReport {
-    MappingReport {
-        provider_id: provider_id.to_string(),
-        direction: MappingDirection::Export,
-        overall: MappingDisposition::Preserved,
-        issues: Vec::new(),
+pub fn canonical_export_report(
+    provider_id: &str,
+    session: &CanonicalSession,
+    capabilities: ProviderCapabilities,
+) -> MappingReport {
+    let mut report = MappingReport::new(provider_id, MappingDirection::Export);
+    let mut assessed = HashSet::new();
+
+    for block in session.events.iter().flat_map(|event| &event.blocks) {
+        let (content_kind, disposition) =
+            export_block_fidelity(block, capabilities.export_fidelity);
+        if !assessed.insert(content_kind) {
+            continue;
+        }
+        match disposition {
+            Some(MappingDisposition::Preserved) => {}
+            Some(disposition) => report.push_issue(MappingIssue {
+                level: if disposition == MappingDisposition::Normalized {
+                    MappingIssueLevel::Info
+                } else {
+                    MappingIssueLevel::Warning
+                },
+                disposition,
+                code: format!("{content_kind}_export_{disposition}", disposition = disposition_name(disposition)),
+                message: format!(
+                    "{provider_id} exports canonical {content_kind} content as {}.",
+                    disposition_name(disposition)
+                ),
+                path: Some(format!("events.blocks.{content_kind}")),
+                raw: None,
+            }),
+            None => report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Unsupported,
+                code: format!("{content_kind}_export_capability_unknown"),
+                message: format!(
+                    "{provider_id} export fidelity for canonical {content_kind} content is not cataloged."
+                ),
+                path: Some(format!("events.blocks.{content_kind}")),
+                raw: None,
+            }),
+        }
     }
+
+    report
 }
 
 pub fn canonical_export_result(
     provider_id: &str,
     session_id: String,
     resume_command: Option<String>,
+    session: &CanonicalSession,
+    capabilities: ProviderCapabilities,
 ) -> ExportedSession {
     ExportedSession {
         provider_id: provider_id.to_string(),
         session_id,
         resume_command,
-        report: canonical_export_report(provider_id),
+        report: canonical_export_report(provider_id, session, capabilities),
+    }
+}
+
+fn export_block_fidelity(
+    block: &EventBlock,
+    fidelity: ProviderContentFidelity,
+) -> (&'static str, Option<MappingDisposition>) {
+    match block {
+        EventBlock::Text { .. } => ("text", fidelity.text),
+        EventBlock::Thinking { .. } => ("thinking", fidelity.thinking),
+        EventBlock::ToolCall { .. } | EventBlock::Command { .. } => {
+            ("tool_call", fidelity.tool_call)
+        }
+        EventBlock::ToolResult { .. } | EventBlock::CommandResult { .. } => {
+            ("tool_result", fidelity.tool_result)
+        }
+        EventBlock::Patch { .. } => ("patch", fidelity.patch),
+        EventBlock::Image { .. } => ("image", fidelity.image),
+        EventBlock::File { .. } => ("file", fidelity.file),
+        EventBlock::Compressed { .. } => ("compressed", fidelity.compressed),
+        EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. } => {
+            ("provider_payload", fidelity.provider_payload)
+        }
+    }
+}
+
+fn disposition_name(disposition: MappingDisposition) -> &'static str {
+    match disposition {
+        MappingDisposition::Preserved => "preserved",
+        MappingDisposition::Normalized => "normalized",
+        MappingDisposition::Downgraded => "downgraded",
+        MappingDisposition::Dropped => "dropped",
+        MappingDisposition::Unsupported => "unsupported",
     }
 }
 
@@ -646,6 +874,70 @@ mod tests {
             canonical_event_visible_message_text(&user).as_deref(),
             Some("hello")
         );
+    }
+
+    #[test]
+    fn canonical_export_report_uses_actual_block_kinds_and_target_fidelity() {
+        let session = CanonicalSession {
+            schema: crate::canonical::CanonicalSchema::default(),
+            identity: crate::canonical::SessionIdentity {
+                canonical_id: "canonical-1".to_string(),
+                source_title: None,
+            },
+            provenance: crate::canonical::SessionProvenance {
+                imported_at: chrono::Utc::now(),
+                imported_by: None,
+                primary_source: crate::canonical::ProviderSessionRef {
+                    provider_id: "source".to_string(),
+                    session_id: "session-1".to_string(),
+                    source_path: None,
+                },
+                aliases: Vec::new(),
+            },
+            context: crate::canonical::SessionContext::default(),
+            events: vec![test_event(
+                "assistant",
+                crate::canonical::SessionEventKind::Message,
+                EventRole::Assistant,
+                vec![
+                    EventBlock::Text {
+                        text: "answer".to_string(),
+                    },
+                    EventBlock::Thinking {
+                        text: "reasoning".to_string(),
+                        signature: None,
+                    },
+                    EventBlock::Command {
+                        command: "cargo test".to_string(),
+                        argv: Vec::new(),
+                        cwd: None,
+                    },
+                ],
+            )],
+            artifacts: Vec::new(),
+            extensions: std::collections::BTreeMap::new(),
+        };
+        let capabilities = ProviderCapabilities {
+            export_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Normalized),
+                tool_call: Some(MappingDisposition::Downgraded),
+                tool_result: None,
+                patch: None,
+                image: None,
+                file: None,
+                compressed: None,
+                provider_payload: None,
+            },
+            ..ProviderCapabilities::default()
+        };
+
+        let report = canonical_export_report("target", &session, capabilities);
+
+        assert_eq!(report.overall, MappingDisposition::Downgraded);
+        assert_eq!(report.issues.len(), 2);
+        assert_eq!(report.issues[0].code, "thinking_export_normalized");
+        assert_eq!(report.issues[1].code, "tool_call_export_downgraded");
     }
 
     #[test]

@@ -3754,6 +3754,21 @@ mod tests {
             .expect("missing claude catalog entry");
         assert_eq!(claude["display_name"], "Claude");
         assert!(claude["capability_set"].is_object());
+        assert_eq!(claude["capability_set"]["scan_strategy"], "full_scan");
+        assert_eq!(claude["capability_set"]["page_strategy"], "full_import");
+        assert_eq!(claude["capability_set"]["storage_shape"], "jsonl");
+        assert_eq!(claude["capability_set"]["turn_quality"], "inferred");
+        assert_eq!(
+            claude["capability_set"]["export_fidelity"]["patch"],
+            "downgraded"
+        );
+        assert_eq!(claude["capability_set"]["resume_quality"], "native");
+        assert_eq!(claude["capability_set"]["write_risk"]["level"], "medium");
+        assert!(claude["capability_set"]["backup_support"].is_object());
+        assert_eq!(
+            claude["capability_set"]["activity_support"]["hook_events"],
+            true
+        );
         assert!(claude["install_state"].is_object());
         assert!(claude["hidden_state"].is_object());
         assert!(claude["sort_order"].is_object());

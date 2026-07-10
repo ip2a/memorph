@@ -25,6 +25,7 @@ macro_rules! json_read_provider {
                     delete: false,
                     rename: false,
                     resume: $resume.is_some(),
+                    ..ProviderCapabilities::default()
                 }
             }
 

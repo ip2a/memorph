@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::canonical::CanonicalSession;
+use crate::canonical::{CanonicalSession, MappingDisposition};
 #[cfg(test)]
 use crate::core::compression;
+use crate::provider::ProviderWriteRisk;
 use crate::providers;
 use crate::storage::{
     activity_store::{
@@ -71,6 +72,14 @@ pub struct SyncReport {
     pub source_holding_id: String,
     pub success: Vec<String>,
     pub errors: Vec<String>,
+    pub target_assessments: Vec<SyncTargetAssessment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncTargetAssessment {
+    pub provider: String,
+    pub fidelity: MappingDisposition,
+    pub write_risk: ProviderWriteRisk,
 }
 
 pub fn list_groups() -> Result<Vec<SyncGroup>> {
@@ -356,6 +365,7 @@ pub fn push_sync(
             source_holding_id: source_holding_id.to_string(),
             success: Vec::new(),
             errors: Vec::new(),
+            target_assessments: Vec::new(),
         };
         let now = Utc::now().timestamp_millis();
 
@@ -382,17 +392,24 @@ pub fn push_sync(
                 .map(PathBuf::from)
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
             let old_session_id = holding.session_id.clone();
+            let capabilities = provider.capabilities();
             let target_session =
                 prepare_session_for_export(&session.session, &source.provider, &holding.provider)?;
             match provider.export_session(&target_session, &target_dir) {
                 Ok(exported) => {
+                    let fidelity = exported.report.overall;
                     holding.session_id = exported.session_id;
                     holding.last_sync_at = Some(now);
                     holding.last_sync_from = Some(source.provider.clone());
                     holding.last_error = None;
                     report.success.push(holding.provider.clone());
+                    report.target_assessments.push(SyncTargetAssessment {
+                        provider: holding.provider.clone(),
+                        fidelity,
+                        write_risk: capabilities.write_risk,
+                    });
 
-                    if provider.capabilities().delete && old_session_id != holding.session_id {
+                    if capabilities.delete && old_session_id != holding.session_id {
                         if let Err(error) = crate::core::delete_session(
                             &holding.provider,
                             &old_session_id,
@@ -458,6 +475,7 @@ pub fn push_sync(
                         "source_provider": report.source_provider,
                         "success": report.success,
                         "errors": report.errors,
+                        "target_assessments": report.target_assessments,
                     }),
                     error: (!report.errors.is_empty()).then(|| report.errors.join("\n")),
                 },

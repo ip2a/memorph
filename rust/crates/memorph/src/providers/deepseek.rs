@@ -136,6 +136,8 @@ impl Provider for DeepseekProvider {
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),
+            session,
+            self.capabilities(),
         ))
     }
 

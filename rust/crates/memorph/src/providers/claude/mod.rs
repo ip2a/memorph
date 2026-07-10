@@ -9,8 +9,10 @@ use crate::canonical::{
 };
 use crate::provider::{
     canonical_block_text, canonical_event_visible_message_role, canonical_event_visible_text,
-    canonical_export_result, canonical_session_title, Provider, ProviderCapabilities,
-    ProviderSessionSummary,
+    canonical_export_result, canonical_session_title, PageStrategy, Provider,
+    ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity,
+    ProviderSessionSummary, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
+    TurnQuality, WriteRiskLevel,
 };
 use crate::storage::projection_store::{ProjectionStore, StoredProjection};
 use crate::utils::{
@@ -41,7 +43,58 @@ impl Provider for ClaudeProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::full_session_management()
+        ProviderCapabilities {
+            scan: true,
+            import: true,
+            export: true,
+            delete: true,
+            rename: true,
+            resume: true,
+            scan_strategy: ScanStrategy::FullScan,
+            page_strategy: PageStrategy::FullImport,
+            storage_shape: StorageShape::Jsonl,
+            turn_quality: TurnQuality::Inferred,
+            import_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Preserved),
+                tool_result: Some(MappingDisposition::Preserved),
+                patch: Some(MappingDisposition::Unsupported),
+                image: Some(MappingDisposition::Downgraded),
+                file: Some(MappingDisposition::Downgraded),
+                compressed: Some(MappingDisposition::Unsupported),
+                provider_payload: Some(MappingDisposition::Preserved),
+            },
+            export_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Preserved),
+                tool_result: Some(MappingDisposition::Preserved),
+                patch: Some(MappingDisposition::Downgraded),
+                image: Some(MappingDisposition::Downgraded),
+                file: Some(MappingDisposition::Downgraded),
+                compressed: Some(MappingDisposition::Downgraded),
+                provider_payload: Some(MappingDisposition::Dropped),
+            },
+            resume_quality: ResumeQuality::Native,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::Medium,
+                multiple_files: false,
+                sqlite: false,
+                sidecar_files: true,
+                index_repair: false,
+            },
+            backup_support: ProviderBackupSupport {
+                before_write: false,
+                restore: false,
+                sync_only: false,
+            },
+            activity_support: ProviderActivitySupport {
+                hook_events: true,
+                runtime_endpoint: true,
+                session_activity: true,
+            },
+        }
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
@@ -122,6 +175,8 @@ impl Provider for ClaudeProvider {
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),
+            session,
+            self.capabilities(),
         ))
     }
 
@@ -267,7 +322,7 @@ pub fn project_session_to_store(
     store: &mut ProjectionStore<'_>,
 ) -> Result<StoredProjection> {
     let imported = import_canonical_session(source_path)?;
-    store.write_imported_session(source_path, &imported)
+    store.write_imported_session(source_path, &imported, ClaudeProvider.capabilities())
 }
 
 fn get_claude_config_dir() -> PathBuf {

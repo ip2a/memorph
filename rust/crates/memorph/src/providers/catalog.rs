@@ -249,6 +249,10 @@ pub fn sort_catalog(catalog: &mut ProviderCatalog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{
+        PageStrategy, ProviderContentFidelity, ResumeQuality, ScanStrategy, StorageShape,
+        TurnQuality, WriteRiskLevel,
+    };
 
     fn env(installed: bool) -> AgentEnvironmentStatus {
         AgentEnvironmentStatus {
@@ -306,6 +310,30 @@ mod tests {
             .unwrap();
         assert!(!codex.filter_tags.contains(&ProviderFilterTag::Installed));
         assert!(codex.hidden_state.global);
+    }
+
+    #[test]
+    fn mature_provider_catalogs_have_complete_quality_metadata() {
+        for provider_id in ["claude", "codex", "opencode"] {
+            let capabilities = find_provider(provider_id).unwrap().capabilities();
+            assert_ne!(capabilities.scan_strategy, ScanStrategy::Unknown);
+            assert_ne!(capabilities.page_strategy, PageStrategy::Unknown);
+            assert_ne!(capabilities.storage_shape, StorageShape::Unknown);
+            assert_ne!(capabilities.turn_quality, TurnQuality::Unknown);
+            assert_ne!(capabilities.resume_quality, ResumeQuality::None);
+            assert_ne!(capabilities.write_risk.level, WriteRiskLevel::Unknown);
+            assert!(fidelity_is_complete(capabilities.import_fidelity));
+            assert!(fidelity_is_complete(capabilities.export_fidelity));
+            assert!(capabilities.activity_support.hook_events);
+            assert!(capabilities.activity_support.runtime_endpoint);
+            assert!(capabilities.activity_support.session_activity);
+            assert!(capabilities.scan);
+            assert!(capabilities.import);
+            assert!(capabilities.export);
+            assert!(capabilities.delete);
+            assert!(capabilities.rename);
+            assert!(capabilities.resume);
+        }
     }
 
     #[test]
@@ -368,5 +396,21 @@ mod tests {
             .collect();
         // Both have sessions; opencode is more recent; both installed; codex is neither.
         assert_eq!(ids, vec!["opencode", "claude", "codex"]);
+    }
+
+    fn fidelity_is_complete(fidelity: ProviderContentFidelity) -> bool {
+        [
+            fidelity.text,
+            fidelity.thinking,
+            fidelity.tool_call,
+            fidelity.tool_result,
+            fidelity.patch,
+            fidelity.image,
+            fidelity.file,
+            fidelity.compressed,
+            fidelity.provider_payload,
+        ]
+        .into_iter()
+        .all(|value| value.is_some())
     }
 }

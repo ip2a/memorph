@@ -3,7 +3,7 @@ use crate::canonical::{
 };
 use crate::provider::{
     canonical_block_text, canonical_event_is_visible_message, canonical_event_visible_message_role,
-    canonical_session_title,
+    canonical_session_title, ProviderCapabilities, StorageShape, TurnQuality,
 };
 use crate::session_projection::{
     EventVisibility, ProjectedEventKey, ProjectionFidelity, ProjectionOperationKind,
@@ -40,6 +40,7 @@ impl<'a> ProjectionStore<'a> {
         &mut self,
         source_path: &Path,
         imported: &ImportedSession,
+        capabilities: ProviderCapabilities,
     ) -> Result<StoredProjection> {
         let provider_id = imported
             .session
@@ -65,7 +66,11 @@ impl<'a> ProjectionStore<'a> {
         })?;
         let session_id = identity.canonical_session_id.clone();
         let ordered_events = ordered_events(&imported.session.events);
-        let turns = infer_turns(&session_id, &ordered_events);
+        let turns = infer_turns(
+            &session_id,
+            &ordered_events,
+            turn_confidence(capabilities.turn_quality),
+        );
         let report_id = Uuid::new_v4().to_string();
         let title = canonical_session_title(&imported.session);
         let created_at_ms = imported
@@ -89,7 +94,13 @@ impl<'a> ProjectionStore<'a> {
             .transaction()
             .context("Failed to start session projection transaction")?;
 
-        upsert_source(&tx, &source_file, imported, now_ms)?;
+        upsert_source(
+            &tx,
+            &source_file,
+            imported,
+            capabilities.storage_shape,
+            now_ms,
+        )?;
         upsert_session(
             &tx,
             &session_id,
@@ -257,6 +268,7 @@ fn ordered_events(events: &[SessionEvent]) -> Vec<(ProjectedEventKey, &SessionEv
 fn infer_turns(
     session_id: &str,
     ordered_events: &[(ProjectedEventKey, &SessionEvent)],
+    confidence: TurnConfidence,
 ) -> Vec<ProjectedTurnRow> {
     let mut turns = Vec::new();
     let mut current: Option<ProjectedTurnRow> = None;
@@ -275,11 +287,7 @@ fn infer_turns(
                 id: stable_row_id("turn", session_id, &turn_order.to_string()),
                 session_id: session_id.to_string(),
                 status: TurnStatus::Completed,
-                confidence: if starts_turn {
-                    TurnConfidence::Inferred
-                } else {
-                    TurnConfidence::Grouped
-                },
+                confidence,
                 started_at_ms: key.timestamp_ms,
                 ended_at_ms: key.timestamp_ms,
                 start_cursor: Some(key.stable_cursor.clone()),
@@ -302,7 +310,7 @@ fn infer_turns(
             id: stable_row_id("turn", session_id, "0"),
             session_id: session_id.to_string(),
             status: TurnStatus::Completed,
-            confidence: TurnConfidence::Grouped,
+            confidence,
             started_at_ms: first.timestamp_ms,
             ended_at_ms: last.timestamp_ms,
             start_cursor: Some(first.stable_cursor.clone()),
@@ -317,6 +325,7 @@ fn upsert_source(
     conn: &Connection,
     source: &SourceFileProjection,
     imported: &ImportedSession,
+    storage_shape: StorageShape,
     now_ms: i64,
 ) -> Result<()> {
     conn.execute(
@@ -342,7 +351,7 @@ fn upsert_source(
             source.provider_session_id.as_deref(),
             source.source_path,
             imported.session.context.workspace_dir.as_deref(),
-            "jsonl",
+            enum_name(storage_shape),
             source.file_mtime_ms,
             source.file_size_bytes,
             source.content_hash,
@@ -353,6 +362,15 @@ fn upsert_source(
     )
     .context("Failed to upsert projected session source")?;
     Ok(())
+}
+
+fn turn_confidence(quality: TurnQuality) -> TurnConfidence {
+    match quality {
+        TurnQuality::Exact => TurnConfidence::Exact,
+        TurnQuality::Inferred => TurnConfidence::Inferred,
+        TurnQuality::Grouped => TurnConfidence::Grouped,
+        TurnQuality::Unknown => TurnConfidence::Unknown,
+    }
 }
 
 fn upsert_session(
@@ -813,10 +831,10 @@ mod tests {
         let imported = imported_session();
 
         let first = ProjectionStore::new(&mut conn)
-            .write_imported_session(file.path(), &imported)
+            .write_imported_session(file.path(), &imported, ProviderCapabilities::default())
             .unwrap();
         let second = ProjectionStore::new(&mut conn)
-            .write_imported_session(file.path(), &imported)
+            .write_imported_session(file.path(), &imported, ProviderCapabilities::default())
             .unwrap();
 
         assert_eq!(first.session_id, second.session_id);
@@ -839,7 +857,11 @@ mod tests {
         writeln!(file, "one").unwrap();
 
         ProjectionStore::new(&mut conn)
-            .write_imported_session(file.path(), &imported_session())
+            .write_imported_session(
+                file.path(),
+                &imported_session(),
+                ProviderCapabilities::default(),
+            )
             .unwrap();
 
         let visibility: String = conn
@@ -859,6 +881,35 @@ mod tests {
 
         assert_eq!(visibility, "visible");
         assert_eq!(block_kind, "text");
+    }
+
+    #[test]
+    fn stores_cataloged_storage_shape_and_turn_quality() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "one").unwrap();
+        let capabilities = ProviderCapabilities {
+            storage_shape: StorageShape::Sqlite,
+            turn_quality: TurnQuality::Exact,
+            ..ProviderCapabilities::default()
+        };
+
+        ProjectionStore::new(&mut conn)
+            .write_imported_session(file.path(), &imported_session(), capabilities)
+            .unwrap();
+
+        let storage_shape: String = conn
+            .query_row("SELECT storage_shape FROM session_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let confidence: String = conn
+            .query_row("SELECT confidence FROM session_turns", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(storage_shape, "sqlite");
+        assert_eq!(confidence, "exact");
     }
 
     #[test]

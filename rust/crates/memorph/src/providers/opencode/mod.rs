@@ -12,8 +12,10 @@ use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
     canonical_event_is_visible_message, canonical_event_visible_message_role,
     canonical_export_result, canonical_session_title, canonical_visible_block_text,
-    compression_retrieval_hint, CompressionProjection, Provider, ProviderCapabilities,
-    ProviderSessionSummary,
+    compression_retrieval_hint, CompressionProjection, PageStrategy, Provider,
+    ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity,
+    ProviderSessionSummary, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
+    TurnQuality, WriteRiskLevel,
 };
 use crate::storage::projection_store::{ProjectionStore, StoredProjection};
 use anyhow::{Context, Result};
@@ -45,7 +47,58 @@ impl Provider for OpenCodeProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::full_session_management()
+        ProviderCapabilities {
+            scan: true,
+            import: true,
+            export: true,
+            delete: true,
+            rename: true,
+            resume: true,
+            scan_strategy: ScanStrategy::Hybrid,
+            page_strategy: PageStrategy::FullImport,
+            storage_shape: StorageShape::Mixed,
+            turn_quality: TurnQuality::Inferred,
+            import_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Preserved),
+                tool_result: Some(MappingDisposition::Preserved),
+                patch: Some(MappingDisposition::Preserved),
+                image: Some(MappingDisposition::Normalized),
+                file: Some(MappingDisposition::Normalized),
+                compressed: Some(MappingDisposition::Downgraded),
+                provider_payload: Some(MappingDisposition::Preserved),
+            },
+            export_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Downgraded),
+                tool_result: Some(MappingDisposition::Downgraded),
+                patch: Some(MappingDisposition::Downgraded),
+                image: Some(MappingDisposition::Downgraded),
+                file: Some(MappingDisposition::Downgraded),
+                compressed: Some(MappingDisposition::Preserved),
+                provider_payload: Some(MappingDisposition::Dropped),
+            },
+            resume_quality: ResumeQuality::Native,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::High,
+                multiple_files: true,
+                sqlite: true,
+                sidecar_files: true,
+                index_repair: false,
+            },
+            backup_support: ProviderBackupSupport {
+                before_write: false,
+                restore: false,
+                sync_only: false,
+            },
+            activity_support: ProviderActivitySupport {
+                hook_events: true,
+                runtime_endpoint: true,
+                session_activity: true,
+            },
+        }
     }
 
     fn detects_native_compression_source(&self) -> bool {
@@ -159,6 +212,8 @@ impl Provider for OpenCodeProvider {
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),
+            session,
+            self.capabilities(),
         ))
     }
 
@@ -329,7 +384,7 @@ pub fn project_session_to_store(
     store: &mut ProjectionStore<'_>,
 ) -> Result<StoredProjection> {
     let imported = import_canonical_session(session_id)?;
-    store.write_imported_session(source_path, &imported)
+    store.write_imported_session(source_path, &imported, OpenCodeProvider.capabilities())
 }
 
 fn import_canonical_session(session_id: &str) -> Result<ImportedSession> {

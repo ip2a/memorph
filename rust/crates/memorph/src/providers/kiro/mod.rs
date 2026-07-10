@@ -42,6 +42,7 @@ impl Provider for KiroProvider {
             delete: true,
             rename: true,
             resume: false,
+            ..ProviderCapabilities::default()
         }
     }
 
@@ -116,6 +117,8 @@ impl Provider for KiroProvider {
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),
+            session,
+            self.capabilities(),
         ))
     }
 

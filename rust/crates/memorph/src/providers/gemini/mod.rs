@@ -28,6 +28,7 @@ impl Provider for GeminiProvider {
             delete: false,
             rename: false,
             resume: true,
+            ..ProviderCapabilities::default()
         }
     }
 
