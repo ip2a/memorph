@@ -119,6 +119,10 @@ pub fn router() -> Router {
         .route("/api/v1/system/select-file", post(select_file))
         .route("/api/v1/system/open-external", post(open_external))
         .route("/api/v1/sessions", get(list_sessions))
+        .route(
+            "/api/v1/sessions/refresh-stale",
+            post(refresh_session_staleness),
+        )
         .route("/api/v1/sessions/{provider}/{session_id}", get(get_session))
         .route(
             "/api/v1/sessions/{provider}/{session_id}/stats",
@@ -319,6 +323,15 @@ struct SessionDetailPayload {
     has_more_events: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     hook_runtime_sessions: Vec<hooks::model::RuntimeSession>,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionStalenessRefreshPayload {
+    checked_sources: usize,
+    fresh_snapshots: usize,
+    stale_snapshots: usize,
+    missing_sources: usize,
+    unknown_sources: usize,
 }
 
 fn fallback_backup_dir_base() -> std::path::PathBuf {
@@ -1302,6 +1315,20 @@ async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
     };
     match core::list_sessions(&params) {
         Ok(groups) => ApiResponse::success(groups).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn refresh_session_staleness() -> impl IntoResponse {
+    match core::refresh_projected_session_staleness() {
+        Ok(report) => ApiResponse::success(SessionStalenessRefreshPayload {
+            checked_sources: report.checked_sources,
+            fresh_snapshots: report.fresh_snapshots,
+            stale_snapshots: report.stale_snapshots,
+            missing_sources: report.missing_sources,
+            unknown_sources: report.unknown_sources,
+        })
+        .into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -2540,6 +2567,26 @@ mod tests {
         let blocked = blocked_sync_targets_from_snapshot(&group, "source", &snapshot);
 
         assert!(blocked.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn session_refresh_stale_route_returns_scan_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/sessions/refresh-stale")
+            .body(Body::empty())
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"]["checked_sources"], 0);
+        assert_eq!(value["data"]["fresh_snapshots"], 0);
+        assert_eq!(value["data"]["stale_snapshots"], 0);
+        assert_eq!(value["data"]["missing_sources"], 0);
+        assert_eq!(value["data"]["unknown_sources"], 0);
     }
 
     struct ArchiveFixture {

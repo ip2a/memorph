@@ -99,6 +99,11 @@ pub enum Commands {
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Vec<String>,
     },
+    /// Manage projected session snapshots
+    Sessions {
+        #[command(subcommand)]
+        command: SessionCommands,
+    },
     /// Manage synchronized multi-provider sessions
     #[command(name = "sync")]
     Sync {
@@ -193,6 +198,12 @@ pub enum LegacyCodexToolCommands {
         #[arg(short, long, value_name = "DIR")]
         workspace: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum SessionCommands {
+    /// Recompute stale flags for projected SQLite session snapshots
+    RefreshStale,
 }
 
 #[derive(Subcommand)]
@@ -445,6 +456,17 @@ mod tests {
                 assert_eq!(codex_home.as_deref(), Some("/tmp/.codex"));
                 assert_eq!(keep, 3);
             }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn sessions_refresh_stale_command_parses() {
+        let cli = Cli::parse_from(["memorph", "sessions", "refresh-stale"]);
+        match cli.command {
+            Some(Commands::Sessions {
+                command: SessionCommands::RefreshStale,
+            }) => {}
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
     }

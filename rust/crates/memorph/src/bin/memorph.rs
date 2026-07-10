@@ -5,7 +5,7 @@ use clap::Parser;
 use memorph::{
     cli::{
         Cli, Commands, CompressionCommands, LegacyCodexToolCommands, LegacyToolCommands,
-        SyncCommands,
+        SessionCommands, SyncCommands,
     },
     config, core, provider_features, providers, server, sync as session_sync, tui, web_assets,
 };
@@ -169,6 +169,8 @@ fn run_command(command: Commands) -> Result<()> {
             }
         }
 
+        Commands::Sessions { command } => run_session_command(command)?,
+
         Commands::Sync { command } => run_sync_command(command)?,
 
         Commands::Compression { command } => run_compression_command(command)?,
@@ -246,6 +248,20 @@ fn run_command(command: Commands) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn run_session_command(command: SessionCommands) -> Result<()> {
+    match command {
+        SessionCommands::RefreshStale => {
+            let report = core::refresh_projected_session_staleness()?;
+            println!("Checked sources: {}", report.checked_sources);
+            println!("Fresh snapshots: {}", report.fresh_snapshots);
+            println!("Stale snapshots: {}", report.stale_snapshots);
+            println!("Missing sources: {}", report.missing_sources);
+            println!("Unknown sources: {}", report.unknown_sources);
+        }
+    }
     Ok(())
 }
 
@@ -989,7 +1005,8 @@ fn print_session_list(all: bool, providers: Vec<String>) -> Result<()> {
             let id = &s.session_id;
             let title = truncate(s.title.as_deref().unwrap_or("(untitled)"), 40);
             let dir = truncate(s.project_dir.as_deref().unwrap_or("(no dir)"), 40);
-            println!("  {} | {} | {}", id, title, dir);
+            let stale = if s.stale { " | stale" } else { "" };
+            println!("  {} | {} | {}{}", id, title, dir, stale);
         }
         if group.sessions.len() > 20 {
             println!("  ... and {} more", group.sessions.len() - 20);
