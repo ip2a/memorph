@@ -1536,7 +1536,7 @@ mod tests {
         assert!(output.contains("Turn quality: inferred"));
         assert!(output.contains("Resume quality: native"));
         assert!(output.contains("Write risk: level=high"));
-        assert!(output.contains("Backup: before_write=true restore=true sync_only=true"));
+        assert!(output.contains("Backup: before_write=true restore=true sync_only=false"));
         assert!(output.contains("  compressed: normalized"));
         assert!(output.contains("  provider_payload: dropped"));
     }
