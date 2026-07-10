@@ -19,7 +19,7 @@ const DEFAULT_ERROR_LIMIT: usize = 50;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HookDiagnosticsReport {
     pub generated_at: DateTime<Utc>,
-    pub store: HookDiagnosticsStorePaths,
+    pub store: HookDiagnosticsStore,
     pub server: Option<HookDiagnosticsServer>,
     pub providers: Vec<HookDiagnosticsProvider>,
     pub runtime_sessions: Vec<RuntimeSession>,
@@ -29,12 +29,8 @@ pub struct HookDiagnosticsReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct HookDiagnosticsStorePaths {
-    pub root: String,
-    pub events: String,
-    pub errors: String,
-    pub runtime_sessions: String,
-    pub server_runtime: String,
+pub struct HookDiagnosticsStore {
+    pub database: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,7 +74,7 @@ impl Default for HookDiagnosticsOptions {
 }
 
 pub fn collect(options: HookDiagnosticsOptions) -> Result<HookDiagnosticsReport> {
-    let paths = store::hook_store_paths()?;
+    let database = store::database_path()?;
     let providers = crate::hooks::registry::all()
         .into_iter()
         .map(|descriptor| {
@@ -108,12 +104,8 @@ pub fn collect(options: HookDiagnosticsOptions) -> Result<HookDiagnosticsReport>
 
     Ok(HookDiagnosticsReport {
         generated_at: Utc::now(),
-        store: HookDiagnosticsStorePaths {
-            root: paths.root.display().to_string(),
-            events: paths.events.display().to_string(),
-            errors: paths.errors.display().to_string(),
-            runtime_sessions: paths.runtime_sessions.display().to_string(),
-            server_runtime: paths.server_runtime.display().to_string(),
+        store: HookDiagnosticsStore {
+            database: database.display().to_string(),
         },
         server: crate::hooks::server::current_runtime_endpoint().map(redact_endpoint),
         counts: HookDiagnosticsCounts {
