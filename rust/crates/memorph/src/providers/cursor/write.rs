@@ -1,14 +1,20 @@
 use crate::canonical::{CanonicalSession, EventRole, SessionEvent};
 use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
-    canonical_session_title,
+    canonical_session_title, ProviderSourceMutation,
 };
 use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
 use anyhow::{Context, Result};
+use rusqlite::types::Value as SqliteValue;
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
 use std::path::Path;
 use uuid::Uuid;
+
+#[cfg(test)]
+static TEST_CURSOR_MUTATION_FAILURE: std::sync::OnceLock<
+    std::sync::Mutex<Option<ProviderSourceMutation>>,
+> = std::sync::OnceLock::new();
 
 /// Build a minimal ProseMirror richText JSON for Cursor (new native format).
 fn prosemirror_rich_text(text: &str) -> serde_json::Value {
@@ -35,26 +41,46 @@ fn random_base64_key() -> String {
 }
 
 /// Read the current composer.composerHeaders index from ItemTable.
-fn read_composer_index(conn: &rusqlite::Connection) -> Result<serde_json::Value> {
-    let json_str: String = conn
+fn read_composer_index(
+    conn: &rusqlite::Connection,
+) -> Result<(serde_json::Value, Option<SqliteValue>)> {
+    let stored = conn
         .query_row(
-            "SELECT CAST(value AS TEXT) FROM ItemTable WHERE key = 'composer.composerHeaders'",
+            "SELECT value FROM ItemTable WHERE key = 'composer.composerHeaders'",
             [],
             |row| row.get(0),
         )
-        .unwrap_or_else(|_| r#"{"allComposers": []}"#.to_string());
-    Ok(serde_json::from_str(&json_str)?)
+        .optional()?;
+    let index = match stored.as_ref() {
+        Some(SqliteValue::Text(text)) => serde_json::from_str(text)?,
+        Some(SqliteValue::Blob(bytes)) => serde_json::from_slice(bytes)?,
+        Some(_) => anyhow::bail!("Cursor composer index is not stored as TEXT or BLOB"),
+        None => json!({"allComposers": []}),
+    };
+    Ok((index, stored))
 }
 
 /// Write the composer.composerHeaders index back to ItemTable.
-fn write_composer_index(conn: &rusqlite::Connection, index: &serde_json::Value) -> Result<()> {
-    conn.execute(
-        "INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?1, ?2)",
-        (
-            "composer.composerHeaders",
-            serde_json::to_string(index)?.as_bytes(),
-        ),
+fn write_composer_index(
+    conn: &rusqlite::Connection,
+    index: &serde_json::Value,
+    storage: Option<&SqliteValue>,
+) -> Result<()> {
+    let value = match storage {
+        Some(SqliteValue::Text(_)) => SqliteValue::Text(serde_json::to_string(index)?),
+        Some(SqliteValue::Blob(_)) | None => SqliteValue::Blob(serde_json::to_vec(index)?),
+        Some(_) => anyhow::bail!("Cursor composer index is not stored as TEXT or BLOB"),
+    };
+    let updated = conn.execute(
+        "UPDATE ItemTable SET value = ?1 WHERE key = ?2",
+        params![value, "composer.composerHeaders"],
     )?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+            params!["composer.composerHeaders", value],
+        )?;
+    }
     Ok(())
 }
 
@@ -69,7 +95,7 @@ fn upsert_composer_index(
     created_at: i64,
     last_updated_at: i64,
 ) -> Result<()> {
-    let mut index = read_composer_index(conn)?;
+    let (mut index, storage) = read_composer_index(conn)?;
     let all_composers = index
         .get_mut("allComposers")
         .and_then(|v| v.as_array_mut())
@@ -116,16 +142,19 @@ fn upsert_composer_index(
     });
 
     all_composers.insert(0, entry);
-    write_composer_index(conn, &index)?;
+    write_composer_index(conn, &index, storage.as_ref())?;
     Ok(())
 }
 
 /// Remove a composer from the composer.composerHeaders index.
 fn remove_composer_index(conn: &rusqlite::Connection, composer_id: &str) -> Result<()> {
-    let mut index = read_composer_index(conn)?;
+    let (mut index, storage) = read_composer_index(conn)?;
+    if storage.is_none() {
+        return Ok(());
+    }
     if let Some(all_composers) = index.get_mut("allComposers").and_then(|v| v.as_array_mut()) {
         all_composers.retain(|c| c.get("composerId").and_then(|v| v.as_str()) != Some(composer_id));
-        write_composer_index(conn, &index)?;
+        write_composer_index(conn, &index, storage.as_ref())?;
     }
     Ok(())
 }
@@ -179,8 +208,11 @@ fn empty_bubble_context() -> serde_json::Value {
 
 /// Delete a Cursor Composer session and all its bubbles.
 pub fn delete_session(session_id: &str) -> Result<()> {
-    let conn = open_global_db()?;
-    let bubbles_deleted = delete_session_with_conn(&conn, session_id)?;
+    let mut conn = open_global_db()?;
+    let tx = conn.transaction()?;
+    let bubbles_deleted = delete_session_with_conn(&tx, session_id)?;
+    tx.commit()?;
+    fail_cursor_mutation_after_database_write(ProviderSourceMutation::Delete)?;
 
     println!(
         "Deleted Cursor session {} ({} bubbles)",
@@ -257,6 +289,13 @@ pub fn delete_sessions(session_ids: &[&str]) -> Vec<Result<()>> {
     }
 
     results
+        .into_iter()
+        .map(|result| {
+            result.and_then(|()| {
+                fail_cursor_mutation_after_database_write(ProviderSourceMutation::Delete)
+            })
+        })
+        .collect()
 }
 
 fn delete_session_with_conn(conn: &rusqlite::Connection, session_id: &str) -> Result<usize> {
@@ -273,33 +312,40 @@ fn delete_session_with_conn(conn: &rusqlite::Connection, session_id: &str) -> Re
     conn.execute("DELETE FROM cursorDiskKV WHERE key = ?1", [&composer_key])
         .with_context(|| format!("Failed to delete composer {}", session_id))?;
 
-    let _ = remove_composer_index(conn, session_id);
+    remove_composer_index(conn, session_id)?;
 
     Ok(bubbles_deleted)
 }
 
 /// Rename a Cursor Composer session by updating its name field.
 pub fn rename_session(session_id: &str, new_title: &str) -> Result<()> {
-    let conn = open_global_db()?;
+    let mut conn = open_global_db()?;
+    let tx = conn.transaction()?;
     let composer_key = format!("composerData:{}", session_id);
 
     // Read existing composer data
-    let existing = conn
+    let existing: Option<SqliteValue> = tx
         .query_row(
-            "SELECT CAST(value AS TEXT) FROM cursorDiskKV WHERE key = ?1",
+            "SELECT value FROM cursorDiskKV WHERE key = ?1",
             [&composer_key],
-            |row| row.get::<_, String>(0),
+            |row| row.get(0),
         )
         .optional()
         .with_context(|| format!("Failed to read composer {}", session_id))?;
 
-    let existing_json = match existing {
-        Some(s) => s,
+    let existing_value = match existing {
+        Some(value) => value,
         None => anyhow::bail!("Cursor composer not found: {}", session_id),
     };
-
-    let mut composer_json = serde_json::from_str::<serde_json::Value>(&existing_json)
-        .with_context(|| format!("Failed to parse composer {} JSON", session_id))?;
+    let mut composer_json: serde_json::Value = match &existing_value {
+        SqliteValue::Text(text) => serde_json::from_str(text),
+        SqliteValue::Blob(bytes) => serde_json::from_slice(bytes),
+        _ => anyhow::bail!(
+            "Cursor composer {} is not stored as TEXT or BLOB",
+            session_id
+        ),
+    }
+    .with_context(|| format!("Failed to parse composer {} JSON", session_id))?;
 
     // Update the name field (title)
     if let Some(obj) = composer_json.as_object_mut() {
@@ -307,26 +353,62 @@ pub fn rename_session(session_id: &str, new_title: &str) -> Result<()> {
     }
 
     // Write back
-    let updated_json = serde_json::to_string(&composer_json)?;
-    conn.execute(
-        "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
-        (&composer_key, updated_json.as_bytes()),
+    let updated_value = match existing_value {
+        SqliteValue::Text(_) => SqliteValue::Text(serde_json::to_string(&composer_json)?),
+        SqliteValue::Blob(_) => SqliteValue::Blob(serde_json::to_vec(&composer_json)?),
+        _ => unreachable!("Cursor composer storage type was validated above"),
+    };
+    tx.execute(
+        "UPDATE cursorDiskKV SET value = ?1 WHERE key = ?2",
+        params![updated_value, &composer_key],
     )
     .with_context(|| format!("Failed to rename composer {}", session_id))?;
 
     // Update index
-    let mut index = read_composer_index(&conn)?;
+    let (mut index, index_storage) = read_composer_index(&tx)?;
     if let Some(all_composers) = index.get_mut("allComposers").and_then(|v| v.as_array_mut()) {
+        let mut changed = false;
         for c in all_composers.iter_mut() {
             if c.get("composerId").and_then(|v| v.as_str()) == Some(session_id) {
                 c.as_object_mut()
                     .map(|o| o.insert("name".to_string(), json!(new_title)));
+                changed = true;
                 break;
             }
         }
-        let _ = write_composer_index(&conn, &index);
+        if changed {
+            write_composer_index(&tx, &index, index_storage.as_ref())?;
+        }
     }
 
+    tx.commit()?;
+    fail_cursor_mutation_after_database_write(ProviderSourceMutation::Rename)?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_cursor_mutation_failure(mutation: Option<ProviderSourceMutation>) {
+    *TEST_CURSOR_MUTATION_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Cursor mutation failure lock") = mutation;
+}
+
+#[cfg(test)]
+fn fail_cursor_mutation_after_database_write(mutation: ProviderSourceMutation) -> Result<()> {
+    let mut failure = TEST_CURSOR_MUTATION_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Cursor mutation failure lock");
+    if *failure == Some(mutation) {
+        *failure = None;
+        anyhow::bail!("injected Cursor mutation failure after database write");
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn fail_cursor_mutation_after_database_write(_mutation: ProviderSourceMutation) -> Result<()> {
     Ok(())
 }
 

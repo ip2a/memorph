@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[cfg(test)]
+static TEST_CURSOR_DB_PATH: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
+
 /// Cross-platform Cursor data directory.
 pub fn cursor_data_dir() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -33,13 +37,31 @@ pub fn cursor_data_dir() -> Result<PathBuf> {
 
 /// Path to the global storage database that holds all AI session data.
 pub fn global_state_db_path() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_CURSOR_DB_PATH
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Cursor database path lock")
+        .clone()
+    {
+        return Ok(path);
+    }
+
     Ok(cursor_data_dir()?
         .join("User")
         .join("globalStorage")
         .join("state.vscdb"))
 }
 
-/// Open the global state database read-only.
+#[cfg(test)]
+pub(crate) fn set_test_cursor_db_path(path: Option<PathBuf>) {
+    *TEST_CURSOR_DB_PATH
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Cursor database path lock") = path;
+}
+
+/// Open the global state database.
 pub fn open_global_db() -> Result<Connection> {
     let path = global_state_db_path()?;
     if !path.exists() {
