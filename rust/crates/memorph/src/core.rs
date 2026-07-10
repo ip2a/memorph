@@ -19,6 +19,7 @@ use crate::storage::{
         ActivityActor, ActivityCompletion, ActivityOperationKind, ActivityQuery, ActivityRecord,
         ActivityStatus, ActivityStore, NewActivity,
     },
+    artifact_store::{ArtifactManifestKind, ArtifactStore, NewArtifactManifest},
     local_store,
 };
 use crate::{provider, providers, utils};
@@ -1845,7 +1846,7 @@ pub struct ExportResult {
 }
 
 pub fn export_session(params: &ExportParams, actor: ActivityActor) -> Result<ExportResult> {
-    let activity_conn = local_store::open_database()?;
+    let mut activity_conn = local_store::open_database()?;
     let input_details = serde_json::json!({
         "provider_session_id": params.session_id,
         "format": params.format,
@@ -1868,12 +1869,21 @@ pub fn export_session(params: &ExportParams, actor: ActivityActor) -> Result<Exp
             .as_deref()
             .unwrap_or(&params.session_id);
         let output_dir = params.output_dir.as_deref().map(std::path::Path::new);
-        session_management::write_session_export_files(
+        let export = session_management::write_session_export_files(
             &imported.session,
             prefix,
             &params.format,
             output_dir,
-        )
+        )?;
+        register_session_export_artifacts(
+            &mut activity_conn,
+            &activity_id,
+            &params.provider,
+            &params.session_id,
+            &params.format,
+            &export,
+        )?;
+        Ok(export)
     })();
     match result {
         Ok(export) => {
@@ -1899,6 +1909,53 @@ pub fn export_session(params: &ExportParams, actor: ActivityActor) -> Result<Exp
             Err(error)
         }
     }
+}
+
+fn register_session_export_artifacts(
+    conn: &mut rusqlite::Connection,
+    operation_id: &str,
+    provider_id: &str,
+    provider_session_id: &str,
+    requested_format: &str,
+    export: &ExportResult,
+) -> Result<()> {
+    let manifests = export
+        .files
+        .iter()
+        .map(|file| {
+            let path = std::path::PathBuf::from(file);
+            let extension = path
+                .extension()
+                .and_then(|value| value.to_str())
+                .with_context(|| format!("Export file has no supported extension: {file}"))?;
+            let (format, mime_type) = match extension {
+                "morph" => ("morph", "application/x-ndjson"),
+                "json" => ("json", "application/json"),
+                "md" => ("md", "text/markdown"),
+                "html" => ("html", "text/html"),
+                _ => anyhow::bail!("Export file has unsupported extension: {file}"),
+            };
+            Ok(NewArtifactManifest {
+                artifact_kind: ArtifactManifestKind::SessionExport,
+                operation_id: Some(operation_id.to_string()),
+                provider_id: Some(provider_id.to_string()),
+                provider_session_id: Some(provider_session_id.to_string()),
+                session_id: None,
+                projection_report_id: None,
+                event_id: None,
+                block_id: None,
+                path,
+                mime_type: Some(mime_type.to_string()),
+                format: Some(format.to_string()),
+                metadata: serde_json::json!({
+                    "role": "canonical_session_export",
+                    "requested_format": requested_format,
+                }),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ArtifactStore::new(conn).register_paths(manifests)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3153,6 +3210,54 @@ mod tests {
         let error = scan_sessions_for_aggregate(&FailingProvider, true).unwrap_err();
 
         assert!(error.to_string().contains("scan failed"));
+    }
+
+    #[test]
+    fn registers_canonical_export_files_with_operation_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("session.json");
+        let markdown_path = dir.path().join("session.md");
+        std::fs::write(&json_path, b"{}").unwrap();
+        std::fs::write(&markdown_path, b"# Session").unwrap();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+
+        register_session_export_artifacts(
+            &mut conn,
+            "operation-1",
+            "claude",
+            "provider-session-1",
+            "both",
+            &ExportResult {
+                files: vec![
+                    json_path.display().to_string(),
+                    markdown_path.display().to_string(),
+                ],
+            },
+        )
+        .unwrap();
+
+        let rows = crate::storage::artifact_store::ArtifactStore::new(&mut conn)
+            .query(crate::storage::artifact_store::ArtifactQuery {
+                artifact_kind: Some(ArtifactManifestKind::SessionExport),
+                operation_id: Some("operation-1".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|artifact| {
+            artifact.provider_id.as_deref() == Some("claude")
+                && artifact.provider_session_id.as_deref() == Some("provider-session-1")
+                && artifact.metadata["role"] == "canonical_session_export"
+                && artifact.metadata["requested_format"] == "both"
+        }));
+        assert!(rows
+            .iter()
+            .any(|artifact| artifact.mime_type.as_deref() == Some("application/json")));
+        assert!(rows
+            .iter()
+            .any(|artifact| artifact.mime_type.as_deref() == Some("text/markdown")));
     }
 
     #[test]

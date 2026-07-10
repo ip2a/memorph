@@ -198,13 +198,30 @@ impl<'a> ArtifactStore<'a> {
     }
 
     pub fn register_path(&mut self, manifest: NewArtifactManifest) -> Result<ArtifactManifest> {
-        let inspected = inspect_artifact_path(&manifest.path)?;
-        let links = resolve_artifact_links(self.conn, &manifest)?;
+        let mut stored = self.register_paths(vec![manifest])?;
+        Ok(stored.remove(0))
+    }
+
+    pub fn register_paths(
+        &mut self,
+        manifests: Vec<NewArtifactManifest>,
+    ) -> Result<Vec<ArtifactManifest>> {
+        if manifests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let inspected = manifests
+            .iter()
+            .map(|manifest| inspect_artifact_path(&manifest.path))
+            .collect::<Result<Vec<_>>>()?;
         let tx = self
             .conn
             .transaction()
             .context("Failed to start artifact registration transaction")?;
-        let stored = insert_artifact_manifest(&tx, manifest, links, inspected)?;
+        let mut stored = Vec::with_capacity(manifests.len());
+        for (manifest, inspected) in manifests.into_iter().zip(inspected) {
+            let links = resolve_artifact_links(&tx, &manifest)?;
+            stored.push(insert_artifact_manifest(&tx, manifest, links, inspected)?);
+        }
         tx.commit()
             .context("Failed to commit artifact registration transaction")?;
         Ok(stored)
@@ -563,6 +580,25 @@ fn resolve_artifact_links(
             .with_context(|| format!("Artifact projection report does not exist: {report_id}"))?;
         merge_link("session", &mut session_id, report_session_id)?;
         merge_link("provider", &mut provider_id, Some(report_provider_id))?;
+    }
+
+    if session_id.is_none() {
+        if let (Some(provider_id_value), Some(provider_session_id_value)) =
+            (provider_id.as_deref(), provider_session_id.as_deref())
+        {
+            session_id = conn
+                .query_row(
+                    "SELECT id
+                     FROM sessions
+                     WHERE provider_id = ?1 AND provider_session_id = ?2
+                     ORDER BY updated_at_ms DESC, id
+                     LIMIT 1",
+                    params![provider_id_value, provider_session_id_value],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("Failed to resolve artifact canonical session identity")?;
+        }
     }
 
     if let Some(session_id_value) = session_id.as_deref() {
@@ -988,6 +1024,85 @@ mod tests {
             "sha256:b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
         );
         assert!(first.path.is_absolute());
+    }
+
+    #[test]
+    fn registers_multiple_paths_atomically_and_resolves_projected_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let json_path = dir.path().join("session.json");
+        let markdown_path = dir.path().join("session.md");
+        std::fs::write(&json_path, b"{}").unwrap();
+        std::fs::write(&markdown_path, b"# Session").unwrap();
+        let mut conn = test_connection();
+        conn.execute(
+            "INSERT INTO sessions
+             (id, provider_id, provider_session_id, status, event_count, turn_count,
+              projection_version, updated_at_ms)
+             VALUES ('session-1', 'claude', 'provider-session-1', 'active', 0, 0, 1, 1)",
+            [],
+        )
+        .unwrap();
+        let mut store = ArtifactStore::new(&mut conn);
+
+        let stored = store
+            .register_paths(vec![
+                new_manifest(json_path, Some("operation-1")),
+                NewArtifactManifest {
+                    path: markdown_path,
+                    mime_type: Some("text/markdown".to_string()),
+                    format: Some("md".to_string()),
+                    ..new_manifest(PathBuf::new(), Some("operation-1"))
+                },
+            ])
+            .unwrap();
+
+        assert_eq!(stored.len(), 2);
+        assert!(stored
+            .iter()
+            .all(|artifact| artifact.session_id.as_deref() == Some("session-1")));
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artifact_manifests WHERE operation_id = 'operation-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn rolls_back_batch_when_any_manifest_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let existing_path = dir.path().join("existing.json");
+        let new_path = dir.path().join("new.json");
+        std::fs::write(&existing_path, b"existing").unwrap();
+        std::fs::write(&new_path, b"new").unwrap();
+        let mut conn = test_connection();
+        let mut store = ArtifactStore::new(&mut conn);
+        store
+            .register_path(new_manifest(existing_path.clone(), Some("operation-1")))
+            .unwrap();
+        let mut conflicting = new_manifest(existing_path, Some("operation-1"));
+        conflicting.metadata = json!({"source": "conflict"});
+
+        let error = store
+            .register_paths(vec![
+                new_manifest(new_path, Some("operation-1")),
+                conflicting,
+            ])
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("already registered with conflicting context"));
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artifact_manifests WHERE operation_id = 'operation-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
