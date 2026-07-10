@@ -15,6 +15,7 @@ use crate::provider::{
     canonical_visible_block_text, compression_retrieval_hint, CompressionProjection, Provider,
     ProviderCapabilities, ProviderSessionImportPage, ProviderSessionSummary,
 };
+use crate::storage::projection_store::{ProjectionStore, StoredProjection};
 use crate::storage::{event_index, session_state};
 use crate::utils;
 use anyhow::{Context, Result};
@@ -531,6 +532,14 @@ impl Provider for CodexProvider {
     fn data_source_paths(&self) -> Vec<PathBuf> {
         vec![get_codex_dir()]
     }
+}
+
+pub fn project_session_to_store(
+    source_path: &Path,
+    store: &mut ProjectionStore<'_>,
+) -> Result<StoredProjection> {
+    let imported = import_canonical_session(source_path)?;
+    store.write_imported_session(source_path, &imported)
 }
 
 pub fn sync_workspace_sessions(
@@ -3520,6 +3529,53 @@ mod tests {
     use tempfile::{tempdir, NamedTempFile};
 
     #[test]
+    fn project_session_to_store_writes_codex_projection_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::storage::local_store::configure_connection(&conn).unwrap();
+        crate::storage::local_store::apply_schema(&mut conn).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        write_codex_projection_sample(&mut file, "Codex Projection Title");
+
+        let stored =
+            project_session_to_store(file.path(), &mut ProjectionStore::new(&mut conn)).unwrap();
+
+        let snapshot: (String, String, i64) = conn
+            .query_row(
+                "SELECT provider_id, title, event_count
+                 FROM session_snapshots
+                 WHERE session_id = ?1",
+                [stored.session_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(snapshot.0, PROVIDER_ID);
+        assert_eq!(snapshot.1, "Codex Projection Title");
+        assert!(snapshot.2 >= 2);
+
+        let alias_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM session_aliases
+                 WHERE session_id = ?1
+                   AND provider_id = ?2
+                   AND alias_value = ?3",
+                [stored.session_id.as_str(), PROVIDER_ID, "codex-projection-1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(alias_count, 1);
+
+        let report_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM projection_reports WHERE session_id = ?1",
+                [stored.session_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(report_count, 1);
+    }
+
+    #[test]
     fn import_canonical_session_preserves_codex_runtime_and_message_events() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(
@@ -5378,5 +5434,41 @@ mod tests {
                 provider_ext: BTreeMap::new(),
             },
         }
+    }
+
+    fn write_codex_projection_sample(file: &mut NamedTempFile, title: &str) {
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "codex-projection-1",
+                    "timestamp": "2026-05-21T10:00:00Z",
+                    "cwd": "/tmp/project",
+                    "title": title,
+                    "model": "gpt-5.3-codex"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "2026-05-21T10:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": "Build this" }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        file.flush().unwrap();
     }
 }

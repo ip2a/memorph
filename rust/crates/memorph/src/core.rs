@@ -312,6 +312,21 @@ fn reproject_stale_snapshot_sources(
                     }
                 }
             }
+            "codex" => {
+                let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
+                match crate::providers::codex::project_session_to_store(
+                    std::path::Path::new(source_path),
+                    &mut store,
+                ) {
+                    Ok(_) => report.reprojected_snapshots += 1,
+                    Err(err) => {
+                        report.failed_snapshots += 1;
+                        report
+                            .failures
+                            .push(reprojection_failure(&source, err.to_string()));
+                    }
+                }
+            }
             _ => {
                 report.unsupported_providers += 1;
                 report.failures.push(reprojection_failure(
@@ -3480,6 +3495,56 @@ mod tests {
     }
 
     #[test]
+    fn reproject_stale_snapshot_sources_rebuilds_codex_projection() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        write_codex_projection_sample(&mut file, "Old Codex title");
+
+        let stored = crate::providers::codex::project_session_to_store(
+            file.path(),
+            &mut ProjectionStore::new(&mut conn),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE session_snapshots SET stale = 1 WHERE session_id = ?1",
+            [stored.session_id.as_str()],
+        )
+        .unwrap();
+        file.as_file_mut().set_len(0).unwrap();
+        file.as_file_mut().seek(SeekFrom::Start(0)).unwrap();
+        write_codex_projection_sample(&mut file, "New Codex title");
+
+        let report = reproject_stale_snapshot_sources(
+            &mut conn,
+            vec![StaleSnapshotSourceRow {
+                canonical_session_id: stored.session_id.clone(),
+                provider_id: "codex".to_string(),
+                provider_session_id: Some("codex-projection-1".to_string()),
+                source_path: Some(file.path().to_string_lossy().to_string()),
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(report.candidate_snapshots, 1);
+        assert_eq!(report.reprojected_snapshots, 1);
+        assert_eq!(report.missing_sources, 0);
+        assert_eq!(report.failed_snapshots, 0);
+        assert!(report.failures.is_empty());
+
+        let snapshot: (String, i64) = conn
+            .query_row(
+                "SELECT title, stale FROM session_snapshots WHERE session_id = ?1",
+                [stored.session_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(snapshot.0, "New Codex title");
+        assert_eq!(snapshot.1, 0);
+    }
+
+    #[test]
     fn reproject_stale_snapshot_sources_reports_missing_source() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
@@ -3545,6 +3610,42 @@ mod tests {
                 "message": {
                     "role": "assistant",
                     "content": "Done"
+                }
+            })
+        )
+        .unwrap();
+        file.flush().unwrap();
+    }
+
+    fn write_codex_projection_sample(file: &mut tempfile::NamedTempFile, title: &str) {
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "timestamp": "2026-05-21T10:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "codex-projection-1",
+                    "timestamp": "2026-05-21T10:00:00Z",
+                    "cwd": "/tmp/project",
+                    "title": title,
+                    "model": "gpt-5.3-codex"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "timestamp": "2026-05-21T10:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        { "type": "input_text", "text": "Build this" }
+                    ]
                 }
             })
         )
