@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 pub struct LocalSqliteStore {
     path: PathBuf,
@@ -113,6 +113,16 @@ pub(crate) fn apply_schema(conn: &mut Connection) -> Result<()> {
             "INSERT INTO schema_migrations (version, name, applied_at_ms)
              VALUES (?1, ?2, strftime('%s','now') * 1000)",
             params![4, "artifact_manifest_store_v4"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    if !applied.contains(&5) {
+        tx.execute_batch(V5_SCHEMA)
+            .context("Failed to apply memorph DB schema v5")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![5, "optional_backup_source_path_v5"],
         )
         .context("Failed to record memorph DB schema migration")?;
     }
@@ -672,6 +682,53 @@ CREATE INDEX idx_artifact_manifests_projection_report
     ON artifact_manifests(projection_report_id);
 "#;
 
+const V5_SCHEMA: &str = r#"
+ALTER TABLE backups RENAME TO backups_v4;
+DROP INDEX IF EXISTS idx_backups_session_created;
+DROP INDEX IF EXISTS idx_backups_provider_session_created;
+DROP INDEX IF EXISTS idx_backups_operation;
+
+CREATE TABLE backups (
+    id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL UNIQUE,
+    operation_id TEXT,
+    provider_id TEXT,
+    provider_session_id TEXT,
+    session_id TEXT,
+    source_path TEXT,
+    created_at_ms INTEGER NOT NULL,
+    restore_hint TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY(artifact_id) REFERENCES artifact_manifests(id) ON DELETE RESTRICT,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE SET NULL
+);
+
+INSERT INTO backups
+    (id, artifact_id, operation_id, provider_id, provider_session_id, session_id,
+     source_path, created_at_ms, restore_hint, metadata_json)
+SELECT
+    id,
+    artifact_id,
+    operation_id,
+    provider_id,
+    provider_session_id,
+    session_id,
+    source_path,
+    created_at_ms,
+    restore_hint,
+    metadata_json
+FROM backups_v4;
+
+DROP TABLE backups_v4;
+
+CREATE INDEX idx_backups_session_created
+    ON backups(session_id, created_at_ms DESC);
+CREATE INDEX idx_backups_provider_session_created
+    ON backups(provider_id, provider_session_id, created_at_ms DESC);
+CREATE INDEX idx_backups_operation
+    ON backups(operation_id);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -736,7 +793,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
         assert_eq!(max_version, SCHEMA_VERSION);
     }
 
@@ -767,7 +824,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
     }
 
     #[test]
@@ -803,7 +860,7 @@ mod tests {
             .unwrap();
 
         assert!(provider_session_id_exists);
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
     }
 
     #[test]
@@ -842,7 +899,7 @@ mod tests {
             .unwrap();
 
         assert!(retention_index_exists);
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
     }
 
     #[test]
@@ -940,7 +997,85 @@ mod tests {
         assert_eq!(migrated.9, "unknown");
         assert!(!legacy_backup_path_column);
         assert_eq!(foreign_key_violations, 0);
-        assert_eq!(migration_count, 4);
+        assert_eq!(migration_count, 5);
+    }
+
+    #[test]
+    fn migrates_existing_v4_backups_to_optional_source_paths() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema_migrations_table(&conn).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        conn.execute_batch(V3_SCHEMA).unwrap();
+        conn.execute_batch(V4_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO artifact_manifests
+             (id, artifact_kind, operation_id, provider_id, provider_session_id,
+              storage_kind, path, content_hash, byte_size, created_at_ms, metadata_json)
+             VALUES
+             ('artifact-1', 'session_backup', 'operation-1', 'codex', 'provider-session-1',
+              'file', '/backup/session.json', 'sha256:test', 42, 1000, '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO backups
+             (id, artifact_id, operation_id, provider_id, provider_session_id, session_id,
+              source_path, created_at_ms, restore_hint, metadata_json)
+             VALUES
+             ('backup-1', 'artifact-1', 'operation-1', 'codex', 'provider-session-1',
+              NULL, '/source/session.jsonl', 1000, 'import canonical JSON', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES
+             (1, 'local_session_store_v1', 0),
+             (2, 'session_activity_query_fields_v2', 0),
+             (3, 'hook_event_retention_index_v3', 0),
+             (4, 'artifact_manifest_store_v4', 0)",
+            [],
+        )
+        .unwrap();
+
+        apply_schema(&mut conn).unwrap();
+
+        let source_path_not_null: i64 = conn
+            .query_row(
+                "SELECT \"notnull\"
+                 FROM pragma_table_info('backups')
+                 WHERE name = 'source_path'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let migrated_source_path: Option<String> = conn
+            .query_row(
+                "SELECT source_path FROM backups WHERE id = 'backup-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let foreign_key_violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let migration_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(source_path_not_null, 0);
+        assert_eq!(
+            migrated_source_path.as_deref(),
+            Some("/source/session.jsonl")
+        );
+        assert_eq!(foreign_key_violations, 0);
+        assert_eq!(migration_count, 5);
     }
 
     #[test]

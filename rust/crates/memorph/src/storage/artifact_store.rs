@@ -166,9 +166,10 @@ pub struct NewBackupRecord {
     pub provider_id: Option<String>,
     pub provider_session_id: Option<String>,
     pub session_id: Option<String>,
-    pub source_path: PathBuf,
+    pub source_path: Option<PathBuf>,
     pub backup_path: PathBuf,
     pub restore_hint: Option<String>,
+    pub mime_type: Option<String>,
     pub format: Option<String>,
     pub artifact_metadata: Value,
     pub backup_metadata: Value,
@@ -182,7 +183,7 @@ pub struct BackupRecord {
     pub provider_id: Option<String>,
     pub provider_session_id: Option<String>,
     pub session_id: Option<String>,
-    pub source_path: PathBuf,
+    pub source_path: Option<PathBuf>,
     pub created_at_ms: i64,
     pub restore_hint: Option<String>,
     pub metadata: Value,
@@ -228,12 +229,15 @@ impl<'a> ArtifactStore<'a> {
     }
 
     pub fn register_backup(&mut self, backup: NewBackupRecord) -> Result<BackupRecord> {
-        let source_path = std::fs::canonicalize(&backup.source_path).with_context(|| {
-            format!(
-                "Failed to resolve backup source path: {}",
-                backup.source_path.display()
-            )
-        })?;
+        let source_path = backup
+            .source_path
+            .as_deref()
+            .map(|path| {
+                std::fs::canonicalize(path).with_context(|| {
+                    format!("Failed to resolve backup source path: {}", path.display())
+                })
+            })
+            .transpose()?;
         let inspected = inspect_artifact_path(&backup.backup_path)?;
         let artifact_input = NewArtifactManifest {
             artifact_kind: ArtifactManifestKind::SessionBackup,
@@ -245,7 +249,7 @@ impl<'a> ArtifactStore<'a> {
             event_id: None,
             block_id: None,
             path: backup.backup_path.clone(),
-            mime_type: None,
+            mime_type: backup.mime_type.clone(),
             format: backup.format.clone(),
             metadata: backup.artifact_metadata.clone(),
         };
@@ -742,14 +746,16 @@ fn insert_artifact_manifest(
 fn insert_backup_record(
     conn: &Transaction<'_>,
     backup: NewBackupRecord,
-    source_path: PathBuf,
+    source_path: Option<PathBuf>,
     artifact: ArtifactManifest,
 ) -> Result<BackupRecord> {
     let id = Uuid::new_v4().to_string();
     let created_at_ms = Utc::now().timestamp_millis();
     let metadata_json = serde_json::to_string(&backup.backup_metadata)
         .context("Failed to encode backup metadata")?;
-    let source_path_text = source_path.to_string_lossy().to_string();
+    let source_path_text = source_path
+        .as_deref()
+        .map(|path| path.to_string_lossy().to_string());
     conn.execute(
         "INSERT OR IGNORE INTO backups
          (id, artifact_id, operation_id, provider_id, provider_session_id, session_id,
@@ -938,7 +944,7 @@ fn load_backup(conn: &Connection, predicate: &str, value: &str) -> Result<Option
             provider_id: row.get(2)?,
             provider_session_id: row.get(3)?,
             session_id: row.get(4)?,
-            source_path: PathBuf::from(row.get::<_, String>(5)?),
+            source_path: row.get::<_, Option<String>>(5)?.map(PathBuf::from),
             created_at_ms: row.get(6)?,
             restore_hint: row.get(7)?,
             metadata: backup_metadata,
@@ -1251,9 +1257,10 @@ mod tests {
                     provider_id: Some("codex".to_string()),
                     provider_session_id: Some("provider-session-1".to_string()),
                     session_id: None,
-                    source_path: source_path.clone(),
+                    source_path: Some(source_path.clone()),
                     backup_path,
                     restore_hint: Some("copy over source".to_string()),
+                    mime_type: Some("application/x-ndjson".to_string()),
                     format: Some("jsonl".to_string()),
                     artifact_metadata: json!({"scope": "single_file"}),
                     backup_metadata: json!({"restore": "replace"}),
@@ -1282,9 +1289,48 @@ mod tests {
         );
         assert_eq!(
             stored.source_path,
-            std::fs::canonicalize(source_path).unwrap()
+            Some(std::fs::canonicalize(source_path).unwrap())
+        );
+        assert_eq!(
+            stored.artifact.mime_type.as_deref(),
+            Some("application/x-ndjson")
         );
         assert_eq!(legacy_backup_columns, 0);
+    }
+
+    #[test]
+    fn registers_backup_without_a_local_source_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_path = dir.path().join("backup.json");
+        std::fs::write(&backup_path, b"{}").unwrap();
+        let mut conn = test_connection();
+        let stored = ArtifactStore::new(&mut conn)
+            .register_backup(NewBackupRecord {
+                operation_id: Some("operation-1".to_string()),
+                provider_id: Some("database-provider".to_string()),
+                provider_session_id: Some("provider-session-1".to_string()),
+                session_id: None,
+                source_path: None,
+                backup_path,
+                restore_hint: Some("import canonical JSON".to_string()),
+                mime_type: Some("application/json".to_string()),
+                format: Some("json".to_string()),
+                artifact_metadata: json!({"role": "manager_canonical_backup"}),
+                backup_metadata: json!({"restore_mode": "canonical_import"}),
+            })
+            .unwrap();
+
+        assert_eq!(stored.source_path, None);
+        assert_eq!(
+            stored.artifact.provider_id.as_deref(),
+            Some("database-provider")
+        );
+        assert_eq!(
+            stored.artifact.provider_session_id.as_deref(),
+            Some("provider-session-1")
+        );
+        assert_eq!(stored.artifact.operation_id.as_deref(), Some("operation-1"));
+        assert_eq!(stored.operation_id.as_deref(), Some("operation-1"));
     }
 
     #[test]

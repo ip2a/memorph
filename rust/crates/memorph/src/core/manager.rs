@@ -3,7 +3,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     thread,
 };
 
@@ -15,6 +15,7 @@ use crate::{
         activity_store::{
             ActivityActor, ActivityCompletion, ActivityOperationKind, ActivityStore, NewActivity,
         },
+        artifact_store::{ArtifactStore, BackupRecord, NewBackupRecord},
         local_store,
     },
 };
@@ -344,7 +345,7 @@ pub fn backup(
             "provider_session_id": item.session_id,
             "output_dir": output_dir,
         });
-        let activity_conn = match local_store::open_database() {
+        let mut activity_conn = match local_store::open_database() {
             Ok(conn) => conn,
             Err(error) => {
                 failed += 1;
@@ -378,7 +379,7 @@ pub fn backup(
                 continue;
             }
         };
-        let result: Result<String> = (|| {
+        let result: Result<(String, String, String)> = (|| {
             std::fs::create_dir_all(output_dir).with_context(|| {
                 format!(
                     "Failed to create output directory: {}",
@@ -401,11 +402,17 @@ pub fn backup(
             );
             let output_path = output_dir.join(&filename);
             export_session_to_json(&session, &output_path)?;
-            Ok(output_path.display().to_string())
+            let backup =
+                register_manager_backup(&mut activity_conn, &activity_id, item, &output_path)?;
+            Ok((
+                output_path.display().to_string(),
+                backup.artifact.id,
+                backup.id,
+            ))
         })();
 
         match result {
-            Ok(file) => {
+            Ok((file, artifact_id, backup_id)) => {
                 if let Err(error) = ActivityStore::new(&activity_conn).finish(
                     &activity_id,
                     ActivityCompletion::success(
@@ -413,6 +420,8 @@ pub fn backup(
                         serde_json::json!({
                             "provider_session_id": item.session_id,
                             "file": file,
+                            "artifact_id": artifact_id,
+                            "backup_id": backup_id,
                         }),
                     ),
                 ) {
@@ -468,6 +477,34 @@ fn export_session_to_json(session: &crate::canonical::CanonicalSession, path: &P
     std::fs::write(path, json)
         .with_context(|| format!("Failed to write export file: {}", path.display()))?;
     Ok(())
+}
+
+fn register_manager_backup(
+    conn: &mut rusqlite::Connection,
+    operation_id: &str,
+    item: &ManagerItem,
+    backup_path: &Path,
+) -> Result<BackupRecord> {
+    ArtifactStore::new(conn).register_backup(NewBackupRecord {
+        operation_id: Some(operation_id.to_string()),
+        provider_id: Some(item.provider_id.clone()),
+        provider_session_id: Some(item.session_id.clone()),
+        session_id: None,
+        source_path: item.source_path.as_deref().map(PathBuf::from),
+        backup_path: backup_path.to_path_buf(),
+        restore_hint: Some(
+            "Import this canonical JSON backup through memorph into a selected provider."
+                .to_string(),
+        ),
+        mime_type: Some("application/json".to_string()),
+        format: Some("json".to_string()),
+        artifact_metadata: serde_json::json!({
+            "role": "manager_canonical_backup",
+        }),
+        backup_metadata: serde_json::json!({
+            "restore_mode": "canonical_import",
+        }),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -688,4 +725,138 @@ pub fn backup_workspace(
         }
     };
     backup(&items, output_dir, actor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::{
+        activity_store::{ActivityQuery, ActivityStatus},
+        artifact_store::{ArtifactManifestKind, NewArtifactManifest},
+    };
+
+    fn test_connection() -> rusqlite::Connection {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        conn
+    }
+
+    fn test_item() -> ManagerItem {
+        ManagerItem {
+            provider_id: "database-provider".to_string(),
+            provider_name: "Database Provider".to_string(),
+            session_id: "provider-session-1".to_string(),
+            source_path: None,
+            title: Some("Session".to_string()),
+            project_dir: Some("/workspace".to_string()),
+            last_active_at: Some(1),
+            size_bytes: 2,
+        }
+    }
+
+    #[test]
+    fn registers_manager_backup_with_activity_and_canonical_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_path = dir.path().join("session.json");
+        std::fs::write(&backup_path, b"{}").unwrap();
+        let mut conn = test_connection();
+        conn.execute(
+            "INSERT INTO sessions
+             (id, provider_id, provider_session_id, status, event_count, turn_count,
+              projection_version, updated_at_ms)
+             VALUES
+             ('session-1', 'database-provider', 'provider-session-1', 'active', 0, 0, 1, 1)",
+            [],
+        )
+        .unwrap();
+        let item = test_item();
+        let activity_id = ActivityStore::new(&conn)
+            .start(NewActivity {
+                provider_id: Some(item.provider_id.clone()),
+                provider_session_id: Some(item.session_id.clone()),
+                workspace_dir: item.project_dir.clone(),
+                operation_kind: ActivityOperationKind::Backup,
+                actor: ActivityActor::System,
+                summary: "Backing up session".to_string(),
+                details: serde_json::json!({}),
+            })
+            .unwrap();
+
+        let stored = register_manager_backup(&mut conn, &activity_id, &item, &backup_path).unwrap();
+
+        assert_eq!(stored.operation_id.as_deref(), Some(activity_id.as_str()));
+        assert_eq!(
+            stored.artifact.operation_id.as_deref(),
+            Some(activity_id.as_str())
+        );
+        assert_eq!(
+            stored.artifact.artifact_kind,
+            ArtifactManifestKind::SessionBackup
+        );
+        assert_eq!(stored.source_path, None);
+        assert_eq!(stored.session_id.as_deref(), Some("session-1"));
+        assert_eq!(stored.artifact.session_id.as_deref(), Some("session-1"));
+        assert_eq!(
+            stored.artifact.provider_id.as_deref(),
+            Some("database-provider")
+        );
+        assert_eq!(
+            stored.artifact.provider_session_id.as_deref(),
+            Some("provider-session-1")
+        );
+        assert_eq!(
+            stored.artifact.mime_type.as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(stored.artifact.format.as_deref(), Some("json"));
+        assert_eq!(stored.artifact.metadata["role"], "manager_canonical_backup");
+        assert_eq!(stored.metadata["restore_mode"], "canonical_import");
+        let activities = ActivityStore::new(&conn)
+            .query(&ActivityQuery {
+                operation_kind: Some(ActivityOperationKind::Backup),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(activities.len(), 1);
+        assert_eq!(activities[0].id, activity_id);
+        assert_eq!(activities[0].status, ActivityStatus::Running);
+    }
+
+    #[test]
+    fn registration_failure_keeps_written_manager_backup_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup_path = dir.path().join("session.json");
+        std::fs::write(&backup_path, b"{}").unwrap();
+        let mut conn = test_connection();
+        let item = test_item();
+        ArtifactStore::new(&mut conn)
+            .register_path(NewArtifactManifest {
+                artifact_kind: ArtifactManifestKind::SessionBackup,
+                operation_id: Some("operation-1".to_string()),
+                provider_id: Some(item.provider_id.clone()),
+                provider_session_id: Some(item.session_id.clone()),
+                session_id: None,
+                projection_report_id: None,
+                event_id: None,
+                block_id: None,
+                path: backup_path.clone(),
+                mime_type: Some("application/json".to_string()),
+                format: Some("json".to_string()),
+                metadata: serde_json::json!({"role": "conflicting_backup"}),
+            })
+            .unwrap();
+
+        let error =
+            register_manager_backup(&mut conn, "operation-1", &item, &backup_path).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("already registered with conflicting context"));
+        assert!(backup_path.exists());
+        let backup_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM backups", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(backup_count, 0);
+    }
 }
