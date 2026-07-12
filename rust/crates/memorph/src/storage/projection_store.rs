@@ -10,9 +10,14 @@ use crate::session_projection::{
     ProjectionStatus, SessionIdentity, SessionIdentityInput, TurnConfidence, TurnStatus,
     SESSION_PROJECTION_VERSION,
 };
+use crate::storage::artifact_store::{
+    default_event_payload_root, event_payload_content_hash, persist_event_payload_at,
+    register_path_in_transaction, ArtifactManifestKind, NewArtifactManifest, EVENT_PAYLOAD_FORMAT,
+    EVENT_PAYLOAD_INLINE_LIMIT_BYTES, EVENT_PAYLOAD_MIME_TYPE,
+};
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -29,11 +34,23 @@ pub struct StoredProjection {
 
 pub struct ProjectionStore<'a> {
     conn: &'a mut Connection,
+    event_payload_root: Option<PathBuf>,
 }
 
 impl<'a> ProjectionStore<'a> {
     pub fn new(conn: &'a mut Connection) -> Self {
-        Self { conn }
+        Self {
+            conn,
+            event_payload_root: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_event_payload_root(conn: &'a mut Connection, event_payload_root: PathBuf) -> Self {
+        Self {
+            conn,
+            event_payload_root: Some(event_payload_root),
+        }
     }
 
     pub fn write_imported_session(
@@ -89,6 +106,11 @@ impl<'a> ProjectionStore<'a> {
                     .map(|(_, event)| event.timestamp.timestamp_millis())
             });
 
+        let event_payload_root = self
+            .event_payload_root
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(default_event_payload_root)?;
         let tx = self
             .conn
             .transaction()
@@ -130,6 +152,15 @@ impl<'a> ProjectionStore<'a> {
         )?;
 
         tx.execute(
+            "UPDATE artifact_manifests
+             SET block_id = NULL
+             WHERE artifact_kind = 'event_payload'
+               AND session_id = ?1
+               AND block_id IS NOT NULL",
+            params![session_id],
+        )
+        .context("Failed to detach prior projected event payload manifests")?;
+        tx.execute(
             "DELETE FROM session_events WHERE session_id = ?1",
             params![session_id],
         )
@@ -141,8 +172,6 @@ impl<'a> ProjectionStore<'a> {
         .context("Failed to clear projected session turns")?;
 
         write_turns(&tx, &turns)?;
-        let block_count =
-            write_events_and_blocks(&tx, &session_id, &source_file.source_id, &ordered_events)?;
         write_projection_report(
             &tx,
             &report_id,
@@ -151,6 +180,16 @@ impl<'a> ProjectionStore<'a> {
             Some(&source_file.source_id),
             imported,
             now_ms,
+        )?;
+        let block_count = write_events_and_blocks(
+            &tx,
+            &event_payload_root,
+            &session_id,
+            &source_file.source_id,
+            provider_id,
+            provider_session_id,
+            &report_id,
+            &ordered_events,
         )?;
 
         tx.commit()
@@ -540,9 +579,13 @@ fn write_turns(conn: &Connection, turns: &[ProjectedTurnRow]) -> Result<()> {
 }
 
 fn write_events_and_blocks(
-    conn: &Connection,
+    conn: &Transaction<'_>,
+    event_payload_root: &Path,
     session_id: &str,
     source_id: &str,
+    provider_id: &str,
+    provider_session_id: &str,
+    report_id: &str,
     ordered_events: &[(ProjectedEventKey, &SessionEvent)],
 ) -> Result<usize> {
     let mut event_stmt = conn
@@ -595,23 +638,69 @@ fn write_events_and_blocks(
         for (block_order, block) in event.blocks.iter().enumerate() {
             let block_json =
                 serde_json::to_string(block).context("Failed to encode projected event block")?;
+            let block_bytes = block_json.as_bytes();
             let content_text = block_text_for_store(block);
-            let preview = block_preview(content_text.as_deref(), &block_json);
+            let preview = block_preview(block, content_text.as_deref(), &block_json);
+            let block_id = stable_row_id("block", &event_id, &block_order.to_string());
+            let content_hash = event_payload_content_hash(block_bytes);
+            let store_as_artifact = block_uses_event_payload_artifact(block, block_bytes.len());
             block_stmt
                 .execute(params![
-                    stable_row_id("block", &event_id, &block_order.to_string()),
+                    block_id,
                     event_id,
                     block_order as i64,
                     block_kind(block),
                     enum_name(block_fidelity(block)),
-                    content_text.as_deref(),
-                    block_json,
+                    if store_as_artifact {
+                        None
+                    } else {
+                        content_text.as_deref()
+                    },
+                    if store_as_artifact {
+                        None
+                    } else {
+                        Some(block_json.as_str())
+                    },
                     preview,
-                    block_json.len() as i64,
-                    format!("{:x}", md5::compute(block_json.as_bytes())),
+                    block_bytes.len() as i64,
+                    content_hash,
                     provider_path(block),
                 ])
                 .context("Failed to insert projected event block")?;
+            if store_as_artifact {
+                let persisted =
+                    persist_event_payload_at(event_payload_root, &block_id, block_bytes)?;
+                let stored = register_path_in_transaction(
+                    conn,
+                    NewArtifactManifest {
+                        artifact_kind: ArtifactManifestKind::EventPayload,
+                        operation_id: Some(report_id.to_string()),
+                        provider_id: Some(provider_id.to_string()),
+                        provider_session_id: Some(provider_session_id.to_string()),
+                        session_id: Some(session_id.to_string()),
+                        projection_report_id: Some(report_id.to_string()),
+                        event_id: Some(event_id.clone()),
+                        block_id: Some(block_id.clone()),
+                        path: persisted.path,
+                        mime_type: Some(EVENT_PAYLOAD_MIME_TYPE.to_string()),
+                        format: Some(EVENT_PAYLOAD_FORMAT.to_string()),
+                        metadata: json!({
+                            "ownership": "memorph",
+                            "payload_schema": "canonical_event_block",
+                            "payload_version": 1,
+                            "block_kind": block_kind(block),
+                            "inline_limit_bytes": EVENT_PAYLOAD_INLINE_LIMIT_BYTES,
+                        }),
+                    },
+                )?;
+                if stored.content_hash != persisted.content_hash
+                    || stored.byte_size != persisted.byte_size
+                {
+                    anyhow::bail!(
+                        "Registered event payload does not match persisted block: {block_id}"
+                    );
+                }
+            }
             block_count += 1;
         }
     }
@@ -774,9 +863,33 @@ fn block_text_for_store(block: &EventBlock) -> Option<String> {
     }
 }
 
-fn block_preview(content_text: Option<&str>, content_json: &str) -> String {
-    let text = content_text.unwrap_or(content_json);
+fn block_preview(block: &EventBlock, content_text: Option<&str>, content_json: &str) -> String {
+    let text = match block {
+        EventBlock::Image {
+            mime_type, path, ..
+        } => {
+            return path
+                .as_deref()
+                .map(|path| format!("{mime_type}: {path}"))
+                .unwrap_or_else(|| mime_type.clone());
+        }
+        _ => content_text.unwrap_or(content_json),
+    };
     text.chars().take(240).collect()
+}
+
+fn block_uses_event_payload_artifact(block: &EventBlock, byte_size: usize) -> bool {
+    byte_size > EVENT_PAYLOAD_INLINE_LIMIT_BYTES
+        && matches!(
+            block,
+            EventBlock::ToolResult { .. }
+                | EventBlock::Patch { .. }
+                | EventBlock::CommandResult { .. }
+                | EventBlock::File { .. }
+                | EventBlock::Image { .. }
+                | EventBlock::ProviderPayload { .. }
+                | EventBlock::Unknown { .. }
+        )
 }
 
 fn provider_path(block: &EventBlock) -> Option<&str> {
@@ -817,6 +930,7 @@ mod tests {
         SessionIdentity as CanonicalIdentity, SessionProvenance,
     };
     use crate::storage::local_store;
+    use crate::storage::snapshot_store::SnapshotStore;
     use chrono::TimeZone;
     use std::collections::BTreeMap;
     use std::io::Write;
@@ -910,6 +1024,281 @@ mod tests {
 
         assert_eq!(storage_shape, "sqlite");
         assert_eq!(confidence, "exact");
+    }
+
+    #[test]
+    fn stores_large_payload_blocks_as_verified_artifacts_and_reads_them_back() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let artifact_dir = tempfile::tempdir().unwrap();
+        let large = "x".repeat(EVENT_PAYLOAD_INLINE_LIMIT_BYTES + 1024);
+        let blocks = vec![
+            EventBlock::ToolResult {
+                tool_call_id: "tool-1".to_string(),
+                content: large.clone(),
+                is_error: false,
+            },
+            EventBlock::Patch {
+                summary: Some("large patch".to_string()),
+                diff_text: Some(large.clone()),
+                files: vec!["src/main.rs".to_string()],
+                hash: None,
+            },
+            EventBlock::CommandResult {
+                command: Some("build".to_string()),
+                exit_code: Some(0),
+                stdout: Some(large.clone()),
+                stderr: None,
+            },
+            EventBlock::File {
+                path: "attachment.txt".to_string(),
+                content: Some(large.clone()),
+                mime_type: Some("text/plain".to_string()),
+            },
+            EventBlock::Image {
+                mime_type: "image/png".to_string(),
+                data: Some(large.clone()),
+                path: Some("image.png".to_string()),
+            },
+            EventBlock::ProviderPayload {
+                kind: "native".to_string(),
+                payload: json!({"raw": large}),
+            },
+        ];
+        let expected = blocks
+            .iter()
+            .map(|block| serde_json::to_value(block).unwrap())
+            .collect::<Vec<_>>();
+        let mut imported = imported_session();
+        imported.session.events.truncate(1);
+        imported.session.events[0].blocks = blocks;
+
+        let stored =
+            ProjectionStore::with_event_payload_root(&mut conn, artifact_dir.path().to_path_buf())
+                .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+                .unwrap();
+
+        let artifact_block_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM session_event_blocks
+                 WHERE artifact_id IS NOT NULL
+                   AND content_json IS NULL
+                   AND content_text IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let manifest_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM artifact_manifests
+                 WHERE artifact_kind = 'event_payload'
+                   AND projection_report_id = ?1",
+                [stored.report_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let page = SnapshotStore::new(&conn)
+            .get_session_detail_page("claude", "claude-session-1", 0, None)
+            .unwrap()
+            .unwrap();
+        let actual = page.events[0]
+            .blocks
+            .iter()
+            .map(|block| serde_json::to_value(block).unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(artifact_block_count, expected.len() as i64);
+        assert_eq!(manifest_count, expected.len() as i64);
+        assert_eq!(actual, expected);
+        let paths = conn
+            .prepare(
+                "SELECT path FROM artifact_manifests
+                 WHERE artifact_kind = 'event_payload'",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        let artifact_root = std::fs::canonicalize(artifact_dir.path()).unwrap();
+        assert!(paths.iter().all(|path| {
+            let path = Path::new(path);
+            path.starts_with(&artifact_root) && path.is_file()
+        }));
+    }
+
+    #[test]
+    fn keeps_small_payload_blocks_inline() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let artifact_dir = tempfile::tempdir().unwrap();
+        let mut imported = imported_session();
+        imported.session.events.truncate(1);
+        imported.session.events[0].blocks = vec![EventBlock::ToolResult {
+            tool_call_id: "tool-1".to_string(),
+            content: "small output".to_string(),
+            is_error: false,
+        }];
+
+        ProjectionStore::with_event_payload_root(&mut conn, artifact_dir.path().to_path_buf())
+            .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+            .unwrap();
+
+        let (content_json, artifact_id): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT content_json, artifact_id FROM session_event_blocks",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(content_json.is_some());
+        assert!(artifact_id.is_none());
+        assert_eq!(count_rows(&conn, "artifact_manifests"), 0);
+    }
+
+    #[test]
+    fn rejects_missing_or_changed_event_payload_without_fallback() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let artifact_dir = tempfile::tempdir().unwrap();
+        let mut imported = imported_session();
+        imported.session.events.truncate(1);
+        imported.session.events[0].blocks = vec![EventBlock::Image {
+            mime_type: "image/png".to_string(),
+            data: Some("x".repeat(EVENT_PAYLOAD_INLINE_LIMIT_BYTES + 1024)),
+            path: None,
+        }];
+
+        ProjectionStore::with_event_payload_root(&mut conn, artifact_dir.path().to_path_buf())
+            .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+            .unwrap();
+        let path = PathBuf::from(
+            conn.query_row(
+                "SELECT path FROM artifact_manifests WHERE artifact_kind = 'event_payload'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        );
+
+        std::fs::write(&path, b"changed").unwrap();
+        let changed_error = SnapshotStore::new(&conn)
+            .get_session_detail_page("claude", "claude-session-1", 0, None)
+            .unwrap_err();
+        assert!(format!("{changed_error:#}").contains("Event payload artifact content changed"));
+
+        std::fs::remove_file(&path).unwrap();
+        let missing_error = SnapshotStore::new(&conn)
+            .get_session_detail_page("claude", "claude-session-1", 0, None)
+            .unwrap_err();
+        assert!(format!("{missing_error:#}").contains("Failed to read event payload artifact"));
+    }
+
+    #[test]
+    fn retains_prior_payload_manifest_by_projection_report_on_reprojection() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let artifact_dir = tempfile::tempdir().unwrap();
+        let mut imported = imported_session();
+        imported.session.events.truncate(1);
+        imported.session.events[0].blocks = vec![EventBlock::ToolResult {
+            tool_call_id: "tool-1".to_string(),
+            content: "a".repeat(EVENT_PAYLOAD_INLINE_LIMIT_BYTES + 1024),
+            is_error: false,
+        }];
+
+        let first =
+            ProjectionStore::with_event_payload_root(&mut conn, artifact_dir.path().to_path_buf())
+                .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+                .unwrap();
+        imported.session.events[0].blocks = vec![EventBlock::ToolResult {
+            tool_call_id: "tool-1".to_string(),
+            content: "b".repeat(EVENT_PAYLOAD_INLINE_LIMIT_BYTES + 1024),
+            is_error: false,
+        }];
+        let second =
+            ProjectionStore::with_event_payload_root(&mut conn, artifact_dir.path().to_path_buf())
+                .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+                .unwrap();
+
+        let rows = conn
+            .prepare(
+                "SELECT projection_report_id, block_id, path
+                 FROM artifact_manifests
+                 WHERE artifact_kind = 'event_payload'
+                 ORDER BY created_at_ms, id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        let first_row = rows.iter().find(|row| row.0 == first.report_id).unwrap();
+        let second_row = rows.iter().find(|row| row.0 == second.report_id).unwrap();
+        assert!(first_row.1.is_none());
+        assert!(second_row.1.is_some());
+        assert!(Path::new(&first_row.2).is_file());
+        assert!(Path::new(&second_row.2).is_file());
+        assert_ne!(first_row.2, second_row.2);
+    }
+
+    #[test]
+    fn retains_unregistered_blob_when_projection_transaction_fails() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER fail_event_payload_registration
+             BEFORE INSERT ON artifact_manifests
+             WHEN NEW.artifact_kind = 'event_payload'
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced event payload registration failure');
+             END;",
+        )
+        .unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let artifact_dir = tempfile::tempdir().unwrap();
+        let mut imported = imported_session();
+        imported.session.events.truncate(1);
+        imported.session.events[0].blocks = vec![EventBlock::ProviderPayload {
+            kind: "native".to_string(),
+            payload: json!({
+                "raw": "x".repeat(EVENT_PAYLOAD_INLINE_LIMIT_BYTES + 1024),
+            }),
+        }];
+
+        let error =
+            ProjectionStore::with_event_payload_root(&mut conn, artifact_dir.path().to_path_buf())
+                .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+                .unwrap_err();
+
+        assert!(format!("{error:#}").contains("forced event payload registration failure"));
+        assert_eq!(count_rows(&conn, "sessions"), 0);
+        assert_eq!(count_rows(&conn, "artifact_manifests"), 0);
+        let files = walkdir::WalkDir::new(artifact_dir.path())
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().is_file())
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 1);
     }
 
     #[test]

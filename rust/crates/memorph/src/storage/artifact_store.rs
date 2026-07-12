@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fmt;
-use std::fs::File;
-use std::io::{BufReader, Read};
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use uuid::Uuid;
@@ -16,6 +16,9 @@ use super::activity_store::ActivityActor;
 
 const DEFAULT_QUERY_LIMIT: usize = 100;
 const MAX_QUERY_LIMIT: usize = 500;
+pub(crate) const EVENT_PAYLOAD_INLINE_LIMIT_BYTES: usize = 64 * 1024;
+pub(crate) const EVENT_PAYLOAD_MIME_TYPE: &str = "application/json";
+pub(crate) const EVENT_PAYLOAD_FORMAT: &str = "canonical-event-block-v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -172,6 +175,13 @@ pub struct ArtifactVerification {
     pub actual_content_hash: Option<String>,
     pub expected_byte_size: i64,
     pub actual_byte_size: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PersistedEventPayload {
+    pub path: PathBuf,
+    pub content_hash: String,
+    pub byte_size: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -618,6 +628,192 @@ impl<'a> ArtifactStore<'a> {
     }
 }
 
+pub(crate) fn default_event_payload_root() -> Result<PathBuf> {
+    Ok(crate::config::memorph_dir()?
+        .join("artifacts")
+        .join("blobs")
+        .join("sha256"))
+}
+
+pub(crate) fn event_payload_content_hash(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+pub(crate) fn persist_event_payload_at(
+    root: &Path,
+    block_id: &str,
+    bytes: &[u8],
+) -> Result<PersistedEventPayload> {
+    let content_hash = event_payload_content_hash(bytes);
+    let hash = content_hash
+        .strip_prefix("sha256:")
+        .context("Event payload hash is not SHA-256")?;
+    let byte_size =
+        i64::try_from(bytes.len()).context("Event payload exceeds SQLite integer range")?;
+    let path = root
+        .join(&hash[..2])
+        .join(&hash[2..4])
+        .join(hash)
+        .join(format!("{block_id}.json"));
+    let parent = path
+        .parent()
+        .context("Event payload path has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "Failed to create event payload artifact directory: {}",
+            parent.display()
+        )
+    })?;
+
+    if path.exists() {
+        verify_event_payload_file(&path, &content_hash, byte_size)?;
+        return Ok(PersistedEventPayload {
+            path,
+            content_hash,
+            byte_size,
+        });
+    }
+
+    let temporary_path = parent.join(format!(".{}.{}.tmp", hash, Uuid::new_v4()));
+    let write_result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary_path)
+            .with_context(|| {
+                format!(
+                    "Failed to create temporary event payload artifact: {}",
+                    temporary_path.display()
+                )
+            })?;
+        file.write_all(bytes).with_context(|| {
+            format!(
+                "Failed to write temporary event payload artifact: {}",
+                temporary_path.display()
+            )
+        })?;
+        file.sync_all().with_context(|| {
+            format!(
+                "Failed to sync temporary event payload artifact: {}",
+                temporary_path.display()
+            )
+        })?;
+        match std::fs::hard_link(&temporary_path, &path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                verify_event_payload_file(&path, &content_hash, byte_size)?;
+                Ok(())
+            }
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "Failed to publish event payload artifact: {}",
+                    path.display()
+                )
+            }),
+        }
+    })();
+    let _ = std::fs::remove_file(&temporary_path);
+    write_result?;
+    verify_event_payload_file(&path, &content_hash, byte_size)?;
+
+    Ok(PersistedEventPayload {
+        path,
+        content_hash,
+        byte_size,
+    })
+}
+
+pub(crate) fn register_path_in_transaction(
+    conn: &Transaction<'_>,
+    manifest: NewArtifactManifest,
+) -> Result<ArtifactManifest> {
+    let inspected = inspect_artifact_path(&manifest.path)?;
+    let links = resolve_artifact_links(conn, &manifest)?;
+    insert_artifact_manifest(conn, manifest, links, inspected)
+}
+
+pub(crate) fn read_event_payload(
+    conn: &Connection,
+    artifact_id: &str,
+    event_id: &str,
+    block_id: &str,
+    expected_block_kind: &str,
+    expected_content_hash: &str,
+    expected_byte_size: i64,
+) -> Result<Vec<u8>> {
+    let manifest = load_artifact_by_id(conn, artifact_id)?
+        .with_context(|| format!("Event payload artifact manifest is missing: {artifact_id}"))?;
+    if manifest.artifact_kind != ArtifactManifestKind::EventPayload {
+        bail!("Block artifact is not an event payload: {artifact_id}");
+    }
+    if manifest.storage_kind != ArtifactStorageKind::File {
+        bail!("Event payload artifact is not a file: {artifact_id}");
+    }
+    if manifest.event_id.as_deref() != Some(event_id)
+        || manifest.block_id.as_deref() != Some(block_id)
+    {
+        bail!("Event payload artifact link does not match block: {block_id}");
+    }
+    if manifest.mime_type.as_deref() != Some(EVENT_PAYLOAD_MIME_TYPE)
+        || manifest.format.as_deref() != Some(EVENT_PAYLOAD_FORMAT)
+    {
+        bail!("Event payload artifact format is invalid: {artifact_id}");
+    }
+    if manifest.content_hash != expected_content_hash || manifest.byte_size != expected_byte_size {
+        bail!("Event payload artifact manifest does not match block: {block_id}");
+    }
+    if manifest.metadata.get("ownership").and_then(Value::as_str) != Some("memorph")
+        || manifest
+            .metadata
+            .get("payload_schema")
+            .and_then(Value::as_str)
+            != Some("canonical_event_block")
+        || manifest
+            .metadata
+            .get("payload_version")
+            .and_then(Value::as_i64)
+            != Some(1)
+        || manifest.metadata.get("block_kind").and_then(Value::as_str) != Some(expected_block_kind)
+        || manifest
+            .metadata
+            .get("inline_limit_bytes")
+            .and_then(Value::as_u64)
+            != Some(EVENT_PAYLOAD_INLINE_LIMIT_BYTES as u64)
+    {
+        bail!("Event payload artifact metadata is invalid: {artifact_id}");
+    }
+
+    let bytes = std::fs::read(&manifest.path).with_context(|| {
+        format!(
+            "Failed to read event payload artifact {}: {}",
+            artifact_id,
+            manifest.path.display()
+        )
+    })?;
+    let actual_byte_size =
+        i64::try_from(bytes.len()).context("Event payload exceeds SQLite integer range")?;
+    let actual_content_hash = event_payload_content_hash(&bytes);
+    if actual_byte_size != expected_byte_size || actual_content_hash != expected_content_hash {
+        bail!("Event payload artifact content changed: {artifact_id}");
+    }
+    Ok(bytes)
+}
+
+fn verify_event_payload_file(
+    path: &Path,
+    expected_content_hash: &str,
+    expected_byte_size: i64,
+) -> Result<()> {
+    let (actual_content_hash, actual_byte_size) = hash_file(path)?;
+    if actual_content_hash != expected_content_hash || actual_byte_size != expected_byte_size {
+        bail!(
+            "Content-addressed event payload path contains unexpected bytes: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 struct InspectedArtifact {
     path: PathBuf,
@@ -951,6 +1147,7 @@ fn insert_artifact_manifest(
             &path_text,
             &inspected.content_hash,
             manifest.operation_id.as_deref(),
+            manifest.block_id.as_deref(),
         )?
     }
     .context("Artifact registration did not produce a manifest")?;
@@ -1072,6 +1269,7 @@ fn load_artifact_by_registration(
     path: &str,
     content_hash: &str,
     operation_id: Option<&str>,
+    block_id: Option<&str>,
 ) -> Result<Option<ArtifactManifest>> {
     conn.query_row(
         "SELECT
@@ -1082,8 +1280,15 @@ fn load_artifact_by_registration(
          WHERE artifact_kind = ?1
            AND path = ?2
            AND content_hash = ?3
-           AND operation_id IS ?4",
-        params![artifact_kind.as_str(), path, content_hash, operation_id],
+           AND operation_id IS ?4
+           AND block_id IS ?5",
+        params![
+            artifact_kind.as_str(),
+            path,
+            content_hash,
+            operation_id,
+            block_id
+        ],
         decode_artifact_row,
     )
     .optional()

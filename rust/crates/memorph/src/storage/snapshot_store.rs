@@ -11,6 +11,7 @@ use crate::canonical::{
 use crate::session_projection::{
     ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
 };
+use crate::storage::artifact_store::read_event_payload;
 use crate::storage::session_state::ResolvedLocalSessionState;
 
 const DETAIL_REPORT_ITEM_LIMIT: i64 = 20;
@@ -583,7 +584,7 @@ impl<'a> SnapshotStore<'a> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT content_json
+                "SELECT id, block_kind, content_json, artifact_id, byte_size, content_hash
                  FROM session_event_blocks
                  WHERE event_id = ?1
                  ORDER BY block_order",
@@ -592,21 +593,62 @@ impl<'a> SnapshotStore<'a> {
         let mut blocks_by_event = BTreeMap::new();
         for event in event_rows {
             let rows = stmt
-                .query_map([event.id.as_str()], |row| row.get::<_, Option<String>>(0))
+                .query_map([event.id.as_str()], |row| {
+                    Ok(ProjectedBlockPayloadRow {
+                        block_id: row.get(0)?,
+                        block_kind: row.get(1)?,
+                        content_json: row.get(2)?,
+                        artifact_id: row.get(3)?,
+                        byte_size: row.get(4)?,
+                        content_hash: row.get(5)?,
+                    })
+                })
                 .with_context(|| {
                     format!("Failed to query projected event blocks for {}", event.id)
                 })?;
             let mut blocks = Vec::new();
             for row in rows {
-                let Some(block_json) = row.with_context(|| {
+                let row = row.with_context(|| {
                     format!("Failed to decode projected event block for {}", event.id)
-                })?
-                else {
-                    continue;
+                })?;
+                let block_json = match (row.content_json, row.artifact_id) {
+                    (Some(block_json), None) => block_json,
+                    (None, Some(artifact_id)) => {
+                        let byte_size = row.byte_size.with_context(|| {
+                            format!(
+                                "Artifact-backed block is missing byte size: {}",
+                                row.block_id
+                            )
+                        })?;
+                        let content_hash = row.content_hash.as_deref().with_context(|| {
+                            format!("Artifact-backed block is missing hash: {}", row.block_id)
+                        })?;
+                        let bytes = read_event_payload(
+                            self.conn,
+                            &artifact_id,
+                            &event.id,
+                            &row.block_id,
+                            &row.block_kind,
+                            content_hash,
+                            byte_size,
+                        )?;
+                        String::from_utf8(bytes).with_context(|| {
+                            format!("Event payload artifact is not UTF-8 JSON: {}", row.block_id)
+                        })?
+                    }
+                    (Some(_), Some(_)) => {
+                        anyhow::bail!(
+                            "Projected event block has inline and artifact payloads: {}",
+                            row.block_id
+                        )
+                    }
+                    (None, None) => {
+                        anyhow::bail!("Projected event block has no payload: {}", row.block_id)
+                    }
                 };
                 blocks.push(
                     serde_json::from_str::<EventBlock>(&block_json).with_context(|| {
-                        format!("Failed to parse projected event block for {}", event.id)
+                        format!("Failed to parse projected event block {}", row.block_id)
                     })?,
                 );
             }
@@ -655,6 +697,16 @@ impl<'a> SnapshotStore<'a> {
             })?;
         Ok(())
     }
+}
+
+#[derive(Debug)]
+struct ProjectedBlockPayloadRow {
+    block_id: String,
+    block_kind: String,
+    content_json: Option<String>,
+    artifact_id: Option<String>,
+    byte_size: Option<i64>,
+    content_hash: Option<String>,
 }
 
 #[derive(Debug, Clone)]
