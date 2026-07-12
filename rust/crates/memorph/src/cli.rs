@@ -118,6 +118,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: BackupCommands,
     },
+    /// Inspect and explicitly clean managed artifacts
+    Artifacts {
+        #[command(subcommand)]
+        command: ArtifactCommands,
+    },
     /// Manage synchronized multi-provider sessions
     #[command(name = "sync")]
     Sync {
@@ -272,6 +277,28 @@ pub enum BackupCommands {
         /// Registered backup ID
         #[arg(value_name = "BACKUP_ID")]
         backup_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ArtifactCommands {
+    /// Inspect registered artifacts and unregistered event payload files
+    Inspect {
+        /// Print the report as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Plan or apply cleanup of detached and orphan event payload artifacts
+    Cleanup {
+        /// Minimum artifact age in hours
+        #[arg(long, default_value = "168", value_name = "HOURS")]
+        retention_hours: u64,
+        /// Execute deletion; without this flag only a plan is returned
+        #[arg(long)]
+        apply: bool,
+        /// Print the report as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -632,6 +659,47 @@ mod tests {
             Some(Commands::Backups {
                 command: BackupCommands::Restore { backup_id },
             }) => assert_eq!(backup_id, "backup-1"),
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn artifacts_inspect_command_parses_json_output() {
+        let cli = Cli::parse_from(["memorph", "artifacts", "inspect", "--json"]);
+
+        match cli.command {
+            Some(Commands::Artifacts {
+                command: ArtifactCommands::Inspect { json },
+            }) => assert!(json),
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn artifacts_cleanup_command_parses_retention_and_apply_mode() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "artifacts",
+            "cleanup",
+            "--retention-hours",
+            "24",
+            "--apply",
+            "--json",
+        ]);
+
+        match cli.command {
+            Some(Commands::Artifacts {
+                command:
+                    ArtifactCommands::Cleanup {
+                        retention_hours,
+                        apply,
+                        json,
+                    },
+            }) => {
+                assert_eq!(retention_hours, 24);
+                assert!(apply);
+                assert!(json);
+            }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
     }

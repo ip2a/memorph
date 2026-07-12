@@ -67,6 +67,7 @@ pub enum ActivityOperationKind {
     LocalStateUpdate,
     Compress,
     Backup,
+    ArtifactCleanup,
 }
 
 impl ActivityOperationKind {
@@ -83,6 +84,7 @@ impl ActivityOperationKind {
             Self::LocalStateUpdate => "local_state_update",
             Self::Compress => "compress",
             Self::Backup => "backup",
+            Self::ArtifactCleanup => "artifact_cleanup",
         }
     }
 }
@@ -109,6 +111,7 @@ impl FromStr for ActivityOperationKind {
             "local_state_update" => Ok(Self::LocalStateUpdate),
             "compress" => Ok(Self::Compress),
             "backup" => Ok(Self::Backup),
+            "artifact_cleanup" => Ok(Self::ArtifactCleanup),
             _ => anyhow::bail!("Unknown activity operation: {value}"),
         }
     }

@@ -4,11 +4,13 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
@@ -175,6 +177,72 @@ pub struct ArtifactVerification {
     pub actual_content_hash: Option<String>,
     pub expected_byte_size: i64,
     pub actual_byte_size: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactRetentionState {
+    CurrentEventPayload,
+    DetachedEventPayload,
+    Retained,
+}
+
+impl ArtifactRetentionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentEventPayload => "current_event_payload",
+            Self::DetachedEventPayload => "detached_event_payload",
+            Self::Retained => "retained",
+        }
+    }
+}
+
+impl fmt::Display for ArtifactRetentionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArtifactInspectionEntry {
+    pub manifest: ArtifactManifest,
+    pub verification: ArtifactVerification,
+    pub retention_state: ArtifactRetentionState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OrphanArtifactFile {
+    pub path: PathBuf,
+    pub byte_size: i64,
+    pub modified_at_ms: i64,
+    pub managed_layout: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArtifactInspectionReport {
+    pub generated_at_ms: i64,
+    pub managed_blob_root: PathBuf,
+    pub registered: Vec<ArtifactInspectionEntry>,
+    pub orphan_files: Vec<OrphanArtifactFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactCleanupFailure {
+    pub path: Option<PathBuf>,
+    pub artifact_ids: Vec<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactCleanupReport {
+    pub applied: bool,
+    pub cutoff_ms: i64,
+    pub candidate_manifest_ids: Vec<String>,
+    pub candidate_orphan_paths: Vec<PathBuf>,
+    pub deleted_manifest_ids: Vec<String>,
+    pub deleted_paths: Vec<PathBuf>,
+    pub retained_shared_paths: Vec<PathBuf>,
+    pub failures: Vec<ArtifactCleanupFailure>,
 }
 
 #[derive(Debug, Clone)]
@@ -583,49 +651,249 @@ impl<'a> ArtifactStore<'a> {
         let Some(manifest) = self.get(artifact_id)? else {
             return Ok(None);
         };
-        if !manifest.path.exists() {
-            return Ok(Some(ArtifactVerification {
-                artifact_id: manifest.id,
-                path: manifest.path,
-                status: ArtifactVerificationStatus::Missing,
-                expected_content_hash: manifest.content_hash,
-                actual_content_hash: None,
-                expected_byte_size: manifest.byte_size,
-                actual_byte_size: None,
-            }));
+        Ok(Some(verify_artifact_manifest(&manifest)?))
+    }
+
+    pub fn inspect(&self, managed_blob_root: &Path) -> Result<ArtifactInspectionReport> {
+        let manifests = load_all_artifact_manifests(self.conn)?;
+        let registered_paths = manifests
+            .iter()
+            .map(|manifest| artifact_path_for_comparison(&manifest.path))
+            .collect::<Result<HashSet<_>>>()?;
+        let mut registered = Vec::with_capacity(manifests.len());
+        for manifest in manifests {
+            let verification = verify_artifact_manifest(&manifest)?;
+            let retention_state = match manifest.artifact_kind {
+                ArtifactManifestKind::EventPayload if manifest.block_id.is_some() => {
+                    ArtifactRetentionState::CurrentEventPayload
+                }
+                ArtifactManifestKind::EventPayload => ArtifactRetentionState::DetachedEventPayload,
+                _ => ArtifactRetentionState::Retained,
+            };
+            registered.push(ArtifactInspectionEntry {
+                manifest,
+                verification,
+                retention_state,
+            });
         }
-        if manifest.storage_kind == ArtifactStorageKind::Unknown
-            || !is_supported_content_hash(&manifest.content_hash)
-        {
-            return Ok(Some(ArtifactVerification {
-                artifact_id: manifest.id,
-                path: manifest.path,
-                status: ArtifactVerificationStatus::Unverifiable,
-                expected_content_hash: manifest.content_hash,
-                actual_content_hash: None,
-                expected_byte_size: manifest.byte_size,
-                actual_byte_size: None,
-            }));
+        let orphan_files = scan_orphan_artifact_files(managed_blob_root, &registered_paths)?;
+        Ok(ArtifactInspectionReport {
+            generated_at_ms: Utc::now().timestamp_millis(),
+            managed_blob_root: managed_blob_root.to_path_buf(),
+            registered,
+            orphan_files,
+        })
+    }
+
+    pub fn cleanup_event_payloads(
+        &mut self,
+        managed_blob_root: &Path,
+        cutoff_ms: i64,
+        apply: bool,
+    ) -> Result<ArtifactCleanupReport> {
+        let candidate_manifests =
+            load_detached_event_payload_candidates(self.conn, managed_blob_root, cutoff_ms)?;
+        let registered_paths = load_all_artifact_paths(self.conn)?;
+        let orphan_files = scan_orphan_artifact_files(managed_blob_root, &registered_paths)?
+            .into_iter()
+            .filter(|file| file.managed_layout && file.modified_at_ms < cutoff_ms)
+            .collect::<Vec<_>>();
+        let mut report = ArtifactCleanupReport {
+            applied: apply,
+            cutoff_ms,
+            candidate_manifest_ids: candidate_manifests
+                .iter()
+                .map(|manifest| manifest.id.clone())
+                .collect(),
+            candidate_orphan_paths: orphan_files.iter().map(|file| file.path.clone()).collect(),
+            deleted_manifest_ids: Vec::new(),
+            deleted_paths: Vec::new(),
+            retained_shared_paths: Vec::new(),
+            failures: Vec::new(),
+        };
+        if !apply {
+            sort_cleanup_report(&mut report);
+            return Ok(report);
         }
 
-        let inspected = inspect_artifact_path(&manifest.path)?;
-        let verified = manifest.storage_kind == inspected.storage_kind
-            && manifest.content_hash == inspected.content_hash
-            && manifest.byte_size == inspected.byte_size;
-        Ok(Some(ArtifactVerification {
-            artifact_id: manifest.id,
-            path: manifest.path,
-            status: if verified {
-                ArtifactVerificationStatus::Verified
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .context("Failed to start event payload cleanup transaction")?;
+        let mut candidates_by_path: HashMap<PathBuf, Vec<&ArtifactManifest>> = HashMap::new();
+        for manifest in &candidate_manifests {
+            candidates_by_path
+                .entry(manifest.path.clone())
+                .or_default()
+                .push(manifest);
+        }
+        let mut paths_to_delete = Vec::new();
+
+        for (path, manifests) in candidates_by_path {
+            let mut all_candidates_deleted = true;
+            for manifest in manifests {
+                let deleted = tx
+                    .execute(
+                        "DELETE FROM artifact_manifests
+                         WHERE id = ?1
+                           AND artifact_kind = 'event_payload'
+                           AND block_id IS NULL
+                           AND created_at_ms < ?2",
+                        params![manifest.id, cutoff_ms],
+                    )
+                    .context("Failed to delete detached event payload manifest")?;
+                if deleted == 1 {
+                    report.deleted_manifest_ids.push(manifest.id.clone());
+                } else {
+                    all_candidates_deleted = false;
+                    report.failures.push(ArtifactCleanupFailure {
+                        path: Some(manifest.path.clone()),
+                        artifact_ids: vec![manifest.id.clone()],
+                        reason: "Event payload manifest changed before cleanup".to_string(),
+                    });
+                }
+            }
+            if !all_candidates_deleted {
+                continue;
+            }
+
+            let path_text = path.to_string_lossy().to_string();
+            if load_artifact_ids_by_path(&tx, &path_text)?.is_empty() {
+                paths_to_delete.push(path);
             } else {
-                ArtifactVerificationStatus::Changed
-            },
-            expected_content_hash: manifest.content_hash,
-            actual_content_hash: Some(inspected.content_hash),
-            expected_byte_size: manifest.byte_size,
-            actual_byte_size: Some(inspected.byte_size),
-        }))
+                report.retained_shared_paths.push(path);
+            }
+        }
+
+        for orphan in orphan_files {
+            let path_text = orphan.path.to_string_lossy().to_string();
+            if load_artifact_ids_by_path(&tx, &path_text)?.is_empty() {
+                paths_to_delete.push(orphan.path);
+            } else {
+                report.failures.push(ArtifactCleanupFailure {
+                    path: Some(orphan.path),
+                    artifact_ids: Vec::new(),
+                    reason: "Orphan file became registered before cleanup".to_string(),
+                });
+            }
+        }
+
+        // Commit reference removal first. A failed file deletion then leaves a retryable orphan,
+        // never a committed manifest pointing at a file removed by a rolled-back transaction.
+        tx.commit()
+            .context("Failed to commit event payload cleanup transaction")?;
+
+        paths_to_delete.sort();
+        paths_to_delete.dedup();
+        for path in paths_to_delete {
+            let path_text = path.to_string_lossy().to_string();
+            if !load_artifact_ids_by_path(self.conn, &path_text)?.is_empty() {
+                report.retained_shared_paths.push(path);
+                continue;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => report.deleted_paths.push(path),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => report.failures.push(ArtifactCleanupFailure {
+                    path: Some(path),
+                    artifact_ids: Vec::new(),
+                    reason: format!("Failed to delete event payload file: {error}"),
+                }),
+            }
+        }
+
+        sort_cleanup_report(&mut report);
+        Ok(report)
     }
+}
+
+fn load_all_artifact_manifests(conn: &Connection) -> Result<Vec<ArtifactManifest>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                id, artifact_kind, storage_kind, operation_id, provider_id,
+                provider_session_id, session_id, projection_report_id, event_id, block_id,
+                path, content_hash, byte_size, mime_type, format, created_at_ms, metadata_json
+             FROM artifact_manifests
+             ORDER BY created_at_ms DESC, id DESC",
+        )
+        .context("Failed to prepare complete artifact inspection query")?;
+    let rows = stmt
+        .query_map([], decode_artifact_row)
+        .context("Failed to query complete artifact inspection")?;
+    let mut manifests = Vec::new();
+    for row in rows {
+        manifests.push(row.context("Failed to decode artifact manifest")?);
+    }
+    Ok(manifests)
+}
+
+fn sort_cleanup_report(report: &mut ArtifactCleanupReport) {
+    report.candidate_manifest_ids.sort();
+    report.candidate_orphan_paths.sort();
+    report.deleted_manifest_ids.sort();
+    report.deleted_paths.sort();
+    report.retained_shared_paths.sort();
+    report.failures.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.artifact_ids.cmp(&right.artifact_ids))
+            .then_with(|| left.reason.cmp(&right.reason))
+    });
+}
+
+fn artifact_path_for_comparison(path: &Path) -> Result<PathBuf> {
+    if path.exists() {
+        std::fs::canonicalize(path)
+            .with_context(|| format!("Failed to resolve artifact path: {}", path.display()))
+    } else {
+        Ok(path.to_path_buf())
+    }
+}
+
+fn verify_artifact_manifest(manifest: &ArtifactManifest) -> Result<ArtifactVerification> {
+    if !manifest.path.exists() {
+        return Ok(ArtifactVerification {
+            artifact_id: manifest.id.clone(),
+            path: manifest.path.clone(),
+            status: ArtifactVerificationStatus::Missing,
+            expected_content_hash: manifest.content_hash.clone(),
+            actual_content_hash: None,
+            expected_byte_size: manifest.byte_size,
+            actual_byte_size: None,
+        });
+    }
+    if manifest.storage_kind == ArtifactStorageKind::Unknown
+        || !is_supported_content_hash(&manifest.content_hash)
+    {
+        return Ok(ArtifactVerification {
+            artifact_id: manifest.id.clone(),
+            path: manifest.path.clone(),
+            status: ArtifactVerificationStatus::Unverifiable,
+            expected_content_hash: manifest.content_hash.clone(),
+            actual_content_hash: None,
+            expected_byte_size: manifest.byte_size,
+            actual_byte_size: None,
+        });
+    }
+
+    let inspected = inspect_artifact_path(&manifest.path)?;
+    let verified = manifest.storage_kind == inspected.storage_kind
+        && manifest.content_hash == inspected.content_hash
+        && manifest.byte_size == inspected.byte_size;
+    Ok(ArtifactVerification {
+        artifact_id: manifest.id.clone(),
+        path: manifest.path.clone(),
+        status: if verified {
+            ArtifactVerificationStatus::Verified
+        } else {
+            ArtifactVerificationStatus::Changed
+        },
+        expected_content_hash: manifest.content_hash.clone(),
+        actual_content_hash: Some(inspected.content_hash),
+        expected_byte_size: manifest.byte_size,
+        actual_byte_size: Some(inspected.byte_size),
+    })
 }
 
 pub(crate) fn default_event_payload_root() -> Result<PathBuf> {
@@ -812,6 +1080,185 @@ fn verify_event_payload_file(
         );
     }
     Ok(())
+}
+
+fn load_detached_event_payload_candidates(
+    conn: &Connection,
+    managed_blob_root: &Path,
+    cutoff_ms: i64,
+) -> Result<Vec<ArtifactManifest>> {
+    let root = canonical_root_for_comparison(managed_blob_root)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+                id, artifact_kind, storage_kind, operation_id, provider_id, provider_session_id,
+                session_id, projection_report_id, event_id, block_id, path, content_hash,
+                byte_size, mime_type, format, created_at_ms, metadata_json
+             FROM artifact_manifests
+             WHERE artifact_kind = 'event_payload'
+               AND block_id IS NULL
+               AND created_at_ms < ?1
+             ORDER BY created_at_ms, id",
+        )
+        .context("Failed to prepare detached event payload cleanup query")?;
+    let rows = stmt
+        .query_map([cutoff_ms], decode_artifact_row)
+        .context("Failed to query detached event payload cleanup candidates")?;
+    let mut candidates = Vec::new();
+    for row in rows {
+        let manifest = row.context("Failed to decode detached event payload candidate")?;
+        if is_managed_event_payload_manifest(&manifest)
+            && manifest.path.starts_with(&root)
+            && is_managed_event_payload_path(&root, &manifest.path)
+            && artifact_content_matches_manifest(&manifest)?
+        {
+            candidates.push(manifest);
+        }
+    }
+    Ok(candidates)
+}
+
+fn load_all_artifact_paths(conn: &Connection) -> Result<HashSet<PathBuf>> {
+    let mut stmt = conn
+        .prepare("SELECT path FROM artifact_manifests")
+        .context("Failed to prepare artifact path query")?;
+    let rows = stmt
+        .query_map([], |row| Ok(PathBuf::from(row.get::<_, String>(0)?)))
+        .context("Failed to query artifact paths")?;
+    let mut paths = HashSet::new();
+    for row in rows {
+        let path = row.context("Failed to decode artifact path")?;
+        paths.insert(artifact_path_for_comparison(&path)?);
+    }
+    Ok(paths)
+}
+
+fn is_managed_event_payload_manifest(manifest: &ArtifactManifest) -> bool {
+    manifest.storage_kind == ArtifactStorageKind::File
+        && manifest.mime_type.as_deref() == Some(EVENT_PAYLOAD_MIME_TYPE)
+        && manifest.format.as_deref() == Some(EVENT_PAYLOAD_FORMAT)
+        && manifest.metadata.get("ownership").and_then(Value::as_str) == Some("memorph")
+        && manifest
+            .metadata
+            .get("payload_schema")
+            .and_then(Value::as_str)
+            == Some("canonical_event_block")
+        && manifest
+            .metadata
+            .get("payload_version")
+            .and_then(Value::as_i64)
+            == Some(1)
+        && manifest
+            .metadata
+            .get("inline_limit_bytes")
+            .and_then(Value::as_u64)
+            == Some(EVENT_PAYLOAD_INLINE_LIMIT_BYTES as u64)
+        && manifest
+            .metadata
+            .get("block_kind")
+            .and_then(Value::as_str)
+            .is_some()
+}
+
+fn artifact_content_matches_manifest(manifest: &ArtifactManifest) -> Result<bool> {
+    if !manifest.path.exists() {
+        return Ok(false);
+    }
+    let inspected = inspect_artifact_path(&manifest.path)?;
+    Ok(inspected.storage_kind == manifest.storage_kind
+        && inspected.content_hash == manifest.content_hash
+        && inspected.byte_size == manifest.byte_size)
+}
+
+fn load_artifact_ids_by_path(conn: &Connection, path: &str) -> Result<Vec<String>> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM artifact_manifests WHERE path = ?1 ORDER BY id")
+        .context("Failed to prepare artifact path reference query")?;
+    let rows = stmt
+        .query_map([path], |row| row.get::<_, String>(0))
+        .context("Failed to query artifact path references")?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row.context("Failed to decode artifact path reference")?);
+    }
+    Ok(ids)
+}
+
+fn scan_orphan_artifact_files(
+    managed_blob_root: &Path,
+    registered_paths: &HashSet<PathBuf>,
+) -> Result<Vec<OrphanArtifactFile>> {
+    if !managed_blob_root.exists() {
+        return Ok(Vec::new());
+    }
+    let root = canonical_root_for_comparison(managed_blob_root)?;
+    let mut files = Vec::new();
+    for entry in WalkDir::new(&root).follow_links(false) {
+        let entry = entry.context("Failed to scan managed event payload directory")?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path().to_path_buf();
+        if registered_paths.contains(&path) {
+            continue;
+        }
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("Failed to inspect orphan artifact: {}", path.display()))?;
+        let byte_size = i64::try_from(metadata.len())
+            .context("Orphan artifact exceeds SQLite integer range")?;
+        let modified_at_ms = system_time_ms(metadata.modified().with_context(|| {
+            format!(
+                "Failed to read orphan artifact modification time: {}",
+                path.display()
+            )
+        })?)?;
+        files.push(OrphanArtifactFile {
+            managed_layout: is_managed_event_payload_path(&root, &path),
+            path,
+            byte_size,
+            modified_at_ms,
+        });
+    }
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(files)
+}
+
+fn canonical_root_for_comparison(root: &Path) -> Result<PathBuf> {
+    if root.exists() {
+        std::fs::canonicalize(root)
+            .with_context(|| format!("Failed to resolve artifact root: {}", root.display()))
+    } else {
+        Ok(root.to_path_buf())
+    }
+}
+
+fn is_managed_event_payload_path(root: &Path, path: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let components = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    if components.len() != 4 {
+        return false;
+    }
+    let hash = &components[2];
+    components[0].len() == 2
+        && components[1].len() == 2
+        && hash.len() == 64
+        && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && components[0] == hash[..2]
+        && components[1] == hash[2..4]
+        && components[3].ends_with(".json")
+}
+
+fn system_time_ms(time: SystemTime) -> Result<i64> {
+    let duration = time
+        .duration_since(UNIX_EPOCH)
+        .context("Artifact modification time predates Unix epoch")?;
+    i64::try_from(duration.as_millis()).context("Artifact modification time exceeds i64")
 }
 
 #[derive(Debug)]
@@ -1509,6 +1956,76 @@ mod tests {
         }
     }
 
+    fn managed_event_payload_metadata() -> Value {
+        json!({
+            "ownership": "memorph",
+            "payload_schema": "canonical_event_block",
+            "payload_version": 1,
+            "block_kind": "tool_result",
+            "inline_limit_bytes": EVENT_PAYLOAD_INLINE_LIMIT_BYTES,
+        })
+    }
+
+    fn insert_artifact_row(
+        conn: &Connection,
+        id: &str,
+        artifact_kind: ArtifactManifestKind,
+        path: &Path,
+        content_hash: &str,
+        byte_size: i64,
+        block_id: Option<&str>,
+        created_at_ms: i64,
+        mime_type: Option<&str>,
+        format: Option<&str>,
+        metadata: &Value,
+    ) {
+        conn.execute(
+            "INSERT INTO artifact_manifests
+             (id, artifact_kind, storage_kind, block_id, path, content_hash, byte_size,
+              mime_type, format, created_at_ms, metadata_json)
+             VALUES (?1, ?2, 'file', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                id,
+                artifact_kind.as_str(),
+                block_id,
+                path.to_string_lossy(),
+                content_hash,
+                byte_size,
+                mime_type,
+                format,
+                created_at_ms,
+                serde_json::to_string(metadata).unwrap(),
+            ],
+        )
+        .unwrap();
+    }
+
+    fn insert_event_payload(
+        conn: &Connection,
+        root: &Path,
+        id: &str,
+        block_id: Option<&str>,
+        created_at_ms: i64,
+        bytes: &[u8],
+    ) -> PathBuf {
+        let persisted = persist_event_payload_at(root, id, bytes).unwrap();
+        let path = std::fs::canonicalize(persisted.path).unwrap();
+        insert_artifact_row(
+            conn,
+            id,
+            ArtifactManifestKind::EventPayload,
+            &path,
+            &persisted.content_hash,
+            persisted.byte_size,
+            block_id,
+            created_at_ms,
+            Some(EVENT_PAYLOAD_MIME_TYPE),
+            Some(EVENT_PAYLOAD_FORMAT),
+            &managed_event_payload_metadata(),
+        );
+        path
+    }
+
     fn register_test_backup(conn: &mut Connection, dir: &Path, operation_id: &str) -> BackupRecord {
         let source_path = dir.join(format!("{operation_id}-source.jsonl"));
         let backup_path = dir.join(format!("{operation_id}-backup.jsonl"));
@@ -2092,5 +2609,223 @@ mod tests {
         assert_eq!(missing.status, ArtifactVerificationStatus::Missing);
         assert_eq!(missing.actual_content_hash, None);
         assert_eq!(missing.actual_byte_size, None);
+    }
+
+    #[test]
+    fn inspection_reports_retention_verification_and_orphan_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sha256");
+        let mut conn = test_connection();
+        let detached_path =
+            insert_event_payload(&conn, &root, "detached", None, 1, br#"{"detached":true}"#);
+        let current_path = insert_event_payload(
+            &conn,
+            &root,
+            "current",
+            Some("block-current"),
+            2,
+            br#"{"current":true}"#,
+        );
+        std::fs::write(&current_path, br#"{"current":"changed"}"#).unwrap();
+        let retained_path = dir.path().join("export.json");
+        std::fs::write(&retained_path, b"{}").unwrap();
+        let retained = ArtifactStore::new(&mut conn)
+            .register_path(new_manifest(retained_path, None))
+            .unwrap();
+        let orphan = persist_event_payload_at(&root, "orphan", br#"{"orphan":true}"#).unwrap();
+        let orphan_path = std::fs::canonicalize(&orphan.path).unwrap();
+        let malformed = root.join("loose.json");
+        std::fs::write(&malformed, b"not-managed-layout").unwrap();
+        let malformed_path = std::fs::canonicalize(&malformed).unwrap();
+
+        let report = ArtifactStore::new(&mut conn).inspect(&root).unwrap();
+
+        let detached = report
+            .registered
+            .iter()
+            .find(|entry| entry.manifest.id == "detached")
+            .unwrap();
+        assert_eq!(
+            detached.retention_state,
+            ArtifactRetentionState::DetachedEventPayload
+        );
+        assert_eq!(
+            detached.verification.status,
+            ArtifactVerificationStatus::Verified
+        );
+        let current = report
+            .registered
+            .iter()
+            .find(|entry| entry.manifest.id == "current")
+            .unwrap();
+        assert_eq!(
+            current.retention_state,
+            ArtifactRetentionState::CurrentEventPayload
+        );
+        assert_eq!(
+            current.verification.status,
+            ArtifactVerificationStatus::Changed
+        );
+        assert_eq!(
+            report
+                .registered
+                .iter()
+                .find(|entry| entry.manifest.id == retained.id)
+                .unwrap()
+                .retention_state,
+            ArtifactRetentionState::Retained
+        );
+        assert!(!report
+            .orphan_files
+            .iter()
+            .any(|file| file.path == detached_path));
+        assert!(report
+            .orphan_files
+            .iter()
+            .any(|file| file.path == orphan_path && file.managed_layout));
+        assert!(report
+            .orphan_files
+            .iter()
+            .any(|file| file.path == malformed_path && !file.managed_layout));
+    }
+
+    #[test]
+    fn inspection_is_not_capped_by_interactive_query_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("missing-root");
+        let mut conn = test_connection();
+        {
+            let tx = conn.transaction().unwrap();
+            for index in 0..=MAX_QUERY_LIMIT {
+                insert_artifact_row(
+                    &tx,
+                    &format!("artifact-{index:04}"),
+                    ArtifactManifestKind::SessionExport,
+                    &dir.path().join(format!("missing-{index:04}.json")),
+                    &format!("sha256:{index:064x}"),
+                    1,
+                    None,
+                    index as i64,
+                    Some("application/json"),
+                    Some("json"),
+                    &json!({"source": "inspection-limit-test"}),
+                );
+            }
+            tx.commit().unwrap();
+        }
+
+        let report = ArtifactStore::new(&mut conn).inspect(&root).unwrap();
+
+        assert_eq!(report.registered.len(), MAX_QUERY_LIMIT + 1);
+        assert!(report
+            .registered
+            .iter()
+            .all(|entry| entry.verification.status == ArtifactVerificationStatus::Missing));
+    }
+
+    #[test]
+    fn cleanup_dry_run_preserves_candidates_and_excludes_new_or_changed_manifests() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sha256");
+        let mut conn = test_connection();
+        let cutoff_ms = Utc::now().timestamp_millis() + 10_000;
+        let old_path = insert_event_payload(&conn, &root, "old", None, 1, b"old");
+        let new_path = insert_event_payload(&conn, &root, "new", None, cutoff_ms + 1, b"new");
+        let changed_path = insert_event_payload(&conn, &root, "changed", None, 1, b"original");
+        std::fs::write(&changed_path, b"changed").unwrap();
+        let orphan = persist_event_payload_at(&root, "orphan", b"orphan").unwrap();
+        let orphan_path = std::fs::canonicalize(&orphan.path).unwrap();
+        let malformed = root.join("loose.json");
+        std::fs::write(&malformed, b"loose").unwrap();
+
+        let report = ArtifactStore::new(&mut conn)
+            .cleanup_event_payloads(&root, cutoff_ms, false)
+            .unwrap();
+
+        assert_eq!(report.candidate_manifest_ids, vec!["old"]);
+        assert_eq!(report.candidate_orphan_paths, vec![orphan_path]);
+        assert!(report.deleted_manifest_ids.is_empty());
+        assert!(report.deleted_paths.is_empty());
+        assert!(old_path.exists());
+        assert!(new_path.exists());
+        assert!(changed_path.exists());
+        assert!(orphan.path.exists());
+        assert!(malformed.exists());
+        assert!(ArtifactStore::new(&mut conn).get("old").unwrap().is_some());
+        assert!(ArtifactStore::new(&mut conn).get("new").unwrap().is_some());
+        assert!(ArtifactStore::new(&mut conn)
+            .get("changed")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn cleanup_apply_deletes_old_detached_manifest_and_managed_orphan_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sha256");
+        let mut conn = test_connection();
+        let cutoff_ms = Utc::now().timestamp_millis() + 10_000;
+        let detached_path = insert_event_payload(&conn, &root, "detached", None, 1, b"detached");
+        let orphan = persist_event_payload_at(&root, "orphan", b"orphan").unwrap();
+        let orphan_path = std::fs::canonicalize(&orphan.path).unwrap();
+        let malformed = root.join("loose.json");
+        std::fs::write(&malformed, b"loose").unwrap();
+
+        let report = ArtifactStore::new(&mut conn)
+            .cleanup_event_payloads(&root, cutoff_ms, true)
+            .unwrap();
+
+        assert_eq!(report.deleted_manifest_ids, vec!["detached"]);
+        let mut expected_paths = vec![detached_path.clone(), orphan_path];
+        expected_paths.sort();
+        assert_eq!(report.deleted_paths, expected_paths);
+        assert!(report.failures.is_empty());
+        assert!(!detached_path.exists());
+        assert!(!orphan.path.exists());
+        assert!(malformed.exists());
+        assert!(ArtifactStore::new(&mut conn)
+            .get("detached")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn cleanup_removes_detached_metadata_but_retains_shared_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("sha256");
+        let mut conn = test_connection();
+        let cutoff_ms = Utc::now().timestamp_millis() + 10_000;
+        let path = insert_event_payload(&conn, &root, "detached", None, 1, b"shared");
+        let hash = event_payload_content_hash(b"shared");
+        insert_artifact_row(
+            &conn,
+            "retained",
+            ArtifactManifestKind::SessionExport,
+            &path,
+            &hash,
+            6,
+            None,
+            2,
+            Some("application/json"),
+            Some("json"),
+            &json!({"source": "shared-reference-test"}),
+        );
+
+        let report = ArtifactStore::new(&mut conn)
+            .cleanup_event_payloads(&root, cutoff_ms, true)
+            .unwrap();
+
+        assert_eq!(report.deleted_manifest_ids, vec!["detached"]);
+        assert_eq!(report.retained_shared_paths, vec![path.clone()]);
+        assert!(report.deleted_paths.is_empty());
+        assert!(path.exists());
+        assert!(ArtifactStore::new(&mut conn)
+            .get("detached")
+            .unwrap()
+            .is_none());
+        assert!(ArtifactStore::new(&mut conn)
+            .get("retained")
+            .unwrap()
+            .is_some());
     }
 }

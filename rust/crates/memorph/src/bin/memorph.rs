@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use memorph::{
     cli::{
-        BackupCommands, Cli, Commands, CompressionCommands, LegacyCodexToolCommands,
-        LegacyToolCommands, SessionCommands, SyncCommands,
+        ArtifactCommands, BackupCommands, Cli, Commands, CompressionCommands,
+        LegacyCodexToolCommands, LegacyToolCommands, SessionCommands, SyncCommands,
     },
     config, core,
     provider::{ProviderCapabilities, ProviderContentFidelity},
@@ -188,6 +188,8 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::Sessions { command } => run_session_command(command)?,
 
         Commands::Backups { command } => run_backup_command(command)?,
+
+        Commands::Artifacts { command } => run_artifact_command(command)?,
 
         Commands::Sync { command } => run_sync_command(command)?,
 
@@ -552,6 +554,65 @@ fn run_backup_command(command: BackupCommands) -> Result<()> {
                 "Restored backup {} successfully (restore {})",
                 record.backup_id, record.id
             );
+        }
+    }
+    Ok(())
+}
+
+fn run_artifact_command(command: ArtifactCommands) -> Result<()> {
+    match command {
+        ArtifactCommands::Inspect { json } => {
+            let report = core::inspect_artifacts()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("Registered artifacts: {}", report.registered.len());
+                println!("Orphan files: {}", report.orphan_files.len());
+                for entry in report.registered {
+                    println!(
+                        "{} | {} | {} | {} | {}",
+                        entry.manifest.id,
+                        entry.manifest.artifact_kind,
+                        entry.retention_state,
+                        entry.verification.status,
+                        entry.manifest.path.display()
+                    );
+                }
+                for orphan in report.orphan_files {
+                    println!(
+                        "orphan | {} | {} bytes | managed_layout={}",
+                        orphan.path.display(),
+                        orphan.byte_size,
+                        orphan.managed_layout
+                    );
+                }
+            }
+        }
+        ArtifactCommands::Cleanup {
+            retention_hours,
+            apply,
+            json,
+        } => {
+            let report = core::cleanup_artifacts(retention_hours, apply, ActivityActor::Cli)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "{} cleanup: {} manifest candidates, {} orphan candidates",
+                    if report.applied { "Applied" } else { "Planned" },
+                    report.candidate_manifest_ids.len(),
+                    report.candidate_orphan_paths.len()
+                );
+                println!("Deleted manifests: {}", report.deleted_manifest_ids.len());
+                println!("Deleted files: {}", report.deleted_paths.len());
+                println!(
+                    "Retained shared files: {}",
+                    report.retained_shared_paths.len()
+                );
+                for failure in report.failures {
+                    println!("Failure: {}", failure.reason);
+                }
+            }
         }
     }
     Ok(())

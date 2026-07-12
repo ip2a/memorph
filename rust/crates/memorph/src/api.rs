@@ -127,6 +127,8 @@ pub fn router() -> Router {
         .route("/api/v1/backups", get(list_backups))
         .route("/api/v1/backups/{backup_id}", get(get_backup))
         .route("/api/v1/backups/{backup_id}/restore", post(restore_backup))
+        .route("/api/v1/artifacts/inspection", get(inspect_artifacts))
+        .route("/api/v1/artifacts/cleanup", post(cleanup_artifacts))
         .route("/api/v1/sessions", get(list_sessions))
         .route(
             "/api/v1/sessions/refresh-stale",
@@ -1464,6 +1466,39 @@ async fn restore_backup(Path(backup_id): Path<String>) -> impl IntoResponse {
             api_error(StatusCode::NOT_FOUND, error).into_response()
         }
         Err(error) => api_error(StatusCode::CONFLICT, error).into_response(),
+    }
+}
+
+async fn inspect_artifacts() -> impl IntoResponse {
+    match core::inspect_artifacts() {
+        Ok(report) => ApiResponse::success(report).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ArtifactCleanupRequest {
+    #[serde(default = "default_artifact_retention_hours")]
+    retention_hours: u64,
+    #[serde(default)]
+    apply: bool,
+}
+
+fn default_artifact_retention_hours() -> u64 {
+    168
+}
+
+async fn cleanup_artifacts(Json(request): Json<ArtifactCleanupRequest>) -> impl IntoResponse {
+    if request.retention_hours == 0 {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            anyhow::anyhow!("Artifact retention must be at least one hour"),
+        )
+        .into_response();
+    }
+    match core::cleanup_artifacts(request.retention_hours, request.apply, ActivityActor::Api) {
+        Ok(report) => ApiResponse::success(report).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
@@ -2875,6 +2910,85 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Unknown backup restore status"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn artifact_routes_inspect_empty_store_and_default_cleanup_to_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+
+        let request = Request::builder()
+            .uri("/api/v1/artifacts/inspection")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"]["registered"].as_array().unwrap().len(), 0);
+        assert_eq!(value["data"]["orphan_files"].as_array().unwrap().len(), 0);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/artifacts/cleanup")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"]["applied"], false);
+        assert_eq!(
+            value["data"]["candidate_manifest_ids"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn artifact_cleanup_route_rejects_zero_retention() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/artifacts/cleanup")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"retention_hours":0}"#))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("retention must be at least one hour"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn applied_artifact_cleanup_records_terminal_activity() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/artifacts/cleanup")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"retention_hours":1,"apply":true}"#))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"]["applied"], true);
+        let activities = core::list_management_activity(&ActivityQuery {
+            operation_kind: Some(ActivityOperationKind::ArtifactCleanup),
+            status: Some(ActivityStatus::Success),
+            actor: Some(ActivityActor::Api),
+            ..ActivityQuery::default()
+        })
+        .unwrap();
+        assert_eq!(activities.len(), 1);
+        assert!(activities[0].finished_at_ms.is_some());
+        assert_eq!(activities[0].details["applied"], true);
     }
 
     #[tokio::test(flavor = "current_thread")]
