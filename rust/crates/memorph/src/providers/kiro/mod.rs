@@ -1,4 +1,5 @@
 pub mod adapter;
+mod backup;
 pub mod hook;
 
 use crate::canonical::{
@@ -9,7 +10,8 @@ use crate::canonical::{
 };
 use crate::provider::{
     canonical_event_visible_message_role, canonical_export_result, canonical_session_title,
-    canonical_visible_block_text, Provider, ProviderCapabilities, ProviderSessionSummary,
+    canonical_visible_block_text, Provider, ProviderBackupSupport, ProviderCapabilities,
+    ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation,
 };
 use crate::utils::truncate_summary;
 use anyhow::{Context, Result};
@@ -17,6 +19,8 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -24,6 +28,15 @@ pub struct KiroProvider;
 
 const PROVIDER_ID: &str = "kiro";
 const TITLE_MAX_CHARS: usize = 80;
+
+#[cfg(test)]
+static TEST_KIRO_GLOBAL_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+static TEST_KIRO_MUTATION_FAILURE: std::sync::OnceLock<
+    std::sync::Mutex<Option<ProviderSourceMutation>>,
+> = std::sync::OnceLock::new();
 
 impl Provider for KiroProvider {
     fn id(&self) -> &'static str {
@@ -42,6 +55,11 @@ impl Provider for KiroProvider {
             delete: true,
             rename: true,
             resume: false,
+            backup_support: ProviderBackupSupport {
+                before_write: true,
+                restore: true,
+                sync_only: false,
+            },
             ..ProviderCapabilities::default()
         }
     }
@@ -124,12 +142,27 @@ impl Provider for KiroProvider {
 
     fn delete_session(&self, session_id: &str) -> Result<()> {
         let global_dir = kiro_global_storage_dir()?;
-        delete_session_in(&global_dir, session_id)
+        backup::delete_session(&global_dir, session_id)
     }
 
     fn rename_session(&self, session_id: &str, new_title: &str) -> Result<()> {
         let global_dir = kiro_global_storage_dir()?;
-        rename_session_in(&global_dir, session_id, new_title)
+        backup::rename_session(&global_dir, session_id, new_title)
+    }
+
+    fn create_session_backup(
+        &self,
+        mutation: ProviderSourceMutation,
+        operation_id: &str,
+        session_id: &str,
+        backup_root: &Path,
+    ) -> Result<ProviderSessionBackup> {
+        let global_dir = kiro_global_storage_dir()?;
+        backup::create_session_backup(&global_dir, mutation, operation_id, session_id, backup_root)
+    }
+
+    fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
+        backup::restore_session_backup(backup)
     }
 
     fn session_size(&self, session_id: &str) -> Result<u64> {
@@ -178,6 +211,16 @@ fn kiro_data_dir() -> Result<PathBuf> {
 }
 
 fn kiro_global_storage_dir() -> Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_KIRO_GLOBAL_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Kiro global dir lock")
+        .clone()
+    {
+        return Ok(path);
+    }
+
     Ok(kiro_data_dir()?
         .join("User")
         .join("globalStorage")
@@ -583,84 +626,6 @@ fn canonical_event_kiro_content(event: &SessionEvent) -> Vec<Value> {
         .collect()
 }
 
-fn delete_session_in(global_dir: &Path, session_id: &str) -> Result<()> {
-    let mut found = false;
-
-    for list_path in session_list_paths(global_dir)? {
-        let Some(session_dir) = list_path.parent() else {
-            continue;
-        };
-
-        let mut entries = read_session_list(&list_path)?;
-        let original_len = entries.len();
-        entries.retain(|entry| {
-            entry
-                .get("sessionId")
-                .and_then(|v| v.as_str())
-                .map(|id| id != session_id)
-                .unwrap_or(true)
-        });
-        if entries.len() != original_len {
-            write_session_list(&list_path, &entries)?;
-            found = true;
-        }
-
-        let session_path = session_dir.join(format!("{}.json", session_id));
-        if session_path.exists() {
-            std::fs::remove_file(session_path)?;
-            found = true;
-        }
-    }
-
-    if !found {
-        anyhow::bail!("Kiro session not found: {}", session_id);
-    }
-
-    Ok(())
-}
-
-fn rename_session_in(global_dir: &Path, session_id: &str, new_title: &str) -> Result<()> {
-    let mut found = false;
-
-    for list_path in session_list_paths(global_dir)? {
-        let Some(session_dir) = list_path.parent() else {
-            continue;
-        };
-
-        let mut entries = read_session_list(&list_path)?;
-        let mut list_changed = false;
-        for entry in &mut entries {
-            if entry.get("sessionId").and_then(|v| v.as_str()) == Some(session_id) {
-                if let Some(object) = entry.as_object_mut() {
-                    object.insert("title".to_string(), Value::String(new_title.to_string()));
-                    list_changed = true;
-                    found = true;
-                }
-            }
-        }
-        if list_changed {
-            write_session_list(&list_path, &entries)?;
-        }
-
-        let session_path = session_dir.join(format!("{}.json", session_id));
-        if session_path.exists() {
-            let raw = std::fs::read_to_string(&session_path)?;
-            let mut value: Value = serde_json::from_str(&raw)?;
-            if let Some(object) = value.as_object_mut() {
-                object.insert("title".to_string(), Value::String(new_title.to_string()));
-                std::fs::write(&session_path, serde_json::to_string_pretty(&value)?)?;
-                found = true;
-            }
-        }
-    }
-
-    if !found {
-        anyhow::bail!("Kiro session not found: {}", session_id);
-    }
-
-    Ok(())
-}
-
 fn session_list_paths(global_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let global_sessions = global_dir.join("sessions").join("sessions.json");
@@ -713,7 +678,44 @@ fn write_session_list(path: &Path, entries: &[Value]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, serde_json::to_string_pretty(entries)?)?;
+    write_file_atomically(path, &serde_json::to_vec_pretty(entries)?)
+}
+
+fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("Kiro write target has no parent directory")?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("Kiro write target has an invalid file name")?;
+    let temporary_path = parent.join(format!(".{file_name}.memorph-{}.tmp", Uuid::new_v4()));
+    let write_result = (|| -> Result<()> {
+        let mut file = File::create(&temporary_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary_path, path)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temporary_path);
+    }
+    write_result
+}
+
+fn fail_kiro_mutation_after_write(mutation: ProviderSourceMutation) -> Result<()> {
+    #[cfg(test)]
+    {
+        let mut configured = TEST_KIRO_MUTATION_FAILURE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if configured.as_ref() == Some(&mutation) {
+            *configured = None;
+            anyhow::bail!("injected Kiro mutation failure after provider write");
+        }
+    }
+    let _ = mutation;
     Ok(())
 }
 
@@ -762,6 +764,91 @@ fn path_mtime_ms(path: &Path) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{core::session_management, storage::local_store};
+    use tempfile::tempdir;
+
+    static TEST_KIRO_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+
+    struct TestKiroGlobalDirGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for TestKiroGlobalDirGuard {
+        fn drop(&mut self) {
+            crate::cache::global_cache().invalidate(PROVIDER_ID);
+            set_test_kiro_mutation_failure(None);
+            backup::set_test_backup_failure(false);
+            *TEST_KIRO_GLOBAL_DIR
+                .get_or_init(|| std::sync::Mutex::new(None))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+    }
+
+    fn use_test_kiro_global_dir(path: PathBuf) -> TestKiroGlobalDirGuard {
+        let lock = TEST_KIRO_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *TEST_KIRO_GLOBAL_DIR
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(path);
+        crate::cache::global_cache().invalidate(PROVIDER_ID);
+        TestKiroGlobalDirGuard { _lock: lock }
+    }
+
+    fn set_test_kiro_mutation_failure(mutation: Option<ProviderSourceMutation>) {
+        *TEST_KIRO_MUTATION_FAILURE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mutation;
+    }
+
+    fn write_native_kiro_scope(global_dir: &Path, scope_dir: &Path, session_id: &str, title: &str) {
+        let scope_dir = global_dir.join(scope_dir);
+        std::fs::create_dir_all(&scope_dir).unwrap();
+        write_session_list(
+            &scope_dir.join("sessions.json"),
+            &[
+                json!({
+                    "sessionId": "other-session",
+                    "title": "Other",
+                    "nativeIndex": "preserve"
+                }),
+                json!({
+                    "sessionId": session_id,
+                    "title": title,
+                    "nativeIndex": "target"
+                }),
+            ],
+        )
+        .unwrap();
+        std::fs::write(
+            scope_dir.join(format!("{session_id}.json")),
+            serde_json::to_vec_pretty(&json!({
+                "sessionId": session_id,
+                "title": title,
+                "history": [],
+                "nativeSession": {"preserve": true}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn target_entry(path: &Path, session_id: &str) -> Value {
+        read_session_list(path)
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.get("sessionId").and_then(Value::as_str) == Some(session_id))
+            .unwrap()
+    }
+
+    fn session_value(path: &Path) -> Value {
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
 
     #[test]
     fn scans_and_loads_workspace_session() -> Result<()> {
@@ -1031,13 +1118,443 @@ mod tests {
             Some("Imported Session")
         );
 
-        rename_session_in(&global_dir, &new_id, "Renamed")?;
+        backup::rename_session(&global_dir, &new_id, "Renamed")?;
         let renamed = scan_sessions_in(&global_dir)?;
         assert_eq!(renamed[0].title.as_deref(), Some("Renamed"));
 
-        delete_session_in(&global_dir, &new_id)?;
+        backup::delete_session(&global_dir, &new_id)?;
         assert!(scan_sessions_in(&global_dir)?.is_empty());
 
         Ok(())
+    }
+
+    #[test]
+    fn delete_backup_restores_all_kiro_scopes_and_preserves_unrelated_index_changes() {
+        let dir = tempdir().unwrap();
+        let global_dir = dir.path().join("kiro.kiroagent");
+        let _guard = use_test_kiro_global_dir(global_dir.clone());
+        let session_id = "kiro-delete";
+        let scopes = [
+            PathBuf::from("sessions"),
+            PathBuf::from("workspace-sessions/workspace-a"),
+            PathBuf::from("workspace-sessions/workspace-b"),
+        ];
+        for scope in &scopes {
+            write_native_kiro_scope(&global_dir, scope, session_id, "Before");
+        }
+        let backup = KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-kiro-delete",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+
+        KiroProvider.delete_session(session_id).unwrap();
+        for scope in &scopes {
+            let list_path = global_dir.join(scope).join("sessions.json");
+            let mut entries = read_session_list(&list_path).unwrap();
+            entries.push(json!({
+                "sessionId": format!("concurrent-{}", scope.display()),
+                "title": "Concurrent"
+            }));
+            write_session_list(&list_path, &entries).unwrap();
+        }
+
+        KiroProvider.restore_session_backup(&backup).unwrap();
+        KiroProvider.restore_session_backup(&backup).unwrap();
+
+        for scope in &scopes {
+            let scope_dir = global_dir.join(scope);
+            assert_eq!(
+                target_entry(&scope_dir.join("sessions.json"), session_id)["title"],
+                "Before"
+            );
+            assert!(read_session_list(&scope_dir.join("sessions.json"))
+                .unwrap()
+                .iter()
+                .any(|entry| entry["title"] == "Concurrent"));
+            assert_eq!(
+                session_value(&scope_dir.join(format!("{session_id}.json")))["nativeSession"]
+                    ["preserve"],
+                true
+            );
+        }
+    }
+
+    #[test]
+    fn rename_restore_only_restores_titles_and_preserves_concurrent_changes() {
+        let dir = tempdir().unwrap();
+        let global_dir = dir.path().join("kiro.kiroagent");
+        let _guard = use_test_kiro_global_dir(global_dir.clone());
+        let session_id = "kiro-rename";
+        let scope = PathBuf::from("workspace-sessions/workspace-a");
+        write_native_kiro_scope(&global_dir, &scope, session_id, "Before");
+        let backup = KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-kiro-rename",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+
+        KiroProvider.rename_session(session_id, "After").unwrap();
+        let scope_dir = global_dir.join(&scope);
+        let list_path = scope_dir.join("sessions.json");
+        let mut entries = read_session_list(&list_path).unwrap();
+        entries
+            .iter_mut()
+            .find(|entry| entry["sessionId"] == session_id)
+            .unwrap()["concurrentIndex"] = json!("keep");
+        entries.push(json!({"sessionId": "concurrent", "title": "Concurrent"}));
+        write_session_list(&list_path, &entries).unwrap();
+        let session_path = scope_dir.join(format!("{session_id}.json"));
+        let mut session = session_value(&session_path);
+        session["concurrentSession"] = json!("keep");
+        write_file_atomically(&session_path, &serde_json::to_vec_pretty(&session).unwrap())
+            .unwrap();
+
+        KiroProvider.restore_session_backup(&backup).unwrap();
+
+        let restored_entry = target_entry(&list_path, session_id);
+        assert_eq!(restored_entry["title"], "Before");
+        assert_eq!(restored_entry["concurrentIndex"], "keep");
+        assert!(read_session_list(&list_path)
+            .unwrap()
+            .iter()
+            .any(|entry| entry["sessionId"] == "concurrent"));
+        let restored_session = session_value(&session_path);
+        assert_eq!(restored_session["title"], "Before");
+        assert_eq!(restored_session["concurrentSession"], "keep");
+    }
+
+    #[test]
+    fn rename_restore_does_not_recreate_concurrently_deleted_targets() {
+        let dir = tempdir().unwrap();
+        let global_dir = dir.path().join("kiro.kiroagent");
+        let _guard = use_test_kiro_global_dir(global_dir.clone());
+        let session_id = "kiro-concurrent-delete";
+        let scope = PathBuf::from("sessions");
+        write_native_kiro_scope(&global_dir, &scope, session_id, "Before");
+        let backup = KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-kiro-concurrent-delete",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+        KiroProvider.rename_session(session_id, "After").unwrap();
+
+        let scope_dir = global_dir.join(scope);
+        let list_path = scope_dir.join("sessions.json");
+        let mut entries = read_session_list(&list_path).unwrap();
+        entries.retain(|entry| entry["sessionId"] != session_id);
+        write_session_list(&list_path, &entries).unwrap();
+        let session_path = scope_dir.join(format!("{session_id}.json"));
+        std::fs::remove_file(&session_path).unwrap();
+
+        KiroProvider.restore_session_backup(&backup).unwrap();
+
+        assert!(!read_session_list(&list_path)
+            .unwrap()
+            .iter()
+            .any(|entry| entry["sessionId"] == session_id));
+        assert!(!session_path.exists());
+    }
+
+    #[test]
+    fn kiro_backup_rejects_ambiguous_invalid_and_unsafe_sources() {
+        let dir = tempdir().unwrap();
+        let global_dir = dir.path().join("kiro.kiroagent");
+        let _guard = use_test_kiro_global_dir(global_dir.clone());
+        let session_id = "kiro-invalid";
+        let scope = global_dir.join("sessions");
+        std::fs::create_dir_all(&scope).unwrap();
+        write_session_list(
+            &scope.join("sessions.json"),
+            &[
+                json!({"sessionId": session_id, "title": "One"}),
+                json!({"sessionId": session_id, "title": "Two"}),
+            ],
+        )
+        .unwrap();
+        std::fs::write(
+            scope.join(format!("{session_id}.json")),
+            serde_json::to_vec(&json!({"sessionId": session_id})).unwrap(),
+        )
+        .unwrap();
+        assert!(KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-duplicate",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate entries"));
+
+        std::fs::write(scope.join("sessions.json"), b"{}").unwrap();
+        assert!(KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-non-array",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("must contain a JSON array"));
+
+        write_session_list(
+            &scope.join("sessions.json"),
+            &[json!({"sessionId": session_id})],
+        )
+        .unwrap();
+        std::fs::write(
+            scope.join(format!("{session_id}.json")),
+            serde_json::to_vec(&json!({"sessionId": "wrong"})).unwrap(),
+        )
+        .unwrap();
+        assert!(KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-wrong-id",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("identity does not match"));
+
+        std::fs::write(
+            scope.join(format!("{session_id}.json")),
+            serde_json::to_vec(&json!(["not", "an", "object"])).unwrap(),
+        )
+        .unwrap();
+        assert!(KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-non-object",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("must contain a JSON object"));
+
+        #[cfg(unix)]
+        {
+            let real_list = scope.join("real-sessions.json");
+            write_session_list(&real_list, &[json!({"sessionId": session_id})]).unwrap();
+            std::fs::remove_file(scope.join("sessions.json")).unwrap();
+            std::os::unix::fs::symlink(&real_list, scope.join("sessions.json")).unwrap();
+            assert!(KiroProvider
+                .create_session_backup(
+                    ProviderSourceMutation::Delete,
+                    "operation-symlink",
+                    session_id,
+                    &dir.path().join("backups"),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("not a regular file"));
+        }
+    }
+
+    #[test]
+    fn kiro_restore_rejects_payload_and_source_path_tampering_before_writes() {
+        let dir = tempdir().unwrap();
+        let global_dir = dir.path().join("kiro.kiroagent");
+        let _guard = use_test_kiro_global_dir(global_dir.clone());
+        let session_id = "kiro-tamper";
+        write_native_kiro_scope(&global_dir, Path::new("sessions"), session_id, "Before");
+        let backup_root = dir.path().join("backups");
+        let payload_backup = KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-payload-tamper",
+                session_id,
+                &backup_root,
+            )
+            .unwrap();
+        KiroProvider.delete_session(session_id).unwrap();
+        std::fs::write(
+            payload_backup.backup_path.join("files/0000-session.json"),
+            b"tampered",
+        )
+        .unwrap();
+        assert!(KiroProvider
+            .restore_session_backup(&payload_backup)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match its manifest"));
+        assert!(
+            !read_session_list(&global_dir.join("sessions/sessions.json"))
+                .unwrap()
+                .iter()
+                .any(|entry| entry["sessionId"] == session_id)
+        );
+        assert!(!global_dir
+            .join("sessions")
+            .join(format!("{session_id}.json"))
+            .exists());
+
+        write_native_kiro_scope(&global_dir, Path::new("sessions"), session_id, "Before");
+        let path_backup = KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-path-tamper",
+                session_id,
+                &backup_root,
+            )
+            .unwrap();
+        let metadata_path = path_backup.backup_path.join("metadata.json");
+        let mut metadata: Value =
+            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+        metadata["scopes"][0]["scope_dir"] = json!("../outside");
+        std::fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+        assert!(KiroProvider
+            .restore_session_backup(&path_backup)
+            .unwrap_err()
+            .to_string()
+            .contains("scope path is invalid"));
+    }
+
+    #[test]
+    fn kiro_backup_contract_registration_and_partial_failure_recovery() {
+        let dir = tempdir().unwrap();
+        let global_dir = dir.path().join("kiro.kiroagent");
+        let _guard = use_test_kiro_global_dir(global_dir.clone());
+        let delete_id = "kiro-partial-delete";
+        let rename_id = "kiro-partial-rename";
+        write_native_kiro_scope(
+            &global_dir,
+            Path::new("sessions"),
+            delete_id,
+            "Delete Before",
+        );
+        write_native_kiro_scope(
+            &global_dir,
+            Path::new("workspace-sessions/workspace-a"),
+            rename_id,
+            "Rename Before",
+        );
+        let backup_root = dir.path().join("backups");
+        let contract = KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-contract",
+                delete_id,
+                &backup_root,
+            )
+            .unwrap();
+        let capabilities = KiroProvider.capabilities();
+        assert!(capabilities.backup_support.before_write);
+        assert!(capabilities.backup_support.restore);
+        assert!(!capabilities.backup_support.sync_only);
+        assert_eq!(contract.source_path, global_dir.canonicalize().unwrap());
+        assert_eq!(contract.format, "kiro-session-backup-v1");
+        assert_eq!(
+            contract.mime_type,
+            "application/vnd.memorph.kiro-session-backup"
+        );
+        assert!(contract.backup_path.join("metadata.json").is_file());
+        assert!(contract
+            .backup_path
+            .join("files/0000-session.json")
+            .is_file());
+
+        let mut unconfigured_artifact_conn = rusqlite::Connection::open_in_memory().unwrap();
+        let registration_results = session_management::delete_sessions(
+            PROVIDER_ID,
+            &[delete_id],
+            &["operation-registration".to_string()],
+            &backup_root,
+            &mut unconfigured_artifact_conn,
+        );
+        assert!(registration_results[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("Delete cancelled before provider write"));
+        assert!(global_dir
+            .join("sessions")
+            .join(format!("{delete_id}.json"))
+            .is_file());
+
+        let mut artifact_conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&artifact_conn).unwrap();
+        local_store::apply_schema(&mut artifact_conn).unwrap();
+        set_test_kiro_mutation_failure(Some(ProviderSourceMutation::Delete));
+        let delete_results = session_management::delete_sessions(
+            PROVIDER_ID,
+            &[delete_id],
+            &["operation-partial-delete".to_string()],
+            &backup_root,
+            &mut artifact_conn,
+        );
+        assert!(delete_results[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("Provider source was restored from registered backup"));
+        assert_eq!(
+            target_entry(&global_dir.join("sessions/sessions.json"), delete_id)["title"],
+            "Delete Before"
+        );
+
+        set_test_kiro_mutation_failure(Some(ProviderSourceMutation::Rename));
+        let rename_error = session_management::rename_session(
+            PROVIDER_ID,
+            rename_id,
+            "After",
+            "operation-partial-rename",
+            &backup_root,
+            &mut artifact_conn,
+        )
+        .unwrap_err();
+        assert!(rename_error
+            .to_string()
+            .contains("Provider source was restored from registered backup"));
+        assert_eq!(
+            target_entry(
+                &global_dir.join("workspace-sessions/workspace-a/sessions.json"),
+                rename_id,
+            )["title"],
+            "Rename Before"
+        );
+    }
+
+    #[test]
+    fn failed_kiro_backup_creation_removes_operation_directory() {
+        let dir = tempdir().unwrap();
+        let global_dir = dir.path().join("kiro.kiroagent");
+        let _guard = use_test_kiro_global_dir(global_dir.clone());
+        let session_id = "kiro-backup-failure";
+        write_native_kiro_scope(&global_dir, Path::new("sessions"), session_id, "Before");
+        backup::set_test_backup_failure(true);
+
+        let error = KiroProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-backup-failure",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("injected Kiro backup failure"));
+        assert!(!dir
+            .path()
+            .join("backups/kiro/operation-backup-failure")
+            .exists());
     }
 }
