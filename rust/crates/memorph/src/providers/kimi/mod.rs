@@ -10,7 +10,8 @@ use crate::canonical::{
 use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
     canonical_export_result, canonical_session_title, canonical_visible_block_text, Provider,
-    ProviderCapabilities, ProviderSessionSummary,
+    ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary,
+    ProviderSourceMutation,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -22,10 +23,21 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+mod backup;
+
 pub struct KimiProvider;
 
 const PROVIDER_ID: &str = "kimi";
 const TITLE_MAX_CHARS: usize = 80;
+
+#[cfg(test)]
+static TEST_KIMI_SESSIONS_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+static TEST_KIMI_MUTATION_FAILURE: std::sync::OnceLock<
+    std::sync::Mutex<Option<ProviderSourceMutation>>,
+> = std::sync::OnceLock::new();
 
 impl Provider for KimiProvider {
     fn id(&self) -> &'static str {
@@ -37,7 +49,14 @@ impl Provider for KimiProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::full_session_management()
+        ProviderCapabilities {
+            backup_support: ProviderBackupSupport {
+                before_write: true,
+                restore: true,
+                sync_only: false,
+            },
+            ..ProviderCapabilities::full_session_management()
+        }
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
@@ -175,20 +194,16 @@ impl Provider for KimiProvider {
     }
 
     fn delete_session(&self, session_id: &str) -> Result<()> {
-        if let Some(dir) = find_session_dir(session_id) {
-            std::fs::remove_dir_all(&dir)
-                .with_context(|| format!("Failed to delete Kimi session dir: {}", dir.display()))?;
-        }
+        let dir = backup::validate_mutation_source(ProviderSourceMutation::Delete, session_id)?;
+        std::fs::remove_dir_all(&dir)
+            .with_context(|| format!("Failed to delete Kimi session dir: {}", dir.display()))?;
+        fail_kimi_mutation_after_write(ProviderSourceMutation::Delete)?;
         Ok(())
     }
 
     fn rename_session(&self, session_id: &str, new_title: &str) -> Result<()> {
-        let dir = find_session_dir(session_id)
-            .with_context(|| format!("Kimi session not found: {}", session_id))?;
+        let dir = backup::validate_mutation_source(ProviderSourceMutation::Rename, session_id)?;
         let state_path = dir.join("state.json");
-        if !state_path.exists() {
-            anyhow::bail!("Kimi state.json not found for session: {}", session_id);
-        }
 
         let raw = std::fs::read_to_string(&state_path)?;
         let mut state: Value = serde_json::from_str(&raw)
@@ -201,9 +216,24 @@ impl Provider for KimiProvider {
             );
         }
 
-        let mut file = File::create(&state_path)?;
-        write!(file, "{}", serde_json::to_string_pretty(&state)?)?;
+        let updated = serde_json::to_vec_pretty(&state)?;
+        write_kimi_state_atomically(&state_path, &updated)?;
+        fail_kimi_mutation_after_write(ProviderSourceMutation::Rename)?;
         Ok(())
+    }
+
+    fn create_session_backup(
+        &self,
+        mutation: ProviderSourceMutation,
+        operation_id: &str,
+        session_id: &str,
+        backup_root: &Path,
+    ) -> Result<ProviderSessionBackup> {
+        backup::create_session_backup(mutation, operation_id, session_id, backup_root)
+    }
+
+    fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
+        backup::restore_session_backup(backup)
     }
 
     fn resume_command(&self, session_id: &str) -> Option<String> {
@@ -234,6 +264,16 @@ impl Provider for KimiProvider {
 // ---------------------------------------------------------------------------
 
 fn get_kimi_sessions_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_KIMI_SESSIONS_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Kimi sessions dir lock")
+        .clone()
+    {
+        return path;
+    }
+
     dirs::home_dir()
         .map(|h| h.join(".kimi").join("sessions"))
         .unwrap_or_else(|| PathBuf::from(".kimi").join("sessions"))
@@ -309,6 +349,58 @@ fn find_session_dir(session_id: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn write_kimi_state_atomically(state_path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = state_path
+        .parent()
+        .context("Kimi state.json has no parent directory")?;
+    let temporary_path = parent.join(format!(".state.json.memorph-{}.tmp", Uuid::new_v4()));
+    let write_result = (|| -> Result<()> {
+        let mut file = File::create(&temporary_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temporary_path, state_path)?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temporary_path);
+    }
+    write_result
+}
+
+#[cfg(test)]
+fn set_test_kimi_sessions_dir(path: Option<PathBuf>) {
+    *TEST_KIMI_SESSIONS_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Kimi sessions dir lock") = path;
+}
+
+#[cfg(test)]
+fn set_test_kimi_mutation_failure(mutation: Option<ProviderSourceMutation>) {
+    *TEST_KIMI_MUTATION_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Kimi mutation failure lock") = mutation;
+}
+
+#[cfg(test)]
+fn fail_kimi_mutation_after_write(mutation: ProviderSourceMutation) -> Result<()> {
+    let mut failure = TEST_KIMI_MUTATION_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Kimi mutation failure lock");
+    if *failure == Some(mutation) {
+        *failure = None;
+        anyhow::bail!("injected Kimi mutation failure after provider write");
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn fail_kimi_mutation_after_write(_mutation: ProviderSourceMutation) -> Result<()> {
+    Ok(())
 }
 
 fn wire_last_timestamp(wire_path: &Path) -> Option<i64> {
@@ -911,6 +1003,403 @@ fn parse_wire_timestamp(value: &Value) -> Option<chrono::DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{core::session_management, storage::local_store};
+    use std::collections::BTreeMap;
+    use tempfile::tempdir;
+
+    static TEST_KIMI_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+
+    struct TestKimiSessionsGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for TestKimiSessionsGuard {
+        fn drop(&mut self) {
+            crate::cache::global_cache().invalidate(PROVIDER_ID);
+            backup::set_test_backup_failure(false);
+            set_test_kimi_mutation_failure(None);
+            set_test_kimi_sessions_dir(None);
+        }
+    }
+
+    fn use_test_kimi_sessions_dir(path: PathBuf) -> TestKimiSessionsGuard {
+        let lock = TEST_KIMI_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_test_kimi_sessions_dir(Some(path));
+        crate::cache::global_cache().invalidate(PROVIDER_ID);
+        TestKimiSessionsGuard { _lock: lock }
+    }
+
+    fn write_native_kimi_fixture(root: &Path, project: &str, session_id: &str) -> PathBuf {
+        let session_dir = root.join(project).join(session_id);
+        std::fs::create_dir_all(session_dir.join("nested")).unwrap();
+        std::fs::write(
+            session_dir.join("state.json"),
+            b"{\n  \"version\": 1,\n  \"custom_title\": \"Before\",\n  \"archived\": false,\n  \"native\": {\"keep\": true}\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            session_dir.join("wire.jsonl"),
+            b"{\"timestamp\":1710000000.0,\"message\":{\"type\":\"metadata\"}}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            session_dir.join("context.jsonl"),
+            b"{\"role\":\"user\",\"content\":\"hello\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            session_dir.join("nested").join("native.bin"),
+            [0_u8, 1, 127, 128, 255],
+        )
+        .unwrap();
+        session_dir
+    }
+
+    fn session_tree_bytes(session_dir: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
+        WalkDir::new(session_dir)
+            .min_depth(1)
+            .into_iter()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| {
+                (
+                    entry
+                        .path()
+                        .strip_prefix(session_dir)
+                        .unwrap()
+                        .to_path_buf(),
+                    std::fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn delete_backup_restores_exact_kimi_directory_and_preserves_unrelated_sessions() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(root.clone());
+        let session_id = "kimi-delete";
+        let session_dir = write_native_kimi_fixture(&root, "project-a", session_id);
+        let unrelated_dir = write_native_kimi_fixture(&root, "project-b", "kimi-other");
+        let original = session_tree_bytes(&session_dir);
+        let backup = KimiProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-kimi-delete",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+
+        KimiProvider.delete_session(session_id).unwrap();
+        assert!(!session_dir.exists());
+        std::fs::write(unrelated_dir.join("wire.jsonl"), b"changed concurrently\n").unwrap();
+
+        KimiProvider.restore_session_backup(&backup).unwrap();
+        KimiProvider.restore_session_backup(&backup).unwrap();
+
+        assert_eq!(session_tree_bytes(&session_dir), original);
+        assert_eq!(
+            std::fs::read(unrelated_dir.join("wire.jsonl")).unwrap(),
+            b"changed concurrently\n"
+        );
+    }
+
+    #[test]
+    fn rename_backup_restores_exact_state_only_and_preserves_other_changes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(root.clone());
+        let session_id = "kimi-rename";
+        let session_dir = write_native_kimi_fixture(&root, "project-a", session_id);
+        let original_state = std::fs::read(session_dir.join("state.json")).unwrap();
+        let backup = KimiProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-kimi-rename",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+
+        KimiProvider.rename_session(session_id, "After").unwrap();
+        std::fs::write(
+            session_dir.join("wire.jsonl"),
+            b"wire changed concurrently\n",
+        )
+        .unwrap();
+        std::fs::write(session_dir.join("concurrent.txt"), b"keep me").unwrap();
+
+        KimiProvider.restore_session_backup(&backup).unwrap();
+        KimiProvider.restore_session_backup(&backup).unwrap();
+
+        assert_eq!(
+            std::fs::read(session_dir.join("state.json")).unwrap(),
+            original_state
+        );
+        assert_eq!(
+            std::fs::read(session_dir.join("wire.jsonl")).unwrap(),
+            b"wire changed concurrently\n"
+        );
+        assert_eq!(
+            std::fs::read(session_dir.join("concurrent.txt")).unwrap(),
+            b"keep me"
+        );
+    }
+
+    #[test]
+    fn rename_restore_does_not_recreate_concurrently_deleted_state() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(root.clone());
+        let session_id = "kimi-concurrent-delete";
+        let session_dir = write_native_kimi_fixture(&root, "project-a", session_id);
+        let backup = KimiProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-kimi-concurrent-delete",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+        KimiProvider.rename_session(session_id, "After").unwrap();
+        std::fs::remove_file(session_dir.join("state.json")).unwrap();
+
+        KimiProvider.restore_session_backup(&backup).unwrap();
+
+        assert!(!session_dir.join("state.json").exists());
+    }
+
+    #[test]
+    fn kimi_backup_contract_and_capabilities_are_truthful() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(root.clone());
+        let session_id = "kimi-contract";
+        let session_dir = write_native_kimi_fixture(&root, "project-a", session_id);
+        let backup = KimiProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-kimi-contract",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+
+        let capabilities = KimiProvider.capabilities();
+        assert!(capabilities.backup_support.before_write);
+        assert!(capabilities.backup_support.restore);
+        assert!(!capabilities.backup_support.sync_only);
+        assert_eq!(backup.source_path, session_dir.canonicalize().unwrap());
+        assert_eq!(backup.format, "kimi-session-backup-v1");
+        assert_eq!(
+            backup.mime_type,
+            "application/vnd.memorph.kimi-session-backup"
+        );
+        assert!(backup.backup_path.join("metadata.json").is_file());
+        assert!(backup.backup_path.join("session/state.json").is_file());
+        assert!(backup
+            .backup_path
+            .join("session/nested/native.bin")
+            .is_file());
+    }
+
+    #[test]
+    fn backup_registration_failure_prevents_kimi_provider_write() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(root.clone());
+        let session_id = "kimi-registration-failure";
+        let session_dir = write_native_kimi_fixture(&root, "project-a", session_id);
+        let mut artifact_conn = rusqlite::Connection::open_in_memory().unwrap();
+
+        let results = session_management::delete_sessions(
+            PROVIDER_ID,
+            &[session_id],
+            &["operation-kimi-registration".to_string()],
+            &dir.path().join("backups"),
+            &mut artifact_conn,
+        );
+
+        assert!(results[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("Delete cancelled before provider write"));
+        assert!(session_dir.exists());
+        assert!(dir
+            .path()
+            .join("backups/kimi/operation-kimi-registration")
+            .exists());
+    }
+
+    #[test]
+    fn partial_kimi_delete_and_rename_failures_restore_registered_backups() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(root.clone());
+        let delete_id = "kimi-partial-delete";
+        let rename_id = "kimi-partial-rename";
+        let delete_dir = write_native_kimi_fixture(&root, "project-a", delete_id);
+        let rename_dir = write_native_kimi_fixture(&root, "project-a", rename_id);
+        let delete_original = session_tree_bytes(&delete_dir);
+        let rename_original = std::fs::read(rename_dir.join("state.json")).unwrap();
+        let mut artifact_conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&artifact_conn).unwrap();
+        local_store::apply_schema(&mut artifact_conn).unwrap();
+
+        set_test_kimi_mutation_failure(Some(ProviderSourceMutation::Delete));
+        let delete_results = session_management::delete_sessions(
+            PROVIDER_ID,
+            &[delete_id],
+            &["operation-kimi-partial-delete".to_string()],
+            &dir.path().join("backups"),
+            &mut artifact_conn,
+        );
+        assert!(delete_results[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("Provider source was restored from registered backup"));
+        assert_eq!(session_tree_bytes(&delete_dir), delete_original);
+
+        set_test_kimi_mutation_failure(Some(ProviderSourceMutation::Rename));
+        let rename_error = session_management::rename_session(
+            PROVIDER_ID,
+            rename_id,
+            "After",
+            "operation-kimi-partial-rename",
+            &dir.path().join("backups"),
+            &mut artifact_conn,
+        )
+        .unwrap_err();
+        assert!(rename_error
+            .to_string()
+            .contains("Provider source was restored from registered backup"));
+        assert_eq!(
+            std::fs::read(rename_dir.join("state.json")).unwrap(),
+            rename_original
+        );
+    }
+
+    #[test]
+    fn kimi_backup_rejects_ambiguous_and_unsafe_sources_before_mutation() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(root.clone());
+        let session_id = "kimi-ambiguous";
+        let first = write_native_kimi_fixture(&root, "project-a", session_id);
+        write_native_kimi_fixture(&root, "project-b", session_id);
+
+        let error = KimiProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-kimi-ambiguous",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("not found or ambiguous"));
+        assert!(first.exists());
+
+        std::fs::remove_dir_all(root.join("project-b").join(session_id)).unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(first.join("wire.jsonl"), first.join("unsafe-wire-link"))
+                .unwrap();
+            let error = KimiProvider
+                .create_session_backup(
+                    ProviderSourceMutation::Delete,
+                    "operation-kimi-unsafe",
+                    session_id,
+                    &dir.path().join("backups"),
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("unsupported filesystem entry"));
+        }
+    }
+
+    #[test]
+    fn kimi_restore_rejects_metadata_and_content_tampering() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(root.clone());
+        let session_id = "kimi-tamper";
+        write_native_kimi_fixture(&root, "project-a", session_id);
+        let backup_root = dir.path().join("backups");
+
+        let content_backup = KimiProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-kimi-content-tamper",
+                session_id,
+                &backup_root,
+            )
+            .unwrap();
+        std::fs::write(
+            content_backup.backup_path.join("session/state.json"),
+            b"tampered",
+        )
+        .unwrap();
+        assert!(KimiProvider
+            .restore_session_backup(&content_backup)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match its manifest"));
+
+        let metadata_backup = KimiProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-kimi-metadata-tamper",
+                session_id,
+                &backup_root,
+            )
+            .unwrap();
+        let metadata_path = metadata_backup.backup_path.join("metadata.json");
+        let mut metadata: Value =
+            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+        metadata["provider_session_id"] = Value::String("other-session".to_string());
+        std::fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+        assert!(KimiProvider
+            .restore_session_backup(&metadata_backup)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match the registered restore context"));
+    }
+
+    #[test]
+    fn failed_kimi_backup_creation_removes_operation_directory() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(root.clone());
+        let session_id = "kimi-backup-failure";
+        write_native_kimi_fixture(&root, "project-a", session_id);
+        backup::set_test_backup_failure(true);
+
+        let error = KimiProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-kimi-backup-failure",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("injected Kimi backup failure"));
+        assert!(!dir
+            .path()
+            .join("backups/kimi/operation-kimi-backup-failure")
+            .exists());
+    }
 
     #[test]
     fn import_canonical_session_preserves_kimi_wire_events_and_state() -> Result<()> {
