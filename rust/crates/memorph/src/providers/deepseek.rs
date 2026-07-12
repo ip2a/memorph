@@ -7,7 +7,8 @@ use crate::canonical::{
 use crate::provider::{
     canonical_event_role_label, canonical_event_visible_message_role,
     canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
-    Provider, ProviderCapabilities, ProviderSessionSummary,
+    Provider, ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup,
+    ProviderSessionSummary, ProviderSourceMutation,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -17,9 +18,20 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+mod backup;
+
 pub struct DeepseekProvider;
 
 const PROVIDER_ID: &str = "deepseek";
+
+#[cfg(test)]
+static TEST_DEEPSEEK_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+static TEST_DEEPSEEK_MUTATION_FAILURE: std::sync::OnceLock<
+    std::sync::Mutex<Option<ProviderSourceMutation>>,
+> = std::sync::OnceLock::new();
 
 impl Provider for DeepseekProvider {
     fn id(&self) -> &'static str {
@@ -31,7 +43,14 @@ impl Provider for DeepseekProvider {
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities::full_session_management()
+        ProviderCapabilities {
+            backup_support: ProviderBackupSupport {
+                before_write: true,
+                restore: true,
+                sync_only: false,
+            },
+            ..ProviderCapabilities::full_session_management()
+        }
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
@@ -146,14 +165,21 @@ impl Provider for DeepseekProvider {
         if !db_path.exists() {
             return Ok(());
         }
-        let conn = Connection::open(&db_path)?;
-        conn.execute("DELETE FROM messages WHERE thread_id = ?1", [session_id])?;
-        conn.execute("DELETE FROM checkpoints WHERE thread_id = ?1", [session_id])?;
-        conn.execute(
+        let mut conn = Connection::open(&db_path)?;
+        backup::validate_mutation_source(&conn, ProviderSourceMutation::Delete, session_id)?;
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM messages WHERE thread_id = ?1", [session_id])?;
+        tx.execute("DELETE FROM checkpoints WHERE thread_id = ?1", [session_id])?;
+        tx.execute(
             "DELETE FROM thread_dynamic_tools WHERE thread_id = ?1",
             [session_id],
         )?;
-        conn.execute("DELETE FROM threads WHERE id = ?1", [session_id])?;
+        let deleted = tx.execute("DELETE FROM threads WHERE id = ?1", [session_id])?;
+        if deleted != 1 {
+            anyhow::bail!("DeepSeek thread not found: {session_id}");
+        }
+        tx.commit()?;
+        fail_deepseek_mutation_after_write(ProviderSourceMutation::Delete)?;
         Ok(())
     }
 
@@ -162,16 +188,36 @@ impl Provider for DeepseekProvider {
         if !db_path.exists() {
             return Ok(());
         }
-        let conn = Connection::open(&db_path)?;
+        let mut conn = Connection::open(&db_path)?;
+        backup::validate_mutation_source(&conn, ProviderSourceMutation::Rename, session_id)?;
         let now = Utc::now().timestamp();
-        conn.execute(
+        let tx = conn.transaction()?;
+        let updated = tx.execute(
             "UPDATE threads SET title = ?1, preview = ?1, updated_at = ?2 WHERE id = ?3",
             [new_title, &now.to_string(), session_id],
         )?;
+        if updated != 1 {
+            anyhow::bail!("DeepSeek thread not found: {session_id}");
+        }
+        tx.commit()?;
 
-        // Also update session_index.jsonl
         append_session_index(session_id, Some(new_title), now, None)?;
+        fail_deepseek_mutation_after_write(ProviderSourceMutation::Rename)?;
         Ok(())
+    }
+
+    fn create_session_backup(
+        &self,
+        mutation: ProviderSourceMutation,
+        operation_id: &str,
+        session_id: &str,
+        backup_root: &Path,
+    ) -> Result<ProviderSessionBackup> {
+        backup::create_session_backup(mutation, operation_id, session_id, backup_root)
+    }
+
+    fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
+        backup::restore_session_backup(backup)
     }
 
     fn resume_command(&self, session_id: &str) -> Option<String> {
@@ -236,10 +282,28 @@ fn deepseek_session_size_with_conn(conn: &Connection, session_id: &str) -> Resul
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn get_state_db_path() -> PathBuf {
+fn get_deepseek_dir() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = TEST_DEEPSEEK_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test DeepSeek dir lock")
+        .clone()
+    {
+        return path;
+    }
+
     dirs::home_dir()
-        .map(|h| h.join(".deepseek").join("state.db"))
-        .unwrap_or_else(|| PathBuf::from(".deepseek").join("state.db"))
+        .map(|h| h.join(".deepseek"))
+        .unwrap_or_else(|| PathBuf::from(".deepseek"))
+}
+
+fn get_state_db_path() -> PathBuf {
+    get_deepseek_dir().join("state.db")
+}
+
+fn get_session_index_path() -> PathBuf {
+    get_deepseek_dir().join("session_index.jsonl")
 }
 
 fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
@@ -658,9 +722,7 @@ fn append_session_index(
     updated_at: i64,
     rollout_path: Option<&Path>,
 ) -> Result<()> {
-    let index_path = dirs::home_dir()
-        .map(|h| h.join(".deepseek").join("session_index.jsonl"))
-        .unwrap_or_else(|| PathBuf::from(".deepseek").join("session_index.jsonl"));
+    let index_path = get_session_index_path();
 
     if let Some(parent) = index_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -683,8 +745,806 @@ fn append_session_index(
 }
 
 #[cfg(test)]
+fn set_test_deepseek_dir(path: Option<PathBuf>) {
+    *TEST_DEEPSEEK_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test DeepSeek dir lock") = path;
+}
+
+#[cfg(test)]
+fn set_test_deepseek_mutation_failure(mutation: Option<ProviderSourceMutation>) {
+    *TEST_DEEPSEEK_MUTATION_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test DeepSeek mutation failure lock") = mutation;
+}
+
+#[cfg(test)]
+fn fail_deepseek_mutation_after_write(mutation: ProviderSourceMutation) -> Result<()> {
+    let mut failure = TEST_DEEPSEEK_MUTATION_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test DeepSeek mutation failure lock");
+    if *failure == Some(mutation) {
+        *failure = None;
+        anyhow::bail!("injected DeepSeek mutation failure after provider write");
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn fail_deepseek_mutation_after_write(_mutation: ProviderSourceMutation) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{core::session_management, storage::local_store};
+    use rusqlite::params;
+    use rusqlite::types::Value as SqliteValue;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    static TEST_DEEPSEEK_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+
+    struct TestDeepseekDirGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for TestDeepseekDirGuard {
+        fn drop(&mut self) {
+            crate::cache::global_cache().invalidate(PROVIDER_ID);
+            backup::set_test_backup_failure(false);
+            set_test_deepseek_mutation_failure(None);
+            set_test_deepseek_dir(None);
+        }
+    }
+
+    fn use_test_deepseek_dir(path: PathBuf) -> TestDeepseekDirGuard {
+        let lock = TEST_DEEPSEEK_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        set_test_deepseek_dir(Some(path));
+        crate::cache::global_cache().invalidate(PROVIDER_ID);
+        TestDeepseekDirGuard { _lock: lock }
+    }
+
+    struct NativeDeepseekFixture {
+        index_path: PathBuf,
+        original_index_bytes: Vec<u8>,
+    }
+
+    fn write_native_deepseek_fixture(
+        deepseek_dir: &Path,
+        session_id: &str,
+    ) -> NativeDeepseekFixture {
+        std::fs::create_dir_all(deepseek_dir).unwrap();
+        let db_path = deepseek_dir.join("state.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                preview TEXT NOT NULL,
+                cwd TEXT NOT NULL,
+                title TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                model_provider TEXT NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0,
+                unrelated_note TEXT NOT NULL,
+                native_blob BLOB
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                item_json TEXT,
+                created_at INTEGER NOT NULL,
+                native_blob BLOB,
+                FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+            );
+            CREATE TABLE checkpoints (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                payload BLOB,
+                note TEXT NOT NULL,
+                FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+            );
+            CREATE TABLE thread_dynamic_tools (
+                thread_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                tool_name TEXT NOT NULL,
+                payload BLOB,
+                PRIMARY KEY (thread_id, position),
+                FOREIGN KEY (thread_id) REFERENCES threads(id) ON DELETE CASCADE
+            );
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (
+                id, preview, cwd, title, created_at, updated_at, model_provider,
+                archived, unrelated_note, native_blob
+             ) VALUES (?1, 'Before preview', '/tmp/deepseek', 'Before', 100, 200,
+                'deepseek', 0, 'target note', ?2)",
+            params![session_id, vec![0_u8, 1, 127, 128, 255]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (
+                id, preview, cwd, title, created_at, updated_at, model_provider,
+                archived, unrelated_note, native_blob
+             ) VALUES ('thread-other', 'Other preview', '/tmp/other', 'Other', 300,
+                400, 'deepseek', 0, 'other note', X'1020')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (
+                id, thread_id, role, content, item_json, created_at, native_blob
+             ) VALUES (1, ?1, 'user', 'hello', '{\"kind\":\"message\"}', 101, ?2)",
+            params![session_id, vec![255_u8, 0, 128]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (
+                id, thread_id, role, content, item_json, created_at, native_blob
+             ) VALUES (2, 'thread-other', 'user', 'other', NULL, 301, X'22')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO checkpoints (id, thread_id, payload, note)
+             VALUES ('checkpoint-1', ?1, ?2, 'target checkpoint')",
+            params![session_id, vec![1_u8, 2, 3, 250]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO checkpoints (id, thread_id, payload, note)
+             VALUES ('checkpoint-other', 'thread-other', X'33', 'other checkpoint')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO thread_dynamic_tools (thread_id, position, tool_name, payload)
+             VALUES (?1, 0, 'shell', ?2)",
+            params![session_id, vec![4_u8, 5, 200]],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO thread_dynamic_tools (thread_id, position, tool_name, payload)
+             VALUES ('thread-other', 0, 'read', X'44')",
+            [],
+        )
+        .unwrap();
+
+        let index_path = deepseek_dir.join("session_index.jsonl");
+        let original_index_bytes = [
+            serde_json::to_string(&json!({
+                "thread_id": session_id,
+                "thread_name": "Before",
+                "updated_at": 200,
+                "rollout_path": null
+            }))
+            .unwrap(),
+            serde_json::to_string(&json!({
+                "thread_id": "thread-other",
+                "thread_name": "Other",
+                "updated_at": 400,
+                "rollout_path": null
+            }))
+            .unwrap(),
+        ]
+        .join("\n")
+        .into_bytes();
+        let mut original_index_bytes = original_index_bytes;
+        original_index_bytes.push(b'\n');
+        std::fs::write(&index_path, &original_index_bytes).unwrap();
+
+        NativeDeepseekFixture {
+            index_path,
+            original_index_bytes,
+        }
+    }
+
+    fn deepseek_session_row_counts(deepseek_dir: &Path, session_id: &str) -> Vec<i64> {
+        let conn = Connection::open(deepseek_dir.join("state.db")).unwrap();
+        [
+            ("threads", "id"),
+            ("messages", "thread_id"),
+            ("checkpoints", "thread_id"),
+            ("thread_dynamic_tools", "thread_id"),
+        ]
+        .into_iter()
+        .map(|(table, column)| {
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                [session_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        })
+        .collect()
+    }
+
+    fn target_thread_values(
+        deepseek_dir: &Path,
+        session_id: &str,
+    ) -> Option<(String, String, i64, String, SqliteValue)> {
+        Connection::open(deepseek_dir.join("state.db"))
+            .unwrap()
+            .query_row(
+                "SELECT title, preview, updated_at, unrelated_note, native_blob
+                 FROM threads WHERE id = ?1",
+                [session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .unwrap()
+    }
+
+    #[test]
+    fn delete_backup_restores_exact_deepseek_rows_and_preserves_unrelated_rows() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-delete-backup";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let original_thread = target_thread_values(&get_deepseek_dir(), session_id).unwrap();
+        let backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-delete-1",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+
+        DeepseekProvider.delete_session(session_id).unwrap();
+        assert_eq!(
+            deepseek_session_row_counts(&get_deepseek_dir(), session_id),
+            vec![0, 0, 0, 0]
+        );
+        let conn = Connection::open(get_state_db_path()).unwrap();
+        conn.execute(
+            "UPDATE threads
+             SET unrelated_note = 'other changed', native_blob = X'AABB'
+             WHERE id = 'thread-other'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        DeepseekProvider.restore_session_backup(&backup).unwrap();
+        DeepseekProvider.restore_session_backup(&backup).unwrap();
+
+        assert_eq!(
+            deepseek_session_row_counts(&get_deepseek_dir(), session_id),
+            vec![1, 1, 1, 1]
+        );
+        assert_eq!(
+            target_thread_values(&get_deepseek_dir(), session_id).as_ref(),
+            Some(&original_thread)
+        );
+        let conn = Connection::open(get_state_db_path()).unwrap();
+        let other: (String, Vec<u8>) = conn
+            .query_row(
+                "SELECT unrelated_note, native_blob FROM threads WHERE id = 'thread-other'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(other, ("other changed".to_string(), vec![0xAA, 0xBB]));
+        let message_blob: Vec<u8> = conn
+            .query_row(
+                "SELECT native_blob FROM messages WHERE thread_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(message_blob, vec![255_u8, 0, 128]);
+    }
+
+    #[test]
+    fn rename_backup_restores_owned_fields_and_removes_only_target_index_append() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-rename-backup";
+        let fixture = write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-rename-1",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+
+        DeepseekProvider
+            .rename_session(session_id, "After")
+            .unwrap();
+        let conn = Connection::open(get_state_db_path()).unwrap();
+        conn.execute(
+            "UPDATE threads
+             SET cwd = '/tmp/changed', unrelated_note = 'changed independently',
+                 native_blob = X'FEED'
+             WHERE id = ?1",
+            [session_id],
+        )
+        .unwrap();
+        drop(conn);
+        append_session_index("thread-concurrent", Some("Concurrent"), 999, None).unwrap();
+
+        DeepseekProvider.restore_session_backup(&backup).unwrap();
+        DeepseekProvider.restore_session_backup(&backup).unwrap();
+
+        let conn = Connection::open(get_state_db_path()).unwrap();
+        let thread: (String, String, i64, String, String, Vec<u8>) = conn
+            .query_row(
+                "SELECT title, preview, updated_at, cwd, unrelated_note, native_blob
+                 FROM threads WHERE id = ?1",
+                [session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            thread,
+            (
+                "Before".to_string(),
+                "Before preview".to_string(),
+                200,
+                "/tmp/changed".to_string(),
+                "changed independently".to_string(),
+                vec![0xFE, 0xED],
+            )
+        );
+        let current_index = std::fs::read(&fixture.index_path).unwrap();
+        assert!(current_index.starts_with(&fixture.original_index_bytes));
+        let suffix = &current_index[fixture.original_index_bytes.len()..];
+        assert_eq!(
+            std::str::from_utf8(suffix)
+                .unwrap()
+                .lines()
+                .map(
+                    |line| serde_json::from_str::<Value>(line).unwrap()["thread_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_string()
+                )
+                .collect::<Vec<_>>(),
+            vec!["thread-concurrent".to_string()]
+        );
+    }
+
+    #[test]
+    fn rename_restore_does_not_recreate_concurrently_deleted_thread() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-concurrent-delete";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-concurrent-delete",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+        DeepseekProvider
+            .rename_session(session_id, "After")
+            .unwrap();
+        Connection::open(get_state_db_path())
+            .unwrap()
+            .execute("DELETE FROM threads WHERE id = ?1", [session_id])
+            .unwrap();
+
+        DeepseekProvider.restore_session_backup(&backup).unwrap();
+
+        assert!(target_thread_values(&get_deepseek_dir(), session_id).is_none());
+    }
+
+    #[test]
+    fn deepseek_backup_contract_and_capabilities_are_truthful() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-backup-contract";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-contract-1",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+
+        let capabilities = DeepseekProvider.capabilities();
+        assert!(capabilities.backup_support.before_write);
+        assert!(capabilities.backup_support.restore);
+        assert!(!capabilities.backup_support.sync_only);
+        assert_eq!(backup.mutation, ProviderSourceMutation::Rename);
+        assert_eq!(backup.operation_id, "operation-contract-1");
+        assert_eq!(backup.provider_session_id, session_id);
+        assert_eq!(
+            backup.source_path,
+            get_state_db_path().canonicalize().unwrap()
+        );
+        assert_eq!(backup.format, "deepseek-session-backup-v1");
+        assert_eq!(
+            backup.mime_type,
+            "application/vnd.memorph.deepseek-session-backup"
+        );
+        assert_eq!(
+            backup
+                .restore_metadata
+                .get("restore_mode")
+                .and_then(Value::as_str),
+            Some("deepseek_session_restore")
+        );
+        assert!(backup.backup_path.join("metadata.json").is_file());
+        assert!(backup
+            .backup_path
+            .join("sqlite/deepseek-session.db")
+            .is_file());
+        assert!(backup
+            .backup_path
+            .join("files/session_index.jsonl")
+            .is_file());
+    }
+
+    #[test]
+    fn backup_registration_failure_prevents_deepseek_provider_write() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-registration-failure";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let backup_root = dir.path().join("backups");
+        let mut artifact_conn = Connection::open_in_memory().unwrap();
+
+        let results = session_management::delete_sessions(
+            PROVIDER_ID,
+            &[session_id],
+            &["operation-registration-failure".to_string()],
+            &backup_root,
+            &mut artifact_conn,
+        );
+
+        let error = results.into_iter().next().unwrap().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Delete cancelled before provider write"));
+        assert_eq!(
+            deepseek_session_row_counts(&get_deepseek_dir(), session_id),
+            vec![1, 1, 1, 1]
+        );
+        assert!(backup_root
+            .join(PROVIDER_ID)
+            .join("operation-registration-failure")
+            .exists());
+    }
+
+    #[test]
+    fn partial_deepseek_delete_failure_restores_registered_backup() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-partial-delete";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let mut artifact_conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&artifact_conn).unwrap();
+        local_store::apply_schema(&mut artifact_conn).unwrap();
+        set_test_deepseek_mutation_failure(Some(ProviderSourceMutation::Delete));
+
+        let results = session_management::delete_sessions(
+            PROVIDER_ID,
+            &[session_id],
+            &["operation-partial-delete".to_string()],
+            &dir.path().join("backups"),
+            &mut artifact_conn,
+        );
+
+        let error = results.into_iter().next().unwrap().unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Provider source was restored from registered backup"));
+        assert_eq!(
+            deepseek_session_row_counts(&get_deepseek_dir(), session_id),
+            vec![1, 1, 1, 1]
+        );
+    }
+
+    #[test]
+    fn partial_deepseek_rename_failure_restores_registered_backup() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-partial-rename";
+        let fixture = write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let mut artifact_conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&artifact_conn).unwrap();
+        local_store::apply_schema(&mut artifact_conn).unwrap();
+        set_test_deepseek_mutation_failure(Some(ProviderSourceMutation::Rename));
+
+        let error = session_management::rename_session(
+            PROVIDER_ID,
+            session_id,
+            "After",
+            "operation-partial-rename",
+            &dir.path().join("backups"),
+            &mut artifact_conn,
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("Provider source was restored from registered backup"));
+        assert_eq!(
+            target_thread_values(&get_deepseek_dir(), session_id)
+                .unwrap()
+                .0,
+            "Before"
+        );
+        assert_eq!(
+            std::fs::read(&fixture.index_path).unwrap(),
+            fixture.original_index_bytes
+        );
+    }
+
+    #[test]
+    fn deepseek_backup_rejects_unsafe_schema_before_mutation() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        std::fs::create_dir_all(get_deepseek_dir()).unwrap();
+        let conn = Connection::open(get_state_db_path()).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE threads (
+                id TEXT,
+                title TEXT,
+                preview TEXT,
+                updated_at INTEGER
+            );
+            CREATE TABLE messages (thread_id TEXT);
+            CREATE TABLE checkpoints (thread_id TEXT);
+            CREATE TABLE thread_dynamic_tools (thread_id TEXT);
+            INSERT INTO threads (id, title, preview, updated_at)
+            VALUES ('unsafe-thread', 'Before', 'Before', 1);
+            ",
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-unsafe-schema",
+                "unsafe-thread",
+                &dir.path().join("backups"),
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("does not enforce a unique id"));
+        assert!(!dir
+            .path()
+            .join("backups/deepseek/operation-unsafe-schema")
+            .exists());
+        assert_eq!(
+            Connection::open(get_state_db_path())
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM threads WHERE id = 'unsafe-thread'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
+
+        std::fs::remove_file(get_state_db_path()).unwrap();
+        let conn = Connection::open(get_state_db_path()).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                preview TEXT,
+                updated_at INTEGER
+            );
+            CREATE TABLE messages (thread_id TEXT);
+            CREATE TABLE thread_dynamic_tools (thread_id TEXT);
+            INSERT INTO threads (id, title, preview, updated_at)
+            VALUES ('missing-table-thread', 'Before', 'Before', 1);
+            ",
+        )
+        .unwrap();
+        drop(conn);
+        let error = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-missing-table",
+                "missing-table-thread",
+                &dir.path().join("backups"),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("table does not exist"));
+        assert!(!dir
+            .path()
+            .join("backups/deepseek/operation-missing-table")
+            .exists());
+    }
+
+    #[test]
+    fn deepseek_restore_rejects_manifest_selection_and_schema_tampering() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-tampering";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let backup_root = dir.path().join("backups");
+
+        let manifest_backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-manifest-tamper",
+                session_id,
+                &backup_root,
+            )
+            .unwrap();
+        let metadata_path = manifest_backup.backup_path.join("metadata.json");
+        let mut metadata: Value =
+            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+        metadata["sqlite_tables"][0]["row_count"] = json!(99);
+        std::fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+        assert!(DeepseekProvider
+            .restore_session_backup(&manifest_backup)
+            .unwrap_err()
+            .to_string()
+            .contains("row count"));
+
+        let selection_backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-selection-tamper",
+                session_id,
+                &backup_root,
+            )
+            .unwrap();
+        Connection::open(
+            selection_backup
+                .backup_path
+                .join("sqlite/deepseek-session.db"),
+        )
+        .unwrap()
+        .execute("UPDATE threads SET id = 'thread-outside-selection'", [])
+        .unwrap();
+        assert!(DeepseekProvider
+            .restore_session_backup(&selection_backup)
+            .unwrap_err()
+            .to_string()
+            .contains("outside the target session"));
+
+        let schema_backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-schema-tamper",
+                session_id,
+                &backup_root,
+            )
+            .unwrap();
+        Connection::open(get_state_db_path())
+            .unwrap()
+            .execute("ALTER TABLE messages ADD COLUMN schema_drift TEXT", [])
+            .unwrap();
+        assert!(DeepseekProvider
+            .restore_session_backup(&schema_backup)
+            .unwrap_err()
+            .to_string()
+            .contains("schema does not match"));
+    }
+
+    #[test]
+    fn deepseek_index_restore_rejects_ambiguous_target_appends() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-ambiguous-index";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-ambiguous-index",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+        DeepseekProvider
+            .rename_session(session_id, "After")
+            .unwrap();
+        append_session_index(session_id, Some("Concurrent target"), 999, None).unwrap();
+
+        let error = DeepseekProvider
+            .restore_session_backup(&backup)
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("multiple target records"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn rename_restore_removes_new_index_file_when_target_append_is_only_content() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-index-absent";
+        let fixture = write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        std::fs::remove_file(&fixture.index_path).unwrap();
+        let backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-index-absent",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+        DeepseekProvider
+            .rename_session(session_id, "After")
+            .unwrap();
+
+        DeepseekProvider.restore_session_backup(&backup).unwrap();
+        DeepseekProvider.restore_session_backup(&backup).unwrap();
+
+        assert!(!fixture.index_path.exists());
+    }
+
+    #[test]
+    fn failed_deepseek_backup_creation_removes_operation_directory() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-backup-cleanup";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let backup_root = dir.path().join("backups");
+        backup::set_test_backup_failure(true);
+
+        let error = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Rename,
+                "operation-backup-cleanup",
+                session_id,
+                &backup_root,
+            )
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("injected DeepSeek backup failure"));
+        assert!(!backup_root
+            .join(PROVIDER_ID)
+            .join("operation-backup-cleanup")
+            .exists());
+    }
 
     #[test]
     fn import_canonical_session_preserves_workspace_tool_payloads_and_history() {
