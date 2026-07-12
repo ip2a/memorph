@@ -124,6 +124,9 @@ pub fn router() -> Router {
         .route("/api/v1/system/select-file", post(select_file))
         .route("/api/v1/system/open-external", post(open_external))
         .route("/api/v1/management/activity", get(list_management_activity))
+        .route("/api/v1/backups", get(list_backups))
+        .route("/api/v1/backups/{backup_id}", get(get_backup))
+        .route("/api/v1/backups/{backup_id}/restore", post(restore_backup))
         .route("/api/v1/sessions", get(list_sessions))
         .route(
             "/api/v1/sessions/refresh-stale",
@@ -1410,6 +1413,57 @@ async fn list_management_activity(
     match core::list_management_activity(&query) {
         Ok(activities) => ApiResponse::success(activities).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct BackupQueryParams {
+    operation_id: Option<String>,
+    provider: Option<String>,
+    provider_session_id: Option<String>,
+    restore_status: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn list_backups(Query(query): Query<BackupQueryParams>) -> impl IntoResponse {
+    let restore_status =
+        match parse_management_activity_filter("restore_status", query.restore_status.as_deref()) {
+            Ok(value) => value,
+            Err(error) => return api_error(StatusCode::BAD_REQUEST, error).into_response(),
+        };
+    match core::session_management::list_registered_backups(
+        crate::storage::artifact_store::BackupQuery {
+            operation_id: query.operation_id,
+            provider_id: query.provider,
+            provider_session_id: query.provider_session_id,
+            restore_status,
+            limit: query.limit,
+        },
+    ) {
+        Ok(backups) => ApiResponse::success(backups).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn get_backup(Path(backup_id): Path<String>) -> impl IntoResponse {
+    match core::session_management::get_registered_backup(&backup_id) {
+        Ok(Some(backup)) => ApiResponse::success(backup).into_response(),
+        Ok(None) => api_error(
+            StatusCode::NOT_FOUND,
+            format!("Unknown backup: {backup_id}"),
+        )
+        .into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn restore_backup(Path(backup_id): Path<String>) -> impl IntoResponse {
+    match core::session_management::restore_registered_backup(&backup_id, ActivityActor::Api) {
+        Ok(restore) => ApiResponse::success(restore).into_response(),
+        Err(error) if error.to_string().contains("Unknown backup:") => {
+            api_error(StatusCode::NOT_FOUND, error).into_response()
+        }
+        Err(error) => api_error(StatusCode::CONFLICT, error).into_response(),
     }
 }
 
@@ -2777,6 +2831,50 @@ mod tests {
         assert_eq!(activities[0]["operation_kind"], "export");
         assert_eq!(activities[0]["status"], "success");
         assert_eq!(activities[0]["actor"], "cli");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn backup_routes_query_empty_store_and_reject_unknown_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+
+        let request = Request::builder()
+            .uri("/api/v1/backups?provider=claude&restore_status=success&limit=10")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"].as_array().unwrap().len(), 0);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/backups/missing/restore")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown backup: missing"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn backup_query_rejects_unknown_restore_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let request = Request::builder()
+            .uri("/api/v1/backups?restore_status=not-a-status")
+            .body(Body::empty())
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Unknown backup restore status"));
     }
 
     #[tokio::test(flavor = "current_thread")]

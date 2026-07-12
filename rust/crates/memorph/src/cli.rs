@@ -113,6 +113,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: SessionCommands,
     },
+    /// Query and restore registered native session backups
+    Backups {
+        #[command(subcommand)]
+        command: BackupCommands,
+    },
     /// Manage synchronized multi-provider sessions
     #[command(name = "sync")]
     Sync {
@@ -227,6 +232,46 @@ pub enum SessionCommands {
         /// Limit reprojection to one provider
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum BackupCommands {
+    /// List registered backups
+    List {
+        /// Filter by mutation operation ID
+        #[arg(long, value_name = "OPERATION_ID")]
+        operation: Option<String>,
+        /// Filter by provider ID
+        #[arg(short, long, value_name = "PROVIDER")]
+        provider: Option<String>,
+        /// Filter by provider session ID
+        #[arg(long, value_name = "SESSION_ID")]
+        session: Option<String>,
+        /// Filter by latest restore status: running, success, failed
+        #[arg(long, value_name = "STATUS")]
+        status: Option<String>,
+        /// Maximum records to return
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+        /// Print records as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one registered backup
+    Show {
+        /// Registered backup ID
+        #[arg(value_name = "BACKUP_ID")]
+        backup_id: String,
+        /// Print the record as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore one registered native session backup
+    Restore {
+        /// Registered backup ID
+        #[arg(value_name = "BACKUP_ID")]
+        backup_id: String,
     },
 }
 
@@ -538,6 +583,55 @@ mod tests {
             Some(Commands::Sessions {
                 command: SessionCommands::ReprojectStale { provider },
             }) => assert_eq!(provider.as_deref(), Some("claude")),
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn backups_commands_parse_query_and_restore_inputs() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "backups",
+            "list",
+            "--operation",
+            "operation-1",
+            "--provider",
+            "claude",
+            "--session",
+            "session-1",
+            "--status",
+            "failed",
+            "--limit",
+            "20",
+            "--json",
+        ]);
+        match cli.command {
+            Some(Commands::Backups {
+                command:
+                    BackupCommands::List {
+                        operation,
+                        provider,
+                        session,
+                        status,
+                        limit,
+                        json,
+                    },
+            }) => {
+                assert_eq!(operation.as_deref(), Some("operation-1"));
+                assert_eq!(provider.as_deref(), Some("claude"));
+                assert_eq!(session.as_deref(), Some("session-1"));
+                assert_eq!(status.as_deref(), Some("failed"));
+                assert_eq!(limit, Some(20));
+                assert!(json);
+            }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+
+        let cli = Cli::parse_from(["memorph", "backups", "restore", "backup-1"]);
+        match cli.command {
+            Some(Commands::Backups {
+                command: BackupCommands::Restore { backup_id },
+            }) => assert_eq!(backup_id, "backup-1"),
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
     }

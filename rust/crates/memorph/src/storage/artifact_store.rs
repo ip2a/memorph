@@ -12,6 +12,8 @@ use std::str::FromStr;
 use uuid::Uuid;
 use walkdir::WalkDir;
 
+use super::activity_store::ActivityActor;
+
 const DEFAULT_QUERY_LIMIT: usize = 100;
 const MAX_QUERY_LIMIT: usize = 500;
 
@@ -149,6 +151,18 @@ pub enum ArtifactVerificationStatus {
     Unverifiable,
 }
 
+impl fmt::Display for ArtifactVerificationStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Verified => "verified",
+            Self::Missing => "missing",
+            Self::Changed => "changed",
+            Self::Unverifiable => "unverifiable",
+        };
+        f.write_str(value)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ArtifactVerification {
     pub artifact_id: String,
@@ -187,6 +201,69 @@ pub struct BackupRecord {
     pub created_at_ms: i64,
     pub restore_hint: Option<String>,
     pub metadata: Value,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BackupRestoreStatus {
+    Running,
+    Success,
+    Failed,
+}
+
+impl BackupRestoreStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Success => "success",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl fmt::Display for BackupRestoreStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for BackupRestoreStatus {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "running" => Ok(Self::Running),
+            "success" => Ok(Self::Success),
+            "failed" => Ok(Self::Failed),
+            _ => bail!("Unknown backup restore status: {value}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackupRestoreRecord {
+    pub id: String,
+    pub backup_id: String,
+    pub status: BackupRestoreStatus,
+    pub actor: ActivityActor,
+    pub started_at_ms: i64,
+    pub finished_at_ms: Option<i64>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BackupQuery {
+    pub operation_id: Option<String>,
+    pub provider_id: Option<String>,
+    pub provider_session_id: Option<String>,
+    pub restore_status: Option<BackupRestoreStatus>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackupEntry {
+    pub backup: BackupRecord,
+    pub latest_restore: Option<BackupRestoreRecord>,
 }
 
 pub struct ArtifactStore<'a> {
@@ -271,6 +348,125 @@ impl<'a> ArtifactStore<'a> {
 
     pub fn get_backup(&self, backup_id: &str) -> Result<Option<BackupRecord>> {
         load_backup_by_id(self.conn, backup_id)
+    }
+
+    pub fn get_backup_entry(&self, backup_id: &str) -> Result<Option<BackupEntry>> {
+        let Some(backup) = self.get_backup(backup_id)? else {
+            return Ok(None);
+        };
+        Ok(Some(BackupEntry {
+            latest_restore: load_latest_backup_restore(self.conn, backup_id)?,
+            backup,
+        }))
+    }
+
+    pub fn query_backups(&self, query: BackupQuery) -> Result<Vec<BackupEntry>> {
+        let limit = query
+            .limit
+            .unwrap_or(DEFAULT_QUERY_LIMIT)
+            .clamp(1, MAX_QUERY_LIMIT) as i64;
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT backup.id
+                 FROM backups backup
+                 LEFT JOIN backup_restores latest_restore
+                   ON latest_restore.id = (
+                       SELECT restore.id
+                       FROM backup_restores restore
+                       WHERE restore.backup_id = backup.id
+                       ORDER BY restore.started_at_ms DESC, restore.id DESC
+                       LIMIT 1
+                   )
+                 WHERE (?1 IS NULL OR backup.operation_id = ?1)
+                   AND (?2 IS NULL OR backup.provider_id = ?2)
+                   AND (?3 IS NULL OR backup.provider_session_id = ?3)
+                   AND (?4 IS NULL OR latest_restore.status = ?4)
+                 ORDER BY backup.created_at_ms DESC, backup.id DESC
+                 LIMIT ?5",
+            )
+            .context("Failed to prepare backup query")?;
+        let rows = stmt
+            .query_map(
+                params![
+                    query.operation_id,
+                    query.provider_id,
+                    query.provider_session_id,
+                    query.restore_status.map(BackupRestoreStatus::as_str),
+                    limit,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .context("Failed to query backups")?;
+        let mut entries = Vec::new();
+        for row in rows {
+            let backup_id = row.context("Failed to decode backup query row")?;
+            entries.push(
+                self.get_backup_entry(&backup_id)?
+                    .context("Backup disappeared while loading query results")?,
+            );
+        }
+        Ok(entries)
+    }
+
+    pub fn start_backup_restore(
+        &mut self,
+        backup_id: &str,
+        actor: ActivityActor,
+    ) -> Result<BackupRestoreRecord> {
+        if self.get_backup(backup_id)?.is_none() {
+            bail!("Unknown backup: {backup_id}");
+        }
+        let record = BackupRestoreRecord {
+            id: Uuid::new_v4().to_string(),
+            backup_id: backup_id.to_string(),
+            status: BackupRestoreStatus::Running,
+            actor,
+            started_at_ms: Utc::now().timestamp_millis(),
+            finished_at_ms: None,
+            error: None,
+        };
+        self.conn
+            .execute(
+                "INSERT INTO backup_restores
+                 (id, backup_id, status, actor, started_at_ms, finished_at_ms, error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL)",
+                params![
+                    record.id,
+                    record.backup_id,
+                    record.status.as_str(),
+                    record.actor.as_str(),
+                    record.started_at_ms,
+                ],
+            )
+            .context("Failed to start backup restore record")?;
+        Ok(record)
+    }
+
+    pub fn finish_backup_restore(
+        &mut self,
+        restore_id: &str,
+        status: BackupRestoreStatus,
+        error: Option<&str>,
+    ) -> Result<BackupRestoreRecord> {
+        if status == BackupRestoreStatus::Running {
+            bail!("Backup restore completion status must be terminal");
+        }
+        let finished_at_ms = Utc::now().timestamp_millis();
+        let updated = self
+            .conn
+            .execute(
+                "UPDATE backup_restores
+                 SET status = ?1, finished_at_ms = ?2, error = ?3
+                 WHERE id = ?4 AND status = 'running'",
+                params![status.as_str(), finished_at_ms, error, restore_id],
+            )
+            .context("Failed to finish backup restore record")?;
+        if updated != 1 {
+            bail!("Backup restore is missing or already finished: {restore_id}");
+        }
+        load_backup_restore(self.conn, restore_id)?
+            .context("Finished backup restore record disappeared")
     }
 
     pub fn find_backup_by_artifact_path(&self, path: &Path) -> Result<Option<BackupRecord>> {
@@ -932,6 +1128,55 @@ fn load_backup_by_id(conn: &Connection, backup_id: &str) -> Result<Option<Backup
     load_backup(conn, "backup.id = ?1", backup_id)
 }
 
+fn load_backup_restore(conn: &Connection, restore_id: &str) -> Result<Option<BackupRestoreRecord>> {
+    conn.query_row(
+        "SELECT id, backup_id, status, actor, started_at_ms, finished_at_ms, error
+         FROM backup_restores
+         WHERE id = ?1",
+        [restore_id],
+        decode_backup_restore_row,
+    )
+    .optional()
+    .context("Failed to load backup restore record")
+}
+
+fn load_latest_backup_restore(
+    conn: &Connection,
+    backup_id: &str,
+) -> Result<Option<BackupRestoreRecord>> {
+    conn.query_row(
+        "SELECT id, backup_id, status, actor, started_at_ms, finished_at_ms, error
+         FROM backup_restores
+         WHERE backup_id = ?1
+         ORDER BY started_at_ms DESC, id DESC
+         LIMIT 1",
+        [backup_id],
+        decode_backup_restore_row,
+    )
+    .optional()
+    .context("Failed to load latest backup restore record")
+}
+
+fn decode_backup_restore_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<BackupRestoreRecord> {
+    let status_text: String = row.get(2)?;
+    let actor_text: String = row.get(3)?;
+    let status = BackupRestoreStatus::from_str(&status_text).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, error.into())
+    })?;
+    let actor = ActivityActor::from_str(&actor_text).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(3, rusqlite::types::Type::Text, error.into())
+    })?;
+    Ok(BackupRestoreRecord {
+        id: row.get(0)?,
+        backup_id: row.get(1)?,
+        status,
+        actor,
+        started_at_ms: row.get(4)?,
+        finished_at_ms: row.get(5)?,
+        error: row.get(6)?,
+    })
+}
+
 fn load_backup_by_artifact_id(
     conn: &Connection,
     artifact_id: &str,
@@ -1057,6 +1302,28 @@ mod tests {
             format: Some("json".to_string()),
             metadata: json!({"source": "test"}),
         }
+    }
+
+    fn register_test_backup(conn: &mut Connection, dir: &Path, operation_id: &str) -> BackupRecord {
+        let source_path = dir.join(format!("{operation_id}-source.jsonl"));
+        let backup_path = dir.join(format!("{operation_id}-backup.jsonl"));
+        std::fs::write(&source_path, b"session").unwrap();
+        std::fs::copy(&source_path, &backup_path).unwrap();
+        ArtifactStore::new(conn)
+            .register_backup(NewBackupRecord {
+                operation_id: Some(operation_id.to_string()),
+                provider_id: Some("codex".to_string()),
+                provider_session_id: Some(format!("{operation_id}-session")),
+                session_id: None,
+                source_path: Some(source_path),
+                backup_path,
+                restore_hint: Some("copy over source".to_string()),
+                mime_type: Some("application/x-ndjson".to_string()),
+                format: Some("jsonl".to_string()),
+                artifact_metadata: json!({"mutation": "rename"}),
+                backup_metadata: json!({"mutation": "rename"}),
+            })
+            .unwrap()
     }
 
     #[test]
@@ -1387,6 +1654,135 @@ mod tests {
         );
         assert_eq!(stored.artifact.operation_id.as_deref(), Some("operation-1"));
         assert_eq!(stored.operation_id.as_deref(), Some("operation-1"));
+    }
+
+    #[test]
+    fn persists_backup_restore_lifecycle_and_rejects_second_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = test_connection();
+        let backup = register_test_backup(&mut conn, dir.path(), "operation-1");
+
+        let started = ArtifactStore::new(&mut conn)
+            .start_backup_restore(&backup.id, ActivityActor::Cli)
+            .unwrap();
+        assert_eq!(started.status, BackupRestoreStatus::Running);
+        assert_eq!(started.finished_at_ms, None);
+        assert_eq!(started.error, None);
+
+        let finished = ArtifactStore::new(&mut conn)
+            .finish_backup_restore(
+                &started.id,
+                BackupRestoreStatus::Failed,
+                Some("restore failed"),
+            )
+            .unwrap();
+        assert_eq!(finished.status, BackupRestoreStatus::Failed);
+        assert!(finished.finished_at_ms.is_some());
+        assert_eq!(finished.error.as_deref(), Some("restore failed"));
+
+        let entry = ArtifactStore::new(&mut conn)
+            .get_backup_entry(&backup.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.latest_restore, Some(finished));
+
+        let error = ArtifactStore::new(&mut conn)
+            .finish_backup_restore(&started.id, BackupRestoreStatus::Success, None)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Backup restore is missing or already finished"));
+    }
+
+    #[test]
+    fn rejects_running_as_backup_restore_completion_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = test_connection();
+        let backup = register_test_backup(&mut conn, dir.path(), "operation-1");
+        let started = ArtifactStore::new(&mut conn)
+            .start_backup_restore(&backup.id, ActivityActor::Api)
+            .unwrap();
+
+        let error = ArtifactStore::new(&mut conn)
+            .finish_backup_restore(&started.id, BackupRestoreStatus::Running, None)
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("completion status must be terminal"));
+        assert_eq!(
+            ArtifactStore::new(&mut conn)
+                .get_backup_entry(&backup.id)
+                .unwrap()
+                .unwrap()
+                .latest_restore
+                .unwrap()
+                .status,
+            BackupRestoreStatus::Running
+        );
+    }
+
+    #[test]
+    fn queries_backups_by_latest_restore_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = test_connection();
+        let restored_backup = register_test_backup(&mut conn, dir.path(), "operation-1");
+        let untouched_backup = register_test_backup(&mut conn, dir.path(), "operation-2");
+
+        let failed = ArtifactStore::new(&mut conn)
+            .start_backup_restore(&restored_backup.id, ActivityActor::Cli)
+            .unwrap();
+        ArtifactStore::new(&mut conn)
+            .finish_backup_restore(
+                &failed.id,
+                BackupRestoreStatus::Failed,
+                Some("first attempt failed"),
+            )
+            .unwrap();
+        conn.execute(
+            "UPDATE backup_restores SET started_at_ms = 1 WHERE id = ?1",
+            [&failed.id],
+        )
+        .unwrap();
+
+        let succeeded = ArtifactStore::new(&mut conn)
+            .start_backup_restore(&restored_backup.id, ActivityActor::Api)
+            .unwrap();
+        ArtifactStore::new(&mut conn)
+            .finish_backup_restore(&succeeded.id, BackupRestoreStatus::Success, None)
+            .unwrap();
+        conn.execute(
+            "UPDATE backup_restores SET started_at_ms = 2 WHERE id = ?1",
+            [&succeeded.id],
+        )
+        .unwrap();
+
+        let successful = ArtifactStore::new(&mut conn)
+            .query_backups(BackupQuery {
+                restore_status: Some(BackupRestoreStatus::Success),
+                ..Default::default()
+            })
+            .unwrap();
+        let failed = ArtifactStore::new(&mut conn)
+            .query_backups(BackupQuery {
+                restore_status: Some(BackupRestoreStatus::Failed),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(successful.len(), 1);
+        assert_eq!(successful[0].backup.id, restored_backup.id);
+        assert_eq!(
+            successful[0].latest_restore.as_ref().unwrap().id,
+            succeeded.id
+        );
+        assert!(failed.is_empty());
+        assert!(ArtifactStore::new(&mut conn)
+            .get_backup_entry(&untouched_backup.id)
+            .unwrap()
+            .unwrap()
+            .latest_restore
+            .is_none());
     }
 
     #[test]

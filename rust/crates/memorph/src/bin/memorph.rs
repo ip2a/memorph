@@ -4,13 +4,14 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use memorph::{
     cli::{
-        Cli, Commands, CompressionCommands, LegacyCodexToolCommands, LegacyToolCommands,
-        SessionCommands, SyncCommands,
+        BackupCommands, Cli, Commands, CompressionCommands, LegacyCodexToolCommands,
+        LegacyToolCommands, SessionCommands, SyncCommands,
     },
     config, core,
     provider::{ProviderCapabilities, ProviderContentFidelity},
     provider_features, providers, server,
     storage::activity_store::ActivityActor,
+    storage::artifact_store::{BackupQuery, BackupRestoreStatus},
     sync as session_sync, tui, web_assets,
 };
 use std::path::Path;
@@ -185,6 +186,8 @@ fn run_command(command: Commands) -> Result<()> {
         }
 
         Commands::Sessions { command } => run_session_command(command)?,
+
+        Commands::Backups { command } => run_backup_command(command)?,
 
         Commands::Sync { command } => run_sync_command(command)?,
 
@@ -454,6 +457,101 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
                     failure.provider_id, failure.session_id, source, failure.reason
                 );
             }
+        }
+    }
+    Ok(())
+}
+
+fn run_backup_command(command: BackupCommands) -> Result<()> {
+    match command {
+        BackupCommands::List {
+            operation,
+            provider,
+            session,
+            status,
+            limit,
+            json,
+        } => {
+            let restore_status = status
+                .as_deref()
+                .map(str::parse::<BackupRestoreStatus>)
+                .transpose()?;
+            let views = core::session_management::list_registered_backups(BackupQuery {
+                operation_id: operation,
+                provider_id: provider,
+                provider_session_id: session,
+                restore_status,
+                limit,
+            })?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&views)?);
+            } else {
+                for view in views {
+                    let backup = &view.entry.backup;
+                    let restore_status = view
+                        .entry
+                        .latest_restore
+                        .as_ref()
+                        .map(|record| record.status.to_string())
+                        .unwrap_or_else(|| "never".to_string());
+                    println!(
+                        "{} | {} | {} | {} | {}",
+                        backup.id,
+                        backup.provider_id.as_deref().unwrap_or("(no provider)"),
+                        backup
+                            .provider_session_id
+                            .as_deref()
+                            .unwrap_or("(no session)"),
+                        view.verification.status,
+                        restore_status
+                    );
+                }
+            }
+        }
+        BackupCommands::Show { backup_id, json } => {
+            let view = core::session_management::get_registered_backup(&backup_id)?
+                .with_context(|| format!("Unknown backup: {backup_id}"))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&view)?);
+            } else {
+                let backup = &view.entry.backup;
+                println!("Backup: {}", backup.id);
+                println!(
+                    "Provider: {}",
+                    backup.provider_id.as_deref().unwrap_or("(none)")
+                );
+                println!(
+                    "Session: {}",
+                    backup.provider_session_id.as_deref().unwrap_or("(none)")
+                );
+                println!(
+                    "Operation: {}",
+                    backup.operation_id.as_deref().unwrap_or("(none)")
+                );
+                println!("Artifact: {}", backup.artifact.path.display());
+                println!("Integrity: {}", view.verification.status);
+                println!(
+                    "Latest restore: {}",
+                    view.entry
+                        .latest_restore
+                        .as_ref()
+                        .map(|record| record.status.to_string())
+                        .unwrap_or_else(|| "never".to_string())
+                );
+                if let Some(hint) = backup.restore_hint.as_deref() {
+                    println!("Restore hint: {hint}");
+                }
+            }
+        }
+        BackupCommands::Restore { backup_id } => {
+            let record = core::session_management::restore_registered_backup(
+                &backup_id,
+                ActivityActor::Cli,
+            )?;
+            println!(
+                "Restored backup {} successfully (restore {})",
+                record.backup_id, record.id
+            );
         }
     }
     Ok(())

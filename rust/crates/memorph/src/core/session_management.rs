@@ -13,8 +13,13 @@ use crate::provider;
 use crate::provider::{ProviderSessionBackup, ProviderSourceMutation};
 use crate::providers;
 use crate::storage::{
-    artifact_store::{ArtifactStore, NewBackupRecord},
-    session_state,
+    activity_store::ActivityActor,
+    artifact_store::{
+        ArtifactManifestKind, ArtifactStore, ArtifactVerification, ArtifactVerificationStatus,
+        BackupEntry, BackupQuery, BackupRecord, BackupRestoreRecord, BackupRestoreStatus,
+        NewBackupRecord,
+    },
+    local_store, session_state,
 };
 
 use super::{
@@ -355,6 +360,194 @@ fn format_restore_errors(errors: &[String]) -> String {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct BackupView {
+    pub entry: BackupEntry,
+    pub verification: ArtifactVerification,
+}
+
+pub fn list_registered_backups(query: BackupQuery) -> Result<Vec<BackupView>> {
+    let mut conn = local_store::open_database()?;
+    let entries = ArtifactStore::new(&mut conn).query_backups(query)?;
+    entries
+        .into_iter()
+        .map(|entry| backup_view(&mut conn, entry))
+        .collect()
+}
+
+pub fn get_registered_backup(backup_id: &str) -> Result<Option<BackupView>> {
+    let mut conn = local_store::open_database()?;
+    let Some(entry) = ArtifactStore::new(&mut conn).get_backup_entry(backup_id)? else {
+        return Ok(None);
+    };
+    backup_view(&mut conn, entry).map(Some)
+}
+
+pub fn restore_registered_backup(
+    backup_id: &str,
+    actor: ActivityActor,
+) -> Result<BackupRestoreRecord> {
+    let mut conn = local_store::open_database()?;
+    restore_registered_backup_with(&mut conn, backup_id, actor, |conn, backup| {
+        let provider_id = backup
+            .provider_id
+            .as_deref()
+            .context("Registered backup is missing provider identity")?;
+        let prov = providers::find_provider(provider_id)
+            .with_context(|| format!("Unknown provider for registered backup: {provider_id}"))?;
+        restore_registered_backup_payload(conn, prov.as_ref(), provider_id, backup)
+    })
+}
+
+fn backup_view(conn: &mut Connection, entry: BackupEntry) -> Result<BackupView> {
+    let verification = ArtifactStore::new(conn)
+        .verify(&entry.backup.artifact.id)?
+        .context("Registered backup artifact manifest is missing")?;
+    Ok(BackupView {
+        entry,
+        verification,
+    })
+}
+
+fn restore_registered_backup_with<F>(
+    conn: &mut Connection,
+    backup_id: &str,
+    actor: ActivityActor,
+    restore: F,
+) -> Result<BackupRestoreRecord>
+where
+    F: FnOnce(&mut Connection, &BackupRecord) -> Result<()>,
+{
+    let backup = ArtifactStore::new(conn)
+        .get_backup(backup_id)?
+        .with_context(|| format!("Unknown backup: {backup_id}"))?;
+    let attempt = ArtifactStore::new(conn).start_backup_restore(backup_id, actor)?;
+    let result = restore(conn, &backup);
+    match result {
+        Ok(()) => ArtifactStore::new(conn).finish_backup_restore(
+            &attempt.id,
+            BackupRestoreStatus::Success,
+            None,
+        ),
+        Err(error) => {
+            let message = format!("{error:#}");
+            ArtifactStore::new(conn).finish_backup_restore(
+                &attempt.id,
+                BackupRestoreStatus::Failed,
+                Some(&message),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn restore_registered_backup_payload(
+    conn: &mut Connection,
+    prov: &dyn provider::Provider,
+    expected_provider_id: &str,
+    backup: &BackupRecord,
+) -> Result<()> {
+    let native_backup = reconstruct_provider_session_backup(backup, expected_provider_id)?;
+    let support = prov.capabilities().backup_support;
+    if !support.before_write || !support.restore || support.sync_only {
+        anyhow::bail!(
+            "Provider does not support manual native session restore: {}",
+            expected_provider_id
+        );
+    }
+    if prov.id() != expected_provider_id {
+        anyhow::bail!(
+            "Registered backup provider mismatch: expected {}, resolved {}",
+            expected_provider_id,
+            prov.id()
+        );
+    }
+    let verification = ArtifactStore::new(conn)
+        .verify(&backup.artifact.id)?
+        .context("Registered backup artifact manifest is missing")?;
+    if verification.status != ArtifactVerificationStatus::Verified {
+        anyhow::bail!(
+            "Registered backup artifact failed integrity verification: {} ({})",
+            backup.id,
+            verification.status
+        );
+    }
+    prov.restore_session_backup(&native_backup)
+}
+
+fn reconstruct_provider_session_backup(
+    backup: &BackupRecord,
+    expected_provider_id: &str,
+) -> Result<ProviderSessionBackup> {
+    if backup.artifact.artifact_kind != ArtifactManifestKind::SessionBackup {
+        anyhow::bail!("Registered backup does not reference a session backup artifact");
+    }
+    if backup.provider_id.as_deref() != Some(expected_provider_id)
+        || backup.artifact.provider_id.as_deref() != Some(expected_provider_id)
+        || backup.operation_id != backup.artifact.operation_id
+        || backup.provider_session_id != backup.artifact.provider_session_id
+    {
+        anyhow::bail!("Registered backup identity does not match its artifact manifest");
+    }
+    let operation_id = backup
+        .operation_id
+        .clone()
+        .context("Registered backup is missing operation identity")?;
+    let provider_session_id = backup
+        .provider_session_id
+        .clone()
+        .context("Registered backup is missing provider session identity")?;
+    let source_path = backup
+        .source_path
+        .clone()
+        .context("Registered backup is not a native provider session backup")?;
+    let restore_hint = backup
+        .restore_hint
+        .clone()
+        .context("Registered backup is missing restore instructions")?;
+    let mime_type = backup
+        .artifact
+        .mime_type
+        .clone()
+        .context("Registered backup is missing MIME identity")?;
+    let format = backup
+        .artifact
+        .format
+        .clone()
+        .context("Registered backup is missing format identity")?;
+    let artifact_mutation = backup
+        .artifact
+        .metadata
+        .get("mutation")
+        .cloned()
+        .context("Registered backup artifact is missing mutation identity")?;
+    let restore_mutation = backup
+        .metadata
+        .get("mutation")
+        .cloned()
+        .context("Registered backup restore metadata is missing mutation identity")?;
+    let artifact_mutation: ProviderSourceMutation =
+        serde_json::from_value(artifact_mutation).context("Invalid artifact mutation identity")?;
+    let restore_mutation: ProviderSourceMutation =
+        serde_json::from_value(restore_mutation).context("Invalid restore mutation identity")?;
+    if artifact_mutation != restore_mutation {
+        anyhow::bail!("Registered backup mutation identities do not match");
+    }
+
+    Ok(ProviderSessionBackup {
+        mutation: artifact_mutation,
+        operation_id,
+        provider_session_id,
+        source_path,
+        backup_path: backup.artifact.path.clone(),
+        restore_hint,
+        mime_type,
+        format,
+        artifact_metadata: backup.artifact.metadata.clone(),
+        restore_metadata: backup.metadata.clone(),
+    })
+}
+
 pub fn prepare_session_for_export(
     session: &CanonicalSession,
     source_provider_id: &str,
@@ -559,6 +752,8 @@ mod tests {
     struct BackupTestProvider {
         source_path: PathBuf,
         backup_failure_session_id: Option<&'static str>,
+        restore_failure: bool,
+        restore_supported: bool,
         mutation_count: AtomicUsize,
         restore_count: AtomicUsize,
     }
@@ -568,6 +763,8 @@ mod tests {
             Self {
                 source_path,
                 backup_failure_session_id: None,
+                restore_failure: false,
+                restore_supported: true,
                 mutation_count: AtomicUsize::new(0),
                 restore_count: AtomicUsize::new(0),
             }
@@ -575,6 +772,16 @@ mod tests {
 
         fn failing_backup_for(mut self, session_id: &'static str) -> Self {
             self.backup_failure_session_id = Some(session_id);
+            self
+        }
+
+        fn failing_restore(mut self) -> Self {
+            self.restore_failure = true;
+            self
+        }
+
+        fn without_restore_support(mut self) -> Self {
+            self.restore_supported = false;
             self
         }
     }
@@ -592,8 +799,8 @@ mod tests {
             let mut capabilities = ProviderCapabilities::full_session_management();
             capabilities.scan = false;
             capabilities.backup_support = ProviderBackupSupport {
-                before_write: true,
-                restore: true,
+                before_write: self.restore_supported,
+                restore: self.restore_supported,
                 sync_only: false,
             };
             capabilities
@@ -642,16 +849,52 @@ mod tests {
                 restore_hint: "restore exact source".to_string(),
                 mime_type: "application/vnd.memorph.test-backup".to_string(),
                 format: "test-backup-v1".to_string(),
-                artifact_metadata: serde_json::json!({"role": "test_prewrite_backup"}),
-                restore_metadata: serde_json::json!({"restore_mode": "test_restore"}),
+                artifact_metadata: serde_json::json!({
+                    "role": "test_prewrite_backup",
+                    "mutation": mutation,
+                }),
+                restore_metadata: serde_json::json!({
+                    "restore_mode": "test_restore",
+                    "mutation": mutation,
+                }),
             })
         }
 
         fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
             self.restore_count.fetch_add(1, Ordering::SeqCst);
+            if self.restore_failure {
+                anyhow::bail!("injected native restore failure");
+            }
             std::fs::copy(backup.backup_path.join("source"), &backup.source_path)?;
             Ok(())
         }
+    }
+
+    fn register_test_backup(
+        provider: &BackupTestProvider,
+        conn: &mut Connection,
+        backup_root: &Path,
+    ) -> String {
+        register_provider_session_backup(
+            provider,
+            "backup-test",
+            ProviderSourceMutation::Delete,
+            "operation-1",
+            "session-1",
+            backup_root,
+            conn,
+        )
+        .unwrap()
+        .unwrap();
+        ArtifactStore::new(conn)
+            .query_backups(BackupQuery {
+                operation_id: Some("operation-1".to_string()),
+                ..Default::default()
+            })
+            .unwrap()
+            .remove(0)
+            .backup
+            .id
     }
 
     #[test]
@@ -811,6 +1054,212 @@ mod tests {
         );
         assert_eq!(provider.mutation_count.load(Ordering::SeqCst), 1);
         assert_eq!(provider.restore_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn manual_native_restore_is_recorded_and_repeatable() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("session.native");
+        std::fs::write(&source_path, b"original provider bytes").unwrap();
+        let provider = BackupTestProvider::new(source_path.clone());
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let backup_id = register_test_backup(&provider, &mut conn, &dir.path().join("backups"));
+
+        for replacement in [
+            b"first replacement".as_slice(),
+            b"second replacement".as_slice(),
+        ] {
+            std::fs::write(&source_path, replacement).unwrap();
+            let restored = restore_registered_backup_with(
+                &mut conn,
+                &backup_id,
+                ActivityActor::Cli,
+                |conn, backup| {
+                    restore_registered_backup_payload(conn, &provider, "backup-test", backup)
+                },
+            )
+            .unwrap();
+            assert_eq!(restored.status, BackupRestoreStatus::Success);
+            assert_eq!(
+                std::fs::read(&source_path).unwrap(),
+                b"original provider bytes"
+            );
+        }
+
+        assert_eq!(provider.restore_count.load(Ordering::SeqCst), 2);
+        let entries = ArtifactStore::new(&mut conn)
+            .query_backups(BackupQuery {
+                restore_status: Some(BackupRestoreStatus::Success),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].latest_restore.as_ref().unwrap().status,
+            BackupRestoreStatus::Success
+        );
+    }
+
+    #[test]
+    fn manual_native_restore_failure_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("session.native");
+        std::fs::write(&source_path, b"original provider bytes").unwrap();
+        let provider = BackupTestProvider::new(source_path).failing_restore();
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let backup_id = register_test_backup(&provider, &mut conn, &dir.path().join("backups"));
+
+        let error = restore_registered_backup_with(
+            &mut conn,
+            &backup_id,
+            ActivityActor::Api,
+            |conn, backup| {
+                restore_registered_backup_payload(conn, &provider, "backup-test", backup)
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("injected native restore failure"));
+        let entry = ArtifactStore::new(&mut conn)
+            .get_backup_entry(&backup_id)
+            .unwrap()
+            .unwrap();
+        let restore = entry.latest_restore.unwrap();
+        assert_eq!(restore.status, BackupRestoreStatus::Failed);
+        assert_eq!(restore.actor, ActivityActor::Api);
+        assert!(restore
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("injected native restore failure"));
+    }
+
+    #[test]
+    fn manual_native_restore_rejects_tampered_artifact_before_provider_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("session.native");
+        std::fs::write(&source_path, b"original provider bytes").unwrap();
+        let provider = BackupTestProvider::new(source_path);
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let backup_id = register_test_backup(&provider, &mut conn, &dir.path().join("backups"));
+        let backup = ArtifactStore::new(&mut conn)
+            .get_backup(&backup_id)
+            .unwrap()
+            .unwrap();
+        std::fs::write(backup.artifact.path.join("source"), b"tampered").unwrap();
+
+        let error = restore_registered_backup_with(
+            &mut conn,
+            &backup_id,
+            ActivityActor::Cli,
+            |conn, backup| {
+                restore_registered_backup_payload(conn, &provider, "backup-test", backup)
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("failed integrity verification"));
+        assert_eq!(provider.restore_count.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            ArtifactStore::new(&mut conn)
+                .get_backup_entry(&backup_id)
+                .unwrap()
+                .unwrap()
+                .latest_restore
+                .unwrap()
+                .status,
+            BackupRestoreStatus::Failed
+        );
+    }
+
+    #[test]
+    fn manual_native_restore_rejects_provider_identity_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("session.native");
+        std::fs::write(&source_path, b"original provider bytes").unwrap();
+        let provider = BackupTestProvider::new(source_path);
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let backup_id = register_test_backup(&provider, &mut conn, &dir.path().join("backups"));
+        conn.execute(
+            "UPDATE artifact_manifests SET provider_id = 'other' WHERE id = (
+                SELECT artifact_id FROM backups WHERE id = ?1
+             )",
+            [&backup_id],
+        )
+        .unwrap();
+
+        let error = restore_registered_backup_with(
+            &mut conn,
+            &backup_id,
+            ActivityActor::Cli,
+            |conn, backup| {
+                restore_registered_backup_payload(conn, &provider, "backup-test", backup)
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("identity does not match"));
+        assert_eq!(provider.restore_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn manual_native_restore_rejects_unsupported_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_path = dir.path().join("session.native");
+        std::fs::write(&source_path, b"original provider bytes").unwrap();
+        let provider = BackupTestProvider::new(source_path.clone());
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let backup_id = register_test_backup(&provider, &mut conn, &dir.path().join("backups"));
+        let unsupported_provider = BackupTestProvider::new(source_path).without_restore_support();
+
+        let error = restore_registered_backup_with(
+            &mut conn,
+            &backup_id,
+            ActivityActor::Cli,
+            |conn, backup| {
+                restore_registered_backup_payload(
+                    conn,
+                    &unsupported_provider,
+                    "backup-test",
+                    backup,
+                )
+            },
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("does not support manual native session restore"));
+        assert_eq!(unsupported_provider.restore_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn manual_native_restore_rejects_unknown_backup_without_attempt_record() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+
+        let error = restore_registered_backup_with(
+            &mut conn,
+            "missing",
+            ActivityActor::Cli,
+            |_conn, _backup| Ok(()),
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("Unknown backup: missing"));
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM backup_restores", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 pub struct LocalSqliteStore {
     path: PathBuf,
@@ -123,6 +123,16 @@ pub(crate) fn apply_schema(conn: &mut Connection) -> Result<()> {
             "INSERT INTO schema_migrations (version, name, applied_at_ms)
              VALUES (?1, ?2, strftime('%s','now') * 1000)",
             params![5, "optional_backup_source_path_v5"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    if !applied.contains(&6) {
+        tx.execute_batch(V6_SCHEMA)
+            .context("Failed to apply memorph DB schema v6")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![6, "backup_restore_attempts_v6"],
         )
         .context("Failed to record memorph DB schema migration")?;
     }
@@ -729,6 +739,24 @@ CREATE INDEX idx_backups_operation
     ON backups(operation_id);
 "#;
 
+const V6_SCHEMA: &str = r#"
+CREATE TABLE backup_restores (
+    id TEXT PRIMARY KEY,
+    backup_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('running', 'success', 'failed')),
+    actor TEXT NOT NULL,
+    started_at_ms INTEGER NOT NULL,
+    finished_at_ms INTEGER,
+    error TEXT,
+    FOREIGN KEY(backup_id) REFERENCES backups(id) ON DELETE RESTRICT
+);
+
+CREATE INDEX idx_backup_restores_backup_started
+    ON backup_restores(backup_id, started_at_ms DESC, id DESC);
+CREATE INDEX idx_backup_restores_status_started
+    ON backup_restores(status, started_at_ms DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,6 +785,7 @@ mod tests {
         assert!(table_exists(conn, "session_activity"));
         assert!(table_exists(conn, "artifact_manifests"));
         assert!(table_exists(conn, "backups"));
+        assert!(table_exists(conn, "backup_restores"));
 
         let foreign_keys: i64 = conn
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
@@ -793,7 +822,7 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, SCHEMA_VERSION);
         assert_eq!(max_version, SCHEMA_VERSION);
     }
 
@@ -824,7 +853,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, SCHEMA_VERSION);
     }
 
     #[test]
@@ -860,7 +889,7 @@ mod tests {
             .unwrap();
 
         assert!(provider_session_id_exists);
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, SCHEMA_VERSION);
     }
 
     #[test]
@@ -899,7 +928,7 @@ mod tests {
             .unwrap();
 
         assert!(retention_index_exists);
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, SCHEMA_VERSION);
     }
 
     #[test]
@@ -997,7 +1026,7 @@ mod tests {
         assert_eq!(migrated.9, "unknown");
         assert!(!legacy_backup_path_column);
         assert_eq!(foreign_key_violations, 0);
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, SCHEMA_VERSION);
     }
 
     #[test]
@@ -1075,7 +1104,55 @@ mod tests {
             Some("/source/session.jsonl")
         );
         assert_eq!(foreign_key_violations, 0);
-        assert_eq!(migration_count, 5);
+        assert_eq!(migration_count, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_existing_v5_schema_to_backup_restore_attempts() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema_migrations_table(&conn).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        conn.execute_batch(V3_SCHEMA).unwrap();
+        conn.execute_batch(V4_SCHEMA).unwrap();
+        conn.execute_batch(V5_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES
+             (1, 'local_session_store_v1', 0),
+             (2, 'session_activity_query_fields_v2', 0),
+             (3, 'hook_event_retention_index_v3', 0),
+             (4, 'artifact_manifest_store_v4', 0),
+             (5, 'optional_backup_source_path_v5', 0)",
+            [],
+        )
+        .unwrap();
+
+        apply_schema(&mut conn).unwrap();
+
+        assert!(table_exists(&conn, "backup_restores"));
+        let restore_indexes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*)
+                 FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name IN (
+                       'idx_backup_restores_backup_started',
+                       'idx_backup_restores_status_started'
+                   )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let migration_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert_eq!(restore_indexes, 2);
+        assert_eq!(migration_count, SCHEMA_VERSION);
     }
 
     #[test]
