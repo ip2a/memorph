@@ -1,8 +1,14 @@
 import type {
   AgentManagementEntry,
   AgentManagementPayload,
+  ArtifactCleanupReport,
+  ArtifactCleanupRequest,
+  ArtifactInspectionReport,
   ApplyCompressionPayload,
   ApplyCompressionResult,
+  BackupQueryParams,
+  BackupRestoreRecord,
+  BackupView,
   BindSyncPayload,
   CompressionArchive,
   CompressionArchivesParams,
@@ -353,6 +359,31 @@ export function backupManagerWorkspace(payload: ManagerWorkspacePayload) {
   return api<ManagerBackupResult>("/api/v1/manager/backup-workspace", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export function inspectArtifacts() {
+  return api<ArtifactInspectionReport>("/api/v1/artifacts/inspection");
+}
+
+export function cleanupArtifacts(payload: ArtifactCleanupRequest) {
+  return api<ArtifactCleanupReport>("/api/v1/artifacts/cleanup", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function listBackups(params: BackupQueryParams = {}) {
+  return api<BackupView[]>(`/api/v1/backups${buildQuery(params)}`);
+}
+
+export function getBackup(backupId: string) {
+  return api<BackupView>(`/api/v1/backups/${encodeURIComponent(backupId)}`);
+}
+
+export function restoreBackup(backupId: string) {
+  return api<BackupRestoreRecord>(`/api/v1/backups/${encodeURIComponent(backupId)}/restore`, {
+    method: "POST",
   });
 }
 

@@ -176,6 +176,134 @@ export type ManagerBackupResult = {
   errors: string[];
 };
 
+export type ArtifactManifestKind =
+  | "compression_archive"
+  | "session_export"
+  | "session_backup"
+  | "event_payload";
+
+export type ArtifactStorageKind = "file" | "directory" | "unknown";
+
+export type ArtifactVerificationStatus = "verified" | "missing" | "changed" | "unverifiable";
+
+export type ArtifactRetentionState =
+  | "current_event_payload"
+  | "detached_event_payload"
+  | "retained";
+
+export type ArtifactManifest = {
+  id: string;
+  artifact_kind: ArtifactManifestKind;
+  storage_kind: ArtifactStorageKind;
+  operation_id?: string | null;
+  provider_id?: string | null;
+  provider_session_id?: string | null;
+  session_id?: string | null;
+  projection_report_id?: string | null;
+  event_id?: string | null;
+  block_id?: string | null;
+  path: string;
+  content_hash: string;
+  byte_size: number;
+  mime_type?: string | null;
+  format?: string | null;
+  created_at_ms: number;
+  metadata: Record<string, unknown>;
+};
+
+export type ArtifactVerification = {
+  artifact_id: string;
+  path: string;
+  status: ArtifactVerificationStatus;
+  expected_content_hash: string;
+  actual_content_hash?: string | null;
+  expected_byte_size: number;
+  actual_byte_size?: number | null;
+};
+
+export type ArtifactInspectionEntry = {
+  manifest: ArtifactManifest;
+  verification: ArtifactVerification;
+  retention_state: ArtifactRetentionState;
+};
+
+export type OrphanArtifactFile = {
+  path: string;
+  byte_size: number;
+  modified_at_ms: number;
+  managed_layout: boolean;
+};
+
+export type ArtifactInspectionReport = {
+  generated_at_ms: number;
+  managed_blob_root: string;
+  registered: ArtifactInspectionEntry[];
+  orphan_files: OrphanArtifactFile[];
+};
+
+export type ArtifactCleanupRequest = {
+  retention_hours: number;
+  apply: boolean;
+};
+
+export type ArtifactCleanupFailure = {
+  path?: string | null;
+  artifact_ids: string[];
+  reason: string;
+};
+
+export type ArtifactCleanupReport = {
+  applied: boolean;
+  cutoff_ms: number;
+  candidate_manifest_ids: string[];
+  candidate_orphan_paths: string[];
+  deleted_manifest_ids: string[];
+  deleted_paths: string[];
+  retained_shared_paths: string[];
+  failures: ArtifactCleanupFailure[];
+};
+
+export type BackupRestoreStatus = "running" | "success" | "failed";
+
+export type BackupRestoreRecord = {
+  id: string;
+  backup_id: string;
+  status: BackupRestoreStatus;
+  actor: "api" | "cli" | "tui" | "sync" | "system";
+  started_at_ms: number;
+  finished_at_ms?: number | null;
+  error?: string | null;
+};
+
+export type BackupRecord = {
+  id: string;
+  artifact: ArtifactManifest;
+  operation_id?: string | null;
+  provider_id?: string | null;
+  provider_session_id?: string | null;
+  session_id?: string | null;
+  source_path?: string | null;
+  created_at_ms: number;
+  restore_hint?: string | null;
+  metadata: Record<string, unknown>;
+};
+
+export type BackupView = {
+  entry: {
+    backup: BackupRecord;
+    latest_restore?: BackupRestoreRecord | null;
+  };
+  verification: ArtifactVerification;
+};
+
+export type BackupQueryParams = {
+  operation_id?: string;
+  provider?: string;
+  provider_session_id?: string;
+  restore_status?: BackupRestoreStatus;
+  limit?: number;
+};
+
 export type CompressionProjection = "native" | "portable" | string;
 
 export type CompressionProviderSupport = {

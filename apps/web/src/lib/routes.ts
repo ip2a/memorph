@@ -1,6 +1,7 @@
 import {
   BotIcon,
   BoxesIcon,
+  DatabaseIcon,
   DatabaseZapIcon,
   GitBranchIcon,
   HomeIcon,
@@ -59,6 +60,13 @@ export const appRoutes: AppRoute[] = [
     href: "/compression",
     icon: DatabaseZapIcon,
     phase: "Phase 4",
+  },
+  {
+    title: "Storage",
+    description: "Artifact integrity, retention, backup restore, and export provenance.",
+    href: "/storage",
+    icon: DatabaseIcon,
+    phase: "Phase 9",
   },
   {
     title: "Agents",

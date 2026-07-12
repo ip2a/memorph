@@ -18,6 +18,9 @@ export const ManagerPage = lazy(() =>
 export const CompressionPage = lazy(() =>
   import("@/features/compression/compression-page").then((module) => ({ default: module.CompressionPage })),
 );
+export const ArtifactsPage = lazy(() =>
+  import("@/features/artifacts/artifacts-page").then((module) => ({ default: module.ArtifactsPage })),
+);
 export const AgentsPage = lazy(() =>
   import("@/features/agents/agents-page").then((module) => ({ default: module.AgentsPage })),
 );

@@ -27,6 +27,7 @@ function routeTitleKey(pathname: string): I18nKey {
   if (pathname.startsWith("/sync")) return "sync";
   if (pathname.startsWith("/manager")) return "manage";
   if (pathname.startsWith("/compression")) return "compression";
+  if (pathname.startsWith("/storage")) return "storage";
   if (pathname.startsWith("/agents")) return "agentManagement";
   if (pathname.startsWith("/hooks")) return "hooks";
   if (pathname.startsWith("/stats")) return "stats";

@@ -1,4 +1,4 @@
-import type { CompressionArchivesParams, ManagerFilter, SessionDetailParams, SessionListParams } from "@/lib/types";
+import type { BackupQueryParams, CompressionArchivesParams, ManagerFilter, SessionDetailParams, SessionListParams } from "@/lib/types";
 
 export const queryKeys = {
   home: ["home"] as const,
@@ -22,6 +22,10 @@ export const queryKeys = {
   managerQuick: (providers: string[]) => ["manager", "quick", providers] as const,
   managerQuickWorkspaces: (providers: string[]) => ["manager", "quick-workspaces", providers] as const,
   managerStats: (filter: ManagerFilter = {}) => ["manager", "stats", filter] as const,
+  artifacts: ["artifacts"] as const,
+  artifactInspection: ["artifacts", "inspection"] as const,
+  backups: (params: BackupQueryParams = {}) => ["backups", params] as const,
+  backup: (backupId: string) => ["backups", backupId] as const,
   compression: (params: CompressionArchivesParams = {}) => ["compression", params] as const,
   compressionArchive: (archiveRef: string) => ["compression-archive", archiveRef] as const,
   compressionProviders: ["compression-providers"] as const,
