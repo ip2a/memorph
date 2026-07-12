@@ -10,6 +10,7 @@ use crate::canonical::{
 };
 use crate::session_projection::{
     ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
+    SourceRange, TurnConfidence, TurnProjection, TurnStatus,
 };
 use crate::storage::artifact_store::read_event_payload;
 use crate::storage::session_state::ResolvedLocalSessionState;
@@ -67,8 +68,10 @@ pub struct ProjectedSessionDetailPage {
     pub event_count: usize,
     pub message_count: usize,
     pub turn_count: usize,
+    pub stale: bool,
     pub local_state: ResolvedLocalSessionState,
     pub projection_report: Option<ProjectedSessionReport>,
+    pub turns: Vec<TurnProjection>,
     pub events: Vec<SessionEvent>,
 }
 
@@ -303,9 +306,11 @@ impl<'a> SnapshotStore<'a> {
             event_offset,
             event_limit,
         )?;
+        let turns = self.session_detail_turns(&header.canonical_session_id)?;
         let projection_report = self.session_projection_report(&header.canonical_session_id)?;
         Ok(Some(ProjectedSessionDetailPage {
             projection_report,
+            turns,
             events,
             ..header
         }))
@@ -338,6 +343,7 @@ impl<'a> SnapshotStore<'a> {
                           AND event.kind = 'message'
                     ),
                     COALESCE(ss.turn_count, s.turn_count, 0),
+                    COALESCE(ss.stale, 0),
                     local.archived,
                     COALESCE(workspace.hidden, local.hidden),
                     COALESCE(workspace.pinned, local.pinned),
@@ -396,30 +402,98 @@ impl<'a> SnapshotStore<'a> {
             event_count: row.get::<_, i64>(9)?.max(0) as usize,
             message_count: row.get::<_, i64>(10)?.max(0) as usize,
             turn_count: row.get::<_, i64>(11)?.max(0) as usize,
+            stale: sql_bool(row.get::<_, i64>(12)?),
             local_state: ResolvedLocalSessionState {
-                display_title: row.get(19)?,
+                display_title: row.get(20)?,
                 archived: row
-                    .get::<_, Option<i64>>(12)?
-                    .map(sql_bool)
-                    .unwrap_or(false),
-                hidden: row
                     .get::<_, Option<i64>>(13)?
                     .map(sql_bool)
                     .unwrap_or(false),
-                pinned: row
+                hidden: row
                     .get::<_, Option<i64>>(14)?
                     .map(sql_bool)
                     .unwrap_or(false),
-                notes: row.get(15)?,
-                tags: parse_string_list(row.get::<_, Option<String>>(16)?.as_deref()),
-                preferred_targets: parse_string_list(row.get::<_, Option<String>>(17)?.as_deref()),
+                pinned: row
+                    .get::<_, Option<i64>>(15)?
+                    .map(sql_bool)
+                    .unwrap_or(false),
+                notes: row.get(16)?,
+                tags: parse_string_list(row.get::<_, Option<String>>(17)?.as_deref()),
+                preferred_targets: parse_string_list(row.get::<_, Option<String>>(18)?.as_deref()),
                 compressed_archive_refs: parse_string_list(
-                    row.get::<_, Option<String>>(18)?.as_deref(),
+                    row.get::<_, Option<String>>(19)?.as_deref(),
                 ),
             },
             projection_report: None,
+            turns: Vec::new(),
             events: Vec::new(),
         }))
+    }
+
+    fn session_detail_turns(&self, session_id: &str) -> Result<Vec<TurnProjection>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    id,
+                    provider_turn_id,
+                    status,
+                    confidence,
+                    started_at_ms,
+                    ended_at_ms,
+                    source_start_cursor,
+                    source_end_cursor,
+                    turn_order
+                 FROM session_turns
+                 WHERE session_id = ?1
+                 ORDER BY turn_order",
+            )
+            .context("Failed to prepare projected session turns")?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, i64>(8)?,
+                ))
+            })
+            .context("Failed to query projected session turns")?;
+
+        let mut turns = Vec::new();
+        for row in rows {
+            let (
+                id,
+                provider_turn_id,
+                status,
+                confidence,
+                started_at_ms,
+                ended_at_ms,
+                start_cursor,
+                end_cursor,
+                turn_order,
+            ) = row.context("Failed to decode projected session turn")?;
+            turns.push(TurnProjection {
+                id,
+                session_id: session_id.to_string(),
+                provider_turn_id,
+                status: parse_turn_status(&status)?,
+                confidence: parse_turn_confidence(&confidence)?,
+                started_at_ms,
+                ended_at_ms,
+                source_range: SourceRange {
+                    start_cursor,
+                    end_cursor,
+                },
+                turn_order,
+            });
+        }
+        Ok(turns)
     }
 
     fn session_projection_report(
@@ -858,6 +932,16 @@ fn parse_projection_status(value: &str) -> Result<ProjectionStatus> {
         .with_context(|| format!("Unknown projection status: {value}"))
 }
 
+fn parse_turn_status(value: &str) -> Result<TurnStatus> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .with_context(|| format!("Unknown projected turn status: {value}"))
+}
+
+fn parse_turn_confidence(value: &str) -> Result<TurnConfidence> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .with_context(|| format!("Unknown projected turn confidence: {value}"))
+}
+
 fn parse_projection_fidelity(value: &str) -> Result<ProjectionFidelity> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
         .with_context(|| format!("Unknown projection report item fidelity: {value}"))
@@ -1078,6 +1162,12 @@ mod tests {
         assert_eq!(page.event_count, 2);
         assert_eq!(page.message_count, 3);
         assert_eq!(page.turn_count, 1);
+        assert!(!page.stale);
+        assert_eq!(page.turns.len(), 1);
+        assert_eq!(page.turns[0].id, "turn-1");
+        assert_eq!(page.turns[0].status, TurnStatus::Completed);
+        assert_eq!(page.turns[0].confidence, TurnConfidence::Exact);
+        assert_eq!(page.turns[0].turn_order, 0);
         assert!(page.local_state.archived);
         assert!(page.local_state.hidden);
         assert!(!page.local_state.pinned);

@@ -131,6 +131,7 @@ pub struct SessionDetailView {
     pub event_count: usize,
     pub message_count: usize,
     pub artifact_count: usize,
+    pub stale: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_runtime_summary: Option<crate::hooks::augmentation::HookRuntimeSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -139,6 +140,7 @@ pub struct SessionDetailView {
     pub hook_runtime_sessions: Vec<crate::hooks::model::RuntimeSession>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection_report: Option<SessionProjectionReportView>,
+    pub turns: Vec<crate::session_projection::TurnProjection>,
     pub events: Vec<SessionEvent>,
     pub artifacts: Vec<SessionArtifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1238,10 +1240,12 @@ fn projected_detail_view(page: ProjectedSessionDetailPage) -> SessionDetailView 
         event_count: page.event_count,
         message_count: page.message_count,
         artifact_count: 0,
+        stale: page.stale,
         hook_runtime_summary: None,
         hook_diagnosis: None,
         hook_runtime_sessions: Vec::new(),
         projection_report: page.projection_report.map(projected_report_view),
+        turns: page.turns,
         events: page.events,
         artifacts: Vec::new(),
         compressed_archive_refs: page.local_state.compressed_archive_refs.clone(),
@@ -3623,6 +3627,7 @@ mod tests {
             event_count: 2,
             message_count: 1,
             turn_count: 1,
+            stale: true,
             local_state: session_state::ResolvedLocalSessionState {
                 display_title: Some("Display".to_string()),
                 archived: false,
@@ -3659,6 +3664,17 @@ mod tests {
                     details: Some(serde_json::json!({ "code": "unsupported_meta" })),
                 }],
             }),
+            turns: vec![crate::session_projection::TurnProjection {
+                id: "turn-1".to_string(),
+                session_id: "canonical-1".to_string(),
+                provider_turn_id: None,
+                status: crate::session_projection::TurnStatus::Completed,
+                confidence: crate::session_projection::TurnConfidence::Exact,
+                started_at_ms: Some(1_700_000_000_000),
+                ended_at_ms: Some(1_700_000_001_000),
+                source_range: crate::session_projection::SourceRange::default(),
+                turn_order: 0,
+            }],
             events: vec![SessionEvent {
                 id: "e2".to_string(),
                 kind: SessionEventKind::Message,
@@ -3690,6 +3706,12 @@ mod tests {
         assert_eq!(view.session_id, "session-1");
         assert_eq!(view.event_count, 2);
         assert_eq!(view.message_count, 1);
+        assert!(view.stale);
+        assert_eq!(view.turns.len(), 1);
+        assert_eq!(
+            view.turns[0].confidence,
+            crate::session_projection::TurnConfidence::Exact
+        );
         assert_eq!(view.source_path.as_deref(), Some("/tmp/session.jsonl"));
         assert_eq!(view.events.len(), 1);
         assert_eq!(view.compressed_archive_refs, vec!["archive-1"]);

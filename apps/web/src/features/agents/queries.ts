@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { detectAgent, getAgent, getMeta, listAgentsSummary, runProviderSetting, updateProviderSetting } from "@/lib/api";
+import { detectAgent, getAgent, getMeta, getProviderCatalog, listAgentsSummary, runProviderSetting, updateProviderSetting } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useAgentsSummary() {
@@ -21,6 +21,13 @@ export function useAgentsMeta() {
   return useQuery({
     queryKey: queryKeys.meta,
     queryFn: getMeta,
+  });
+}
+
+export function useAgentProviderCatalog(workspace?: string | null) {
+  return useQuery({
+    queryKey: queryKeys.providerCatalog(workspace),
+    queryFn: () => getProviderCatalog(workspace),
   });
 }
 

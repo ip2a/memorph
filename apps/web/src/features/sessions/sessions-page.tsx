@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRightIcon, EyeIcon, PinIcon, SearchIcon } from "lucide-react";
+import { ArrowRightIcon, EyeIcon, PinIcon, RefreshCwIcon, RotateCwIcon, SearchIcon, TriangleAlertIcon } from "lucide-react";
+import { toast } from "sonner";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
 import { Badge } from "@/components/ui/badge";
@@ -25,7 +26,7 @@ import {
 } from "@/components/ui/table";
 import { formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
 import type { SessionHookFilter, SessionItem, SessionListSort } from "@/lib/types";
-import { useSessions } from "@/features/sessions/queries";
+import { useRefreshSessionStaleness, useReprojectStaleSessions, useSessions } from "@/features/sessions/queries";
 
 function matchesSearch(session: SessionItem, query: string) {
   if (!query) return true;
@@ -46,6 +47,8 @@ export function SessionsPage() {
     [hookFilter, sort],
   );
   const sessions = useSessions(params);
+  const refreshStaleness = useRefreshSessionStaleness();
+  const reprojectStale = useReprojectStaleSessions();
 
   if (sessions.isLoading) return <PageSkeleton />;
   if (sessions.error) return <PageError title="Sessions failed to load" message={sessions.error.message} />;
@@ -57,6 +60,35 @@ export function SessionsPage() {
     }))
     .filter((group) => group.sessions.length > 0);
   const total = groups.reduce((sum, group) => sum + group.sessions.length, 0);
+  const staleTotal = groups.reduce(
+    (sum, group) => sum + group.sessions.filter((session) => session.stale).length,
+    0,
+  );
+
+  function handleRefreshStaleness() {
+    refreshStaleness.mutate(undefined, {
+      onSuccess: (report) => {
+        toast.success(
+          `Checked ${report.checked_sources} sources: ${report.stale_snapshots} stale, ${report.fresh_snapshots} fresh`,
+        );
+      },
+      onError: (error) => toast.error(error.message),
+    });
+  }
+
+  function handleReprojectStale() {
+    reprojectStale.mutate(null, {
+      onSuccess: (report) => {
+        const summary = `${report.reprojected_snapshots}/${report.candidate_snapshots} snapshots reprojected`;
+        if (report.failed_snapshots || report.missing_sources || report.unsupported_providers) {
+          toast.warning(summary);
+        } else {
+          toast.success(summary);
+        }
+      },
+      onError: (error) => toast.error(error.message),
+    });
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -66,18 +98,31 @@ export function SessionsPage() {
           <h1 className="text-3xl font-semibold">Sessions</h1>
           <p className="text-muted-foreground">Provider-scoped sessions rebuilt as a shadcn table workflow.</p>
         </div>
-        <Button asChild variant="outline">
-          <Link to="/manager">
-            Manager
-            <ArrowRightIcon data-icon="inline-end" />
-          </Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" disabled={refreshStaleness.isPending} onClick={handleRefreshStaleness}>
+            <RefreshCwIcon className={refreshStaleness.isPending ? "animate-spin" : undefined} data-icon="inline-start" />
+            Check sources
+          </Button>
+          <Button type="button" variant="outline" disabled={reprojectStale.isPending || staleTotal === 0} onClick={handleReprojectStale}>
+            <RotateCwIcon className={reprojectStale.isPending ? "animate-spin" : undefined} data-icon="inline-start" />
+            Reproject stale
+          </Button>
+          <Button asChild variant="outline">
+            <Link to="/manager">
+              Manager
+              <ArrowRightIcon data-icon="inline-end" />
+            </Link>
+          </Button>
+        </div>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>Filters</CardTitle>
-          <CardDescription>{total} sessions across {groups.length} providers</CardDescription>
+          <CardDescription>
+            {total} sessions across {groups.length} providers
+            {staleTotal ? ` · ${staleTotal} stale` : ""}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 md:grid-cols-[1fr_auto_auto]">
@@ -155,6 +200,7 @@ export function SessionsPage() {
                         <div className="flex flex-wrap gap-1">
                           {session.pinned ? <Badge variant="secondary"><PinIcon />Pinned</Badge> : null}
                           {session.hidden ? <Badge variant="outline"><EyeIcon />Hidden</Badge> : null}
+                          {session.stale ? <Badge variant="destructive"><TriangleAlertIcon />Stale</Badge> : null}
                           {session.hook_runtime_summary ? <Badge variant="outline">Hook</Badge> : null}
                         </div>
                       </TableCell>

@@ -3401,6 +3401,7 @@ mod tests {
                 event_count: 0,
                 message_count: 0,
                 artifact_count: 0,
+                stale: true,
                 hook_runtime_summary: Some(hooks::augmentation::HookRuntimeSummary {
                     linked_sessions: 1,
                     waiting_sessions: 0,
@@ -3427,6 +3428,17 @@ mod tests {
                     "claude:session:session-1",
                 )],
                 projection_report: None,
+                turns: vec![crate::session_projection::TurnProjection {
+                    id: "turn-1".to_string(),
+                    session_id: "canonical-1".to_string(),
+                    provider_turn_id: None,
+                    status: crate::session_projection::TurnStatus::Completed,
+                    confidence: crate::session_projection::TurnConfidence::Inferred,
+                    started_at_ms: None,
+                    ended_at_ms: None,
+                    source_range: crate::session_projection::SourceRange::default(),
+                    turn_order: 0,
+                }],
                 events: Vec::new(),
                 artifacts: Vec::new(),
             },
@@ -3445,6 +3457,8 @@ mod tests {
         );
         assert_eq!(value["view"]["hook_runtime_summary"]["confidence"], "high");
         assert_eq!(value["view"]["hook_diagnosis"]["kind"], "linked");
+        assert_eq!(value["view"]["stale"], true);
+        assert_eq!(value["view"]["turns"][0]["confidence"], "inferred");
         assert_eq!(
             value["hook_runtime_sessions"][0]["provider_session_id"],
             "session-1"

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArchiveIcon, CopyIcon, InfoIcon, PinIcon, SearchIcon } from "lucide-react";
+import { ArchiveIcon, CopyIcon, InfoIcon, PinIcon, SearchIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DetailHeader } from "@/components/shared/detail-header";
 import { DetailTimeline, scrollToDetailMessage } from "@/components/shared/detail-timeline";
@@ -27,6 +27,17 @@ import { queryKeys } from "@/lib/query-keys";
 
 function detailTitle(view: SessionDetailView) {
   return view.display_title || view.title || view.native_title || view.session_id;
+}
+
+function readable(value: string | null | undefined) {
+  return value ? value.replaceAll("_", " ") : "-";
+}
+
+function qualityBadgeVariant(value: string | null | undefined): "secondary" | "outline" | "destructive" {
+  if (value === "dropped" || value === "unsupported" || value === "failed" || value === "completed_with_loss") {
+    return "destructive";
+  }
+  return value === "preserved" || value === "exact" || value === "completed" ? "secondary" : "outline";
 }
 
 async function copyText(text: string, label: string) {
@@ -57,33 +68,99 @@ function SessionDetailsDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg" data-session-details-dialog>
+      <DialogContent className="sm:max-w-2xl" data-session-details-dialog>
         <DialogHeader>
           <DialogTitle>Session details</DialogTitle>
-          <DialogDescription>Counts, paths, and metadata for this canonical session.</DialogDescription>
+          <DialogDescription>Snapshot state, projection quality, and persisted turn boundaries.</DialogDescription>
         </DialogHeader>
-        <div className="flex flex-col gap-2 text-sm">
-          <MetaLine columns="wide" label="Messages" value={String(view.message_count)} />
-          <MetaLine columns="wide" label="Events" value={String(view.event_count)} />
-          <MetaLine
-            columns="wide"
-            label="Loaded"
-            value={hasMoreEvents ? `${returnedEventCount} (more available)` : String(returnedEventCount)}
-          />
-          <MetaLine columns="wide" label="Artifacts" value={String(view.artifact_count)} />
-          <MetaLine columns="wide" label="Archives" value={String(archives)} />
-          <MetaLine columns="wide" label="Session ID" value={<span className="break-all font-mono text-xs">{view.session_id}</span>} />
-          <MetaLine columns="wide" label="Created" value={formatDateTime(view.created_at)} />
-          <MetaLine columns="wide" label="Last active" value={formatDateTime(view.last_active_at)} />
-          {view.source_path ? (
-            <MetaLine
-              columns="wide"
-              label="Source path"
-              value={<PathText value={view.source_path} tone="default" wrap="all" className="text-sm" />}
-            />
-          ) : null}
-          {localState.notes ? <MetaLine columns="wide" label="Notes" value={localState.notes} /> : null}
-        </div>
+        <ScrollArea className="max-h-[min(72vh,42rem)] pr-3">
+          <div className="flex flex-col gap-5 text-sm">
+            <section className="flex flex-col gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <strong>Snapshot</strong>
+                {view.stale ? <Badge variant="destructive"><TriangleAlertIcon />Stale source</Badge> : <Badge variant="secondary">Fresh</Badge>}
+              </div>
+              <MetaLine columns="wide" label="Messages" value={String(view.message_count)} />
+              <MetaLine columns="wide" label="Events" value={String(view.event_count)} />
+              <MetaLine columns="wide" label="Turns" value={String(view.turns.length)} />
+              <MetaLine
+                columns="wide"
+                label="Loaded"
+                value={hasMoreEvents ? `${returnedEventCount} (more available)` : String(returnedEventCount)}
+              />
+              <MetaLine columns="wide" label="Artifacts" value={String(view.artifact_count)} />
+              <MetaLine columns="wide" label="Archives" value={String(archives)} />
+              <MetaLine columns="wide" label="Session ID" value={<span className="break-all font-mono text-xs">{view.session_id}</span>} />
+              <MetaLine columns="wide" label="Created" value={formatDateTime(view.created_at)} />
+              <MetaLine columns="wide" label="Last active" value={formatDateTime(view.last_active_at)} />
+              {view.source_path ? (
+                <MetaLine
+                  columns="wide"
+                  label="Source path"
+                  value={<PathText value={view.source_path} tone="default" wrap="all" className="text-sm" />}
+                />
+              ) : null}
+              {localState.notes ? <MetaLine columns="wide" label="Notes" value={localState.notes} /> : null}
+            </section>
+
+            <section className="flex flex-col gap-3 border-t pt-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <strong>Projection quality</strong>
+                {view.projection_report ? (
+                  <>
+                    <Badge variant={qualityBadgeVariant(view.projection_report.status)}>
+                      {readable(view.projection_report.status)}
+                    </Badge>
+                    <Badge variant={qualityBadgeVariant(view.projection_report.summary.mapping_overall)}>
+                      {readable(view.projection_report.summary.mapping_overall)}
+                    </Badge>
+                  </>
+                ) : <Badge variant="outline">No report</Badge>}
+              </div>
+              {view.projection_report ? (
+                <>
+                  <div className="grid grid-cols-3 gap-2">
+                    <StatItem label="Preserved" value={view.projection_report.summary.preserved_count} />
+                    <StatItem label="Normalized" value={view.projection_report.summary.normalized_count} />
+                    <StatItem label="Dropped" value={view.projection_report.summary.dropped_count} />
+                  </div>
+                  <MetaLine columns="wide" label="Operation" value={readable(view.projection_report.operation_kind)} />
+                  <MetaLine columns="wide" label="Version" value={String(view.projection_report.projection_version)} />
+                  <MetaLine columns="wide" label="Projected" value={formatDateTime(view.projection_report.created_at)} />
+                  {view.projection_report.items.length ? (
+                    <div className="flex flex-col border-t">
+                      {view.projection_report.items.map((item) => (
+                        <div key={`${item.item_order}-${item.field_path ?? item.scope}`} className="grid gap-1 border-b py-2 sm:grid-cols-[auto_minmax(0,1fr)]">
+                          <Badge variant={qualityBadgeVariant(item.fidelity)}>{readable(item.fidelity)}</Badge>
+                          <div className="min-w-0">
+                            <div className="break-all font-mono text-xs">{item.field_path || item.scope}</div>
+                            {item.reason ? <div className="text-xs text-muted-foreground">{item.reason}</div> : null}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
+            </section>
+
+            <section className="flex flex-col gap-3 border-t pt-4">
+              <strong>Turns</strong>
+              {view.turns.length ? view.turns.map((turn) => (
+                <div key={turn.id} className="grid gap-2 border-b pb-3 sm:grid-cols-[auto_auto_minmax(0,1fr)] sm:items-center">
+                  <span className="font-mono text-xs">#{turn.turn_order + 1}</span>
+                  <div className="flex flex-wrap gap-1">
+                    <Badge variant={qualityBadgeVariant(turn.confidence)}>{readable(turn.confidence)}</Badge>
+                    <Badge variant={qualityBadgeVariant(turn.status)}>{readable(turn.status)}</Badge>
+                  </div>
+                  <div className="min-w-0 text-xs text-muted-foreground sm:text-right">
+                    {formatDateTime(turn.started_at_ms)} to {formatDateTime(turn.ended_at_ms)}
+                  </div>
+                </div>
+              )) : <span className="text-muted-foreground">No persisted turns.</span>}
+            </section>
+          </div>
+        </ScrollArea>
       </DialogContent>
     </Dialog>
   );
@@ -131,6 +208,10 @@ function SessionDetailMeta({
   const tags = localState.tags ?? [];
   const preferredTargets = localState.preferred_targets ?? [];
   const activity = useSessionActivity(view.provider_id, view.session_id);
+  const confidenceCounts = view.turns.reduce<Record<string, number>>((counts, turn) => {
+    counts[turn.confidence] = (counts[turn.confidence] ?? 0) + 1;
+    return counts;
+  }, {});
 
   return (
     <div className="flex w-full flex-col gap-2.5" data-session-detail-meta>
@@ -157,6 +238,17 @@ function SessionDetailMeta({
             Copy resume command
           </Button>
         ) : null}
+        {view.stale ? <Badge variant="destructive"><TriangleAlertIcon className="size-3" />Stale source</Badge> : null}
+        {view.projection_report ? (
+          <Badge variant={qualityBadgeVariant(view.projection_report.summary.mapping_overall)}>
+            Projection: {readable(view.projection_report.summary.mapping_overall)}
+          </Badge>
+        ) : null}
+        {Object.entries(confidenceCounts).map(([confidence, count]) => (
+          <Badge key={confidence} variant={qualityBadgeVariant(confidence)}>
+            {count} {readable(confidence)} turns
+          </Badge>
+        ))}
         {localState.hidden ? <Badge variant="outline">Hidden</Badge> : null}
         {localState.pinned ? (
           <Badge variant="secondary">
@@ -265,6 +357,9 @@ function DetailEventItem({ event, index, highlighted }: { event: SessionEvent; i
             <span key={label} className="text-muted-foreground">{label}</span>
           ))}
           {event.metadata?.model ? <span className="text-muted-foreground">{event.metadata.model}</span> : null}
+          {event.metadata?.fidelity ? (
+            <Badge variant={qualityBadgeVariant(event.metadata.fidelity)}>{readable(event.metadata.fidelity)}</Badge>
+          ) : null}
         </span>
         <span className="shrink-0 whitespace-nowrap text-muted-foreground">{formatDateTime(event.timestamp)}</span>
       </header>

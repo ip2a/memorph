@@ -52,6 +52,8 @@ import type {
   ProviderActivityTimeline,
   SessionGroup,
   SessionListParams,
+  SessionReprojectionReport,
+  SessionStalenessRefreshReport,
   SwitchSessionPayload,
   SwitchSessionResult,
   SyncGroup,
@@ -415,6 +417,19 @@ export function restoreCompressionArchive(payload: RestoreCompressionPayload) {
 
 export function listSessions(params: SessionListParams = {}) {
   return api<SessionGroup[]>(`/api/v1/sessions${buildQuery(params)}`);
+}
+
+export function refreshSessionStaleness() {
+  return api<SessionStalenessRefreshReport>("/api/v1/sessions/refresh-stale", {
+    method: "POST",
+  });
+}
+
+export function reprojectStaleSessions(provider?: string | null) {
+  return api<SessionReprojectionReport>("/api/v1/sessions/reproject-stale", {
+    method: "POST",
+    body: JSON.stringify({ provider: provider || null }),
+  });
 }
 
 export function getSession(provider: string, sessionId: string, params: SessionDetailParams = {}) {

@@ -26,9 +26,17 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { formatBytes, formatExecutableVersion } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { AgentEnvironmentStatus, AgentManagementEntry, ProviderHookDiagnosisAggregate, ProviderSettingItem } from "@/lib/types";
+import type {
+  AgentEnvironmentStatus,
+  AgentManagementEntry,
+  ProviderCapabilities,
+  ProviderContentFidelity,
+  ProviderHookDiagnosisAggregate,
+  ProviderSettingItem,
+} from "@/lib/types";
 import {
   useAgent,
+  useAgentProviderCatalog,
   useAgentsMeta,
   useAgentsSummary,
   useDetectAgent,
@@ -261,6 +269,133 @@ function HooksBlock({ provider }: { provider: AgentManagementEntry }) {
   );
 }
 
+function capabilityLabel(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function riskVariant(level: string): "secondary" | "outline" | "destructive" {
+  if (level === "high" || level === "unknown") return "destructive";
+  return level === "low" ? "secondary" : "outline";
+}
+
+function FidelityRows({
+  label,
+  fidelity,
+}: {
+  label: string;
+  fidelity: ProviderContentFidelity;
+}) {
+  const entries = Object.entries(fidelity).filter((entry): entry is [string, string] => Boolean(entry[1]));
+  return (
+    <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
+      <strong className="text-sm font-medium">{label}</strong>
+      <div className="flex flex-wrap gap-1.5">
+        {entries.length ? entries.map(([kind, disposition]) => (
+          <Badge
+            key={kind}
+            variant={disposition === "dropped" || disposition === "unsupported" ? "destructive" : disposition === "preserved" ? "secondary" : "outline"}
+          >
+            {capabilityLabel(kind)}: {capabilityLabel(disposition)}
+          </Badge>
+        )) : <span className="text-xs text-muted-foreground">Unknown</span>}
+      </div>
+    </div>
+  );
+}
+
+function CapabilityBlock({ capabilities }: { capabilities: ProviderCapabilities | undefined }) {
+  if (!capabilities) {
+    return (
+      <DetailSection title="Session Management Capability">
+        <div className="text-sm text-muted-foreground">Capability catalog data is unavailable.</div>
+      </DetailSection>
+    );
+  }
+
+  const operations = [
+    ["Scan", capabilities.scan],
+    ["Import", capabilities.import],
+    ["Export", capabilities.export],
+    ["Delete", capabilities.delete],
+    ["Rename", capabilities.rename],
+    ["Resume", capabilities.resume],
+  ] as const;
+  const topology = [
+    ["Multiple files", capabilities.write_risk.multiple_files],
+    ["SQLite", capabilities.write_risk.sqlite],
+    ["Sidecars", capabilities.write_risk.sidecar_files],
+    ["Index repair", capabilities.write_risk.index_repair],
+  ] as const;
+
+  return (
+    <DetailSection
+      title="Session Management Capability"
+      description="Projection quality and native write risk declared by the provider implementation."
+    >
+      <SummaryGrid
+        items={[
+          { label: "Storage", value: capabilityLabel(capabilities.storage_shape) },
+          { label: "Scan", value: capabilityLabel(capabilities.scan_strategy) },
+          { label: "Paging", value: capabilityLabel(capabilities.page_strategy) },
+          { label: "Turn quality", value: capabilityLabel(capabilities.turn_quality) },
+          { label: "Resume", value: capabilityLabel(capabilities.resume_quality) },
+          { label: "Write risk", value: capabilityLabel(capabilities.write_risk.level) },
+        ]}
+      />
+      <div className="flex flex-col">
+        <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
+          <strong className="text-sm font-medium">Operations</strong>
+          <div className="flex flex-wrap gap-1.5">
+            {operations.map(([label, supported]) => (
+              <Badge key={label} variant={supported ? "secondary" : "outline"}>{label}: {supported ? "yes" : "no"}</Badge>
+            ))}
+          </div>
+        </div>
+        <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
+          <div className="flex min-w-0 flex-col gap-1">
+            <strong className="text-sm font-medium">Native write risk</strong>
+            <span className="text-xs text-muted-foreground">Storage planes touched by delete, rename, import, or sync.</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <Badge variant={riskVariant(capabilities.write_risk.level)}>{capabilityLabel(capabilities.write_risk.level)}</Badge>
+            {topology.map(([label, present]) => (
+              <Badge key={label} variant={present ? "outline" : "ghost"}>{label}: {present ? "yes" : "no"}</Badge>
+            ))}
+          </div>
+        </div>
+        <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
+          <strong className="text-sm font-medium">Backup contract</strong>
+          <div className="flex flex-wrap gap-1.5">
+            <Badge variant={capabilities.backup_support.before_write ? "secondary" : "destructive"}>
+              Before write: {capabilities.backup_support.before_write ? "yes" : "no"}
+            </Badge>
+            <Badge variant={capabilities.backup_support.restore ? "secondary" : "destructive"}>
+              Restore: {capabilities.backup_support.restore ? "yes" : "no"}
+            </Badge>
+            <Badge variant="outline">Sync only: {capabilities.backup_support.sync_only ? "yes" : "no"}</Badge>
+          </div>
+        </div>
+        <FidelityRows label="Import fidelity" fidelity={capabilities.import_fidelity} />
+        <FidelityRows label="Export fidelity" fidelity={capabilities.export_fidelity} />
+        <div className="grid gap-3 py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
+          <strong className="text-sm font-medium">Activity coverage</strong>
+          <div className="flex flex-wrap gap-1.5">
+            <Badge variant={capabilities.activity_support.hook_events ? "secondary" : "outline"}>
+              Hook events: {capabilities.activity_support.hook_events ? "yes" : "no"}
+            </Badge>
+            <Badge variant={capabilities.activity_support.runtime_endpoint ? "secondary" : "outline"}>
+              Runtime endpoint: {capabilities.activity_support.runtime_endpoint ? "yes" : "no"}
+            </Badge>
+            <Badge variant={capabilities.activity_support.session_activity ? "secondary" : "outline"}>
+              Session activity: {capabilities.activity_support.session_activity ? "yes" : "no"}
+            </Badge>
+          </div>
+        </div>
+      </div>
+    </DetailSection>
+  );
+}
+
 function ProviderItemsBlock({
   provider,
   workspace,
@@ -340,10 +475,12 @@ function ProviderItemsBlock({
 
 function ProviderDetail({
   provider,
+  capabilities,
   isLoading,
   workspace,
 }: {
   provider: AgentManagementEntry | undefined;
+  capabilities: ProviderCapabilities | undefined;
   isLoading: boolean;
   workspace: string | null | undefined;
 }) {
@@ -429,6 +566,7 @@ function ProviderDetail({
           {updateSetting.error ? <PageError title="Setting update failed" message={updateSetting.error.message} /> : null}
           {runSetting.error ? <PageError title="Provider action failed" message={runSetting.error.message} /> : null}
           <EnvironmentBlock provider={provider} />
+          <CapabilityBlock capabilities={capabilities} />
           <HooksBlock provider={provider} />
           <ProviderItemsBlock
             provider={provider}
@@ -487,6 +625,7 @@ function ProviderDetail({
 export function AgentsPage() {
   const summary = useAgentsSummary();
   const meta = useAgentsMeta();
+  const catalog = useAgentProviderCatalog(meta.data?.selected_workspace);
   const providers = summary.data?.providers ?? [];
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const selected = providers.some((provider) => provider.provider_id === selectedProvider)
@@ -494,10 +633,12 @@ export function AgentsPage() {
     : providers[0]?.provider_id || null;
   const detail = useAgent(selected);
   const workspace = meta.data?.selected_workspace || null;
+  const capabilities = catalog.data?.providers.find((provider) => provider.provider_id === selected)?.capability_set;
 
   if (summary.isLoading || meta.isLoading) return <PageSkeleton />;
   if (summary.error) return <PageError title="Agents failed to load" message={summary.error.message} />;
   if (meta.error) return <PageError title="Workspace metadata failed to load" message={meta.error.message} />;
+  if (catalog.error) return <PageError title="Provider capabilities failed to load" message={catalog.error.message} />;
 
   return (
     <TwoPanePage>
@@ -516,7 +657,12 @@ export function AgentsPage() {
         <AgentStatsStrip provider={detail.data} loading={detail.isLoading} />
         <Separator />
         {detail.error ? <PageError title="Agent detail failed to load" message={detail.error.message} /> : null}
-        <ProviderDetail provider={detail.data} isLoading={detail.isLoading} workspace={workspace} />
+        <ProviderDetail
+          provider={detail.data}
+          capabilities={capabilities}
+          isLoading={detail.isLoading || catalog.isLoading}
+          workspace={workspace}
+        />
       </PanelCard>
       <Separator className="hidden" />
     </TwoPanePage>

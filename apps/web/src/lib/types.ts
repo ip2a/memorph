@@ -450,9 +450,55 @@ export type ProviderCatalogUpdatePayload = {
   workspace?: string | null;
 };
 
+export type ProviderContentFidelity = {
+  text?: MappingDisposition | null;
+  thinking?: MappingDisposition | null;
+  tool_call?: MappingDisposition | null;
+  tool_result?: MappingDisposition | null;
+  patch?: MappingDisposition | null;
+  image?: MappingDisposition | null;
+  file?: MappingDisposition | null;
+  compressed?: MappingDisposition | null;
+  provider_payload?: MappingDisposition | null;
+};
+
+export type ProviderCapabilities = {
+  scan: boolean;
+  import: boolean;
+  export: boolean;
+  delete: boolean;
+  rename: boolean;
+  resume: boolean;
+  scan_strategy: "unknown" | "full_scan" | "indexed" | "hybrid" | string;
+  page_strategy: "unknown" | "full_import" | "indexed_page" | "native_page" | string;
+  storage_shape: "unknown" | "jsonl" | "sqlite" | "directory" | "mixed" | string;
+  turn_quality: "unknown" | "exact" | "inferred" | "grouped" | string;
+  import_fidelity: ProviderContentFidelity;
+  export_fidelity: ProviderContentFidelity;
+  resume_quality: "none" | "native" | "imported" | "text_only" | string;
+  write_risk: {
+    level: "unknown" | "low" | "medium" | "high" | string;
+    multiple_files: boolean;
+    sqlite: boolean;
+    sidecar_files: boolean;
+    index_repair: boolean;
+  };
+  backup_support: {
+    before_write: boolean;
+    restore: boolean;
+    sync_only: boolean;
+  };
+  activity_support: {
+    hook_events: boolean;
+    runtime_endpoint: boolean;
+    session_activity: boolean;
+  };
+};
+
 export type ProviderCatalogEntry = {
   provider_id: string;
   display_name: string;
+  capability_set: ProviderCapabilities;
   filter_tags?: string[];
   hidden_state?: {
     global?: boolean;
@@ -555,6 +601,7 @@ export type SessionItem = {
   display_title?: string | null;
   hidden: boolean;
   pinned: boolean;
+  stale: boolean;
   preferred_targets: string[];
   project_dir: string | null;
   last_active_at: number | null;
@@ -572,6 +619,51 @@ export type SessionDetailParams = {
 };
 
 export type MappingDisposition = "preserved" | "normalized" | "downgraded" | "dropped" | "unsupported" | string;
+
+export type ProjectionFidelity = "preserved" | "normalized" | "dropped" | string;
+
+export type SessionProjectionReport = {
+  id: string;
+  provider_id: string;
+  source_id?: string | null;
+  operation_kind: "scan" | "import" | "export" | "rebuild" | string;
+  projection_version: number;
+  status: "completed" | "completed_with_loss" | "failed" | string;
+  created_at: string;
+  created_at_ms: number;
+  summary: {
+    canonical_event_count?: number | null;
+    mapping_direction?: "import" | "export" | string | null;
+    mapping_overall?: MappingDisposition | null;
+    preserved_count: number;
+    normalized_count: number;
+    dropped_count: number;
+  };
+  item_count: number;
+  items: Array<{
+    item_order: number;
+    fidelity: ProjectionFidelity;
+    scope: string;
+    field_path?: string | null;
+    reason?: string | null;
+    details?: unknown;
+  }>;
+};
+
+export type SessionTurn = {
+  id: string;
+  session_id: string;
+  provider_turn_id?: string | null;
+  status: "unknown" | "open" | "completed" | "failed" | "interrupted" | string;
+  confidence: "exact" | "inferred" | "grouped" | "unknown" | string;
+  started_at_ms?: number | null;
+  ended_at_ms?: number | null;
+  source_range: {
+    start_cursor?: string | null;
+    end_cursor?: string | null;
+  };
+  turn_order: number;
+};
 
 export type EventRole = "user" | "assistant" | "tool" | "system" | "developer" | "unknown" | string;
 
@@ -690,9 +782,12 @@ export type SessionDetailView = {
   event_count: number;
   message_count: number;
   artifact_count: number;
+  stale: boolean;
   hook_runtime_summary?: HookRuntimeSummary | null;
   hook_diagnosis?: SessionHookDiagnosis | null;
   hook_runtime_sessions: unknown[];
+  projection_report?: SessionProjectionReport | null;
+  turns: SessionTurn[];
   events: SessionEvent[];
   artifacts: SessionArtifact[];
   compressed_archive_refs: string[];
@@ -705,6 +800,28 @@ export type SessionDetailPayload = {
   returned_event_count: number;
   has_more_events: boolean;
   hook_runtime_sessions: unknown[];
+};
+
+export type SessionStalenessRefreshReport = {
+  checked_sources: number;
+  fresh_snapshots: number;
+  stale_snapshots: number;
+  missing_sources: number;
+  unknown_sources: number;
+};
+
+export type SessionReprojectionReport = {
+  candidate_snapshots: number;
+  reprojected_snapshots: number;
+  missing_sources: number;
+  unsupported_providers: number;
+  failed_snapshots: number;
+  failures: Array<{
+    provider_id: string;
+    provider_session_id?: string | null;
+    source_path?: string | null;
+    reason: string;
+  }>;
 };
 
 export type SessionActivityBucketUnit = "minute" | "hour" | "twelve_hour";
