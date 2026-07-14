@@ -48,7 +48,8 @@
 !/.github/workflows/*.yml
 
 # Local draft documentation.
-/docs/
+/docs/*
+!/docs/session-management-redesign.md
 
 # Web app source.
 !/apps/
