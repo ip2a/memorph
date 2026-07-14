@@ -379,6 +379,7 @@ impl Provider for CodexProvider {
             let title = select_codex_display_title(
                 thread_name.as_deref(),
                 sqlite_meta.and_then(|meta| meta.title.as_deref()),
+                None,
                 &id,
             );
 
@@ -447,6 +448,7 @@ impl Provider for CodexProvider {
             let title = select_codex_display_title(
                 thread_name.as_deref(),
                 sqlite_meta.and_then(|meta| meta.title.as_deref()),
+                None,
                 session_id,
             );
 
@@ -1512,7 +1514,12 @@ pub fn project_session_to_store(
     source_path: &Path,
     store: &mut ProjectionStore<'_>,
 ) -> Result<StoredProjection> {
-    let imported = import_canonical_session(source_path)?;
+    let mut imported = import_canonical_session(source_path)?;
+    imported.session.identity.source_title = resolve_codex_projection_title(
+        source_path,
+        &imported.session.identity.canonical_id,
+        imported.session.identity.source_title.as_deref(),
+    )?;
     store.write_imported_session(source_path, &imported, CodexProvider.capabilities())
 }
 
@@ -2456,6 +2463,8 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                 .map(str::to_string)
         })
         .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let source_title =
+        select_codex_display_title(None, None, source_title.as_deref(), &canonical_id);
 
     Ok(ImportedSession {
         session: CanonicalSession {
@@ -2751,6 +2760,7 @@ fn build_codex_event_index(
                 .map(str::to_string)
         })
         .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let source_title = select_codex_display_title(None, None, source_title.as_deref(), &session_id);
 
     Ok((
         event_index::IndexedSessionState {
@@ -3588,13 +3598,44 @@ fn clean_non_empty(value: Option<&str>) -> Option<&str> {
 fn select_codex_display_title(
     index_title: Option<&str>,
     sqlite_title: Option<&str>,
+    rollout_title: Option<&str>,
     session_id: &str,
 ) -> Option<String> {
     clean_non_empty(index_title)
         .filter(|title| *title != session_id)
         .or_else(|| clean_non_empty(sqlite_title).filter(|title| *title != session_id))
-        .or_else(|| clean_non_empty(index_title))
+        .or_else(|| clean_non_empty(rollout_title).filter(|title| *title != session_id))
         .map(str::to_string)
+}
+
+fn resolve_codex_projection_title(
+    source_path: &Path,
+    session_id: &str,
+    rollout_title: Option<&str>,
+) -> Result<Option<String>> {
+    let codex_dir = source_path
+        .ancestors()
+        .find(|ancestor| ancestor.file_name().and_then(|name| name.to_str()) == Some("sessions"))
+        .and_then(Path::parent);
+    let Some(codex_dir) = codex_dir else {
+        return Ok(select_codex_display_title(
+            None,
+            None,
+            rollout_title,
+            session_id,
+        ));
+    };
+
+    let index_entries = load_session_index_entries(&codex_dir.join("session_index.jsonl"))?;
+    let sqlite_metadata = build_sqlite_thread_metadata_lookup(codex_dir)?;
+    Ok(select_codex_display_title(
+        index_entries.get(session_id).map(String::as_str),
+        sqlite_metadata
+            .get(session_id)
+            .and_then(|metadata| metadata.title.as_deref()),
+        rollout_title,
+        session_id,
+    ))
 }
 
 fn resolve_codex_reindex_title(
@@ -5295,6 +5336,105 @@ mod tests {
             )
             .unwrap();
         assert_eq!(report_count, 1);
+    }
+
+    #[test]
+    fn project_session_title_uses_codex_native_precedence_and_prompt_fallback() {
+        let temp = tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        let sessions_dir = codex_dir.join("sessions/2026/07/15");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let session_id = "codex-title-precedence";
+        let source_path = sessions_dir.join(format!("rollout-{session_id}.jsonl"));
+        let write_rollout = |title: &str| {
+            std::fs::write(
+                &source_path,
+                [
+                    serde_json::to_string(&json!({
+                        "timestamp": "2026-07-15T10:00:00Z",
+                        "type": "session_meta",
+                        "payload": {
+                            "id": session_id,
+                            "cwd": "/tmp/project",
+                            "title": title
+                        }
+                    }))
+                    .unwrap(),
+                    serde_json::to_string(&json!({
+                        "timestamp": "2026-07-15T10:00:01Z",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Prompt title"
+                                }
+                            ]
+                        }
+                    }))
+                    .unwrap(),
+                ]
+                .join("\n")
+                    + "\n",
+            )
+            .unwrap();
+        };
+        let write_index = |title: &str| {
+            std::fs::write(
+                codex_dir.join("session_index.jsonl"),
+                serde_json::to_string(&json!({
+                    "id": session_id,
+                    "thread_name": title,
+                    "updated_at": "2026-07-15T10:00:01Z"
+                }))
+                .unwrap()
+                    + "\n",
+            )
+            .unwrap();
+        };
+
+        write_rollout("Rollout title");
+        write_index("Index title");
+        let sqlite = Connection::open(codex_dir.join(CODEX_SQLITE_FILE_BASENAME)).unwrap();
+        sqlite
+            .execute("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT)", [])
+            .unwrap();
+        sqlite
+            .execute(
+                "INSERT INTO threads (id, title) VALUES (?1, ?2)",
+                rusqlite::params![session_id, "SQLite title"],
+            )
+            .unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::storage::local_store::configure_connection(&conn).unwrap();
+        crate::storage::local_store::apply_schema(&mut conn).unwrap();
+        let projected_title = |conn: &Connection| -> String {
+            conn.query_row("SELECT title FROM session_snapshots", [], |row| row.get(0))
+                .unwrap()
+        };
+
+        project_session_to_store(&source_path, &mut ProjectionStore::new(&mut conn)).unwrap();
+        assert_eq!(projected_title(&conn), "Index title");
+
+        write_index(session_id);
+        project_session_to_store(&source_path, &mut ProjectionStore::new(&mut conn)).unwrap();
+        assert_eq!(projected_title(&conn), "SQLite title");
+
+        sqlite
+            .execute(
+                "UPDATE threads SET title = ?1 WHERE id = ?2",
+                rusqlite::params![session_id, session_id],
+            )
+            .unwrap();
+        project_session_to_store(&source_path, &mut ProjectionStore::new(&mut conn)).unwrap();
+        assert_eq!(projected_title(&conn), "Rollout title");
+
+        write_rollout(session_id);
+        project_session_to_store(&source_path, &mut ProjectionStore::new(&mut conn)).unwrap();
+        assert_eq!(projected_title(&conn), "Prompt title");
     }
 
     #[test]
