@@ -33,6 +33,7 @@ pub mod manager;
 pub mod session_management;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
+const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &["claude", "codex", "opencode"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListParams {
@@ -315,6 +316,237 @@ pub struct SessionReprojectionFailure {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionProjectionBootstrapReport {
+    pub scanned_providers: usize,
+    pub failed_providers: usize,
+    pub discovered_sessions: usize,
+    pub projected_sessions: usize,
+    pub unchanged_sessions: usize,
+    pub missing_sources: usize,
+    pub unsupported_providers: usize,
+    pub failed_sessions: usize,
+    pub failures: Vec<SessionProjectionBootstrapFailure>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionProjectionBootstrapFailure {
+    pub provider_id: String,
+    pub session_id: Option<String>,
+    pub source_path: Option<String>,
+    pub reason: String,
+}
+
+pub fn bootstrap_session_projections(
+    provider_filter: Option<&str>,
+    actor: ActivityActor,
+) -> Result<SessionProjectionBootstrapReport> {
+    let provider_filter = provider_filter.map(providers::canonical_provider_id);
+    let activity_conn = local_store::open_database()?;
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: provider_filter.clone(),
+        provider_session_id: None,
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Scan,
+        actor,
+        summary: "Discovering and projecting provider sessions".to_string(),
+        details: serde_json::json!({
+            "scan_kind": "projection_bootstrap",
+            "provider_filter": provider_filter,
+        }),
+    })?;
+    let result = (|| {
+        let mut conn = local_store::open_database()?;
+        bootstrap_session_projections_in_connection(&mut conn, provider_filter.as_deref())
+    })();
+    match result {
+        Ok(report) => {
+            let has_failures = report.failed_providers > 0
+                || report.failed_sessions > 0
+                || report.missing_sources > 0
+                || report.unsupported_providers > 0;
+            let status = if !has_failures {
+                ActivityStatus::Success
+            } else if report.projected_sessions == 0 && report.unchanged_sessions == 0 {
+                ActivityStatus::Failed
+            } else {
+                ActivityStatus::Partial
+            };
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion {
+                    status,
+                    provider_id: provider_filter.clone(),
+                    provider_session_id: None,
+                    workspace_dir: None,
+                    summary: "Discovered and projected provider sessions".to_string(),
+                    details: serde_json::to_value(&report)?,
+                    error: (!report.failures.is_empty()).then(|| {
+                        report
+                            .failures
+                            .iter()
+                            .map(|failure| failure.reason.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }),
+                },
+            )?;
+            Ok(report)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to discover and project provider sessions",
+                    serde_json::json!({
+                        "scan_kind": "projection_bootstrap",
+                        "provider_filter": provider_filter,
+                    }),
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+fn bootstrap_session_projections_in_connection(
+    conn: &mut rusqlite::Connection,
+    provider_filter: Option<&str>,
+) -> Result<SessionProjectionBootstrapReport> {
+    let provider_ids = provider_filter
+        .map(|provider_id| vec![providers::canonical_provider_id(provider_id)])
+        .unwrap_or_else(|| {
+            PROJECTED_SESSION_PROVIDER_IDS
+                .iter()
+                .map(|provider_id| (*provider_id).to_string())
+                .collect()
+        });
+    let mut report = SessionProjectionBootstrapReport::default();
+
+    for provider_id in provider_ids {
+        if !provider_supports_session_projection(&provider_id) {
+            report.unsupported_providers += 1;
+            report.failures.push(SessionProjectionBootstrapFailure {
+                provider_id: provider_id.clone(),
+                session_id: None,
+                source_path: None,
+                reason: format!(
+                    "provider does not support projected store bootstrap yet: {provider_id}"
+                ),
+            });
+            continue;
+        }
+        let Some(provider) = providers::find_provider(&provider_id) else {
+            report.unsupported_providers += 1;
+            report.failures.push(SessionProjectionBootstrapFailure {
+                provider_id: provider_id.clone(),
+                session_id: None,
+                source_path: None,
+                reason: format!("provider is not registered: {provider_id}"),
+            });
+            continue;
+        };
+        let sessions = match provider.scan_sessions() {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                report.failed_providers += 1;
+                report.failures.push(SessionProjectionBootstrapFailure {
+                    provider_id: provider_id.clone(),
+                    session_id: None,
+                    source_path: None,
+                    reason: format!("failed to scan provider sessions: {error:#}"),
+                });
+                continue;
+            }
+        };
+        report.scanned_providers += 1;
+        report.discovered_sessions += sessions.len();
+
+        for session in sessions {
+            bootstrap_provider_session(conn, &provider_id, &session, &mut report);
+        }
+    }
+
+    Ok(report)
+}
+
+fn bootstrap_provider_session(
+    conn: &mut rusqlite::Connection,
+    provider_id: &str,
+    session: &ProviderSessionSummary,
+    report: &mut SessionProjectionBootstrapReport,
+) {
+    let Some(source_path) = session
+        .source_path
+        .as_deref()
+        .filter(|source_path| !source_path.is_empty())
+    else {
+        report.missing_sources += 1;
+        report.failures.push(bootstrap_failure(
+            provider_id,
+            session,
+            "provider session has no source path".to_string(),
+        ));
+        return;
+    };
+    if !projection_source_file_exists(source_path) {
+        report.missing_sources += 1;
+        report.failures.push(bootstrap_failure(
+            provider_id,
+            session,
+            format!("source file not found: {source_path}"),
+        ));
+        return;
+    }
+
+    let freshness = crate::storage::snapshot_store::SnapshotStore::new(conn)
+        .session_source_is_fresh(provider_id, &session.session_id, source_path);
+    match freshness {
+        Ok(true) => {
+            report.unchanged_sessions += 1;
+            return;
+        }
+        Ok(false) => {}
+        Err(error) => {
+            report.failed_sessions += 1;
+            report.failures.push(bootstrap_failure(
+                provider_id,
+                session,
+                format!("failed to inspect projected source freshness: {error:#}"),
+            ));
+            return;
+        }
+    }
+
+    match project_provider_session_source(conn, provider_id, Some(&session.session_id), source_path)
+    {
+        Ok(_) => report.projected_sessions += 1,
+        Err(error) => {
+            report.failed_sessions += 1;
+            report.failures.push(bootstrap_failure(
+                provider_id,
+                session,
+                format!("failed to project provider session: {error:#}"),
+            ));
+        }
+    }
+}
+
+fn bootstrap_failure(
+    provider_id: &str,
+    session: &ProviderSessionSummary,
+    reason: String,
+) -> SessionProjectionBootstrapFailure {
+    SessionProjectionBootstrapFailure {
+        provider_id: provider_id.to_string(),
+        session_id: Some(session.session_id.clone()),
+        source_path: session.source_path.clone(),
+        reason,
+    }
+}
+
 pub fn reproject_stale_sessions(
     provider_filter: Option<&str>,
     actor: ActivityActor,
@@ -411,102 +643,70 @@ fn reproject_stale_snapshot_sources(
             ));
             continue;
         };
-        match source.provider_id.as_str() {
-            "claude" => {
-                if !projection_source_file_exists(source_path) {
-                    report.missing_sources += 1;
-                    report.failures.push(reprojection_failure(
-                        &source,
-                        format!("source file not found: {source_path}"),
-                    ));
-                    continue;
-                }
-                let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
-                match crate::providers::claude::project_session_to_store(
-                    std::path::Path::new(source_path),
-                    &mut store,
-                ) {
-                    Ok(_) => report.reprojected_snapshots += 1,
-                    Err(err) => {
-                        report.failed_snapshots += 1;
-                        report
-                            .failures
-                            .push(reprojection_failure(&source, err.to_string()));
-                    }
-                }
-            }
-            "codex" => {
-                if !projection_source_file_exists(source_path) {
-                    report.missing_sources += 1;
-                    report.failures.push(reprojection_failure(
-                        &source,
-                        format!("source file not found: {source_path}"),
-                    ));
-                    continue;
-                }
-                let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
-                match crate::providers::codex::project_session_to_store(
-                    std::path::Path::new(source_path),
-                    &mut store,
-                ) {
-                    Ok(_) => report.reprojected_snapshots += 1,
-                    Err(err) => {
-                        report.failed_snapshots += 1;
-                        report
-                            .failures
-                            .push(reprojection_failure(&source, err.to_string()));
-                    }
-                }
-            }
-            "opencode" => {
-                let Some(provider_session_id) = source
-                    .provider_session_id
-                    .as_deref()
-                    .filter(|value| !value.is_empty())
-                else {
-                    report.failed_snapshots += 1;
-                    report.failures.push(reprojection_failure(
-                        &source,
-                        "projected OpenCode session has no provider session id".to_string(),
-                    ));
-                    continue;
-                };
-                if !projection_source_file_exists(source_path) {
-                    report.missing_sources += 1;
-                    report.failures.push(reprojection_failure(
-                        &source,
-                        format!("source file not found: {source_path}"),
-                    ));
-                    continue;
-                }
-                let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
-                match crate::providers::opencode::project_session_to_store(
-                    provider_session_id,
-                    std::path::Path::new(source_path),
-                    &mut store,
-                ) {
-                    Ok(_) => report.reprojected_snapshots += 1,
-                    Err(err) => {
-                        report.failed_snapshots += 1;
-                        report
-                            .failures
-                            .push(reprojection_failure(&source, err.to_string()));
-                    }
-                }
-            }
-            _ => {
-                report.unsupported_providers += 1;
-                report.failures.push(reprojection_failure(
-                    &source,
-                    format!(
-                        "provider does not support projected store reprojection yet: {}",
-                        source.provider_id
-                    ),
-                ));
+        if !provider_supports_session_projection(&source.provider_id) {
+            report.unsupported_providers += 1;
+            report.failures.push(reprojection_failure(
+                &source,
+                format!(
+                    "provider does not support projected store reprojection yet: {}",
+                    source.provider_id
+                ),
+            ));
+            continue;
+        }
+        if !projection_source_file_exists(source_path) {
+            report.missing_sources += 1;
+            report.failures.push(reprojection_failure(
+                &source,
+                format!("source file not found: {source_path}"),
+            ));
+            continue;
+        }
+        match project_provider_session_source(
+            conn,
+            &source.provider_id,
+            source.provider_session_id.as_deref(),
+            source_path,
+        ) {
+            Ok(_) => report.reprojected_snapshots += 1,
+            Err(error) => {
+                report.failed_snapshots += 1;
+                report
+                    .failures
+                    .push(reprojection_failure(&source, format!("{error:#}")));
             }
         }
     }
     Ok(report)
+}
+
+fn provider_supports_session_projection(provider_id: &str) -> bool {
+    PROJECTED_SESSION_PROVIDER_IDS.contains(&provider_id)
+}
+
+fn project_provider_session_source(
+    conn: &mut rusqlite::Connection,
+    provider_id: &str,
+    provider_session_id: Option<&str>,
+    source_path: &str,
+) -> Result<crate::storage::projection_store::StoredProjection> {
+    let source_path = std::path::Path::new(source_path);
+    let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
+    match provider_id {
+        "claude" => crate::providers::claude::project_session_to_store(source_path, &mut store),
+        "codex" => crate::providers::codex::project_session_to_store(source_path, &mut store),
+        "opencode" => {
+            let provider_session_id = provider_session_id
+                .filter(|value| !value.is_empty())
+                .context("Projected OpenCode session has no provider session id")?;
+            crate::providers::opencode::project_session_to_store(
+                provider_session_id,
+                source_path,
+                &mut store,
+            )
+        }
+        _ => anyhow::bail!("Provider does not support projected store projection: {provider_id}"),
+    }
 }
 
 fn projection_source_file_exists(source_path: &str) -> bool {

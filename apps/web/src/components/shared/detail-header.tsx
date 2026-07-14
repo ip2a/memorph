@@ -37,8 +37,7 @@ export function DetailHeader({
     <div
       {...actionsProps}
       className={cn(
-        "flex flex-wrap gap-2",
-        actionsPlacement === "inline" ? "justify-start md:justify-end" : "justify-start",
+        actionsPlacement === "inline" ? "flex flex-wrap gap-2 justify-start md:justify-end" : "flex w-full min-w-0",
         actionsProps?.className,
       )}
     >

@@ -1,10 +1,9 @@
-import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Link, Outlet, useLocation } from "react-router-dom";
 import { lazy, Suspense, useState } from "react";
-import { ArrowLeftIcon, SettingsIcon } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
 import { cn } from "@/lib/utils";
+import { AppShellNav } from "@/components/layout/app-shell-nav";
 import { WorkspaceSwitchDialog } from "@/features/workspaces/workspace-switch-dialog";
 import { useUiStore } from "@/stores/ui-store";
 
@@ -16,8 +15,19 @@ const SettingsDialog = lazy(() =>
   import("@/features/settings/settings-dialog").then((module) => ({ default: module.SettingsDialog })),
 );
 
-function isRoute(pathname: string, route: string) {
-  return route === "/" ? pathname === "/" : pathname.startsWith(route);
+function isFullscreenRoute(pathname: string) {
+  if (pathname === "/") return true;
+  if (pathname.startsWith("/sessions/")) return true;
+  if (pathname.startsWith("/sessions")) return false;
+  if (pathname.startsWith("/sync")) return true;
+  if (pathname.startsWith("/manager")) return true;
+  if (pathname.startsWith("/compression")) return true;
+  if (pathname.startsWith("/storage")) return true;
+  if (pathname.startsWith("/agents")) return true;
+  if (pathname.startsWith("/hooks")) return true;
+  if (pathname.startsWith("/stats")) return true;
+  if (pathname.startsWith("/tools")) return false;
+  return true;
 }
 
 function routeTitleKey(pathname: string): I18nKey {
@@ -36,23 +46,18 @@ function routeTitleKey(pathname: string): I18nKey {
 
 export function AppShell() {
   const location = useLocation();
-  const navigate = useNavigate();
   const { t } = useI18n();
   const workspaceSwitchOpen = useUiStore((state) => state.workspaceSwitchOpen);
   const setWorkspaceSwitchOpen = useUiStore((state) => state.setWorkspaceSwitchOpen);
   const [importSessionOpen, setImportSessionOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const isHome = location.pathname === "/";
-  const isManager = isRoute(location.pathname, "/manager");
-  const isHooks = isRoute(location.pathname, "/hooks");
-  const isAgents = isRoute(location.pathname, "/agents");
-  const isStats = isRoute(location.pathname, "/stats");
+  const fullscreen = isFullscreenRoute(location.pathname);
   const title = t(routeTitleKey(location.pathname));
 
   return (
-    <div className="mx-auto grid h-dvh w-[min(1280px,calc(100vw-24px))] grid-rows-[auto_minmax(0,1fr)] overflow-hidden pb-4">
-      <header className="mb-3 flex min-h-16 items-center justify-between gap-4 border-b py-3">
-        <div className="flex min-w-0 items-center gap-3">
+    <div className="mx-auto grid h-dvh w-[min(1280px,calc(100vw-24px))] grid-cols-[minmax(0,1fr)] grid-rows-[auto_minmax(0,1fr)] overflow-hidden">
+      <header className="flex min-h-16 min-w-0 items-center justify-between gap-4 border-b py-3">
+        <div className="flex min-w-0 shrink items-center gap-3">
           <Link to="/" className="font-mono font-bold">
             memorph
           </Link>
@@ -64,53 +69,10 @@ export function AppShell() {
           ) : null}
         </div>
 
-        <nav className="flex flex-wrap items-center justify-end gap-2">
-          {!isHome ? (
-            <Button type="button" variant="outline" onClick={() => navigate(-1)}>
-              <ArrowLeftIcon data-icon="inline-start" />
-              {t("back")}
-            </Button>
-          ) : null}
-          <Button type="button" variant="outline" onClick={() => setWorkspaceSwitchOpen(true)}>
-            {t("switchWorkspace")}
-          </Button>
-          {!isStats ? (
-            <Button asChild variant="outline">
-              <Link to="/stats">{t("stats")}</Link>
-            </Button>
-          ) : null}
-          {!isHooks ? (
-            <Button asChild variant="outline">
-              <Link to="/hooks">{t("hooks")}</Link>
-            </Button>
-          ) : null}
-          {!isAgents ? (
-            <Button asChild variant="outline">
-              <Link to="/agents">{t("agentManagement")}</Link>
-            </Button>
-          ) : null}
-          {isManager ? (
-            <>
-              <Button asChild variant="outline">
-                <Link to="/compression">{t("compressSessions")}</Link>
-              </Button>
-              <Button asChild variant="outline">
-                <Link to="/sync">{t("syncGroups")}</Link>
-              </Button>
-              <Button type="button" variant="outline" onClick={() => setImportSessionOpen(true)}>
-                {t("importSession")}
-              </Button>
-            </>
-          ) : (
-            <Button asChild variant="outline">
-              <Link to="/manager">{t("manage")}</Link>
-            </Button>
-          )}
-          <Button variant="outline" onClick={() => setSettingsOpen(true)}>
-            <SettingsIcon data-icon="inline-start" />
-            {t("settings")}
-          </Button>
-        </nav>
+        <AppShellNav
+          onOpenImportSession={() => setImportSessionOpen(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
       </header>
 
       <WorkspaceSwitchDialog open={workspaceSwitchOpen} onOpenChange={setWorkspaceSwitchOpen} />
@@ -127,10 +89,8 @@ export function AppShell() {
 
       <main
         className={cn(
-          "min-h-0 overflow-hidden",
-          isRoute(location.pathname, "/manager") || isRoute(location.pathname, "/agents")
-            ? "flex h-full flex-col pb-0"
-            : "",
+          "min-h-0 min-w-0",
+          fullscreen ? "flex h-full flex-col overflow-hidden pt-3" : "overflow-auto py-3",
         )}
       >
         <Outlet />

@@ -430,6 +430,26 @@ fn provider_fidelity_lines(fidelity: ProviderContentFidelity) -> Vec<String> {
 
 fn run_session_command(command: SessionCommands) -> Result<()> {
     match command {
+        SessionCommands::Bootstrap { provider } => {
+            let report =
+                core::bootstrap_session_projections(provider.as_deref(), ActivityActor::Cli)?;
+            println!("Scanned providers: {}", report.scanned_providers);
+            println!("Failed providers: {}", report.failed_providers);
+            println!("Discovered sessions: {}", report.discovered_sessions);
+            println!("Projected sessions: {}", report.projected_sessions);
+            println!("Unchanged sessions: {}", report.unchanged_sessions);
+            println!("Missing sources: {}", report.missing_sources);
+            println!("Unsupported providers: {}", report.unsupported_providers);
+            println!("Failed sessions: {}", report.failed_sessions);
+            for failure in report.failures {
+                let session = failure.session_id.as_deref().unwrap_or("(provider scan)");
+                let source = failure.source_path.as_deref().unwrap_or("(no source)");
+                println!(
+                    "  {}:{} | {} | {}",
+                    failure.provider_id, session, source, failure.reason
+                );
+            }
+        }
         SessionCommands::Report {
             provider,
             session_id,

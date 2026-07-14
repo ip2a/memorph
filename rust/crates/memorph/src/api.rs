@@ -131,6 +131,10 @@ pub fn router() -> Router {
         .route("/api/v1/artifacts/cleanup", post(cleanup_artifacts))
         .route("/api/v1/sessions", get(list_sessions))
         .route(
+            "/api/v1/sessions/bootstrap",
+            post(bootstrap_session_projections),
+        )
+        .route(
             "/api/v1/sessions/refresh-stale",
             post(refresh_session_staleness),
         )
@@ -351,6 +355,11 @@ struct SessionStalenessRefreshPayload {
 
 #[derive(Debug, Deserialize)]
 struct SessionReprojectStaleRequest {
+    provider: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionProjectionBootstrapRequest {
     provider: Option<String>,
 }
 
@@ -1512,6 +1521,15 @@ async fn refresh_session_staleness() -> impl IntoResponse {
             unknown_sources: report.unknown_sources,
         })
         .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+async fn bootstrap_session_projections(
+    Json(request): Json<SessionProjectionBootstrapRequest>,
+) -> impl IntoResponse {
+    match core::bootstrap_session_projections(request.provider.as_deref(), ActivityActor::Api) {
+        Ok(report) => ApiResponse::success(report).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }

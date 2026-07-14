@@ -227,7 +227,7 @@ impl Provider for OpenCodeProvider {
                             title: Some(title),
                             project_dir: Some(directory),
                             last_active_at: Some(updated),
-                            source_path: Some(session_id),
+                            source_path: Some(opencode_db_session_source_locator(&session_id)),
                         })
                     },
                 )
@@ -2222,6 +2222,10 @@ fn get_db_path() -> PathBuf {
     get_opencode_dir().join("opencode.db")
 }
 
+fn opencode_db_session_source_locator(session_id: &str) -> String {
+    format!("{}#session={session_id}", get_db_path().to_string_lossy())
+}
+
 /// Estimate session size from OpenCode SQLite DB.
 fn opencode_session_db_size(session_id: &str) -> Result<u64> {
     let db_path = get_db_path();
@@ -2309,7 +2313,7 @@ fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
             title: Some(title),
             project_dir: Some(directory),
             last_active_at: Some(updated),
-            source_path: Some(session_id),
+            source_path: Some(opencode_db_session_source_locator(&session_id)),
         })
     })?;
 
@@ -2529,11 +2533,11 @@ fn parse_session_file(path: &Path) -> Option<ProviderSessionSummary> {
         .and_then(|v| v.as_i64());
 
     Some(ProviderSessionSummary {
-        session_id: session_id.clone(),
+        session_id,
         title,
         project_dir: directory,
         last_active_at: updated,
-        source_path: Some(session_id),
+        source_path: Some(path.to_string_lossy().to_string()),
     })
 }
 

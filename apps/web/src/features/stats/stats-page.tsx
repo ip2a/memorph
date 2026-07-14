@@ -2,6 +2,7 @@ import { useMemo, useState, type HTMLAttributes } from "react";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
 import { SectionHeading } from "@/components/shared/section-heading";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -103,11 +104,8 @@ export function StatsPage() {
           }
         />
 
-        <section
-          className="grid grid-cols-[max-content_minmax(0,1.35fr)_minmax(0,0.85fr)] items-stretch gap-3 border-b pb-4 sm:gap-4"
-          data-stats-kpi-strip
-        >
-          <MetricGrid columns="three" className="w-max shrink-0 gap-1.5">
+        <section className="border-b pb-4" data-stats-kpi-strip>
+          <MetricGrid columns="auto" className="grid-cols-2 sm:grid-cols-3 xl:grid-cols-6">
             <MetricTile
               label="Sessions"
               value={
@@ -175,23 +173,39 @@ export function StatsPage() {
               variant="square"
             />
           </MetricGrid>
-
-          <div className="flex min-h-0 min-w-0 flex-col border-l pl-3 sm:pl-4">
-            <StatsRankBarChart
-              className="h-full"
-              isLoading={loading || sessions.isLoading}
-              title={allWorkspaces ? "Top Workspaces" : "Top Sessions"}
-              items={rankBarItems}
-              emptyLabel={allWorkspaces ? "暂无工作空间消息数据。" : "当前工作区暂无会话消息数据。"}
-            />
-          </div>
-
-          <div className="flex min-h-0 min-w-0 flex-col items-center justify-center border-l pl-3 sm:pl-4">
-            <ProviderPieChart items={providerShare} emptyLabel="当前工作区暂无会话。" className="w-full max-w-[5.5rem] sm:max-w-36" />
-          </div>
         </section>
 
-        <DividerSection data-stats-primary-charts className="border-b-0 pb-0">
+        <section className="grid gap-4 lg:grid-cols-2" data-stats-primary-charts>
+          <Card size="sm">
+            <CardHeader>
+              <CardTitle>{allWorkspaces ? "Top Workspaces" : "Top Sessions"}</CardTitle>
+              <CardDescription>按消息数量排名</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <StatsRankBarChart
+                isLoading={loading || sessions.isLoading}
+                items={rankBarItems}
+                emptyLabel={allWorkspaces ? "暂无工作空间消息数据。" : "当前工作区暂无会话消息数据。"}
+              />
+            </CardContent>
+          </Card>
+
+          <Card size="sm">
+            <CardHeader>
+              <CardTitle>Provider Share</CardTitle>
+              <CardDescription>会话分布占比</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <ProviderPieChart items={providerShare} emptyLabel="当前工作区暂无会话。" />
+            </CardContent>
+          </Card>
+        </section>
+
+        <DividerSection data-stats-activity-chart className="border-b-0 pb-0">
+          <div className="flex flex-col gap-1">
+            <strong className="text-sm font-medium">Activity Timeline</strong>
+            <p className="text-xs text-muted-foreground">选定时间范围内的活动趋势</p>
+          </div>
           <SessionActivityChart timeline={activityTimeline} isLoading={activityLoading} />
         </DividerSection>
       </div>

@@ -1,6 +1,6 @@
 import { FormEvent, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { FolderOpenIcon, Trash2Icon } from "lucide-react";
+import { FolderOpenIcon, ListIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
 import { PathText } from "@/components/shared/path-text";
@@ -26,9 +26,17 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from "@/components/ui/input-group";
+import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverHeader,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
-import { deleteWorkspaceHistory, getManagerQuickWorkspaces, getMeta, listSessions, listWorkspaces } from "@/lib/api";
+import { deleteWorkspaceHistory, getManagerWorkspaces, getMeta, listSessions, listWorkspaces, selectFolder } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { queryKeys } from "@/lib/query-keys";
 import type { ManagerWorkspaceItem, WorkspaceEntry } from "@/lib/types";
@@ -38,6 +46,11 @@ function normalizeWorkspacePath(path: string) {
   return path.replace(/[\\/]+$/, "");
 }
 
+function isValidWorkspacePath(path: string) {
+  const normalized = path.trim();
+  return normalized.length > 0 && normalized !== "—" && normalized !== "-";
+}
+
 function workspaceSessionCounts(items: ManagerWorkspaceItem[] | undefined) {
   const counts = new Map<string, number>();
   for (const item of items ?? []) {
@@ -45,6 +58,105 @@ function workspaceSessionCounts(items: ManagerWorkspaceItem[] | undefined) {
     counts.set(key, (counts.get(key) ?? 0) + item.session_count);
   }
   return counts;
+}
+
+type AggregatedWorkspace = {
+  path: string;
+  sessionCount: number;
+  lastActiveAt: number | null;
+};
+
+function aggregateWorkspacesWithSessions(items: ManagerWorkspaceItem[] | undefined): AggregatedWorkspace[] {
+  const map = new Map<string, AggregatedWorkspace>();
+
+  for (const item of items ?? []) {
+    if (item.session_count <= 0 || !isValidWorkspacePath(item.workspace)) continue;
+
+    const key = normalizeWorkspacePath(item.workspace);
+    const lastActive = item.last_active_at ?? null;
+    const existing = map.get(key);
+
+    if (existing) {
+      existing.sessionCount += item.session_count;
+      if (lastActive !== null) {
+        existing.lastActiveAt =
+          existing.lastActiveAt === null ? lastActive : Math.max(existing.lastActiveAt, lastActive);
+      }
+      continue;
+    }
+
+    map.set(key, {
+      path: item.workspace,
+      sessionCount: item.session_count,
+      lastActiveAt: lastActive,
+    });
+  }
+
+  return Array.from(map.values()).sort((left, right) => (right.lastActiveAt ?? 0) - (left.lastActiveAt ?? 0));
+}
+
+function WorkspaceSessionPickerPanel({
+  isLoading,
+  workspaces,
+  onPick,
+}: {
+  isLoading: boolean;
+  workspaces: AggregatedWorkspace[];
+  onPick: (workspace: string) => void;
+}) {
+  return (
+    <ScrollArea className="h-72">
+      <div className="flex flex-col gap-0.5 p-2">
+        {isLoading ? (
+          <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">
+            <Spinner />
+            Loading
+          </div>
+        ) : workspaces.length ? (
+          workspaces.map((workspace) => (
+            <WorkspaceSessionPickerRow
+              key={normalizeWorkspacePath(workspace.path)}
+              workspace={workspace}
+              onPick={onPick}
+            />
+          ))
+        ) : (
+          <Empty className="min-h-32 border-0">
+            <EmptyHeader>
+              <EmptyTitle>No sessions found</EmptyTitle>
+              <EmptyDescription>Install an agent and create sessions, or paste a path manually.</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+      </div>
+    </ScrollArea>
+  );
+}
+
+function WorkspaceSessionPickerRow({
+  workspace,
+  onPick,
+}: {
+  workspace: AggregatedWorkspace;
+  onPick: (workspace: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="flex w-full flex-col gap-1 rounded-md px-2 py-2 text-left outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
+      data-workspace-session-picker-item
+      onClick={() => onPick(workspace.path)}
+    >
+      <span className="flex min-w-0 items-center justify-between gap-3">
+        <strong className="truncate">{workspaceName(workspace.path, "memorph")}</strong>
+        <span className="flex shrink-0 items-center gap-3 font-mono text-xs text-muted-foreground">
+          <span>{workspace.sessionCount} sessions</span>
+          {workspace.lastActiveAt ? <span>{formatDateTime(workspace.lastActiveAt)}</span> : null}
+        </span>
+      </span>
+      <PathText value={workspace.path} wrap="all" />
+    </button>
+  );
 }
 
 function WorkspaceHistoryRow({
@@ -100,6 +212,9 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
   const selectedWorkspace = useUiStore((state) => state.selectedWorkspace);
   const setSelectedWorkspace = useUiStore((state) => state.setSelectedWorkspace);
   const [draft, setDraft] = useState<string | null>(null);
+  const [sessionPickerOpen, setSessionPickerOpen] = useState(false);
+
+  const sessionWorkspaceFilter = useMemo(() => ({ sort: "recent" as const }), []);
 
   const meta = useQuery({
     queryKey: queryKeys.meta,
@@ -114,8 +229,8 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
   });
 
   const managerWorkspaces = useQuery({
-    queryKey: queryKeys.managerQuickWorkspaces([]),
-    queryFn: () => getManagerQuickWorkspaces([]),
+    queryKey: queryKeys.manager("workspaces", sessionWorkspaceFilter),
+    queryFn: () => getManagerWorkspaces(sessionWorkspaceFilter),
     enabled: open,
   });
 
@@ -123,6 +238,10 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
   const draftWorkspace = draft ?? currentWorkspace;
   const workspaceItems = useMemo(() => workspaces.data ?? meta.data?.workspaces ?? [], [meta.data?.workspaces, workspaces.data]);
   const sessionCounts = useMemo(() => workspaceSessionCounts(managerWorkspaces.data?.items), [managerWorkspaces.data?.items]);
+  const workspacesWithSessions = useMemo(
+    () => aggregateWorkspacesWithSessions(managerWorkspaces.data?.items),
+    [managerWorkspaces.data?.items],
+  );
 
   const switchWorkspace = useMutation({
     mutationFn: async (workspace: string) => {
@@ -168,11 +287,35 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
     switchWorkspace.mutate(workspace);
   }
 
+  function pickExistingWorkspace(workspace: string) {
+    setSessionPickerOpen(false);
+    pickWorkspace(workspace);
+  }
+
+  async function browseFolder() {
+    try {
+      const result = await selectFolder({
+        start_path: draftWorkspace.trim() || currentWorkspace || null,
+      });
+      if (result.path) setDraft(result.path);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error("Error", {
+        description: /only available in the desktop app/i.test(message)
+          ? "Folder picker is only available in the desktop app."
+          : message,
+      });
+    }
+  }
+
   return (
     <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen) setDraft(null);
+        if (!nextOpen) {
+          setDraft(null);
+          setSessionPickerOpen(false);
+        }
         onOpenChange(nextOpen);
       }}
     >
@@ -196,7 +339,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                   onChange={(event) => setDraft(event.target.value)}
                 />
                 <InputGroupAddon align="inline-end">
-                  <InputGroupButton type="button" variant="ghost" disabled>
+                  <InputGroupButton type="button" variant="ghost" onClick={() => void browseFolder()}>
                     <FolderOpenIcon data-icon="inline-start" />
                     Browse
                   </InputGroupButton>
@@ -215,9 +358,30 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
           <section className="flex min-h-0 flex-col gap-2" data-workspace-switch-list>
             <div className="flex items-center justify-between gap-3">
               <strong className="text-sm">Workspace History</strong>
-              <span className="font-mono text-xs text-muted-foreground">{workspaceItems.length}</span>
+              <div className="flex items-center gap-2">
+                <Popover open={sessionPickerOpen} onOpenChange={setSessionPickerOpen}>
+                  <PopoverTrigger asChild>
+                    <Button type="button" variant="outline" size="sm">
+                      <ListIcon data-icon="inline-start" />
+                      Pick workspace
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[min(32rem,calc(100vw-2rem))] gap-0 p-0" align="end" sideOffset={6}>
+                    <PopoverHeader className="border-b px-3 py-2.5">
+                      <PopoverTitle>Workspaces with sessions</PopoverTitle>
+                      <PopoverDescription>Pick a workspace path detected from installed agents.</PopoverDescription>
+                    </PopoverHeader>
+                    <WorkspaceSessionPickerPanel
+                      isLoading={managerWorkspaces.isLoading}
+                      workspaces={workspacesWithSessions}
+                      onPick={pickExistingWorkspace}
+                    />
+                  </PopoverContent>
+                </Popover>
+                <span className="font-mono text-xs text-muted-foreground">{workspaceItems.length}</span>
+              </div>
             </div>
-            <ScrollArea className="max-h-72 rounded-md border">
+            <ScrollArea className="h-72 rounded-md border">
               <div className="px-3">
                 {workspaces.isLoading ? (
                   <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">

@@ -221,6 +221,12 @@ pub enum LegacyCodexToolCommands {
 
 #[derive(Subcommand)]
 pub enum SessionCommands {
+    /// Discover provider sessions and fully project new or changed sources into SQLite
+    Bootstrap {
+        /// Limit discovery and projection to one provider
+        #[arg(short, long, value_name = "PROVIDER")]
+        provider: Option<String>,
+    },
     /// Show the projected SQLite quality report for one session
     Report {
         /// Provider ID

@@ -12,12 +12,14 @@ APP_TSX = SRC_ROOT / "app" / "app.tsx"
 ROUTER_TSX = SRC_ROOT / "app" / "router.tsx"
 ROUTE_ELEMENTS_TSX = SRC_ROOT / "app" / "route-elements.tsx"
 APP_SHELL_TSX = SRC_ROOT / "components" / "layout" / "app-shell.tsx"
+APP_SHELL_NAV_TSX = SRC_ROOT / "components" / "layout" / "app-shell-nav.tsx"
 I18N_CORE_TS = SRC_ROOT / "lib" / "i18n-core.ts"
 I18N_CONTEXT_TS = SRC_ROOT / "lib" / "i18n-context.ts"
 I18N_PROVIDER_TSX = SRC_ROOT / "lib" / "i18n-provider.tsx"
 AGENTS_PAGE_TSX = SRC_ROOT / "features" / "agents" / "agents-page.tsx"
 HOOKS_PAGE_TSX = SRC_ROOT / "features" / "hooks" / "hooks-page.tsx"
 MANAGER_PAGE_TSX = SRC_ROOT / "features" / "manager" / "manager-page.tsx"
+MANAGER_PREVIEW_HEADER_TOOLBAR_TSX = SRC_ROOT / "features" / "manager" / "manager-preview-header-toolbar.tsx"
 COMPRESSION_PAGE_TSX = SRC_ROOT / "features" / "compression" / "compression-page.tsx"
 COMPRESSION_ACTIONS_TSX = SRC_ROOT / "features" / "compression" / "compression-actions.tsx"
 SYNC_PAGE_TSX = SRC_ROOT / "features" / "sync" / "sync-page.tsx"
@@ -32,6 +34,7 @@ SESSION_ACTIONS_TSX = SRC_ROOT / "features" / "sessions" / "session-actions.tsx"
 SESSION_ACTIONS_DIR = SRC_ROOT / "features" / "sessions" / "actions"
 SESSION_ACTION_SCHEMAS_TS = SRC_ROOT / "features" / "sessions" / "model" / "schemas.ts"
 SESSION_DETAIL_PAGE_TSX = SRC_ROOT / "features" / "sessions" / "session-detail-page.tsx"
+SESSION_DETAIL_HEADER_ACTIONS_TSX = SRC_ROOT / "features" / "sessions" / "session-detail-header-actions.tsx"
 API_TS = SRC_ROOT / "lib" / "api.ts"
 TYPES_TS = SRC_ROOT / "lib" / "types.ts"
 UI_STORE_TS = SRC_ROOT / "stores" / "ui-store.ts"
@@ -83,7 +86,7 @@ class WebUiInvariantTest(unittest.TestCase):
         context = I18N_CONTEXT_TS.read_text(encoding="utf-8")
         provider = I18N_PROVIDER_TSX.read_text(encoding="utf-8")
         app = APP_TSX.read_text(encoding="utf-8")
-        shell = APP_SHELL_TSX.read_text(encoding="utf-8")
+        shell = APP_SHELL_TSX.read_text(encoding="utf-8") + APP_SHELL_NAV_TSX.read_text(encoding="utf-8")
         settings = SETTINGS_DIALOG_TSX.read_text(encoding="utf-8")
 
         for marker in [
@@ -145,7 +148,7 @@ class WebUiInvariantTest(unittest.TestCase):
         self.assertIn("LazyRoute", source)
 
     def test_shell_uses_legacy_topbar_contract(self) -> None:
-        shell = APP_SHELL_TSX.read_text(encoding="utf-8")
+        shell = APP_SHELL_TSX.read_text(encoding="utf-8") + APP_SHELL_NAV_TSX.read_text(encoding="utf-8")
         self.assertIn("Outlet", shell)
         self.assertIn("memorph", shell)
         for marker in [
@@ -166,7 +169,7 @@ class WebUiInvariantTest(unittest.TestCase):
             self.assertNotIn(sidebar_component, shell)
 
     def test_workspace_switch_preserves_legacy_modal_workflow(self) -> None:
-        shell = APP_SHELL_TSX.read_text(encoding="utf-8")
+        shell = APP_SHELL_TSX.read_text(encoding="utf-8") + APP_SHELL_NAV_TSX.read_text(encoding="utf-8")
         dialog = WORKSPACE_SWITCH_DIALOG_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         home_queries = HOME_QUERIES_TS.read_text(encoding="utf-8")
@@ -199,7 +202,7 @@ class WebUiInvariantTest(unittest.TestCase):
         self.assertIn("enabled: !meta.isLoading", home_queries)
 
     def test_import_session_preserves_legacy_modal_workflow(self) -> None:
-        shell = APP_SHELL_TSX.read_text(encoding="utf-8")
+        shell = APP_SHELL_TSX.read_text(encoding="utf-8") + APP_SHELL_NAV_TSX.read_text(encoding="utf-8")
         dialog = IMPORT_SESSION_DIALOG_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
@@ -243,7 +246,7 @@ class WebUiInvariantTest(unittest.TestCase):
         self.assertIn("sessionsRoot", query_keys)
 
     def test_settings_preserves_legacy_wide_modal_workflow(self) -> None:
-        shell = APP_SHELL_TSX.read_text(encoding="utf-8")
+        shell = APP_SHELL_TSX.read_text(encoding="utf-8") + APP_SHELL_NAV_TSX.read_text(encoding="utf-8")
         dialog = SETTINGS_DIALOG_TSX.read_text(encoding="utf-8")
         order_list = AGENT_ORDER_LIST_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
@@ -362,15 +365,15 @@ class WebUiInvariantTest(unittest.TestCase):
         home = HOME_PAGE_TSX.read_text(encoding="utf-8")
         action_target = SESSION_ACTION_TARGET_TS.read_text(encoding="utf-8")
         actions = read_session_actions()
-        detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8")
+        detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8") + SESSION_DETAIL_HEADER_ACTIONS_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
 
         for marker in [
             "onRename(session)",
             "onDelete(session)",
-            "Rename</Button>",
-            "Remove</Button>",
+            "Rename",
+            "Remove",
             "RenameSessionDialog",
             "DeleteSessionDialog",
             "targetFromSession(renameTarget)",
@@ -425,15 +428,15 @@ class WebUiInvariantTest(unittest.TestCase):
     def test_session_copy_export_preserve_legacy_row_and_detail_workflows(self) -> None:
         home = HOME_PAGE_TSX.read_text(encoding="utf-8")
         actions = read_session_actions()
-        detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8")
+        detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8") + SESSION_DETAIL_HEADER_ACTIONS_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
 
         for marker in [
             "onSwitch(session)",
             "onExport(session)",
-            "Switch</Button>",
-            "Export</Button>",
+            "Switch",
+            "Export",
             "SwitchSessionDialog",
             "ExportSessionDialog",
             "targetFromSession(switchTarget)",
@@ -473,12 +476,12 @@ class WebUiInvariantTest(unittest.TestCase):
             "ExportSessionDialog",
             "providers={providers.data ?? []}",
             "meta={meta.data}",
-            "Compression</Button>",
-            "Sync</Button>",
-            "Switch</Button>",
-            "Export</Button>",
-            "Rename</Button>",
-            "Remove</Button>",
+            "Compression",
+            "Sync",
+            "Switch",
+            "Export",
+            "Rename",
+            "Remove",
         ]:
             self.assertIn(marker, detail)
 
@@ -496,7 +499,7 @@ class WebUiInvariantTest(unittest.TestCase):
     def test_create_sync_preserves_legacy_session_action_workflow(self) -> None:
         home = HOME_PAGE_TSX.read_text(encoding="utf-8")
         actions = read_session_actions()
-        detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8")
+        detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8") + SESSION_DETAIL_HEADER_ACTIONS_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
 
@@ -608,7 +611,7 @@ class WebUiInvariantTest(unittest.TestCase):
     def test_manager_route_preserves_legacy_two_panel_preview(self) -> None:
         router = ROUTER_TSX.read_text(encoding="utf-8")
         route_elements = ROUTE_ELEMENTS_TSX.read_text(encoding="utf-8")
-        manager_page = MANAGER_PAGE_TSX.read_text(encoding="utf-8")
+        manager_page = MANAGER_PAGE_TSX.read_text(encoding="utf-8") + MANAGER_PREVIEW_HEADER_TOOLBAR_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
         manager_route_match = re.search(
@@ -675,7 +678,7 @@ class WebUiInvariantTest(unittest.TestCase):
         compression_page = COMPRESSION_PAGE_TSX.read_text(encoding="utf-8")
         compression_actions = COMPRESSION_ACTIONS_TSX.read_text(encoding="utf-8")
         home = HOME_PAGE_TSX.read_text(encoding="utf-8")
-        detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8")
+        detail = SESSION_DETAIL_PAGE_TSX.read_text(encoding="utf-8") + SESSION_DETAIL_HEADER_ACTIONS_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
         compression_route_match = re.search(

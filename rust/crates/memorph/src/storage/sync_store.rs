@@ -159,7 +159,7 @@ pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
         "UPDATE sync_groups SET status = 'deleted' WHERE id = ?1",
         [group_id],
     )
-        .with_context(|| format!("Failed to delete sync group: {group_id}"))?;
+    .with_context(|| format!("Failed to delete sync group: {group_id}"))?;
     Ok(())
 }
 

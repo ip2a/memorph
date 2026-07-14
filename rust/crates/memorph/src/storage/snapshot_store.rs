@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -288,6 +288,43 @@ impl<'a> SnapshotStore<'a> {
             });
         }
         Ok(sources)
+    }
+
+    pub fn session_source_is_fresh(
+        &self,
+        provider_id: &str,
+        provider_session_id: &str,
+        source_path: &str,
+    ) -> Result<bool> {
+        let Some(current_fingerprint) =
+            source_fingerprint_for_path(std::path::Path::new(source_path))?
+        else {
+            return Ok(false);
+        };
+        let exists = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM sessions s
+                    JOIN session_snapshots ss ON ss.session_id = s.id
+                    JOIN session_sources src ON src.id = s.primary_source_id
+                    WHERE s.deleted_at_ms IS NULL
+                      AND s.provider_id = ?1
+                      AND COALESCE(s.provider_session_id, src.provider_session_id) = ?2
+                      AND src.source_path = ?3
+                      AND ss.source_fingerprint = ?4
+                 )",
+                params![
+                    provider_id,
+                    provider_session_id,
+                    source_path,
+                    current_fingerprint
+                ],
+                |row| row.get::<_, i64>(0),
+            )
+            .context("Failed to query projected session source freshness")?;
+        Ok(exists != 0)
     }
 
     pub fn get_session_detail_page(

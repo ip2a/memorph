@@ -5,11 +5,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import {
   ArrowRightIcon,
   CheckIcon,
-  ChevronDownIcon,
-  CopyIcon,
-  FilterIcon,
   MoreHorizontalIcon,
-  SearchIcon,
   Trash2Icon,
 } from "lucide-react";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
@@ -23,14 +19,6 @@ import { workspaceName } from "@/components/shared/workspace-name";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Input } from "@/components/ui/input";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { ScrollPane } from "@/components/shared/scroll-pane";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -53,6 +41,7 @@ import {
   useManagerStats,
   useManagerWorkspaces,
 } from "@/features/manager/queries";
+import { ManagerPreviewHeaderToolbar } from "@/features/manager/manager-preview-header-toolbar";
 
 type ManagerView = "sessions" | "workspaces";
 
@@ -283,76 +272,31 @@ function PreviewHeader({
 }) {
   return (
     <div
-      className="grid grid-cols-1 gap-3 border-b pb-2 md:grid-cols-[minmax(0,auto)_auto_minmax(0,1fr)] md:grid-rows-[auto_auto] md:items-center md:gap-x-4 md:gap-y-2"
+      className="grid grid-cols-1 gap-3 border-b pb-2 md:grid-cols-[minmax(0,auto)_auto_minmax(0,1fr)] md:items-center md:gap-x-4"
       data-manager-preview-header
     >
-      <div className="flex min-w-0 flex-col gap-1 md:row-span-2">
+      <div className="flex min-w-0 flex-col gap-1">
         <strong className="text-sm font-medium">{title}</strong>
         <span className="text-muted-foreground text-sm">{summary}</span>
       </div>
 
-      <Separator orientation="vertical" className="hidden md:row-span-2 md:block md:h-auto md:self-stretch" />
+      <Separator orientation="vertical" className="hidden md:block md:h-auto md:self-stretch" />
 
-      <div className="flex flex-wrap justify-start gap-2 md:justify-end" data-manager-preview-actions>
-        <Button type="button" variant="outline" disabled={!canAct} onClick={onClean} data-manager-action-clean>
-          <Trash2Icon data-icon="inline-start" />
-          Clean
-        </Button>
-        <Button type="button" variant="outline" disabled={!canAct} onClick={onBackup} data-manager-action-backup>
-          <CopyIcon data-icon="inline-start" />
-          Backup
-        </Button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button type="button" variant="outline" disabled={!canAct} data-manager-action-more>
-              <MoreHorizontalIcon data-icon="inline-start" />
-              More
-              <ChevronDownIcon data-icon="inline-end" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem disabled={!canAct} onSelect={onCopyPaths}>
-              <CopyIcon />
-              Copy Paths
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button type="button" variant="outline" disabled={!canSelect} data-manager-selection-menu>
-              <CheckIcon data-icon="inline-start" />
-              Selection
-              <ChevronDownIcon data-icon="inline-end" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={onSelectAll}>Select All</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onDeselectAll}>Deselect All</DropdownMenuItem>
-            <DropdownMenuItem onSelect={onInvertSelection}>Invert Selection</DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem disabled={!canSelectFiltered} onSelect={onSelectFiltered}>
-              Select Filtered
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-
-      <div className="flex min-w-0 items-center justify-start gap-2 md:justify-end">
-        <div className="relative w-52 shrink-0">
-          <SearchIcon className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          <Input
-            className="pl-8"
-            value={search}
-            onChange={(event) => onSearchChange(event.target.value)}
-            placeholder={searchPlaceholder}
-            data-manager-preview-search
-          />
-        </div>
-        <Button type="button" variant="outline" disabled data-manager-preview-filters>
-          <FilterIcon data-icon="inline-start" />
-          Filters
-        </Button>
-      </div>
+      <ManagerPreviewHeaderToolbar
+        canAct={canAct}
+        canSelect={canSelect}
+        canSelectFiltered={canSelectFiltered}
+        search={search}
+        searchPlaceholder={searchPlaceholder}
+        onSearchChange={onSearchChange}
+        onClean={onClean}
+        onBackup={onBackup}
+        onCopyPaths={onCopyPaths}
+        onSelectAll={onSelectAll}
+        onDeselectAll={onDeselectAll}
+        onInvertSelection={onInvertSelection}
+        onSelectFiltered={onSelectFiltered}
+      />
     </div>
   );
 }

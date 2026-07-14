@@ -5,18 +5,50 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use tauri::{PhysicalSize, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{
+    LogicalSize, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+};
 
-const MIN_INNER_WIDTH: f64 = 620.0;
-const MIN_INNER_HEIGHT: f64 = 423.0;
-const DEFAULT_BASELINE_SCREEN_WIDTH: f64 = 2560.0;
-const DEFAULT_BASELINE_SCREEN_HEIGHT: f64 = 1440.0;
-const DEFAULT_BASELINE_WINDOW_WIDTH: f64 = 970.0;
-const DEFAULT_BASELINE_WINDOW_HEIGHT: f64 = 670.0;
-const DEFAULT_SCREEN_WIDTH_RATIO: f64 =
-    DEFAULT_BASELINE_WINDOW_WIDTH / DEFAULT_BASELINE_SCREEN_WIDTH;
-const DEFAULT_SCREEN_HEIGHT_RATIO: f64 =
-    DEFAULT_BASELINE_WINDOW_HEIGHT / DEFAULT_BASELINE_SCREEN_HEIGHT;
+// Align with apps/web/src/components/layout/app-shell.tsx:
+// w-[min(1280px,calc(100vw-24px))]
+const WEB_CONTENT_MAX_WIDTH: f64 = 1280.0;
+const WEB_CONTENT_HORIZONTAL_PADDING: f64 = 24.0;
+const MIN_CONTENT_WIDTH_RATIO: f64 = 0.70;
+const ABSOLUTE_MIN_INNER_WIDTH: f64 = 720.0;
+const DESIGN_MIN_INNER_HEIGHT: f64 = 480.0;
+const DEFAULT_INNER_WIDTH: f64 = 1180.0;
+const DEFAULT_INNER_HEIGHT: f64 = 760.0;
+const WORK_AREA_WIDTH_CAP_RATIO: f64 = 0.94;
+
+struct MinInnerSize {
+    width: f64,
+    height: f64,
+}
+
+fn compute_min_inner_size(monitor: Option<&tauri::Monitor>) -> MinInnerSize {
+    let boundary_width =
+        WEB_CONTENT_MAX_WIDTH * MIN_CONTENT_WIDTH_RATIO + WEB_CONTENT_HORIZONTAL_PADDING;
+    let mut min_width = boundary_width.max(ABSOLUTE_MIN_INNER_WIDTH);
+
+    if let Some(monitor) = monitor {
+        let scale_factor = monitor.scale_factor();
+        if scale_factor > 0.0 {
+            let (area_width, _) = logical_work_area(monitor);
+            min_width = min_width.min(area_width * WORK_AREA_WIDTH_CAP_RATIO);
+        }
+    }
+
+    MinInnerSize {
+        width: min_width,
+        height: DESIGN_MIN_INNER_HEIGHT,
+    }
+}
+
+fn apply_min_inner_size(window: &WebviewWindow) {
+    let monitor = window.current_monitor().ok().flatten();
+    let min_size = compute_min_inner_size(monitor.as_ref());
+    let _ = window.set_min_size(Some(LogicalSize::new(min_size.width, min_size.height)));
+}
 
 fn start_local_server() -> Result<String> {
     let std_listener = std::net::TcpListener::bind("127.0.0.1:0")?;
@@ -59,30 +91,15 @@ fn logical_work_area(monitor: &tauri::Monitor) -> (f64, f64) {
     )
 }
 
-fn logical_monitor_size(monitor: &tauri::Monitor) -> (f64, f64) {
-    let scale_factor = monitor.scale_factor();
-    let size = monitor.size();
-    (
-        size.width as f64 / scale_factor,
-        size.height as f64 / scale_factor,
-    )
-}
-
 fn default_window_state(monitor: Option<&tauri::Monitor>) -> memorph::config::DesktopWindowState {
-    let (screen_width, screen_height) = monitor.map(logical_monitor_size).unwrap_or((
-        DEFAULT_BASELINE_SCREEN_WIDTH,
-        DEFAULT_BASELINE_SCREEN_HEIGHT,
-    ));
+    let min_size = compute_min_inner_size(monitor);
     let (max_width, max_height) = monitor
         .map(logical_work_area)
-        .unwrap_or((screen_width, screen_height));
-
-    let width = screen_width * DEFAULT_SCREEN_WIDTH_RATIO;
-    let height = screen_height * DEFAULT_SCREEN_HEIGHT_RATIO;
+        .unwrap_or((DEFAULT_INNER_WIDTH, DEFAULT_INNER_HEIGHT));
 
     memorph::config::DesktopWindowState {
-        width: clamp_dimension(width, MIN_INNER_WIDTH, max_width).round() as u32,
-        height: clamp_dimension(height, MIN_INNER_HEIGHT, max_height).round() as u32,
+        width: clamp_dimension(DEFAULT_INNER_WIDTH, min_size.width, max_width).round() as u32,
+        height: clamp_dimension(DEFAULT_INNER_HEIGHT, min_size.height, max_height).round() as u32,
     }
 }
 
@@ -90,17 +107,18 @@ fn clamp_window_state(
     state: memorph::config::DesktopWindowState,
     monitor: Option<&tauri::Monitor>,
 ) -> memorph::config::DesktopWindowState {
+    let min_size = compute_min_inner_size(monitor);
     if let Some(monitor) = monitor {
         let (max_width, max_height) = logical_work_area(monitor);
         memorph::config::DesktopWindowState {
-            width: clamp_dimension(state.width as f64, MIN_INNER_WIDTH, max_width).round() as u32,
-            height: clamp_dimension(state.height as f64, MIN_INNER_HEIGHT, max_height).round()
+            width: clamp_dimension(state.width as f64, min_size.width, max_width).round() as u32,
+            height: clamp_dimension(state.height as f64, min_size.height, max_height).round()
                 as u32,
         }
     } else {
         memorph::config::DesktopWindowState {
-            width: state.width.max(MIN_INNER_WIDTH as u32),
-            height: state.height.max(MIN_INNER_HEIGHT as u32),
+            width: state.width.max(min_size.width.round() as u32),
+            height: state.height.max(min_size.height.round() as u32),
         }
     }
 }
@@ -249,14 +267,18 @@ pub fn run() {
             )
             .title("memorph")
             .inner_size(initial_state.width as f64, initial_state.height as f64)
-            .min_inner_size(MIN_INNER_WIDTH, MIN_INNER_HEIGHT)
+            .min_inner_size(ABSOLUTE_MIN_INNER_WIDTH, DESIGN_MIN_INNER_HEIGHT)
+            .zoom_hotkeys_enabled(false)
             .center()
             .build()?;
+
+            apply_min_inner_size(&window);
 
             let latest_window_state = Arc::new(Mutex::new(initial_state));
             let latest_window_state_handle = Arc::clone(&latest_window_state);
             let event_window = window.clone();
             window.on_window_event(move |event| match event {
+                WindowEvent::Moved(_) => apply_min_inner_size(&event_window),
                 WindowEvent::Resized(size) => {
                     if let Ok(scale_factor) = event_window.scale_factor() {
                         if let Ok(mut state) = latest_window_state_handle.lock() {
@@ -269,6 +291,7 @@ pub fn run() {
                     new_inner_size,
                     ..
                 } => {
+                    apply_min_inner_size(&event_window);
                     if let Ok(mut state) = latest_window_state_handle.lock() {
                         *state = logical_state_from_physical(*new_inner_size, *scale_factor);
                     }

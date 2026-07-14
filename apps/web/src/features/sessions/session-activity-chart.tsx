@@ -126,24 +126,26 @@ export function SessionActivityChart({ className, isLoading, timeline }: Session
 
   return (
     <div className={cn("flex min-h-[104px] min-w-0 flex-col gap-1 overflow-visible", className)} data-session-activity-chart>
-      <div className="flex items-start justify-between gap-3 overflow-visible pr-0.5">
+      <div className="flex min-h-12 items-start justify-between gap-3 overflow-visible pr-0.5">
         <div className="min-w-0">
           <p className="text-xs font-medium text-foreground">Activity</p>
           <p className="truncate text-[11px] text-muted-foreground">
             {bucketUnitLabel(timeline.bucket_unit)} · peak {formatActivityScore(peak)}
           </p>
         </div>
-        {activePoint ? (
-          <div className="shrink-0 text-right text-[11px] leading-4 text-muted-foreground">
-            <div className="font-medium text-foreground tabular-nums">{activePoint.timeLabel}</div>
-            <div>{formatActivityScore(activePoint.activityScore)} activity</div>
-            <div>{activePoint.messageCount} msgs · {activePoint.eventCount} events</div>
-          </div>
-        ) : (
-          <div className="shrink-0 whitespace-nowrap text-right text-[11px] tabular-nums text-muted-foreground">
-            {formatActivityScore(totalActivity)} total
-          </div>
-        )}
+        <div className="flex h-12 shrink-0 flex-col items-end text-right text-[11px] leading-4 text-muted-foreground">
+          {activePoint ? (
+            <>
+              <div className="font-medium text-foreground tabular-nums">{activePoint.timeLabel}</div>
+              <div>{formatActivityScore(activePoint.activityScore)} activity</div>
+              <div>
+                {activePoint.messageCount} msgs · {activePoint.eventCount} events
+              </div>
+            </>
+          ) : (
+            <div className="tabular-nums">{formatActivityScore(totalActivity)} total</div>
+          )}
+        </div>
       </div>
 
       <div className="relative min-w-0 overflow-visible">

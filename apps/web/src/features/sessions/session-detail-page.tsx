@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArchiveIcon, CopyIcon, InfoIcon, PinIcon, SearchIcon, TriangleAlertIcon } from "lucide-react";
+import { ArchiveIcon, CopyIcon, PinIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DetailHeader } from "@/components/shared/detail-header";
 import { DetailTimeline, scrollToDetailMessage } from "@/components/shared/detail-timeline";
@@ -11,7 +11,6 @@ import { PathText } from "@/components/shared/path-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatDateTime, formatDetailTitle, formatNumericDateTime } from "@/lib/format";
 import type { SessionArtifact, SessionDetailView, SessionEvent } from "@/lib/types";
@@ -22,6 +21,7 @@ import { CompressSessionDialog } from "@/features/compression/compression-action
 import { SessionBlock } from "@/features/sessions/session-block";
 import { getBlockLabel } from "@/features/sessions/session-block-utils";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
+import { SessionDetailHeaderActions } from "@/features/sessions/session-detail-header-actions";
 import { getMeta, listProviders } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -215,17 +215,17 @@ function SessionDetailMeta({
 
   return (
     <div className="flex w-full flex-col gap-2.5" data-session-detail-meta>
-      <div className="grid gap-y-3 border-y py-2.5 lg:grid-cols-[minmax(0,0.34fr)_auto_minmax(0,1fr)] lg:items-center lg:gap-x-0">
-        <div className="flex min-w-0 flex-col justify-center gap-2.5 px-4 py-1 lg:px-5 lg:pr-3">
+      <div className="grid grid-cols-[minmax(0,0.34fr)_auto_minmax(0,1fr)] items-center gap-x-0 border-y py-2.5">
+        <div className="flex min-w-0 flex-col justify-center gap-2.5 px-4 py-1 pr-3">
           <StatItem label="Messages" value={view.message_count} />
           <StatItem label="Events" value={view.event_count} />
           <StatItem label="Loaded" value={returnedEventCount} title={hasMoreEvents ? "More events available beyond this page" : undefined} />
         </div>
 
-        <div className="hidden w-px self-stretch bg-border lg:mx-5 lg:block" aria-hidden />
+        <div className="mx-5 w-px self-stretch bg-border" aria-hidden />
 
         <SessionActivityChart
-          className="min-h-[104px] min-w-0 overflow-visible lg:pl-1"
+          className="min-h-[104px] min-w-0 overflow-visible pl-1"
           isLoading={activity.isLoading}
           timeline={activity.data}
         />
@@ -446,31 +446,18 @@ export function SessionDetailPage() {
               />
             )}
             actions={(
-              <div className="flex w-full min-w-0 items-center gap-3">
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="outline" onClick={() => setDetailsOpen(true)}>
-                    <InfoIcon data-icon="inline-start" />
-                    Details
-                  </Button>
-                  <Button type="button" variant="outline" onClick={() => setArtifactsOpen(true)}>Artifacts</Button>
-                  <Button type="button" variant="outline" onClick={() => setCompressionOpen(true)}>Compression</Button>
-                  <Button type="button" variant="outline" onClick={() => setSyncOpen(true)}>Sync</Button>
-                  <Button type="button" variant="outline" onClick={() => setSwitchOpen(true)}>Switch</Button>
-                  <Button type="button" variant="outline" onClick={() => setExportOpen(true)}>Export</Button>
-                  <Button type="button" variant="outline" onClick={() => setRenameOpen(true)}>Rename</Button>
-                  <Button type="button" variant="destructive" onClick={() => setDeleteOpen(true)}>Remove</Button>
-                </div>
-                <div className="relative min-w-[10rem] flex-1">
-                  <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    className="h-8 pl-8"
-                    value={eventSearch}
-                    onChange={(event) => setEventSearch(event.target.value)}
-                    placeholder="Search events"
-                    data-session-event-search
-                  />
-                </div>
-              </div>
+              <SessionDetailHeaderActions
+                eventSearch={eventSearch}
+                onEventSearchChange={setEventSearch}
+                onOpenDetails={() => setDetailsOpen(true)}
+                onOpenArtifacts={() => setArtifactsOpen(true)}
+                onOpenCompression={() => setCompressionOpen(true)}
+                onOpenSync={() => setSyncOpen(true)}
+                onOpenSwitch={() => setSwitchOpen(true)}
+                onOpenExport={() => setExportOpen(true)}
+                onOpenRename={() => setRenameOpen(true)}
+                onOpenDelete={() => setDeleteOpen(true)}
+              />
             )}
             actionsProps={{ className: "w-full" }}
           />
