@@ -147,6 +147,7 @@ main() {
   run_step "前端本机 clean install（npm ${NPM_VERSION}）" npm_ci --prefix "$WEB_DIR"
   run_step "前端 lint" npm --prefix "$WEB_DIR" run lint
   run_step "构建并同步前端资源到 crate" "$ROOT_DIR/scripts/build_web_assets.sh"
+  run_step "运行前端工作流测试" npm --prefix "$WEB_DIR" test
   run_step "运行 web UI 不变量检查" python3 "$ROOT_DIR/scripts/test_web_ui_invariants.py"
   run_step "检查 Rust workspace" cargo check --locked --manifest-path "$ROOT_DIR/rust/Cargo.toml"
   run_step "检查 Tauri desktop" cargo check --locked --manifest-path "$TAURI_MANIFEST"

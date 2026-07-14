@@ -94,6 +94,7 @@ def build_readiness_report() -> dict[str, object]:
         "local_checks": [
             "python3 scripts/release_preflight.py",
             "python3 scripts/test_release_scripts.py",
+            "npm test --prefix apps/web",
             "python3 scripts/test_web_ui_invariants.py",
         ],
         "release_sequence": [

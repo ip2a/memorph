@@ -183,98 +183,94 @@ pub struct ManagerBackupResult {
 
 /// Preview sessions matching the filter criteria.
 pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
-    let provider_ids = manager_provider_ids(filter);
-
-    let cutoff_ms = filter.older_than_ms.or_else(|| {
-        filter.older_than_days.map(|days| {
-            let duration = chrono::Duration::days(days as i64);
-            (Utc::now() - duration).timestamp_millis()
-        })
-    });
-
-    let larger_than_bytes = filter
-        .larger_than_bytes
-        .or_else(|| filter.larger_than_mb.map(|mb| mb as u64 * 1024 * 1024));
-    let smaller_than_bytes = filter.smaller_than_bytes;
-
-    let items_by_provider = thread::scope(|scope| {
-        let handles: Vec<_> = provider_ids
-            .iter()
-            .map(|pid| {
-                scope.spawn(move || {
-                    let provider = match providers::find_provider(pid) {
-                        Some(p) => p,
-                        None => return Vec::new(),
-                    };
-
-                    let cache = crate::cache::global_cache();
-                    let sessions = match cache.get_or_refresh(pid, || provider.scan_sessions()) {
-                        Ok(s) => s,
-                        Err(_) => return Vec::new(),
-                    };
-
-                    let candidates: Vec<ProviderSessionSummary> = sessions
-                        .into_iter()
-                        .filter(|meta| {
-                            if let Some(ref ws) = filter.workspace {
-                                let matches = workspace_session_matches(&*provider, meta, ws);
-                                if !matches {
-                                    return false;
-                                }
-                            }
-                            if let Some(cutoff) = cutoff_ms {
-                                let last_active = meta.last_active_at.unwrap_or(i64::MAX);
-                                if last_active > cutoff {
-                                    return false;
-                                }
-                            }
-                            true
-                        })
-                        .collect();
-                    let session_ids: Vec<&str> = candidates
-                        .iter()
-                        .map(|meta| meta.session_id.as_str())
-                        .collect();
-                    let sizes = provider.session_sizes(&session_ids);
-
-                    candidates
-                        .into_iter()
-                        .filter_map(|meta| {
-                            let size_bytes = sizes.get(&meta.session_id).copied().unwrap_or(0);
-                            if larger_than_bytes.is_some_and(|threshold| size_bytes < threshold) {
-                                return None;
-                            }
-                            if smaller_than_bytes.is_some_and(|threshold| size_bytes > threshold) {
-                                return None;
-                            }
-                            Some(ManagerItem {
-                                id: ManagerItem::action_identity(pid, &meta.session_id),
-                                provider_id: pid.clone(),
-                                provider_name: provider.name().to_string(),
-                                session_id: meta.session_id.clone(),
-                                source_path: meta.source_path.clone(),
-                                title: meta.title.clone(),
-                                project_dir: meta.project_dir.clone(),
-                                last_active_at: meta.last_active_at,
-                                size_bytes,
-                            })
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .filter_map(|handle| handle.join().ok())
-            .collect::<Vec<_>>()
-    });
-    let items = items_by_provider.into_iter().flatten().collect();
+    let items = projected_manager_items(filter)?;
 
     Ok(ManagerPreviewResult::from_items(
         items,
         filter.sort.as_deref(),
         filter.limit,
     ))
+}
+
+fn projected_manager_items(filter: &ManagerFilter) -> Result<Vec<ManagerItem>> {
+    let provider_names: BTreeMap<String, String> = manager_provider_ids(filter)
+        .into_iter()
+        .filter_map(|provider_id| {
+            providers::find_provider(&provider_id)
+                .map(|provider| (provider_id, provider.name().to_string()))
+        })
+        .collect();
+    let cutoff_ms = filter.older_than_ms.or_else(|| {
+        filter.older_than_days.map(|days| {
+            let duration = chrono::Duration::days(days as i64);
+            (Utc::now() - duration).timestamp_millis()
+        })
+    });
+    let larger_than_bytes = filter
+        .larger_than_bytes
+        .or_else(|| filter.larger_than_mb.map(|mb| mb as u64 * 1024 * 1024));
+    let smaller_than_bytes = filter.smaller_than_bytes;
+    let conn = local_store::open_database()?;
+    let snapshots =
+        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
+
+    Ok(snapshots
+        .into_iter()
+        .filter_map(|snapshot| {
+            let provider_name = provider_names.get(&snapshot.provider_id)?;
+            if filter.workspace.as_deref().is_some_and(|workspace| {
+                !projected_workspace_matches(
+                    &snapshot.provider_id,
+                    snapshot.workspace_dir.as_deref(),
+                    workspace,
+                )
+            }) {
+                return None;
+            }
+            if cutoff_ms
+                .is_some_and(|cutoff| snapshot.last_active_at_ms.unwrap_or(i64::MAX) > cutoff)
+            {
+                return None;
+            }
+            let size_bytes = snapshot.size_bytes.unwrap_or(0);
+            if larger_than_bytes.is_some_and(|threshold| size_bytes < threshold)
+                || smaller_than_bytes.is_some_and(|threshold| size_bytes > threshold)
+            {
+                return None;
+            }
+            let session_id = snapshot
+                .provider_session_id
+                .unwrap_or(snapshot.canonical_session_id);
+            Some(ManagerItem {
+                id: ManagerItem::action_identity(&snapshot.provider_id, &session_id),
+                provider_id: snapshot.provider_id,
+                provider_name: provider_name.clone(),
+                session_id,
+                source_path: snapshot.source_path,
+                title: snapshot.display_title.or(snapshot.title),
+                project_dir: snapshot.workspace_dir,
+                last_active_at: snapshot.last_active_at_ms,
+                size_bytes,
+            })
+        })
+        .collect())
+}
+
+fn projected_workspace_group_key(provider_id: &str, workspace: Option<&str>) -> String {
+    crate::core::session_management::normalized_workspace_key(provider_id, workspace)
+        .unwrap_or_else(|| workspace.unwrap_or("—").to_string())
+}
+
+fn projected_workspace_matches(
+    provider_id: &str,
+    session_workspace: Option<&str>,
+    requested_workspace: &str,
+) -> bool {
+    crate::core::session_management::workspace_matches(
+        provider_id,
+        session_workspace,
+        Some(requested_workspace),
+    ) || projected_workspace_group_key(provider_id, session_workspace) == requested_workspace
 }
 
 pub fn stats(filter: &ManagerFilter) -> Result<ManagerStatsResult> {
@@ -603,109 +599,32 @@ fn workspace_session_matches(
 
 /// Build an aggregated view of (provider, workspace) groups across the requested providers.
 pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
-    let provider_ids = manager_provider_ids(filter);
+    let mut candidates = projected_manager_items(filter)?;
+    candidates.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
+    let mut session_ids_seen = BTreeSet::new();
+    candidates.retain(|item| session_ids_seen.insert(item.id.clone()));
 
-    let cutoff_ms = filter.older_than_ms.or_else(|| {
-        filter.older_than_days.map(|days| {
-            let duration = chrono::Duration::days(days as i64);
-            (Utc::now() - duration).timestamp_millis()
-        })
-    });
-
-    let larger_than_bytes = filter
-        .larger_than_bytes
-        .or_else(|| filter.larger_than_mb.map(|mb| mb as u64 * 1024 * 1024));
-    let smaller_than_bytes = filter.smaller_than_bytes;
-
-    let groups_by_provider = thread::scope(|scope| {
-        let handles: Vec<_> = provider_ids
-            .iter()
-            .map(|pid| {
-                scope.spawn(move || {
-                    let provider = match providers::find_provider(pid) {
-                        Some(p) => p,
-                        None => return BTreeMap::new(),
-                    };
-
-                    let cache = crate::cache::global_cache();
-                    let sessions = match cache.get_or_refresh(pid, || provider.scan_sessions()) {
-                        Ok(s) => s,
-                        Err(_) => return BTreeMap::new(),
-                    };
-
-                    let mut candidates: Vec<&ProviderSessionSummary> = sessions
-                        .iter()
-                        .filter(|meta| {
-                            if let Some(ref workspace) = filter.workspace {
-                                if !workspace_session_matches(&*provider, meta, workspace) {
-                                    return false;
-                                }
-                            }
-                            if let Some(cutoff) = cutoff_ms {
-                                let last_active = meta.last_active_at.unwrap_or(i64::MAX);
-                                if last_active > cutoff {
-                                    return false;
-                                }
-                            }
-                            true
-                        })
-                        .collect();
-                    candidates
-                        .sort_by_key(|meta| std::cmp::Reverse(meta.last_active_at.unwrap_or(0)));
-                    let mut session_ids_seen = BTreeSet::new();
-                    candidates.retain(|meta| session_ids_seen.insert(meta.session_id.clone()));
-
-                    let session_ids: Vec<&str> = candidates
-                        .iter()
-                        .map(|meta| meta.session_id.as_str())
-                        .collect();
-                    let sizes = provider.session_sizes(&session_ids);
-                    let mut groups: BTreeMap<(String, String), ManagerWorkspaceItem> =
-                        BTreeMap::new();
-
-                    for meta in candidates {
-                        let size_bytes = sizes.get(&meta.session_id).copied().unwrap_or(0);
-
-                        if larger_than_bytes.is_some_and(|threshold| size_bytes < threshold) {
-                            continue;
-                        }
-                        if smaller_than_bytes.is_some_and(|threshold| size_bytes > threshold) {
-                            continue;
-                        }
-
-                        let workspace = workspace_group_key(&*provider, meta);
-
-                        let key = (pid.clone(), workspace.clone());
-                        let entry = groups.entry(key).or_insert_with(|| ManagerWorkspaceItem {
-                            provider_id: pid.clone(),
-                            provider_name: provider.name().to_string(),
-                            workspace,
-                            session_count: 0,
-                            total_size_bytes: 0,
-                            last_active_at: None,
-                        });
-                        entry.session_count += 1;
-                        entry.total_size_bytes += size_bytes;
-                        let last_active = meta.last_active_at.unwrap_or(0);
-                        entry.last_active_at = Some(
-                            entry
-                                .last_active_at
-                                .map_or(last_active, |v| v.max(last_active)),
-                        );
-                    }
-
-                    groups
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .filter_map(|handle| handle.join().ok())
-            .collect::<Vec<_>>()
-    });
     let mut groups: BTreeMap<(String, String), ManagerWorkspaceItem> = BTreeMap::new();
-    for provider_groups in groups_by_provider {
-        groups.extend(provider_groups);
+    for item in candidates {
+        let workspace =
+            projected_workspace_group_key(&item.provider_id, item.project_dir.as_deref());
+        let key = (item.provider_id.clone(), workspace.clone());
+        let entry = groups.entry(key).or_insert_with(|| ManagerWorkspaceItem {
+            provider_id: item.provider_id.clone(),
+            provider_name: item.provider_name.clone(),
+            workspace,
+            session_count: 0,
+            total_size_bytes: 0,
+            last_active_at: None,
+        });
+        entry.session_count += 1;
+        entry.total_size_bytes += item.size_bytes;
+        let last_active = item.last_active_at.unwrap_or(0);
+        entry.last_active_at = Some(
+            entry
+                .last_active_at
+                .map_or(last_active, |value| value.max(last_active)),
+        );
     }
 
     let items = groups.into_values().collect();
@@ -802,6 +721,21 @@ mod tests {
         artifact_store::{ArtifactManifestKind, NewArtifactManifest},
     };
 
+    struct TestConfigHomeGuard;
+
+    impl TestConfigHomeGuard {
+        fn new(path: &Path) -> Self {
+            crate::config::set_test_home_dir(path.to_path_buf());
+            Self
+        }
+    }
+
+    impl Drop for TestConfigHomeGuard {
+        fn drop(&mut self) {
+            crate::config::reset_test_home_dir();
+        }
+    }
+
     fn test_connection() -> rusqlite::Connection {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
@@ -823,6 +757,55 @@ mod tests {
         }
     }
 
+    fn insert_projected_manager_snapshot(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        provider_session_id: &str,
+        workspace: &str,
+        source_path: &str,
+        title: &str,
+        last_active_at: i64,
+        size_bytes: i64,
+    ) {
+        conn.execute(
+            "INSERT INTO session_sources
+             (id, provider_id, provider_session_id, source_path, workspace_dir, file_size_bytes,
+              first_seen_at_ms, last_seen_at_ms)
+             VALUES (?1, 'claude', ?2, ?3, ?4, ?5, 10, 10)",
+            rusqlite::params![
+                format!("source-{session_id}"),
+                provider_session_id,
+                source_path,
+                workspace,
+                size_bytes,
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+             (id, provider_id, provider_session_id, primary_source_id, workspace_dir, title,
+              status, created_at_ms, last_active_at_ms, event_count, turn_count)
+             VALUES (?1, 'claude', ?2, ?3, ?4, ?5, 'completed', 10, ?6, 2, 1)",
+            rusqlite::params![
+                session_id,
+                provider_session_id,
+                format!("source-{session_id}"),
+                workspace,
+                title,
+                last_active_at,
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_snapshots
+             (session_id, provider_id, title, workspace_dir, status, last_active_at_ms,
+              event_count, turn_count, flags_json, projection_version, stale, updated_at_ms)
+             VALUES (?1, 'claude', ?2, ?3, 'completed', ?4, 2, 1, '{}', 1, 0, ?4)",
+            rusqlite::params![session_id, title, workspace, last_active_at],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn manager_action_identity_is_stable_and_unambiguous() {
         assert_eq!(
@@ -833,6 +816,83 @@ mod tests {
             ManagerItem::action_identity("a", "bc"),
             ManagerItem::action_identity("ab", "c")
         );
+    }
+
+    #[test]
+    fn manager_read_models_ignore_provider_history_and_requested_provider_volume() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let history_dir = home.path().join(".claude/projects/project-history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+        for index in 0..128 {
+            std::fs::write(
+                history_dir.join(format!("historical-{index}.jsonl")),
+                b"not a provider session",
+            )
+            .unwrap();
+        }
+
+        let conn = local_store::open_database().unwrap();
+        insert_projected_manager_snapshot(
+            &conn,
+            "canonical-1",
+            "native-1",
+            "/work/project-one",
+            "/missing/provider/source.jsonl",
+            "Projected session",
+            200,
+            4096,
+        );
+        insert_projected_manager_snapshot(
+            &conn,
+            "canonical-2",
+            "native-2",
+            "/work/project-two",
+            "/missing/provider/second-source.jsonl",
+            "Second projected session",
+            100,
+            512,
+        );
+        drop(conn);
+
+        let mut providers = (0..128)
+            .map(|index| format!("unknown-{index}"))
+            .collect::<Vec<_>>();
+        providers.push("claude".to_string());
+        let filter = ManagerFilter {
+            providers,
+            older_than_days: None,
+            older_than_ms: None,
+            larger_than_mb: None,
+            larger_than_bytes: None,
+            smaller_than_bytes: None,
+            workspace: None,
+            sort: Some("recent".to_string()),
+            limit: Some(100),
+        };
+
+        let result = preview(&filter).unwrap();
+        assert_eq!(result.total_count, 2);
+        assert_eq!(result.total_size_bytes, 4608);
+        assert_eq!(result.items[0].session_id, "native-1");
+        assert_eq!(result.items[0].title.as_deref(), Some("Projected session"));
+
+        let workspaces = workspaces(&filter).unwrap();
+        assert_eq!(workspaces.total_count, 2);
+        assert_eq!(workspaces.total_size_bytes, 4608);
+        assert_eq!(workspaces.items[0].workspace, "/work/project-one");
+        assert_eq!(workspaces.items[0].session_count, 1);
+
+        let filtered = preview(&ManagerFilter {
+            workspace: Some("/work/project-one".to_string()),
+            larger_than_bytes: Some(4096),
+            smaller_than_bytes: Some(4096),
+            ..filter
+        })
+        .unwrap();
+        assert_eq!(filtered.total_count, 1);
+        assert_eq!(filtered.total_size_bytes, 4096);
+        assert_eq!(filtered.items[0].session_id, "native-1");
     }
 
     #[test]
