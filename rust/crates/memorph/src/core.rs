@@ -241,11 +241,7 @@ pub fn resolve_providers(filter: &[String]) -> Vec<String> {
 }
 
 pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
-    if let Some(groups) = list_projected_session_snapshots(params)? {
-        return Ok(groups);
-    }
-
-    list_provider_sessions(params)
+    list_projected_session_snapshots(params)
 }
 
 pub fn refresh_projected_session_staleness(
@@ -729,23 +725,48 @@ fn reprojection_failure(
     }
 }
 
-fn list_projected_session_snapshots(
-    params: &SessionListParams,
-) -> Result<Option<Vec<SessionGroup>>> {
-    if params.sort != SessionListSort::Recent || params.hook_filter != SessionHookFilter::All {
-        return Ok(None);
-    }
-
+fn list_projected_session_snapshots(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
     let conn = crate::storage::local_store::open_database()?;
     let snapshots =
         crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
-    let groups = projected_snapshot_groups(snapshots, params);
-    Ok(Some(groups))
+    let hook_runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
+    let hook_statuses = resolve_providers(&params.providers)
+        .into_iter()
+        .filter(|provider_id| {
+            snapshots
+                .iter()
+                .any(|snapshot| snapshot.provider_id == *provider_id)
+        })
+        .map(|provider_id| {
+            let hook_status = crate::hooks::operations::status(&provider_id).unwrap_or(
+                crate::hooks::model::HookInstallStatus {
+                    provider: provider_id.clone(),
+                    status: crate::hooks::model::HookHealthStatus::InstalledBrokenConfig,
+                    config_path: None,
+                    installed_version: None,
+                    current_version: None,
+                    message: Some(
+                        "Failed to inspect hook status while building session list.".to_string(),
+                    ),
+                    last_event_at: None,
+                },
+            );
+            (provider_id, hook_status)
+        })
+        .collect();
+    Ok(projected_snapshot_groups(
+        snapshots,
+        params,
+        &hook_runtime_snapshot,
+        &hook_statuses,
+    ))
 }
 
 fn projected_snapshot_groups(
     snapshots: Vec<ProjectedSessionSnapshotRow>,
     params: &SessionListParams,
+    hook_runtime_snapshot: &[crate::hooks::model::RuntimeSession],
+    hook_statuses: &HashMap<String, crate::hooks::model::HookInstallStatus>,
 ) -> Vec<SessionGroup> {
     let provider_ids = resolve_providers(&params.providers);
     let requested_workspace = if params.all {
@@ -765,6 +786,7 @@ fn projected_snapshot_groups(
             let requested_workspace_key = requested_workspace.and_then(|workspace| {
                 session_management::normalized_workspace_key(&provider_id, Some(workspace))
             });
+            let hook_status = hook_statuses.get(&provider_id);
             let mut sessions: Vec<SessionItem> = snapshots
                 .iter()
                 .filter(|snapshot| snapshot.provider_id == provider_id)
@@ -778,10 +800,26 @@ fn projected_snapshot_groups(
                     );
                     session_workspace_key.as_deref() == Some(requested_workspace_key)
                 })
-                .map(projected_snapshot_item)
+                .map(|snapshot| {
+                    let mut item = projected_snapshot_item(snapshot);
+                    if let Some(hook_status) = hook_status {
+                        let hook_augmentation =
+                            crate::hooks::augmentation::augment_session_from_snapshot_with_status(
+                                hook_runtime_snapshot,
+                                hook_status.clone(),
+                                &provider_id,
+                                &item.session_id,
+                                snapshot.workspace_dir.as_deref(),
+                            );
+                        item.hook_runtime_summary = hook_augmentation.runtime_summary;
+                        item.hook_diagnosis = hook_augmentation.diagnosis;
+                    }
+                    item
+                })
                 .collect();
 
-            sessions.sort_by(compare_recent_then_title);
+            sessions.retain(|item| session_matches_hook_filter(item, &params.hook_filter));
+            sort_session_items(&mut sessions, &params.sort);
             let sessions: Vec<SessionItem> =
                 sessions.into_iter().skip(offset).take(limit).collect();
             if sessions.is_empty() {
@@ -828,168 +866,6 @@ fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) -> SessionIte
     }
 }
 
-fn list_provider_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
-    let provider_ids = resolve_providers(&params.providers);
-    let explicit_provider_filter = !params.providers.is_empty();
-    let session_states = session_state::load_state_store().unwrap_or_default();
-    let hook_runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-
-    let mut indexed_results: Vec<(usize, Option<Result<Option<SessionGroup>>>)> =
-        Vec::with_capacity(provider_ids.len());
-
-    std::thread::scope(|s| {
-        let hook_runtime_snapshot = &hook_runtime_snapshot;
-        let mut handles = Vec::with_capacity(provider_ids.len());
-        for (index, pid) in provider_ids.iter().enumerate() {
-            let session_states = &session_states;
-            let params = params;
-            let handle = s.spawn(move || {
-                let prov = match providers::find_provider(pid) {
-                    Some(p) => p,
-                    None => return Ok(None),
-                };
-                let capabilities = prov.capabilities();
-                if !capabilities.scan {
-                    return Ok(None);
-                }
-                let Some(sessions) =
-                    scan_sessions_for_aggregate(prov.as_ref(), explicit_provider_filter)?
-                else {
-                    return Ok(None);
-                };
-                let mut workspace_key_cache: HashMap<String, Option<String>> = HashMap::new();
-                let requested_workspace_key = if params.all {
-                    None
-                } else {
-                    prov.normalized_workspace_key(params.cwd.as_deref())
-                };
-                let mut filtered_summaries: Vec<&ProviderSessionSummary> = if params.all {
-                    sessions.iter().collect()
-                } else {
-                    sessions
-                        .iter()
-                        .filter(|s| {
-                            let session_workspace_key = cached_normalized_workspace_key(
-                                prov.as_ref(),
-                                &mut workspace_key_cache,
-                                s.project_dir.as_deref(),
-                            );
-                            session_workspace_key.as_deref() == requested_workspace_key.as_deref()
-                        })
-                        .collect()
-                };
-
-                filtered_summaries.sort_by_key(|s| {
-                    let workspace_key = cached_normalized_workspace_key(
-                        prov.as_ref(),
-                        &mut workspace_key_cache,
-                        s.project_dir.as_deref(),
-                    );
-                    let state = resolve_session_state_with_workspace_key(
-                        pid.as_str(),
-                        &s.session_id,
-                        s.title.clone(),
-                        workspace_key.as_deref(),
-                        session_states,
-                    );
-                    (
-                        std::cmp::Reverse(state.local.pinned),
-                        std::cmp::Reverse(s.last_active_at),
-                    )
-                });
-
-                let offset = params.offset.unwrap_or(0);
-                let needs_full_item_ranking = params.sort != SessionListSort::Recent
-                    || params.hook_filter != SessionHookFilter::All;
-                let candidate_summaries: Vec<&ProviderSessionSummary> = if needs_full_item_ranking {
-                    filtered_summaries
-                } else {
-                    filtered_summaries
-                        .into_iter()
-                        .skip(offset)
-                        .take(params.limit.unwrap_or(usize::MAX))
-                        .collect()
-                };
-
-                let session_ids: Vec<&str> = candidate_summaries
-                    .iter()
-                    .map(|s| s.session_id.as_str())
-                    .collect();
-                let sizes = prov.session_sizes(&session_ids);
-                let hook_status = crate::hooks::operations::status(pid.as_str()).unwrap_or(
-                    crate::hooks::model::HookInstallStatus {
-                        provider: pid.clone(),
-                        status: crate::hooks::model::HookHealthStatus::InstalledBrokenConfig,
-                        config_path: None,
-                        installed_version: None,
-                        current_version: None,
-                        message: Some(
-                            "Failed to inspect hook status while building session list."
-                                .to_string(),
-                        ),
-                        last_event_at: None,
-                    },
-                );
-                let mut filtered: Vec<SessionItem> = candidate_summaries
-                    .iter()
-                    .map(|s| {
-                        enrich_session_item(
-                            prov.as_ref(),
-                            capabilities,
-                            pid.as_str(),
-                            s,
-                            session_states,
-                            &sizes,
-                            params.include_message_counts,
-                            &hook_runtime_snapshot,
-                            &hook_status,
-                        )
-                    })
-                    .collect();
-
-                if needs_full_item_ranking {
-                    filtered.retain(|item| session_matches_hook_filter(item, &params.hook_filter));
-                    sort_session_items(&mut filtered, &params.sort);
-                    filtered = filtered
-                        .into_iter()
-                        .skip(offset)
-                        .take(params.limit.unwrap_or(usize::MAX))
-                        .collect();
-                }
-
-                if filtered.is_empty() {
-                    Ok(None)
-                } else {
-                    Ok(Some(SessionGroup {
-                        provider_id: pid.clone(),
-                        provider_name: prov.name().to_string(),
-                        sessions: filtered,
-                    }))
-                }
-            });
-            handles.push((index, handle));
-        }
-
-        for (index, handle) in handles {
-            indexed_results.push((index, Some(handle.join().unwrap())));
-        }
-    });
-
-    indexed_results.sort_by_key(|(index, _)| *index);
-
-    let mut groups = Vec::new();
-    for (_, result) in indexed_results {
-        match result {
-            Some(Ok(Some(group))) => groups.push(group),
-            Some(Ok(None)) => {}
-            Some(Err(e)) if explicit_provider_filter => return Err(e),
-            _ => {}
-        }
-    }
-
-    Ok(groups)
-}
-
 fn scan_sessions_for_aggregate(
     provider: &dyn provider::Provider,
     explicit_provider_filter: bool,
@@ -1001,57 +877,6 @@ fn scan_sessions_for_aggregate(
         Err(err) if explicit_provider_filter => Err(err),
         Err(_) => Ok(None),
     }
-}
-
-fn enrich_session_item(
-    provider: &dyn provider::Provider,
-    capabilities: provider::ProviderCapabilities,
-    provider_id: &str,
-    meta: &ProviderSessionSummary,
-    session_states: &SessionStateStore,
-    sizes: &HashMap<String, u64>,
-    include_message_count: bool,
-    hook_runtime_snapshot: &[crate::hooks::model::RuntimeSession],
-    hook_status: &crate::hooks::model::HookInstallStatus,
-) -> SessionItem {
-    let mut item = SessionItem::from((meta, provider_id));
-    let state = resolve_session_state(
-        provider_id,
-        &meta.session_id,
-        meta.title.clone(),
-        meta.project_dir.as_deref(),
-        session_states,
-    );
-    apply_session_item_state(&mut item, &state);
-    item.size_bytes = sizes.get(&meta.session_id).copied().or_else(|| {
-        meta.source_path.as_deref().and_then(|path| {
-            std::fs::metadata(path)
-                .ok()
-                .filter(|metadata| metadata.is_file())
-                .map(|metadata| metadata.len())
-        })
-    });
-
-    if include_message_count && capabilities.import {
-        if let Some(source_path) = meta.source_path.as_deref() {
-            item.message_count = provider
-                .import_session(source_path)
-                .ok()
-                .map(|imported| session_message_count(&imported.session));
-        }
-    }
-
-    let hook_augmentation = crate::hooks::augmentation::augment_session_from_snapshot_with_status(
-        hook_runtime_snapshot,
-        hook_status.clone(),
-        provider_id,
-        &meta.session_id,
-        meta.project_dir.as_deref(),
-    );
-    item.hook_runtime_summary = hook_augmentation.runtime_summary;
-    item.hook_diagnosis = hook_augmentation.diagnosis;
-
-    item
 }
 
 fn session_matches_hook_filter(item: &SessionItem, hook_filter: &SessionHookFilter) -> bool {
@@ -1314,6 +1139,8 @@ mod session_list_hook_tests {
                 projected_row("canonical-other", "native-other", "/tmp/other", 40),
             ],
             &params,
+            &[],
+            &HashMap::new(),
         );
 
         assert_eq!(groups.len(), 1);
@@ -1531,38 +1358,6 @@ fn resolve_session_state(
     }
 }
 
-fn resolve_session_state_with_workspace_key(
-    provider_id: &str,
-    session_id: &str,
-    native_title: Option<String>,
-    workspace_key: Option<&str>,
-    session_states: &SessionStateStore,
-) -> ResolvedSessionState {
-    ResolvedSessionState {
-        native_title,
-        local: session_state::resolve_session_state(
-            session_states,
-            provider_id,
-            session_id,
-            workspace_key,
-        ),
-    }
-}
-
-fn cached_normalized_workspace_key(
-    provider: &dyn provider::Provider,
-    cache: &mut HashMap<String, Option<String>>,
-    workspace: Option<&str>,
-) -> Option<String> {
-    let workspace = workspace.map(str::trim).filter(|value| !value.is_empty())?;
-    if let Some(cached) = cache.get(workspace) {
-        return cached.clone();
-    }
-    let normalized = provider.normalized_workspace_key(Some(workspace));
-    cache.insert(workspace.to_string(), normalized.clone());
-    normalized
-}
-
 fn apply_session_item_state(item: &mut SessionItem, state: &ResolvedSessionState) {
     item.native_title = state.native_title.clone();
     item.display_title = state.local.display_title.clone();
@@ -1570,14 +1365,6 @@ fn apply_session_item_state(item: &mut SessionItem, state: &ResolvedSessionState
     item.hidden = state.local.hidden;
     item.pinned = state.local.pinned;
     item.preferred_targets = state.local.preferred_targets.clone();
-}
-
-fn session_message_count(session: &CanonicalSession) -> usize {
-    session
-        .events
-        .iter()
-        .filter(|event| provider::canonical_event_is_visible_message(event))
-        .count()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4845,6 +4632,44 @@ mod tests {
     }
 
     #[test]
+    fn non_default_session_list_reads_projection_without_provider_source() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let mut source = tempfile::NamedTempFile::new().unwrap();
+        write_claude_projection_sample(&mut source, "Projected title");
+        let mut conn = local_store::open_database().unwrap();
+
+        crate::providers::claude::project_session_to_store(
+            source.path(),
+            &mut ProjectionStore::new(&mut conn),
+        )
+        .unwrap();
+        drop(conn);
+        drop(source);
+
+        let groups = list_sessions(&SessionListParams {
+            all: true,
+            providers: vec!["claude".to_string()],
+            cwd: None,
+            include_message_counts: true,
+            limit: None,
+            offset: None,
+            sort: SessionListSort::Title,
+            hook_filter: SessionHookFilter::All,
+        })
+        .unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].sessions.len(), 1);
+        assert_eq!(groups[0].sessions[0].session_id, "session-projection-1");
+        assert_eq!(
+            groups[0].sessions[0].title.as_deref(),
+            Some("Projected title")
+        );
+        assert_eq!(groups[0].sessions[0].message_count, Some(2));
+    }
+
+    #[test]
     fn reproject_stale_snapshot_sources_rebuilds_claude_projection() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
@@ -5109,6 +4934,21 @@ mod tests {
         )
         .unwrap();
         file.flush().unwrap();
+    }
+
+    struct TestConfigHomeGuard;
+
+    impl TestConfigHomeGuard {
+        fn new(path: &std::path::Path) -> Self {
+            crate::config::set_test_home_dir(path.to_path_buf());
+            Self
+        }
+    }
+
+    impl Drop for TestConfigHomeGuard {
+        fn drop(&mut self) {
+            crate::config::reset_test_home_dir();
+        }
     }
 
     struct TestOpenCodeDirGuard;
