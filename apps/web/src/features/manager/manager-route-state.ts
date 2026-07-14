@@ -2,7 +2,7 @@ import type { ManagerFilter } from "@/lib/types";
 
 export type ManagerView = "sessions" | "workspaces";
 export type ManagerScope = "current" | "all";
-export type ManagerSort = "recent" | "size" | "title";
+export type ManagerSort = "recent" | "size" | "title" | "sessions";
 
 export type ManagerRouteState = {
   view: ManagerView;
@@ -22,15 +22,20 @@ export function readManagerRouteState(searchParams: URLSearchParams): ManagerRou
         .filter(Boolean),
     ),
   );
+  const view = searchParams.get("view") === "workspaces" ? "workspaces" : "sessions";
   const sort = searchParams.get("sort");
+  const normalizedSort =
+    sort === "size" || sort === "title" || (view === "workspaces" && sort === "sessions")
+      ? sort
+      : "recent";
 
   return {
-    view: searchParams.get("view") === "workspaces" ? "workspaces" : "sessions",
+    view,
     scope: searchParams.get("scope") === "all" ? "all" : "current",
     workspace: searchParams.get("workspace") || null,
     providers,
     search: searchParams.get("q") ?? "",
-    sort: sort === "size" || sort === "title" ? sort : "recent",
+    sort: normalizedSort,
   };
 }
 

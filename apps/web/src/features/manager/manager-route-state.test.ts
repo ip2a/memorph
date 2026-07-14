@@ -72,4 +72,13 @@ describe("manager route state", () => {
       sort: "title",
     });
   });
+
+  it("supports workspace session-count sorting without leaking it into sessions", () => {
+    expect(
+      readManagerRouteState(new URLSearchParams("view=workspaces&sort=sessions")).sort,
+    ).toBe("sessions");
+    expect(readManagerRouteState(new URLSearchParams("sort=sessions")).sort).toBe(
+      "recent",
+    );
+  });
 });

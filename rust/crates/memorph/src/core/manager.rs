@@ -117,6 +117,9 @@ impl ManagerWorkspacesResult {
                 items.sort_by_key(|item| std::cmp::Reverse(item.total_size_bytes));
             }
             Some("title") => items.sort_by_key(|item| item.workspace.to_lowercase()),
+            Some("sessions") => {
+                items.sort_by_key(|item| std::cmp::Reverse(item.session_count));
+            }
             _ => {
                 items.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
             }
@@ -904,6 +907,28 @@ mod tests {
         assert_eq!(result.items.len(), 2);
         assert_eq!(result.total_count, 3);
         assert_eq!(result.total_size_bytes, 60);
+    }
+
+    #[test]
+    fn workspace_result_sorts_by_session_count() {
+        let items = [2_usize, 8, 4]
+            .into_iter()
+            .enumerate()
+            .map(|(index, session_count)| ManagerWorkspaceItem {
+                provider_id: "database-provider".to_string(),
+                provider_name: "Database Provider".to_string(),
+                workspace: format!("/workspace/{index}"),
+                session_count,
+                total_size_bytes: 10,
+                last_active_at: Some(index as i64),
+            })
+            .collect();
+
+        let result = ManagerWorkspacesResult::from_items(items, Some("sessions"), None);
+
+        assert_eq!(result.items[0].session_count, 8);
+        assert_eq!(result.items[1].session_count, 4);
+        assert_eq!(result.items[2].session_count, 2);
     }
 
     #[test]

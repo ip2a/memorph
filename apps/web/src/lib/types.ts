@@ -102,7 +102,7 @@ export type ManagerFilter = {
   larger_than_bytes?: number;
   smaller_than_bytes?: number;
   workspace?: string;
-  sort?: "recent" | "size" | "title";
+  sort?: "recent" | "size" | "title" | "sessions";
   limit?: number;
 };
 

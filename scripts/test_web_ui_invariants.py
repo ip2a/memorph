@@ -19,7 +19,6 @@ I18N_PROVIDER_TSX = SRC_ROOT / "lib" / "i18n-provider.tsx"
 AGENTS_PAGE_TSX = SRC_ROOT / "features" / "agents" / "agents-page.tsx"
 HOOKS_PAGE_TSX = SRC_ROOT / "features" / "hooks" / "hooks-page.tsx"
 MANAGER_PAGE_TSX = SRC_ROOT / "features" / "manager" / "manager-page.tsx"
-MANAGER_PREVIEW_HEADER_TOOLBAR_TSX = SRC_ROOT / "features" / "manager" / "manager-preview-header-toolbar.tsx"
 COMPRESSION_PAGE_TSX = SRC_ROOT / "features" / "compression" / "compression-page.tsx"
 COMPRESSION_ACTIONS_TSX = SRC_ROOT / "features" / "compression" / "compression-actions.tsx"
 SYNC_PAGE_TSX = SRC_ROOT / "features" / "sync" / "sync-page.tsx"
@@ -608,10 +607,10 @@ class WebUiInvariantTest(unittest.TestCase):
         ]:
             self.assertIn(marker, hooks_page)
 
-    def test_manager_route_preserves_legacy_two_panel_preview(self) -> None:
+    def test_manager_route_uses_single_panel_asset_management_workflow(self) -> None:
         router = ROUTER_TSX.read_text(encoding="utf-8")
         route_elements = ROUTE_ELEMENTS_TSX.read_text(encoding="utf-8")
-        manager_page = MANAGER_PAGE_TSX.read_text(encoding="utf-8") + MANAGER_PREVIEW_HEADER_TOOLBAR_TSX.read_text(encoding="utf-8")
+        manager_page = MANAGER_PAGE_TSX.read_text(encoding="utf-8")
         api = API_TS.read_text(encoding="utf-8")
         types = TYPES_TS.read_text(encoding="utf-8")
         manager_route_match = re.search(
@@ -628,25 +627,28 @@ class WebUiInvariantTest(unittest.TestCase):
 
         for marker in [
             "data-manager-page-layout",
-            "data-manager-control-panel",
+            "data-manager-page-context",
             "data-manager-result-panel",
-            "data-manager-workspace-summary",
-            "data-manager-provider-controls",
+            "data-manager-scope-control",
             "data-manager-view-tabs",
-            "data-manager-preview-header",
-            "data-manager-preview-search",
-            "data-manager-action-clean",
-            "data-manager-action-backup",
-            "data-manager-action-more",
-            "data-manager-selection-menu",
+            "data-manager-filter-toolbar",
+            "data-manager-provider-filter",
+            "data-manager-search",
+            "data-manager-sort",
+            "data-manager-select-visible",
+            "data-manager-selection-bar",
             "data-manager-row",
+            "data-manager-row-link",
+            "data-manager-row-more",
             "data-manager-row-actions",
             "SessionRows",
             "WorkspaceRows",
-            "Clean Selected",
-            "Select All",
+            "All providers",
+            "Select visible",
+            "Back up",
+            "Delete",
             "data-manager-action-dialog",
-            "data-manager-clean-dialog",
+            "data-manager-delete-dialog",
             "data-manager-backup-dialog",
             "data-manager-action-result",
             "cleanManagerItems",
@@ -671,6 +673,9 @@ class WebUiInvariantTest(unittest.TestCase):
             self.assertIn(marker, api + types)
 
         self.assertNotIn("<Table", manager_page)
+        self.assertNotIn("TwoPanePage", manager_page)
+        self.assertNotIn("ManagerPreviewHeaderToolbar", manager_page)
+        self.assertNotIn("Clean Selected", manager_page)
 
     def test_compression_route_preserves_legacy_two_panel_row_workflow(self) -> None:
         router = ROUTER_TSX.read_text(encoding="utf-8")

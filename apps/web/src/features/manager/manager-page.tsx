@@ -1,29 +1,51 @@
-import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import {
-  ArrowRightIcon,
+  ArchiveIcon,
   CheckIcon,
+  ChevronDownIcon,
   MoreHorizontalIcon,
+  SearchIcon,
   Trash2Icon,
+  XIcon,
 } from "lucide-react";
-import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
-import { PanelCard } from "@/components/shared/panel-card";
 import { PathText } from "@/components/shared/path-text";
-import { SelectableRowButton } from "@/components/shared/selectable-row-button";
-import { TwoPanePage } from "@/components/shared/two-pane-page";
-import { WorkspaceIdentity } from "@/components/shared/workspace-identity";
+import { ScrollPane } from "@/components/shared/scroll-pane";
 import { workspaceName } from "@/components/shared/workspace-name";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import { ScrollPane } from "@/components/shared/scroll-pane";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import {
   backupManagerItems,
@@ -33,7 +55,14 @@ import {
 } from "@/lib/api";
 import { formatBytes, formatDateTime } from "@/lib/format";
 import { queryKeys } from "@/lib/query-keys";
-import type { ManagerBackupResult, ManagerCleanResult, ManagerFilter, ManagerItem, ManagerWorkspaceItem, ProviderInfo } from "@/lib/types";
+import type {
+  ManagerBackupResult,
+  ManagerCleanResult,
+  ManagerFilter,
+  ManagerItem,
+  ManagerWorkspaceItem,
+  ProviderInfo,
+} from "@/lib/types";
 import {
   useManagerMeta,
   useManagerPreview,
@@ -41,18 +70,21 @@ import {
   useManagerStats,
   useManagerWorkspaces,
 } from "@/features/manager/queries";
-import { ManagerPreviewHeaderToolbar } from "@/features/manager/manager-preview-header-toolbar";
 import {
   readManagerRouteState,
   resolveManagerRequest,
 } from "@/features/manager/manager-route-state";
-import type { ManagerScope, ManagerView } from "@/features/manager/manager-route-state";
+import type {
+  ManagerScope,
+  ManagerSort,
+  ManagerView,
+} from "@/features/manager/manager-route-state";
 import { useUiStore } from "@/stores/ui-store";
 
 type ManagerActionTarget =
-  | { kind: "clean-sessions"; items: ManagerItem[] }
+  | { kind: "delete-sessions"; items: ManagerItem[] }
   | { kind: "backup-sessions"; items: ManagerItem[] }
-  | { kind: "clean-workspaces"; items: ManagerWorkspaceItem[] }
+  | { kind: "delete-workspaces"; items: ManagerWorkspaceItem[] }
   | { kind: "backup-workspaces"; items: ManagerWorkspaceItem[] };
 
 type ManagerActionReport = {
@@ -61,59 +93,48 @@ type ManagerActionReport = {
   lines: string[];
 };
 
-function sessionKey(item: ManagerItem) {
-  return item.id;
-}
-
-function workspaceKey(item: ManagerWorkspaceItem) {
-  return `${item.provider_id}:${item.workspace}`;
-}
-
-function providerOptions(providers: ProviderInfo[] | undefined) {
-  return (providers ?? []).filter((provider) => provider.scan);
-}
-
-function selectionSummary(
-  total: number | undefined,
-  visible: number,
-  selected: number,
-  bytes: number,
-  searchActive: boolean,
-) {
-  const visibleLabel = searchActive ? `${visible} shown / ${total ?? 0} total` : `${total ?? 0} total`;
-  return `${visibleLabel} / ${selected} selected / ${formatBytes(bytes)} selected`;
+function workspaceIdentity(item: ManagerWorkspaceItem) {
+  return JSON.stringify([item.provider_id, item.workspace]);
 }
 
 function matchesSessionSearch(item: ManagerItem, query: string) {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return true;
 
-  return [item.title, item.session_id, item.provider_id, item.provider_name, item.project_dir, item.source_path].some(
-    (value) => value?.toLowerCase().includes(normalized),
-  );
+  return [
+    item.title,
+    item.session_id,
+    item.provider_id,
+    item.provider_name,
+    item.project_dir,
+    item.source_path,
+  ].some((value) => value?.toLowerCase().includes(normalized));
 }
 
 function matchesWorkspaceSearch(item: ManagerWorkspaceItem, query: string) {
   const normalized = query.trim().toLowerCase();
   if (!normalized) return true;
 
-  return [item.workspace, workspaceName(item.workspace), item.provider_id, item.provider_name].some((value) =>
-    value?.toLowerCase().includes(normalized),
-  );
+  return [
+    item.workspace,
+    workspaceName(item.workspace),
+    item.provider_id,
+    item.provider_name,
+  ].some((value) => value?.toLowerCase().includes(normalized));
 }
 
 function actionTitle(target: ManagerActionTarget | null) {
   switch (target?.kind) {
-    case "clean-sessions":
-      return "Clean Selected";
+    case "delete-sessions":
+      return target.items.length === 1 ? "Delete session" : "Delete sessions";
     case "backup-sessions":
-      return "Backup Selected";
-    case "clean-workspaces":
-      return "Clean Workspace Selected";
+      return target.items.length === 1 ? "Back up session" : "Back up sessions";
+    case "delete-workspaces":
+      return target.items.length === 1 ? "Delete workspace sessions" : "Delete workspace sessions";
     case "backup-workspaces":
-      return "Backup Workspace Selected";
+      return target.items.length === 1 ? "Back up workspace" : "Back up workspaces";
     default:
-      return "Manager Action";
+      return "Manager action";
   }
 }
 
@@ -121,248 +142,290 @@ function isBackupAction(target: ManagerActionTarget | null) {
   return target?.kind === "backup-sessions" || target?.kind === "backup-workspaces";
 }
 
-function isCleanAction(target: ManagerActionTarget | null) {
-  return target?.kind === "clean-sessions" || target?.kind === "clean-workspaces";
+function isDeleteAction(target: ManagerActionTarget | null) {
+  return target?.kind === "delete-sessions" || target?.kind === "delete-workspaces";
 }
 
 function actionStats(target: ManagerActionTarget | null) {
-  if (!target) return { sessions: 0, workspaces: 0 };
-  if (target.kind === "clean-sessions" || target.kind === "backup-sessions") {
-    return { sessions: target.items.length, workspaces: 0 };
+  if (!target) return { sessions: 0, workspaces: 0, bytes: 0 };
+  if (target.kind === "delete-sessions" || target.kind === "backup-sessions") {
+    return {
+      sessions: target.items.length,
+      workspaces: 0,
+      bytes: target.items.reduce((sum, item) => sum + item.size_bytes, 0),
+    };
   }
   return {
-    sessions: target.items.reduce((sum, item) => sum + Number(item.session_count || 0), 0),
+    sessions: target.items.reduce((sum, item) => sum + item.session_count, 0),
     workspaces: target.items.length,
+    bytes: target.items.reduce((sum, item) => sum + item.total_size_bytes, 0),
   };
 }
 
 function cleanSummary(result: ManagerCleanResult) {
-  return `${result.success} cleaned, ${result.failed} failed, ${formatBytes(result.freed_bytes)} freed`;
+  return `${result.success} deleted, ${result.failed} failed, ${formatBytes(result.freed_bytes)} freed`;
 }
 
 function backupSummary(result: ManagerBackupResult) {
-  return `${result.success} exported, ${result.failed} failed`;
+  return `${result.success} backed up, ${result.failed} failed`;
 }
 
-function ProviderControls({
+function ProviderFilter({
   providers,
   selected,
   onToggle,
+  onSelectAll,
 }: {
   providers: ProviderInfo[];
   selected: string[];
   onToggle: (providerId: string) => void;
+  onSelectAll: () => void;
 }) {
-  if (!providers.length) {
-    return (
-      <Empty>
-        <EmptyHeader>
-          <EmptyTitle>No providers</EmptyTitle>
-          <EmptyDescription>No scan providers were returned by the backend.</EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    );
-  }
+  const selectedNames = providers
+    .filter((provider) => selected.includes(provider.id))
+    .map((provider) => provider.name);
+  const label =
+    selectedNames.length === 0
+      ? "All providers"
+      : selectedNames.length === 1
+        ? selectedNames[0]
+        : `${selectedNames.length} providers`;
 
   return (
-    <ScrollPane className="min-h-0 flex-1" data-manager-provider-controls innerClassName="flex flex-col gap-2">
-      {providers.map((provider) => {
-        const checked = selected.length === 0 || selected.includes(provider.id);
-        return (
-          <SelectableRowButton
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          className="min-w-0 justify-between sm:min-w-44"
+          data-manager-provider-filter
+        >
+          <span className="truncate">{label}</span>
+          <ChevronDownIcon data-icon="inline-end" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-56">
+        <DropdownMenuLabel>Provider</DropdownMenuLabel>
+        <DropdownMenuCheckboxItem
+          checked={selected.length === 0}
+          onCheckedChange={onSelectAll}
+        >
+          All providers
+        </DropdownMenuCheckboxItem>
+        <DropdownMenuSeparator />
+        {providers.map((provider) => (
+          <DropdownMenuCheckboxItem
             key={provider.id}
-            selected={checked}
-            title={provider.name}
-            trailing={checked ? <CheckIcon className="text-muted-foreground size-4" aria-hidden /> : null}
-            onClick={() => onToggle(provider.id)}
-          />
-        );
-      })}
-    </ScrollPane>
+            checked={selected.includes(provider.id)}
+            onSelect={(event) => event.preventDefault()}
+            onCheckedChange={() => onToggle(provider.id)}
+          >
+            {provider.name}
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
-function ControlPanel({
-  workspace,
+function ScopeControl({
   scope,
   specifiedWorkspace,
-  providers,
-  selectedProviders,
-  onScopeChange,
-  onToggleProvider,
+  onChange,
 }: {
-  workspace: string | null;
   scope: ManagerScope;
   specifiedWorkspace: boolean;
-  providers: ProviderInfo[];
-  selectedProviders: string[];
-  onScopeChange: (scope: ManagerScope) => void;
-  onToggleProvider: (providerId: string) => void;
-}) {
-  const scopeLabel = specifiedWorkspace
-    ? "Specified workspace"
-    : scope === "all"
-      ? "All workspaces"
-      : "Current workspace";
-
-  return (
-    <PanelCard className="flex h-full min-h-0 flex-col overflow-hidden" data-manager-control-panel>
-      <section className="flex flex-col gap-3 border-b pb-4" data-manager-workspace-summary>
-        <div className="flex items-center justify-between gap-2">
-          <span className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Scope</span>
-          <Badge variant="outline">{scopeLabel}</Badge>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <Button
-            type="button"
-            variant={scope === "current" && !specifiedWorkspace ? "default" : "outline"}
-            onClick={() => onScopeChange("current")}
-          >
-            Current
-          </Button>
-          <Button
-            type="button"
-            variant={scope === "all" && !specifiedWorkspace ? "default" : "outline"}
-            onClick={() => onScopeChange("all")}
-          >
-            All
-          </Button>
-        </div>
-        {workspace ? (
-          <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
-        ) : (
-          <p className="text-muted-foreground text-sm">Sessions from every indexed workspace.</p>
-        )}
-      </section>
-      <ProviderControls providers={providers} selected={selectedProviders} onToggle={onToggleProvider} />
-    </PanelCard>
-  );
-}
-
-function StatsStrip({
-  view,
-  onViewChange,
-  stats,
-  providerCount,
-  loading,
-}: {
-  view: ManagerView;
-  onViewChange: (view: ManagerView) => void;
-  stats: ReturnType<typeof useManagerStats>["data"];
-  providerCount: number;
-  loading: boolean;
-}) {
-  const placeholder = loading ? <Skeleton className="h-5 w-20" /> : "-";
-  return (
-    <MetricGrid columns="four" data-manager-view-tabs>
-      <MetricTile
-        active={view === "sessions"}
-        label="Current Workspace"
-        value={stats ? formatBytes(stats.current_workspace_size_bytes) : placeholder}
-        hint={`${stats?.current_workspace_session_count ?? 0} sessions`}
-        onClick={() => onViewChange("sessions")}
-        variant="compact"
-      />
-      <MetricTile
-        active={view === "workspaces"}
-        label="All Workspaces"
-        value={stats ? stats.all_workspace_count : placeholder}
-        hint={`${stats?.all_workspace_session_count ?? 0} sessions`}
-        onClick={() => onViewChange("workspaces")}
-        variant="compact"
-      />
-      <MetricTile label="Selected Agents" value={providerCount || placeholder} hint="scan providers" variant="compact" />
-      <MetricTile label="All Size" value={stats ? formatBytes(stats.all_workspace_size_bytes) : placeholder} hint="indexed storage" variant="compact" />
-    </MetricGrid>
-  );
-}
-
-function PreviewHeader({
-  title,
-  summary,
-  search,
-  searchPlaceholder,
-  canAct,
-  canSelect,
-  canSelectFiltered,
-  onSearchChange,
-  onClean,
-  onBackup,
-  onCopyPaths,
-  onSelectAll,
-  onDeselectAll,
-  onInvertSelection,
-  onSelectFiltered,
-}: {
-  title: string;
-  summary: string;
-  search: string;
-  searchPlaceholder: string;
-  canAct: boolean;
-  canSelect: boolean;
-  canSelectFiltered: boolean;
-  onSearchChange: (value: string) => void;
-  onClean: () => void;
-  onBackup: () => void;
-  onCopyPaths: () => void;
-  onSelectAll: () => void;
-  onDeselectAll: () => void;
-  onInvertSelection: () => void;
-  onSelectFiltered: () => void;
+  onChange: (scope: ManagerScope) => void;
 }) {
   return (
     <div
-      className="grid grid-cols-1 gap-3 border-b pb-2 md:grid-cols-[minmax(0,auto)_auto_minmax(0,1fr)] md:items-center md:gap-x-4"
-      data-manager-preview-header
+      className="grid grid-cols-2 rounded-lg bg-muted p-1"
+      data-manager-scope-control
+      aria-label="Workspace scope"
     >
-      <div className="flex min-w-0 flex-col gap-1">
-        <strong className="text-sm font-medium">{title}</strong>
-        <span className="text-muted-foreground text-sm">{summary}</span>
-      </div>
-
-      <Separator orientation="vertical" className="hidden md:block md:h-auto md:self-stretch" />
-
-      <ManagerPreviewHeaderToolbar
-        canAct={canAct}
-        canSelect={canSelect}
-        canSelectFiltered={canSelectFiltered}
-        search={search}
-        searchPlaceholder={searchPlaceholder}
-        onSearchChange={onSearchChange}
-        onClean={onClean}
-        onBackup={onBackup}
-        onCopyPaths={onCopyPaths}
-        onSelectAll={onSelectAll}
-        onDeselectAll={onDeselectAll}
-        onInvertSelection={onInvertSelection}
-        onSelectFiltered={onSelectFiltered}
-      />
+      <Button
+        type="button"
+        size="sm"
+        variant={scope === "current" && !specifiedWorkspace ? "secondary" : "ghost"}
+        aria-pressed={scope === "current" && !specifiedWorkspace}
+        onClick={() => onChange("current")}
+      >
+        Current workspace
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant={scope === "all" && !specifiedWorkspace ? "secondary" : "ghost"}
+        aria-pressed={scope === "all" && !specifiedWorkspace}
+        onClick={() => onChange("all")}
+      >
+        All workspaces
+      </Button>
     </div>
   );
 }
 
-function RowShell({
-  selected,
-  onToggle,
-  children,
+function ViewControl({
+  view,
+  onChange,
 }: {
-  selected: boolean;
-  onToggle: () => void;
-  children: ReactNode;
+  view: ManagerView;
+  onChange: (view: ManagerView) => void;
 }) {
   return (
-    <article
-      className={`relative cursor-pointer rounded-md border px-3 py-3${selected ? " bg-muted" : ""}`}
-      data-selected={selected ? "true" : "false"}
-      data-manager-row
-      aria-selected={selected}
-      onClick={onToggle}
+    <Tabs
+      value={view}
+      onValueChange={(value) => onChange(value as ManagerView)}
+      data-manager-view-tabs
     >
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">{children}</div>
-      {selected ? (
-        <CheckIcon className="text-muted-foreground pointer-events-none absolute right-3 bottom-3 size-4" aria-hidden />
+      <TabsList className="grid w-full grid-cols-2 sm:w-72">
+        <TabsTrigger value="sessions">Sessions</TabsTrigger>
+        <TabsTrigger value="workspaces">Workspaces</TabsTrigger>
+      </TabsList>
+    </Tabs>
+  );
+}
+
+function FilterToolbar({
+  view,
+  providers,
+  selectedProviders,
+  search,
+  sort,
+  visibleCount,
+  hasActiveFilters,
+  onToggleProvider,
+  onSelectAllProviders,
+  onSearchChange,
+  onSortChange,
+  onSelectVisible,
+  onClearFilters,
+}: {
+  view: ManagerView;
+  providers: ProviderInfo[];
+  selectedProviders: string[];
+  search: string;
+  sort: ManagerSort;
+  visibleCount: number;
+  hasActiveFilters: boolean;
+  onToggleProvider: (providerId: string) => void;
+  onSelectAllProviders: () => void;
+  onSearchChange: (value: string) => void;
+  onSortChange: (sort: ManagerSort) => void;
+  onSelectVisible: () => void;
+  onClearFilters: () => void;
+}) {
+  return (
+    <div
+      className="grid gap-2 border-b pb-3 sm:grid-cols-[minmax(14rem,1fr)_auto_auto] xl:grid-cols-[minmax(18rem,1fr)_auto_auto_auto_auto]"
+      data-manager-filter-toolbar
+    >
+      <div className="relative min-w-0 sm:col-span-3 xl:col-span-1">
+        <SearchIcon
+          className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+          aria-hidden="true"
+        />
+        <Input
+          value={search}
+          onChange={(event) => onSearchChange(event.target.value)}
+          placeholder={
+            view === "sessions"
+              ? "Search sessions, providers, or paths"
+              : "Search workspaces, providers, or paths"
+          }
+          className="pl-8"
+          data-manager-search
+        />
+      </div>
+
+      <ProviderFilter
+        providers={providers}
+        selected={selectedProviders}
+        onToggle={onToggleProvider}
+        onSelectAll={onSelectAllProviders}
+      />
+
+      <Select value={sort} onValueChange={(value) => onSortChange(value as ManagerSort)}>
+        <SelectTrigger className="min-w-36" data-manager-sort>
+          <SelectValue placeholder="Sort" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectItem value="recent">Recent</SelectItem>
+            <SelectItem value="size">Size</SelectItem>
+            {view === "workspaces" ? (
+              <SelectItem value="sessions">Session count</SelectItem>
+            ) : null}
+            <SelectItem value="title">{view === "sessions" ? "Title" : "Name"}</SelectItem>
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+
+      <Button
+        type="button"
+        variant="outline"
+        disabled={visibleCount === 0}
+        onClick={onSelectVisible}
+        data-manager-select-visible
+      >
+        <CheckIcon data-icon="inline-start" />
+        Select visible
+      </Button>
+
+      {hasActiveFilters ? (
+        <Button
+          type="button"
+          variant="ghost"
+          onClick={onClearFilters}
+          data-manager-clear-filters
+        >
+          <XIcon data-icon="inline-start" />
+          Clear filters
+        </Button>
       ) : null}
-    </article>
+    </div>
+  );
+}
+
+function RowActions({
+  href,
+  label,
+  onBackup,
+  onDelete,
+}: {
+  href: string;
+  label: string;
+  onBackup: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          aria-label={`More actions for ${label}`}
+          data-manager-row-more
+        >
+          <MoreHorizontalIcon />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem asChild>
+          <Link to={href}>Open</Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onBackup}>
+          <ArchiveIcon />
+          Back up
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+          <Trash2Icon />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -370,56 +433,72 @@ function SessionRows({
   items,
   selected,
   onToggle,
-  onCleanRow,
-  onBackupRow,
+  onBackup,
+  onDelete,
 }: {
   items: ManagerItem[];
   selected: Set<string>;
-  onToggle: (key: string) => void;
-  onCleanRow: (item: ManagerItem) => void;
-  onBackupRow: (item: ManagerItem) => void;
+  onToggle: (id: string) => void;
+  onBackup: (item: ManagerItem) => void;
+  onDelete: (item: ManagerItem) => void;
 }) {
-  if (!items.length) return <PageEmpty title="No sessions" description="No provider sessions matched the current manager filter." />;
+  if (!items.length) {
+    return (
+      <PageEmpty
+        title="No sessions matched"
+        description="Change the search or filters to see sessions in this scope."
+      />
+    );
+  }
 
   return (
-    <div className="flex flex-col gap-2" data-manager-session-preview>
+    <div className="flex flex-col gap-2" data-manager-session-list>
       {items.map((item) => {
-        const key = sessionKey(item);
+        const label = item.title || item.session_id;
         const href = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
+        const checked = selected.has(item.id);
+
         return (
-          <RowShell key={key} selected={selected.has(key)} onToggle={() => onToggle(key)}>
-            <div className="flex min-w-0 flex-col gap-2">
-              <Link to={href} className="truncate text-sm font-medium hover:underline" onClick={(event) => event.stopPropagation()}>
-                {item.title || item.session_id}
-              </Link>
-              <div className="text-muted-foreground flex flex-wrap gap-2 text-xs">
+          <article
+            key={item.id}
+            className="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)_2.5rem] items-stretch rounded-lg border bg-card transition-colors hover:border-foreground/20 data-[selected=true]:bg-muted/40"
+            data-manager-row
+            data-selected={checked ? "true" : "false"}
+          >
+            <div className="grid place-items-center border-r">
+              <Checkbox
+                checked={checked}
+                onCheckedChange={() => onToggle(item.id)}
+                aria-label={`Select ${label}`}
+              />
+            </div>
+
+            <Link
+              to={href}
+              className="flex min-w-0 flex-col gap-2 px-3 py-3 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              data-manager-row-link
+            >
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <strong className="min-w-0 truncate text-sm font-medium">{label}</strong>
                 <Badge variant="outline">{item.provider_name || item.provider_id}</Badge>
+              </div>
+              <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>{formatBytes(item.size_bytes)}</span>
                 <span>Updated {formatDateTime(item.last_active_at)}</span>
+                <span className="truncate font-mono">{item.session_id}</span>
               </div>
               <PathText value={item.project_dir || item.source_path} wrap="all" />
+            </Link>
+
+            <div className="grid place-items-center border-l" data-manager-row-actions>
+              <RowActions
+                href={href}
+                label={label}
+                onBackup={() => onBackup(item)}
+                onDelete={() => onDelete(item)}
+              />
             </div>
-            <div
-              className="flex flex-wrap justify-start gap-2 md:justify-end"
-              data-manager-row-actions
-              onClick={(event) => event.stopPropagation()}
-            >
-              <Button asChild variant="outline">
-                <Link to={href}>
-                  View
-                  <ArrowRightIcon data-icon="inline-end" />
-                </Link>
-              </Button>
-              <Button type="button" variant="outline" onClick={() => onCleanRow(item)}>
-                <Trash2Icon data-icon="inline-start" />
-                Remove
-              </Button>
-              <Button type="button" variant="outline" onClick={() => onBackupRow(item)}>
-                <MoreHorizontalIcon data-icon="inline-start" />
-                More
-              </Button>
-            </div>
-          </RowShell>
+          </article>
         );
       })}
     </div>
@@ -430,218 +509,124 @@ function WorkspaceRows({
   items,
   selected,
   onToggle,
-  onCleanRow,
-  onBackupRow,
+  onBackup,
+  onDelete,
 }: {
   items: ManagerWorkspaceItem[];
   selected: Set<string>;
-  onToggle: (key: string) => void;
-  onCleanRow: (item: ManagerWorkspaceItem) => void;
-  onBackupRow: (item: ManagerWorkspaceItem) => void;
+  onToggle: (identity: string) => void;
+  onBackup: (item: ManagerWorkspaceItem) => void;
+  onDelete: (item: ManagerWorkspaceItem) => void;
 }) {
-  if (!items.length) return <PageEmpty title="No workspaces" description="No workspace groups matched the current manager filter." />;
+  if (!items.length) {
+    return (
+      <PageEmpty
+        title="No workspaces matched"
+        description="Change the search or filters to see workspaces in this scope."
+      />
+    );
+  }
 
   return (
-    <div className="flex flex-col gap-2" data-manager-workspace-preview>
+    <div className="flex flex-col gap-2" data-manager-workspace-list>
       {items.map((item) => {
-        const key = workspaceKey(item);
-        const href = `/manager?view=sessions&providers=${encodeURIComponent(item.provider_id)}&workspace=${encodeURIComponent(item.workspace)}`;
+        const identity = workspaceIdentity(item);
+        const label = workspaceName(item.workspace);
+        const params = new URLSearchParams({
+          view: "sessions",
+          workspace: item.workspace,
+          providers: item.provider_id,
+        });
+        const href = `/manager?${params.toString()}`;
+        const checked = selected.has(identity);
+
         return (
-          <RowShell key={key} selected={selected.has(key)} onToggle={() => onToggle(key)}>
-            <div className="flex min-w-0 flex-col gap-2">
-              <Link to={href} className="truncate text-sm font-medium hover:underline" onClick={(event) => event.stopPropagation()}>
-                {workspaceName(item.workspace)}
-              </Link>
-              <div className="text-muted-foreground flex flex-wrap gap-2 text-xs">
+          <article
+            key={identity}
+            className="grid min-w-0 grid-cols-[2.5rem_minmax(0,1fr)_2.5rem] items-stretch rounded-lg border bg-card transition-colors hover:border-foreground/20 data-[selected=true]:bg-muted/40"
+            data-manager-row
+            data-selected={checked ? "true" : "false"}
+          >
+            <div className="grid place-items-center border-r">
+              <Checkbox
+                checked={checked}
+                onCheckedChange={() => onToggle(identity)}
+                aria-label={`Select ${label}`}
+              />
+            </div>
+
+            <Link
+              to={href}
+              className="flex min-w-0 flex-col gap-2 px-3 py-3 outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+              data-manager-row-link
+            >
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <strong className="min-w-0 truncate text-sm font-medium">{label}</strong>
                 <Badge variant="outline">{item.provider_name || item.provider_id}</Badge>
+              </div>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 <span>{item.session_count} sessions</span>
                 <span>{formatBytes(item.total_size_bytes)}</span>
                 <span>Updated {formatDateTime(item.last_active_at)}</span>
               </div>
-              <span className="text-muted-foreground break-words font-mono text-xs">{item.workspace}</span>
+              <span className="break-all font-mono text-xs text-muted-foreground">
+                {item.workspace}
+              </span>
+            </Link>
+
+            <div className="grid place-items-center border-l" data-manager-row-actions>
+              <RowActions
+                href={href}
+                label={label}
+                onBackup={() => onBackup(item)}
+                onDelete={() => onDelete(item)}
+              />
             </div>
-            <div
-              className="flex flex-wrap justify-start gap-2 md:justify-end"
-              data-manager-row-actions
-              onClick={(event) => event.stopPropagation()}
-            >
-              <Button asChild variant="outline">
-                <Link to={href}>
-                  View
-                  <ArrowRightIcon data-icon="inline-end" />
-                </Link>
-              </Button>
-              <Button type="button" variant="outline" onClick={() => onCleanRow(item)}>
-                <Trash2Icon data-icon="inline-start" />
-                Remove
-              </Button>
-              <Button type="button" variant="outline" onClick={() => onBackupRow(item)}>
-                <MoreHorizontalIcon data-icon="inline-start" />
-                More
-              </Button>
-            </div>
-          </RowShell>
+          </article>
         );
       })}
     </div>
   );
 }
 
-function ResultPanel({
-  view,
-  setView,
-  stats,
-  statsLoading,
-  providerCount,
-  requestEnabled,
-  sessions,
-  workspaces,
-  search,
-  onSearchChange,
-  selectedSessions,
-  selectedWorkspaces,
-  selectedSessionBytes,
-  selectedWorkspaceBytes,
-  onToggleSession,
-  onToggleWorkspace,
-  onSelectAllSessions,
-  onDeselectAllSessions,
-  onInvertSessions,
-  onSelectFilteredSessions,
-  onSelectAllWorkspaces,
-  onDeselectAllWorkspaces,
-  onInvertWorkspaces,
-  onSelectFilteredWorkspaces,
-  onCopySessionPaths,
-  onCopyWorkspacePaths,
-  onOpenAction,
+function SelectionBar({
+  count,
+  visibleCount,
+  bytes,
+  onClear,
+  onBackup,
+  onDelete,
 }: {
-  view: ManagerView;
-  setView: (view: ManagerView) => void;
-  stats: ReturnType<typeof useManagerStats>;
-  statsLoading: boolean;
-  providerCount: number;
-  requestEnabled: boolean;
-  sessions: ReturnType<typeof useManagerPreview>;
-  workspaces: ReturnType<typeof useManagerWorkspaces>;
-  search: string;
-  onSearchChange: (value: string) => void;
-  selectedSessions: Set<string>;
-  selectedWorkspaces: Set<string>;
-  selectedSessionBytes: number;
-  selectedWorkspaceBytes: number;
-  onToggleSession: (key: string) => void;
-  onToggleWorkspace: (key: string) => void;
-  onSelectAllSessions: () => void;
-  onDeselectAllSessions: () => void;
-  onInvertSessions: () => void;
-  onSelectFilteredSessions: () => void;
-  onSelectAllWorkspaces: () => void;
-  onDeselectAllWorkspaces: () => void;
-  onInvertWorkspaces: () => void;
-  onSelectFilteredWorkspaces: () => void;
-  onCopySessionPaths: () => void;
-  onCopyWorkspacePaths: () => void;
-  onOpenAction: (target: ManagerActionTarget) => void;
+  count: number;
+  visibleCount: number;
+  bytes: number;
+  onClear: () => void;
+  onBackup: () => void;
+  onDelete: () => void;
 }) {
-  const sessionRows = sessions.data?.items ?? [];
-  const workspaceRows = workspaces.data?.items ?? [];
-  const filteredSessionRows = sessionRows.filter((item) => matchesSessionSearch(item, search));
-  const filteredWorkspaceRows = workspaceRows.filter((item) => matchesWorkspaceSearch(item, search));
-  const searchActive = search.trim().length > 0;
-
   return (
-    <PanelCard variant="plain" className="flex h-full min-h-0 flex-col gap-4 overflow-hidden" data-manager-result-panel>
-        {view === "sessions" ? (
-          <PreviewHeader
-            title="Manager Preview"
-            summary={selectionSummary(
-              sessions.data?.total_count,
-              filteredSessionRows.length,
-              selectedSessions.size,
-              selectedSessionBytes,
-              searchActive,
-            )}
-            search={search}
-            searchPlaceholder="Search title, id, provider, or path"
-            canSelect={sessionRows.length > 0}
-            canSelectFiltered={searchActive && filteredSessionRows.length > 0}
-            canAct={selectedSessions.size > 0}
-            onSearchChange={onSearchChange}
-            onClean={() => onOpenAction({ kind: "clean-sessions", items: sessionRows.filter((item) => selectedSessions.has(sessionKey(item))) })}
-            onBackup={() => onOpenAction({ kind: "backup-sessions", items: sessionRows.filter((item) => selectedSessions.has(sessionKey(item))) })}
-            onCopyPaths={onCopySessionPaths}
-            onSelectAll={onSelectAllSessions}
-            onDeselectAll={onDeselectAllSessions}
-            onInvertSelection={onInvertSessions}
-            onSelectFiltered={onSelectFilteredSessions}
-          />
-        ) : (
-          <PreviewHeader
-            title="Workspace Preview"
-            summary={selectionSummary(
-              workspaces.data?.total_count,
-              filteredWorkspaceRows.length,
-              selectedWorkspaces.size,
-              selectedWorkspaceBytes,
-              searchActive,
-            )}
-            search={search}
-            searchPlaceholder="Search workspace, provider, or path"
-            canSelect={workspaceRows.length > 0}
-            canSelectFiltered={searchActive && filteredWorkspaceRows.length > 0}
-            canAct={selectedWorkspaces.size > 0}
-            onSearchChange={onSearchChange}
-            onClean={() =>
-              onOpenAction({ kind: "clean-workspaces", items: workspaceRows.filter((item) => selectedWorkspaces.has(workspaceKey(item))) })
-            }
-            onBackup={() =>
-              onOpenAction({ kind: "backup-workspaces", items: workspaceRows.filter((item) => selectedWorkspaces.has(workspaceKey(item))) })
-            }
-            onCopyPaths={onCopyWorkspacePaths}
-            onSelectAll={onSelectAllWorkspaces}
-            onDeselectAll={onDeselectAllWorkspaces}
-            onInvertSelection={onInvertWorkspaces}
-            onSelectFiltered={onSelectFilteredWorkspaces}
-          />
-        )}
-        <Separator />
-        <StatsStrip view={view} onViewChange={setView} stats={stats.data} providerCount={providerCount} loading={statsLoading} />
-        {!requestEnabled ? (
-          <PageEmpty
-            title="No current workspace"
-            description="Choose a workspace from the app switcher or change the manager scope to All."
-          />
-        ) : view === "sessions" ? (
-          <ScrollPane className="flex-1" data-manager-session-list>
-            {sessions.isLoading ? (
-              <PageSkeleton />
-            ) : (
-              <SessionRows
-                items={filteredSessionRows}
-                selected={selectedSessions}
-                onToggle={onToggleSession}
-                onCleanRow={(item) => onOpenAction({ kind: "clean-sessions", items: [item] })}
-                onBackupRow={(item) => onOpenAction({ kind: "backup-sessions", items: [item] })}
-              />
-            )}
-          </ScrollPane>
-        ) : (
-          <ScrollPane className="flex-1" data-manager-workspace-list>
-            {workspaces.isLoading ? (
-              <PageSkeleton />
-            ) : (
-              <WorkspaceRows
-                items={filteredWorkspaceRows}
-                selected={selectedWorkspaces}
-                onToggle={onToggleWorkspace}
-                onCleanRow={(item) => onOpenAction({ kind: "clean-workspaces", items: [item] })}
-                onBackupRow={(item) => onOpenAction({ kind: "backup-workspaces", items: [item] })}
-              />
-            )}
-          </ScrollPane>
-        )}
-    </PanelCard>
+    <div
+      className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/60 px-3 py-2"
+      data-manager-selection-bar
+    >
+      <div className="mr-auto min-w-0">
+        <strong className="text-sm">{count} selected</strong>
+        <span className="ml-2 text-xs text-muted-foreground">
+          {visibleCount} visible · {formatBytes(bytes)}
+        </span>
+      </div>
+      <Button type="button" variant="ghost" onClick={onClear}>
+        Clear
+      </Button>
+      <Button type="button" variant="outline" onClick={onBackup}>
+        <ArchiveIcon data-icon="inline-start" />
+        Back up
+      </Button>
+      <Button type="button" variant="destructive" onClick={onDelete}>
+        <Trash2Icon data-icon="inline-start" />
+        Delete
+      </Button>
+    </div>
   );
 }
 
@@ -656,15 +641,27 @@ export function ManagerPage() {
   const queryClient = useQueryClient();
   const meta = useManagerMeta();
   const providers = useManagerProviders();
+  const providerOptions = useMemo(
+    () => (providers.data ?? []).filter((provider) => provider.scan),
+    [providers.data],
+  );
+  const availableProviderIds = useMemo(
+    () => new Set(providerOptions.map((provider) => provider.id)),
+    [providerOptions],
+  );
+  const selectedProviders = useMemo(
+    () =>
+      providers.data
+        ? route.providers.filter((providerId) => availableProviderIds.has(providerId))
+        : route.providers,
+    [availableProviderIds, providers.data, route.providers],
+  );
   const currentWorkspace = selectedWorkspaceOverride || meta.data?.selected_workspace || null;
   const request = useMemo(
-    () => resolveManagerRequest(route, currentWorkspace),
-    [currentWorkspace, route],
+    () => resolveManagerRequest({ ...route, providers: selectedProviders }, currentWorkspace),
+    [currentWorkspace, route, selectedProviders],
   );
   const filter: ManagerFilter = request.filter;
-  const view = route.view;
-  const search = route.search;
-  const selectedProviders = route.providers;
   const stats = useManagerStats(filter, { enabled: request.enabled });
   const sessions = useManagerPreview(filter, {
     enabled: request.enabled && route.view === "sessions",
@@ -673,21 +670,43 @@ export function ManagerPage() {
     enabled: request.enabled && route.view === "workspaces",
   });
 
+  useEffect(() => {
+    if (!providers.data) return;
+    const canonicalProviders = selectedProviders.join(",");
+    if ((searchParams.get("providers") ?? "") === canonicalProviders) return;
+
+    const next = new URLSearchParams(searchParams);
+    if (canonicalProviders) next.set("providers", canonicalProviders);
+    else next.delete("providers");
+    setSearchParams(next, { replace: true });
+  }, [providers.data, searchParams, selectedProviders, setSearchParams]);
+
   const managerAction = useMutation({
     mutationFn: async (target: ManagerActionTarget): Promise<ManagerActionReport> => {
       const outputDir = meta.data?.settings.default_backup_dir || "./backups";
 
-      if (target.kind === "clean-sessions") {
+      if (target.kind === "delete-sessions") {
         const result = await cleanManagerItems({ items: target.items });
-        return { title: "Clean Selected", summary: cleanSummary(result), lines: result.errors || [] };
+        return {
+          title: "Delete sessions",
+          summary: cleanSummary(result),
+          lines: result.errors || [],
+        };
       }
 
       if (target.kind === "backup-sessions") {
-        const result = await backupManagerItems({ items: target.items, output_dir: outputDir });
-        return { title: "Backup Selected", summary: backupSummary(result), lines: [...(result.files || []), ...(result.errors || [])] };
+        const result = await backupManagerItems({
+          items: target.items,
+          output_dir: outputDir,
+        });
+        return {
+          title: "Back up sessions",
+          summary: backupSummary(result),
+          lines: [...(result.files || []), ...(result.errors || [])],
+        };
       }
 
-      if (target.kind === "clean-workspaces") {
+      if (target.kind === "delete-workspaces") {
         let success = 0;
         let failed = 0;
         let freed = 0;
@@ -695,17 +714,27 @@ export function ManagerPage() {
         const errors: string[] = [];
 
         for (const item of target.items) {
-          const result = await cleanManagerWorkspace({ provider_id: item.provider_id, workspace: item.workspace });
+          const result = await cleanManagerWorkspace({
+            provider_id: item.provider_id,
+            workspace: item.workspace,
+          });
           success += result.success;
           failed += result.failed;
           freed += result.freed_bytes;
-          lines.push(`${item.provider_id} / ${workspaceName(item.workspace)}: ${result.success}/${result.failed}`);
+          lines.push(
+            `${item.provider_id} / ${workspaceName(item.workspace)}: ${result.success} deleted, ${result.failed} failed`,
+          );
           errors.push(...(result.errors || []));
         }
 
         return {
-          title: "Clean Workspace Selected",
-          summary: cleanSummary({ success, failed, freed_bytes: freed, errors }),
+          title: "Delete workspace sessions",
+          summary: cleanSummary({
+            success,
+            failed,
+            freed_bytes: freed,
+            errors,
+          }),
           lines: [...lines, ...errors],
         };
       }
@@ -717,16 +746,22 @@ export function ManagerPage() {
       const errors: string[] = [];
 
       for (const item of target.items) {
-        const result = await backupManagerWorkspace({ provider_id: item.provider_id, workspace: item.workspace, output_dir: outputDir });
+        const result = await backupManagerWorkspace({
+          provider_id: item.provider_id,
+          workspace: item.workspace,
+          output_dir: outputDir,
+        });
         success += result.success;
         failed += result.failed;
-        lines.push(`${item.provider_id} / ${workspaceName(item.workspace)}: ${result.success}/${result.failed}`);
+        lines.push(
+          `${item.provider_id} / ${workspaceName(item.workspace)}: ${result.success} backed up, ${result.failed} failed`,
+        );
         files.push(...(result.files || []));
         errors.push(...(result.errors || []));
       }
 
       return {
-        title: "Backup Workspace Selected",
+        title: "Back up workspaces",
         summary: backupSummary({ success, failed, files, errors }),
         lines: [...lines, ...files, ...errors],
       };
@@ -744,172 +779,200 @@ export function ManagerPage() {
       ]);
     },
     onError: (error) => {
-      toast.error("Manager action failed", { description: error instanceof Error ? error.message : String(error) });
+      toast.error("Manager action failed", {
+        description: error instanceof Error ? error.message : String(error),
+      });
     },
   });
 
   if (providers.isLoading || meta.isLoading) return <PageSkeleton />;
-  if (providers.error) return <PageError title="Manager providers failed to load" message={providers.error.message} />;
-  if (meta.error) return <PageError title="Manager workspace failed to load" message={meta.error.message} />;
-  if (stats.error) return <PageError title="Manager stats failed to load" message={stats.error.message} />;
-  if (sessions.error) return <PageError title="Manager sessions failed to load" message={sessions.error.message} />;
-  if (workspaces.error) return <PageError title="Manager workspaces failed to load" message={workspaces.error.message} />;
+  if (providers.error) {
+    return (
+      <PageError
+        title="Manager providers failed to load"
+        message={providers.error.message}
+      />
+    );
+  }
+  if (meta.error) {
+    return (
+      <PageError
+        title="Manager workspace failed to load"
+        message={meta.error.message}
+      />
+    );
+  }
+  if (stats.error) {
+    return (
+      <PageError title="Manager stats failed to load" message={stats.error.message} />
+    );
+  }
+  if (sessions.error) {
+    return (
+      <PageError
+        title="Manager sessions failed to load"
+        message={sessions.error.message}
+      />
+    );
+  }
+  if (workspaces.error) {
+    return (
+      <PageError
+        title="Manager workspaces failed to load"
+        message={workspaces.error.message}
+      />
+    );
+  }
 
-  const options = providerOptions(providers.data);
   const sessionRows = sessions.data?.items ?? [];
   const workspaceRows = workspaces.data?.items ?? [];
-  const selectedSessionBytes = sessionRows
-    .filter((item) => selectedSessions.has(sessionKey(item)))
-    .reduce((sum, item) => sum + item.size_bytes, 0);
-  const selectedWorkspaceBytes = workspaceRows
-    .filter((item) => selectedWorkspaces.has(workspaceKey(item)))
-    .reduce((sum, item) => sum + item.total_size_bytes, 0);
-  const providerCount = stats.data?.selected_agent_count ?? (selectedProviders.length || options.length);
+  const visibleSessions = sessionRows.filter((item) =>
+    matchesSessionSearch(item, route.search),
+  );
+  const visibleWorkspaces = workspaceRows.filter((item) =>
+    matchesWorkspaceSearch(item, route.search),
+  );
+  const selectedSessionItems = sessionRows.filter((item) =>
+    selectedSessions.has(item.id),
+  );
+  const selectedWorkspaceItems = workspaceRows.filter((item) =>
+    selectedWorkspaces.has(workspaceIdentity(item)),
+  );
+  const selectedSessionBytes = selectedSessionItems.reduce(
+    (sum, item) => sum + item.size_bytes,
+    0,
+  );
+  const selectedWorkspaceBytes = selectedWorkspaceItems.reduce(
+    (sum, item) => sum + item.total_size_bytes,
+    0,
+  );
+  const visibleSelectedSessions = visibleSessions.filter((item) =>
+    selectedSessions.has(item.id),
+  ).length;
+  const visibleSelectedWorkspaces = visibleWorkspaces.filter((item) =>
+    selectedWorkspaces.has(workspaceIdentity(item)),
+  ).length;
+  const visibleRows = route.view === "sessions" ? visibleSessions : visibleWorkspaces;
+  const totalCount =
+    route.view === "sessions"
+      ? sessions.data?.total_count
+      : workspaces.data?.total_count;
+  const totalSize =
+    route.view === "sessions"
+      ? sessions.data?.total_size_bytes
+      : workspaces.data?.total_size_bytes;
+  const selectedCount =
+    route.view === "sessions"
+      ? selectedSessionItems.length
+      : selectedWorkspaceItems.length;
+  const specifiedWorkspace = Boolean(route.workspace);
+  const scopeTitle = specifiedWorkspace
+    ? workspaceName(request.workspace || "")
+    : route.scope === "all"
+      ? "All workspaces"
+      : "Current workspace";
+  const scopeDescription = request.workspace
+    ? request.workspace
+    : route.scope === "all"
+      ? "Sessions across every indexed workspace."
+      : "No current workspace is selected.";
+  const hasActiveFilters =
+    selectedProviders.length > 0 || Boolean(route.search.trim()) || route.sort !== "recent";
 
-  function changeScope(scope: ManagerScope) {
+  function replaceRoute(update: (next: URLSearchParams) => void, replace = false) {
     const next = new URLSearchParams(searchParams);
-    next.delete("workspace");
-    if (scope === "all") next.set("scope", "all");
-    else next.delete("scope");
-    setSearchParams(next);
+    update(next);
+    setSearchParams(next, { replace });
+  }
+
+  function clearSelection() {
     setSelectedSessions(new Set());
     setSelectedWorkspaces(new Set());
   }
 
-  function changeView(nextView: ManagerView) {
-    const next = new URLSearchParams(searchParams);
-    if (nextView === "workspaces") next.set("view", "workspaces");
-    else next.delete("view");
-    setSearchParams(next);
-    setSelectedSessions(new Set());
-    setSelectedWorkspaces(new Set());
+  function changeScope(scope: ManagerScope) {
+    replaceRoute((next) => {
+      next.delete("workspace");
+      if (scope === "all") next.set("scope", "all");
+      else next.delete("scope");
+    });
+    clearSelection();
+  }
+
+  function changeView(view: ManagerView) {
+    replaceRoute((next) => {
+      if (view === "workspaces") next.set("view", "workspaces");
+      else next.delete("view");
+      if (view === "sessions" && route.sort === "sessions") next.delete("sort");
+    });
+    clearSelection();
   }
 
   function changeSearch(value: string) {
-    const next = new URLSearchParams(searchParams);
-    if (value) next.set("q", value);
-    else next.delete("q");
-    setSearchParams(next, { replace: true });
+    replaceRoute((next) => {
+      if (value) next.set("q", value);
+      else next.delete("q");
+    }, true);
+  }
+
+  function changeSort(sort: ManagerSort) {
+    replaceRoute((next) => {
+      if (sort === "recent") next.delete("sort");
+      else next.set("sort", sort);
+    });
+    clearSelection();
+  }
+
+  function setProviders(nextProviders: string[]) {
+    replaceRoute((next) => {
+      if (nextProviders.length) next.set("providers", nextProviders.join(","));
+      else next.delete("providers");
+    });
+    clearSelection();
   }
 
   function toggleProvider(providerId: string) {
-    const nextProviders = selectedProviders.includes(providerId)
-      ? selectedProviders.filter((id) => id !== providerId)
-      : [...selectedProviders, providerId];
-    const next = new URLSearchParams(searchParams);
-    next.delete("provider");
-    if (nextProviders.length) next.set("providers", nextProviders.join(","));
-    else next.delete("providers");
-    setSearchParams(next);
-    setSelectedSessions(new Set());
-    setSelectedWorkspaces(new Set());
-  }
-
-  function toggleSession(key: string) {
-    setSelectedSessions((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
-  function toggleWorkspace(key: string) {
-    setSelectedWorkspaces((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
-  function selectAllSessions() {
-    setSelectedSessions(new Set(sessionRows.map(sessionKey)));
-  }
-
-  function deselectAllSessions() {
-    setSelectedSessions(new Set());
-  }
-
-  function invertSessions() {
-    setSelectedSessions((current) => {
-      const next = new Set(current);
-      for (const item of sessionRows) {
-        const key = sessionKey(item);
-        if (next.has(key)) next.delete(key);
-        else next.add(key);
-      }
-      return next;
-    });
-  }
-
-  function selectFilteredSessions() {
-    setSelectedSessions(
-      new Set(sessionRows.filter((item) => matchesSessionSearch(item, search)).map(sessionKey)),
+    setProviders(
+      selectedProviders.includes(providerId)
+        ? selectedProviders.filter((id) => id !== providerId)
+        : [...selectedProviders, providerId],
     );
   }
 
-  function selectAllWorkspaces() {
-    setSelectedWorkspaces(new Set(workspaceRows.map(workspaceKey)));
+  function clearFilters() {
+    replaceRoute((next) => {
+      next.delete("providers");
+      next.delete("q");
+      next.delete("sort");
+    });
+    clearSelection();
   }
 
-  function deselectAllWorkspaces() {
-    setSelectedWorkspaces(new Set());
-  }
-
-  function invertWorkspaces() {
-    setSelectedWorkspaces((current) => {
+  function toggleSession(id: string) {
+    setSelectedSessions((current) => {
       const next = new Set(current);
-      for (const item of workspaceRows) {
-        const key = workspaceKey(item);
-        if (next.has(key)) next.delete(key);
-        else next.add(key);
-      }
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
   }
 
-  function selectFilteredWorkspaces() {
-    setSelectedWorkspaces(
-      new Set(workspaceRows.filter((item) => matchesWorkspaceSearch(item, search)).map(workspaceKey)),
-    );
+  function toggleWorkspace(identity: string) {
+    setSelectedWorkspaces((current) => {
+      const next = new Set(current);
+      if (next.has(identity)) next.delete(identity);
+      else next.add(identity);
+      return next;
+    });
   }
 
-  async function copySessionPaths() {
-    const paths = sessionRows
-      .filter((item) => selectedSessions.has(sessionKey(item)))
-      .map((item) => item.project_dir || item.source_path)
-      .filter(Boolean);
-
-    if (!paths.length) {
-      toast.error("No paths to copy");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(paths.join("\n"));
-      toast.success(`Copied ${paths.length} path${paths.length === 1 ? "" : "s"}`);
-    } catch (error) {
-      toast.error("Copy failed", { description: error instanceof Error ? error.message : String(error) });
-    }
-  }
-
-  async function copyWorkspacePaths() {
-    const paths = workspaceRows
-      .filter((item) => selectedWorkspaces.has(workspaceKey(item)))
-      .map((item) => item.workspace)
-      .filter(Boolean);
-
-    if (!paths.length) {
-      toast.error("No paths to copy");
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(paths.join("\n"));
-      toast.success(`Copied ${paths.length} path${paths.length === 1 ? "" : "s"}`);
-    } catch (error) {
-      toast.error("Copy failed", { description: error instanceof Error ? error.message : String(error) });
+  function selectVisible() {
+    if (route.view === "sessions") {
+      setSelectedSessions(new Set(visibleSessions.map((item) => item.id)));
+    } else {
+      setSelectedWorkspaces(
+        new Set(visibleWorkspaces.map((item) => workspaceIdentity(item))),
+      );
     }
   }
 
@@ -926,69 +989,201 @@ export function ManagerPage() {
 
   return (
     <>
-      <TwoPanePage className="h-full min-h-0 flex-1" data-manager-page-layout>
-        <ControlPanel
-          workspace={request.workspace}
-          scope={route.scope}
-          specifiedWorkspace={Boolean(route.workspace)}
-          providers={options}
-          selectedProviders={selectedProviders}
-          onScopeChange={changeScope}
-          onToggleProvider={toggleProvider}
-        />
-        <ResultPanel
-          view={view}
-          setView={changeView}
-          stats={stats}
-          statsLoading={stats.isLoading}
-          providerCount={providerCount}
-          requestEnabled={request.enabled}
-          sessions={sessions}
-          workspaces={workspaces}
-          search={search}
-          onSearchChange={changeSearch}
-          selectedSessions={selectedSessions}
-          selectedWorkspaces={selectedWorkspaces}
-          selectedSessionBytes={selectedSessionBytes}
-          selectedWorkspaceBytes={selectedWorkspaceBytes}
-          onToggleSession={toggleSession}
-          onToggleWorkspace={toggleWorkspace}
-          onSelectAllSessions={selectAllSessions}
-          onDeselectAllSessions={deselectAllSessions}
-          onInvertSessions={invertSessions}
-          onSelectFilteredSessions={selectFilteredSessions}
-          onSelectAllWorkspaces={selectAllWorkspaces}
-          onDeselectAllWorkspaces={deselectAllWorkspaces}
-          onInvertWorkspaces={invertWorkspaces}
-          onSelectFilteredWorkspaces={selectFilteredWorkspaces}
-          onCopySessionPaths={copySessionPaths}
-          onCopyWorkspacePaths={copyWorkspacePaths}
-          onOpenAction={openAction}
-        />
-      </TwoPanePage>
+      <div
+        className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden"
+        data-manager-page-layout
+      >
+        <section
+          className="flex shrink-0 flex-col gap-3 rounded-lg border bg-card p-4"
+          data-manager-page-context
+        >
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-lg font-semibold tracking-tight">Session manager</h1>
+                <Badge variant={specifiedWorkspace ? "secondary" : "outline"}>
+                  {specifiedWorkspace
+                    ? "Specified workspace"
+                    : route.scope === "all"
+                      ? "All workspaces"
+                      : "Current workspace"}
+                </Badge>
+              </div>
+              <strong className="mt-2 block truncate text-sm">{scopeTitle}</strong>
+              <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                {scopeDescription}
+              </p>
+            </div>
+            <ScopeControl
+              scope={route.scope}
+              specifiedWorkspace={specifiedWorkspace}
+              onChange={changeScope}
+            />
+          </div>
 
-      <Dialog open={Boolean(actionTarget)} onOpenChange={(open) => !open && setActionTarget(null)}>
-        <DialogContent data-manager-action-dialog data-manager-clean-dialog={isCleanAction(actionTarget) ? "true" : undefined} data-manager-backup-dialog={isBackupAction(actionTarget) ? "true" : undefined}>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+            <ViewControl view={route.view} onChange={changeView} />
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              {stats.isLoading ? (
+                <Skeleton className="h-4 w-40" />
+              ) : (
+                <>
+                  <span>{stats.data?.selected_agent_count ?? 0} providers</span>
+                  <span>{totalCount ?? 0} total</span>
+                  <span>{formatBytes(totalSize ?? 0)}</span>
+                </>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section
+          className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden rounded-lg border bg-card p-4"
+          data-manager-result-panel
+        >
+          <FilterToolbar
+            view={route.view}
+            providers={providerOptions}
+            selectedProviders={selectedProviders}
+            search={route.search}
+            sort={route.sort}
+            visibleCount={visibleRows.length}
+            hasActiveFilters={hasActiveFilters}
+            onToggleProvider={toggleProvider}
+            onSelectAllProviders={() => setProviders([])}
+            onSearchChange={changeSearch}
+            onSortChange={changeSort}
+            onSelectVisible={selectVisible}
+            onClearFilters={clearFilters}
+          />
+
+          {selectedCount > 0 ? (
+            route.view === "sessions" ? (
+              <SelectionBar
+                count={selectedSessionItems.length}
+                visibleCount={visibleSelectedSessions}
+                bytes={selectedSessionBytes}
+                onClear={() => setSelectedSessions(new Set())}
+                onBackup={() =>
+                  openAction({ kind: "backup-sessions", items: selectedSessionItems })
+                }
+                onDelete={() =>
+                  openAction({ kind: "delete-sessions", items: selectedSessionItems })
+                }
+              />
+            ) : (
+              <SelectionBar
+                count={selectedWorkspaceItems.length}
+                visibleCount={visibleSelectedWorkspaces}
+                bytes={selectedWorkspaceBytes}
+                onClear={() => setSelectedWorkspaces(new Set())}
+                onBackup={() =>
+                  openAction({
+                    kind: "backup-workspaces",
+                    items: selectedWorkspaceItems,
+                  })
+                }
+                onDelete={() =>
+                  openAction({
+                    kind: "delete-workspaces",
+                    items: selectedWorkspaceItems,
+                  })
+                }
+              />
+            )
+          ) : null}
+
+          <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span>
+              {visibleRows.length} shown / {totalCount ?? 0} total
+            </span>
+            <span>
+              Sorted by {route.sort === "sessions" ? "session count" : route.sort}
+            </span>
+          </div>
+
+          {!request.enabled ? (
+            <PageEmpty
+              title="No current workspace"
+              description="Choose a workspace from the app switcher or change the scope to All workspaces."
+            />
+          ) : route.view === "sessions" ? (
+            <ScrollPane className="min-h-0 flex-1">
+              {sessions.isLoading ? (
+                <PageSkeleton />
+              ) : (
+                <SessionRows
+                  items={visibleSessions}
+                  selected={selectedSessions}
+                  onToggle={toggleSession}
+                  onBackup={(item) =>
+                    openAction({ kind: "backup-sessions", items: [item] })
+                  }
+                  onDelete={(item) =>
+                    openAction({ kind: "delete-sessions", items: [item] })
+                  }
+                />
+              )}
+            </ScrollPane>
+          ) : (
+            <ScrollPane className="min-h-0 flex-1">
+              {workspaces.isLoading ? (
+                <PageSkeleton />
+              ) : (
+                <WorkspaceRows
+                  items={visibleWorkspaces}
+                  selected={selectedWorkspaces}
+                  onToggle={toggleWorkspace}
+                  onBackup={(item) =>
+                    openAction({ kind: "backup-workspaces", items: [item] })
+                  }
+                  onDelete={(item) =>
+                    openAction({ kind: "delete-workspaces", items: [item] })
+                  }
+                />
+              )}
+            </ScrollPane>
+          )}
+        </section>
+      </div>
+
+      <Dialog
+        open={Boolean(actionTarget)}
+        onOpenChange={(open) => !open && setActionTarget(null)}
+      >
+        <DialogContent
+          data-manager-action-dialog
+          data-manager-delete-dialog={isDeleteAction(actionTarget) ? "true" : undefined}
+          data-manager-backup-dialog={isBackupAction(actionTarget) ? "true" : undefined}
+        >
           <DialogHeader>
             <DialogTitle>{actionTitle(actionTarget)}</DialogTitle>
             <DialogDescription>
-              {isCleanAction(actionTarget)
-                ? "Confirm removal of the selected manager targets."
-                : "Confirm backup of the selected manager targets."}
+              {isDeleteAction(actionTarget)
+                ? "Confirm deletion of the selected sessions."
+                : "Confirm backup of the selected sessions."}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2 rounded-md border p-3 font-mono text-xs">
-            {pendingStats.workspaces > 0 ? <span>Workspaces: {pendingStats.workspaces}</span> : null}
+            {pendingStats.workspaces > 0 ? (
+              <span>Workspaces: {pendingStats.workspaces}</span>
+            ) : null}
             <span>Sessions: {pendingStats.sessions}</span>
-            {isBackupAction(actionTarget) ? <span>Backup Dir: {backupDir}</span> : null}
+            <span>Estimated size: {formatBytes(pendingStats.bytes)}</span>
+            {isBackupAction(actionTarget) ? <span>Backup dir: {backupDir}</span> : null}
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setActionTarget(null)} disabled={managerAction.isPending}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setActionTarget(null)}
+              disabled={managerAction.isPending}
+            >
               Cancel
             </Button>
             <Button
               type="button"
-              variant={isCleanAction(actionTarget) ? "destructive" : "default"}
+              variant={isDeleteAction(actionTarget) ? "destructive" : "default"}
               onClick={() => actionTarget && managerAction.mutate(actionTarget)}
               disabled={!actionTarget || managerAction.isPending}
             >
@@ -998,7 +1193,10 @@ export function ManagerPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={Boolean(actionReport)} onOpenChange={(open) => !open && setActionReport(null)}>
+      <Dialog
+        open={Boolean(actionReport)}
+        onOpenChange={(open) => !open && setActionReport(null)}
+      >
         <DialogContent data-manager-action-result>
           <DialogHeader>
             <DialogTitle>{actionReport?.title}</DialogTitle>
@@ -1006,13 +1204,9 @@ export function ManagerPage() {
           </DialogHeader>
           {actionReport?.lines.length ? (
             <ScrollArea className="max-h-72 rounded-md border p-3">
-              <div className="flex flex-col gap-2 font-mono text-xs">
-                {actionReport.lines.map((line, index) => (
-                  <span key={`${line}-${index}`} className="break-words">
-                    {line}
-                  </span>
-                ))}
-              </div>
+              <pre className="whitespace-pre-wrap break-words font-mono text-xs">
+                {actionReport.lines.join("\n")}
+              </pre>
             </ScrollArea>
           ) : null}
           <DialogFooter>
