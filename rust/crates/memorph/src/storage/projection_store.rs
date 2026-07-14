@@ -819,6 +819,16 @@ fn write_projection_report(
     let mut preserved_count = 0;
     let mut normalized_count = 0;
     let mut dropped_count = 0;
+    let mut mapping_overall = imported.report.overall;
+    // Fidelity totals cover materialized events and separate mapping findings.
+    for event in &imported.session.events {
+        mapping_overall = mapping_overall.worst(event.metadata.fidelity);
+        match projection_fidelity(event.metadata.fidelity) {
+            ProjectionFidelity::Preserved => preserved_count += 1,
+            ProjectionFidelity::Normalized => normalized_count += 1,
+            ProjectionFidelity::Dropped => dropped_count += 1,
+        }
+    }
     for issue in &imported.report.issues {
         match projection_fidelity(issue.disposition) {
             ProjectionFidelity::Preserved => preserved_count += 1,
@@ -834,7 +844,7 @@ fn write_projection_report(
     let summary = json!({
         "canonical_event_count": imported.session.events.len(),
         "mapping_direction": enum_name(imported.report.direction),
-        "mapping_overall": enum_name(imported.report.overall),
+        "mapping_overall": enum_name(mapping_overall),
         "preserved_count": preserved_count,
         "normalized_count": normalized_count,
         "dropped_count": dropped_count,
@@ -1006,8 +1016,8 @@ mod tests {
     use super::*;
     use crate::canonical::{
         CanonicalSchema, CanonicalSession, EventLinks, EventMetadata, EventSource,
-        MappingDirection, MappingReport, ProviderSessionRef, SessionContext,
-        SessionIdentity as CanonicalIdentity, SessionProvenance,
+        MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef,
+        SessionContext, SessionIdentity as CanonicalIdentity, SessionProvenance,
     };
     use crate::storage::local_store;
     use crate::storage::snapshot_store::SnapshotStore;
@@ -1041,6 +1051,82 @@ mod tests {
         assert_eq!(count_rows(&conn, "session_event_blocks"), 2);
         assert_eq!(count_rows(&conn, "session_turns"), 1);
         assert_eq!(count_rows(&conn, "projection_reports"), 2);
+    }
+
+    #[test]
+    fn projection_report_counts_lossless_canonical_events_as_preserved() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "one").unwrap();
+
+        let stored = ProjectionStore::new(&mut conn)
+            .write_imported_session(
+                file.path(),
+                &imported_session(),
+                ProviderCapabilities::default(),
+            )
+            .unwrap();
+        let (status, summary_json): (String, String) = conn
+            .query_row(
+                "SELECT status, summary_json FROM projection_reports WHERE id = ?1",
+                [stored.report_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let summary: Value = serde_json::from_str(&summary_json).unwrap();
+
+        assert_eq!(status, "succeeded");
+        assert_eq!(summary["canonical_event_count"], 2);
+        assert_eq!(summary["mapping_overall"], "preserved");
+        assert_eq!(summary["preserved_count"], 2);
+        assert_eq!(summary["normalized_count"], 0);
+        assert_eq!(summary["dropped_count"], 0);
+    }
+
+    #[test]
+    fn projection_report_combines_event_fidelity_and_mapping_findings() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "one").unwrap();
+        let mut imported = imported_session();
+        imported.session.events[1].metadata.fidelity = MappingDisposition::Downgraded;
+        imported.report.push_issue(MappingIssue {
+            level: MappingIssueLevel::Info,
+            disposition: MappingDisposition::Normalized,
+            code: "normalized_field".to_string(),
+            message: "Normalized one provider field".to_string(),
+            path: Some("events[1].field".to_string()),
+            raw: None,
+        });
+        imported.report.push_issue(MappingIssue {
+            level: MappingIssueLevel::Warning,
+            disposition: MappingDisposition::Unsupported,
+            code: "dropped_record".to_string(),
+            message: "Dropped one unsupported provider record".to_string(),
+            path: Some("line:3".to_string()),
+            raw: None,
+        });
+
+        let stored = ProjectionStore::new(&mut conn)
+            .write_imported_session(file.path(), &imported, ProviderCapabilities::default())
+            .unwrap();
+        let (status, summary_json): (String, String) = conn
+            .query_row(
+                "SELECT status, summary_json FROM projection_reports WHERE id = ?1",
+                [stored.report_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let summary: Value = serde_json::from_str(&summary_json).unwrap();
+
+        assert_eq!(status, "completed_with_loss");
+        assert_eq!(summary["mapping_overall"], "unsupported");
+        assert_eq!(summary["preserved_count"], 1);
+        assert_eq!(summary["normalized_count"], 2);
+        assert_eq!(summary["dropped_count"], 1);
+        assert_eq!(count_rows(&conn, "projection_report_items"), 2);
     }
 
     #[test]
