@@ -3038,6 +3038,10 @@ mod tests {
         );
         let backup = crate::core::manager::backup(
             &[crate::core::manager::ManagerItem {
+                id: crate::core::manager::ManagerItem::action_identity(
+                    "missing-provider",
+                    "missing-session",
+                ),
                 provider_id: "missing-provider".to_string(),
                 provider_name: "Missing".to_string(),
                 session_id: "missing-session".to_string(),

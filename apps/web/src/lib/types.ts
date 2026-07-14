@@ -102,11 +102,12 @@ export type ManagerFilter = {
   larger_than_bytes?: number;
   smaller_than_bytes?: number;
   workspace?: string;
-  sort?: "recent" | "size" | string;
+  sort?: "recent" | "size" | "title";
   limit?: number;
 };
 
 export type ManagerItem = {
+  id: string;
   provider_id: string;
   provider_name: string;
   session_id: string;

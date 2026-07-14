@@ -42,8 +42,12 @@ import {
   useManagerWorkspaces,
 } from "@/features/manager/queries";
 import { ManagerPreviewHeaderToolbar } from "@/features/manager/manager-preview-header-toolbar";
-
-type ManagerView = "sessions" | "workspaces";
+import {
+  readManagerRouteState,
+  resolveManagerRequest,
+} from "@/features/manager/manager-route-state";
+import type { ManagerScope, ManagerView } from "@/features/manager/manager-route-state";
+import { useUiStore } from "@/stores/ui-store";
 
 type ManagerActionTarget =
   | { kind: "clean-sessions"; items: ManagerItem[] }
@@ -58,7 +62,7 @@ type ManagerActionReport = {
 };
 
 function sessionKey(item: ManagerItem) {
-  return `${item.provider_id}:${item.session_id}`;
+  return item.id;
 }
 
 function workspaceKey(item: ManagerWorkspaceItem) {
@@ -180,19 +184,55 @@ function ProviderControls({
 
 function ControlPanel({
   workspace,
+  scope,
+  specifiedWorkspace,
   providers,
   selectedProviders,
+  onScopeChange,
   onToggleProvider,
 }: {
-  workspace: string | null | undefined;
+  workspace: string | null;
+  scope: ManagerScope;
+  specifiedWorkspace: boolean;
   providers: ProviderInfo[];
   selectedProviders: string[];
+  onScopeChange: (scope: ManagerScope) => void;
   onToggleProvider: (providerId: string) => void;
 }) {
+  const scopeLabel = specifiedWorkspace
+    ? "Specified workspace"
+    : scope === "all"
+      ? "All workspaces"
+      : "Current workspace";
+
   return (
     <PanelCard className="flex h-full min-h-0 flex-col overflow-hidden" data-manager-control-panel>
       <section className="flex flex-col gap-3 border-b pb-4" data-manager-workspace-summary>
-        <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-muted-foreground text-xs font-medium uppercase tracking-wide">Scope</span>
+          <Badge variant="outline">{scopeLabel}</Badge>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant={scope === "current" && !specifiedWorkspace ? "default" : "outline"}
+            onClick={() => onScopeChange("current")}
+          >
+            Current
+          </Button>
+          <Button
+            type="button"
+            variant={scope === "all" && !specifiedWorkspace ? "default" : "outline"}
+            onClick={() => onScopeChange("all")}
+          >
+            All
+          </Button>
+        </div>
+        {workspace ? (
+          <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
+        ) : (
+          <p className="text-muted-foreground text-sm">Sessions from every indexed workspace.</p>
+        )}
       </section>
       <ProviderControls providers={providers} selected={selectedProviders} onToggle={onToggleProvider} />
     </PanelCard>
@@ -405,7 +445,7 @@ function WorkspaceRows({
     <div className="flex flex-col gap-2" data-manager-workspace-preview>
       {items.map((item) => {
         const key = workspaceKey(item);
-        const href = `/manager?view=sessions&provider=${encodeURIComponent(item.provider_id)}&workspace=${encodeURIComponent(item.workspace)}`;
+        const href = `/manager?view=sessions&providers=${encodeURIComponent(item.provider_id)}&workspace=${encodeURIComponent(item.workspace)}`;
         return (
           <RowShell key={key} selected={selected.has(key)} onToggle={() => onToggle(key)}>
             <div className="flex min-w-0 flex-col gap-2">
@@ -453,6 +493,7 @@ function ResultPanel({
   stats,
   statsLoading,
   providerCount,
+  requestEnabled,
   sessions,
   workspaces,
   search,
@@ -480,6 +521,7 @@ function ResultPanel({
   stats: ReturnType<typeof useManagerStats>;
   statsLoading: boolean;
   providerCount: number;
+  requestEnabled: boolean;
   sessions: ReturnType<typeof useManagerPreview>;
   workspaces: ReturnType<typeof useManagerWorkspaces>;
   search: string;
@@ -565,7 +607,12 @@ function ResultPanel({
         )}
         <Separator />
         <StatsStrip view={view} onViewChange={setView} stats={stats.data} providerCount={providerCount} loading={statsLoading} />
-        {view === "sessions" ? (
+        {!requestEnabled ? (
+          <PageEmpty
+            title="No current workspace"
+            description="Choose a workspace from the app switcher or change the manager scope to All."
+          />
+        ) : view === "sessions" ? (
           <ScrollPane className="flex-1" data-manager-session-list>
             {sessions.isLoading ? (
               <PageSkeleton />
@@ -599,28 +646,32 @@ function ResultPanel({
 }
 
 export function ManagerPage() {
-  const [searchParams] = useSearchParams();
-  const initialProvider = searchParams.get("provider");
-  const initialView: ManagerView = searchParams.get("view") === "workspaces" ? "workspaces" : "sessions";
-  const [view, setView] = useState<ManagerView>(initialView);
-  const [search, setSearch] = useState("");
-  const [selectedProviders, setSelectedProviders] = useState<string[]>(() => (initialProvider ? [initialProvider] : []));
+  const [searchParams, setSearchParams] = useSearchParams();
+  const route = useMemo(() => readManagerRouteState(searchParams), [searchParams]);
+  const selectedWorkspaceOverride = useUiStore((state) => state.selectedWorkspace);
   const [selectedSessions, setSelectedSessions] = useState<Set<string>>(() => new Set());
   const [selectedWorkspaces, setSelectedWorkspaces] = useState<Set<string>>(() => new Set());
   const [actionTarget, setActionTarget] = useState<ManagerActionTarget | null>(null);
   const [actionReport, setActionReport] = useState<ManagerActionReport | null>(null);
   const queryClient = useQueryClient();
-
-  const filter = useMemo<ManagerFilter>(
-    () => ({ providers: selectedProviders, sort: "recent", limit: 100 }),
-    [selectedProviders],
-  );
-
   const meta = useManagerMeta();
   const providers = useManagerProviders();
-  const stats = useManagerStats(filter);
-  const sessions = useManagerPreview(filter);
-  const workspaces = useManagerWorkspaces(filter);
+  const currentWorkspace = selectedWorkspaceOverride || meta.data?.selected_workspace || null;
+  const request = useMemo(
+    () => resolveManagerRequest(route, currentWorkspace),
+    [currentWorkspace, route],
+  );
+  const filter: ManagerFilter = request.filter;
+  const view = route.view;
+  const search = route.search;
+  const selectedProviders = route.providers;
+  const stats = useManagerStats(filter, { enabled: request.enabled });
+  const sessions = useManagerPreview(filter, {
+    enabled: request.enabled && route.view === "sessions",
+  });
+  const workspaces = useManagerWorkspaces(filter, {
+    enabled: request.enabled && route.view === "workspaces",
+  });
 
   const managerAction = useMutation({
     mutationFn: async (target: ManagerActionTarget): Promise<ManagerActionReport> => {
@@ -715,11 +766,41 @@ export function ManagerPage() {
     .reduce((sum, item) => sum + item.total_size_bytes, 0);
   const providerCount = stats.data?.selected_agent_count ?? (selectedProviders.length || options.length);
 
+  function changeScope(scope: ManagerScope) {
+    const next = new URLSearchParams(searchParams);
+    next.delete("workspace");
+    if (scope === "all") next.set("scope", "all");
+    else next.delete("scope");
+    setSearchParams(next);
+    setSelectedSessions(new Set());
+    setSelectedWorkspaces(new Set());
+  }
+
+  function changeView(nextView: ManagerView) {
+    const next = new URLSearchParams(searchParams);
+    if (nextView === "workspaces") next.set("view", "workspaces");
+    else next.delete("view");
+    setSearchParams(next);
+    setSelectedSessions(new Set());
+    setSelectedWorkspaces(new Set());
+  }
+
+  function changeSearch(value: string) {
+    const next = new URLSearchParams(searchParams);
+    if (value) next.set("q", value);
+    else next.delete("q");
+    setSearchParams(next, { replace: true });
+  }
+
   function toggleProvider(providerId: string) {
-    setSelectedProviders((current) =>
-      current.includes(providerId) ? current.filter((id) => id !== providerId) : [...current, providerId],
-    );
-    setSearch("");
+    const nextProviders = selectedProviders.includes(providerId)
+      ? selectedProviders.filter((id) => id !== providerId)
+      : [...selectedProviders, providerId];
+    const next = new URLSearchParams(searchParams);
+    next.delete("provider");
+    if (nextProviders.length) next.set("providers", nextProviders.join(","));
+    else next.delete("providers");
+    setSearchParams(next);
     setSelectedSessions(new Set());
     setSelectedWorkspaces(new Set());
   }
@@ -847,24 +928,25 @@ export function ManagerPage() {
     <>
       <TwoPanePage className="h-full min-h-0 flex-1" data-manager-page-layout>
         <ControlPanel
-          workspace={meta.data?.selected_workspace}
+          workspace={request.workspace}
+          scope={route.scope}
+          specifiedWorkspace={Boolean(route.workspace)}
           providers={options}
           selectedProviders={selectedProviders}
+          onScopeChange={changeScope}
           onToggleProvider={toggleProvider}
         />
         <ResultPanel
           view={view}
-          setView={(nextView) => {
-            if (nextView !== view) setSearch("");
-            setView(nextView);
-          }}
+          setView={changeView}
           stats={stats}
           statsLoading={stats.isLoading}
           providerCount={providerCount}
+          requestEnabled={request.enabled}
           sessions={sessions}
           workspaces={workspaces}
           search={search}
-          onSearchChange={setSearch}
+          onSearchChange={changeSearch}
           selectedSessions={selectedSessions}
           selectedWorkspaces={selectedWorkspaces}
           selectedSessionBytes={selectedSessionBytes}

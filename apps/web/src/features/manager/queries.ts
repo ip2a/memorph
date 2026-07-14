@@ -47,16 +47,18 @@ export function useManagerStats(filter: ManagerFilter, options?: { enabled?: boo
   });
 }
 
-export function useManagerPreview(filter: ManagerFilter) {
+export function useManagerPreview(filter: ManagerFilter, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.manager("sessions", filter),
     queryFn: () => getManagerPreview(filter),
+    enabled: options?.enabled ?? true,
   });
 }
 
-export function useManagerWorkspaces(filter: ManagerFilter) {
+export function useManagerWorkspaces(filter: ManagerFilter, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: queryKeys.manager("workspaces", filter),
     queryFn: () => getManagerWorkspaces(filter),
+    enabled: options?.enabled ?? true,
   });
 }

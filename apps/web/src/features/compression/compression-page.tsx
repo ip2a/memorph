@@ -301,7 +301,7 @@ function CompressionOverview() {
           <ScrollArea className="min-h-0 pr-3">
             <div className="flex flex-col gap-2">
               {candidateRows.length ? (
-                candidateRows.map((item) => <CandidateRow key={`${item.provider_id}:${item.session_id}`} item={item} onCompress={setCompressTarget} />)
+                candidateRows.map((item) => <CandidateRow key={item.id} item={item} onCompress={setCompressTarget} />)
               ) : (
                 <PageEmpty title="No sessions" description="No recent sessions are available for compression." />
               )}

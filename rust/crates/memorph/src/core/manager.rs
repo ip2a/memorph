@@ -35,6 +35,7 @@ pub struct ManagerFilter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagerItem {
+    pub id: String,
     pub provider_id: String,
     pub provider_name: String,
     pub session_id: String,
@@ -52,11 +53,88 @@ pub struct ManagerPreviewResult {
     pub total_size_bytes: u64,
 }
 
+impl ManagerItem {
+    pub(crate) fn action_identity(provider_id: &str, session_id: &str) -> String {
+        format!("{}:{provider_id}{session_id}", provider_id.len())
+    }
+}
+
+impl ManagerPreviewResult {
+    fn from_items(mut items: Vec<ManagerItem>, sort: Option<&str>, limit: Option<usize>) -> Self {
+        match sort {
+            Some("recent") => {
+                items.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
+            }
+            Some("title") => items.sort_by(|left, right| {
+                left.title
+                    .as_deref()
+                    .unwrap_or(&left.session_id)
+                    .to_lowercase()
+                    .cmp(
+                        &right
+                            .title
+                            .as_deref()
+                            .unwrap_or(&right.session_id)
+                            .to_lowercase(),
+                    )
+            }),
+            _ => items.sort_by_key(|item| std::cmp::Reverse(item.size_bytes)),
+        }
+
+        let mut identities = BTreeSet::new();
+        items.retain(|item| identities.insert(item.id.clone()));
+
+        let total_count = items.len();
+        let total_size_bytes = items.iter().map(|item| item.size_bytes).sum();
+
+        if let Some(limit) = limit {
+            items.truncate(limit);
+        }
+
+        Self {
+            items,
+            total_count,
+            total_size_bytes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagerWorkspacesResult {
     pub items: Vec<ManagerWorkspaceItem>,
     pub total_count: usize,
     pub total_size_bytes: u64,
+}
+
+impl ManagerWorkspacesResult {
+    fn from_items(
+        mut items: Vec<ManagerWorkspaceItem>,
+        sort: Option<&str>,
+        limit: Option<usize>,
+    ) -> Self {
+        match sort {
+            Some("size") => {
+                items.sort_by_key(|item| std::cmp::Reverse(item.total_size_bytes));
+            }
+            Some("title") => items.sort_by_key(|item| item.workspace.to_lowercase()),
+            _ => {
+                items.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
+            }
+        }
+
+        let total_count = items.len();
+        let total_size_bytes = items.iter().map(|item| item.total_size_bytes).sum();
+
+        if let Some(limit) = limit {
+            items.truncate(limit);
+        }
+
+        Self {
+            items,
+            total_count,
+            total_size_bytes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +245,7 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
                                 return None;
                             }
                             Some(ManagerItem {
+                                id: ManagerItem::action_identity(pid, &meta.session_id),
                                 provider_id: pid.clone(),
                                 provider_name: provider.name().to_string(),
                                 session_id: meta.session_id.clone(),
@@ -186,26 +265,13 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
             .filter_map(|handle| handle.join().ok())
             .collect::<Vec<_>>()
     });
-    let mut items: Vec<ManagerItem> = items_by_provider.into_iter().flatten().collect();
+    let items = items_by_provider.into_iter().flatten().collect();
 
-    if filter.sort.as_deref() == Some("recent") {
-        items.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
-    } else {
-        items.sort_by_key(|item| std::cmp::Reverse(item.size_bytes));
-    }
-
-    if let Some(limit) = filter.limit {
-        items.truncate(limit);
-    }
-
-    let total_count = items.len();
-    let total_size_bytes = items.iter().map(|item| item.size_bytes).sum();
-
-    Ok(ManagerPreviewResult {
-        total_count,
-        total_size_bytes,
+    Ok(ManagerPreviewResult::from_items(
         items,
-    })
+        filter.sort.as_deref(),
+        filter.limit,
+    ))
 }
 
 pub fn stats(filter: &ManagerFilter) -> Result<ManagerStatsResult> {
@@ -564,9 +630,14 @@ pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
                         Err(_) => return BTreeMap::new(),
                     };
 
-                    let candidates: Vec<&ProviderSessionSummary> = sessions
+                    let mut candidates: Vec<&ProviderSessionSummary> = sessions
                         .iter()
                         .filter(|meta| {
+                            if let Some(ref workspace) = filter.workspace {
+                                if !workspace_session_matches(&*provider, meta, workspace) {
+                                    return false;
+                                }
+                            }
                             if let Some(cutoff) = cutoff_ms {
                                 let last_active = meta.last_active_at.unwrap_or(i64::MAX);
                                 if last_active > cutoff {
@@ -576,6 +647,10 @@ pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
                             true
                         })
                         .collect();
+                    candidates
+                        .sort_by_key(|meta| std::cmp::Reverse(meta.last_active_at.unwrap_or(0)));
+                    let mut session_ids_seen = BTreeSet::new();
+                    candidates.retain(|meta| session_ids_seen.insert(meta.session_id.clone()));
 
                     let session_ids: Vec<&str> = candidates
                         .iter()
@@ -630,25 +705,13 @@ pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
         groups.extend(provider_groups);
     }
 
-    let mut items: Vec<ManagerWorkspaceItem> = groups.into_values().collect();
+    let items = groups.into_values().collect();
 
-    if filter.sort.as_deref() == Some("size") {
-        items.sort_by_key(|item| std::cmp::Reverse(item.total_size_bytes));
-    } else {
-        items.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
-    }
-
-    if let Some(limit) = filter.limit {
-        items.truncate(limit);
-    }
-
-    let total_count = items.len();
-    let total_size_bytes = items.iter().map(|i| i.total_size_bytes).sum();
-    Ok(ManagerWorkspacesResult {
+    Ok(ManagerWorkspacesResult::from_items(
         items,
-        total_count,
-        total_size_bytes,
-    })
+        filter.sort.as_deref(),
+        filter.limit,
+    ))
 }
 
 /// Resolve the concrete ManagerItem rows for a given provider workspace.
@@ -672,6 +735,7 @@ fn list_workspace_sessions(provider_id: &str, workspace: &str) -> Result<Vec<Man
     let items: Vec<ManagerItem> = candidates
         .into_iter()
         .map(|meta| ManagerItem {
+            id: ManagerItem::action_identity(provider_id, &meta.session_id),
             provider_id: provider_id.to_string(),
             provider_name: provider.name().to_string(),
             session_id: meta.session_id.clone(),
@@ -683,7 +747,7 @@ fn list_workspace_sessions(provider_id: &str, workspace: &str) -> Result<Vec<Man
         })
         .collect();
 
-    Ok(items)
+    Ok(ManagerPreviewResult::from_items(items, Some("recent"), None).items)
 }
 
 /// Delete all sessions in a provider workspace.
@@ -744,6 +808,7 @@ mod tests {
 
     fn test_item() -> ManagerItem {
         ManagerItem {
+            id: ManagerItem::action_identity("database-provider", "provider-session-1"),
             provider_id: "database-provider".to_string(),
             provider_name: "Database Provider".to_string(),
             session_id: "provider-session-1".to_string(),
@@ -753,6 +818,92 @@ mod tests {
             last_active_at: Some(1),
             size_bytes: 2,
         }
+    }
+
+    #[test]
+    fn manager_action_identity_is_stable_and_unambiguous() {
+        assert_eq!(
+            ManagerItem::action_identity("codex", "session-1"),
+            ManagerItem::action_identity("codex", "session-1")
+        );
+        assert_ne!(
+            ManagerItem::action_identity("a", "bc"),
+            ManagerItem::action_identity("ab", "c")
+        );
+    }
+
+    #[test]
+    fn preview_result_deduplicates_before_counting_and_limiting() {
+        let mut older_duplicate = test_item();
+        older_duplicate.title = Some("Older duplicate".to_string());
+        older_duplicate.last_active_at = Some(10);
+        older_duplicate.size_bytes = 10;
+
+        let mut newer_duplicate = older_duplicate.clone();
+        newer_duplicate.title = Some("Newer duplicate".to_string());
+        newer_duplicate.last_active_at = Some(40);
+
+        let mut second = test_item();
+        second.id = ManagerItem::action_identity("database-provider", "provider-session-2");
+        second.session_id = "provider-session-2".to_string();
+        second.last_active_at = Some(30);
+        second.size_bytes = 20;
+
+        let mut third = test_item();
+        third.id = ManagerItem::action_identity("database-provider", "provider-session-3");
+        third.session_id = "provider-session-3".to_string();
+        third.last_active_at = Some(20);
+        third.size_bytes = 30;
+
+        let result = ManagerPreviewResult::from_items(
+            vec![older_duplicate, second, third, newer_duplicate],
+            Some("recent"),
+            Some(2),
+        );
+
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.total_count, 3);
+        assert_eq!(result.total_size_bytes, 60);
+        assert_eq!(result.items[0].title.as_deref(), Some("Newer duplicate"));
+    }
+
+    #[test]
+    fn preview_size_sort_keeps_largest_duplicate() {
+        let mut smaller = test_item();
+        smaller.title = Some("Smaller".to_string());
+        smaller.size_bytes = 10;
+
+        let mut larger = smaller.clone();
+        larger.title = Some("Larger".to_string());
+        larger.size_bytes = 20;
+
+        let result = ManagerPreviewResult::from_items(vec![smaller, larger], Some("size"), None);
+
+        assert_eq!(result.total_count, 1);
+        assert_eq!(result.total_size_bytes, 20);
+        assert_eq!(result.items[0].title.as_deref(), Some("Larger"));
+    }
+
+    #[test]
+    fn workspace_result_counts_before_limiting() {
+        let items = [10_u64, 20, 30]
+            .into_iter()
+            .enumerate()
+            .map(|(index, total_size_bytes)| ManagerWorkspaceItem {
+                provider_id: "database-provider".to_string(),
+                provider_name: "Database Provider".to_string(),
+                workspace: format!("/workspace/{index}"),
+                session_count: index + 1,
+                total_size_bytes,
+                last_active_at: Some(index as i64),
+            })
+            .collect();
+
+        let result = ManagerWorkspacesResult::from_items(items, Some("size"), Some(2));
+
+        assert_eq!(result.items.len(), 2);
+        assert_eq!(result.total_count, 3);
+        assert_eq!(result.total_size_bytes, 60);
     }
 
     #[test]
