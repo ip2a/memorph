@@ -118,6 +118,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: BackupCommands,
     },
+    /// Protect and restore the memorph management database
+    Database {
+        #[command(subcommand)]
+        command: DatabaseCommands,
+    },
     /// Inspect and explicitly clean managed artifacts
     Artifacts {
         #[command(subcommand)]
@@ -283,6 +288,40 @@ pub enum BackupCommands {
         /// Registered backup ID
         #[arg(value_name = "BACKUP_ID")]
         backup_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum DatabaseCommands {
+    /// Create and register a consistent memorph.db backup bundle
+    Backup {
+        /// Directory that will contain the generated backup bundle
+        #[arg(long, value_name = "DIR")]
+        output_dir: Option<String>,
+        /// Print the report as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify a database backup bundle without changing local state
+    Verify {
+        /// Database backup bundle directory
+        #[arg(value_name = "BUNDLE")]
+        bundle: String,
+        /// Print the report as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore memorph.db from a verified backup bundle
+    Restore {
+        /// Database backup bundle directory
+        #[arg(value_name = "BUNDLE")]
+        bundle: String,
+        /// Confirm replacement of the current memorph management database
+        #[arg(long)]
+        confirm: bool,
+        /// Print the report as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -569,6 +608,68 @@ mod tests {
             Some(Commands::Sessions {
                 command: SessionCommands::RefreshStale,
             }) => {}
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
+    fn database_commands_parse_complete_options() {
+        let cli = Cli::parse_from([
+            "memorph",
+            "database",
+            "backup",
+            "--output-dir",
+            "/tmp/backups",
+            "--json",
+        ]);
+        match cli.command {
+            Some(Commands::Database {
+                command: DatabaseCommands::Backup { output_dir, json },
+            }) => {
+                assert_eq!(output_dir.as_deref(), Some("/tmp/backups"));
+                assert!(json);
+            }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+
+        let cli = Cli::parse_from([
+            "memorph",
+            "database",
+            "verify",
+            "/tmp/backup-bundle",
+            "--json",
+        ]);
+        match cli.command {
+            Some(Commands::Database {
+                command: DatabaseCommands::Verify { bundle, json },
+            }) => {
+                assert_eq!(bundle, "/tmp/backup-bundle");
+                assert!(json);
+            }
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+
+        let cli = Cli::parse_from([
+            "memorph",
+            "database",
+            "restore",
+            "/tmp/backup-bundle",
+            "--confirm",
+            "--json",
+        ]);
+        match cli.command {
+            Some(Commands::Database {
+                command:
+                    DatabaseCommands::Restore {
+                        bundle,
+                        confirm,
+                        json,
+                    },
+            }) => {
+                assert_eq!(bundle, "/tmp/backup-bundle");
+                assert!(confirm);
+                assert!(json);
+            }
             other => panic!("unexpected command: {:?}", other.map(|_| "other")),
         }
     }

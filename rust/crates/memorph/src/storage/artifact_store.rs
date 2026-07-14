@@ -26,6 +26,7 @@ pub(crate) const EVENT_PAYLOAD_FORMAT: &str = "canonical-event-block-v1";
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactManifestKind {
     CompressionArchive,
+    DatabaseBackup,
     SessionExport,
     SessionBackup,
     EventPayload,
@@ -35,6 +36,7 @@ impl ArtifactManifestKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::CompressionArchive => "compression_archive",
+            Self::DatabaseBackup => "database_backup",
             Self::SessionExport => "session_export",
             Self::SessionBackup => "session_backup",
             Self::EventPayload => "event_payload",
@@ -54,6 +56,7 @@ impl FromStr for ArtifactManifestKind {
     fn from_str(value: &str) -> Result<Self> {
         match value {
             "compression_archive" => Ok(Self::CompressionArchive),
+            "database_backup" => Ok(Self::DatabaseBackup),
             "session_export" => Ok(Self::SessionExport),
             "session_backup" => Ok(Self::SessionBackup),
             "event_payload" => Ok(Self::EventPayload),

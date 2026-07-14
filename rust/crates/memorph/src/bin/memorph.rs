@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use memorph::{
     cli::{
-        ArtifactCommands, BackupCommands, Cli, Commands, CompressionCommands,
+        ArtifactCommands, BackupCommands, Cli, Commands, CompressionCommands, DatabaseCommands,
         LegacyCodexToolCommands, LegacyToolCommands, SessionCommands, SyncCommands,
     },
     config, core,
@@ -188,6 +188,8 @@ fn run_command(command: Commands) -> Result<()> {
         Commands::Sessions { command } => run_session_command(command)?,
 
         Commands::Backups { command } => run_backup_command(command)?,
+
+        Commands::Database { command } => run_database_command(command)?,
 
         Commands::Artifacts { command } => run_artifact_command(command)?,
 
@@ -574,6 +576,69 @@ fn run_backup_command(command: BackupCommands) -> Result<()> {
                 "Restored backup {} successfully (restore {})",
                 record.backup_id, record.id
             );
+        }
+    }
+    Ok(())
+}
+
+fn run_database_command(command: DatabaseCommands) -> Result<()> {
+    match command {
+        DatabaseCommands::Backup { output_dir, json } => {
+            let report = core::database_management::backup_database(
+                output_dir.as_deref().map(Path::new),
+                ActivityActor::Cli,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("Database backup: {}", report.backup.bundle_path.display());
+                println!("Backup ID: {}", report.backup.manifest.backup_id);
+                println!("Artifact: {}", report.artifact.id);
+                println!("Schema: {}", report.backup.manifest.schema_version);
+                println!("Bytes: {}", report.backup.manifest.database_bytes);
+            }
+        }
+        DatabaseCommands::Verify { bundle, json } => {
+            let report = core::database_management::verify_database_backup(Path::new(&bundle))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("Verified database backup: {}", report.bundle_path.display());
+                println!("Backup ID: {}", report.manifest.backup_id);
+                println!("Schema: {}", report.manifest.schema_version);
+                println!("SQLite quick check: {}", report.quick_check);
+                println!("Foreign key violations: {}", report.foreign_key_violations);
+            }
+        }
+        DatabaseCommands::Restore {
+            bundle,
+            confirm,
+            json,
+        } => {
+            if !confirm {
+                anyhow::bail!(
+                    "Database restore requires --confirm because it replaces the current memorph.db"
+                );
+            }
+            let report = core::database_management::restore_database(
+                Path::new(&bundle),
+                ActivityActor::Cli,
+            )?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "Restored database backup: {}",
+                    report.restored_backup.bundle_path.display()
+                );
+                println!("Backup ID: {}", report.restored_backup.manifest.backup_id);
+                println!(
+                    "Safety backup: {}",
+                    report.safety_backup.bundle_path.display()
+                );
+                println!("Schema: {}", report.schema_version);
+                println!("Operation: {}", report.operation_id);
+            }
         }
     }
     Ok(())

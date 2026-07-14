@@ -29,6 +29,7 @@ use crate::{provider, providers, utils};
 
 pub mod active_compression;
 pub mod compression;
+pub mod database_management;
 pub mod manager;
 pub mod session_management;
 

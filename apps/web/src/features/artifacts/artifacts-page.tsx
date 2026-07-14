@@ -63,6 +63,7 @@ type StorageView = "artifacts" | "backups" | "exports";
 const artifactKinds: Array<ArtifactManifestKind | "all"> = [
   "all",
   "event_payload",
+  "database_backup",
   "session_backup",
   "session_export",
   "compression_archive",

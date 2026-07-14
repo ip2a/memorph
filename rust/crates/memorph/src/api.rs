@@ -127,6 +127,11 @@ pub fn router() -> Router {
         .route("/api/v1/backups", get(list_backups))
         .route("/api/v1/backups/{backup_id}", get(get_backup))
         .route("/api/v1/backups/{backup_id}/restore", post(restore_backup))
+        .route("/api/v1/database/backups", post(create_database_backup))
+        .route(
+            "/api/v1/database/backups/verify",
+            post(verify_database_backup),
+        )
         .route("/api/v1/artifacts/inspection", get(inspect_artifacts))
         .route("/api/v1/artifacts/cleanup", post(cleanup_artifacts))
         .route("/api/v1/sessions", get(list_sessions))
@@ -1475,6 +1480,44 @@ async fn restore_backup(Path(backup_id): Path<String>) -> impl IntoResponse {
             api_error(StatusCode::NOT_FOUND, error).into_response()
         }
         Err(error) => api_error(StatusCode::CONFLICT, error).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CreateDatabaseBackupRequest {
+    output_dir: Option<String>,
+}
+
+async fn create_database_backup(
+    Json(request): Json<CreateDatabaseBackupRequest>,
+) -> impl IntoResponse {
+    match core::database_management::backup_database(
+        request.output_dir.as_deref().map(std::path::Path::new),
+        ActivityActor::Api,
+    ) {
+        Ok(report) => ApiResponse::success(report).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct VerifyDatabaseBackupRequest {
+    bundle: String,
+}
+
+async fn verify_database_backup(
+    Json(request): Json<VerifyDatabaseBackupRequest>,
+) -> impl IntoResponse {
+    if request.bundle.trim().is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "Database backup bundle is required",
+        )
+        .into_response();
+    }
+    match core::database_management::verify_database_backup(std::path::Path::new(&request.bundle)) {
+        Ok(report) => ApiResponse::success(report).into_response(),
+        Err(error) => api_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
 }
 
@@ -2950,6 +2993,66 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Unknown backup restore status"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn database_backup_routes_create_and_verify_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let output_dir = dir.path().join("database-backups");
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/database/backups")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"output_dir": output_dir}).to_string(),
+            ))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"]["backup"]["quick_check"], "ok");
+        assert_eq!(
+            value["data"]["artifact"]["artifact_kind"],
+            "database_backup"
+        );
+        let bundle = value["data"]["backup"]["bundle_path"].as_str().unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/database/backups/verify")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"bundle": bundle}).to_string(),
+            ))
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"]["quick_check"], "ok");
+        assert_eq!(value["data"]["foreign_key_violations"], 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn database_backup_verify_rejects_invalid_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/database/backups/verify")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"bundle": dir.path().join("missing")}).to_string(),
+            ))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to inspect"));
     }
 
     #[tokio::test(flavor = "current_thread")]

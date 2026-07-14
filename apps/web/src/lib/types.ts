@@ -179,6 +179,7 @@ export type ManagerBackupResult = {
 
 export type ArtifactManifestKind =
   | "compression_archive"
+  | "database_backup"
   | "session_export"
   | "session_backup"
   | "event_payload";

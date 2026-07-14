@@ -7,6 +7,10 @@ use std::time::Duration;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SCHEMA_VERSION: i64 = 6;
 
+pub(crate) fn current_schema_version() -> i64 {
+    SCHEMA_VERSION
+}
+
 pub struct LocalSqliteStore {
     path: PathBuf,
     conn: Connection,
