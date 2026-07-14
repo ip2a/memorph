@@ -160,6 +160,11 @@ fn remove_session_with_connection(
             [&canonical_session_id],
         )
         .context("Failed to remove local session state")?;
+        tx.execute(
+            "UPDATE sessions SET deleted_at_ms = ?2 WHERE id = ?1",
+            params![canonical_session_id, Utc::now().timestamp_millis()],
+        )
+        .context("Failed to mark session as deleted")?;
     }
     tx.commit()
         .context("Failed to commit local session state removal")
@@ -841,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_state_preserves_managed_session_identity() {
+    fn removing_state_tombstones_managed_session_projection() {
         let (_dir, mut store) = test_store();
         update_session_state_with_connection(
             store.connection_mut(),
@@ -856,6 +861,23 @@ mod tests {
         let canonical = resolve_canonical_session_id(store.connection(), "claude", "session-1")
             .unwrap()
             .unwrap();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO session_snapshots
+                 (session_id, provider_id, updated_at_ms)
+                 VALUES (?1, 'claude', 0)",
+                [&canonical],
+            )
+            .unwrap();
+        assert_eq!(
+            crate::storage::snapshot_store::SnapshotStore::new(store.connection())
+                .list_session_snapshots()
+                .unwrap()
+                .len(),
+            1
+        );
+
         remove_session_with_connection(store.connection_mut(), "claude", "session-1").unwrap();
 
         let sessions: i64 = store
@@ -868,8 +890,32 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
+        let deleted_at_ms: Option<i64> = store
+            .connection()
+            .query_row(
+                "SELECT deleted_at_ms FROM sessions WHERE id = ?1",
+                [&canonical],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let visible_sessions: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE deleted_at_ms IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(sessions, 1);
         assert_eq!(local, 0);
+        assert!(deleted_at_ms.is_some());
+        assert_eq!(visible_sessions, 0);
+        assert!(
+            crate::storage::snapshot_store::SnapshotStore::new(store.connection())
+                .list_session_snapshots()
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(
             resolve_canonical_session_id(store.connection(), "claude", "session-1")
                 .unwrap()
