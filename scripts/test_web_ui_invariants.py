@@ -647,10 +647,21 @@ class WebUiInvariantTest(unittest.TestCase):
             "Select visible",
             "Back up",
             "Delete",
+            "AlertDialog",
             "data-manager-action-dialog",
             "data-manager-delete-dialog",
             "data-manager-backup-dialog",
+            "data-manager-confirm-delete",
+            "Delete permanently",
+            "Start backup",
+            "cannot be undone",
             "data-manager-action-result",
+            "data-manager-action-outcome",
+            "data-manager-initial-loading",
+            "data-manager-results-loading",
+            "data-manager-refreshing",
+            "No sessions in this scope",
+            "No sessions matched your filters",
             "cleanManagerItems",
             "backupManagerItems",
             "cleanManagerWorkspace",
@@ -676,6 +687,7 @@ class WebUiInvariantTest(unittest.TestCase):
         self.assertNotIn("TwoPanePage", manager_page)
         self.assertNotIn("ManagerPreviewHeaderToolbar", manager_page)
         self.assertNotIn("Clean Selected", manager_page)
+        self.assertNotIn("Confirm deletion of the selected sessions.", manager_page)
 
     def test_compression_route_preserves_legacy_two_panel_row_workflow(self) -> None:
         router = ROUTER_TSX.read_text(encoding="utf-8")

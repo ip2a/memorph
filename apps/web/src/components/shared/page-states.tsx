@@ -21,7 +21,15 @@ export function PageSkeleton() {
   );
 }
 
-export function PageEmpty({ title, description }: { title: string; description: string }) {
+export function PageEmpty({
+  title,
+  description,
+  onRefresh,
+}: {
+  title: string;
+  description: string;
+  onRefresh?: () => void;
+}) {
   return (
     <Empty>
       <EmptyHeader>
@@ -31,21 +39,44 @@ export function PageEmpty({ title, description }: { title: string; description: 
         <EmptyTitle>{title}</EmptyTitle>
         <EmptyDescription>{description}</EmptyDescription>
       </EmptyHeader>
-      <EmptyContent>
-        <Button variant="outline">
-          <RefreshCwIcon data-icon="inline-start" />
-          Refresh
-        </Button>
-      </EmptyContent>
+      {onRefresh ? (
+        <EmptyContent>
+          <Button variant="outline" className="min-h-10" onClick={onRefresh}>
+            <RefreshCwIcon data-icon="inline-start" />
+            Refresh
+          </Button>
+        </EmptyContent>
+      ) : null}
     </Empty>
   );
 }
 
-export function PageError({ title, message }: { title: string; message: string }) {
+export function PageError({
+  title,
+  message,
+  onRetry,
+}: {
+  title: string;
+  message: string;
+  onRetry?: () => void;
+}) {
   return (
     <Alert variant="destructive">
       <AlertTitle>{title}</AlertTitle>
-      <AlertDescription>{message}</AlertDescription>
+      <AlertDescription className="flex flex-col items-start gap-3">
+        <span>{message}</span>
+        {onRetry ? (
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-10"
+            onClick={onRetry}
+          >
+            <RefreshCwIcon data-icon="inline-start" />
+            Retry
+          </Button>
+        ) : null}
+      </AlertDescription>
     </Alert>
   );
 }
