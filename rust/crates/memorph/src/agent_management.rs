@@ -66,7 +66,10 @@ impl Serialize for AgentManagementEntry {
 
 pub fn list_agent_management_entries() -> Result<Vec<AgentManagementEntry>> {
     let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-    build_entries_parallel(&runtime_snapshot)
+    let conn = crate::storage::local_store::open_database()?;
+    let projected_sessions =
+        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
+    build_entries_parallel(&runtime_snapshot, &projected_sessions)
 }
 
 pub fn list_agent_management_summaries() -> Result<Vec<AgentManagementSummaryEntry>> {
@@ -78,19 +81,28 @@ pub fn list_agent_management_summaries() -> Result<Vec<AgentManagementSummaryEnt
 
 pub fn get_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntry> {
     let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-    build_agent_management_entry(provider_id, &runtime_snapshot, false)
+    let conn = crate::storage::local_store::open_database()?;
+    let projected_sessions =
+        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
+    build_agent_management_entry(provider_id, &runtime_snapshot, &projected_sessions, false)
 }
 
 pub fn detect_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntry> {
     let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-    build_agent_management_entry(provider_id, &runtime_snapshot, true)
+    let conn = crate::storage::local_store::open_database()?;
+    let projected_sessions =
+        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
+    build_agent_management_entry(provider_id, &runtime_snapshot, &projected_sessions, true)
 }
 
 fn build_entries_parallel(
     runtime_snapshot: &[crate::hooks::model::RuntimeSession],
+    projected_sessions: &[crate::storage::snapshot_store::ProjectedSessionSnapshotRow],
 ) -> Result<Vec<AgentManagementEntry>> {
     build_provider_results_parallel(
-        |provider_id| build_agent_management_entry(provider_id, runtime_snapshot, false),
+        |provider_id| {
+            build_agent_management_entry(provider_id, runtime_snapshot, projected_sessions, false)
+        },
         "agent management worker did not return an entry",
     )
 }
@@ -164,6 +176,7 @@ fn build_agent_management_summary(provider_id: &str) -> Result<AgentManagementSu
 fn build_agent_management_entry(
     provider_id: &str,
     runtime_snapshot: &[crate::hooks::model::RuntimeSession],
+    projected_sessions: &[crate::storage::snapshot_store::ProjectedSessionSnapshotRow],
     refresh_environment: bool,
 ) -> Result<AgentManagementEntry> {
     let provider = crate::providers::find_provider(provider_id)
@@ -171,17 +184,11 @@ fn build_agent_management_entry(
     let settings = crate::provider_settings::list_provider_settings(provider_id)?;
     let hook = crate::hooks::operations::status(provider_id)?;
     let hook_descriptor = crate::hooks::registry::find(provider_id);
-    let session_summaries = if provider.capabilities().scan {
-        let cache = crate::cache::global_cache();
-        cache.get_or_refresh(provider_id, || provider.scan_sessions())?
-    } else {
-        Vec::new()
-    };
-    let hook_diagnosis = crate::hooks::augmentation::aggregate_provider_sessions(
+    let hook_diagnosis = crate::hooks::augmentation::aggregate_provider_snapshots(
         runtime_snapshot,
         hook.clone(),
         provider_id,
-        &session_summaries,
+        projected_sessions,
     );
 
     Ok(AgentManagementEntry {
@@ -213,20 +220,21 @@ mod tests {
     #[test]
     fn agent_management_entry_exposes_hook_status() {
         let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-        let claude = build_agent_management_entry("claude", &runtime_snapshot, false).unwrap();
+        let claude = build_agent_management_entry("claude", &runtime_snapshot, &[], false).unwrap();
         assert_eq!(claude.hook.provider, "claude");
     }
 
     #[test]
     fn agent_management_entry_exposes_settings() {
         let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-        let codex = build_agent_management_entry("codex", &runtime_snapshot, false).unwrap();
+        let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
         assert!(codex
             .settings
             .iter()
             .any(|setting| setting.id == "repair_workspace_sessions"));
 
-        let opencode = build_agent_management_entry("opencode", &runtime_snapshot, false).unwrap();
+        let opencode =
+            build_agent_management_entry("opencode", &runtime_snapshot, &[], false).unwrap();
         assert!(opencode
             .settings
             .iter()
@@ -278,7 +286,7 @@ mod tests {
     #[test]
     fn agent_management_entry_groups_common_environment_fields() {
         let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-        let codex = build_agent_management_entry("codex", &runtime_snapshot, false).unwrap();
+        let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
         let environment = crate::agent_environment::detect_provider_environment("codex");
         assert_eq!(codex.environment.config_path, environment.config_path);
         assert!(!codex.environment.install_method.trim().is_empty());
@@ -287,7 +295,7 @@ mod tests {
     #[test]
     fn agent_management_entry_serializes_environment_block_and_flat_compat_fields() {
         let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-        let codex = build_agent_management_entry("codex", &runtime_snapshot, false).unwrap();
+        let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
         let value = serde_json::to_value(&codex).unwrap();
 
         assert_eq!(value["provider_id"], "codex");
@@ -306,5 +314,51 @@ mod tests {
             value["install_method"]
         );
         assert_eq!(value["environment"]["installed"], value["installed"]);
+    }
+
+    #[test]
+    fn agent_management_diagnosis_counts_projected_sessions() {
+        let projected_sessions = vec![
+            crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
+                canonical_session_id: "codex:projected-session".to_string(),
+                provider_id: "codex".to_string(),
+                provider_session_id: Some("projected-session".to_string()),
+                title: Some("Projected session".to_string()),
+                display_title: None,
+                workspace_dir: Some("/tmp/projected-workspace".to_string()),
+                last_active_at_ms: None,
+                source_path: Some("/missing/provider/source.jsonl".to_string()),
+                message_count: 1,
+                event_count: 1,
+                turn_count: 1,
+                size_bytes: Some(10),
+                hidden: false,
+                pinned: false,
+                preferred_targets: Vec::new(),
+                stale: false,
+            },
+            crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
+                canonical_session_id: "claude:other-provider".to_string(),
+                provider_id: "claude".to_string(),
+                provider_session_id: Some("other-provider".to_string()),
+                title: None,
+                display_title: None,
+                workspace_dir: None,
+                last_active_at_ms: None,
+                source_path: None,
+                message_count: 0,
+                event_count: 0,
+                turn_count: 0,
+                size_bytes: None,
+                hidden: false,
+                pinned: false,
+                preferred_targets: Vec::new(),
+                stale: false,
+            },
+        ];
+
+        let codex = build_agent_management_entry("codex", &[], &projected_sessions, false).unwrap();
+
+        assert_eq!(codex.hook_diagnosis.total_sessions, 1);
     }
 }

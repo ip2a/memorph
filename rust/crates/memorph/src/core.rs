@@ -10,7 +10,7 @@ use crate::core::active_compression::{
     ActiveCompressionReport,
 };
 use crate::provider::ProviderSessionSummary;
-use crate::storage::session_state::{self, SessionStateStore};
+use crate::storage::session_state;
 use crate::storage::snapshot_store::{
     ProjectedSessionDetailPage, ProjectedSessionReport, ProjectedSessionReportItem,
     ProjectedSessionReportSummary, ProjectedSessionSnapshotRow, SnapshotStaleScanReport,
@@ -192,44 +192,6 @@ pub struct SessionProjectionReportItemView {
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub details: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct ResolvedSessionState {
-    native_title: Option<String>,
-    local: session_state::ResolvedLocalSessionState,
-}
-
-impl ResolvedSessionState {
-    fn resolved_title(&self) -> Option<&str> {
-        self.local
-            .display_title
-            .as_deref()
-            .or(self.native_title.as_deref())
-    }
-}
-
-impl From<(&ProviderSessionSummary, &str)> for SessionItem {
-    fn from((meta, provider_id): (&ProviderSessionSummary, &str)) -> Self {
-        Self {
-            session_id: meta.session_id.clone(),
-            title: meta.title.clone(),
-            native_title: meta.title.clone(),
-            display_title: None,
-            hidden: false,
-            pinned: false,
-            stale: false,
-            preferred_targets: Vec::new(),
-            project_dir: meta.project_dir.as_deref().map(utils::user_visible_path),
-            last_active_at: meta.last_active_at,
-            source_path: meta.source_path.as_deref().map(utils::user_visible_path),
-            provider_id: provider_id.to_string(),
-            message_count: None,
-            size_bytes: None,
-            hook_runtime_summary: None,
-            hook_diagnosis: None,
-        }
-    }
 }
 
 pub fn resolve_providers(filter: &[String]) -> Vec<String> {
@@ -869,19 +831,6 @@ fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) -> SessionIte
     }
 }
 
-fn scan_sessions_for_aggregate(
-    provider: &dyn provider::Provider,
-    explicit_provider_filter: bool,
-) -> Result<Option<Vec<ProviderSessionSummary>>> {
-    let cache = crate::cache::global_cache();
-    let provider_id = provider.id();
-    match cache.get_or_refresh(provider_id, || provider.scan_sessions()) {
-        Ok(sessions) => Ok(Some(sessions)),
-        Err(err) if explicit_provider_filter => Err(err),
-        Err(_) => Ok(None),
-    }
-}
-
 fn session_matches_hook_filter(item: &SessionItem, hook_filter: &SessionHookFilter) -> bool {
     use crate::hooks::augmentation::SessionHookDiagnosisKind;
 
@@ -1342,34 +1291,6 @@ pub fn get_resolved_local_session_state(
     )
 }
 
-fn resolve_session_state(
-    provider_id: &str,
-    session_id: &str,
-    native_title: Option<String>,
-    workspace_dir: Option<&str>,
-    session_states: &SessionStateStore,
-) -> ResolvedSessionState {
-    let workspace_dir = session_management::normalized_workspace_key(provider_id, workspace_dir);
-    ResolvedSessionState {
-        native_title,
-        local: session_state::resolve_session_state(
-            session_states,
-            provider_id,
-            session_id,
-            workspace_dir.as_deref(),
-        ),
-    }
-}
-
-fn apply_session_item_state(item: &mut SessionItem, state: &ResolvedSessionState) {
-    item.native_title = state.native_title.clone();
-    item.display_title = state.local.display_title.clone();
-    item.title = state.resolved_title().map(str::to_string);
-    item.hidden = state.local.hidden;
-    item.pinned = state.local.pinned;
-    item.preferred_targets = state.local.preferred_targets.clone();
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventStats {
     pub event_id: String,
@@ -1391,14 +1312,14 @@ pub struct SessionStats {
 }
 
 pub fn compute_session_stats(provider_id: &str, session_id: &str) -> Result<SessionStats> {
-    let imported = get_canonical_session(provider_id, session_id)?;
-    let mut events = Vec::with_capacity(imported.session.events.len());
+    let detail = get_session_detail_view(provider_id, session_id)?;
+    let mut events = Vec::with_capacity(detail.events.len());
     let mut total_char_count = 0usize;
     let mut total_byte_size = 0usize;
     let mut total_visible_char_count = 0usize;
     let mut total_visible_byte_size = 0usize;
 
-    for event in &imported.session.events {
+    for event in &detail.events {
         let full_text = provider::canonical_event_text(event);
         let visible_text = provider::canonical_event_visible_text(event);
         let char_count = full_text.chars().count();
@@ -2985,12 +2906,10 @@ pub fn update_session_local_state(
     let result = (|| {
         let prov = providers::find_provider(provider_id)
             .with_context(|| format!("Unknown provider: {}", provider_id))?;
-        let capabilities = prov.capabilities();
-        if capabilities.scan {
-            let exists = prov.get_session_meta(session_id)?.is_some();
-            if !exists {
-                anyhow::bail!("Session not found: {}", session_id);
-            }
+        let projected_identity = crate::storage::snapshot_store::SnapshotStore::new(&activity_conn)
+            .find_session_identity(provider_id, session_id)?;
+        if projected_identity.is_none() {
+            anyhow::bail!("Projected session not found: {}", session_id);
         }
 
         let mut normalized_update = update.clone();
@@ -3303,92 +3222,43 @@ pub struct FindParams {
 }
 
 pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
-    let provider_ids = resolve_providers(&params.providers);
-    let explicit_provider_filter = !params.providers.is_empty();
-    let session_states = session_state::load_state_store().unwrap_or_default();
-    let hook_runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-    let mut groups = Vec::new();
+    let groups = list_sessions(&SessionListParams {
+        all: true,
+        providers: params.providers.clone(),
+        cwd: None,
+        include_message_counts: true,
+        limit: None,
+        offset: None,
+        sort: SessionListSort::Recent,
+        hook_filter: SessionHookFilter::All,
+    })?;
 
-    for pid in &provider_ids {
-        let prov = match providers::find_provider(pid) {
-            Some(p) => p,
-            None => continue,
-        };
-        let capabilities = prov.capabilities();
-        if !capabilities.scan {
-            continue;
-        }
-        let Some(sessions) = scan_sessions_for_aggregate(prov.as_ref(), explicit_provider_filter)?
-        else {
-            continue;
-        };
-        let hook_status = crate::hooks::operations::status(pid).unwrap_or(
-            crate::hooks::model::HookInstallStatus {
-                provider: pid.clone(),
-                status: crate::hooks::model::HookHealthStatus::InstalledBrokenConfig,
-                config_path: None,
-                installed_version: None,
-                current_version: None,
-                message: Some("Failed to inspect hook status while finding sessions.".to_string()),
-                last_event_at: None,
-            },
-        );
-        let filtered: Vec<SessionItem> = sessions
-            .iter()
-            .map(|s| {
-                let mut item = SessionItem::from((s, pid.as_str()));
-                let state = resolve_session_state(
-                    pid,
-                    &s.session_id,
-                    s.title.clone(),
-                    s.project_dir.as_deref(),
-                    &session_states,
-                );
-                apply_session_item_state(&mut item, &state);
-                let hook_augmentation =
-                    crate::hooks::augmentation::augment_session_from_snapshot_with_status(
-                        &hook_runtime_snapshot,
-                        hook_status.clone(),
-                        pid,
-                        &s.session_id,
-                        s.project_dir.as_deref(),
-                    );
-                item.hook_runtime_summary = hook_augmentation.runtime_summary;
-                item.hook_diagnosis = hook_augmentation.diagnosis;
-                item
-            })
-            .filter(|s| {
-                let dir_match = params.dir.as_ref().map_or(true, |d| {
-                    s.project_dir
+    Ok(groups
+        .into_iter()
+        .filter_map(|mut group| {
+            group.sessions.retain(|session| {
+                let dir_match = params.dir.as_ref().map_or(true, |directory| {
+                    session
+                        .project_dir
                         .as_ref()
-                        .map(|pd| pd.contains(d.as_str()))
-                        .unwrap_or(false)
+                        .is_some_and(|project_dir| project_dir.contains(directory))
                 });
-                let session_match = params.session.as_ref().map_or(true, |pat| {
-                    s.session_id.contains(pat.as_str())
-                        || s.title
+                let session_match = params.session.as_ref().map_or(true, |pattern| {
+                    session.session_id.contains(pattern)
+                        || session
+                            .title
                             .as_ref()
-                            .map(|t| t.contains(pat.as_str()))
-                            .unwrap_or(false)
-                        || s.native_title
+                            .is_some_and(|title| title.contains(pattern))
+                        || session
+                            .native_title
                             .as_ref()
-                            .map(|t| t.contains(pat.as_str()))
-                            .unwrap_or(false)
+                            .is_some_and(|title| title.contains(pattern))
                 });
                 dir_match && session_match
-            })
-            .collect();
-
-        if !filtered.is_empty() {
-            groups.push(SessionGroup {
-                provider_id: pid.clone(),
-                provider_name: prov.name().to_string(),
-                sessions: filtered,
             });
-        }
-    }
-
-    Ok(groups)
+            (!group.sessions.is_empty()).then_some(group)
+        })
+        .collect())
 }
 
 #[cfg(test)]
@@ -3407,46 +3277,11 @@ mod tests {
         ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
     };
     use crate::storage::projection_store::ProjectionStore;
-    use crate::storage::session_state::SessionStateStore;
     use crate::storage::{local_store, snapshot_store::StaleSnapshotSourceRow};
     use chrono::Utc;
     use std::collections::BTreeMap;
     use std::io::{Seek, SeekFrom, Write};
     use tempfile::Builder;
-
-    struct FailingProvider;
-
-    impl provider::Provider for FailingProvider {
-        fn id(&self) -> &'static str {
-            "failing"
-        }
-
-        fn name(&self) -> &'static str {
-            "Failing"
-        }
-
-        fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
-            anyhow::bail!("scan failed")
-        }
-
-        fn import_session(&self, _source_path: &str) -> Result<ImportedSession> {
-            anyhow::bail!("unused")
-        }
-    }
-
-    #[test]
-    fn aggregate_scan_skips_provider_error_without_explicit_filter() {
-        let sessions = scan_sessions_for_aggregate(&FailingProvider, false).unwrap();
-
-        assert!(sessions.is_none());
-    }
-
-    #[test]
-    fn aggregate_scan_keeps_provider_error_with_explicit_filter() {
-        let error = scan_sessions_for_aggregate(&FailingProvider, true).unwrap_err();
-
-        assert!(error.to_string().contains("scan failed"));
-    }
 
     #[test]
     fn registers_canonical_export_files_with_operation_identity() {
@@ -3494,38 +3329,6 @@ mod tests {
         assert!(rows
             .iter()
             .any(|artifact| artifact.mime_type.as_deref() == Some("text/markdown")));
-    }
-
-    #[test]
-    fn session_item_overlay_prefers_memorph_display_title() {
-        let meta = ProviderSessionSummary {
-            session_id: "session-1".to_string(),
-            title: Some("Native".to_string()),
-            project_dir: Some("/tmp/project".to_string()),
-            last_active_at: Some(42),
-            source_path: Some("/tmp/session.jsonl".to_string()),
-        };
-        let mut item = SessionItem::from((&meta, "codex"));
-        let mut session_states = SessionStateStore::default();
-        session_state::set_display_title_in_store(
-            &mut session_states,
-            "codex",
-            "session-1",
-            "Display",
-        );
-
-        let state = resolve_session_state(
-            "codex",
-            "session-1",
-            meta.title.clone(),
-            meta.project_dir.as_deref(),
-            &session_states,
-        );
-        apply_session_item_state(&mut item, &state);
-
-        assert_eq!(item.native_title.as_deref(), Some("Native"));
-        assert_eq!(item.display_title.as_deref(), Some("Display"));
-        assert_eq!(item.title.as_deref(), Some("Display"));
     }
 
     #[test]
@@ -4734,6 +4537,33 @@ mod tests {
             Some("Projected title")
         );
         assert_eq!(groups[0].sessions[0].message_count, Some(2));
+
+        let found = find_sessions(&FindParams {
+            dir: Some("/tmp/project".to_string()),
+            session: Some("Projected title".to_string()),
+            providers: vec!["claude".to_string()],
+        })
+        .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].sessions.len(), 1);
+        assert_eq!(found[0].sessions[0].session_id, "session-projection-1");
+
+        let stats = compute_session_stats("claude", "session-projection-1").unwrap();
+        assert_eq!(stats.events.len(), 3);
+        assert!(stats.total_char_count > 0);
+        assert!(stats.total_visible_char_count > 0);
+
+        let local_state = update_session_local_state(
+            "claude",
+            "session-projection-1",
+            &session_state::SessionLocalStateUpdate {
+                pinned: Some(true),
+                ..Default::default()
+            },
+            ActivityActor::System,
+        )
+        .unwrap();
+        assert!(local_state.pinned);
     }
 
     #[test]

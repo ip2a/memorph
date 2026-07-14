@@ -545,24 +545,26 @@ pub fn sync_to_latest(group_id: &str, actor: ActivityActor) -> Result<SyncReport
 // ---------------------------------------------------------------------------
 
 pub fn refresh_active_times(group: &mut SyncGroup) -> Result<()> {
+    let conn = local_store::open_database()?;
+    let snapshots =
+        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
+    apply_projected_active_times(group, &snapshots);
+    Ok(())
+}
+
+fn apply_projected_active_times(
+    group: &mut SyncGroup,
+    snapshots: &[crate::storage::snapshot_store::ProjectedSessionSnapshotRow],
+) {
     for holding in &mut group.holdings {
-        if let Some(provider) = providers::find_provider(&holding.provider) {
-            if provider.capabilities().scan {
-                let cache = crate::cache::global_cache();
-                if let Ok(sessions) =
-                    cache.get_or_refresh(&holding.provider, || provider.scan_sessions())
-                {
-                    if let Some(meta) = sessions
-                        .into_iter()
-                        .find(|s| s.session_id == holding.session_id)
-                    {
-                        holding.last_active_at = meta.last_active_at;
-                    }
-                }
-            }
+        if let Some(snapshot) = snapshots.iter().find(|snapshot| {
+            snapshot.provider_id == holding.provider
+                && (snapshot.canonical_session_id == holding.session_id
+                    || snapshot.provider_session_id.as_deref() == Some(holding.session_id.as_str()))
+        }) {
+            holding.last_active_at = snapshot.last_active_at_ms;
         }
     }
-    Ok(())
 }
 
 fn build_canonical_session(group: &SyncGroup) -> Result<(CanonicalSession, String)> {
@@ -645,6 +647,62 @@ mod tests {
         assert!(group_has_holding(&group, "codex", "session-1"));
         assert!(!group_has_holding(&group, "claude", "session-1"));
         assert!(!group_has_holding(&group, "codex", "session-2"));
+    }
+
+    #[test]
+    fn refresh_active_times_uses_projected_sessions_and_preserves_missing_values() {
+        let mut group = SyncGroup {
+            id: "group-1".to_string(),
+            title: "group".to_string(),
+            source_provider: Some("codex".to_string()),
+            created_at: 1,
+            updated_at: 1,
+            holdings: vec![
+                Holding {
+                    id: "holding-native".to_string(),
+                    provider: "codex".to_string(),
+                    session_id: "native-1".to_string(),
+                    target_dir: None,
+                    created_at: 1,
+                    last_active_at: None,
+                    last_sync_at: None,
+                    last_sync_from: None,
+                    last_error: None,
+                },
+                Holding {
+                    id: "holding-canonical".to_string(),
+                    provider: "claude".to_string(),
+                    session_id: "claude:canonical-2".to_string(),
+                    target_dir: None,
+                    created_at: 1,
+                    last_active_at: None,
+                    last_sync_at: None,
+                    last_sync_from: None,
+                    last_error: None,
+                },
+                Holding {
+                    id: "holding-missing".to_string(),
+                    provider: "opencode".to_string(),
+                    session_id: "missing".to_string(),
+                    target_dir: None,
+                    created_at: 1,
+                    last_active_at: Some(7),
+                    last_sync_at: None,
+                    last_sync_from: None,
+                    last_error: None,
+                },
+            ],
+        };
+        let snapshots = vec![
+            projected_snapshot("codex:canonical-1", "codex", "native-1", 30),
+            projected_snapshot("claude:canonical-2", "claude", "native-2", 40),
+        ];
+
+        apply_projected_active_times(&mut group, &snapshots);
+
+        assert_eq!(group.holdings[0].last_active_at, Some(30));
+        assert_eq!(group.holdings[1].last_active_at, Some(40));
+        assert_eq!(group.holdings[2].last_active_at, Some(7));
     }
 
     #[test]
@@ -744,6 +802,32 @@ mod tests {
                 fidelity: MappingDisposition::Preserved,
                 provider_ext: BTreeMap::new(),
             },
+        }
+    }
+
+    fn projected_snapshot(
+        canonical_session_id: &str,
+        provider_id: &str,
+        provider_session_id: &str,
+        last_active_at_ms: i64,
+    ) -> crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
+        crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
+            canonical_session_id: canonical_session_id.to_string(),
+            provider_id: provider_id.to_string(),
+            provider_session_id: Some(provider_session_id.to_string()),
+            title: None,
+            display_title: None,
+            workspace_dir: None,
+            last_active_at_ms: Some(last_active_at_ms),
+            source_path: Some("/missing/provider/source".to_string()),
+            message_count: 0,
+            event_count: 0,
+            turn_count: 0,
+            size_bytes: None,
+            hidden: false,
+            pinned: false,
+            preferred_targets: Vec::new(),
+            stale: false,
         }
     }
 }

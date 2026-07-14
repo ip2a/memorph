@@ -1,5 +1,6 @@
 use memorph::config;
 use serde_json::json;
+use std::io::Write;
 use std::process::Command;
 
 struct ArchiveFixture {
@@ -80,14 +81,15 @@ fn write_archive_fixture() -> ArchiveFixture {
             }
         ]
     });
-    std::fs::write(
-        group_dir.join("archive.json"),
-        serde_json::to_string_pretty(&archive).unwrap(),
-    )
-    .unwrap();
+    let file = std::fs::File::create(group_dir.join("archive.json.gz")).unwrap();
+    let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    encoder
+        .write_all(&serde_json::to_vec(&archive).unwrap())
+        .unwrap();
+    encoder.finish().unwrap();
 
     ArchiveFixture {
-        archive_ref: format!("memorph-archive://{}/archive.json", unique),
+        archive_ref: format!("memorph-archive://{}/archive.json.gz", unique),
         group_dir,
     }
 }

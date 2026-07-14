@@ -55,6 +55,17 @@ pub struct ProjectedSessionSnapshotRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedSessionIdentityRow {
+    pub canonical_session_id: String,
+    pub provider_session_id: Option<String>,
+    pub title: Option<String>,
+    pub display_title: Option<String>,
+    pub workspace_dir: Option<String>,
+    pub source_path: Option<String>,
+    pub last_active_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedActivityEventRow {
     pub canonical_session_id: String,
     pub kind: SessionEventKind,
@@ -264,6 +275,113 @@ impl<'a> SnapshotStore<'a> {
             snapshots.push(row.context("Failed to decode projected session snapshot")?);
         }
         Ok(snapshots)
+    }
+
+    pub fn find_session_identity(
+        &self,
+        provider_id: &str,
+        session_id: &str,
+    ) -> Result<Option<ProjectedSessionIdentityRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    s.id,
+                    COALESCE(s.provider_session_id, src.provider_session_id),
+                    COALESCE(ss.title, s.title),
+                    COALESCE(local.display_title, ss.display_title),
+                    COALESCE(ss.workspace_dir, s.workspace_dir, src.workspace_dir),
+                    src.source_path,
+                    COALESCE(ss.last_active_at_ms, s.last_active_at_ms)
+                 FROM sessions s
+                 JOIN session_snapshots ss ON ss.session_id = s.id
+                 LEFT JOIN session_sources src ON src.id = s.primary_source_id
+                 LEFT JOIN session_local_state local ON local.session_id = s.id
+                 WHERE s.deleted_at_ms IS NULL
+                   AND s.provider_id = ?1
+                   AND (
+                        s.provider_session_id = ?2
+                        OR src.provider_session_id = ?2
+                        OR s.id = ?2
+                        OR EXISTS (
+                            SELECT 1
+                            FROM session_aliases alias
+                            WHERE alias.session_id = s.id
+                              AND alias.provider_id = ?1
+                              AND alias.alias_kind = 'provider_session_id'
+                              AND alias.alias_value = ?2
+                        )
+                   )
+                 ORDER BY COALESCE(ss.last_active_at_ms, s.last_active_at_ms) DESC
+                 LIMIT 1",
+            )
+            .context("Failed to prepare projected session identity query")?;
+        let mut rows = stmt
+            .query([provider_id, session_id])
+            .context("Failed to query projected session identity")?;
+        let Some(row) = rows
+            .next()
+            .context("Failed to decode projected session identity")?
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some(ProjectedSessionIdentityRow {
+            canonical_session_id: row.get(0)?,
+            provider_session_id: row.get(1)?,
+            title: row.get(2)?,
+            display_title: row.get(3)?,
+            workspace_dir: row.get(4)?,
+            source_path: row.get(5)?,
+            last_active_at_ms: row.get(6)?,
+        }))
+    }
+
+    pub fn list_provider_session_identities(
+        &self,
+        provider_id: &str,
+    ) -> Result<Vec<ProjectedSessionIdentityRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    s.id,
+                    COALESCE(s.provider_session_id, src.provider_session_id),
+                    COALESCE(ss.title, s.title),
+                    COALESCE(local.display_title, ss.display_title),
+                    COALESCE(ss.workspace_dir, s.workspace_dir, src.workspace_dir),
+                    src.source_path,
+                    COALESCE(ss.last_active_at_ms, s.last_active_at_ms)
+                 FROM sessions s
+                 JOIN session_snapshots ss ON ss.session_id = s.id
+                 LEFT JOIN session_sources src ON src.id = s.primary_source_id
+                 LEFT JOIN session_local_state local ON local.session_id = s.id
+                 WHERE s.deleted_at_ms IS NULL
+                   AND s.provider_id = ?1
+                 ORDER BY
+                    COALESCE(ss.last_active_at_ms, s.last_active_at_ms) DESC,
+                    s.id ASC",
+            )
+            .context("Failed to prepare projected provider session identity list")?;
+        let rows = stmt
+            .query_map([provider_id], |row| {
+                Ok(ProjectedSessionIdentityRow {
+                    canonical_session_id: row.get(0)?,
+                    provider_session_id: row.get(1)?,
+                    title: row.get(2)?,
+                    display_title: row.get(3)?,
+                    workspace_dir: row.get(4)?,
+                    source_path: row.get(5)?,
+                    last_active_at_ms: row.get(6)?,
+                })
+            })
+            .context("Failed to query projected provider session identities")?;
+
+        let mut identities = Vec::new();
+        for row in rows {
+            identities.push(row.context("Failed to decode projected provider session identity")?);
+        }
+        Ok(identities)
     }
 
     pub fn list_stale_snapshot_sources(
@@ -1290,6 +1408,82 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].source_path.as_deref(), Some(source_path.as_str()));
         assert_eq!(rows[0].provider_session_id.as_deref(), Some("native-1"));
+    }
+
+    #[test]
+    fn finds_projected_session_identity_by_native_canonical_and_alias_ids() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        insert_projected_snapshot(
+            &conn,
+            "canonical-1",
+            "claude",
+            "native-1",
+            "/tmp/project",
+            20,
+        );
+        conn.execute(
+            "INSERT INTO session_aliases
+             (alias_kind, alias_value, session_id, provider_id, source_id, created_at_ms)
+             VALUES ('provider_session_id', 'alias-native-1', 'canonical-1', 'claude',
+                     'source-canonical-1', 20)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_local_state
+             (session_id, display_title, updated_at_ms)
+             VALUES ('canonical-1', 'Local title', 30)",
+            [],
+        )
+        .unwrap();
+
+        let snapshots = SnapshotStore::new(&conn);
+        for session_id in ["native-1", "canonical-1", "alias-native-1"] {
+            let identity = snapshots
+                .find_session_identity("claude", session_id)
+                .unwrap()
+                .expect("projected identity");
+            assert_eq!(identity.canonical_session_id, "canonical-1");
+            assert_eq!(identity.provider_session_id.as_deref(), Some("native-1"));
+            assert_eq!(identity.display_title.as_deref(), Some("Local title"));
+            assert_eq!(identity.workspace_dir.as_deref(), Some("/tmp/project"));
+            assert_eq!(identity.last_active_at_ms, Some(20));
+        }
+        assert!(snapshots
+            .find_session_identity("codex", "native-1")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn lists_projected_identities_without_reading_provider_sources() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let file = NamedTempFile::new().unwrap();
+        let source_path = file.path().to_string_lossy().to_string();
+        insert_projected_snapshot_with_source_path(
+            &conn,
+            "canonical-1",
+            "claude",
+            "native-1",
+            "/tmp/project",
+            &source_path,
+            20,
+        );
+        insert_projected_snapshot(&conn, "canonical-2", "codex", "native-2", "/tmp/other", 10);
+        drop(file);
+
+        let identities = SnapshotStore::new(&conn)
+            .list_provider_session_identities("claude")
+            .unwrap();
+
+        assert_eq!(identities.len(), 1);
+        assert_eq!(identities[0].canonical_session_id, "canonical-1");
+        assert_eq!(
+            identities[0].source_path.as_deref(),
+            Some(source_path.as_str())
+        );
     }
 
     #[test]

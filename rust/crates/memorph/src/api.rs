@@ -557,46 +557,6 @@ fn provider_info_list() -> Vec<ProviderInfo> {
         .collect()
 }
 
-fn scan_provider_sessions(
-    provider_id: &str,
-    workspace: Option<&str>,
-) -> anyhow::Result<Vec<crate::provider::ProviderSessionSummary>> {
-    let provider = crate::providers::find_provider(provider_id)
-        .ok_or_else(|| anyhow::anyhow!("Unknown provider: {}", provider_id))?;
-    let sessions = provider.scan_sessions()?;
-    let Some(workspace) = workspace.filter(|value| !value.is_empty()) else {
-        return Ok(sessions);
-    };
-    Ok(sessions
-        .into_iter()
-        .filter(|session| {
-            crate::provider::default_workspace_matches(
-                session.project_dir.as_deref(),
-                Some(workspace),
-            )
-        })
-        .collect())
-}
-
-fn filter_sessions_by_workspace(
-    sessions: &[crate::provider::ProviderSessionSummary],
-    workspace: Option<&str>,
-) -> Vec<crate::provider::ProviderSessionSummary> {
-    let Some(workspace) = workspace.filter(|value| !value.is_empty()) else {
-        return sessions.to_vec();
-    };
-    sessions
-        .iter()
-        .filter(|session| {
-            crate::provider::default_workspace_matches(
-                session.project_dir.as_deref(),
-                Some(workspace),
-            )
-        })
-        .cloned()
-        .collect()
-}
-
 async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result<ProviderCatalog> {
     if let Some(catalog) = cache::catalog_cache().get(workspace) {
         return Ok(catalog);
@@ -691,59 +651,65 @@ async fn build_provider_catalog_active(
 
     let ordered_ids = config::ordered_provider_ids(&config::web_preferences()?);
     let workspace_opt = workspace.filter(|value| !value.is_empty());
-
-    // Scan sessions concurrently.
-    let mut scan_handles = Vec::new();
-    for id in &ordered_ids {
-        let id = id.clone();
-        scan_handles.push(tokio::task::spawn_blocking(move || {
-            (
-                id.clone(),
-                scan_provider_sessions(&id, None).unwrap_or_default(),
-            )
-        }));
-    }
-    let mut sessions_by_provider: std::collections::HashMap<
-        String,
-        Vec<crate::provider::ProviderSessionSummary>,
-    > = std::collections::HashMap::new();
-    for handle in scan_handles {
-        if let Ok((id, sessions)) = handle.await {
-            sessions_by_provider.insert(id, sessions);
-        }
-    }
-
-    let providers = ordered_ids
-        .iter()
-        .filter_map(|id| {
-            let sessions = sessions_by_provider.get(id)?;
-            let workspace_sessions = filter_sessions_by_workspace(sessions, workspace_opt);
-            let global_last_active = sessions
-                .iter()
-                .filter_map(|session| session.last_active_at)
-                .max()
-                .unwrap_or(0);
-            let workspace_last_active = workspace_sessions
-                .iter()
-                .filter_map(|session| session.last_active_at)
-                .max()
-                .unwrap_or(0);
-            Some(cache::ProviderActiveInfo {
-                provider_id: id.clone(),
-                has_sessions: !workspace_sessions.is_empty(),
-                active_time: crate::providers::catalog::ActiveTime {
-                    global: global_last_active,
-                    workspace: workspace_last_active,
-                },
-            })
-        })
-        .collect();
-
-    let result = cache::ProviderActiveCatalog { providers };
+    let snapshots = tokio::task::spawn_blocking(|| {
+        let conn = crate::storage::local_store::open_database()?;
+        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()
+    })
+    .await
+    .context("Provider activity projection task failed")??;
+    let result = provider_active_catalog_from_snapshots(&ordered_ids, workspace_opt, &snapshots);
 
     cache::active_catalog_cache().set(workspace, result.clone());
 
     Ok(result)
+}
+
+fn provider_active_catalog_from_snapshots(
+    ordered_ids: &[String],
+    workspace: Option<&str>,
+    snapshots: &[crate::storage::snapshot_store::ProjectedSessionSnapshotRow],
+) -> cache::ProviderActiveCatalog {
+    let providers = ordered_ids
+        .iter()
+        .map(|id| {
+            let provider = crate::providers::find_provider(id);
+            let sessions: Vec<_> = snapshots
+                .iter()
+                .filter(|session| session.provider_id == *id)
+                .collect();
+            let workspace_sessions: Vec<_> = sessions
+                .iter()
+                .copied()
+                .filter(|session| {
+                    workspace.map_or(true, |workspace| {
+                        provider.as_ref().is_some_and(|provider| {
+                            provider.workspace_matches(
+                                session.workspace_dir.as_deref(),
+                                Some(workspace),
+                            )
+                        })
+                    })
+                })
+                .collect();
+            cache::ProviderActiveInfo {
+                provider_id: id.clone(),
+                has_sessions: !workspace_sessions.is_empty(),
+                active_time: crate::providers::catalog::ActiveTime {
+                    global: sessions
+                        .iter()
+                        .filter_map(|session| session.last_active_at_ms)
+                        .max()
+                        .unwrap_or(0),
+                    workspace: workspace_sessions
+                        .iter()
+                        .filter_map(|session| session.last_active_at_ms)
+                        .max()
+                        .unwrap_or(0),
+                },
+            }
+        })
+        .collect();
+    cache::ProviderActiveCatalog { providers }
 }
 
 fn invalidate_catalog_cache() {
@@ -3399,14 +3365,15 @@ mod tests {
                 },
             ],
         };
-        std::fs::write(
-            archive_dir.join("archive.json"),
-            serde_json::to_string_pretty(&archive).unwrap(),
-        )
-        .unwrap();
+        let file = std::fs::File::create(archive_dir.join("archive.json.gz")).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        encoder
+            .write_all(&serde_json::to_vec(&archive).unwrap())
+            .unwrap();
+        encoder.finish().unwrap();
 
         ArchiveFixture {
-            archive_ref: format!("memorph-archive://{}/archive.json", group),
+            archive_ref: format!("memorph-archive://{}/archive.json.gz", group),
             group_dir: archive_dir,
             _home: home,
             _root: root,
@@ -4153,6 +4120,62 @@ mod tests {
         assert!(claude["sort_order"].is_object());
         assert!(claude["active_time"].is_object());
         assert!(claude["filter_tags"].is_array());
+    }
+
+    #[test]
+    fn active_catalog_uses_projected_sessions_for_workspace_activity() {
+        let ordered_ids = vec!["codex".to_string(), "claude".to_string()];
+        let snapshots = vec![
+            crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
+                canonical_session_id: "codex:one".to_string(),
+                provider_id: "codex".to_string(),
+                provider_session_id: Some("one".to_string()),
+                title: None,
+                display_title: None,
+                workspace_dir: Some("/tmp/current".to_string()),
+                last_active_at_ms: Some(30),
+                source_path: Some("/missing/codex.jsonl".to_string()),
+                message_count: 0,
+                event_count: 0,
+                turn_count: 0,
+                size_bytes: None,
+                hidden: false,
+                pinned: false,
+                preferred_targets: Vec::new(),
+                stale: false,
+            },
+            crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
+                canonical_session_id: "codex:two".to_string(),
+                provider_id: "codex".to_string(),
+                provider_session_id: Some("two".to_string()),
+                title: None,
+                display_title: None,
+                workspace_dir: Some("/tmp/other".to_string()),
+                last_active_at_ms: Some(50),
+                source_path: Some("/missing/codex-other.jsonl".to_string()),
+                message_count: 0,
+                event_count: 0,
+                turn_count: 0,
+                size_bytes: None,
+                hidden: false,
+                pinned: false,
+                preferred_targets: Vec::new(),
+                stale: false,
+            },
+        ];
+
+        let catalog =
+            provider_active_catalog_from_snapshots(&ordered_ids, Some("/tmp/current"), &snapshots);
+
+        assert_eq!(catalog.providers.len(), 2);
+        assert_eq!(catalog.providers[0].provider_id, "codex");
+        assert!(catalog.providers[0].has_sessions);
+        assert_eq!(catalog.providers[0].active_time.global, 50);
+        assert_eq!(catalog.providers[0].active_time.workspace, 30);
+        assert_eq!(catalog.providers[1].provider_id, "claude");
+        assert!(!catalog.providers[1].has_sessions);
+        assert_eq!(catalog.providers[1].active_time.global, 0);
+        assert_eq!(catalog.providers[1].active_time.workspace, 0);
     }
 
     #[tokio::test]

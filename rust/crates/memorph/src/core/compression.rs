@@ -24,7 +24,7 @@ use crate::provider::{self, canonical_event_text};
 
 const ARCHIVE_SCHEME: &str = "memorph-archive://";
 const ARCHIVE_VERSION: u32 = 1;
-const ARCHIVE_EXTENSION: &str = "json.gz";
+const ARCHIVE_SUFFIX: &str = ".json.gz";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -40,36 +40,6 @@ pub struct CompressedSegment<'a> {
     pub source_event_ids: &'a [String],
     pub source_event_count: Option<usize>,
     pub archive_ref: Option<&'a str>,
-}
-
-type NormalizeSourceFn = fn(
-    &CanonicalSession,
-    &CompressionPolicy,
-    Option<&Path>,
-    CompressionReport,
-) -> Result<(CanonicalSession, CompressionReport)>;
-
-struct CompressionSourceAdapter {
-    normalize: Option<NormalizeSourceFn>,
-}
-
-struct CompressionProviderAdapter {
-    provider_id: &'static str,
-    source: CompressionSourceAdapter,
-}
-
-const COMPRESSION_PROVIDER_ADAPTERS: &[CompressionProviderAdapter] =
-    &[CompressionProviderAdapter {
-        provider_id: "opencode",
-        source: CompressionSourceAdapter {
-            normalize: Some(normalize_opencode_source_compression),
-        },
-    }];
-
-fn provider_adapter(provider_id: &str) -> Option<&'static CompressionProviderAdapter> {
-    COMPRESSION_PROVIDER_ADAPTERS
-        .iter()
-        .find(|adapter| adapter.provider_id == provider_id)
 }
 
 pub fn compressed_segment(event: &SessionEvent) -> Option<CompressedSegment<'_>> {
@@ -311,13 +281,12 @@ fn normalize_native_source_compression(
     archive_dir: Option<&Path>,
     base_report: CompressionReport,
 ) -> Result<(CanonicalSession, CompressionReport)> {
-    let Some(adapter) = provider_adapter(&policy.source_provider_id) else {
-        return Ok((session.clone(), base_report));
-    };
-    let Some(normalize) = adapter.source.normalize else {
-        return Ok((session.clone(), base_report));
-    };
-    normalize(session, policy, archive_dir, base_report)
+    match policy.source_provider_id.as_str() {
+        "opencode" => {
+            normalize_opencode_source_compression(session, policy, archive_dir, base_report)
+        }
+        _ => Ok((session.clone(), base_report)),
+    }
 }
 
 fn normalize_opencode_source_compression(
@@ -698,7 +667,7 @@ fn write_archive(
             dir.display()
         )
     })?;
-    let filename = format!("{}.{}", archive_id, ARCHIVE_EXTENSION);
+    let filename = format!("{archive_id}{ARCHIVE_SUFFIX}");
     let path = dir.join(&filename);
     let record = CompressionArchive {
         version: ARCHIVE_VERSION,
@@ -718,53 +687,28 @@ fn write_archive(
 }
 
 fn read_archive_text(path: &Path) -> Result<String> {
-    if path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.ends_with(".json.gz"))
-    {
-        let file = std::fs::File::open(path)
-            .with_context(|| format!("Failed to read compression archive: {}", path.display()))?;
-        let mut decoder = GzDecoder::new(file);
-        let mut raw = String::new();
-        decoder
-            .read_to_string(&mut raw)
-            .with_context(|| format!("Failed to decompress archive: {}", path.display()))?;
-        return Ok(raw);
-    }
-
-    std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read compression archive: {}", path.display()))
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("Failed to read compression archive: {}", path.display()))?;
+    let mut decoder = GzDecoder::new(file);
+    let mut raw = String::new();
+    decoder
+        .read_to_string(&mut raw)
+        .with_context(|| format!("Failed to decompress archive: {}", path.display()))?;
+    Ok(raw)
 }
 
 /// Decompress only the first `limit` bytes of a gzip archive to extract metadata.
 fn read_archive_header_text(path: &Path, limit: usize) -> Result<String> {
-    if path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .is_some_and(|value| value.ends_with(".json.gz"))
-    {
-        let file = File::open(path)
-            .with_context(|| format!("Failed to read compression archive: {}", path.display()))?;
-        let mut decoder = GzDecoder::new(BufReader::new(file));
-        let mut buf = vec![0u8; limit];
-        let n = decoder
-            .read(&mut buf)
-            .with_context(|| format!("Failed to decompress archive prefix: {}", path.display()))?;
-        buf.truncate(n);
-        String::from_utf8(buf)
-            .with_context(|| format!("Archive prefix is not UTF-8: {}", path.display()))
-    } else {
-        let mut file = File::open(path)
-            .with_context(|| format!("Failed to read compression archive: {}", path.display()))?;
-        let mut buf = vec![0u8; limit];
-        let n = file
-            .read(&mut buf)
-            .with_context(|| format!("Failed to read archive prefix: {}", path.display()))?;
-        buf.truncate(n);
-        String::from_utf8(buf)
-            .with_context(|| format!("Archive prefix is not UTF-8: {}", path.display()))
-    }
+    let file = File::open(path)
+        .with_context(|| format!("Failed to read compression archive: {}", path.display()))?;
+    let mut decoder = GzDecoder::new(BufReader::new(file));
+    let mut buf = vec![0u8; limit];
+    let n = decoder
+        .read(&mut buf)
+        .with_context(|| format!("Failed to decompress archive prefix: {}", path.display()))?;
+    buf.truncate(n);
+    String::from_utf8(buf)
+        .with_context(|| format!("Archive prefix is not UTF-8: {}", path.display()))
 }
 
 /// Parse a partial JSON document as an archive summary header.
@@ -841,6 +785,7 @@ pub(crate) fn archive_path_from_ref_in_dir(
         || relative_path
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
+        || !relative.ends_with(ARCHIVE_SUFFIX)
     {
         anyhow::bail!("Invalid compression archive ref: {}", archive_ref);
     }
@@ -1147,7 +1092,7 @@ fn filter_summaries_by_workspace(
 fn is_supported_archive_path(path: &Path) -> bool {
     path.file_name()
         .and_then(|value| value.to_str())
-        .is_some_and(|value| value.ends_with(".json") || value.ends_with(".json.gz"))
+        .is_some_and(|value| value.ends_with(ARCHIVE_SUFFIX))
 }
 
 fn compression_ratio(original_size_bytes: u64, stored_size_bytes: u64) -> f64 {
@@ -1346,25 +1291,18 @@ mod tests {
     }
 
     #[test]
-    fn archive_loader_supports_legacy_json_archives() {
+    fn archive_loader_rejects_plain_json_archives() {
         let temp = tempfile::tempdir().unwrap();
-        write_test_archive(
-            temp.path(),
-            "legacy",
-            "legacy.json",
-            Utc.timestamp_millis_opt(1_700_000_000_000)
-                .single()
-                .unwrap(),
-            "summary-legacy",
-            vec!["event-legacy".to_string()],
-        );
+        let dir = temp.path().join("legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("legacy.json"), "{}").unwrap();
 
-        let archive =
-            load_archive_from_dir(temp.path(), "memorph-archive://legacy/legacy.json").unwrap();
+        let error =
+            load_archive_from_dir(temp.path(), "memorph-archive://legacy/legacy.json").unwrap_err();
 
-        assert_eq!(archive.canonical_id, "legacy");
-        assert_eq!(archive.summary_event_id, "summary-legacy");
-        assert_eq!(archive.source_event_ids, vec!["event-legacy"]);
+        assert!(error
+            .to_string()
+            .contains("Invalid compression archive ref"));
     }
 
     #[test]
@@ -1394,7 +1332,7 @@ mod tests {
         write_test_archive(
             temp.path(),
             "canonical-a",
-            "a.json",
+            "a.json.gz",
             Utc.timestamp_millis_opt(1_700_000_000_000)
                 .single()
                 .unwrap(),
@@ -1425,7 +1363,7 @@ mod tests {
         write_test_archive(
             temp.path(),
             "canonical-a",
-            "a.json",
+            "a.json.gz",
             Utc.timestamp_millis_opt(1_700_000_000_000)
                 .single()
                 .unwrap(),
@@ -1438,7 +1376,7 @@ mod tests {
         write_test_archive(
             temp.path(),
             "canonical-b",
-            "b.json",
+            "b.json.gz",
             Utc.timestamp_millis_opt(1_800_000_000_000)
                 .single()
                 .unwrap(),
@@ -1534,7 +1472,7 @@ mod tests {
                     "codex",
                     "portable",
                     EventRole::Assistant,
-                    "[Compressed session segment from opencode]\nportable summary\nSource event count: 42\nArchive: memorph-archive://portable/a.json\nRetrieve specific details with: memorph compression retrieve memorph-archive://portable/a.json --query <terms> --max-results 5",
+                    "[Compressed session segment from opencode]\nportable summary\nSource event count: 42\nArchive: memorph-archive://portable/a.json.gz\nRetrieve specific details with: memorph compression retrieve memorph-archive://portable/a.json.gz --query <terms> --max-results 5",
                     false,
                 ),
                 provider_text_event("codex", "tail", EventRole::User, "new request", false),
@@ -1550,7 +1488,7 @@ mod tests {
         assert_eq!(report.preserved_events, 2);
         assert_eq!(
             report.archive_refs,
-            vec!["memorph-archive://portable/a.json".to_string()]
+            vec!["memorph-archive://portable/a.json.gz".to_string()]
         );
         assert!(matches!(
             prepared.events[0].blocks.first(),
@@ -1562,7 +1500,7 @@ mod tests {
                 ..
             }) if source_provider_id == "opencode"
                 && summary == "portable summary"
-                && archive_ref == "memorph-archive://portable/a.json"
+                && archive_ref == "memorph-archive://portable/a.json.gz"
         ));
         assert_eq!(
             prepared.events[0].metadata.source.phase.as_deref(),
@@ -1597,7 +1535,7 @@ mod tests {
                     "kimi",
                     Vec::new(),
                     Some(42),
-                    Some("memorph-archive://portable/a.json"),
+                    Some("memorph-archive://portable/a.json.gz"),
                 ),
                 text_event("summary", EventRole::Assistant, "portable summary", true),
                 text_event("tail", EventRole::User, "new request", false),
@@ -1615,7 +1553,7 @@ mod tests {
         assert_eq!(report.removed_expanded_events, 1);
         assert_eq!(
             report.archive_refs,
-            vec!["memorph-archive://portable/a.json".to_string()]
+            vec!["memorph-archive://portable/a.json.gz".to_string()]
         );
         assert!(matches!(
             prepared.events[0].blocks.first(),
@@ -1628,7 +1566,7 @@ mod tests {
             }) if source_provider_id == "kimi"
                 && summary == "portable summary"
                 && source_event_ids.is_empty()
-                && archive_ref == "memorph-archive://portable/a.json"
+                && archive_ref == "memorph-archive://portable/a.json.gz"
         ));
         assert_eq!(prepared.events[1].id, "tail");
         assert!(list_archives_in_dir(temp.path(), None).unwrap().is_empty());
@@ -1680,7 +1618,7 @@ mod tests {
         write_test_archive(
             temp.path(),
             "canonical-a",
-            "a.json",
+            "a.json.gz",
             Utc.timestamp_millis_opt(1_700_000_000_000)
                 .single()
                 .unwrap(),
@@ -1690,7 +1628,7 @@ mod tests {
         write_test_archive(
             temp.path(),
             "canonical-b",
-            "b.json",
+            "b.json.gz",
             Utc.timestamp_millis_opt(1_800_000_000_000)
                 .single()
                 .unwrap(),
@@ -1703,16 +1641,17 @@ mod tests {
         assert_eq!(archives.len(), 2);
         assert_eq!(
             archives[0].archive_ref,
-            "memorph-archive://canonical-b/b.json"
+            "memorph-archive://canonical-b/b.json.gz"
         );
         assert_eq!(archives[0].source_event_count, 2);
         assert_eq!(archives[0].summary_event_id, "summary-b");
         assert!(archives[0].original_size_bytes > 0);
         assert!(archives[0].stored_size_bytes > 0);
-        assert_eq!(archives[0].compression_ratio, 1.0);
+        assert!(archives[0].compression_ratio > 0.0);
+        assert!(archives[0].compression_ratio < 1.0);
         assert_eq!(
             archives[1].archive_ref,
-            "memorph-archive://canonical-a/a.json"
+            "memorph-archive://canonical-a/a.json.gz"
         );
         assert_eq!(archives[1].source_event_count, 1);
     }
@@ -1726,16 +1665,6 @@ mod tests {
                 .is_err()
         );
         assert!(archive_path_from_ref_in_dir(root, "memorph-archive://./escape.json").is_err());
-    }
-
-    #[test]
-    fn source_adapter_registry_only_handles_source_normalization() {
-        let opencode = provider_adapter("opencode").expect("opencode source adapter");
-        assert_eq!(opencode.provider_id, "opencode");
-        assert!(opencode.source.normalize.is_some());
-
-        assert!(provider_adapter("codex").is_none());
-        assert!(provider_adapter("closed-provider").is_none());
     }
 
     fn write_test_archive(
@@ -1759,11 +1688,8 @@ mod tests {
             source_event_ids,
             events: Vec::new(),
         };
-        std::fs::write(
-            dir.join(filename),
-            serde_json::to_string_pretty(&archive).unwrap(),
-        )
-        .unwrap();
+        let content = serde_json::to_vec(&archive).unwrap();
+        write_gzip_atomic(&dir.join(filename), &content).unwrap();
     }
 
     fn sample_opencode_compacted_session() -> CanonicalSession {

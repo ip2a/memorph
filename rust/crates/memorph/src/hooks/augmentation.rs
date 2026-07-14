@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::hooks::model::{
     HookHealthStatus, HookInstallStatus, RuntimeSession, RuntimeSessionStatus,
 };
-use crate::provider::ProviderSessionSummary;
+use crate::storage::snapshot_store::ProjectedSessionSnapshotRow;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -139,11 +139,11 @@ pub fn augment_session_from_snapshot_with_status(
     )
 }
 
-pub fn aggregate_provider_sessions(
+pub fn aggregate_provider_snapshots(
     snapshot: &[RuntimeSession],
     hook_status: HookInstallStatus,
     provider: &str,
-    sessions: &[ProviderSessionSummary],
+    sessions: &[ProjectedSessionSnapshotRow],
 ) -> ProviderHookDiagnosisAggregate {
     let active_runtime_sessions = snapshot
         .iter()
@@ -155,19 +155,27 @@ pub fn aggregate_provider_sessions(
                 )
         })
         .count();
+    let provider_sessions: Vec<_> = sessions
+        .iter()
+        .filter(|session| session.provider_id == provider)
+        .collect();
     let mut aggregate = ProviderHookDiagnosisAggregate {
-        total_sessions: sessions.len(),
+        total_sessions: provider_sessions.len(),
         active_runtime_sessions,
         ..ProviderHookDiagnosisAggregate::default()
     };
 
-    for meta in sessions {
+    for session in &provider_sessions {
+        let session_id = session
+            .provider_session_id
+            .as_deref()
+            .unwrap_or(&session.canonical_session_id);
         let augmentation = augment_session_from_snapshot_with_status(
             snapshot,
             hook_status.clone(),
             provider,
-            &meta.session_id,
-            meta.project_dir.as_deref(),
+            session_id,
+            session.workspace_dir.as_deref(),
         );
         if let Some(summary) = augmentation.runtime_summary.as_ref() {
             aggregate.sessions_with_runtime += summary.linked_sessions;
@@ -177,7 +185,7 @@ pub fn aggregate_provider_sessions(
         }
     }
 
-    if aggregate.recommended_actions.is_empty() && sessions.is_empty() {
+    if aggregate.recommended_actions.is_empty() && provider_sessions.is_empty() {
         aggregate.recommended_actions = default_provider_actions(&hook_status.status);
     }
 
@@ -705,27 +713,15 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_provider_sessions_counts_linked_and_no_match() {
+    fn aggregate_provider_snapshots_counts_linked_and_no_match() {
         let mut linked = runtime_session("rt-5");
         linked.provider_session_id = Some("session-1".to_string());
         let sessions = vec![
-            ProviderSessionSummary {
-                session_id: "session-1".to_string(),
-                title: None,
-                project_dir: Some("/tmp/project".to_string()),
-                last_active_at: None,
-                source_path: None,
-            },
-            ProviderSessionSummary {
-                session_id: "session-2".to_string(),
-                title: None,
-                project_dir: Some("/tmp/project-2".to_string()),
-                last_active_at: None,
-                source_path: None,
-            },
+            projected_snapshot("session-1", "/tmp/project"),
+            projected_snapshot("session-2", "/tmp/project-2"),
         ];
 
-        let aggregate = aggregate_provider_sessions(
+        let aggregate = aggregate_provider_snapshots(
             &[linked],
             hook_status(HookHealthStatus::InstalledOk, None),
             "sample",
@@ -740,6 +736,30 @@ mod tests {
             .recommended_actions
             .iter()
             .any(|action| action.setting_id == "verify_hook"));
+    }
+
+    fn projected_snapshot(
+        provider_session_id: &str,
+        workspace_dir: &str,
+    ) -> ProjectedSessionSnapshotRow {
+        ProjectedSessionSnapshotRow {
+            canonical_session_id: format!("canonical-{provider_session_id}"),
+            provider_id: "sample".to_string(),
+            provider_session_id: Some(provider_session_id.to_string()),
+            title: None,
+            display_title: None,
+            workspace_dir: Some(workspace_dir.to_string()),
+            last_active_at_ms: None,
+            source_path: None,
+            message_count: 0,
+            event_count: 0,
+            turn_count: 0,
+            size_bytes: None,
+            hidden: false,
+            pinned: false,
+            preferred_targets: Vec::new(),
+            stale: false,
+        }
     }
 
     fn hook_status(
