@@ -838,11 +838,7 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
             }
         };
 
-        let timestamp = value
-            .get("timestamp")
-            .and_then(parse_timestamp_to_ms)
-            .and_then(chrono::DateTime::from_timestamp_millis)
-            .unwrap_or_else(Utc::now);
+        let timestamp = claude_line_timestamp(&value, line_idx + 1);
         created_at = created_at.or(Some(timestamp));
         last_active_at = Some(timestamp);
 
@@ -919,6 +915,17 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
         },
         report,
     })
+}
+
+fn claude_line_timestamp(value: &Value, line_number: usize) -> chrono::DateTime<Utc> {
+    value
+        .get("timestamp")
+        .and_then(parse_timestamp_to_ms)
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .unwrap_or_else(|| {
+            chrono::DateTime::from_timestamp_millis(line_number as i64)
+                .expect("Claude source line number is a valid timestamp")
+        })
 }
 
 fn canonical_event_from_claude_line(
@@ -1696,6 +1703,58 @@ mod tests {
                 is_error
             }) if tool_call_id == "toolu_1" && content == "contents" && !is_error
         ));
+    }
+
+    #[test]
+    fn import_canonical_session_uses_stable_source_order_for_missing_timestamps() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "user-1",
+                "sessionId": "session-stable",
+                "message": { "role": "user", "content": "First" }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "assistant-1",
+                "sessionId": "session-stable",
+                "timestamp": "not-a-timestamp",
+                "message": { "role": "assistant", "content": "Second" }
+            })
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let first = import_canonical_session(file.path()).unwrap();
+        let second = import_canonical_session(file.path()).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&first.session.events).unwrap(),
+            serde_json::to_value(&second.session.events).unwrap()
+        );
+        assert_eq!(first.session.events[0].timestamp.timestamp_millis(), 1);
+        assert_eq!(first.session.events[1].timestamp.timestamp_millis(), 2);
+        assert_eq!(
+            first.session.context.created_at.unwrap().timestamp_millis(),
+            1
+        );
+        assert_eq!(
+            first
+                .session
+                .context
+                .last_active_at
+                .unwrap()
+                .timestamp_millis(),
+            2
+        );
     }
 
     #[test]

@@ -449,13 +449,17 @@ fn opencode_database_source(source_locator: &str) -> Option<(&str, &str)> {
 
 fn imported_session_from_data(
     session_id: &str,
-    (session_json, messages, parts): (Value, Vec<(i64, Value)>, HashMap<String, Vec<Value>>),
+    (session_json, messages, parts): (
+        Value,
+        Vec<(Option<i64>, Value)>,
+        HashMap<String, Vec<Value>>,
+    ),
 ) -> Result<ImportedSession> {
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
     let mut events = Vec::new();
     let mut artifacts = Vec::new();
 
-    let mut msg_list: Vec<(i64, Value, Vec<Value>)> = messages
+    let mut msg_list: Vec<(Option<i64>, Value, Vec<Value>)> = messages
         .into_iter()
         .map(|(created, msg_json)| {
             let msg_id = msg_json
@@ -467,9 +471,15 @@ fn imported_session_from_data(
             (created, msg_json, msg_parts)
         })
         .collect();
-    msg_list.sort_by_key(|(created, _, _)| *created);
+    msg_list.sort_by(|(left_created, left, _), (right_created, right, _)| {
+        let left_id = left.get("id").and_then(Value::as_str).unwrap_or("");
+        let right_id = right.get("id").and_then(Value::as_str).unwrap_or("");
+        left_created
+            .cmp(right_created)
+            .then_with(|| left_id.cmp(right_id))
+    });
 
-    for (_, msg_json, msg_parts) in msg_list {
+    for (source_order, (source_created, msg_json, msg_parts)) in msg_list.into_iter().enumerate() {
         let role_str = msg_json
             .get("role")
             .and_then(|v| v.as_str())
@@ -499,12 +509,16 @@ fn imported_session_from_data(
             .get("parentID")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let created = msg_json
+        let timestamp = msg_json
             .get("time")
             .and_then(|v| v.get("created"))
             .and_then(|v| v.as_i64())
-            .unwrap_or_else(|| Utc::now().timestamp_millis());
-        let timestamp = chrono::DateTime::from_timestamp_millis(created).unwrap_or_else(Utc::now);
+            .and_then(chrono::DateTime::from_timestamp_millis)
+            .or_else(|| source_created.and_then(chrono::DateTime::from_timestamp_millis))
+            .unwrap_or_else(|| {
+                chrono::DateTime::from_timestamp_millis(source_order as i64)
+                    .expect("OpenCode message source order is a valid timestamp")
+            });
 
         let blocks = canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report, &mut artifacts);
         if blocks.is_empty() {
@@ -2409,7 +2423,11 @@ fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
 
 fn load_session_from_db(
     session_id: &str,
-) -> Result<(Value, Vec<(i64, Value)>, HashMap<String, Vec<Value>>)> {
+) -> Result<(
+    Value,
+    Vec<(Option<i64>, Value)>,
+    HashMap<String, Vec<Value>>,
+)> {
     let db_path = get_db_path();
     load_session_from_db_path(&db_path, session_id)
 }
@@ -2417,7 +2435,11 @@ fn load_session_from_db(
 fn load_session_from_db_path(
     db_path: &Path,
     session_id: &str,
-) -> Result<(Value, Vec<(i64, Value)>, HashMap<String, Vec<Value>>)> {
+) -> Result<(
+    Value,
+    Vec<(Option<i64>, Value)>,
+    HashMap<String, Vec<Value>>,
+)> {
     let conn = Connection::open(db_path)?;
 
     // Load session
@@ -2477,7 +2499,10 @@ fn load_session_from_db_path(
 
     // Load messages
     let mut stmt = conn.prepare(
-        "SELECT id, session_id, time_created, time_updated, data FROM message WHERE session_id = ?1 ORDER BY time_created"
+        "SELECT id, session_id, time_created, time_updated, data
+         FROM message
+         WHERE session_id = ?1
+         ORDER BY time_created, id",
     )?;
     let rows = stmt.query_map([session_id], |row| {
         let msg_id: String = row.get(0)?;
@@ -2490,7 +2515,7 @@ fn load_session_from_db_path(
             map.insert("id".to_string(), Value::String(msg_id));
             map.insert("sessionID".to_string(), Value::String(session_id));
         }
-        Ok((created, data))
+        Ok((Some(created), data))
     })?;
 
     let mut messages = Vec::new();
@@ -2503,7 +2528,10 @@ fn load_session_from_db_path(
     // Load parts
     let mut parts_map: HashMap<String, Vec<Value>> = HashMap::new();
     let mut stmt = conn.prepare(
-        "SELECT id, message_id, session_id, time_created, time_updated, data FROM part WHERE session_id = ?1"
+        "SELECT id, message_id, session_id, time_created, time_updated, data
+         FROM part
+         WHERE session_id = ?1
+         ORDER BY message_id, time_created, id",
     )?;
     let rows = stmt.query_map([session_id], |row| {
         let part_id: String = row.get(0)?;
@@ -2532,7 +2560,11 @@ fn load_session_from_db_path(
 
 fn load_session_from_filesystem(
     session_id: &str,
-) -> Result<(Value, Vec<(i64, Value)>, HashMap<String, Vec<Value>>)> {
+) -> Result<(
+    Value,
+    Vec<(Option<i64>, Value)>,
+    HashMap<String, Vec<Value>>,
+)> {
     let storage_dir = get_opencode_dir().join("storage");
 
     // Find session file
@@ -2556,7 +2588,11 @@ fn load_session_from_filesystem(
 fn load_session_from_filesystem_path(
     session_id: &str,
     session_path: &Path,
-) -> Result<(Value, Vec<(i64, Value)>, HashMap<String, Vec<Value>>)> {
+) -> Result<(
+    Value,
+    Vec<(Option<i64>, Value)>,
+    HashMap<String, Vec<Value>>,
+)> {
     let storage_dir = get_opencode_dir().join("storage");
     let session_json: Value = serde_json::from_reader(File::open(&session_path)?)?;
 
@@ -2564,8 +2600,9 @@ fn load_session_from_filesystem_path(
     let mut messages = Vec::new();
     let msg_dir = storage_dir.join("message").join(session_id);
     if msg_dir.exists() {
-        for entry in std::fs::read_dir(&msg_dir)? {
-            let entry = entry?;
+        let mut entries = std::fs::read_dir(&msg_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
@@ -2574,8 +2611,7 @@ fn load_session_from_filesystem_path(
             let created = msg_json
                 .get("time")
                 .and_then(|v| v.get("created"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
+                .and_then(|v| v.as_i64());
             messages.push((created, msg_json));
         }
     }
@@ -2584,15 +2620,18 @@ fn load_session_from_filesystem_path(
     let mut parts_map: HashMap<String, Vec<Value>> = HashMap::new();
     let parts_dir = storage_dir.join("part");
     if parts_dir.exists() {
-        for entry in std::fs::read_dir(&parts_dir)? {
-            let entry = entry?;
+        let mut entries = std::fs::read_dir(&parts_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
             let msg_id = entry.file_name().to_string_lossy().to_string();
             let msg_parts_dir = entry.path();
             if !msg_parts_dir.is_dir() {
                 continue;
             }
-            for part_entry in std::fs::read_dir(&msg_parts_dir)? {
-                let part_entry = part_entry?;
+            let mut part_entries =
+                std::fs::read_dir(&msg_parts_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+            part_entries.sort_by_key(|entry| entry.path());
+            for part_entry in part_entries {
                 let part_path = part_entry.path();
                 if part_path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
@@ -3581,6 +3620,91 @@ mod tests {
             )
             .unwrap();
         assert_eq!(report_count, 1);
+    }
+
+    #[test]
+    fn database_import_uses_stable_message_and_part_order() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        let session_id = "ses-stable-order";
+        write_native_opencode_fixture(opencode_dir.path(), session_id);
+        let db_path = opencode_dir.path().join("opencode.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute("DELETE FROM part WHERE session_id = ?1", [session_id])
+            .unwrap();
+        conn.execute("DELETE FROM message WHERE session_id = ?1", [session_id])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, time_updated, data)
+             VALUES ('msg-b', ?1, 1700000000010, 1700000000011,
+                     '{\"role\":\"assistant\"}')",
+            [session_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, time_updated, data)
+             VALUES ('msg-a', ?1, 1700000000010, 1700000000011,
+                     '{\"role\":\"user\",\"time\":{\"created\":9223372036854775807}}')",
+            [session_id],
+        )
+        .unwrap();
+        for (part_id, message_id, text) in [
+            ("part-z", "msg-a", "second block"),
+            ("part-a", "msg-a", "first block"),
+            ("part-b", "msg-b", "assistant block"),
+        ] {
+            conn.execute(
+                "INSERT INTO part (
+                    id, message_id, session_id, time_created, time_updated, data
+                 ) VALUES (?1, ?2, ?3, 1700000000020, 1700000000021, ?4)",
+                rusqlite::params![
+                    part_id,
+                    message_id,
+                    session_id,
+                    serde_json::json!({ "type": "text", "text": text }).to_string()
+                ],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let first = imported_session_from_data(
+            session_id,
+            load_session_from_db_path(&db_path, session_id).unwrap(),
+        )
+        .unwrap();
+        let second = imported_session_from_data(
+            session_id,
+            load_session_from_db_path(&db_path, session_id).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&first.session.events).unwrap(),
+            serde_json::to_value(&second.session.events).unwrap()
+        );
+        assert_eq!(
+            first
+                .session
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["msg-a", "msg-b"]
+        );
+        assert_eq!(
+            first.session.events[0].timestamp.timestamp_millis(),
+            1_700_000_000_010
+        );
+        assert_eq!(
+            first.session.events[1].timestamp.timestamp_millis(),
+            1_700_000_000_010
+        );
+        assert!(matches!(
+            first.session.events[0].blocks.as_slice(),
+            [EventBlock::Text { text: first }, EventBlock::Text { text: second }]
+                if first == "first block" && second == "second block"
+        ));
     }
 
     #[test]

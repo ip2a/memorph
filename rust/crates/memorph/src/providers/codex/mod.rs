@@ -2287,12 +2287,7 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let timestamp = value
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(Utc::now);
+        let timestamp = codex_line_timestamp(&value, line_idx + 1);
         last_active_at = Some(timestamp);
 
         match line_type.as_str() {
@@ -2493,6 +2488,18 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
     })
 }
 
+fn codex_line_timestamp(value: &Value, line_number: usize) -> chrono::DateTime<Utc> {
+    value
+        .get("timestamp")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&Utc))
+        .unwrap_or_else(|| {
+            chrono::DateTime::from_timestamp_millis(line_number as i64)
+                .expect("Codex source line number is a valid timestamp")
+        })
+}
+
 pub fn import_canonical_session_page(
     path: &Path,
     event_offset: usize,
@@ -2535,12 +2542,7 @@ pub fn import_canonical_session_page(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
         let payload = value.get("payload");
-        let timestamp = value
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(Utc::now);
+        let timestamp = codex_line_timestamp(&value, location.line_no);
 
         if let Some(event) = codex_event_from_line(
             line_type,
@@ -2687,12 +2689,7 @@ fn build_codex_event_index(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
         let payload = value.get("payload");
-        let timestamp = value
-            .get("timestamp")
-            .and_then(|v| v.as_str())
-            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-            .map(|dt| dt.with_timezone(&Utc))
-            .unwrap_or_else(Utc::now);
+        let timestamp = codex_line_timestamp(&value, line_no);
         last_active_at_ms = Some(timestamp.timestamp_millis());
 
         if line_type == "session_meta" {
@@ -5298,6 +5295,56 @@ mod tests {
             )
             .unwrap();
         assert_eq!(report_count, 1);
+    }
+
+    #[test]
+    fn codex_import_and_event_index_use_stable_source_order_for_missing_timestamps() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-stable",
+                    "cwd": "/tmp/project"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            json!({
+                "timestamp": "not-a-timestamp",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "Build this" }]
+                }
+            })
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        let first = import_canonical_session(file.path()).unwrap();
+        let second = import_canonical_session(file.path()).unwrap();
+        let fingerprint = event_index::source_file_fingerprint(file.path()).unwrap();
+        let (first_index, first_locations) =
+            build_codex_event_index(file.path(), fingerprint).unwrap();
+        let (second_index, second_locations) =
+            build_codex_event_index(file.path(), fingerprint).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&first.session.events).unwrap(),
+            serde_json::to_value(&second.session.events).unwrap()
+        );
+        assert_eq!(first.session.events[0].timestamp.timestamp_millis(), 1);
+        assert_eq!(first.session.events[1].timestamp.timestamp_millis(), 2);
+        assert_eq!(first_index, second_index);
+        assert_eq!(first_locations, second_locations);
+        assert_eq!(first_index.last_active_at_ms, Some(2));
     }
 
     #[test]
