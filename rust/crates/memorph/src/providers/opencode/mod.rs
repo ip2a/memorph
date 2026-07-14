@@ -176,11 +176,9 @@ impl Provider for OpenCodeProvider {
         let mut seen = std::collections::HashSet::new();
 
         // 1. Scan SQLite DB (primary source for recent sessions)
-        if let Ok(db_sessions) = scan_sessions_from_db() {
-            for s in db_sessions {
-                seen.insert(s.session_id.clone());
-                sessions.push(s);
-            }
+        for session in scan_sessions_from_db()? {
+            seen.insert(session.session_id.clone());
+            sessions.push(session);
         }
 
         // 2. Scan filesystem (fallback for older sessions)
@@ -261,7 +259,10 @@ impl Provider for OpenCodeProvider {
     }
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
-        import_canonical_session(source_path)
+        let session_id = opencode_session_id_from_source_locator(source_path)?;
+        let mut imported = import_canonical_session_from_source(&session_id, source_path)?;
+        imported.session.provenance.primary_source.source_path = Some(source_path.to_string());
+        Ok(imported)
     }
 
     fn export_session(
@@ -357,17 +358,99 @@ pub fn project_session_to_store(
     source_path: &Path,
     store: &mut ProjectionStore<'_>,
 ) -> Result<StoredProjection> {
-    let imported = import_canonical_session(session_id)?;
+    let source_locator = source_path.to_string_lossy();
+    let mut imported = import_canonical_session_from_source(session_id, &source_locator)?;
+    imported.session.provenance.primary_source.source_path =
+        Some(source_path.to_string_lossy().to_string());
     store.write_imported_session(source_path, &imported, OpenCodeProvider.capabilities())
 }
 
+fn opencode_session_id_from_source_locator(source_locator: &str) -> Result<String> {
+    if let Some((_, session_id)) = opencode_database_source(source_locator) {
+        return Ok(session_id.to_string());
+    }
+    anyhow::ensure!(
+        !source_locator.contains('#'),
+        "OpenCode database source locator is invalid"
+    );
+
+    let source_path = Path::new(source_locator);
+    if source_path.is_file() {
+        let source: Value =
+            serde_json::from_reader(File::open(source_path)?).with_context(|| {
+                format!(
+                    "Failed to parse OpenCode session source: {}",
+                    source_path.display()
+                )
+            })?;
+        return source
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|session_id| !session_id.is_empty())
+            .map(str::to_string)
+            .context("OpenCode session source has no id");
+    }
+
+    if !source_locator.is_empty() && !source_locator.contains('/') && !source_locator.contains('\\')
+    {
+        return Ok(source_locator.to_string());
+    }
+
+    anyhow::bail!("OpenCode source locator does not exist: {source_locator}")
+}
+
 fn import_canonical_session(session_id: &str) -> Result<ImportedSession> {
-    let (session_json, messages, parts) = if let Ok(data) = load_session_from_db(session_id) {
-        data
+    let data = if get_db_path().exists() {
+        match load_session_from_db(session_id) {
+            Ok(data) => data,
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<rusqlite::Error>(),
+                    Some(rusqlite::Error::QueryReturnedNoRows)
+                ) =>
+            {
+                load_session_from_filesystem(session_id)?
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         load_session_from_filesystem(session_id)?
     };
+    imported_session_from_data(session_id, data)
+}
 
+fn import_canonical_session_from_source(
+    session_id: &str,
+    source_locator: &str,
+) -> Result<ImportedSession> {
+    let data = if let Some((database_path, locator_session_id)) =
+        opencode_database_source(source_locator)
+    {
+        anyhow::ensure!(
+            locator_session_id == session_id,
+            "OpenCode database source locator session does not match projected session"
+        );
+        load_session_from_db_path(Path::new(database_path), session_id)?
+    } else {
+        let source_path = Path::new(source_locator);
+        if source_path.is_file() {
+            load_session_from_filesystem_path(session_id, source_path)?
+        } else {
+            return import_canonical_session(session_id);
+        }
+    };
+    imported_session_from_data(session_id, data)
+}
+
+fn opencode_database_source(source_locator: &str) -> Option<(&str, &str)> {
+    let (database_path, session_id) = source_locator.rsplit_once("#session=")?;
+    (!database_path.is_empty() && !session_id.is_empty()).then_some((database_path, session_id))
+}
+
+fn imported_session_from_data(
+    session_id: &str,
+    (session_json, messages, parts): (Value, Vec<(i64, Value)>, HashMap<String, Vec<Value>>),
+) -> Result<ImportedSession> {
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
     let mut events = Vec::new();
     let mut artifacts = Vec::new();
@@ -2319,9 +2402,7 @@ fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
 
     let mut sessions = Vec::new();
     for row in rows {
-        if let Ok(s) = row {
-            sessions.push(s);
-        }
+        sessions.push(row?);
     }
     Ok(sessions)
 }
@@ -2330,7 +2411,14 @@ fn load_session_from_db(
     session_id: &str,
 ) -> Result<(Value, Vec<(i64, Value)>, HashMap<String, Vec<Value>>)> {
     let db_path = get_db_path();
-    let conn = Connection::open(&db_path)?;
+    load_session_from_db_path(&db_path, session_id)
+}
+
+fn load_session_from_db_path(
+    db_path: &Path,
+    session_id: &str,
+) -> Result<(Value, Vec<(i64, Value)>, HashMap<String, Vec<Value>>)> {
+    let conn = Connection::open(db_path)?;
 
     // Load session
     let session_json: Value = conn.query_row(
@@ -2462,6 +2550,14 @@ fn load_session_from_filesystem(
     }
 
     let session_path = session_path.context("Session not found in filesystem")?;
+    load_session_from_filesystem_path(session_id, &session_path)
+}
+
+fn load_session_from_filesystem_path(
+    session_id: &str,
+    session_path: &Path,
+) -> Result<(Value, Vec<(i64, Value)>, HashMap<String, Vec<Value>>)> {
+    let storage_dir = get_opencode_dir().join("storage");
     let session_json: Value = serde_json::from_reader(File::open(&session_path)?)?;
 
     // Load messages from filesystem
@@ -2946,6 +3042,149 @@ mod tests {
             orphan_part_path,
             original_session_bytes,
         }
+    }
+
+    #[test]
+    fn scan_sessions_uses_fingerprintable_database_source_locator() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        write_native_opencode_fixture(opencode_dir.path(), "ses_locator");
+
+        let sessions = OpenCodeProvider.scan_sessions().unwrap();
+        let session = sessions
+            .iter()
+            .find(|session| session.session_id == "ses_locator")
+            .unwrap();
+
+        assert_eq!(
+            session.source_path.as_deref(),
+            Some(
+                format!(
+                    "{}#session=ses_locator",
+                    opencode_dir.path().join("opencode.db").to_string_lossy()
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            crate::storage::projection_store::projection_source_file_path(Path::new(
+                session.source_path.as_deref().unwrap()
+            )),
+            opencode_dir.path().join("opencode.db")
+        );
+        let imported = OpenCodeProvider
+            .import_session(session.source_path.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(
+            imported.session.provenance.primary_source.session_id,
+            "ses_locator"
+        );
+        assert_eq!(
+            imported.session.provenance.primary_source.source_path,
+            session.source_path
+        );
+    }
+
+    #[test]
+    fn scan_sessions_reports_corrupt_database() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        std::fs::write(opencode_dir.path().join("opencode.db"), b"not sqlite").unwrap();
+
+        let error = OpenCodeProvider.scan_sessions().unwrap_err();
+
+        assert!(error.to_string().contains("file is not a database"));
+    }
+
+    #[test]
+    fn import_session_reads_the_explicit_source_plane() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        let fixture = write_native_opencode_fixture(opencode_dir.path(), "ses_source_plane");
+        std::fs::write(
+            &fixture.session_path,
+            serde_json::json!({
+                "id": "ses_source_plane",
+                "projectID": "project-1",
+                "directory": "/tmp/project",
+                "title": "Filesystem title",
+                "time": {"created": 1700000000000_i64, "updated": 1700000000100_i64}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let from_database = OpenCodeProvider
+            .import_session(&opencode_db_session_source_locator("ses_source_plane"))
+            .unwrap();
+        let from_filesystem = OpenCodeProvider
+            .import_session(fixture.session_path.to_string_lossy().as_ref())
+            .unwrap();
+
+        assert_eq!(
+            from_database.session.identity.source_title.as_deref(),
+            Some("Before")
+        );
+        assert_eq!(
+            from_filesystem.session.identity.source_title.as_deref(),
+            Some("Filesystem title")
+        );
+    }
+
+    #[test]
+    fn import_session_uses_database_path_from_locator() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        write_native_opencode_fixture(opencode_dir.path(), "ses_database_path");
+        let default_database = opencode_dir.path().join("opencode.db");
+        let alternate_database = opencode_dir.path().join("alternate.db");
+        std::fs::rename(&default_database, &alternate_database).unwrap();
+        std::fs::write(&default_database, b"not sqlite").unwrap();
+        let locator = format!(
+            "{}#session=ses_database_path",
+            alternate_database.to_string_lossy()
+        );
+
+        let imported = OpenCodeProvider.import_session(&locator).unwrap();
+
+        assert_eq!(
+            imported.session.identity.source_title.as_deref(),
+            Some("Before")
+        );
+        assert_eq!(
+            imported
+                .session
+                .provenance
+                .primary_source
+                .source_path
+                .as_deref(),
+            Some(locator.as_str())
+        );
+    }
+
+    #[test]
+    fn parse_session_file_keeps_actual_json_source_path() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("ses_file.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "id": "ses_file",
+                "directory": "/tmp/project",
+                "title": "File session",
+                "time": {"updated": 1_790_000_000_000_i64}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let session = parse_session_file(&path).unwrap();
+
+        assert_eq!(session.session_id, "ses_file");
+        assert_eq!(
+            session.source_path.as_deref(),
+            Some(path.to_string_lossy().as_ref())
+        );
     }
 
     fn session_owned_row_counts(opencode_dir: &Path, session_id: &str) -> Vec<i64> {

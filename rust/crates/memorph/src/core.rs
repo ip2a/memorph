@@ -4697,6 +4697,154 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_discovers_projects_skips_unchanged_and_reprojects_changes() {
+        let opencode_dir = tempfile::tempdir().unwrap();
+        let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
+        write_opencode_projection_sample(
+            opencode_dir.path(),
+            "ses_bootstrap",
+            "Initial OpenCode title",
+        );
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+
+        let first =
+            bootstrap_session_projections_in_connection(&mut conn, Some("opencode")).unwrap();
+        assert_eq!(first.scanned_providers, 1);
+        assert_eq!(first.discovered_sessions, 1);
+        assert_eq!(first.projected_sessions, 1);
+        assert_eq!(first.unchanged_sessions, 0);
+        assert!(first.failures.is_empty());
+
+        let second =
+            bootstrap_session_projections_in_connection(&mut conn, Some("opencode")).unwrap();
+        assert_eq!(second.discovered_sessions, 1);
+        assert_eq!(second.projected_sessions, 0);
+        assert_eq!(second.unchanged_sessions, 1);
+        let report_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM projection_reports", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(report_count, 1);
+
+        write_opencode_projection_sample(
+            opencode_dir.path(),
+            "ses_bootstrap",
+            "Changed OpenCode title",
+        );
+        let third =
+            bootstrap_session_projections_in_connection(&mut conn, Some("opencode")).unwrap();
+        assert_eq!(third.projected_sessions, 1);
+        assert_eq!(third.unchanged_sessions, 0);
+        let snapshot_title: String = conn
+            .query_row(
+                "SELECT title FROM session_snapshots WHERE provider_id = 'opencode'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(snapshot_title, "Changed OpenCode title");
+        let report_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM projection_reports", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(report_count, 2);
+    }
+
+    #[test]
+    fn bootstrap_continues_after_missing_and_invalid_session_sources() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut valid = tempfile::NamedTempFile::new().unwrap();
+        write_claude_projection_sample(&mut valid, "Valid title");
+        let invalid = tempfile::tempdir().unwrap();
+        let sessions = [
+            ProviderSessionSummary {
+                session_id: "valid-session".to_string(),
+                title: Some("Valid title".to_string()),
+                project_dir: Some("/tmp/project".to_string()),
+                last_active_at: None,
+                source_path: Some(valid.path().to_string_lossy().to_string()),
+            },
+            ProviderSessionSummary {
+                session_id: "invalid-session".to_string(),
+                title: None,
+                project_dir: None,
+                last_active_at: None,
+                source_path: Some(invalid.path().to_string_lossy().to_string()),
+            },
+            ProviderSessionSummary {
+                session_id: "missing-session".to_string(),
+                title: None,
+                project_dir: None,
+                last_active_at: None,
+                source_path: Some("/tmp/memorph-bootstrap-missing.jsonl".to_string()),
+            },
+        ];
+        let mut report = SessionProjectionBootstrapReport::default();
+
+        for session in &sessions {
+            bootstrap_provider_session(&mut conn, "claude", session, &mut report);
+        }
+
+        assert_eq!(report.projected_sessions, 1);
+        assert_eq!(report.failed_sessions, 1);
+        assert_eq!(report.missing_sources, 1);
+        assert_eq!(report.failures.len(), 2);
+        assert!(report
+            .failures
+            .iter()
+            .any(|failure| failure.session_id.as_deref() == Some("invalid-session")));
+        assert!(report
+            .failures
+            .iter()
+            .any(|failure| failure.session_id.as_deref() == Some("missing-session")));
+    }
+
+    #[test]
+    fn bootstrap_reports_provider_scan_failure() {
+        let opencode_dir = tempfile::tempdir().unwrap();
+        let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
+        std::fs::write(opencode_dir.path().join("opencode.db"), b"not sqlite").unwrap();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+
+        let report =
+            bootstrap_session_projections_in_connection(&mut conn, Some("opencode")).unwrap();
+
+        assert_eq!(report.scanned_providers, 0);
+        assert_eq!(report.failed_providers, 1);
+        assert_eq!(report.discovered_sessions, 0);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].provider_id, "opencode");
+        assert_eq!(report.failures[0].session_id, None);
+        assert!(report.failures[0]
+            .reason
+            .contains("failed to scan provider sessions"));
+    }
+
+    #[test]
+    fn bootstrap_reports_unsupported_provider_without_scanning() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+
+        let report =
+            bootstrap_session_projections_in_connection(&mut conn, Some("cursor")).unwrap();
+
+        assert_eq!(report.scanned_providers, 0);
+        assert_eq!(report.unsupported_providers, 1);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].provider_id, "cursor");
+        assert_eq!(report.failures[0].session_id, None);
+    }
+
+    #[test]
     fn reproject_stale_snapshot_sources_rebuilds_claude_projection() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();

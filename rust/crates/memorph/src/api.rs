@@ -2817,6 +2817,28 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn session_bootstrap_route_returns_empty_provider_report() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = ConfigTestHome::new(dir.path());
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/sessions/bootstrap")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"provider":"claude"}"#))
+            .unwrap();
+
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"]["scanned_providers"], 1);
+        assert_eq!(value["data"]["failed_providers"], 0);
+        assert_eq!(value["data"]["discovered_sessions"], 0);
+        assert_eq!(value["data"]["projected_sessions"], 0);
+        assert_eq!(value["data"]["unchanged_sessions"], 0);
+        assert_eq!(value["data"]["failures"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn session_reproject_stale_route_returns_report() {
         let dir = tempfile::tempdir().unwrap();
         let _home = ConfigTestHome::new(dir.path());

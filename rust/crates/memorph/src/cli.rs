@@ -574,6 +574,17 @@ mod tests {
     }
 
     #[test]
+    fn sessions_bootstrap_command_parses_provider() {
+        let cli = Cli::parse_from(["memorph", "sessions", "bootstrap", "--provider", "opencode"]);
+        match cli.command {
+            Some(Commands::Sessions {
+                command: SessionCommands::Bootstrap { provider },
+            }) => assert_eq!(provider.as_deref(), Some("opencode")),
+            other => panic!("unexpected command: {:?}", other.map(|_| "other")),
+        }
+    }
+
+    #[test]
     fn providers_command_parses_provider_and_json_output() {
         let cli = Cli::parse_from(["memorph", "providers", "codex", "--json"]);
         match cli.command {

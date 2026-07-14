@@ -215,6 +215,101 @@ pub fn projection_source_file_path(path: &Path) -> PathBuf {
     PathBuf::from(file_path)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectionSourceFingerprint {
+    pub file_mtime_ms: i64,
+    pub file_size_bytes: i64,
+    pub content_hash: String,
+    pub source_cursor: String,
+}
+
+pub(crate) fn projection_source_fingerprint(
+    path: &Path,
+) -> Result<Option<ProjectionSourceFingerprint>> {
+    let file_path = projection_source_file_path(path);
+    let metadata = match std::fs::metadata(&file_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to read session source metadata: {}",
+                    file_path.display()
+                )
+            })
+        }
+    };
+    let mut bytes = match std::fs::read(&file_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to read session source content: {}",
+                    file_path.display()
+                )
+            })
+        }
+    };
+    let mut file_mtime_ms = metadata_modified_ms(&metadata);
+    let mut file_size_bytes = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+
+    if has_session_source_fragment(path) {
+        let mut wal_path = file_path.as_os_str().to_os_string();
+        wal_path.push("-wal");
+        let wal_path = PathBuf::from(wal_path);
+        match std::fs::metadata(&wal_path) {
+            Ok(wal_metadata) => {
+                let wal_bytes = std::fs::read(&wal_path).with_context(|| {
+                    format!(
+                        "Failed to read session source WAL content: {}",
+                        wal_path.display()
+                    )
+                })?;
+                bytes.extend_from_slice(b"\0memorph-sqlite-wal\0");
+                bytes.extend_from_slice(&(wal_bytes.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(&wal_bytes);
+                file_mtime_ms = file_mtime_ms.max(metadata_modified_ms(&wal_metadata));
+                file_size_bytes = file_size_bytes
+                    .saturating_add(i64::try_from(wal_metadata.len()).unwrap_or(i64::MAX));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to read session source WAL metadata: {}",
+                        wal_path.display()
+                    )
+                })
+            }
+        }
+    }
+
+    let content_hash = format!("{:x}", md5::compute(&bytes));
+    let source_cursor = format!("{file_mtime_ms}:{file_size_bytes}:{content_hash}");
+    Ok(Some(ProjectionSourceFingerprint {
+        file_mtime_ms,
+        file_size_bytes,
+        content_hash,
+        source_cursor,
+    }))
+}
+
+fn has_session_source_fragment(path: &Path) -> bool {
+    path.to_string_lossy()
+        .split_once('#')
+        .is_some_and(|(_, fragment)| fragment.starts_with("session="))
+}
+
+fn metadata_modified_ms(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
 #[derive(Debug, Clone)]
 struct SourceFileProjection {
     source_id: String,
@@ -229,39 +324,24 @@ struct SourceFileProjection {
 
 impl SourceFileProjection {
     fn read(provider_id: &str, provider_session_id: Option<&str>, path: &Path) -> Result<Self> {
-        let file_path = projection_source_file_path(path);
-        let metadata = std::fs::metadata(&file_path).with_context(|| {
+        let fingerprint = projection_source_fingerprint(path)?.with_context(|| {
             format!(
-                "Failed to read session source metadata: {}",
-                file_path.display()
+                "Session source does not exist: {}",
+                projection_source_file_path(path).display()
             )
         })?;
-        let modified_ms = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-            .unwrap_or(0);
-        let bytes = std::fs::read(&file_path).with_context(|| {
-            format!(
-                "Failed to read session source content: {}",
-                file_path.display()
-            )
-        })?;
-        let content_hash = format!("{:x}", md5::compute(&bytes));
         let source_path = path.to_string_lossy().to_string();
         let source_id = stable_row_id("source", provider_id, &source_path);
-        let source_cursor = format!("{}:{}:{}", modified_ms, metadata.len(), content_hash);
 
         Ok(Self {
             source_id,
             provider_id: provider_id.to_string(),
             provider_session_id: provider_session_id.map(str::to_string),
             source_path,
-            file_mtime_ms: modified_ms,
-            file_size_bytes: metadata.len().min(i64::MAX as u64) as i64,
-            content_hash,
-            source_cursor,
+            file_mtime_ms: fingerprint.file_mtime_ms,
+            file_size_bytes: fingerprint.file_size_bytes,
+            content_hash: fingerprint.content_hash,
+            source_cursor: fingerprint.source_cursor,
         })
     }
 }
@@ -1311,6 +1391,28 @@ mod tests {
             projection_source_file_path(Path::new("/tmp/session#1.jsonl")),
             PathBuf::from("/tmp/session#1.jsonl")
         );
+    }
+
+    #[test]
+    fn database_session_fingerprint_includes_wal_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let database_path = dir.path().join("opencode.db");
+        std::fs::write(&database_path, b"database").unwrap();
+        let locator = PathBuf::from(format!("{}#session=ses_1", database_path.to_string_lossy()));
+        let without_wal = projection_source_fingerprint(&locator).unwrap().unwrap();
+
+        let wal_path = PathBuf::from(format!("{}-wal", database_path.to_string_lossy()));
+        std::fs::write(&wal_path, b"first wal state").unwrap();
+        let first_wal = projection_source_fingerprint(&locator).unwrap().unwrap();
+        assert_ne!(without_wal.source_cursor, first_wal.source_cursor);
+        assert_eq!(
+            first_wal.file_size_bytes,
+            b"database".len() as i64 + b"first wal state".len() as i64
+        );
+
+        std::fs::write(&wal_path, b"second wal state").unwrap();
+        let second_wal = projection_source_fingerprint(&locator).unwrap().unwrap();
+        assert_ne!(first_wal.content_hash, second_wal.content_hash);
     }
 
     fn count_rows(conn: &Connection, table: &str) -> i64 {

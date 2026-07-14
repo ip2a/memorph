@@ -1020,43 +1020,10 @@ fn timestamp_from_ms(value: Option<i64>) -> DateTime<Utc> {
 }
 
 fn source_fingerprint_for_path(path: &std::path::Path) -> Result<Option<String>> {
-    let file_path = crate::storage::projection_store::projection_source_file_path(path);
-    let metadata = match std::fs::metadata(&file_path) {
-        Ok(metadata) => metadata,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!(
-                    "Failed to read session source metadata: {}",
-                    file_path.display()
-                )
-            })
-        }
-    };
-    let modified_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or(0);
-    let bytes = match std::fs::read(&file_path) {
-        Ok(bytes) => bytes,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!(
-                    "Failed to read session source content: {}",
-                    file_path.display()
-                )
-            })
-        }
-    };
-    Ok(Some(format!(
-        "{}:{}:{:x}",
-        modified_ms,
-        metadata.len(),
-        md5::compute(&bytes)
-    )))
+    Ok(
+        crate::storage::projection_store::projection_source_fingerprint(path)?
+            .map(|fingerprint| fingerprint.source_cursor),
+    )
 }
 
 fn sql_bool(value: i64) -> bool {
@@ -1331,6 +1298,43 @@ mod tests {
             }
         );
         assert!(!snapshot_stale(&conn, "canonical-1"));
+    }
+
+    #[test]
+    fn session_source_freshness_requires_exact_identity_path_and_fingerprint() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(file, "one").unwrap();
+        file.flush().unwrap();
+        let source_path = file.path().to_string_lossy().to_string();
+        let fingerprint = source_fingerprint_for_path(file.path()).unwrap().unwrap();
+        insert_projected_snapshot_source(
+            &conn,
+            "canonical-1",
+            "claude",
+            "native-1",
+            &source_path,
+            &fingerprint,
+            false,
+        );
+        let store = SnapshotStore::new(&conn);
+
+        assert!(store
+            .session_source_is_fresh("claude", "native-1", &source_path)
+            .unwrap());
+        assert!(!store
+            .session_source_is_fresh("claude", "native-2", &source_path)
+            .unwrap());
+        assert!(!store
+            .session_source_is_fresh("codex", "native-1", &source_path)
+            .unwrap());
+
+        writeln!(file, "two").unwrap();
+        file.flush().unwrap();
+        assert!(!store
+            .session_source_is_fresh("claude", "native-1", &source_path)
+            .unwrap());
     }
 
     #[test]
