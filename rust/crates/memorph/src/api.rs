@@ -1328,6 +1328,7 @@ struct ProviderActivityQuery {
     workspace: Option<String>,
     hours: Option<i64>,
     all: Option<bool>,
+    all_time: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1694,12 +1695,14 @@ async fn get_provider_activity(
     let hours = q.hours.unwrap_or(core::PROVIDER_ACTIVITY_DEFAULT_HOURS);
     let workspace = q.workspace;
     let all_workspaces = q.all.unwrap_or(false);
+    let all_time = q.all_time.unwrap_or(false);
     let result = tokio::task::spawn_blocking(move || {
         core::compute_provider_activity_timeline(
             &provider,
             workspace.as_deref(),
             hours,
             all_workspaces,
+            all_time,
         )
     })
     .await;

@@ -1,32 +1,13 @@
-import { useMemo, useState, type HTMLAttributes } from "react";
+import { useState } from "react";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
 import { SectionHeading } from "@/components/shared/section-heading";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { SessionActivityChart } from "@/features/sessions/session-activity-chart";
-import { ProviderPieChart, StatsRankBarChart } from "@/features/stats/stats-charts";
+import { StatsOverviewPanels } from "@/features/stats/stats-overview-panels";
 import { type StatsRange, type StatsWorkspaceScope, useStatsDashboard } from "@/features/stats/queries";
 import { formatBytes } from "@/lib/format";
-import { cn } from "@/lib/utils";
-
-function DividerSection({
-  children,
-  className,
-  title,
-  ...props
-}: HTMLAttributes<HTMLElement> & {
-  title?: string;
-}) {
-  return (
-    <section className={cn("flex flex-col gap-3 border-b pb-4", className)} {...props}>
-      {title ? <strong className="text-sm font-medium">{title}</strong> : null}
-      {children}
-    </section>
-  );
-}
 
 export function StatsPage() {
   const [range, setRange] = useState<StatsRange>("7d");
@@ -56,19 +37,11 @@ export function StatsPage() {
         ? String(activityTotal)
         : activityTotal.toFixed(1);
 
-  const providerShare = useMemo(() => {
-    const top = providerBreakdown.slice(0, 5);
-    const rest = providerBreakdown.slice(5).reduce((sum, item) => sum + item.value, 0);
-    const items = top.map((item) => ({
-      id: item.id,
-      label: item.label,
-      value: item.value,
-    }));
-    if (rest > 0) {
-      items.push({ id: "other", label: "Other", value: rest });
-    }
-    return items;
-  }, [providerBreakdown]);
+  const usageTable = {
+    items: rankBarItems,
+    labelColumn: allWorkspaces ? "Workspace" : "Session",
+    valueColumn: "Messages",
+  };
 
   if (loading && !stats.data && !hooks.data) {
     return <PageSkeleton />;
@@ -105,7 +78,7 @@ export function StatsPage() {
         />
 
         <section className="border-b pb-4" data-stats-kpi-strip>
-          <MetricGrid columns="auto" className="grid-cols-2 sm:grid-cols-3 xl:grid-cols-6">
+          <MetricGrid columns="auto" className="grid-cols-3 justify-items-center xl:grid-cols-6">
             <MetricTile
               label="Sessions"
               value={
@@ -163,7 +136,7 @@ export function StatsPage() {
             <MetricTile
               label="Activity"
               value={activityValue}
-              hint={`${hours}h weighted score`}
+              hint={hours ? `${hours}h weighted score` : "all-time weighted score"}
               variant="square"
             />
             <MetricTile
@@ -175,39 +148,14 @@ export function StatsPage() {
           </MetricGrid>
         </section>
 
-        <section className="grid gap-4 lg:grid-cols-2" data-stats-primary-charts>
-          <Card size="sm">
-            <CardHeader>
-              <CardTitle>{allWorkspaces ? "Top Workspaces" : "Top Sessions"}</CardTitle>
-              <CardDescription>按消息数量排名</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <StatsRankBarChart
-                isLoading={loading || sessions.isLoading}
-                items={rankBarItems}
-                emptyLabel={allWorkspaces ? "暂无工作空间消息数据。" : "当前工作区暂无会话消息数据。"}
-              />
-            </CardContent>
-          </Card>
-
-          <Card size="sm">
-            <CardHeader>
-              <CardTitle>Provider Share</CardTitle>
-              <CardDescription>会话分布占比</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ProviderPieChart items={providerShare} emptyLabel="当前工作区暂无会话。" />
-            </CardContent>
-          </Card>
-        </section>
-
-        <DividerSection data-stats-activity-chart className="border-b-0 pb-0">
-          <div className="flex flex-col gap-1">
-            <strong className="text-sm font-medium">Activity Timeline</strong>
-            <p className="text-xs text-muted-foreground">选定时间范围内的活动趋势</p>
-          </div>
-          <SessionActivityChart timeline={activityTimeline} isLoading={activityLoading} />
-        </DividerSection>
+        <StatsOverviewPanels
+          isLoading={loading || activityLoading || sessions.isLoading}
+          range={range}
+          tableItems={usageTable.items}
+          tableLabelColumn={usageTable.labelColumn}
+          tableValueColumn={usageTable.valueColumn}
+          timeline={activityTimeline}
+        />
       </div>
     </ScrollArea>
   );

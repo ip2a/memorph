@@ -440,7 +440,7 @@ export function getSession(provider: string, sessionId: string, params: SessionD
 
 export function getProviderActivity(
   provider: string,
-  params: { all?: boolean; hours?: number; workspace?: string } = {},
+  params: { all?: boolean; all_time?: boolean; hours?: number; workspace?: string } = {},
 ) {
   return api<ProviderActivityTimeline>(
     `/api/v1/providers/${encodeURIComponent(provider)}/activity${buildQuery(params)}`,

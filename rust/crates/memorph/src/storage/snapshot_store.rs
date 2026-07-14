@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, params_from_iter, types::Value, Connection};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
@@ -52,6 +52,30 @@ pub struct ProjectedSessionSnapshotRow {
     pub pinned: bool,
     pub preferred_targets: Vec<String>,
     pub stale: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedActivityEventRow {
+    pub canonical_session_id: String,
+    pub kind: SessionEventKind,
+    pub timestamp_ms: i64,
+    pub visible_message: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedActivitySessionRow {
+    pub canonical_session_id: String,
+    pub workspace_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedSessionActivityRow {
+    pub canonical_session_id: String,
+    pub provider_id: String,
+    pub provider_session_id: Option<String>,
+    pub created_at_ms: Option<i64>,
+    pub last_active_at_ms: Option<i64>,
+    pub events: Vec<ProjectedActivityEventRow>,
 }
 
 #[derive(Debug, Clone)]
@@ -351,6 +375,125 @@ impl<'a> SnapshotStore<'a> {
             events,
             ..header
         }))
+    }
+
+    pub fn get_session_activity(
+        &self,
+        provider_id: &str,
+        provider_session_id: &str,
+    ) -> Result<Option<ProjectedSessionActivityRow>> {
+        let Some(header) = self.session_detail_header(provider_id, provider_session_id)? else {
+            return Ok(None);
+        };
+        let events = self.session_activity_events(&header.canonical_session_id)?;
+        Ok(Some(ProjectedSessionActivityRow {
+            canonical_session_id: header.canonical_session_id,
+            provider_id: header.provider_id,
+            provider_session_id: header.provider_session_id,
+            created_at_ms: header.created_at_ms,
+            last_active_at_ms: header.last_active_at_ms,
+            events,
+        }))
+    }
+
+    pub fn list_activity_sessions_for_provider(
+        &self,
+        provider_id: &str,
+    ) -> Result<Vec<ProjectedActivitySessionRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    session.id,
+                    COALESCE(snapshot.workspace_dir, session.workspace_dir, source.workspace_dir)
+                 FROM sessions session
+                 JOIN session_snapshots snapshot ON snapshot.session_id = session.id
+                 LEFT JOIN session_sources source ON source.id = session.primary_source_id
+                 WHERE session.deleted_at_ms IS NULL
+                   AND session.provider_id = ?1
+                 ORDER BY session.id",
+            )
+            .context("Failed to prepare projected activity sessions")?;
+        let rows = stmt
+            .query_map([provider_id], |row| {
+                Ok(ProjectedActivitySessionRow {
+                    canonical_session_id: row.get(0)?,
+                    workspace_dir: row.get(1)?,
+                })
+            })
+            .context("Failed to query projected activity sessions")?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            sessions.push(row.context("Failed to decode projected activity session")?);
+        }
+        Ok(sessions)
+    }
+
+    pub fn list_activity_events_for_sessions(
+        &self,
+        canonical_session_ids: &[&str],
+        range_start_ms: Option<i64>,
+        range_end_ms: i64,
+    ) -> Result<Vec<ProjectedActivityEventRow>> {
+        if canonical_session_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut events = Vec::new();
+        for session_ids in canonical_session_ids.chunks(500) {
+            let placeholders = std::iter::repeat_n("?", session_ids.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let sql = format!(
+                "SELECT
+                    event.session_id,
+                    event.kind,
+                    event.timestamp_ms,
+                    event.visibility
+                 FROM session_events event
+                 JOIN sessions session ON session.id = event.session_id
+                 WHERE session.deleted_at_ms IS NULL
+                   AND event.session_id IN ({placeholders})
+                   AND event.timestamp_ms IS NOT NULL
+                   AND (? IS NULL OR event.timestamp_ms >= ?)
+                   AND event.timestamp_ms <= ?
+                 ORDER BY event.timestamp_ms, event.source_order, event.stable_cursor"
+            );
+            let mut values = session_ids
+                .iter()
+                .map(|session_id| Value::Text((*session_id).to_string()))
+                .collect::<Vec<_>>();
+            values.push(range_start_ms.map(Value::Integer).unwrap_or(Value::Null));
+            values.push(range_start_ms.map(Value::Integer).unwrap_or(Value::Null));
+            values.push(Value::Integer(range_end_ms));
+            let mut stmt = self
+                .conn
+                .prepare(&sql)
+                .context("Failed to prepare projected activity events")?;
+            let rows = stmt
+                .query_map(params_from_iter(values.iter()), |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .context("Failed to query projected activity events")?;
+            for row in rows {
+                let (canonical_session_id, kind, timestamp_ms, visibility) =
+                    row.context("Failed to decode projected activity event")?;
+                events.push(ProjectedActivityEventRow {
+                    canonical_session_id,
+                    kind: parse_event_kind(&kind)?,
+                    timestamp_ms,
+                    visible_message: visibility == "visible",
+                });
+            }
+        }
+        events.sort_by_key(|event| event.timestamp_ms);
+        Ok(events)
     }
 
     fn session_detail_header(
@@ -684,6 +827,47 @@ impl<'a> SnapshotStore<'a> {
         for row in event_rows {
             let event_blocks = blocks.get(&row.id).cloned().unwrap_or_default();
             events.push(row.into_event(provider_id, event_blocks)?);
+        }
+        Ok(events)
+    }
+
+    fn session_activity_events(
+        &self,
+        canonical_session_id: &str,
+    ) -> Result<Vec<ProjectedActivityEventRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT
+                    event.kind,
+                    event.timestamp_ms,
+                    event.visibility
+                 FROM session_events event
+                 WHERE event.session_id = ?1
+                   AND event.timestamp_ms IS NOT NULL
+                 ORDER BY event.timestamp_ms, event.source_order, event.stable_cursor",
+            )
+            .context("Failed to prepare projected session activity events")?;
+        let rows = stmt
+            .query_map([canonical_session_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .context("Failed to query projected session activity events")?;
+
+        let mut events = Vec::new();
+        for row in rows {
+            let (kind, timestamp_ms, visibility) =
+                row.context("Failed to decode projected session activity event")?;
+            events.push(ProjectedActivityEventRow {
+                canonical_session_id: canonical_session_id.to_string(),
+                kind: parse_event_kind(&kind)?,
+                timestamp_ms,
+                visible_message: visibility == "visible",
+            });
         }
         Ok(events)
     }
@@ -1263,6 +1447,53 @@ mod tests {
             EventBlock::Text { text } => assert_eq!(text, "Cached only"),
             block => panic!("unexpected block: {block:?}"),
         }
+    }
+
+    #[test]
+    fn lists_projected_activity_events_across_query_batches() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let tx = conn.transaction().unwrap();
+        for index in 0..501 {
+            let session_id = format!("activity-session-{index}");
+            tx.execute(
+                "INSERT INTO sessions
+                 (id, provider_id, provider_session_id, status, event_count, turn_count, deleted_at_ms)
+                 VALUES (?1, 'claude', ?1, 'completed', 1, 0, ?2)",
+                params![
+                    session_id,
+                    if index == 250 { Some(1_i64) } else { None }
+                ],
+            )
+            .unwrap();
+            tx.execute(
+                "INSERT INTO session_events
+                 (id, session_id, role, kind, visibility, timestamp_ms, source_order,
+                  stable_cursor, metadata_json)
+                 VALUES (?1, ?2, 'assistant', 'message', 'visible', ?3, 0, '0', '{}')",
+                params![format!("activity-event-{index}"), session_id, 501 - index],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        let session_ids = (0..501)
+            .map(|index| format!("activity-session-{index}"))
+            .collect::<Vec<_>>();
+        let session_id_refs = session_ids.iter().map(String::as_str).collect::<Vec<_>>();
+        let events = SnapshotStore::new(&conn)
+            .list_activity_events_for_sessions(&session_id_refs, Some(100), 500)
+            .unwrap();
+
+        assert_eq!(events.len(), 400);
+        assert!(events
+            .windows(2)
+            .all(|pair| pair[0].timestamp_ms <= pair[1].timestamp_ms));
+        assert!(events.iter().all(|event| event.timestamp_ms >= 100));
+        assert!(events.iter().all(|event| event.timestamp_ms <= 500));
+        assert!(events
+            .iter()
+            .all(|event| event.canonical_session_id != "activity-session-250"));
     }
 
     #[test]

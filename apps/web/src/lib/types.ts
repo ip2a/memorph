@@ -826,7 +826,7 @@ export type SessionReprojectionReport = {
   }>;
 };
 
-export type SessionActivityBucketUnit = "minute" | "hour" | "twelve_hour";
+export type SessionActivityBucketUnit = "minute" | "hour" | "twelve_hour" | "adaptive";
 
 export type SessionActivityBucket = {
   start: string;
@@ -857,8 +857,8 @@ export type ProviderActivityTimeline = {
   range_end: string;
   buckets: SessionActivityBucket[];
   total_activity: number;
-  sessions_scanned: number;
-  sessions_considered: number;
+  projected_sessions: number;
+  sessions_with_activity: number;
 };
 
 export type SessionGroup = {

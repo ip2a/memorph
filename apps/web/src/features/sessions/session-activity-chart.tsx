@@ -28,16 +28,24 @@ function bucketActivity(bucket: SessionActivityBucket) {
   return bucket.activity_score ?? bucket.event_count + bucket.message_count;
 }
 
-function bucketUnitLabel(unit: SessionActivityTimeline["bucket_unit"]) {
-  switch (unit) {
-    case "minute":
+function bucketUnitLabel(timeline: SessionActivityTimeline) {
+  switch (timeline.bucket_seconds) {
+    case 60:
       return "per minute";
-    case "hour":
+    case 3600:
       return "per hour";
-    case "twelve_hour":
+    case 43_200:
       return "per 12 hours";
     default:
-      return "per bucket";
+      if (timeline.bucket_seconds % 86_400 === 0) {
+        const days = timeline.bucket_seconds / 86_400;
+        return `per ${days} ${days === 1 ? "day" : "days"}`;
+      }
+      if (timeline.bucket_seconds % 3600 === 0) {
+        const hours = timeline.bucket_seconds / 3600;
+        return `per ${hours} ${hours === 1 ? "hour" : "hours"}`;
+      }
+      return `per ${timeline.bucket_seconds} seconds`;
   }
 }
 
@@ -130,7 +138,7 @@ export function SessionActivityChart({ className, isLoading, timeline }: Session
         <div className="min-w-0">
           <p className="text-xs font-medium text-foreground">Activity</p>
           <p className="truncate text-[11px] text-muted-foreground">
-            {bucketUnitLabel(timeline.bucket_unit)} · peak {formatActivityScore(peak)}
+            {bucketUnitLabel(timeline)} · peak {formatActivityScore(peak)}
           </p>
         </div>
         <div className="flex h-12 shrink-0 flex-col items-end text-right text-[11px] leading-4 text-muted-foreground">

@@ -13,8 +13,12 @@ export const queryKeys = {
     ["session", provider, sessionId, params] as const,
   sessionActivity: (provider: string, sessionId: string) =>
     ["session", provider, sessionId, "activity"] as const,
-  providerActivity: (provider: string, workspace: string | null, hours = 72, allWorkspaces = false) =>
-    ["provider-activity", provider, allWorkspaces ? "all-workspaces" : workspace ?? "global", hours] as const,
+  providerActivity: (
+    provider: string,
+    workspace: string | null,
+    range: number | "all" = 72,
+    allWorkspaces = false,
+  ) => ["provider-activity", provider, allWorkspaces ? "all-workspaces" : workspace ?? "global", range] as const,
   syncGroups: ["sync-groups"] as const,
   syncGroup: (groupId: string) => ["sync-group", groupId] as const,
   syncStatus: (groupId?: string) => ["sync-status", groupId ?? "all"] as const,

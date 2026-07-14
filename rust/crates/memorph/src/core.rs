@@ -1,8 +1,10 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::canonical::{CanonicalSession, ImportedSession, SessionArtifact, SessionEvent};
+use crate::canonical::{
+    CanonicalSession, ImportedSession, SessionArtifact, SessionEvent, SessionEventKind,
+};
 use crate::core::active_compression::{
     ActiveCompressionApplyParams, ActiveCompressionParams, ActiveCompressionPolicy,
     ActiveCompressionReport,
@@ -1435,6 +1437,7 @@ pub enum SessionActivityBucketUnit {
     Minute,
     Hour,
     TwelveHour,
+    Adaptive,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1466,24 +1469,57 @@ pub fn compute_session_activity_timeline(
     provider_id: &str,
     session_id: &str,
 ) -> Result<SessionActivityTimeline> {
+    let conn = local_store::open_database()?;
+    compute_session_activity_timeline_in_connection(&conn, provider_id, session_id)
+}
+
+fn compute_session_activity_timeline_in_connection(
+    conn: &rusqlite::Connection,
+    provider_id: &str,
+    session_id: &str,
+) -> Result<SessionActivityTimeline> {
     use chrono::TimeDelta;
 
-    let imported = get_canonical_session(provider_id, session_id)?;
-    let session = &imported.session;
-    let mut event_timestamps = Vec::with_capacity(session.events.len());
-
-    for event in &session.events {
-        event_timestamps.push(event.timestamp);
+    let projected = crate::storage::snapshot_store::SnapshotStore::new(conn)
+        .get_session_activity(provider_id, session_id)?
+        .with_context(|| format!("Projected session not found: {provider_id}/{session_id}"))?;
+    let mut event_timestamps = Vec::with_capacity(projected.events.len());
+    for event in &projected.events {
+        let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.timestamp_ms)
+            .with_context(|| {
+                format!(
+                    "Invalid projected activity timestamp for {provider_id}/{session_id}: {}",
+                    event.timestamp_ms
+                )
+            })?;
+        event_timestamps.push(timestamp);
     }
-
-    let created_at = session
-        .context
-        .created_at
-        .or_else(|| event_timestamps.iter().copied().min());
-    let last_active_at = session
-        .context
-        .last_active_at
-        .or_else(|| event_timestamps.iter().copied().max());
+    let projected_created_at = projected
+        .created_at_ms
+        .map(|timestamp| {
+            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp).with_context(|| {
+                format!("Invalid projected session created_at timestamp: {timestamp}")
+            })
+        })
+        .transpose()?;
+    let projected_last_active_at = projected
+        .last_active_at_ms
+        .map(|timestamp| {
+            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp).with_context(|| {
+                format!("Invalid projected session last_active_at timestamp: {timestamp}")
+            })
+        })
+        .transpose()?;
+    let first_event_at = event_timestamps.iter().copied().min();
+    let last_event_at = event_timestamps.iter().copied().max();
+    let created_at = match (projected_created_at, first_event_at) {
+        (Some(projected), Some(event)) => Some(projected.min(event)),
+        (projected, event) => projected.or(event),
+    };
+    let last_active_at = match (projected_last_active_at, last_event_at) {
+        (Some(projected), Some(event)) => Some(projected.max(event)),
+        (projected, event) => projected.or(event),
+    };
 
     let range_start = created_at
         .or_else(|| event_timestamps.first().copied())
@@ -1498,8 +1534,9 @@ pub fn compute_session_activity_timeline(
     };
 
     let span = range_end.signed_duration_since(range_start);
-    let (bucket_unit, mut bucket_seconds) = choose_activity_bucket(span);
+    let (_, mut bucket_seconds) = choose_activity_bucket(span);
     let bucket_count = activity_bucket_count(span, &mut bucket_seconds);
+    let bucket_unit = activity_bucket_unit(bucket_seconds);
     let mut buckets = Vec::with_capacity(bucket_count);
     for index in 0..bucket_count {
         let start = range_start + TimeDelta::seconds(index as i64 * bucket_seconds);
@@ -1519,14 +1556,14 @@ pub fn compute_session_activity_timeline(
 
     let mut total_activity = 0.0;
     let mut total_messages = 0usize;
-    for event in &session.events {
-        let weight = event_activity_weight(event);
+    for (event, timestamp) in projected.events.iter().zip(event_timestamps) {
+        let weight = event_activity_weight(&event.kind, event.visible_message);
         total_activity += weight;
-        if provider::canonical_event_is_visible_message(event) {
+        if event.visible_message {
             total_messages += 1;
         }
         if let Some(bucket) = bucket_for_timestamp(
-            event.timestamp,
+            timestamp,
             range_start,
             range_end,
             bucket_seconds,
@@ -1534,7 +1571,7 @@ pub fn compute_session_activity_timeline(
         ) {
             bucket.event_count += 1;
             bucket.activity_score += weight;
-            if provider::canonical_event_is_visible_message(event) {
+            if event.visible_message {
                 bucket.message_count += 1;
             }
         }
@@ -1548,15 +1585,14 @@ pub fn compute_session_activity_timeline(
         bucket_unit,
         bucket_seconds,
         buckets,
-        total_events: session.events.len(),
+        total_events: projected.events.len(),
         total_messages,
         total_activity,
     })
 }
 
 pub const PROVIDER_ACTIVITY_DEFAULT_HOURS: i64 = 72;
-const PROVIDER_ACTIVITY_MAX_HOURS: i64 = 168;
-const PROVIDER_ACTIVITY_MAX_SESSIONS: usize = 64;
+const PROVIDER_ACTIVITY_MAX_HOURS: i64 = 24 * 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderActivityTimeline {
@@ -1567,8 +1603,8 @@ pub struct ProviderActivityTimeline {
     pub range_end: chrono::DateTime<chrono::Utc>,
     pub buckets: Vec<SessionActivityBucket>,
     pub total_activity: f64,
-    pub sessions_scanned: usize,
-    pub sessions_considered: usize,
+    pub projected_sessions: usize,
+    pub sessions_with_activity: usize,
 }
 
 pub fn compute_provider_activity_timeline(
@@ -1576,24 +1612,80 @@ pub fn compute_provider_activity_timeline(
     workspace: Option<&str>,
     hours: i64,
     all_workspaces: bool,
+    all_time: bool,
+) -> Result<ProviderActivityTimeline> {
+    let conn = local_store::open_database()?;
+    compute_provider_activity_timeline_in_connection(
+        &conn,
+        provider_id,
+        workspace,
+        hours,
+        all_workspaces,
+        all_time,
+    )
+}
+
+fn compute_provider_activity_timeline_in_connection(
+    conn: &rusqlite::Connection,
+    provider_id: &str,
+    workspace: Option<&str>,
+    hours: i64,
+    all_workspaces: bool,
+    all_time: bool,
 ) -> Result<ProviderActivityTimeline> {
     use chrono::TimeDelta;
 
     let prov = providers::find_provider(provider_id)
         .with_context(|| format!("Unknown provider: {}", provider_id))?;
-    let capabilities = prov.capabilities();
-    if !capabilities.scan || !capabilities.import {
-        anyhow::bail!(
-            "Provider does not support activity timeline: {}",
-            provider_id
-        );
-    }
-
     let hours = hours.clamp(1, PROVIDER_ACTIVITY_MAX_HOURS);
-    let bucket_seconds = 60 * 60;
     let range_end = chrono::Utc::now();
-    let range_start = range_end - TimeDelta::hours(hours);
-    let bucket_count = hours as usize;
+    let requested_range_start = (!all_time).then(|| range_end - TimeDelta::hours(hours));
+    let sessions = crate::storage::snapshot_store::SnapshotStore::new(conn)
+        .list_activity_sessions_for_provider(provider_id)?
+        .into_iter()
+        .filter(|session| {
+            if all_workspaces {
+                return true;
+            }
+            prov.normalized_workspace_key(workspace).as_deref()
+                == prov
+                    .normalized_workspace_key(session.workspace_dir.as_deref())
+                    .as_deref()
+        })
+        .collect::<Vec<_>>();
+    let projected_sessions = sessions.len();
+    let selected_session_ids = sessions
+        .iter()
+        .map(|session| session.canonical_session_id.as_str())
+        .collect::<Vec<_>>();
+    let events = crate::storage::snapshot_store::SnapshotStore::new(conn)
+        .list_activity_events_for_sessions(
+            &selected_session_ids,
+            requested_range_start.map(|value| value.timestamp_millis()),
+            range_end.timestamp_millis(),
+        )?;
+    let range_start = requested_range_start.unwrap_or_else(|| {
+        events
+            .iter()
+            .filter_map(|event| {
+                chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.timestamp_ms)
+            })
+            .min()
+            .unwrap_or(range_end)
+    });
+    let span = range_end.signed_duration_since(range_start);
+    let mut bucket_seconds = if all_time {
+        choose_activity_bucket(span).1
+    } else if hours <= 7 * 24 {
+        60 * 60
+    } else {
+        12 * 60 * 60
+    };
+    let bucket_count = if all_time {
+        activity_bucket_count(span, &mut bucket_seconds)
+    } else {
+        ((span.num_seconds().max(0) + bucket_seconds - 1) / bucket_seconds).max(1) as usize
+    };
 
     let mut buckets = Vec::with_capacity(bucket_count);
     for index in 0..bucket_count {
@@ -1611,94 +1703,52 @@ pub fn compute_provider_activity_timeline(
             activity_score: 0.0,
         });
     }
-
-    let Some(sessions) = scan_sessions_for_aggregate(prov.as_ref(), true)? else {
-        return Ok(ProviderActivityTimeline {
-            provider_id: provider_id.to_string(),
-            hours,
-            bucket_seconds,
+    let mut sessions_with_events = HashSet::new();
+    let mut total_activity = 0.0f64;
+    for event in &events {
+        let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.timestamp_ms)
+            .with_context(|| {
+                format!(
+                    "Invalid projected provider activity timestamp for {provider_id}: {}",
+                    event.timestamp_ms
+                )
+            })?;
+        sessions_with_events.insert(event.canonical_session_id.as_str());
+        let weight = event_activity_weight(&event.kind, event.visible_message);
+        total_activity += weight;
+        if let Some(bucket) = bucket_for_timestamp(
+            timestamp,
             range_start,
             range_end,
-            buckets,
-            total_activity: 0.0,
-            sessions_scanned: 0,
-            sessions_considered: 0,
-        });
-    };
-
-    let mut candidates: Vec<&ProviderSessionSummary> = if all_workspaces {
-        sessions.iter().collect()
-    } else {
-        let requested_workspace_key = prov.normalized_workspace_key(workspace);
-        sessions
-            .iter()
-            .filter(|session| {
-                requested_workspace_key.as_deref()
-                    == prov
-                        .normalized_workspace_key(session.project_dir.as_deref())
-                        .as_deref()
-            })
-            .collect()
-    };
-    candidates.sort_by_key(|session| std::cmp::Reverse(session.last_active_at));
-    let sessions_considered = candidates.len();
-
-    let mut sessions_scanned = 0usize;
-    let mut total_activity = 0.0f64;
-    let range_start_ms = range_start.timestamp_millis();
-    for meta in candidates.into_iter().take(PROVIDER_ACTIVITY_MAX_SESSIONS) {
-        if meta
-            .last_active_at
-            .is_some_and(|last_active| last_active < range_start_ms)
-        {
-            continue;
-        }
-        let imported = match get_canonical_session(provider_id, &meta.session_id) {
-            Ok(imported) => imported,
-            Err(_) => continue,
-        };
-        sessions_scanned += 1;
-        for event in &imported.session.events {
-            if event.timestamp < range_start || event.timestamp > range_end {
-                continue;
-            }
-            let weight = event_activity_weight(event);
-            total_activity += weight;
-            if let Some(bucket) = bucket_for_timestamp(
-                event.timestamp,
-                range_start,
-                range_end,
-                bucket_seconds,
-                &mut buckets,
-            ) {
-                bucket.event_count += 1;
-                bucket.activity_score += weight;
-                if provider::canonical_event_is_visible_message(event) {
-                    bucket.message_count += 1;
-                }
+            bucket_seconds,
+            &mut buckets,
+        ) {
+            bucket.event_count += 1;
+            bucket.activity_score += weight;
+            if event.visible_message {
+                bucket.message_count += 1;
             }
         }
     }
+    let actual_hours = ((span.num_seconds().max(0) + 3599) / 3600).max(1);
 
     Ok(ProviderActivityTimeline {
         provider_id: provider_id.to_string(),
-        hours,
+        hours: if all_time { actual_hours } else { hours },
         bucket_seconds,
         range_start,
         range_end,
         buckets,
         total_activity,
-        sessions_scanned,
-        sessions_considered,
+        projected_sessions,
+        sessions_with_activity: sessions_with_events.len(),
     })
 }
 
-fn event_activity_weight(event: &SessionEvent) -> f64 {
-    use crate::canonical::SessionEventKind;
-
-    match event.kind {
+fn event_activity_weight(kind: &SessionEventKind, visible_message: bool) -> f64 {
+    match kind {
         SessionEventKind::Lifecycle => 0.25,
-        SessionEventKind::Message if provider::canonical_event_is_visible_message(event) => 3.0,
+        SessionEventKind::Message if visible_message => 3.0,
         SessionEventKind::Message => 1.5,
         SessionEventKind::ToolCall | SessionEventKind::ToolResult => 2.0,
         SessionEventKind::Command | SessionEventKind::CommandResult => 1.75,
@@ -1714,6 +1764,15 @@ fn choose_activity_bucket(span: chrono::TimeDelta) -> (SessionActivityBucketUnit
         (SessionActivityBucketUnit::Hour, 60 * 60)
     } else {
         (SessionActivityBucketUnit::TwelveHour, 12 * 60 * 60)
+    }
+}
+
+fn activity_bucket_unit(bucket_seconds: i64) -> SessionActivityBucketUnit {
+    match bucket_seconds {
+        60 => SessionActivityBucketUnit::Minute,
+        3_600 => SessionActivityBucketUnit::Hour,
+        43_200 => SessionActivityBucketUnit::TwelveHour,
+        _ => SessionActivityBucketUnit::Adaptive,
     }
 }
 
@@ -4482,6 +4541,13 @@ mod tests {
             choose_activity_bucket(chrono::TimeDelta::days(3)),
             (SessionActivityBucketUnit::TwelveHour, 12 * 60 * 60)
         );
+
+        let (_, mut bucket_seconds) = choose_activity_bucket(chrono::TimeDelta::days(100));
+        assert!(activity_bucket_count(chrono::TimeDelta::days(100), &mut bucket_seconds) <= 96);
+        assert_eq!(
+            activity_bucket_unit(bucket_seconds),
+            SessionActivityBucketUnit::Adaptive
+        );
     }
 
     #[test]
@@ -4668,6 +4734,150 @@ mod tests {
             Some("Projected title")
         );
         assert_eq!(groups[0].sessions[0].message_count, Some(2));
+    }
+
+    #[test]
+    fn activity_timelines_read_projection_without_provider_source() {
+        let mut source = tempfile::NamedTempFile::new().unwrap();
+        write_claude_projection_sample(&mut source, "Projected activity");
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        crate::providers::claude::project_session_to_store(
+            source.path(),
+            &mut ProjectionStore::new(&mut conn),
+        )
+        .unwrap();
+        drop(source);
+
+        let session = compute_session_activity_timeline_in_connection(
+            &conn,
+            "claude",
+            "session-projection-1",
+        )
+        .unwrap();
+        assert_eq!(session.total_events, 3);
+        assert_eq!(session.total_messages, 2);
+        assert_eq!(session.total_activity, 6.25);
+
+        let provider = compute_provider_activity_timeline_in_connection(
+            &conn,
+            "claude",
+            Some("/tmp/project"),
+            PROVIDER_ACTIVITY_DEFAULT_HOURS,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(provider.projected_sessions, 1);
+        assert_eq!(provider.sessions_with_activity, 1);
+        assert_eq!(provider.total_activity, 6.25);
+        assert_eq!(
+            provider
+                .buckets
+                .iter()
+                .map(|bucket| bucket.message_count)
+                .sum::<usize>(),
+            2
+        );
+    }
+
+    #[test]
+    fn provider_activity_applies_projection_scope_range_and_deletion_rules() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&conn).unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let now = Utc::now();
+
+        project_claude_activity_sample(
+            &mut conn,
+            "activity-recent-a",
+            "/tmp/project-a",
+            now - chrono::TimeDelta::hours(2),
+        );
+        project_claude_activity_sample(
+            &mut conn,
+            "activity-recent-b",
+            "/tmp/project-b",
+            now - chrono::TimeDelta::hours(3),
+        );
+        project_claude_activity_sample(
+            &mut conn,
+            "activity-old-a",
+            "/tmp/project-a",
+            now - chrono::TimeDelta::days(40),
+        );
+        project_claude_activity_sample(
+            &mut conn,
+            "activity-future-a",
+            "/tmp/project-a",
+            now + chrono::TimeDelta::hours(2),
+        );
+
+        let workspace = compute_provider_activity_timeline_in_connection(
+            &conn,
+            "claude",
+            Some("/tmp/project-a"),
+            24 * 30,
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(workspace.hours, 720);
+        assert_eq!(workspace.bucket_seconds, 12 * 60 * 60);
+        assert_eq!(workspace.buckets.len(), 60);
+        assert_eq!(workspace.projected_sessions, 3);
+        assert_eq!(workspace.sessions_with_activity, 1);
+        assert_eq!(workspace.total_activity, 6.25);
+        assert_eq!(activity_event_count(&workspace), 3);
+
+        let all_workspaces = compute_provider_activity_timeline_in_connection(
+            &conn,
+            "claude",
+            None,
+            24 * 30,
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(all_workspaces.projected_sessions, 4);
+        assert_eq!(all_workspaces.sessions_with_activity, 2);
+        assert_eq!(all_workspaces.total_activity, 12.5);
+        assert_eq!(activity_event_count(&all_workspaces), 6);
+
+        let all_time_workspace = compute_provider_activity_timeline_in_connection(
+            &conn,
+            "claude",
+            Some("/tmp/project-a"),
+            PROVIDER_ACTIVITY_DEFAULT_HOURS,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(all_time_workspace.projected_sessions, 3);
+        assert_eq!(all_time_workspace.sessions_with_activity, 2);
+        assert_eq!(all_time_workspace.total_activity, 12.5);
+        assert_eq!(activity_event_count(&all_time_workspace), 6);
+        assert!(all_time_workspace.range_start <= now - chrono::TimeDelta::days(40));
+
+        conn.execute(
+            "UPDATE sessions SET deleted_at_ms = ?1 WHERE provider_session_id = ?2",
+            rusqlite::params![Utc::now().timestamp_millis(), "activity-recent-a"],
+        )
+        .unwrap();
+        let after_delete = compute_provider_activity_timeline_in_connection(
+            &conn,
+            "claude",
+            None,
+            24 * 30,
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(after_delete.projected_sessions, 3);
+        assert_eq!(after_delete.sessions_with_activity, 1);
+        assert_eq!(after_delete.total_activity, 6.25);
+        assert_eq!(activity_event_count(&after_delete), 3);
     }
 
     #[test]
@@ -4899,6 +5109,73 @@ mod tests {
         )
         .unwrap();
         file.flush().unwrap();
+    }
+
+    fn project_claude_activity_sample(
+        conn: &mut rusqlite::Connection,
+        session_id: &str,
+        workspace: &str,
+        timestamp: chrono::DateTime<Utc>,
+    ) {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom-title",
+                "customTitle": session_id,
+                "sessionId": session_id,
+                "timestamp": timestamp.to_rfc3339()
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": format!("{session_id}-user"),
+                "sessionId": session_id,
+                "cwd": workspace,
+                "timestamp": (timestamp + chrono::TimeDelta::seconds(1)).to_rfc3339(),
+                "message": {
+                    "role": "user",
+                    "content": "Build this"
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": format!("{session_id}-assistant"),
+                "parentUuid": format!("{session_id}-user"),
+                "sessionId": session_id,
+                "cwd": workspace,
+                "timestamp": (timestamp + chrono::TimeDelta::seconds(2)).to_rfc3339(),
+                "message": {
+                    "role": "assistant",
+                    "content": "Done"
+                }
+            })
+        )
+        .unwrap();
+        file.flush().unwrap();
+        crate::providers::claude::project_session_to_store(
+            file.path(),
+            &mut ProjectionStore::new(conn),
+        )
+        .unwrap();
+    }
+
+    fn activity_event_count(timeline: &ProviderActivityTimeline) -> usize {
+        timeline
+            .buckets
+            .iter()
+            .map(|bucket| bucket.event_count)
+            .sum()
     }
 
     fn write_codex_projection_sample(file: &mut tempfile::NamedTempFile, title: &str) {

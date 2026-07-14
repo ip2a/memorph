@@ -20,55 +20,74 @@ export function statsRangeHours(range: StatsRange) {
     case "7d":
       return 168;
     case "30d":
+      return 720;
     case "all":
     default:
-      return 168;
+      return undefined;
   }
 }
 
 export function aggregateActivityValues(timelines: ProviderActivityTimeline[]) {
-  if (!timelines.length) return [];
-  const length = timelines[0]?.buckets.length ?? 0;
-  const totals = Array.from({ length }, () => 0);
-  for (const timeline of timelines) {
-    timeline.buckets.forEach((bucket, index) => {
-      totals[index] = (totals[index] ?? 0) + bucket.activity_score;
-    });
-  }
-  return totals;
+  return aggregateActivityTimeline(timelines)?.buckets.map((bucket) => bucket.activity_score) ?? [];
 }
 
 export function aggregateActivityTimeline(timelines: ProviderActivityTimeline[]) {
-  if (!timelines.length) return null;
+  const validTimelines = timelines.filter((timeline) => {
+    const start = Date.parse(timeline.range_start);
+    const end = Date.parse(timeline.range_end);
+    return Number.isFinite(start) && Number.isFinite(end) && end >= start && timeline.bucket_seconds > 0;
+  });
+  if (!validTimelines.length) return null;
 
-  const first = timelines[0];
-  const buckets = first.buckets.map((bucket, index) => {
-    let activity_score = 0;
-    let event_count = 0;
-    let message_count = 0;
-    for (const timeline of timelines) {
-      const entry = timeline.buckets[index];
-      if (!entry) continue;
-      activity_score += entry.activity_score;
-      event_count += entry.event_count;
-      message_count += entry.message_count;
-    }
+  const rangeStartMs = Math.min(...validTimelines.map((timeline) => Date.parse(timeline.range_start)));
+  const rangeEndMs = Math.max(...validTimelines.map((timeline) => Date.parse(timeline.range_end)));
+  let bucketSeconds = Math.max(...validTimelines.map((timeline) => timeline.bucket_seconds), 1);
+  const spanSeconds = Math.max(0, Math.ceil((rangeEndMs - rangeStartMs) / 1000));
+  while (Math.ceil(spanSeconds / bucketSeconds) > 120) {
+    bucketSeconds *= 2;
+  }
+  const bucketCount = Math.max(1, Math.ceil(spanSeconds / bucketSeconds));
+  const buckets = Array.from({ length: bucketCount }, (_, index) => {
+    const startMs = rangeStartMs + index * bucketSeconds * 1000;
+    const endMs = index + 1 === bucketCount ? rangeEndMs : startMs + bucketSeconds * 1000;
     return {
-      start: bucket.start,
-      end: bucket.end,
-      event_count,
-      message_count,
-      activity_score,
+      start: new Date(startMs).toISOString(),
+      end: new Date(endMs).toISOString(),
+      event_count: 0,
+      message_count: 0,
+      activity_score: 0,
     };
   });
+
+  for (const timeline of validTimelines) {
+    for (const source of timeline.buckets) {
+      const sourceStartMs = Date.parse(source.start);
+      if (!Number.isFinite(sourceStartMs)) continue;
+      const index = Math.min(
+        Math.max(Math.floor((sourceStartMs - rangeStartMs) / (bucketSeconds * 1000)), 0),
+        buckets.length - 1,
+      );
+      const target = buckets[index];
+      target.event_count += source.event_count;
+      target.message_count += source.message_count;
+      target.activity_score += source.activity_score;
+    }
+  }
 
   return {
     provider_id: "aggregate",
     session_id: "all",
-    created_at: first.range_start,
-    last_active_at: first.range_end,
-    bucket_unit: "hour" as const,
-    bucket_seconds: first.bucket_seconds,
+    created_at: new Date(rangeStartMs).toISOString(),
+    last_active_at: new Date(rangeEndMs).toISOString(),
+    bucket_unit:
+      bucketSeconds === 60
+        ? ("minute" as const)
+        : bucketSeconds === 3600
+          ? ("hour" as const)
+          : bucketSeconds === 43_200
+            ? ("twelve_hour" as const)
+            : ("adaptive" as const),
+    bucket_seconds: bucketSeconds,
     buckets,
     total_events: buckets.reduce((sum, bucket) => sum + bucket.event_count, 0),
     total_messages: buckets.reduce((sum, bucket) => sum + bucket.message_count, 0),
@@ -149,18 +168,20 @@ export function useStatsDashboard(range: StatsRange, scope: StatsWorkspaceScope)
   });
 
   const activityProviders = useMemo(() => {
-    const scanIds = new Set(providers.data?.filter((provider) => provider.scan).map((provider) => provider.id) ?? []);
-    const sessionIds = sessions.data?.map((group) => group.provider_id) ?? [];
-    const ids = sessionIds.length ? sessionIds.filter((id) => scanIds.has(id)) : [...scanIds];
-    return ids.slice(0, 16);
+    const ids = new Set(providers.data?.map((provider) => provider.id) ?? []);
+    for (const group of sessions.data ?? []) {
+      ids.add(group.provider_id);
+    }
+    return [...ids];
   }, [providers.data, sessions.data]);
 
   const activityQueries = useQueries({
     queries: activityProviders.map((providerId) => ({
-      queryKey: queryKeys.providerActivity(providerId, workspace, hours, allWorkspaces),
+      queryKey: queryKeys.providerActivity(providerId, workspace, hours ?? "all", allWorkspaces),
       queryFn: () =>
         getProviderActivity(providerId, {
           all: allWorkspaces,
+          all_time: range === "all",
           hours,
           workspace: allWorkspaces ? undefined : workspace ?? undefined,
         }),
@@ -186,9 +207,10 @@ export function useStatsDashboard(range: StatsRange, scope: StatsWorkspaceScope)
   const activityLoading = activityQueries.some((query) => query.isLoading);
   const activityTotal = useMemo(() => activityValues.reduce((sum, value) => sum + value, 0), [activityValues]);
 
-  const loading = meta.isLoading || stats.isLoading || hooks.isLoading || sessions.isLoading;
+  const loading = meta.isLoading || stats.isLoading || hooks.isLoading || providers.isLoading || sessions.isLoading;
 
-  const error = meta.error || stats.error || hooks.error || sessions.error;
+  const activityError = activityQueries.find((query) => query.error)?.error;
+  const error = meta.error || stats.error || hooks.error || providers.error || sessions.error || activityError;
 
   return {
     activityLoading,

@@ -5,14 +5,14 @@ mod manager_stats;
 mod provider_sessions;
 mod store;
 
-pub use agent_environment::{AgentEnvironmentCache, agent_environment_cache};
+pub use agent_environment::{agent_environment_cache, AgentEnvironmentCache};
 pub use catalog::{
-    ActiveCatalogCache, CatalogCache, ProviderActiveCatalog, ProviderActiveInfo,
-    active_catalog_cache, catalog_cache, invalidate_catalog_caches,
+    active_catalog_cache, catalog_cache, invalidate_catalog_caches, ActiveCatalogCache,
+    CatalogCache, ProviderActiveCatalog, ProviderActiveInfo,
 };
-pub use compression_archives::{CompressionArchivesCache, compression_archives_cache};
-pub use manager_stats::{ManagerStatsCache, manager_stats_cache};
+pub use compression_archives::{compression_archives_cache, CompressionArchivesCache};
+pub use manager_stats::{manager_stats_cache, ManagerStatsCache};
 pub use provider_sessions::{
-    CacheWatcher, SessionCache, build_path_registry, global_cache, init_cache, init_watcher,
+    build_path_registry, global_cache, init_cache, init_watcher, CacheWatcher, SessionCache,
 };
 pub use store::{CacheEntry, CachePolicy, CacheStore};
