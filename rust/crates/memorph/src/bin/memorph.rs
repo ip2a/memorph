@@ -953,12 +953,14 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             output,
             format,
         } => {
-            let result =
-                core::restore_compression_archive(&core::RestoreCompressionArchiveParams {
+            let result = core::restore_compression_archive(
+                &core::RestoreCompressionArchiveParams {
                     archive_ref,
                     output_prefix: output,
                     format,
-                })?;
+                },
+                ActivityActor::Cli,
+            )?;
             for file in result.files {
                 println!("Restored compression archive: {}", file);
             }
@@ -981,11 +983,14 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             output,
             format,
         } => {
-            let result = core::expand_compression_session(&core::ExpandCompressionSessionParams {
-                file,
-                output_prefix: output,
-                format,
-            })?;
+            let result = core::expand_compression_session(
+                &core::ExpandCompressionSessionParams {
+                    file,
+                    output_prefix: output,
+                    format,
+                },
+                ActivityActor::Cli,
+            )?;
             for file in result.files {
                 println!("Expanded compression session: {}", file);
             }

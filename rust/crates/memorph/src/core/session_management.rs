@@ -570,8 +570,10 @@ pub fn prepare_session_for_target_provider(
     prepare_session_for_export(session, source_provider_id, target_provider_id)
 }
 
-pub fn expand_compression_session(params: &ExpandCompressionSessionParams) -> Result<ExportResult> {
-    let session = read_session_export_file(&params.file)?;
+pub fn expand_compression_session(
+    params: &ExpandCompressionSessionParams,
+    session: &CanonicalSession,
+) -> Result<ExportResult> {
     let source_provider_id = session.provenance.primary_source.provider_id.trim();
     let source_provider_id = if source_provider_id.is_empty() {
         "memorph"
@@ -591,9 +593,8 @@ pub fn expand_compression_session(params: &ExpandCompressionSessionParams) -> Re
 
 pub fn restore_compression_archive(
     params: &RestoreCompressionArchiveParams,
+    session: &CanonicalSession,
 ) -> Result<ExportResult> {
-    let archive = compression::load_archive(&params.archive_ref)?;
-    let session = session_from_compression_archive_for_tests(&params.archive_ref, archive)?;
     let default_prefix = format!("{}_compression_archive", session.identity.canonical_id);
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
     write_session_export_files(&session, prefix, &params.format, None)
@@ -697,7 +698,7 @@ pub fn write_session_export_files(
     Ok(ExportResult { files })
 }
 
-pub(crate) fn session_from_compression_archive_for_tests(
+pub(crate) fn session_from_compression_archive(
     archive_ref: &str,
     archive: compression::CompressionArchive,
 ) -> Result<CanonicalSession> {

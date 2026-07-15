@@ -1999,7 +1999,7 @@ async fn restore_compression_archive(
         output_prefix: body.output_prefix,
         format: body.format,
     };
-    match core::restore_compression_archive(&params) {
+    match core::restore_compression_archive(&params, ActivityActor::Api) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -2027,7 +2027,7 @@ async fn expand_compression_session(
         output_prefix: body.output_prefix,
         format: body.format,
     };
-    match core::expand_compression_session(&params) {
+    match core::expand_compression_session(&params, ActivityActor::Api) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

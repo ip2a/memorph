@@ -1850,7 +1850,7 @@ pub fn export_session(params: &ExportParams, actor: ActivityActor) -> Result<Exp
             &params.format,
             output_dir,
         )?;
-        register_session_export_artifacts(
+        let artifacts = register_session_export_artifacts(
             &mut activity_conn,
             &activity_id,
             &params.provider,
@@ -1858,10 +1858,10 @@ pub fn export_session(params: &ExportParams, actor: ActivityActor) -> Result<Exp
             &params.format,
             &export,
         )?;
-        Ok(export)
+        Ok((export, artifacts))
     })();
     match result {
-        Ok(export) => {
+        Ok((export, artifacts)) => {
             ActivityStore::new(&activity_conn).finish(
                 &activity_id,
                 ActivityCompletion::success(
@@ -1870,6 +1870,7 @@ pub fn export_session(params: &ExportParams, actor: ActivityActor) -> Result<Exp
                         "provider_session_id": params.session_id,
                         "format": params.format,
                         "files": export.files,
+                        "artifact_ids": artifacts.iter().map(|artifact| artifact.id.clone()).collect::<Vec<_>>(),
                     }),
                 ),
             )?;
@@ -1893,7 +1894,7 @@ fn register_session_export_artifacts(
     provider_session_id: &str,
     requested_format: &str,
     export: &ExportResult,
-) -> Result<()> {
+) -> Result<Vec<crate::storage::artifact_store::ArtifactManifest>> {
     let manifests = export
         .files
         .iter()
@@ -1929,8 +1930,7 @@ fn register_session_export_artifacts(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    ArtifactStore::new(conn).register_paths(manifests)?;
-    Ok(())
+    ArtifactStore::new(conn).register_paths(manifests)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1940,8 +1940,79 @@ pub struct ExpandCompressionSessionParams {
     pub format: String,
 }
 
-pub fn expand_compression_session(params: &ExpandCompressionSessionParams) -> Result<ExportResult> {
-    session_management::expand_compression_session(params)
+pub fn expand_compression_session(
+    params: &ExpandCompressionSessionParams,
+    actor: ActivityActor,
+) -> Result<ExportResult> {
+    let mut conn = local_store::open_database()?;
+    let input_details = serde_json::json!({
+        "source_file": params.file,
+        "format": params.format,
+        "output_prefix": params.output_prefix,
+    });
+    let activity_id = ActivityStore::new(&conn).start(NewActivity {
+        provider_id: None,
+        provider_session_id: None,
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Compress,
+        actor,
+        summary: "Expanding compressed session".to_string(),
+        details: input_details.clone(),
+    })?;
+    let result = (|| {
+        let session = session_management::read_session_export_file(&params.file)?;
+        let provider_id = session.provenance.primary_source.provider_id.trim();
+        let provider_id = if provider_id.is_empty() {
+            "memorph".to_string()
+        } else {
+            provider_id.to_string()
+        };
+        let provider_session_id = session.provenance.primary_source.session_id.trim();
+        let provider_session_id = if provider_session_id.is_empty() {
+            session.identity.canonical_id.clone()
+        } else {
+            provider_session_id.to_string()
+        };
+        let export = session_management::expand_compression_session(params, &session)?;
+        let artifacts = register_session_export_artifacts(
+            &mut conn,
+            &activity_id,
+            &provider_id,
+            &provider_session_id,
+            &params.format,
+            &export,
+        )?;
+        Ok((export, artifacts, provider_id, provider_session_id))
+    })();
+    match result {
+        Ok((export, artifacts, provider_id, provider_session_id)) => {
+            let mut completion = ActivityCompletion::success(
+                "Expanded compressed session",
+                serde_json::json!({
+                    "source_file": params.file,
+                    "format": params.format,
+                    "files": export.files,
+                    "artifact_ids": artifacts.iter().map(|artifact| artifact.id.clone()).collect::<Vec<_>>(),
+                }),
+            );
+            completion.provider_id = Some(provider_id);
+            completion.provider_session_id = Some(provider_session_id);
+            ActivityStore::new(&conn).finish(&activity_id, completion)?;
+            Ok(export)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to expand compressed session",
+                    input_details,
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1953,8 +2024,74 @@ pub struct RestoreCompressionArchiveParams {
 
 pub fn restore_compression_archive(
     params: &RestoreCompressionArchiveParams,
+    actor: ActivityActor,
 ) -> Result<ExportResult> {
-    session_management::restore_compression_archive(params)
+    let mut conn = local_store::open_database()?;
+    let input_details = serde_json::json!({
+        "archive_ref": params.archive_ref,
+        "format": params.format,
+        "output_prefix": params.output_prefix,
+    });
+    let activity_id = ActivityStore::new(&conn).start(NewActivity {
+        provider_id: None,
+        provider_session_id: None,
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Compress,
+        actor,
+        summary: "Restoring compression archive".to_string(),
+        details: input_details.clone(),
+    })?;
+    let result = (|| {
+        let archive = compression::load_archive(&params.archive_ref)?;
+        let session =
+            session_management::session_from_compression_archive(&params.archive_ref, archive)?;
+        let source = session.provenance.aliases.first();
+        let provider_id = source
+            .map(|reference| reference.provider_id.clone())
+            .unwrap_or_else(|| "memorph".to_string());
+        let provider_session_id = source
+            .map(|reference| reference.session_id.clone())
+            .unwrap_or_else(|| session.identity.canonical_id.clone());
+        let export = session_management::restore_compression_archive(params, &session)?;
+        let artifacts = register_session_export_artifacts(
+            &mut conn,
+            &activity_id,
+            &provider_id,
+            &provider_session_id,
+            &params.format,
+            &export,
+        )?;
+        Ok((export, artifacts, provider_id, provider_session_id))
+    })();
+    match result {
+        Ok((export, artifacts, provider_id, provider_session_id)) => {
+            let mut completion = ActivityCompletion::success(
+                "Restored compression archive",
+                serde_json::json!({
+                    "archive_ref": params.archive_ref,
+                    "format": params.format,
+                    "files": export.files,
+                    "artifact_ids": artifacts.iter().map(|artifact| artifact.id.clone()).collect::<Vec<_>>(),
+                }),
+            );
+            completion.provider_id = Some(provider_id);
+            completion.provider_session_id = Some(provider_session_id);
+            ActivityStore::new(&conn).finish(&activity_id, completion)?;
+            Ok(export)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to restore compression archive",
+                    input_details,
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2453,10 +2590,24 @@ pub fn active_compression_apply(
             &applied.report.archive_refs,
         )?;
         let result = write_active_compression_application(params, &session, applied)?;
+        let export_artifacts = register_session_export_artifacts(
+            &mut activity_conn,
+            &activity_id,
+            &params.source_provider_id,
+            params
+                .session_id
+                .as_deref()
+                .unwrap_or(&session.identity.canonical_id),
+            &params.format,
+            &ExportResult {
+                files: result.files.clone(),
+            },
+        )?;
         Ok((
             result,
             artifacts
                 .into_iter()
+                .chain(export_artifacts)
                 .map(|artifact| artifact.id)
                 .collect::<Vec<_>>(),
         ))
@@ -2563,7 +2714,12 @@ fn register_active_compression_archive_artifacts(
                 artifact_kind: ArtifactManifestKind::CompressionArchive,
                 operation_id: Some(operation_id.to_string()),
                 provider_id: Some(params.source_provider_id.clone()),
-                provider_session_id: params.session_id.clone(),
+                provider_session_id: Some(
+                    params
+                        .session_id
+                        .clone()
+                        .unwrap_or_else(|| session.identity.canonical_id.clone()),
+                ),
                 session_id: None,
                 projection_report_id: None,
                 event_id: None,
@@ -3281,6 +3437,7 @@ mod tests {
     use chrono::Utc;
     use std::collections::BTreeMap;
     use std::io::{Seek, SeekFrom, Write};
+    use std::path::Path;
     use tempfile::Builder;
 
     #[test]
@@ -3329,6 +3486,128 @@ mod tests {
         assert!(rows
             .iter()
             .any(|artifact| artifact.mime_type.as_deref() == Some("text/markdown")));
+    }
+
+    #[test]
+    fn compression_exports_register_complete_artifact_matrix() {
+        let root = tempfile::tempdir().unwrap();
+        let _home = TestConfigHomeGuard::new(root.path());
+        let source = active_compression_source_session();
+        let source_file = write_active_compression_source_file(&source);
+
+        let expanded = expand_compression_session(
+            &ExpandCompressionSessionParams {
+                file: source_file.path().display().to_string(),
+                output_prefix: Some(root.path().join("expanded").display().to_string()),
+                format: "json".to_string(),
+            },
+            ActivityActor::System,
+        )
+        .unwrap();
+        let applied = active_compression_apply(
+            &ActiveCompressionApplyCommandParams {
+                source_provider_id: "claude".to_string(),
+                target_provider_id: "codex".to_string(),
+                session_id: None,
+                file: Some(source_file.path().display().to_string()),
+                policy: active_compression::ActiveCompressionPolicy {
+                    protect_recent_message_events: 1,
+                    min_candidate_bytes: 16,
+                    min_savings_ratio_percent: 20,
+                    mode: active_compression::ActiveCompressionMode::Auto,
+                },
+                candidate_ids: vec!["candidate-0001".to_string()],
+                output_prefix: Some(root.path().join("compressed").display().to_string()),
+                format: "json".to_string(),
+            },
+            ActivityActor::System,
+        )
+        .unwrap();
+        let restored = restore_compression_archive(
+            &RestoreCompressionArchiveParams {
+                archive_ref: applied.archive_refs[0].clone(),
+                output_prefix: Some(root.path().join("restored").display().to_string()),
+                format: "json".to_string(),
+            },
+            ActivityActor::System,
+        )
+        .unwrap();
+
+        assert!(expanded.files.iter().all(|file| Path::new(file).exists()));
+        assert!(applied.files.iter().all(|file| Path::new(file).exists()));
+        assert!(restored.files.iter().all(|file| Path::new(file).exists()));
+
+        let mut conn = local_store::open_database().unwrap();
+        let activities = ActivityStore::new(&conn)
+            .query(&ActivityQuery {
+                operation_kind: Some(ActivityOperationKind::Compress),
+                status: Some(ActivityStatus::Success),
+                actor: Some(ActivityActor::System),
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+        let cases = [
+            ("Expanded compressed session", 1, 0),
+            ("Applied active session compression", 1, 1),
+            ("Restored compression archive", 1, 0),
+        ];
+        for (summary, expected_exports, expected_archives) in cases {
+            let activity = activities
+                .iter()
+                .find(|activity| activity.summary == summary)
+                .unwrap_or_else(|| panic!("missing activity: {summary}"));
+            let artifacts = ArtifactStore::new(&mut conn)
+                .query(crate::storage::artifact_store::ArtifactQuery {
+                    operation_id: Some(activity.id.clone()),
+                    limit: Some(10),
+                    ..Default::default()
+                })
+                .unwrap();
+            assert_eq!(
+                artifacts
+                    .iter()
+                    .filter(|artifact| {
+                        artifact.artifact_kind == ArtifactManifestKind::SessionExport
+                    })
+                    .count(),
+                expected_exports
+            );
+            assert_eq!(
+                artifacts
+                    .iter()
+                    .filter(|artifact| {
+                        artifact.artifact_kind == ArtifactManifestKind::CompressionArchive
+                    })
+                    .count(),
+                expected_archives
+            );
+            for artifact in &artifacts {
+                assert_eq!(
+                    artifact.operation_id.as_deref(),
+                    Some(activity.id.as_str()),
+                    "{summary}: {artifact:?}"
+                );
+                assert_eq!(
+                    artifact.provider_id.as_deref(),
+                    Some("claude"),
+                    "{summary}: {artifact:?}"
+                );
+                assert_eq!(
+                    artifact.provider_session_id.as_deref(),
+                    Some("dry-run-file"),
+                    "{summary}: {artifact:?}"
+                );
+                assert!(artifact.path.exists(), "{summary}: {artifact:?}");
+            }
+            let detail_ids = activity.details["artifact_ids"].as_array().unwrap();
+            assert_eq!(detail_ids.len(), artifacts.len());
+            assert!(artifacts.iter().all(|artifact| {
+                detail_ids
+                    .iter()
+                    .any(|value| value.as_str() == Some(artifact.id.as_str()))
+            }));
+        }
     }
 
     #[test]
@@ -3628,7 +3907,7 @@ mod tests {
             }],
         };
 
-        let session = session_management::session_from_compression_archive_for_tests(
+        let session = session_management::session_from_compression_archive(
             "memorph-archive://test/archive.json",
             archive,
         )
