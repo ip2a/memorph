@@ -21,7 +21,7 @@ use crate::storage::{
         ActivityStatus, ActivityStore, NewActivity,
     },
     artifact_store::{
-        default_event_payload_root, ArtifactCleanupReport, ArtifactInspectionReport,
+        default_managed_artifact_root, ArtifactCleanupReport, ArtifactInspectionReport,
         ArtifactManifestKind, ArtifactStore, NewArtifactManifest,
     },
     local_store,
@@ -2104,8 +2104,6 @@ fn register_session_export_artifacts(
                 provider_session_id: Some(provider_session_id.to_string()),
                 session_id: None,
                 projection_report_id: None,
-                event_id: None,
-                block_id: None,
                 path,
                 mime_type: Some(mime_type.to_string()),
                 format: Some(format.to_string()),
@@ -2908,8 +2906,6 @@ fn register_active_compression_archive_artifacts(
                 ),
                 session_id: None,
                 projection_report_id: None,
-                event_id: None,
-                block_id: None,
                 path: compression::archive_path_from_ref_in_dir(archive_dir, archive_ref)?,
                 mime_type: Some("application/gzip".to_string()),
                 format: Some("json.gz".to_string()),
@@ -3351,7 +3347,7 @@ pub fn list_management_activity(query: &ActivityQuery) -> Result<Vec<ActivityRec
 
 pub fn inspect_artifacts() -> Result<ArtifactInspectionReport> {
     let mut conn = local_store::open_database()?;
-    let root = default_event_payload_root()?;
+    let root = default_managed_artifact_root()?;
     ArtifactStore::new(&mut conn).inspect(&root)
 }
 
@@ -3379,9 +3375,9 @@ pub fn cleanup_artifacts(
         operation_kind: ActivityOperationKind::ArtifactCleanup,
         actor,
         summary: if apply {
-            "Cleaning retained event payload artifacts"
+            "Cleaning orphan artifact files"
         } else {
-            "Planning retained event payload artifact cleanup"
+            "Planning orphan artifact cleanup"
         }
         .to_string(),
         details: serde_json::json!({
@@ -3392,8 +3388,8 @@ pub fn cleanup_artifacts(
     })?;
     let result = (|| {
         let mut conn = local_store::open_database()?;
-        let root = default_event_payload_root()?;
-        ArtifactStore::new(&mut conn).cleanup_event_payloads(&root, cutoff_ms, apply)
+        let root = default_managed_artifact_root()?;
+        ArtifactStore::new(&mut conn).cleanup_orphan_files(&root, cutoff_ms, apply)
     })();
     match result {
         Ok(report) => {
@@ -3410,9 +3406,9 @@ pub fn cleanup_artifacts(
                     provider_session_id: None,
                     workspace_dir: None,
                     summary: if apply {
-                        "Cleaned retained event payload artifacts"
+                        "Cleaned orphan artifact files"
                     } else {
-                        "Planned retained event payload artifact cleanup"
+                        "Planned orphan artifact cleanup"
                     }
                     .to_string(),
                     details: serde_json::to_value(&report)?,
@@ -3433,7 +3429,7 @@ pub fn cleanup_artifacts(
             ActivityStore::new(&activity_conn).finish(
                 &activity_id,
                 ActivityCompletion::failed(
-                    "Failed to manage retained event payload artifacts",
+                    "Failed to manage orphan artifact files",
                     serde_json::json!({
                         "apply": apply,
                         "retention_hours": retention_hours,
@@ -4401,8 +4397,6 @@ mod tests {
                 provider_session_id: Some("provider-session-1".to_string()),
                 session_id: None,
                 projection_report_id: None,
-                event_id: None,
-                block_id: None,
                 path: archive_path.clone(),
                 mime_type: Some("application/gzip".to_string()),
                 format: Some("json.gz".to_string()),
@@ -4741,17 +4735,16 @@ mod tests {
             })
             .unwrap();
         assert_eq!(report_count, 0);
-        let body_row_count: i64 = conn
+        let body_table_count: i64 = conn
             .query_row(
-                "SELECT
-                   (SELECT COUNT(*) FROM session_turns) +
-                   (SELECT COUNT(*) FROM session_events) +
-                   (SELECT COUNT(*) FROM session_event_blocks)",
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(body_row_count, 0);
+        assert_eq!(body_table_count, 0);
     }
 
     #[test]

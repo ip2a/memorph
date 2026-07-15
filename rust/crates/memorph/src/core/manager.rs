@@ -1059,8 +1059,6 @@ mod tests {
                 provider_session_id: Some(item.session_id.clone()),
                 session_id: None,
                 projection_report_id: None,
-                event_id: None,
-                block_id: None,
                 path: backup_path.clone(),
                 mime_type: Some("application/json".to_string()),
                 format: Some("json".to_string()),

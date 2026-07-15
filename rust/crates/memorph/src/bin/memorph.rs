@@ -668,12 +668,10 @@ fn run_artifact_command(command: ArtifactCommands) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 println!(
-                    "{} cleanup: {} manifest candidates, {} orphan candidates",
+                    "{} cleanup: {} orphan candidates",
                     if report.applied { "Applied" } else { "Planned" },
-                    report.candidate_manifest_ids.len(),
                     report.candidate_orphan_paths.len()
                 );
-                println!("Deleted manifests: {}", report.deleted_manifest_ids.len());
                 println!("Deleted files: {}", report.deleted_paths.len());
                 println!(
                     "Retained shared files: {}",

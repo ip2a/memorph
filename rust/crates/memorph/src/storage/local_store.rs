@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 pub(crate) fn current_schema_version() -> i64 {
     SCHEMA_VERSION
@@ -161,7 +161,46 @@ pub(crate) fn apply_schema(conn: &mut Connection) -> Result<()> {
         .context("Failed to record memorph DB schema migration")?;
     }
     tx.commit()
-        .context("Failed to commit memorph DB schema migration")
+        .context("Failed to commit memorph DB schema migration")?;
+    apply_bodyless_session_schema(conn)
+}
+
+fn apply_bodyless_session_schema(conn: &mut Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")
+        .context("Failed to disable foreign keys for memorph DB schema v9")?;
+    let migration_result = (|| {
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("Failed to start memorph DB schema v9 migration")?;
+        let applied = applied_migrations(&tx)?;
+        if !applied.contains(&9) {
+            tx.execute_batch(V9_SCHEMA)
+                .context("Failed to apply memorph DB schema v9")?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at_ms)
+                 VALUES (?1, ?2, strftime('%s','now') * 1000)",
+                params![9, "drop_persisted_session_body_v9"],
+            )
+            .context("Failed to record memorph DB schema migration")?;
+        }
+        let foreign_key_violations: i64 = tx
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .context("Failed to validate memorph DB schema v9 foreign keys")?;
+        if foreign_key_violations != 0 {
+            anyhow::bail!(
+                "Memorph DB schema v9 produced {foreign_key_violations} foreign key violations"
+            );
+        }
+        tx.commit()
+            .context("Failed to commit memorph DB schema v9 migration")
+    })();
+    let restore_result = conn
+        .execute_batch("PRAGMA foreign_keys = ON;")
+        .context("Failed to restore foreign keys after memorph DB schema v9");
+    migration_result?;
+    restore_result
 }
 
 fn create_schema_migrations_table(conn: &Connection) -> Result<()> {
@@ -800,6 +839,70 @@ CREATE INDEX idx_session_snapshots_provider_workspace_recent
     ON session_snapshots(provider_id, workspace_dir, last_active_at_ms DESC);
 "#;
 
+const V9_SCHEMA: &str = r#"
+UPDATE hook_events
+SET payload_artifact_id = NULL
+WHERE payload_artifact_id IN (
+    SELECT id
+    FROM artifact_manifests
+    WHERE artifact_kind = 'event_payload'
+);
+
+DROP TABLE session_event_blocks;
+DROP TABLE session_events;
+DROP TABLE session_turns;
+
+CREATE TABLE artifact_manifests_v9 (
+    id TEXT PRIMARY KEY,
+    artifact_kind TEXT NOT NULL,
+    session_id TEXT,
+    path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    mime_type TEXT,
+    format TEXT,
+    created_at_ms INTEGER NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    operation_id TEXT,
+    provider_id TEXT,
+    provider_session_id TEXT,
+    projection_report_id TEXT,
+    storage_kind TEXT NOT NULL DEFAULT 'unknown',
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE SET NULL,
+    FOREIGN KEY(projection_report_id) REFERENCES projection_reports(id) ON DELETE SET NULL
+);
+
+INSERT INTO artifact_manifests_v9
+    (id, artifact_kind, session_id, path, content_hash, byte_size, mime_type, format,
+     created_at_ms, metadata_json, operation_id, provider_id, provider_session_id,
+     projection_report_id, storage_kind)
+SELECT
+    id, artifact_kind, session_id, path, content_hash, byte_size, mime_type, format,
+    created_at_ms, metadata_json, operation_id, provider_id, provider_session_id,
+    projection_report_id, storage_kind
+FROM artifact_manifests
+WHERE artifact_kind <> 'event_payload';
+
+DROP TABLE artifact_manifests;
+ALTER TABLE artifact_manifests_v9 RENAME TO artifact_manifests;
+
+CREATE UNIQUE INDEX idx_artifact_manifests_registration
+    ON artifact_manifests(
+        artifact_kind,
+        path,
+        content_hash,
+        COALESCE(operation_id, '')
+    );
+CREATE INDEX idx_artifact_manifests_session
+    ON artifact_manifests(session_id, created_at_ms DESC);
+CREATE INDEX idx_artifact_manifests_operation
+    ON artifact_manifests(operation_id);
+CREATE INDEX idx_artifact_manifests_provider_session
+    ON artifact_manifests(provider_id, provider_session_id, created_at_ms DESC);
+CREATE INDEX idx_artifact_manifests_projection_report
+    ON artifact_manifests(projection_report_id);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -824,7 +927,9 @@ mod tests {
         assert!(table_exists(conn, "schema_migrations"));
         assert!(table_exists(conn, "session_sources"));
         assert!(table_exists(conn, "session_snapshots"));
-        assert!(table_exists(conn, "session_turns"));
+        assert!(!table_exists(conn, "session_turns"));
+        assert!(!table_exists(conn, "session_events"));
+        assert!(!table_exists(conn, "session_event_blocks"));
         assert!(table_exists(conn, "session_activity"));
         assert!(table_exists(conn, "artifact_manifests"));
         assert!(table_exists(conn, "backups"));

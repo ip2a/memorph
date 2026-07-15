@@ -2928,7 +2928,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(value["data"]["applied"], false);
         assert_eq!(
-            value["data"]["candidate_manifest_ids"]
+            value["data"]["candidate_orphan_paths"]
                 .as_array()
                 .unwrap()
                 .len(),

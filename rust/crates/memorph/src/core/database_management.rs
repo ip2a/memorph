@@ -306,8 +306,6 @@ fn register_database_backup_artifact(
         provider_session_id: None,
         session_id: None,
         projection_report_id: None,
-        event_id: None,
-        block_id: None,
         path: backup.bundle_path.clone(),
         mime_type: Some(DATABASE_BACKUP_MIME_TYPE.to_string()),
         format: Some(DATABASE_BACKUP_FORMAT.to_string()),
