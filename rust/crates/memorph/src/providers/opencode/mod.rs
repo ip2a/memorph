@@ -521,9 +521,23 @@ fn imported_session_from_data(
                     .expect("OpenCode message source order is a valid timestamp")
             });
 
-        let blocks = canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report, &mut artifacts);
+        let mut blocks =
+            canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report, &mut artifacts);
         if blocks.is_empty() {
-            continue;
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Normalized,
+                code: "opencode_message_without_mappable_parts".to_string(),
+                message:
+                    "OpenCode message had no mappable parts and was preserved as provider payload"
+                        .to_string(),
+                path: Some(format!("message:{}", msg_id)),
+                raw: Some(msg_json.clone()),
+            });
+            blocks = vec![EventBlock::ProviderPayload {
+                kind: "message_without_mappable_parts".to_string(),
+                payload: msg_json.clone(),
+            }];
         }
 
         let model = msg_json
@@ -689,6 +703,21 @@ fn canonical_blocks_from_parts(
                     blocks.push(EventBlock::Text {
                         text: text.to_string(),
                     });
+                } else {
+                    report.push_issue(MappingIssue {
+                        level: MappingIssueLevel::Warning,
+                        disposition: MappingDisposition::Normalized,
+                        code: "opencode_text_part_missing_text".to_string(),
+                        message:
+                            "OpenCode text part without text was preserved as provider payload"
+                                .to_string(),
+                        path: Some(format!("{}:part:{}", msg_id, idx)),
+                        raw: Some(part.clone()),
+                    });
+                    blocks.push(EventBlock::ProviderPayload {
+                        kind: "text".to_string(),
+                        payload: part.clone(),
+                    });
                 }
             }
             Some("reasoning") => {
@@ -696,6 +725,21 @@ fn canonical_blocks_from_parts(
                     blocks.push(EventBlock::Thinking {
                         text: text.to_string(),
                         signature: None,
+                    });
+                } else {
+                    report.push_issue(MappingIssue {
+                        level: MappingIssueLevel::Warning,
+                        disposition: MappingDisposition::Normalized,
+                        code: "opencode_reasoning_part_missing_text".to_string(),
+                        message:
+                            "OpenCode reasoning part without text was preserved as provider payload"
+                                .to_string(),
+                        path: Some(format!("{}:part:{}", msg_id, idx)),
+                        raw: Some(part.clone()),
+                    });
+                    blocks.push(EventBlock::ProviderPayload {
+                        kind: "reasoning".to_string(),
+                        payload: part.clone(),
                     });
                 }
             }
@@ -763,6 +807,20 @@ fn canonical_blocks_from_parts(
                             content: None,
                             metadata: BTreeMap::new(),
                         });
+                    } else {
+                        report.push_issue(MappingIssue {
+                            level: MappingIssueLevel::Warning,
+                            disposition: MappingDisposition::Normalized,
+                            code: "opencode_image_part_invalid_data_uri".to_string(),
+                            message: "OpenCode image part with an invalid data URI was preserved as provider payload"
+                                .to_string(),
+                            path: Some(format!("{}:part:{}", msg_id, idx)),
+                            raw: Some(part.clone()),
+                        });
+                        blocks.push(EventBlock::ProviderPayload {
+                            kind: "file".to_string(),
+                            payload: part.clone(),
+                        });
                     }
                 } else if !url.is_empty() {
                     blocks.push(EventBlock::File {
@@ -777,6 +835,21 @@ fn canonical_blocks_from_parts(
                         mime_type: Some(mime.to_string()),
                         content: Some(url.to_string()),
                         metadata: BTreeMap::new(),
+                    });
+                } else {
+                    report.push_issue(MappingIssue {
+                        level: MappingIssueLevel::Warning,
+                        disposition: MappingDisposition::Normalized,
+                        code: "opencode_file_part_missing_url".to_string(),
+                        message:
+                            "OpenCode file part without a URL was preserved as provider payload"
+                                .to_string(),
+                        path: Some(format!("{}:part:{}", msg_id, idx)),
+                        raw: Some(part.clone()),
+                    });
+                    blocks.push(EventBlock::ProviderPayload {
+                        kind: "file".to_string(),
+                        payload: part.clone(),
                     });
                 }
             }
@@ -2860,6 +2933,76 @@ mod tests {
     use chrono::TimeZone;
     use rusqlite::Connection;
     use tempfile::tempdir;
+
+    #[test]
+    fn opencode_malformed_parts_are_preserved_and_reported() {
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+        let mut artifacts = Vec::new();
+        let blocks = canonical_blocks_from_parts(
+            "message-1",
+            &[
+                serde_json::json!({"type": "text"}),
+                serde_json::json!({"type": "reasoning"}),
+                serde_json::json!({
+                    "type": "file",
+                    "mime": "image/png",
+                    "filename": "image.png",
+                    "url": "data:image/png,not-valid"
+                }),
+                serde_json::json!({"type": "file", "filename": "missing.txt"}),
+            ],
+            &mut report,
+            &mut artifacts,
+        );
+
+        assert_eq!(blocks.len(), 4);
+        assert!(blocks
+            .iter()
+            .all(|block| matches!(block, EventBlock::ProviderPayload { .. })));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "opencode_text_part_missing_text"));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "opencode_reasoning_part_missing_text"));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "opencode_image_part_invalid_data_uri"));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "opencode_file_part_missing_url"));
+    }
+
+    #[test]
+    fn opencode_message_without_parts_is_preserved_as_an_event() {
+        let imported = imported_session_from_data(
+            "session-1",
+            (
+                serde_json::json!({"id": "session-1", "title": "Empty message"}),
+                vec![(
+                    Some(1),
+                    serde_json::json!({"id": "message-1", "role": "assistant"}),
+                )],
+                HashMap::new(),
+            ),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            imported.session.events[0].blocks.as_slice(),
+            [EventBlock::ProviderPayload { kind, .. }]
+                if kind == "message_without_mappable_parts"
+        ));
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "opencode_message_without_mappable_parts"));
+    }
 
     #[test]
     fn maps_opencode_error_finish_to_failed_boundary() {

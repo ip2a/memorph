@@ -3196,7 +3196,15 @@ fn codex_response_item_event(
             .get("call_id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let content = payload.get("output").and_then(|v| v.as_str()).unwrap_or("");
+        let content = payload
+            .get("output")
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| value.to_string())
+            })
+            .unwrap_or_default();
         return SessionEvent {
             id: event_id,
             kind: SessionEventKind::ToolResult,
@@ -3205,7 +3213,7 @@ fn codex_response_item_event(
             links: EventLinks::default(),
             blocks: vec![EventBlock::ToolResult {
                 tool_call_id: call_id.to_string(),
-                content: content.to_string(),
+                content,
                 is_error: false,
             }],
             metadata: EventMetadata {
@@ -3263,16 +3271,44 @@ fn codex_response_item_event(
                         blocks.push(EventBlock::Text {
                             text: text.to_string(),
                         });
+                    } else {
+                        report.push_issue(MappingIssue {
+                            level: MappingIssueLevel::Warning,
+                            disposition: MappingDisposition::Normalized,
+                            code: "codex_text_block_missing_text".to_string(),
+                            message:
+                                "Codex text block without text was preserved as provider payload"
+                                    .to_string(),
+                            path: Some(format!("response_item:{}:block:{}", line_no, idx)),
+                            raw: Some(block.clone()),
+                        });
+                        blocks.push(EventBlock::ProviderPayload {
+                            kind: block_type.to_string(),
+                            payload: block.clone(),
+                        });
                     }
                 }
                 "refusal" => {
-                    let text = block
-                        .get("text")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("[refused]");
-                    blocks.push(EventBlock::Text {
-                        text: text.to_string(),
-                    });
+                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                        blocks.push(EventBlock::Text {
+                            text: text.to_string(),
+                        });
+                    } else {
+                        report.push_issue(MappingIssue {
+                            level: MappingIssueLevel::Warning,
+                            disposition: MappingDisposition::Normalized,
+                            code: "codex_refusal_block_missing_text".to_string(),
+                            message:
+                                "Codex refusal block without text was preserved as provider payload"
+                                    .to_string(),
+                            path: Some(format!("response_item:{}:block:{}", line_no, idx)),
+                            raw: Some(block.clone()),
+                        });
+                        blocks.push(EventBlock::ProviderPayload {
+                            kind: block_type.to_string(),
+                            payload: block.clone(),
+                        });
+                    }
                 }
                 "input_image" => {
                     if let Some(image_block) = codex_image_block(block) {
@@ -3294,8 +3330,19 @@ fn codex_response_item_event(
                     }
                 }
                 "reasoning" => {
-                    // Skip reasoning blocks - they are provider-internal telemetry
-                    continue;
+                    report.push_issue(MappingIssue {
+                        level: MappingIssueLevel::Info,
+                        disposition: MappingDisposition::Normalized,
+                        code: "codex_reasoning_preserved_as_provider_payload".to_string(),
+                        message: "Codex reasoning block was preserved as provider payload instead of being exposed as user-visible thinking"
+                            .to_string(),
+                        path: Some(format!("response_item:{}:block:{}", line_no, idx)),
+                        raw: Some(block.clone()),
+                    });
+                    blocks.push(EventBlock::ProviderPayload {
+                        kind: "reasoning".to_string(),
+                        payload: block.clone(),
+                    });
                 }
                 other => {
                     report.push_issue(MappingIssue {
@@ -3317,6 +3364,23 @@ fn codex_response_item_event(
     } else {
         blocks.push(EventBlock::ProviderPayload {
             kind: "message_without_content".to_string(),
+            payload: payload.clone(),
+        });
+    }
+
+    if blocks.is_empty() {
+        report.push_issue(MappingIssue {
+            level: MappingIssueLevel::Warning,
+            disposition: MappingDisposition::Normalized,
+            code: "codex_message_without_mappable_blocks".to_string(),
+            message:
+                "Codex message had no mappable content blocks and was preserved as provider payload"
+                    .to_string(),
+            path: Some(format!("response_item:{}", line_no)),
+            raw: Some(payload.clone()),
+        });
+        blocks.push(EventBlock::ProviderPayload {
+            kind: "message_without_mappable_blocks".to_string(),
             payload: payload.clone(),
         });
     }
@@ -6075,6 +6139,74 @@ mod tests {
         assert_eq!(image_block.0, "image/png");
         assert_eq!(image_block.1.as_deref(), Some("QUJD"));
         assert_eq!(image_block.2, &None);
+    }
+
+    #[test]
+    fn codex_response_blocks_preserve_reasoning_and_json_tool_output() {
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+        let output = codex_response_item_event(
+            &json!({
+                "type": "function_call_output",
+                "call_id": "call-1",
+                "output": {"status": "ok", "items": [1, 2]}
+            }),
+            Utc::now(),
+            1,
+            json!({}),
+            &mut report,
+        );
+        assert!(matches!(
+            output.blocks.as_slice(),
+            [EventBlock::ToolResult { content, .. }]
+                if content == r#"{"items":[1,2],"status":"ok"}"#
+        ));
+
+        let reasoning = codex_response_item_event(
+            &json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "reasoning", "summary": "internal"}]
+            }),
+            Utc::now(),
+            2,
+            json!({}),
+            &mut report,
+        );
+        assert!(matches!(
+            reasoning.blocks.as_slice(),
+            [EventBlock::ProviderPayload { kind, payload }]
+                if kind == "reasoning" && payload == &json!({"type": "reasoning", "summary": "internal"})
+        ));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "codex_reasoning_preserved_as_provider_payload"));
+    }
+
+    #[test]
+    fn codex_text_block_without_text_is_not_silently_dropped() {
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+        let event = codex_response_item_event(
+            &json!({
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text"}]
+            }),
+            Utc::now(),
+            3,
+            json!({}),
+            &mut report,
+        );
+
+        assert!(matches!(
+            event.blocks.as_slice(),
+            [EventBlock::ProviderPayload { kind, .. }]
+                if kind == "output_text"
+        ));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "codex_text_block_missing_text"));
     }
 
     #[test]

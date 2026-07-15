@@ -1084,71 +1084,119 @@ fn claude_event_blocks(
         Some(Value::Array(items)) => items
             .iter()
             .enumerate()
-            .map(|(idx, item)| claude_content_block(item, raw_line, line_number, idx, report))
+            .map(|(idx, item)| claude_content_block(item, line_number, idx, report))
             .collect(),
-        Some(other) => vec![EventBlock::Unknown { raw: other.clone() }],
-        None => Vec::new(),
+        Some(other) => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Normalized,
+                code: "claude_content_shape_preserved".to_string(),
+                message: "Claude message content was preserved as an unknown block because it was neither a string nor an array".to_string(),
+                path: Some(format!("line:{}:content", line_number)),
+                raw: Some(other.clone()),
+            });
+            vec![EventBlock::Unknown { raw: other.clone() }]
+        }
+        None => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Normalized,
+                code: "claude_content_missing".to_string(),
+                message: "Claude message had no content; the raw message event was preserved"
+                    .to_string(),
+                path: Some(format!("line:{}:content", line_number)),
+                raw: Some(raw_line.clone()),
+            });
+            Vec::new()
+        }
     }
 }
 
 fn claude_content_block(
     value: &Value,
-    raw_line: &Value,
     line_number: usize,
     block_index: usize,
     report: &mut MappingReport,
 ) -> EventBlock {
     match value.get("type").and_then(|v| v.as_str()) {
-        Some("text") => EventBlock::Text {
+        Some("text") if value.get("text").and_then(Value::as_str).is_some() => EventBlock::Text {
             text: value
                 .get("text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
+                .and_then(Value::as_str)
+                .unwrap()
                 .to_string(),
         },
-        Some("thinking") => EventBlock::Thinking {
-            text: value
-                .get("thinking")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            signature: value
-                .get("signature")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
-        },
-        Some("tool_use") => EventBlock::ToolCall {
-            tool_call_id: value
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("claude-tool-{}-{}", line_number, block_index)),
-            name: value
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-            input: value.get("input").cloned(),
-        },
-        Some("tool_result") => EventBlock::ToolResult {
-            tool_call_id: value
-                .get("tool_use_id")
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("claude-tool-{}-{}", line_number, block_index)),
-            content: value
-                .get("content")
-                .map(|v| {
-                    v.as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| v.to_string())
-                })
-                .unwrap_or_default(),
-            is_error: value
-                .get("is_error")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-        },
+        Some("thinking") if value.get("thinking").and_then(Value::as_str).is_some() => {
+            EventBlock::Thinking {
+                text: value
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string(),
+                signature: value
+                    .get("signature")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            }
+        }
+        Some("tool_use")
+            if value.get("id").and_then(Value::as_str).is_some()
+                && value.get("name").and_then(Value::as_str).is_some()
+                && value.get("input").is_some() =>
+        {
+            EventBlock::ToolCall {
+                tool_call_id: value.get("id").and_then(Value::as_str).unwrap().to_string(),
+                name: value
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string(),
+                input: value.get("input").cloned(),
+            }
+        }
+        Some("tool_result")
+            if value.get("tool_use_id").and_then(Value::as_str).is_some()
+                && value.get("content").is_some() =>
+        {
+            EventBlock::ToolResult {
+                tool_call_id: value
+                    .get("tool_use_id")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string(),
+                content: value
+                    .get("content")
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| v.to_string())
+                    })
+                    .unwrap(),
+                is_error: value
+                    .get("is_error")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+            }
+        }
+        Some("text" | "thinking" | "tool_use" | "tool_result") => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Normalized,
+                code: "claude_malformed_content_block".to_string(),
+                message: "Malformed Claude content block was preserved as provider payload"
+                    .to_string(),
+                path: Some(format!("line:{}:block:{}", line_number, block_index)),
+                raw: Some(value.clone()),
+            });
+            EventBlock::ProviderPayload {
+                kind: value
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_string(),
+                payload: value.clone(),
+            }
+        }
         Some(kind) => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Info,
@@ -1156,14 +1204,24 @@ fn claude_content_block(
                 code: "provider_block_preserved".to_string(),
                 message: format!("Preserved unsupported Claude content block '{}'", kind),
                 path: Some(format!("line:{}:block:{}", line_number, block_index)),
-                raw: Some(raw_line.clone()),
+                raw: Some(value.clone()),
             });
             EventBlock::ProviderPayload {
                 kind: kind.to_string(),
                 payload: value.clone(),
             }
         }
-        None => EventBlock::Unknown { raw: value.clone() },
+        None => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Normalized,
+                code: "claude_block_missing_type".to_string(),
+                message: "Claude content block without a type was preserved as unknown".to_string(),
+                path: Some(format!("line:{}:block:{}", line_number, block_index)),
+                raw: Some(value.clone()),
+            });
+            EventBlock::Unknown { raw: value.clone() }
+        }
     }
 }
 
@@ -1965,6 +2023,53 @@ mod tests {
 
         let content = canonical_event_to_claude_message_content(&event).unwrap();
         assert_eq!(content.as_str(), Some("Build this"));
+    }
+
+    #[test]
+    fn malformed_claude_content_blocks_are_preserved_and_reported() {
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+        let block = claude_content_block(
+            &serde_json::json!({"type": "tool_use", "name": "Read"}),
+            7,
+            2,
+            &mut report,
+        );
+
+        assert!(matches!(
+            block,
+            EventBlock::ProviderPayload { ref kind, ref payload }
+                if kind == "tool_use" && payload == &serde_json::json!({"type": "tool_use", "name": "Read"})
+        ));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "claude_malformed_content_block"));
+    }
+
+    #[test]
+    fn claude_content_shape_is_preserved_and_reported() {
+        let raw_line = serde_json::json!({
+            "type": "assistant",
+            "message": {"role": "assistant", "content": {"unexpected": true}}
+        });
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+        let blocks = claude_event_blocks(
+            raw_line
+                .get("message")
+                .and_then(|message| message.get("content")),
+            &raw_line,
+            8,
+            &mut report,
+        );
+
+        assert!(matches!(
+            blocks.as_slice(),
+            [EventBlock::Unknown { raw }] if raw == &serde_json::json!({"unexpected": true})
+        ));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "claude_content_shape_preserved"));
     }
 
     fn write_claude_projection_sample(file: &mut NamedTempFile) {
