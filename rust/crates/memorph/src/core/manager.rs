@@ -8,9 +8,7 @@ use std::{
 };
 
 use crate::{
-    core,
-    provider::{Provider, ProviderSessionSummary},
-    providers,
+    core, providers,
     storage::{
         activity_store::{
             ActivityActor, ActivityCompletion, ActivityOperationKind, ActivityStore, NewActivity,
@@ -582,21 +580,6 @@ pub struct ManagerWorkspaceItem {
     pub last_active_at: Option<i64>,
 }
 
-fn workspace_group_key(provider: &dyn Provider, meta: &ProviderSessionSummary) -> String {
-    provider
-        .normalized_workspace_key(meta.project_dir.as_deref())
-        .unwrap_or_else(|| meta.project_dir.clone().unwrap_or_else(|| "—".to_string()))
-}
-
-fn workspace_session_matches(
-    provider: &dyn Provider,
-    meta: &ProviderSessionSummary,
-    workspace: &str,
-) -> bool {
-    provider.workspace_matches(meta.project_dir.as_deref(), Some(workspace))
-        || workspace_group_key(provider, meta) == workspace
-}
-
 /// Build an aggregated view of (provider, workspace) groups across the requested providers.
 pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
     let mut candidates = projected_manager_items(filter)?;
@@ -638,38 +621,17 @@ pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
 
 /// Resolve the concrete ManagerItem rows for a given provider workspace.
 fn list_workspace_sessions(provider_id: &str, workspace: &str) -> Result<Vec<ManagerItem>> {
-    let provider = providers::find_provider(provider_id)
-        .with_context(|| format!("Unknown provider: {}", provider_id))?;
-
-    let cache = crate::cache::global_cache();
-    let sessions = cache.get_or_refresh(provider_id, || provider.scan_sessions())?;
-
-    let candidates: Vec<ProviderSessionSummary> = sessions
-        .into_iter()
-        .filter(|meta| workspace_session_matches(&*provider, meta, workspace))
-        .collect();
-    let session_ids: Vec<&str> = candidates
-        .iter()
-        .map(|meta| meta.session_id.as_str())
-        .collect();
-    let sizes = provider.session_sizes(&session_ids);
-
-    let items: Vec<ManagerItem> = candidates
-        .into_iter()
-        .map(|meta| ManagerItem {
-            id: ManagerItem::action_identity(provider_id, &meta.session_id),
-            provider_id: provider_id.to_string(),
-            provider_name: provider.name().to_string(),
-            session_id: meta.session_id.clone(),
-            source_path: meta.source_path.clone(),
-            title: meta.title.clone(),
-            project_dir: meta.project_dir.clone(),
-            last_active_at: meta.last_active_at,
-            size_bytes: sizes.get(&meta.session_id).copied().unwrap_or(0),
-        })
-        .collect();
-
-    Ok(ManagerPreviewResult::from_items(items, Some("recent"), None).items)
+    projected_manager_items(&ManagerFilter {
+        providers: vec![provider_id.to_string()],
+        older_than_days: None,
+        older_than_ms: None,
+        larger_than_mb: None,
+        larger_than_bytes: None,
+        smaller_than_bytes: None,
+        workspace: Some(workspace.to_string()),
+        sort: Some("recent".to_string()),
+        limit: None,
+    })
 }
 
 /// Delete all sessions in a provider workspace.
@@ -816,6 +778,29 @@ mod tests {
             ManagerItem::action_identity("a", "bc"),
             ManagerItem::action_identity("ab", "c")
         );
+    }
+
+    #[test]
+    fn workspace_actions_resolve_items_from_projected_sessions() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let conn = local_store::open_database().unwrap();
+        insert_projected_manager_snapshot(
+            &conn,
+            "canonical-workspace",
+            "native-workspace",
+            "/work/project-one",
+            "/missing/provider/source.jsonl",
+            "Projected workspace session",
+            200,
+            4096,
+        );
+        drop(conn);
+
+        let items = list_workspace_sessions("claude", "/work/project-one").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].session_id, "native-workspace");
+        assert_eq!(items[0].size_bytes, 4096);
     }
 
     #[test]
