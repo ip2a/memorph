@@ -32,7 +32,7 @@ pub fn normalize_request(request: &HookIngestRequest) -> Result<Vec<HookEvent>> 
 
 pub fn adapter_for(provider: &str) -> Option<&'static dyn HookAdapter> {
     match provider.trim().to_ascii_lowercase().as_str() {
-        "generic" | "custom" | "unknown" => Some(&GENERIC_ADAPTER),
+        "generic" => Some(&GENERIC_ADAPTER),
         provider => crate::providers::find_hook_adapter(provider),
     }
 }
@@ -88,8 +88,10 @@ mod tests {
 
     #[test]
     fn rejects_unregistered_provider_explicitly() {
-        let request = HookIngestRequest::new("missing-provider", "tool_started", json!({}));
-        let err = normalize_request(&request).unwrap_err().to_string();
-        assert!(err.contains("No hook adapter"));
+        for provider in ["missing-provider", "custom", "unknown"] {
+            let request = HookIngestRequest::new(provider, "tool_started", json!({}));
+            let err = normalize_request(&request).unwrap_err().to_string();
+            assert!(err.contains("No hook adapter"), "provider: {provider}");
+        }
     }
 }

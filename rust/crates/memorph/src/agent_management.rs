@@ -293,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_management_entry_serializes_environment_block_and_flat_compat_fields() {
+    fn agent_management_entry_serializes_environment_block_and_flat_fields() {
         let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
         let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
         let value = serde_json::to_value(&codex).unwrap();

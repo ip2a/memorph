@@ -1,8 +1,7 @@
 //! Provider-owned setting module registry.
 //!
 //! This keeps provider-specific setting-module dispatch out of `provider_settings::mod`
-//! so the mod file stays focused on orchestration, shared setting behavior, and
-//! compatibility wrappers.
+//! so the mod file stays focused on orchestration and shared setting behavior.
 
 pub(super) fn find_provider_setting_module(
     provider_id: &str,
