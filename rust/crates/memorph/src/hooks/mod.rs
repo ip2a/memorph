@@ -17,7 +17,6 @@ pub mod doctor;
 pub mod extension_file_hook;
 pub mod health;
 pub mod identity;
-pub mod installer;
 pub mod json_settings_hook;
 pub mod lifecycle;
 pub mod model;

@@ -215,11 +215,7 @@ fn install() -> Result<HookOperationReport> {
     let hooks_changed = root != original;
     crate::hooks::config_formats::json_hooks::write_json_object(&path, &root)?;
     let flag_changed =
-        crate::hooks::config_formats::toml_hooks::enable_bool_feature_removing_legacy(
-            &config_path(),
-            "hooks",
-            &["codex_hooks"],
-        )?;
+        crate::hooks::config_formats::toml_hooks::enable_bool_feature(&config_path(), "hooks")?;
     let status = status()?;
     Ok(HookOperationReport {
         provider: "codex".to_string(),

@@ -8,14 +8,6 @@ use anyhow::{Context, Result};
 use crate::storage::atomic_write;
 
 pub fn enable_bool_feature(path: &Path, key: &str) -> Result<bool> {
-    enable_bool_feature_removing_legacy(path, key, &[])
-}
-
-pub fn enable_bool_feature_removing_legacy(
-    path: &Path,
-    key: &str,
-    legacy_keys: &[&str],
-) -> Result<bool> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
@@ -25,7 +17,7 @@ pub fn enable_bool_feature_removing_legacy(
         })?;
     }
     let original = fs::read_to_string(path).unwrap_or_default();
-    let updated = ensure_features_bool_enabled(&original, key, legacy_keys);
+    let updated = ensure_features_bool_enabled(&original, key);
     if updated == original {
         return Ok(false);
     }
@@ -48,15 +40,11 @@ pub fn features_bool_enabled(contents: &str, key: &str) -> bool {
     false
 }
 
-fn ensure_features_bool_enabled(contents: &str, key: &str, legacy_keys: &[&str]) -> String {
+fn ensure_features_bool_enabled(contents: &str, key: &str) -> String {
     let assignment = format!("{key} = true");
     let mut lines: Vec<String> = contents
         .replace("\r\n", "\n")
         .lines()
-        .filter(|line| {
-            let key = toml_assignment_key(line.trim());
-            !legacy_keys.iter().any(|legacy| key == Some(*legacy))
-        })
         .map(ToString::to_string)
         .collect();
     let had_trailing_newline = contents.ends_with('\n') || contents.is_empty();

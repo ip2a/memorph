@@ -80,17 +80,8 @@ pub(crate) fn hooks_dir() -> PathBuf {
         .join("Hooks")
 }
 
-fn legacy_hooks_dir() -> PathBuf {
-    crate::hooks::shared::hook_home_dir()
-        .join("Documents")
-        .join("Cline")
-        .join("Hooks")
-}
-
 fn hooks_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![hooks_dir(), legacy_hooks_dir()];
-    dirs.dedup();
-    dirs
+    vec![hooks_dir()]
 }
 
 fn required_events() -> impl Iterator<Item = &'static str> {
