@@ -148,15 +148,6 @@ pub enum Commands {
         #[arg(long)]
         no_open: bool,
     },
-    /// Start the web UI server (legacy alias for `memorph web`)
-    Serve {
-        /// Port to listen on (defaults to 3737; override via server.web_port in ~/.memorph/config.json)
-        #[arg(short, long)]
-        port: Option<u16>,
-        /// Don't auto-open browser
-        #[arg(long)]
-        no_open: bool,
-    },
     /// Start the API server only
     Api {
         /// Port to listen on (defaults to 3223; override via server.api_port in ~/.memorph/config.json)
@@ -170,9 +161,6 @@ pub enum Commands {
         /// Sync Codex sessions for the current workspace so hidden sessions show up again
         #[arg(long)]
         sync: bool,
-        /// Legacy alias for `--sync`
-        #[arg(long, hide = true)]
-        repair_workspace_sessions: bool,
         /// Workspace directory to sync (default: current directory)
         #[arg(short, long, value_name = "DIR")]
         workspace: Option<String>,
@@ -531,13 +519,11 @@ mod tests {
         match cli.command {
             Some(Commands::Codex {
                 sync,
-                repair_workspace_sessions,
                 workspace,
                 codex_home,
                 keep,
             }) => {
                 assert!(sync);
-                assert!(!repair_workspace_sessions);
                 assert_eq!(workspace, None);
                 assert_eq!(codex_home, None);
                 assert_eq!(keep, 5);

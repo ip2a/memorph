@@ -206,19 +206,7 @@ fn run_command(command: Commands) -> Result<()> {
                         config::DEFAULT_WEB_PORT
                     })
             });
-            run_web_server(port, no_open, WebCommandKind::Recommended)?
-        }
-
-        Commands::Serve { port, no_open } => {
-            let port = port.unwrap_or_else(|| {
-                config::server_preferences()
-                    .map(|s| s.web_port)
-                    .unwrap_or_else(|e| {
-                        eprintln!("Warning: failed to load config: {e}");
-                        config::DEFAULT_WEB_PORT
-                    })
-            });
-            run_web_server(port, no_open, WebCommandKind::Legacy)?
+            run_web_server(port, no_open)?
         }
 
         Commands::Api { port } => {
@@ -239,12 +227,11 @@ fn run_command(command: Commands) -> Result<()> {
 
         Commands::Codex {
             sync,
-            repair_workspace_sessions,
             workspace,
             codex_home,
             keep,
         } => {
-            if !sync && !repair_workspace_sessions {
+            if !sync {
                 anyhow::bail!("No Codex action selected. Use --sync.");
             }
             run_codex_sync_workspace_sessions(workspace, codex_home, keep)?;
@@ -1260,13 +1247,8 @@ fn run_interactive_menu() -> Result<()> {
     tui::run_tui()
 }
 
-enum WebCommandKind {
-    Recommended,
-    Legacy,
-}
-
-fn run_web_server(port: u16, no_open: bool, kind: WebCommandKind) -> Result<()> {
-    print_web_banner(kind);
+fn run_web_server(port: u16, no_open: bool) -> Result<()> {
+    print_web_banner();
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(server::run(port, no_open, true))
 }
@@ -1460,18 +1442,11 @@ fn shell_word(value: &str) -> String {
     }
 }
 
-fn print_web_banner(kind: WebCommandKind) {
+fn print_web_banner() {
     println!("{}", web_assets::MEMORPH_ASCII);
     println!();
     println!("Starting memorph Web UI.");
-    match kind {
-        WebCommandKind::Recommended => {
-            println!("Recommended command: memorph web");
-        }
-        WebCommandKind::Legacy => {
-            println!("`memorph serve` is still supported, but `memorph web` is recommended.");
-        }
-    }
+    println!("Command: memorph web");
     println!("Need API only? Use `memorph api`.");
     println!();
 }

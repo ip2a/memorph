@@ -171,90 +171,28 @@ impl Provider for OpenCodeProvider {
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
-        let mut sessions = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut sessions = BTreeMap::new();
 
-        // 1. Scan SQLite DB (primary source for recent sessions)
+        // OpenCode exposes two native source planes. A session id collision is
+        // represented once using the database locator, which is stable across
+        // filesystem layout changes.
         for session in scan_sessions_from_db()? {
-            seen.insert(session.session_id.clone());
-            sessions.push(session);
+            sessions.insert(session.session_id.clone(), session);
+        }
+        for session in scan_sessions_from_filesystem()? {
+            sessions
+                .entry(session.session_id.clone())
+                .or_insert(session);
         }
 
-        // 2. Scan filesystem (fallback for older sessions)
-        let storage_dir = get_opencode_dir().join("storage").join("session");
-        if storage_dir.exists() {
-            for entry in WalkDir::new(&storage_dir)
-                .max_depth(3)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                    continue;
-                }
-                if let Some(meta) = parse_session_file(path) {
-                    if !seen.contains(&meta.session_id) {
-                        sessions.push(meta);
-                    }
-                }
-            }
-        }
-
-        Ok(sessions)
+        Ok(sessions.into_values().collect())
     }
 
     fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
-        // 1. Try SQLite DB first
-        let db_path = get_db_path();
-        if db_path.exists() {
-            let conn = Connection::open(&db_path)?;
-            let meta = conn
-                .query_row(
-                    "SELECT id, project_id, directory, title, time_created, time_updated FROM session WHERE id = ?1 AND time_archived IS NULL",
-                    [session_id],
-                    |row| {
-                        let session_id: String = row.get(0)?;
-                        let _project_id: String = row.get(1)?;
-                        let directory: String = row.get(2)?;
-                        let title: String = row.get(3)?;
-                        let _created: i64 = row.get(4)?;
-                        let updated: i64 = row.get(5)?;
-                        Ok(ProviderSessionSummary {
-                            session_id: session_id.clone(),
-                            title: Some(title),
-                            project_dir: Some(directory),
-                            last_active_at: Some(updated),
-                            source_path: Some(opencode_db_session_source_locator(&session_id)),
-                        })
-                    },
-                )
-                .optional()?;
-            if meta.is_some() {
-                return Ok(meta);
-            }
-        }
-
-        // 2. Fallback to filesystem scan
-        let storage_dir = get_opencode_dir().join("storage").join("session");
-        if storage_dir.exists() {
-            for entry in WalkDir::new(&storage_dir)
-                .max_depth(3)
-                .into_iter()
-                .filter_map(|e| e.ok())
-            {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                    continue;
-                }
-                if let Some(meta) = parse_session_file(path) {
-                    if meta.session_id == session_id {
-                        return Ok(Some(meta));
-                    }
-                }
-            }
-        }
-
-        Ok(None)
+        Ok(self
+            .scan_sessions()?
+            .into_iter()
+            .find(|session| session.session_id == session_id))
     }
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
@@ -398,26 +336,6 @@ fn opencode_session_id_from_source_locator(source_locator: &str) -> Result<Strin
     anyhow::bail!("OpenCode source locator does not exist: {source_locator}")
 }
 
-fn import_canonical_session(session_id: &str) -> Result<ImportedSession> {
-    let data = if get_db_path().exists() {
-        match load_session_from_db(session_id) {
-            Ok(data) => data,
-            Err(error)
-                if matches!(
-                    error.downcast_ref::<rusqlite::Error>(),
-                    Some(rusqlite::Error::QueryReturnedNoRows)
-                ) =>
-            {
-                load_session_from_filesystem(session_id)?
-            }
-            Err(error) => return Err(error),
-        }
-    } else {
-        load_session_from_filesystem(session_id)?
-    };
-    imported_session_from_data(session_id, data)
-}
-
 fn import_canonical_session_from_source(
     session_id: &str,
     source_locator: &str,
@@ -435,7 +353,9 @@ fn import_canonical_session_from_source(
         if source_path.is_file() {
             load_session_from_filesystem_path(session_id, source_path)?
         } else {
-            return import_canonical_session(session_id);
+            anyhow::bail!(
+                "OpenCode source locator does not identify a native source plane: {source_locator}"
+            );
         }
     };
     imported_session_from_data(session_id, data)
@@ -2507,6 +2427,34 @@ fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
     Ok(sessions)
 }
 
+fn scan_sessions_from_filesystem() -> Result<Vec<ProviderSessionSummary>> {
+    let storage_dir = get_opencode_dir().join("storage").join("session");
+    if !storage_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut sessions = Vec::new();
+    for entry in WalkDir::new(storage_dir)
+        .max_depth(3)
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+    {
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        if let Some(session) = parse_session_file(path) {
+            sessions.push(session);
+        }
+    }
+    sessions.sort_by(|left, right| {
+        left.session_id
+            .cmp(&right.session_id)
+            .then_with(|| left.source_path.cmp(&right.source_path))
+    });
+    Ok(sessions)
+}
+
 fn load_session_from_db(
     session_id: &str,
 ) -> Result<(
@@ -2642,33 +2590,6 @@ fn load_session_from_db_path(
     }
 
     Ok((session_json, messages, parts_map))
-}
-
-fn load_session_from_filesystem(
-    session_id: &str,
-) -> Result<(
-    Value,
-    Vec<(Option<i64>, Value)>,
-    HashMap<String, Vec<Value>>,
-)> {
-    let storage_dir = get_opencode_dir().join("storage");
-
-    // Find session file
-    let mut session_path: Option<PathBuf> = None;
-    for entry in WalkDir::new(storage_dir.join("session"))
-        .max_depth(3)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        let path = entry.path();
-        if path.file_stem().and_then(|s| s.to_str()) == Some(session_id) {
-            session_path = Some(path.to_path_buf());
-            break;
-        }
-    }
-
-    let session_path = session_path.context("Session not found in filesystem")?;
-    load_session_from_filesystem_path(session_id, &session_path)
 }
 
 fn load_session_from_filesystem_path(
@@ -3319,6 +3240,31 @@ mod tests {
             imported.session.provenance.primary_source.source_path,
             session.source_path
         );
+    }
+
+    #[test]
+    fn scan_sessions_discovers_filesystem_only_source_plane() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        let fixture = write_native_opencode_fixture(opencode_dir.path(), "ses_filesystem_only");
+        std::fs::remove_file(opencode_dir.path().join("opencode.db")).unwrap();
+
+        let sessions = OpenCodeProvider.scan_sessions().unwrap();
+        let session = sessions
+            .iter()
+            .find(|session| session.session_id == "ses_filesystem_only")
+            .unwrap();
+
+        assert_eq!(
+            session.source_path.as_deref(),
+            Some(fixture.session_path.to_string_lossy().as_ref())
+        );
+        let meta = OpenCodeProvider
+            .get_session_meta("ses_filesystem_only")
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.session_id, session.session_id);
+        assert_eq!(meta.source_path, session.source_path);
     }
 
     #[test]

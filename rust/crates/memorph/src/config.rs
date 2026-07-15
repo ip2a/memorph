@@ -143,8 +143,6 @@ fn default_false() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentDisplayPreferences {
     #[serde(default)]
-    pub order: Vec<String>,
-    #[serde(default)]
     pub primary: Vec<String>,
     #[serde(default)]
     pub sort_order: ProviderDisplayOrder,
@@ -456,8 +454,6 @@ pub fn update_agent_display_preferences(
         global: normalize_provider_ids(hidden_state.global),
         workspace: normalize_provider_ids(hidden_state.workspace),
     };
-    // Keep legacy `order` in sync with global sort order for backward compatibility.
-    config.web.agent_display.order = config.web.agent_display.sort_order.global.clone();
     save_config(&config)
 }
 
@@ -502,10 +498,6 @@ pub fn update_home_button_config(home_buttons: HomeButtonConfig) -> Result<()> {
 
 pub fn ordered_provider_ids(prefs: &WebPreferences) -> Vec<String> {
     let mut ordered = normalize_provider_ids(prefs.agent_display.sort_order.global.clone());
-    // Migration: legacy `order` field feeds into global sort order when new field is empty.
-    if ordered.is_empty() {
-        ordered = normalize_provider_ids(prefs.agent_display.order.clone());
-    }
     for id in crate::providers::all_provider_ids() {
         if !ordered.iter().any(|existing| existing == id) {
             ordered.push((*id).to_string());
@@ -559,7 +551,6 @@ pub fn workspace_hidden_provider_ids(workspace: Option<&str>) -> Vec<String> {
 }
 
 pub fn primary_provider_ids(prefs: &WebPreferences) -> Vec<String> {
-    // `primary` is deprecated in favor of explicit sort_order; kept for backward reads.
     let ordered = ordered_provider_ids(prefs);
     let primary = normalize_provider_ids(prefs.agent_display.primary.clone());
     if primary.is_empty() {
@@ -831,22 +822,11 @@ mod tests {
     fn ordered_provider_ids_prefers_sort_order_global() {
         let mut prefs = WebPreferences::default();
         prefs.agent_display.sort_order.global = vec!["opencode".into(), "claude".into()];
-        prefs.agent_display.order = vec!["codex".into()]; // legacy should be ignored
 
         let ordered = ordered_provider_ids(&prefs);
         assert_eq!(ordered[0], "opencode");
         assert_eq!(ordered[1], "claude");
         assert!(ordered.contains(&"codex".to_string()));
-    }
-
-    #[test]
-    fn ordered_provider_ids_migrates_legacy_order() {
-        let mut prefs = WebPreferences::default();
-        prefs.agent_display.order = vec!["codex".into(), "claude".into()];
-
-        let ordered = ordered_provider_ids(&prefs);
-        assert_eq!(ordered[0], "codex");
-        assert_eq!(ordered[1], "claude");
     }
 
     #[test]
