@@ -294,7 +294,9 @@ fn event_from_message(
         links: EventLinks {
             parent_event_id: None,
             provider_parent_id: None,
+            provider_turn_id: None,
             turn_index: Some(index as u32),
+            turn_boundary: None,
             related_event_ids: Vec::new(),
         },
         blocks,

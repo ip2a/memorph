@@ -5,7 +5,7 @@ use crate::canonical::{
     CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
     EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
     MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
+    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary, UsageStats,
 };
 use crate::provider::{
     canonical_block_text, canonical_event_visible_message_role, canonical_event_visible_text,
@@ -992,7 +992,9 @@ fn canonical_event_from_claude_line(
         links: EventLinks {
             parent_event_id: parent_id.clone(),
             provider_parent_id: parent_id,
+            provider_turn_id: None,
             turn_index: None,
+            turn_boundary: claude_turn_boundary(message),
             related_event_ids: Vec::new(),
         },
         blocks,
@@ -1020,6 +1022,14 @@ fn canonical_event_from_claude_line(
             },
         },
     })
+}
+
+fn claude_turn_boundary(message: &Value) -> Option<TurnBoundary> {
+    match message.get("stop_reason").and_then(Value::as_str) {
+        Some("end_turn" | "stop_sequence") => Some(TurnBoundary::Completed),
+        Some("max_tokens") => Some(TurnBoundary::Interrupted),
+        _ => None,
+    }
 }
 
 fn claude_event_role(line_type: &str, message: &Value, raw: &Value) -> EventRole {
@@ -1198,7 +1208,9 @@ fn provider_payload_event(
         links: EventLinks {
             parent_event_id: parent_id.clone(),
             provider_parent_id: parent_id,
+            provider_turn_id: None,
             turn_index: None,
+            turn_boundary: None,
             related_event_ids: Vec::new(),
         },
         blocks: vec![EventBlock::ProviderPayload {
@@ -1534,6 +1546,26 @@ mod tests {
                 provider_ext: BTreeMap::new(),
             },
         }
+    }
+
+    #[test]
+    fn maps_claude_end_turn_to_completed_boundary() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "uuid": "assistant-1",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Done"}],
+                "stop_reason": "end_turn"
+            }
+        });
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+
+        let event = canonical_event_from_claude_line(1, "assistant", Utc::now(), &raw, &mut report)
+            .unwrap();
+
+        assert_eq!(event.links.provider_turn_id, None);
+        assert_eq!(event.links.turn_boundary, Some(TurnBoundary::Completed));
     }
 
     #[test]

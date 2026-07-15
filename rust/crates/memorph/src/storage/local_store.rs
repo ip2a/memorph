@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub(crate) fn current_schema_version() -> i64 {
     SCHEMA_VERSION
@@ -137,6 +137,16 @@ pub(crate) fn apply_schema(conn: &mut Connection) -> Result<()> {
             "INSERT INTO schema_migrations (version, name, applied_at_ms)
              VALUES (?1, ?2, strftime('%s','now') * 1000)",
             params![6, "backup_restore_attempts_v6"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    if !applied.contains(&7) {
+        tx.execute_batch(V7_SCHEMA)
+            .context("Failed to apply memorph DB schema v7")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![7, "event_index_turn_links_v7"],
         )
         .context("Failed to record memorph DB schema migration")?;
     }
@@ -761,6 +771,16 @@ CREATE INDEX idx_backup_restores_status_started
     ON backup_restores(status, started_at_ms DESC);
 "#;
 
+const V7_SCHEMA: &str = r#"
+ALTER TABLE session_event_index ADD COLUMN provider_turn_id TEXT;
+ALTER TABLE session_event_index ADD COLUMN turn_index INTEGER;
+ALTER TABLE session_event_index ADD COLUMN turn_boundary TEXT
+    CHECK(turn_boundary IS NULL OR turn_boundary IN ('started', 'completed', 'failed', 'interrupted'));
+
+CREATE INDEX idx_session_event_index_turn
+    ON session_event_index(provider_id, source_path, provider_turn_id, event_index);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1157,6 +1177,75 @@ mod tests {
 
         assert_eq!(restore_indexes, 2);
         assert_eq!(migration_count, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_existing_v6_event_index_rows_to_turn_links() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema_migrations_table(&conn).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute_batch(V2_SCHEMA).unwrap();
+        conn.execute_batch(V3_SCHEMA).unwrap();
+        conn.execute_batch(V4_SCHEMA).unwrap();
+        conn.execute_batch(V5_SCHEMA).unwrap();
+        conn.execute_batch(V6_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO session_event_index
+             (provider_id, session_id, source_path, file_mtime_ms, file_size_bytes,
+              event_index, byte_offset, byte_length, line_no)
+             VALUES ('codex', 'session-1', '/tmp/session.jsonl', 10, 20, 0, 0, 12, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES
+             (1, 'local_session_store_v1', 0),
+             (2, 'session_activity_query_fields_v2', 0),
+             (3, 'hook_event_retention_index_v3', 0),
+             (4, 'artifact_manifest_store_v4', 0),
+             (5, 'optional_backup_source_path_v5', 0),
+             (6, 'backup_restore_attempts_v6', 0)",
+            [],
+        )
+        .unwrap();
+
+        apply_schema(&mut conn).unwrap();
+
+        let migrated: (String, i64, Option<String>, Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT session_id, line_no, provider_turn_id, turn_index, turn_boundary
+                 FROM session_event_index",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let turn_index_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master
+                    WHERE type = 'index' AND name = 'idx_session_event_index_turn'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(migrated.0, "session-1");
+        assert_eq!(migrated.1, 1);
+        assert_eq!(migrated.2, None);
+        assert_eq!(migrated.3, None);
+        assert_eq!(migrated.4, None);
+        assert!(turn_index_exists);
     }
 
     #[test]

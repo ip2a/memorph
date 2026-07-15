@@ -1,5 +1,6 @@
 use crate::canonical::{
     EventBlock, EventRole, ImportedSession, MappingDisposition, SessionEvent, SessionEventKind,
+    TurnBoundary,
 };
 use crate::provider::{
     canonical_block_text, canonical_event_is_visible_message, canonical_event_visible_message_role,
@@ -19,6 +20,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, Transaction};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -83,7 +85,7 @@ impl<'a> ProjectionStore<'a> {
         })?;
         let session_id = identity.canonical_session_id.clone();
         let ordered_events = ordered_events(&imported.session.events);
-        let turns = infer_turns(
+        let turn_plan = project_turns(
             &session_id,
             &ordered_events,
             turn_confidence(capabilities.turn_quality),
@@ -134,7 +136,7 @@ impl<'a> ProjectionStore<'a> {
             created_at_ms,
             last_active_at_ms,
             ordered_events.len(),
-            turns.len(),
+            turn_plan.turns.len(),
             now_ms,
         )?;
         upsert_aliases(&tx, &identity, &source_file.source_id, now_ms)?;
@@ -146,7 +148,7 @@ impl<'a> ProjectionStore<'a> {
             imported.session.context.workspace_dir.as_deref(),
             last_active_at_ms,
             ordered_events.len(),
-            turns.len(),
+            turn_plan.turns.len(),
             &source_file.source_cursor,
             now_ms,
         )?;
@@ -171,7 +173,7 @@ impl<'a> ProjectionStore<'a> {
         )
         .context("Failed to clear projected session turns")?;
 
-        write_turns(&tx, &turns)?;
+        write_turns(&tx, &turn_plan.turns)?;
         write_projection_report(
             &tx,
             &report_id,
@@ -190,6 +192,7 @@ impl<'a> ProjectionStore<'a> {
             provider_session_id,
             &report_id,
             &ordered_events,
+            &turn_plan.event_turn_ids,
         )?;
 
         tx.commit()
@@ -201,7 +204,7 @@ impl<'a> ProjectionStore<'a> {
             report_id,
             event_count: ordered_events.len(),
             block_count,
-            turn_count: turns.len(),
+            turn_count: turn_plan.turns.len(),
         })
     }
 }
@@ -350,6 +353,7 @@ impl SourceFileProjection {
 struct ProjectedTurnRow {
     id: String,
     session_id: String,
+    provider_turn_id: Option<String>,
     status: TurnStatus,
     confidence: TurnConfidence,
     started_at_ms: Option<i64>,
@@ -357,6 +361,13 @@ struct ProjectedTurnRow {
     start_cursor: Option<String>,
     end_cursor: Option<String>,
     turn_order: i64,
+    last_event_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+struct TurnProjectionPlan {
+    turns: Vec<ProjectedTurnRow>,
+    event_turn_ids: Vec<Option<String>>,
 }
 
 fn ordered_events(events: &[SessionEvent]) -> Vec<(ProjectedEventKey, &SessionEvent)> {
@@ -384,60 +395,135 @@ fn ordered_events(events: &[SessionEvent]) -> Vec<(ProjectedEventKey, &SessionEv
     ordered
 }
 
-fn infer_turns(
+fn project_turns(
     session_id: &str,
     ordered_events: &[(ProjectedEventKey, &SessionEvent)],
-    confidence: TurnConfidence,
-) -> Vec<ProjectedTurnRow> {
-    let mut turns = Vec::new();
-    let mut current: Option<ProjectedTurnRow> = None;
+    inferred_confidence: TurnConfidence,
+) -> TurnProjectionPlan {
+    let mut turns: Vec<ProjectedTurnRow> = Vec::new();
+    let mut exact_turns = HashMap::<String, usize>::new();
+    let mut current_inferred: Option<usize> = None;
+    let mut event_turn_ids = vec![None; ordered_events.len()];
+    let mut next_turn_order = 0i64;
 
-    for (key, event) in ordered_events {
+    for (event_index, (key, event)) in ordered_events.iter().enumerate() {
+        if let Some(provider_turn_id) = event.links.provider_turn_id.as_deref() {
+            let turn_index = if let Some(turn_index) = exact_turns.get(provider_turn_id) {
+                *turn_index
+            } else {
+                let requested_order = event.links.turn_index.map(i64::from);
+                let turn_order = requested_order
+                    .filter(|order| !turns.iter().any(|turn| turn.turn_order == *order))
+                    .unwrap_or(next_turn_order);
+                next_turn_order = next_turn_order.max(turn_order.saturating_add(1));
+                let turn_index = turns.len();
+                turns.push(ProjectedTurnRow {
+                    id: stable_row_id("turn", session_id, &format!("provider:{provider_turn_id}")),
+                    session_id: session_id.to_string(),
+                    provider_turn_id: Some(provider_turn_id.to_string()),
+                    status: TurnStatus::Unknown,
+                    confidence: TurnConfidence::Exact,
+                    started_at_ms: None,
+                    ended_at_ms: None,
+                    start_cursor: None,
+                    end_cursor: None,
+                    turn_order,
+                    last_event_at_ms: None,
+                });
+                exact_turns.insert(provider_turn_id.to_string(), turn_index);
+                turn_index
+            };
+            let turn = &mut turns[turn_index];
+            include_turn_event(turn, key);
+            apply_turn_boundary(turn, event.links.turn_boundary, key.timestamp_ms);
+            event_turn_ids[event_index] = Some(turn.id.clone());
+            continue;
+        }
+
         let starts_turn = matches!(
             canonical_event_visible_message_role(event),
             Some(EventRole::User)
         );
         if starts_turn {
-            if let Some(turn) = current.take() {
-                turns.push(turn);
+            if let Some(turn_index) = current_inferred.take() {
+                let turn = &mut turns[turn_index];
+                if matches!(turn.status, TurnStatus::Open | TurnStatus::Unknown) {
+                    turn.status = TurnStatus::Completed;
+                    turn.ended_at_ms = turn.last_event_at_ms;
+                }
             }
-            let turn_order = turns.len() as i64;
-            current = Some(ProjectedTurnRow {
+            let turn_order = next_turn_order;
+            next_turn_order = next_turn_order.saturating_add(1);
+            let turn_index = turns.len();
+            turns.push(ProjectedTurnRow {
                 id: stable_row_id("turn", session_id, &turn_order.to_string()),
                 session_id: session_id.to_string(),
-                status: TurnStatus::Completed,
-                confidence,
+                provider_turn_id: None,
+                status: TurnStatus::Open,
+                confidence: inferred_confidence,
                 started_at_ms: key.timestamp_ms,
-                ended_at_ms: key.timestamp_ms,
-                start_cursor: Some(key.stable_cursor.clone()),
-                end_cursor: Some(key.stable_cursor.clone()),
+                ended_at_ms: None,
+                start_cursor: None,
+                end_cursor: None,
                 turn_order,
+                last_event_at_ms: None,
             });
-        } else if let Some(turn) = current.as_mut() {
-            turn.ended_at_ms = key.timestamp_ms.or(turn.ended_at_ms);
-            turn.end_cursor = Some(key.stable_cursor.clone());
+            current_inferred = Some(turn_index);
+        }
+
+        if let Some(turn_index) = current_inferred {
+            let turn = &mut turns[turn_index];
+            include_turn_event(turn, key);
+            apply_turn_boundary(turn, event.links.turn_boundary, key.timestamp_ms);
+            event_turn_ids[event_index] = Some(turn.id.clone());
+            if matches!(
+                event.links.turn_boundary,
+                Some(TurnBoundary::Completed | TurnBoundary::Failed | TurnBoundary::Interrupted)
+            ) {
+                current_inferred = None;
+            }
         }
     }
 
-    if let Some(turn) = current {
-        turns.push(turn);
+    turns.sort_by_key(|turn| turn.turn_order);
+    TurnProjectionPlan {
+        turns,
+        event_turn_ids,
     }
-    if turns.is_empty() && !ordered_events.is_empty() {
-        let first = &ordered_events[0].0;
-        let last = &ordered_events[ordered_events.len() - 1].0;
-        turns.push(ProjectedTurnRow {
-            id: stable_row_id("turn", session_id, "0"),
-            session_id: session_id.to_string(),
-            status: TurnStatus::Completed,
-            confidence,
-            started_at_ms: first.timestamp_ms,
-            ended_at_ms: last.timestamp_ms,
-            start_cursor: Some(first.stable_cursor.clone()),
-            end_cursor: Some(last.stable_cursor.clone()),
-            turn_order: 0,
-        });
+}
+
+fn include_turn_event(turn: &mut ProjectedTurnRow, key: &ProjectedEventKey) {
+    if turn.start_cursor.is_none() {
+        turn.start_cursor = Some(key.stable_cursor.clone());
     }
-    turns
+    turn.end_cursor = Some(key.stable_cursor.clone());
+    turn.last_event_at_ms = key.timestamp_ms.or(turn.last_event_at_ms);
+}
+
+fn apply_turn_boundary(
+    turn: &mut ProjectedTurnRow,
+    boundary: Option<TurnBoundary>,
+    timestamp_ms: Option<i64>,
+) {
+    match boundary {
+        Some(TurnBoundary::Started) => {
+            turn.status = TurnStatus::Open;
+            turn.started_at_ms = turn.started_at_ms.or(timestamp_ms);
+        }
+        Some(TurnBoundary::Completed) => {
+            turn.status = TurnStatus::Completed;
+            turn.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
+        }
+        Some(TurnBoundary::Failed) => {
+            turn.status = TurnStatus::Failed;
+            turn.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
+        }
+        Some(TurnBoundary::Interrupted) => {
+            turn.status = TurnStatus::Interrupted;
+            turn.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
+        }
+        None => {}
+    }
 }
 
 fn upsert_source(
@@ -633,7 +719,7 @@ fn write_turns(conn: &Connection, turns: &[ProjectedTurnRow]) -> Result<()> {
             "INSERT INTO session_turns
              (id, session_id, provider_turn_id, status, confidence, started_at_ms, ended_at_ms,
               source_start_cursor, source_end_cursor, source_range_json, turn_order)
-             VALUES (?1, ?2, NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )
         .context("Failed to prepare projected turn insert")?;
     for turn in turns {
@@ -644,6 +730,7 @@ fn write_turns(conn: &Connection, turns: &[ProjectedTurnRow]) -> Result<()> {
         stmt.execute(params![
             turn.id,
             turn.session_id,
+            turn.provider_turn_id.as_deref(),
             enum_name(turn.status),
             enum_name(turn.confidence),
             turn.started_at_ms,
@@ -667,6 +754,7 @@ fn write_events_and_blocks(
     provider_session_id: &str,
     report_id: &str,
     ordered_events: &[(ProjectedEventKey, &SessionEvent)],
+    event_turn_ids: &[Option<String>],
 ) -> Result<usize> {
     let mut event_stmt = conn
         .prepare(
@@ -686,17 +774,18 @@ fn write_events_and_blocks(
         .context("Failed to prepare projected event block insert")?;
 
     let mut block_count = 0;
-    for (key, event) in ordered_events {
+    for (event_index, (key, event)) in ordered_events.iter().enumerate() {
         let event_id = stable_row_id("event", session_id, &event.id);
-        let turn_id = turn_order_for_event(ordered_events, key)
-            .map(|turn_order| stable_row_id("turn", session_id, &turn_order.to_string()));
+        let turn_id = event_turn_ids
+            .get(event_index)
+            .and_then(|turn_id| turn_id.as_deref());
         let metadata_json = serde_json::to_string(&event.metadata)
             .context("Failed to encode projected event metadata")?;
         event_stmt
             .execute(params![
                 event_id,
                 session_id,
-                turn_id.as_deref(),
+                turn_id,
                 event
                     .metadata
                     .source
@@ -786,25 +875,6 @@ fn write_events_and_blocks(
     }
 
     Ok(block_count)
-}
-
-fn turn_order_for_event(
-    ordered_events: &[(ProjectedEventKey, &SessionEvent)],
-    target_key: &ProjectedEventKey,
-) -> Option<i64> {
-    let mut order = -1;
-    for (key, event) in ordered_events {
-        if matches!(
-            canonical_event_visible_message_role(event),
-            Some(EventRole::User)
-        ) {
-            order += 1;
-        }
-        if key == target_key {
-            return (order >= 0).then_some(order);
-        }
-    }
-    None
 }
 
 fn write_projection_report(
@@ -1051,6 +1121,240 @@ mod tests {
         assert_eq!(count_rows(&conn, "session_event_blocks"), 2);
         assert_eq!(count_rows(&conn, "session_turns"), 1);
         assert_eq!(count_rows(&conn, "projection_reports"), 2);
+    }
+
+    #[test]
+    fn persists_exact_provider_turn_lifecycle_and_snapshot_fields() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let mut imported = imported_session();
+        imported.session.identity.canonical_id = "codex-session-1".to_string();
+        imported.session.provenance.primary_source.provider_id = "codex".to_string();
+        imported.session.provenance.primary_source.session_id = "codex-session-1".to_string();
+        imported.session.events = vec![
+            event("context", EventRole::System, "context", base),
+            event(
+                "started",
+                EventRole::System,
+                "started",
+                base + chrono::Duration::seconds(1),
+            ),
+            event(
+                "user-1",
+                EventRole::User,
+                "Build it",
+                base + chrono::Duration::seconds(2),
+            ),
+            event(
+                "complete",
+                EventRole::System,
+                "complete",
+                base + chrono::Duration::seconds(3),
+            ),
+        ];
+        for event in &mut imported.session.events {
+            event.metadata.source.provider_id = "codex".to_string();
+            event.links.provider_turn_id = Some("turn-1".to_string());
+            event.links.turn_index = Some(0);
+        }
+        imported.session.events[1].links.turn_boundary = Some(TurnBoundary::Started);
+        imported.session.events[3].links.turn_boundary = Some(TurnBoundary::Completed);
+
+        ProjectionStore::new(&mut conn)
+            .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+            .unwrap();
+
+        let stored: (String, String, String, i64, i64, String, String) = conn
+            .query_row(
+                "SELECT provider_turn_id, status, confidence, started_at_ms, ended_at_ms,
+                        source_start_cursor, source_end_cursor
+                 FROM session_turns",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let distinct_event_turns: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT turn_id) FROM session_events WHERE turn_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let page = SnapshotStore::new(&conn)
+            .get_session_detail_page("codex", "codex-session-1", 0, None)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(stored.0, "turn-1");
+        assert_eq!(stored.1, "completed");
+        assert_eq!(stored.2, "exact");
+        assert_eq!(
+            stored.3,
+            (base + chrono::Duration::seconds(1)).timestamp_millis()
+        );
+        assert_eq!(
+            stored.4,
+            (base + chrono::Duration::seconds(3)).timestamp_millis()
+        );
+        assert_eq!(stored.5, "context");
+        assert_eq!(stored.6, "complete");
+        assert_eq!(distinct_event_turns, 1);
+        assert_eq!(page.turns.len(), 1);
+        assert_eq!(page.turns[0].provider_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(page.turns[0].status, TurnStatus::Completed);
+        assert_eq!(page.turns[0].confidence, TurnConfidence::Exact);
+        assert_eq!(
+            page.turns[0].source_range.start_cursor.as_deref(),
+            Some("context")
+        );
+        assert_eq!(
+            page.turns[0].source_range.end_cursor.as_deref(),
+            Some("complete")
+        );
+    }
+
+    #[test]
+    fn keeps_final_inferred_turn_open_and_closes_only_preceding_turn() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let base = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let mut imported = imported_session();
+        imported.session.events = vec![
+            event("user-1", EventRole::User, "First", base),
+            event(
+                "assistant-1",
+                EventRole::Assistant,
+                "First answer",
+                base + chrono::Duration::seconds(1),
+            ),
+            event(
+                "user-2",
+                EventRole::User,
+                "Second",
+                base + chrono::Duration::seconds(2),
+            ),
+            event(
+                "assistant-2",
+                EventRole::Assistant,
+                "Still running",
+                base + chrono::Duration::seconds(3),
+            ),
+        ];
+
+        ProjectionStore::new(&mut conn)
+            .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+            .unwrap();
+
+        let statuses = conn
+            .prepare("SELECT status, ended_at_ms FROM session_turns ORDER BY turn_order")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+
+        assert_eq!(statuses[0].0, "completed");
+        assert_eq!(
+            statuses[0].1,
+            Some((base + chrono::Duration::seconds(1)).timestamp_millis())
+        );
+        assert_eq!(statuses[1], ("open".to_string(), None));
+    }
+
+    #[test]
+    fn applies_explicit_terminal_boundary_to_inferred_turn() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let mut imported = imported_session();
+        imported.session.events[1].links.turn_boundary = Some(TurnBoundary::Failed);
+
+        ProjectionStore::new(&mut conn)
+            .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+            .unwrap();
+
+        let status: String = conn
+            .query_row("SELECT status FROM session_turns", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(status, "failed");
+    }
+
+    #[test]
+    fn persists_native_aborted_turn_as_interrupted() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let mut imported = imported_session();
+        for event in &mut imported.session.events {
+            event.links.provider_turn_id = Some("turn-aborted".to_string());
+            event.links.turn_index = Some(0);
+        }
+        imported.session.events[0].links.turn_boundary = Some(TurnBoundary::Started);
+        imported.session.events[1].links.turn_boundary = Some(TurnBoundary::Interrupted);
+
+        ProjectionStore::new(&mut conn)
+            .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+            .unwrap();
+
+        let stored: (String, String, String) = conn
+            .query_row(
+                "SELECT provider_turn_id, status, confidence FROM session_turns",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(stored.0, "turn-aborted");
+        assert_eq!(stored.1, "interrupted");
+        assert_eq!(stored.2, "exact");
+    }
+
+    #[test]
+    fn does_not_invent_turn_for_unrelated_lifecycle_events() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut source = NamedTempFile::new().unwrap();
+        writeln!(source, "one").unwrap();
+        let mut imported = imported_session();
+        imported.session.events = vec![event(
+            "session-meta",
+            EventRole::System,
+            "metadata",
+            Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+        )];
+        imported.session.events[0].kind = SessionEventKind::Lifecycle;
+
+        ProjectionStore::new(&mut conn)
+            .write_imported_session(source.path(), &imported, ProviderCapabilities::default())
+            .unwrap();
+
+        assert_eq!(count_rows(&conn, "session_turns"), 0);
+        let linked_events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_events WHERE turn_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked_events, 0);
     }
 
     #[test]

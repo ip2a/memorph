@@ -6,7 +6,8 @@ use crate::canonical::{
     ArtifactKind, CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata,
     EventRole, EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
     MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionArtifact,
-    SessionContext, SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
+    SessionContext, SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
+    TurnBoundary, UsageStats,
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
@@ -547,6 +548,7 @@ fn imported_session_from_data(
             .get("finish")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        let turn_boundary = opencode_turn_boundary(finish.as_deref());
         let cost = msg_json.get("cost").and_then(|v| v.as_f64());
         let agent = msg_json
             .get("agent")
@@ -581,7 +583,9 @@ fn imported_session_from_data(
             links: EventLinks {
                 parent_event_id: parent_id.clone(),
                 provider_parent_id: parent_id,
+                provider_turn_id: None,
                 turn_index: None,
+                turn_boundary,
                 related_event_ids: Vec::new(),
             },
             blocks,
@@ -656,6 +660,17 @@ fn imported_session_from_data(
         },
         report,
     })
+}
+
+fn opencode_turn_boundary(finish: Option<&str>) -> Option<TurnBoundary> {
+    match finish {
+        Some("stop") => Some(TurnBoundary::Completed),
+        Some("error") => Some(TurnBoundary::Failed),
+        Some("abort" | "cancelled" | "canceled" | "length" | "content_filter") => {
+            Some(TurnBoundary::Interrupted)
+        }
+        _ => None,
+    }
 }
 
 fn canonical_blocks_from_parts(
@@ -2845,6 +2860,47 @@ mod tests {
     use chrono::TimeZone;
     use rusqlite::Connection;
     use tempfile::tempdir;
+
+    #[test]
+    fn maps_opencode_error_finish_to_failed_boundary() {
+        let mut parts = HashMap::new();
+        parts.insert(
+            "user-1".to_string(),
+            vec![serde_json::json!({"type": "text", "text": "Build it"})],
+        );
+        parts.insert(
+            "assistant-1".to_string(),
+            vec![serde_json::json!({"type": "text", "text": "Failed"})],
+        );
+        let imported = imported_session_from_data(
+            "session-1",
+            (
+                serde_json::json!({"id": "session-1", "title": "Build it"}),
+                vec![
+                    (Some(1), serde_json::json!({"id": "user-1", "role": "user"})),
+                    (
+                        Some(2),
+                        serde_json::json!({
+                            "id": "assistant-1",
+                            "role": "assistant",
+                            "finish": "error"
+                        }),
+                    ),
+                ],
+                parts,
+            ),
+        )
+        .unwrap();
+
+        let assistant = imported
+            .session
+            .events
+            .iter()
+            .find(|event| event.id == "assistant-1")
+            .unwrap();
+        assert_eq!(assistant.links.provider_turn_id, None);
+        assert_eq!(assistant.links.turn_boundary, Some(TurnBoundary::Failed));
+    }
 
     static TEST_OPENCODE_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
         std::sync::OnceLock::new();

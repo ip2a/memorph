@@ -128,9 +128,22 @@ pub struct EventLinks {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_parent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_boundary: Option<TurnBoundary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub related_event_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnBoundary {
+    Started,
+    Completed,
+    Failed,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

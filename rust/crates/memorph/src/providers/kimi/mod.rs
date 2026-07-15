@@ -832,7 +832,9 @@ fn kimi_event(
         links: EventLinks {
             parent_event_id: None,
             provider_parent_id: None,
+            provider_turn_id: None,
             turn_index: Some(turn_index),
+            turn_boundary: None,
             related_event_ids: Vec::new(),
         },
         blocks,

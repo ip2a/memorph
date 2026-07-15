@@ -907,7 +907,8 @@ impl<'a> SnapshotStore<'a> {
                     event.timestamp_ms,
                     event.metadata_json,
                     event.turn_id,
-                    turn.turn_order
+                    turn.turn_order,
+                    turn.provider_turn_id
                  FROM session_events event
                  LEFT JOIN session_turns turn ON turn.id = event.turn_id
                  WHERE event.session_id = ?1
@@ -928,6 +929,7 @@ impl<'a> SnapshotStore<'a> {
                     metadata_json: row.get(4)?,
                     turn_id: row.get(5)?,
                     turn_order: row.get(6)?,
+                    provider_turn_id: row.get(7)?,
                 })
             })
             .context("Failed to query projected session detail events")?;
@@ -1174,6 +1176,7 @@ struct ProjectedEventRow {
     metadata_json: String,
     turn_id: Option<String>,
     turn_order: Option<i64>,
+    provider_turn_id: Option<String>,
 }
 
 impl ProjectedEventRow {
@@ -1192,6 +1195,7 @@ impl ProjectedEventRow {
         }
 
         let links = EventLinks {
+            provider_turn_id: self.provider_turn_id,
             turn_index: self.turn_order.and_then(|value| u32::try_from(value).ok()),
             ..EventLinks::default()
         };
@@ -1500,8 +1504,8 @@ mod tests {
         );
         conn.execute(
             "INSERT INTO session_turns
-             (id, session_id, status, confidence, turn_order)
-             VALUES ('turn-1', 'canonical-1', 'completed', 'exact', 0)",
+             (id, session_id, provider_turn_id, status, confidence, turn_order)
+             VALUES ('turn-1', 'canonical-1', 'provider-turn-1', 'completed', 'exact', 0)",
             [],
         )
         .unwrap();
@@ -1547,6 +1551,10 @@ mod tests {
         assert!(!page.stale);
         assert_eq!(page.turns.len(), 1);
         assert_eq!(page.turns[0].id, "turn-1");
+        assert_eq!(
+            page.turns[0].provider_turn_id.as_deref(),
+            Some("provider-turn-1")
+        );
         assert_eq!(page.turns[0].status, TurnStatus::Completed);
         assert_eq!(page.turns[0].confidence, TurnConfidence::Exact);
         assert_eq!(page.turns[0].turn_order, 0);
@@ -1594,6 +1602,10 @@ mod tests {
         assert_eq!(page.events[0].id, "event-2");
         assert_eq!(page.events[0].role, EventRole::Assistant);
         assert_eq!(page.events[0].kind, SessionEventKind::Message);
+        assert_eq!(
+            page.events[0].links.provider_turn_id.as_deref(),
+            Some("provider-turn-1")
+        );
         assert_eq!(page.events[0].links.turn_index, Some(0));
         assert_eq!(
             page.events[0].metadata.provider_ext["projected_turn_id"],

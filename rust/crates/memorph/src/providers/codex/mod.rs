@@ -5,7 +5,7 @@ use crate::canonical::{
     CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
     EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
     MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
+    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary,
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
@@ -116,6 +116,81 @@ enum CodexInternalMessageKind {
     LifecycleSentinel,
     RuntimeContext,
     ProviderControl,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CodexTurnLink {
+    provider_turn_id: Option<String>,
+    turn_index: Option<u32>,
+    turn_boundary: Option<TurnBoundary>,
+}
+
+impl CodexTurnLink {
+    fn apply_to(self, event: &mut SessionEvent) {
+        event.links.provider_turn_id = self.provider_turn_id;
+        event.links.turn_index = self.turn_index;
+        event.links.turn_boundary = self.turn_boundary;
+    }
+}
+
+#[derive(Debug, Default)]
+struct CodexTurnTracker {
+    active_turn_id: Option<String>,
+    turn_indices: HashMap<String, u32>,
+    next_turn_index: u32,
+}
+
+impl CodexTurnTracker {
+    fn observe_line(&mut self, line: &Value) -> CodexTurnLink {
+        let line_type = line.get("type").and_then(Value::as_str);
+        let payload = line.get("payload");
+        let payload_type = payload
+            .and_then(|value| value.get("type"))
+            .and_then(Value::as_str);
+        let boundary = match (line_type, payload_type) {
+            (Some("event_msg"), Some("task_started")) => Some(TurnBoundary::Started),
+            (Some("event_msg"), Some("task_complete")) => Some(TurnBoundary::Completed),
+            (Some("event_msg"), Some("turn_aborted")) => Some(TurnBoundary::Interrupted),
+            _ => None,
+        };
+        let explicit_turn_id = payload
+            .and_then(|value| value.get("turn_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        if let Some(turn_id) = explicit_turn_id.as_ref() {
+            self.active_turn_id = Some(turn_id.clone());
+        }
+        let provider_turn_id = explicit_turn_id.or_else(|| self.active_turn_id.clone());
+        let turn_index = provider_turn_id
+            .as_ref()
+            .map(|turn_id| self.turn_index(turn_id));
+        let closes_turn = matches!(
+            boundary,
+            Some(TurnBoundary::Completed | TurnBoundary::Failed | TurnBoundary::Interrupted)
+        );
+        if closes_turn && self.active_turn_id.as_ref() == provider_turn_id.as_ref() {
+            self.active_turn_id = None;
+        }
+
+        CodexTurnLink {
+            provider_turn_id,
+            turn_index,
+            turn_boundary: boundary,
+        }
+    }
+
+    fn turn_index(&mut self, turn_id: &str) -> u32 {
+        if let Some(index) = self.turn_indices.get(turn_id) {
+            return *index;
+        }
+        let index = self.next_turn_index;
+        self.next_turn_index = self.next_turn_index.saturating_add(1);
+        self.turn_indices.insert(turn_id.to_string(), index);
+        index
+    }
 }
 
 impl CodexInternalMessageKind {
@@ -2268,6 +2343,7 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
     let mut last_active_at: Option<chrono::DateTime<Utc>> = None;
     let mut source_title: Option<String> = None;
     let mut extensions = BTreeMap::new();
+    let mut turn_tracker = CodexTurnTracker::default();
 
     for (line_idx, line) in reader.lines().enumerate() {
         let line = line?;
@@ -2296,6 +2372,8 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
             .to_string();
         let timestamp = codex_line_timestamp(&value, line_idx + 1);
         last_active_at = Some(timestamp);
+        let first_new_event = events.len();
+        let turn_link = turn_tracker.observe_line(&value);
 
         match line_type.as_str() {
             "session_meta" => {
@@ -2454,6 +2532,9 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                 ));
             }
         }
+        for event in &mut events[first_new_event..] {
+            turn_link.clone().apply_to(event);
+        }
     }
 
     let canonical_id = session_id
@@ -2553,7 +2634,7 @@ pub fn import_canonical_session_page(
         let payload = value.get("payload");
         let timestamp = codex_line_timestamp(&value, location.line_no);
 
-        if let Some(event) = codex_event_from_line(
+        if let Some(mut event) = codex_event_from_line(
             line_type,
             payload,
             timestamp,
@@ -2561,6 +2642,12 @@ pub fn import_canonical_session_page(
             value.clone(),
             &mut report,
         ) {
+            CodexTurnLink {
+                provider_turn_id: location.provider_turn_id,
+                turn_index: location.turn_index,
+                turn_boundary: location.turn_boundary,
+            }
+            .apply_to(&mut event);
             events.push(event);
         }
     }
@@ -2674,6 +2761,7 @@ fn build_codex_event_index(
     let mut last_active_at_ms: Option<i64> = None;
     let mut source_title: Option<String> = None;
     let mut locations = Vec::new();
+    let mut turn_tracker = CodexTurnTracker::default();
 
     loop {
         line.clear();
@@ -2700,6 +2788,7 @@ fn build_codex_event_index(
         let payload = value.get("payload");
         let timestamp = codex_line_timestamp(&value, line_no);
         last_active_at_ms = Some(timestamp.timestamp_millis());
+        let turn_link = turn_tracker.observe_line(&value);
 
         if line_type == "session_meta" {
             if let Some(payload) = payload {
@@ -2749,6 +2838,9 @@ fn build_codex_event_index(
             byte_offset: line_offset,
             byte_length: byte_length as u64,
             line_no,
+            provider_turn_id: turn_link.provider_turn_id,
+            turn_index: turn_link.turn_index,
+            turn_boundary: turn_link.turn_boundary,
         });
         event_count += 1;
     }
@@ -5665,6 +5757,73 @@ mod tests {
                     Some(EventBlock::Text { text }) if text == "Done."
                 )
         }));
+        let started = events
+            .iter()
+            .find(|event| event.id == "codex:event_msg:task_started:3")
+            .unwrap();
+        let completed = events
+            .iter()
+            .find(|event| event.id == "codex:event_msg:task_complete:8")
+            .unwrap();
+        assert_eq!(started.links.provider_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(started.links.turn_index, Some(0));
+        assert_eq!(started.links.turn_boundary, Some(TurnBoundary::Started));
+        assert_eq!(completed.links.provider_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(completed.links.turn_index, Some(0));
+        assert_eq!(completed.links.turn_boundary, Some(TurnBoundary::Completed));
+        assert!(events
+            .iter()
+            .filter(|event| event.id != "codex:base_instructions:1")
+            .all(|event| event.links.provider_turn_id.as_deref() == Some("turn-1")));
+    }
+
+    #[test]
+    fn paged_import_preserves_native_turn_context_when_page_starts_mid_turn() {
+        let home = tempdir().unwrap();
+        crate::config::set_test_home_dir(home.path().to_path_buf());
+        let mut file = NamedTempFile::new().unwrap();
+        for line in [
+            json!({
+                "timestamp": "2026-05-21T10:00:00Z",
+                "type": "session_meta",
+                "payload": {"id": "paged-turn", "cwd": "/tmp/project"}
+            }),
+            json!({
+                "timestamp": "2026-05-21T10:00:01Z",
+                "type": "turn_context",
+                "payload": {"turn_id": "turn-page", "cwd": "/tmp/project"}
+            }),
+            json!({
+                "timestamp": "2026-05-21T10:00:02Z",
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": "turn-page"}
+            }),
+            json!({
+                "timestamp": "2026-05-21T10:00:03Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Working"}]
+                }
+            }),
+            json!({
+                "timestamp": "2026-05-21T10:00:04Z",
+                "type": "event_msg",
+                "payload": {"type": "task_complete", "turn_id": "turn-page"}
+            }),
+        ] {
+            writeln!(file, "{}", line).unwrap();
+        }
+
+        let page = import_canonical_session_page(file.path(), 3, Some(1)).unwrap();
+        crate::config::reset_test_home_dir();
+
+        assert_eq!(page.imported.session.events.len(), 1);
+        let event = &page.imported.session.events[0];
+        assert_eq!(event.links.provider_turn_id.as_deref(), Some("turn-page"));
+        assert_eq!(event.links.turn_index, Some(0));
+        assert_eq!(event.links.turn_boundary, None);
     }
 
     #[test]
@@ -5851,6 +6010,12 @@ mod tests {
                     .and_then(Value::as_str)
                     == Some("runtime_context")
         }));
+        let aborted = events
+            .iter()
+            .find(|event| event.id == "codex:event_msg:turn_aborted:5")
+            .unwrap();
+        assert_eq!(aborted.links.provider_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(aborted.links.turn_boundary, Some(TurnBoundary::Interrupted));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::canonical::TurnBoundary;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -29,6 +30,9 @@ pub struct IndexedEventLocation {
     pub byte_offset: u64,
     pub byte_length: u64,
     pub line_no: usize,
+    pub provider_turn_id: Option<String>,
+    pub turn_index: Option<u32>,
+    pub turn_boundary: Option<TurnBoundary>,
 }
 
 pub fn database_path() -> Result<PathBuf> {
@@ -138,8 +142,9 @@ pub fn replace_session_index(
         let mut stmt = tx
             .prepare(
                 "INSERT INTO session_event_index
-                 (provider_id, session_id, source_path, file_mtime_ms, file_size_bytes, event_index, byte_offset, byte_length, line_no)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (provider_id, session_id, source_path, file_mtime_ms, file_size_bytes, event_index,
+                  byte_offset, byte_length, line_no, provider_turn_id, turn_index, turn_boundary)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             )
             .context("Failed to prepare event index insert")?;
         for event in events {
@@ -153,6 +158,9 @@ pub fn replace_session_index(
                 event.byte_offset as i64,
                 event.byte_length as i64,
                 event.line_no as i64,
+                event.provider_turn_id.as_deref(),
+                event.turn_index.map(i64::from),
+                event.turn_boundary.map(turn_boundary_name),
             ])
             .context("Failed to write event index row")?;
         }
@@ -170,7 +178,8 @@ pub fn load_event_locations(
     event_offset: usize,
     event_limit: Option<usize>,
 ) -> Result<Vec<IndexedEventLocation>> {
-    let base = "SELECT event_index, byte_offset, byte_length, line_no
+    let base = "SELECT event_index, byte_offset, byte_length, line_no,
+                       provider_turn_id, turn_index, turn_boundary
          FROM session_event_index
          WHERE provider_id = ?1
            AND source_path = ?2
@@ -212,9 +221,45 @@ pub fn load_event_locations(
             byte_offset: row.get::<_, i64>(1)? as u64,
             byte_length: row.get::<_, i64>(2)? as u64,
             line_no: row.get::<_, i64>(3)? as usize,
+            provider_turn_id: row.get(4)?,
+            turn_index: row
+                .get::<_, Option<i64>>(5)?
+                .and_then(|value| u32::try_from(value).ok()),
+            turn_boundary: row
+                .get::<_, Option<String>>(6)?
+                .as_deref()
+                .map(parse_turn_boundary)
+                .transpose()?,
         });
     }
     Ok(locations)
+}
+
+fn turn_boundary_name(boundary: TurnBoundary) -> &'static str {
+    match boundary {
+        TurnBoundary::Started => "started",
+        TurnBoundary::Completed => "completed",
+        TurnBoundary::Failed => "failed",
+        TurnBoundary::Interrupted => "interrupted",
+    }
+}
+
+fn parse_turn_boundary(value: &str) -> rusqlite::Result<TurnBoundary> {
+    match value {
+        "started" => Ok(TurnBoundary::Started),
+        "completed" => Ok(TurnBoundary::Completed),
+        "failed" => Ok(TurnBoundary::Failed),
+        "interrupted" => Ok(TurnBoundary::Interrupted),
+        _ => Err(rusqlite::Error::FromSqlConversionFailure(
+            6,
+            rusqlite::types::Type::Text,
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Invalid turn boundary: {value}"),
+            )
+            .into(),
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -247,18 +292,27 @@ mod tests {
                 byte_offset: 0,
                 byte_length: 10,
                 line_no: 1,
+                provider_turn_id: Some("turn-1".to_string()),
+                turn_index: Some(0),
+                turn_boundary: Some(TurnBoundary::Started),
             },
             IndexedEventLocation {
                 event_index: 1,
                 byte_offset: 10,
                 byte_length: 12,
                 line_no: 2,
+                provider_turn_id: Some("turn-1".to_string()),
+                turn_index: Some(0),
+                turn_boundary: None,
             },
             IndexedEventLocation {
                 event_index: 2,
                 byte_offset: 22,
                 byte_length: 8,
                 line_no: 3,
+                provider_turn_id: Some("turn-1".to_string()),
+                turn_index: Some(0),
+                turn_boundary: Some(TurnBoundary::Completed),
             },
         ];
 
