@@ -751,7 +751,7 @@ mod tests {
             workspace_dir: Some(workspace_dir.to_string()),
             last_active_at_ms: None,
             source_path: None,
-            message_count: 0,
+            message_count: Some(0),
             event_count: 0,
             turn_count: 0,
             size_bytes: None,

@@ -820,7 +820,7 @@ mod tests {
             workspace_dir: None,
             last_active_at_ms: Some(last_active_at_ms),
             source_path: Some("/missing/provider/source".to_string()),
-            message_count: 0,
+            message_count: Some(0),
             event_count: 0,
             turn_count: 0,
             size_bytes: None,

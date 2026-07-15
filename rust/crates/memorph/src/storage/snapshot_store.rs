@@ -44,7 +44,7 @@ pub struct ProjectedSessionSnapshotRow {
     pub workspace_dir: Option<String>,
     pub last_active_at_ms: Option<i64>,
     pub source_path: Option<String>,
-    pub message_count: usize,
+    pub message_count: Option<usize>,
     pub event_count: usize,
     pub turn_count: usize,
     pub size_bytes: Option<u64>,
@@ -57,12 +57,15 @@ pub struct ProjectedSessionSnapshotRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedSessionIdentityRow {
     pub canonical_session_id: String,
+    pub source_id: Option<String>,
     pub provider_session_id: Option<String>,
     pub title: Option<String>,
     pub display_title: Option<String>,
     pub workspace_dir: Option<String>,
     pub source_path: Option<String>,
+    pub source_fingerprint: Option<String>,
     pub last_active_at_ms: Option<i64>,
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,51 +200,83 @@ impl<'a> SnapshotStore<'a> {
     }
 
     pub fn list_session_snapshots(&self) -> Result<Vec<ProjectedSessionSnapshotRow>> {
+        self.list_session_snapshots_filtered(None, None, true)
+    }
+
+    pub fn list_session_snapshots_filtered(
+        &self,
+        provider_ids: Option<&[String]>,
+        workspace_scopes: Option<&[(String, String)]>,
+        include_message_counts: bool,
+    ) -> Result<Vec<ProjectedSessionSnapshotRow>> {
+        let message_count_sql = if include_message_counts {
+            "CASE WHEN ss.counts_complete = 1 THEN ss.message_count ELSE NULL END"
+        } else {
+            "NULL"
+        };
+        let mut where_clauses = vec!["s.deleted_at_ms IS NULL".to_string()];
+        let mut values = Vec::new();
+
+        if let Some(provider_ids) = provider_ids.filter(|ids| !ids.is_empty()) {
+            let placeholders = vec!["?"; provider_ids.len()].join(", ");
+            where_clauses.push(format!("ss.provider_id IN ({placeholders})"));
+            values.extend(provider_ids.iter().cloned().map(Value::Text));
+        }
+
+        if let Some(workspace_scopes) = workspace_scopes.filter(|scopes| !scopes.is_empty()) {
+            let scopes = workspace_scopes
+                .iter()
+                .map(|_| "(ss.provider_id = ? AND ss.workspace_dir = ?)")
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            where_clauses.push(format!("({scopes})"));
+            for (provider_id, workspace_dir) in workspace_scopes {
+                values.push(Value::Text(provider_id.clone()));
+                values.push(Value::Text(workspace_dir.clone()));
+            }
+        }
+
+        let sql = format!(
+            "SELECT
+                ss.session_id,
+                ss.provider_id,
+                COALESCE(s.provider_session_id, src.provider_session_id),
+                ss.title,
+                COALESCE(local.display_title, ss.display_title),
+                ss.workspace_dir,
+                ss.last_active_at_ms,
+                src.source_path,
+                {message_count_sql},
+                COALESCE(ss.event_count, s.event_count, 0),
+                COALESCE(ss.turn_count, s.turn_count, 0),
+                src.file_size_bytes,
+                ss.flags_json,
+                COALESCE(workspace.hidden, local.hidden),
+                COALESCE(workspace.pinned, local.pinned),
+                COALESCE(workspace.preferred_targets_json, local.preferred_targets_json),
+                ss.stale
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             LEFT JOIN session_sources src ON src.id = s.primary_source_id
+             LEFT JOIN session_local_state local ON local.session_id = ss.session_id
+             LEFT JOIN workspace_session_state workspace
+                ON workspace.session_id = ss.session_id
+               AND workspace.workspace_dir = ss.workspace_dir
+             WHERE {}
+             ORDER BY
+                ss.provider_id ASC,
+                COALESCE(workspace.pinned, local.pinned, 0) DESC,
+                ss.last_active_at_ms DESC,
+                lower(COALESCE(local.display_title, ss.display_title, ss.title, ss.session_id)) ASC",
+            where_clauses.join(" AND ")
+        );
         let mut stmt = self
             .conn
-            .prepare(
-                "SELECT
-                    ss.session_id,
-                    ss.provider_id,
-                    COALESCE(s.provider_session_id, src.provider_session_id),
-                    ss.title,
-                    COALESCE(local.display_title, ss.display_title),
-                    ss.workspace_dir,
-                    ss.last_active_at_ms,
-                    src.source_path,
-                    (
-                        SELECT COUNT(*)
-                        FROM session_events event
-                        WHERE event.session_id = ss.session_id
-                          AND event.visibility = 'visible'
-                          AND event.kind = 'message'
-                    ),
-                    COALESCE(ss.event_count, s.event_count, 0),
-                    COALESCE(ss.turn_count, s.turn_count, 0),
-                    src.file_size_bytes,
-                    ss.flags_json,
-                    COALESCE(workspace.hidden, local.hidden),
-                    COALESCE(workspace.pinned, local.pinned),
-                    COALESCE(workspace.preferred_targets_json, local.preferred_targets_json),
-                    ss.stale
-                 FROM session_snapshots ss
-                 JOIN sessions s ON s.id = ss.session_id
-                 LEFT JOIN session_sources src ON src.id = s.primary_source_id
-                 LEFT JOIN session_local_state local ON local.session_id = ss.session_id
-                 LEFT JOIN workspace_session_state workspace
-                    ON workspace.session_id = ss.session_id
-                   AND workspace.workspace_dir = ss.workspace_dir
-                 WHERE s.deleted_at_ms IS NULL
-                 ORDER BY
-                    ss.provider_id ASC,
-                    COALESCE(workspace.pinned, local.pinned, 0) DESC,
-                    ss.last_active_at_ms DESC,
-                    lower(COALESCE(local.display_title, ss.display_title, ss.title, ss.session_id)) ASC",
-            )
+            .prepare(&sql)
             .context("Failed to prepare projected session snapshot list")?;
 
         let rows = stmt
-            .query_map([], |row| {
+            .query_map(params_from_iter(values.iter()), |row| {
                 let flags_json: String = row.get(12)?;
                 let local_hidden: Option<i64> = row.get(13)?;
                 let local_pinned: Option<i64> = row.get(14)?;
@@ -258,7 +293,9 @@ impl<'a> SnapshotStore<'a> {
                     workspace_dir: row.get(5)?,
                     last_active_at_ms: row.get(6)?,
                     source_path: row.get(7)?,
-                    message_count: row.get::<_, i64>(8)?.max(0) as usize,
+                    message_count: row
+                        .get::<_, Option<i64>>(8)?
+                        .map(|value| value.max(0) as usize),
                     event_count: row.get::<_, i64>(9)?.max(0) as usize,
                     turn_count: row.get::<_, i64>(10)?.max(0) as usize,
                     size_bytes: file_size_bytes.and_then(|value| u64::try_from(value).ok()),
@@ -287,12 +324,15 @@ impl<'a> SnapshotStore<'a> {
             .prepare(
                 "SELECT
                     s.id,
+                    src.id,
                     COALESCE(s.provider_session_id, src.provider_session_id),
                     COALESCE(ss.title, s.title),
                     COALESCE(local.display_title, ss.display_title),
                     COALESCE(ss.workspace_dir, s.workspace_dir, src.workspace_dir),
                     src.source_path,
-                    COALESCE(ss.last_active_at_ms, s.last_active_at_ms)
+                    ss.source_fingerprint,
+                    COALESCE(ss.last_active_at_ms, s.last_active_at_ms),
+                    ss.stale
                  FROM sessions s
                  JOIN session_snapshots ss ON ss.session_id = s.id
                  LEFT JOIN session_sources src ON src.id = s.primary_source_id
@@ -328,12 +368,15 @@ impl<'a> SnapshotStore<'a> {
 
         Ok(Some(ProjectedSessionIdentityRow {
             canonical_session_id: row.get(0)?,
-            provider_session_id: row.get(1)?,
-            title: row.get(2)?,
-            display_title: row.get(3)?,
-            workspace_dir: row.get(4)?,
-            source_path: row.get(5)?,
-            last_active_at_ms: row.get(6)?,
+            source_id: row.get(1)?,
+            provider_session_id: row.get(2)?,
+            title: row.get(3)?,
+            display_title: row.get(4)?,
+            workspace_dir: row.get(5)?,
+            source_path: row.get(6)?,
+            source_fingerprint: row.get(7)?,
+            last_active_at_ms: row.get(8)?,
+            stale: sql_bool(row.get(9)?),
         }))
     }
 
@@ -346,12 +389,15 @@ impl<'a> SnapshotStore<'a> {
             .prepare(
                 "SELECT
                     s.id,
+                    src.id,
                     COALESCE(s.provider_session_id, src.provider_session_id),
                     COALESCE(ss.title, s.title),
                     COALESCE(local.display_title, ss.display_title),
                     COALESCE(ss.workspace_dir, s.workspace_dir, src.workspace_dir),
                     src.source_path,
-                    COALESCE(ss.last_active_at_ms, s.last_active_at_ms)
+                    ss.source_fingerprint,
+                    COALESCE(ss.last_active_at_ms, s.last_active_at_ms),
+                    ss.stale
                  FROM sessions s
                  JOIN session_snapshots ss ON ss.session_id = s.id
                  LEFT JOIN session_sources src ON src.id = s.primary_source_id
@@ -367,12 +413,15 @@ impl<'a> SnapshotStore<'a> {
             .query_map([provider_id], |row| {
                 Ok(ProjectedSessionIdentityRow {
                     canonical_session_id: row.get(0)?,
-                    provider_session_id: row.get(1)?,
-                    title: row.get(2)?,
-                    display_title: row.get(3)?,
-                    workspace_dir: row.get(4)?,
-                    source_path: row.get(5)?,
-                    last_active_at_ms: row.get(6)?,
+                    source_id: row.get(1)?,
+                    provider_session_id: row.get(2)?,
+                    title: row.get(3)?,
+                    display_title: row.get(4)?,
+                    workspace_dir: row.get(5)?,
+                    source_path: row.get(6)?,
+                    source_fingerprint: row.get(7)?,
+                    last_active_at_ms: row.get(8)?,
+                    stale: sql_bool(row.get(9)?),
                 })
             })
             .context("Failed to query projected provider session identities")?;
@@ -1327,8 +1376,8 @@ fn timestamp_from_ms(value: Option<i64>) -> DateTime<Utc> {
 
 fn source_fingerprint_for_path(path: &std::path::Path) -> Result<Option<String>> {
     Ok(
-        crate::storage::projection_store::projection_source_fingerprint(path)?
-            .map(|fingerprint| fingerprint.source_cursor),
+        crate::storage::session_index_store::source_fingerprint(path)?
+            .map(|fingerprint| fingerprint.value),
     )
 }
 
@@ -1357,11 +1406,9 @@ mod tests {
             20,
         );
         conn.execute(
-            "INSERT INTO session_events
-             (id, session_id, role, kind, visibility, source_order, stable_cursor, metadata_json)
-             VALUES
-             ('event-1', 'canonical-1', 'user', 'message', 'visible', 0, '0', '{}'),
-             ('event-2', 'canonical-1', 'assistant', 'message', 'hidden_internal', 1, '1', '{}')",
+            "UPDATE session_snapshots
+             SET message_count = 1, counts_complete = 1
+             WHERE session_id = 'canonical-1'",
             [],
         )
         .unwrap();
@@ -1381,7 +1428,7 @@ mod tests {
         assert_eq!(rows[0].display_title.as_deref(), Some("Local title"));
         assert_eq!(rows[0].workspace_dir.as_deref(), Some("/tmp/project"));
         assert_eq!(rows[0].source_path.as_deref(), Some("/tmp/source.jsonl"));
-        assert_eq!(rows[0].message_count, 1);
+        assert_eq!(rows[0].message_count, Some(1));
         assert_eq!(rows[0].event_count, 2);
         assert_eq!(rows[0].turn_count, 1);
         assert_eq!(rows[0].size_bytes, Some(20));

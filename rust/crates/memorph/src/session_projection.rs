@@ -1,3 +1,5 @@
+use crate::canonical::{EventRole, SessionEvent, TurnBoundary};
+use crate::provider::{canonical_event_visible_message_role, TurnQuality};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -179,6 +181,189 @@ pub struct SourceRange {
     pub start_cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_cursor: Option<String>,
+}
+
+#[derive(Debug)]
+struct TurnAccumulator {
+    projection: TurnProjection,
+    last_event_at_ms: Option<i64>,
+}
+
+pub fn project_session_turns(
+    session_id: &str,
+    events: &[SessionEvent],
+    turn_quality: TurnQuality,
+) -> Vec<TurnProjection> {
+    let mut ordered_events = events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| {
+            let stable_cursor = event
+                .metadata
+                .source
+                .original_id
+                .as_deref()
+                .unwrap_or(event.id.as_str());
+            (
+                ProjectedEventKey::new(
+                    Some(event.timestamp.timestamp_millis()),
+                    index as i64,
+                    stable_cursor,
+                ),
+                event,
+            )
+        })
+        .collect::<Vec<_>>();
+    ordered_events.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let inferred_confidence = match turn_quality {
+        TurnQuality::Exact => TurnConfidence::Exact,
+        TurnQuality::Inferred => TurnConfidence::Inferred,
+        TurnQuality::Grouped => TurnConfidence::Grouped,
+        TurnQuality::Unknown => TurnConfidence::Unknown,
+    };
+    let mut turns = Vec::<TurnAccumulator>::new();
+    let mut exact_turns = std::collections::HashMap::<String, usize>::new();
+    let mut current_inferred = None;
+    let mut next_turn_order = 0i64;
+
+    for (key, event) in ordered_events {
+        if let Some(provider_turn_id) = event.links.provider_turn_id.as_deref() {
+            let turn_index = if let Some(turn_index) = exact_turns.get(provider_turn_id) {
+                *turn_index
+            } else {
+                let requested_order = event.links.turn_index.map(i64::from);
+                let turn_order = requested_order
+                    .filter(|order| {
+                        !turns
+                            .iter()
+                            .any(|turn| turn.projection.turn_order == *order)
+                    })
+                    .unwrap_or(next_turn_order);
+                next_turn_order = next_turn_order.max(turn_order.saturating_add(1));
+                let turn_index = turns.len();
+                turns.push(TurnAccumulator {
+                    projection: TurnProjection {
+                        id: stable_turn_id(session_id, &format!("provider:{provider_turn_id}")),
+                        session_id: session_id.to_string(),
+                        provider_turn_id: Some(provider_turn_id.to_string()),
+                        status: TurnStatus::Unknown,
+                        confidence: TurnConfidence::Exact,
+                        started_at_ms: None,
+                        ended_at_ms: None,
+                        source_range: SourceRange::default(),
+                        turn_order,
+                    },
+                    last_event_at_ms: None,
+                });
+                exact_turns.insert(provider_turn_id.to_string(), turn_index);
+                turn_index
+            };
+            include_turn_event(&mut turns[turn_index], &key);
+            apply_turn_boundary(
+                &mut turns[turn_index],
+                event.links.turn_boundary,
+                key.timestamp_ms,
+            );
+            continue;
+        }
+
+        if matches!(
+            canonical_event_visible_message_role(event),
+            Some(EventRole::User)
+        ) {
+            if let Some(turn_index) = current_inferred.take() {
+                complete_open_turn(&mut turns[turn_index]);
+            }
+            let turn_order = next_turn_order;
+            next_turn_order = next_turn_order.saturating_add(1);
+            let turn_index = turns.len();
+            turns.push(TurnAccumulator {
+                projection: TurnProjection {
+                    id: stable_turn_id(session_id, &turn_order.to_string()),
+                    session_id: session_id.to_string(),
+                    provider_turn_id: None,
+                    status: TurnStatus::Open,
+                    confidence: inferred_confidence,
+                    started_at_ms: key.timestamp_ms,
+                    ended_at_ms: None,
+                    source_range: SourceRange::default(),
+                    turn_order,
+                },
+                last_event_at_ms: None,
+            });
+            current_inferred = Some(turn_index);
+        }
+
+        if let Some(turn_index) = current_inferred {
+            include_turn_event(&mut turns[turn_index], &key);
+            apply_turn_boundary(
+                &mut turns[turn_index],
+                event.links.turn_boundary,
+                key.timestamp_ms,
+            );
+            if matches!(
+                event.links.turn_boundary,
+                Some(TurnBoundary::Completed | TurnBoundary::Failed | TurnBoundary::Interrupted)
+            ) {
+                current_inferred = None;
+            }
+        }
+    }
+
+    turns.sort_by_key(|turn| turn.projection.turn_order);
+    turns.into_iter().map(|turn| turn.projection).collect()
+}
+
+fn include_turn_event(turn: &mut TurnAccumulator, key: &ProjectedEventKey) {
+    if turn.projection.source_range.start_cursor.is_none() {
+        turn.projection.source_range.start_cursor = Some(key.stable_cursor.clone());
+    }
+    turn.projection.source_range.end_cursor = Some(key.stable_cursor.clone());
+    turn.last_event_at_ms = key.timestamp_ms.or(turn.last_event_at_ms);
+}
+
+fn apply_turn_boundary(
+    turn: &mut TurnAccumulator,
+    boundary: Option<TurnBoundary>,
+    timestamp_ms: Option<i64>,
+) {
+    match boundary {
+        Some(TurnBoundary::Started) => {
+            turn.projection.status = TurnStatus::Open;
+            turn.projection.started_at_ms = turn.projection.started_at_ms.or(timestamp_ms);
+        }
+        Some(TurnBoundary::Completed) => {
+            turn.projection.status = TurnStatus::Completed;
+            turn.projection.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
+        }
+        Some(TurnBoundary::Failed) => {
+            turn.projection.status = TurnStatus::Failed;
+            turn.projection.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
+        }
+        Some(TurnBoundary::Interrupted) => {
+            turn.projection.status = TurnStatus::Interrupted;
+            turn.projection.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
+        }
+        None => {}
+    }
+}
+
+fn complete_open_turn(turn: &mut TurnAccumulator) {
+    if matches!(
+        turn.projection.status,
+        TurnStatus::Open | TurnStatus::Unknown
+    ) {
+        turn.projection.status = TurnStatus::Completed;
+        turn.projection.ended_at_ms = turn.last_event_at_ms;
+    }
+}
+
+fn stable_turn_id(session_id: &str, seed: &str) -> String {
+    format!(
+        "turn_{:x}",
+        md5::compute(format!("{}\0{}", session_id, seed).as_bytes())
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

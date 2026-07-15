@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 pub(crate) fn current_schema_version() -> i64 {
     SCHEMA_VERSION
@@ -147,6 +147,16 @@ pub(crate) fn apply_schema(conn: &mut Connection) -> Result<()> {
             "INSERT INTO schema_migrations (version, name, applied_at_ms)
              VALUES (?1, ?2, strftime('%s','now') * 1000)",
             params![7, "event_index_turn_links_v7"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    if !applied.contains(&8) {
+        tx.execute_batch(V8_SCHEMA)
+            .context("Failed to apply memorph DB schema v8")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![8, "source_backed_session_index_v8"],
         )
         .context("Failed to record memorph DB schema migration")?;
     }
@@ -779,6 +789,15 @@ ALTER TABLE session_event_index ADD COLUMN turn_boundary TEXT
 
 CREATE INDEX idx_session_event_index_turn
     ON session_event_index(provider_id, source_path, provider_turn_id, event_index);
+"#;
+
+const V8_SCHEMA: &str = r#"
+ALTER TABLE session_snapshots ADD COLUMN message_count INTEGER;
+ALTER TABLE session_snapshots ADD COLUMN counts_complete INTEGER NOT NULL DEFAULT 0
+    CHECK(counts_complete IN (0, 1));
+
+CREATE INDEX idx_session_snapshots_provider_workspace_recent
+    ON session_snapshots(provider_id, workspace_dir, last_active_at_ms DESC);
 "#;
 
 #[cfg(test)]

@@ -12,9 +12,7 @@ use crate::core::active_compression::{
 use crate::provider::ProviderSessionSummary;
 use crate::storage::session_state;
 use crate::storage::snapshot_store::{
-    ProjectedSessionDetailPage, ProjectedSessionReport, ProjectedSessionReportItem,
-    ProjectedSessionReportSummary, ProjectedSessionSnapshotRow, SnapshotStaleScanReport,
-    StaleSnapshotSourceRow,
+    ProjectedSessionSnapshotRow, SnapshotStaleScanReport, StaleSnapshotSourceRow,
 };
 use crate::storage::{
     activity_store::{
@@ -452,7 +450,7 @@ fn bootstrap_provider_session(
         ));
         return;
     };
-    if !projection_source_file_exists(source_path) {
+    if !session_source_exists(source_path) {
         report.missing_sources += 1;
         report.failures.push(bootstrap_failure(
             provider_id,
@@ -481,8 +479,20 @@ fn bootstrap_provider_session(
         }
     }
 
-    match project_provider_session_source(conn, provider_id, Some(&session.session_id), source_path)
-    {
+    let Some(provider) = providers::find_provider(provider_id) else {
+        report.failed_sessions += 1;
+        report.failures.push(bootstrap_failure(
+            provider_id,
+            session,
+            format!("provider is not registered: {provider_id}"),
+        ));
+        return;
+    };
+    match crate::storage::session_index_store::SessionIndexStore::new(conn).write_session_summary(
+        provider_id,
+        session,
+        provider.capabilities(),
+    ) {
         Ok(_) => report.projected_sessions += 1,
         Err(error) => {
             report.failed_sessions += 1;
@@ -615,7 +625,7 @@ fn reproject_stale_snapshot_sources(
             ));
             continue;
         }
-        if !projection_source_file_exists(source_path) {
+        if !session_source_exists(source_path) {
             report.missing_sources += 1;
             report.failures.push(reprojection_failure(
                 &source,
@@ -623,12 +633,48 @@ fn reproject_stale_snapshot_sources(
             ));
             continue;
         }
-        match project_provider_session_source(
-            conn,
-            &source.provider_id,
-            source.provider_session_id.as_deref(),
-            source_path,
-        ) {
+        let Some(provider_session_id) = source
+            .provider_session_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        else {
+            report.failed_snapshots += 1;
+            report.failures.push(reprojection_failure(
+                &source,
+                "indexed session has no provider session id".to_string(),
+            ));
+            continue;
+        };
+        let Some(provider) = providers::find_provider(&source.provider_id) else {
+            report.unsupported_providers += 1;
+            report.failures.push(reprojection_failure(
+                &source,
+                format!("provider is not registered: {}", source.provider_id),
+            ));
+            continue;
+        };
+        let summary = match provider.get_session_meta(provider_session_id) {
+            Ok(Some(summary)) => summary,
+            Ok(None) => {
+                report.failed_snapshots += 1;
+                report.failures.push(reprojection_failure(
+                    &source,
+                    "provider no longer reports the indexed session".to_string(),
+                ));
+                continue;
+            }
+            Err(error) => {
+                report.failed_snapshots += 1;
+                report.failures.push(reprojection_failure(
+                    &source,
+                    format!("failed to refresh provider session summary: {error:#}"),
+                ));
+                continue;
+            }
+        };
+        match crate::storage::session_index_store::SessionIndexStore::new(conn)
+            .write_session_summary(&source.provider_id, &summary, provider.capabilities())
+        {
             Ok(_) => report.reprojected_snapshots += 1,
             Err(error) => {
                 report.failed_snapshots += 1;
@@ -645,33 +691,8 @@ fn provider_supports_session_projection(provider_id: &str) -> bool {
     PROJECTED_SESSION_PROVIDER_IDS.contains(&provider_id)
 }
 
-fn project_provider_session_source(
-    conn: &mut rusqlite::Connection,
-    provider_id: &str,
-    provider_session_id: Option<&str>,
-    source_path: &str,
-) -> Result<crate::storage::projection_store::StoredProjection> {
-    let source_path = std::path::Path::new(source_path);
-    let mut store = crate::storage::projection_store::ProjectionStore::new(conn);
-    match provider_id {
-        "claude" => crate::providers::claude::project_session_to_store(source_path, &mut store),
-        "codex" => crate::providers::codex::project_session_to_store(source_path, &mut store),
-        "opencode" => {
-            let provider_session_id = provider_session_id
-                .filter(|value| !value.is_empty())
-                .context("Projected OpenCode session has no provider session id")?;
-            crate::providers::opencode::project_session_to_store(
-                provider_session_id,
-                source_path,
-                &mut store,
-            )
-        }
-        _ => anyhow::bail!("Provider does not support projected store projection: {provider_id}"),
-    }
-}
-
-fn projection_source_file_exists(source_path: &str) -> bool {
-    crate::storage::projection_store::projection_source_file_path(std::path::Path::new(source_path))
+fn session_source_exists(source_path: &str) -> bool {
+    crate::storage::session_index_store::source_file_path(std::path::Path::new(source_path))
         .exists()
 }
 
@@ -692,10 +713,27 @@ fn reprojection_failure(
 
 fn list_projected_session_snapshots(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
     let conn = crate::storage::local_store::open_database()?;
-    let snapshots =
-        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
+    let provider_ids = resolve_providers(&params.providers);
+    let workspace_scopes = if params.all {
+        None
+    } else {
+        let scopes: Vec<(String, String)> = provider_ids
+            .iter()
+            .filter_map(|provider_id| {
+                session_management::normalized_workspace_key(provider_id, params.cwd.as_deref())
+                    .map(|workspace| (provider_id.clone(), workspace))
+            })
+            .collect();
+        Some(scopes)
+    };
+    let snapshots = crate::storage::snapshot_store::SnapshotStore::new(&conn)
+        .list_session_snapshots_filtered(
+            Some(&provider_ids),
+            workspace_scopes.as_deref(),
+            params.include_message_counts,
+        )?;
     let hook_runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-    let hook_statuses = resolve_providers(&params.providers)
+    let hook_statuses = provider_ids
         .into_iter()
         .filter(|provider_id| {
             snapshots
@@ -824,7 +862,7 @@ fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) -> SessionIte
             .as_deref()
             .map(utils::user_visible_path),
         provider_id: snapshot.provider_id.clone(),
-        message_count: Some(snapshot.message_count),
+        message_count: snapshot.message_count,
         size_bytes: snapshot.size_bytes,
         hook_runtime_summary: None,
         hook_diagnosis: None,
@@ -1131,7 +1169,7 @@ mod session_list_hook_tests {
             workspace_dir: Some(workspace_dir.to_string()),
             last_active_at_ms: Some(last_active_at_ms),
             source_path: Some(format!("/tmp/{provider_session_id}.jsonl")),
-            message_count: 3,
+            message_count: Some(3),
             event_count: 5,
             turn_count: 2,
             size_bytes: Some(128),
@@ -1171,108 +1209,204 @@ pub fn get_session_detail_view_page(
     event_offset: usize,
     event_limit: Option<usize>,
 ) -> Result<SessionDetailView> {
-    let conn = crate::storage::local_store::open_database()?;
-    let page = crate::storage::snapshot_store::SnapshotStore::new(&conn)
-        .get_session_detail_page(provider_id, session_id, event_offset, event_limit)?
-        .with_context(|| format!("Session not found in projected store: {session_id}"))?;
-    Ok(projected_detail_view(page))
-}
-
-fn projected_detail_view(page: ProjectedSessionDetailPage) -> SessionDetailView {
-    let provider_name = providers::find_provider(&page.provider_id)
-        .map(|provider| provider.name().to_string())
-        .unwrap_or_else(|| page.provider_id.clone());
-    let resume_command = providers::find_provider(&page.provider_id).and_then(|provider| {
-        page.provider_session_id
-            .as_deref()
-            .and_then(|session_id| provider.resume_command(session_id))
-    });
-    let session_id = page
+    let mut conn = crate::storage::local_store::open_database()?;
+    let identity = crate::storage::snapshot_store::SnapshotStore::new(&conn)
+        .find_session_identity(provider_id, session_id)?
+        .with_context(|| format!("Session is not indexed: {provider_id}/{session_id}"))?;
+    let source_path = identity
+        .source_path
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .with_context(|| format!("Session has no source locator: {provider_id}/{session_id}"))?;
+    let source_fingerprint =
+        crate::storage::session_index_store::source_fingerprint(std::path::Path::new(source_path))?
+            .with_context(|| format!("Session source is missing: {source_path}"))?;
+    let provider = providers::find_provider(provider_id)
+        .with_context(|| format!("Unknown provider: {provider_id}"))?;
+    if !provider.capabilities().import {
+        anyhow::bail!("Provider does not support session detail reads: {provider_id}");
+    }
+    let provider_session_id = identity
         .provider_session_id
-        .clone()
-        .unwrap_or_else(|| page.canonical_session_id.clone());
-    let display_title = page
-        .local_state
+        .as_deref()
+        .unwrap_or(session_id)
+        .to_string();
+    let mut page = provider.import_session_page(source_path, event_offset, event_limit)?;
+    let meta = ProviderSessionSummary {
+        session_id: provider_session_id.clone(),
+        title: identity.title.clone(),
+        project_dir: identity.workspace_dir.clone(),
+        last_active_at: identity.last_active_at_ms,
+        source_path: Some(source_path.to_string()),
+    };
+    enrich_imported_session_from_meta(&mut page.imported, provider_id, &meta);
+    for turn in &mut page.turns {
+        turn.session_id = identity.canonical_session_id.clone();
+        turn.id = format!(
+            "turn_{:x}",
+            md5::compute(
+                format!(
+                    "{}\0{}",
+                    identity.canonical_session_id,
+                    turn.provider_turn_id
+                        .as_deref()
+                        .map(|value| format!("provider:{value}"))
+                        .unwrap_or_else(|| turn.turn_order.to_string())
+                )
+                .as_bytes()
+            )
+        );
+    }
+    let local_state_store = session_state::load_state_store()?;
+    let local_state = session_state::resolve_session_state(
+        &local_state_store,
+        provider_id,
+        &provider_session_id,
+        identity.workspace_dir.as_deref(),
+    );
+    let stale =
+        identity.stale || identity.source_fingerprint.as_deref() != Some(&source_fingerprint.value);
+    let counts_written = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+        .record_complete_counts(
+            &identity.canonical_session_id,
+            &source_fingerprint.value,
+            page.event_count,
+            page.message_count,
+            page.turns.len(),
+        )?;
+    let _ = counts_written;
+    let display_title = local_state
         .display_title
         .clone()
-        .or(page.display_title);
-    let title = display_title.clone().or_else(|| page.title.clone());
-
-    SessionDetailView {
-        provider_id: page.provider_id,
-        provider_name,
-        session_id,
-        canonical_id: page.canonical_session_id,
-        title,
-        native_title: page.title,
-        display_title,
-        workspace_dir: page.workspace_dir.as_deref().map(utils::user_visible_path),
-        created_at: page
-            .created_at_ms
-            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis),
-        last_active_at: page
+        .or_else(|| identity.display_title.clone());
+    let title = display_title.clone().or_else(|| identity.title.clone());
+    let last_active_at = page.imported.session.context.last_active_at.or_else(|| {
+        identity
             .last_active_at_ms
-            .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis),
-        source_path: page.source_path.as_deref().map(utils::user_visible_path),
-        resume_command,
-        local_state: page.local_state.clone(),
+            .and_then(chrono::DateTime::from_timestamp_millis)
+    });
+    let created_at = page.imported.session.context.created_at;
+
+    Ok(SessionDetailView {
+        provider_id: provider_id.to_string(),
+        provider_name: provider.name().to_string(),
+        session_id: provider_session_id,
+        canonical_id: identity.canonical_session_id.clone(),
+        title,
+        native_title: identity.title,
+        display_title,
+        workspace_dir: page
+            .imported
+            .session
+            .context
+            .workspace_dir
+            .as_deref()
+            .map(utils::user_visible_path),
+        created_at,
+        last_active_at,
+        source_path: Some(utils::user_visible_path(source_path)),
+        resume_command: provider.resume_command(
+            identity
+                .provider_session_id
+                .as_deref()
+                .unwrap_or(session_id),
+        ),
+        local_state: local_state.clone(),
         event_count: page.event_count,
         message_count: page.message_count,
-        artifact_count: 0,
-        stale: page.stale,
+        artifact_count: page.imported.session.artifacts.len(),
+        stale,
         hook_runtime_summary: None,
         hook_diagnosis: None,
         hook_runtime_sessions: Vec::new(),
-        projection_report: page.projection_report.map(projected_report_view),
+        projection_report: Some(source_mapping_report_view(
+            provider_id,
+            identity.source_id.as_deref(),
+            &page.imported,
+            page.event_count,
+        )),
         turns: page.turns,
-        events: page.events,
-        artifacts: Vec::new(),
-        compressed_archive_refs: page.local_state.compressed_archive_refs.clone(),
-    }
+        events: page.imported.session.events,
+        artifacts: page.imported.session.artifacts,
+        compressed_archive_refs: local_state.compressed_archive_refs.clone(),
+    })
 }
 
-fn projected_report_view(report: ProjectedSessionReport) -> SessionProjectionReportView {
+fn source_mapping_report_view(
+    provider_id: &str,
+    source_id: Option<&str>,
+    imported: &ImportedSession,
+    event_count: usize,
+) -> SessionProjectionReportView {
+    let mut preserved_count = 0;
+    let mut normalized_count = 0;
+    let mut dropped_count = 0;
+    for disposition in imported
+        .session
+        .events
+        .iter()
+        .map(|event| event.metadata.fidelity)
+        .chain(imported.report.issues.iter().map(|issue| issue.disposition))
+    {
+        match disposition {
+            crate::canonical::MappingDisposition::Preserved => preserved_count += 1,
+            crate::canonical::MappingDisposition::Normalized
+            | crate::canonical::MappingDisposition::Downgraded => normalized_count += 1,
+            crate::canonical::MappingDisposition::Dropped
+            | crate::canonical::MappingDisposition::Unsupported => dropped_count += 1,
+        }
+    }
     SessionProjectionReportView {
-        id: report.id,
-        provider_id: report.provider_id,
-        source_id: report.source_id,
-        operation_kind: report.operation_kind,
-        projection_version: report.projection_version,
-        status: report.status,
-        created_at: chrono::DateTime::<chrono::Utc>::from_timestamp_millis(report.created_at_ms)
-            .unwrap_or(chrono::DateTime::<chrono::Utc>::UNIX_EPOCH),
-        created_at_ms: report.created_at_ms,
-        summary: projected_report_summary_view(report.summary),
-        item_count: report.item_count,
-        items: report
-            .items
-            .into_iter()
-            .map(projected_report_item_view)
+        id: format!(
+            "source-read:{provider_id}:{}",
+            imported.session.identity.canonical_id
+        ),
+        provider_id: provider_id.to_string(),
+        source_id: source_id.map(str::to_string),
+        operation_kind: crate::session_projection::ProjectionOperationKind::Import,
+        projection_version: crate::session_projection::SESSION_PROJECTION_VERSION,
+        status: if dropped_count > 0 {
+            crate::session_projection::ProjectionStatus::CompletedWithLoss
+        } else {
+            crate::session_projection::ProjectionStatus::Succeeded
+        },
+        created_at: chrono::Utc::now(),
+        created_at_ms: chrono::Utc::now().timestamp_millis(),
+        summary: SessionProjectionReportSummaryView {
+            canonical_event_count: Some(event_count),
+            mapping_direction: Some(imported.report.direction),
+            mapping_overall: Some(imported.report.overall),
+            preserved_count,
+            normalized_count,
+            dropped_count,
+        },
+        item_count: imported.report.issues.len(),
+        items: imported
+            .report
+            .issues
+            .iter()
+            .enumerate()
+            .map(|(index, issue)| SessionProjectionReportItemView {
+                item_order: index as i64,
+                fidelity: match issue.disposition {
+                    crate::canonical::MappingDisposition::Preserved => {
+                        crate::session_projection::ProjectionFidelity::Preserved
+                    }
+                    crate::canonical::MappingDisposition::Normalized
+                    | crate::canonical::MappingDisposition::Downgraded => {
+                        crate::session_projection::ProjectionFidelity::Normalized
+                    }
+                    crate::canonical::MappingDisposition::Dropped
+                    | crate::canonical::MappingDisposition::Unsupported => {
+                        crate::session_projection::ProjectionFidelity::Dropped
+                    }
+                },
+                scope: crate::session_projection::ProjectionItemScope::ProviderPayload,
+                field_path: issue.path.clone(),
+                reason: Some(issue.message.clone()),
+                details: issue.raw.clone(),
+            })
             .collect(),
-    }
-}
-
-fn projected_report_summary_view(
-    summary: ProjectedSessionReportSummary,
-) -> SessionProjectionReportSummaryView {
-    SessionProjectionReportSummaryView {
-        canonical_event_count: summary.canonical_event_count,
-        mapping_direction: summary.mapping_direction,
-        mapping_overall: summary.mapping_overall,
-        preserved_count: summary.preserved_count,
-        normalized_count: summary.normalized_count,
-        dropped_count: summary.dropped_count,
-    }
-}
-
-fn projected_report_item_view(item: ProjectedSessionReportItem) -> SessionProjectionReportItemView {
-    SessionProjectionReportItemView {
-        item_order: item.item_order,
-        fidelity: item.fidelity,
-        scope: item.scope,
-        field_path: item.field_path,
-        reason: item.reason,
-        details: item.details,
     }
 }
 
@@ -3429,14 +3563,11 @@ mod tests {
         HookToolCall, PermissionRequest, QuestionRequest, RuntimeSession, RuntimeSessionId,
         RuntimeSessionStatus,
     };
-    use crate::session_projection::{
-        ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
-    };
     use crate::storage::projection_store::ProjectionStore;
     use crate::storage::{local_store, snapshot_store::StaleSnapshotSourceRow};
     use chrono::Utc;
     use std::collections::BTreeMap;
-    use std::io::{Seek, SeekFrom, Write};
+    use std::io::Write;
     use std::path::Path;
     use tempfile::Builder;
 
@@ -3738,136 +3869,6 @@ mod tests {
         assert_eq!(
             imported.session.identity.source_title.as_deref(),
             Some("Display")
-        );
-    }
-
-    #[test]
-    fn projected_session_detail_view_uses_sqlite_projection_fields() {
-        let view = projected_detail_view(ProjectedSessionDetailPage {
-            canonical_session_id: "canonical-1".to_string(),
-            provider_id: "codex".to_string(),
-            provider_session_id: Some("session-1".to_string()),
-            title: Some("Native".to_string()),
-            display_title: None,
-            workspace_dir: Some("/tmp/project".to_string()),
-            created_at_ms: Some(1_700_000_000_000),
-            last_active_at_ms: Some(1_700_000_001_000),
-            source_path: Some("/tmp/session.jsonl".to_string()),
-            event_count: 2,
-            message_count: 1,
-            turn_count: 1,
-            stale: true,
-            local_state: session_state::ResolvedLocalSessionState {
-                display_title: Some("Display".to_string()),
-                archived: false,
-                hidden: false,
-                pinned: false,
-                notes: None,
-                tags: Vec::new(),
-                preferred_targets: Vec::new(),
-                compressed_archive_refs: vec!["archive-1".to_string()],
-            },
-            projection_report: Some(ProjectedSessionReport {
-                id: "report-1".to_string(),
-                provider_id: "codex".to_string(),
-                source_id: Some("source-1".to_string()),
-                operation_kind: ProjectionOperationKind::Import,
-                projection_version: 1,
-                status: ProjectionStatus::CompletedWithLoss,
-                created_at_ms: 1_700_000_002_000,
-                summary: ProjectedSessionReportSummary {
-                    canonical_event_count: Some(2),
-                    mapping_direction: Some(MappingDirection::Import),
-                    mapping_overall: Some(MappingDisposition::Dropped),
-                    preserved_count: 1,
-                    normalized_count: 1,
-                    dropped_count: 1,
-                },
-                item_count: 1,
-                items: vec![ProjectedSessionReportItem {
-                    item_order: 0,
-                    fidelity: ProjectionFidelity::Dropped,
-                    scope: ProjectionItemScope::ProviderPayload,
-                    field_path: Some("events[0].meta".to_string()),
-                    reason: Some("unsupported field".to_string()),
-                    details: Some(serde_json::json!({ "code": "unsupported_meta" })),
-                }],
-            }),
-            turns: vec![crate::session_projection::TurnProjection {
-                id: "turn-1".to_string(),
-                session_id: "canonical-1".to_string(),
-                provider_turn_id: None,
-                status: crate::session_projection::TurnStatus::Completed,
-                confidence: crate::session_projection::TurnConfidence::Exact,
-                started_at_ms: Some(1_700_000_000_000),
-                ended_at_ms: Some(1_700_000_001_000),
-                source_range: crate::session_projection::SourceRange::default(),
-                turn_order: 0,
-            }],
-            events: vec![SessionEvent {
-                id: "e2".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::Assistant,
-                timestamp: Utc::now(),
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
-                    text: "hello".to_string(),
-                }],
-                metadata: EventMetadata {
-                    source: EventSource {
-                        provider_id: "codex".to_string(),
-                        original_id: None,
-                        original_role: None,
-                        phase: None,
-                    },
-                    model: None,
-                    usage: None,
-                    fidelity: MappingDisposition::Preserved,
-                    provider_ext: BTreeMap::new(),
-                },
-            }],
-        });
-
-        assert_eq!(view.title.as_deref(), Some("Display"));
-        assert_eq!(view.native_title.as_deref(), Some("Native"));
-        assert_eq!(view.display_title.as_deref(), Some("Display"));
-        assert_eq!(view.canonical_id, "canonical-1");
-        assert_eq!(view.session_id, "session-1");
-        assert_eq!(view.event_count, 2);
-        assert_eq!(view.message_count, 1);
-        assert!(view.stale);
-        assert_eq!(view.turns.len(), 1);
-        assert_eq!(
-            view.turns[0].confidence,
-            crate::session_projection::TurnConfidence::Exact
-        );
-        assert_eq!(view.source_path.as_deref(), Some("/tmp/session.jsonl"));
-        assert_eq!(view.events.len(), 1);
-        assert_eq!(view.compressed_archive_refs, vec!["archive-1"]);
-        let report = view.projection_report.as_ref().unwrap();
-        assert_eq!(report.id, "report-1");
-        assert_eq!(report.source_id.as_deref(), Some("source-1"));
-        assert_eq!(report.operation_kind, ProjectionOperationKind::Import);
-        assert_eq!(report.status, ProjectionStatus::CompletedWithLoss);
-        assert_eq!(report.created_at_ms, 1_700_000_002_000);
-        assert_eq!(report.summary.canonical_event_count, Some(2));
-        assert_eq!(
-            report.summary.mapping_direction,
-            Some(MappingDirection::Import)
-        );
-        assert_eq!(
-            report.summary.mapping_overall,
-            Some(MappingDisposition::Dropped)
-        );
-        assert_eq!(report.summary.normalized_count, 1);
-        assert_eq!(report.item_count, 1);
-        assert_eq!(
-            report.items[0].field_path.as_deref(),
-            Some("events[0].meta")
-        );
-        assert_eq!(
-            report.items[0].details.as_ref().unwrap()["code"],
-            serde_json::Value::String("unsupported_meta".to_string())
         );
     }
 
@@ -4633,7 +4634,7 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_discovers_projects_skips_unchanged_and_reprojects_changes() {
+    fn bootstrap_discovers_projects_skips_unchanged_and_refreshes_changed_indexes() {
         let opencode_dir = tempfile::tempdir().unwrap();
         let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
         write_opencode_projection_sample(
@@ -4663,7 +4664,7 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(report_count, 1);
+        assert_eq!(report_count, 0);
 
         write_opencode_projection_sample(
             opencode_dir.path(),
@@ -4687,11 +4688,22 @@ mod tests {
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(report_count, 2);
+        assert_eq!(report_count, 0);
+        let body_row_count: i64 = conn
+            .query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM session_turns) +
+                   (SELECT COUNT(*) FROM session_events) +
+                   (SELECT COUNT(*) FROM session_event_blocks)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(body_row_count, 0);
     }
 
     #[test]
-    fn bootstrap_continues_after_missing_and_invalid_session_sources() {
+    fn bootstrap_continues_after_missing_sources_without_parsing_body_content() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
         local_store::apply_schema(&mut conn).unwrap();
@@ -4727,14 +4739,10 @@ mod tests {
             bootstrap_provider_session(&mut conn, "claude", session, &mut report);
         }
 
-        assert_eq!(report.projected_sessions, 1);
-        assert_eq!(report.failed_sessions, 1);
+        assert_eq!(report.projected_sessions, 2);
+        assert_eq!(report.failed_sessions, 0);
         assert_eq!(report.missing_sources, 1);
-        assert_eq!(report.failures.len(), 2);
-        assert!(report
-            .failures
-            .iter()
-            .any(|failure| failure.session_id.as_deref() == Some("invalid-session")));
+        assert_eq!(report.failures.len(), 1);
         assert!(report
             .failures
             .iter()
@@ -4781,18 +4789,36 @@ mod tests {
     }
 
     #[test]
-    fn non_default_session_list_reads_projection_without_provider_source() {
+    fn non_default_session_list_reads_index_without_provider_source() {
         let home = tempfile::tempdir().unwrap();
         let _home_guard = TestConfigHomeGuard::new(home.path());
         let mut source = tempfile::NamedTempFile::new().unwrap();
         write_claude_projection_sample(&mut source, "Projected title");
         let mut conn = local_store::open_database().unwrap();
 
-        crate::providers::claude::project_session_to_store(
-            source.path(),
-            &mut ProjectionStore::new(&mut conn),
-        )
-        .unwrap();
+        let provider = providers::find_provider("claude").unwrap();
+        let stored = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .write_session_summary(
+                "claude",
+                &ProviderSessionSummary {
+                    session_id: "session-projection-1".to_string(),
+                    title: Some("Projected title".to_string()),
+                    project_dir: Some("/tmp/project".to_string()),
+                    last_active_at: None,
+                    source_path: Some(source.path().to_string_lossy().to_string()),
+                },
+                provider.capabilities(),
+            )
+            .unwrap();
+        crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .record_complete_counts(
+                &stored.canonical_session_id,
+                &stored.source_fingerprint,
+                3,
+                2,
+                1,
+            )
+            .unwrap();
         drop(conn);
         drop(source);
 
@@ -4827,10 +4853,8 @@ mod tests {
         assert_eq!(found[0].sessions.len(), 1);
         assert_eq!(found[0].sessions[0].session_id, "session-projection-1");
 
-        let stats = compute_session_stats("claude", "session-projection-1").unwrap();
-        assert_eq!(stats.events.len(), 3);
-        assert!(stats.total_char_count > 0);
-        assert!(stats.total_visible_char_count > 0);
+        let error = compute_session_stats("claude", "session-projection-1").unwrap_err();
+        assert!(format!("{error:#}").contains("source"));
 
         let local_state = update_session_local_state(
             "claude",
@@ -4990,34 +5014,41 @@ mod tests {
     }
 
     #[test]
-    fn reproject_stale_snapshot_sources_rebuilds_claude_projection() {
+    fn reproject_stale_snapshot_sources_refreshes_claude_index() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let project_dir = home.path().join(".claude/projects/project-1");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let source_path = project_dir.join("session-projection-1.jsonl");
+        let mut file = std::fs::File::create(&source_path).unwrap();
+        write_claude_projection_sample(&mut file, "Old title");
+
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
         local_store::apply_schema(&mut conn).unwrap();
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        write_claude_projection_sample(&mut file, "Old title");
-
-        let stored = crate::providers::claude::project_session_to_store(
-            file.path(),
-            &mut ProjectionStore::new(&mut conn),
-        )
-        .unwrap();
+        let provider = providers::find_provider("claude").unwrap();
+        let summary = provider
+            .get_session_meta("session-projection-1")
+            .unwrap()
+            .unwrap();
+        let stored = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .write_session_summary("claude", &summary, provider.capabilities())
+            .unwrap();
         conn.execute(
             "UPDATE session_snapshots SET stale = 1 WHERE session_id = ?1",
-            [stored.session_id.as_str()],
+            [stored.canonical_session_id.as_str()],
         )
         .unwrap();
-        file.as_file_mut().set_len(0).unwrap();
-        file.as_file_mut().seek(SeekFrom::Start(0)).unwrap();
+        let mut file = std::fs::File::create(&source_path).unwrap();
         write_claude_projection_sample(&mut file, "New title");
 
         let report = reproject_stale_snapshot_sources(
             &mut conn,
             vec![StaleSnapshotSourceRow {
-                canonical_session_id: stored.session_id.clone(),
+                canonical_session_id: stored.canonical_session_id.clone(),
                 provider_id: "claude".to_string(),
                 provider_session_id: Some("session-projection-1".to_string()),
-                source_path: Some(file.path().to_string_lossy().to_string()),
+                source_path: Some(source_path.to_string_lossy().to_string()),
             }],
         )
         .unwrap();
@@ -5031,7 +5062,7 @@ mod tests {
         let snapshot: (String, i64) = conn
             .query_row(
                 "SELECT title, stale FROM session_snapshots WHERE session_id = ?1",
-                [stored.session_id.as_str()],
+                [stored.canonical_session_id.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
@@ -5040,34 +5071,43 @@ mod tests {
     }
 
     #[test]
-    fn reproject_stale_snapshot_sources_rebuilds_codex_projection() {
+    fn reproject_stale_snapshot_sources_refreshes_codex_index() {
+        let codex_dir = tempfile::tempdir().unwrap();
+        let _guard = TestCodexDirGuard::new(codex_dir.path().to_path_buf());
+        let sessions_dir = codex_dir.path().join("sessions/2026/05/21");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        let source_path = sessions_dir.join("rollout-2026-05-21T10-00-00-codex-projection-1.jsonl");
+        let mut file = std::fs::File::create(&source_path).unwrap();
+        write_codex_projection_sample(&mut file, "Old Codex title");
+        write_codex_index_sample(codex_dir.path(), "Old Codex title");
+
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
         local_store::apply_schema(&mut conn).unwrap();
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        write_codex_projection_sample(&mut file, "Old Codex title");
-
-        let stored = crate::providers::codex::project_session_to_store(
-            file.path(),
-            &mut ProjectionStore::new(&mut conn),
-        )
-        .unwrap();
+        let provider = providers::find_provider("codex").unwrap();
+        let summary = provider
+            .get_session_meta("codex-projection-1")
+            .unwrap()
+            .unwrap();
+        let stored = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .write_session_summary("codex", &summary, provider.capabilities())
+            .unwrap();
         conn.execute(
             "UPDATE session_snapshots SET stale = 1 WHERE session_id = ?1",
-            [stored.session_id.as_str()],
+            [stored.canonical_session_id.as_str()],
         )
         .unwrap();
-        file.as_file_mut().set_len(0).unwrap();
-        file.as_file_mut().seek(SeekFrom::Start(0)).unwrap();
+        let mut file = std::fs::File::create(&source_path).unwrap();
         write_codex_projection_sample(&mut file, "New Codex title");
+        write_codex_index_sample(codex_dir.path(), "New Codex title");
 
         let report = reproject_stale_snapshot_sources(
             &mut conn,
             vec![StaleSnapshotSourceRow {
-                canonical_session_id: stored.session_id.clone(),
+                canonical_session_id: stored.canonical_session_id.clone(),
                 provider_id: "codex".to_string(),
                 provider_session_id: Some("codex-projection-1".to_string()),
-                source_path: Some(file.path().to_string_lossy().to_string()),
+                source_path: Some(source_path.to_string_lossy().to_string()),
             }],
         )
         .unwrap();
@@ -5081,7 +5121,7 @@ mod tests {
         let snapshot: (String, i64) = conn
             .query_row(
                 "SELECT title, stale FROM session_snapshots WHERE session_id = ?1",
-                [stored.session_id.as_str()],
+                [stored.canonical_session_id.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
@@ -5090,7 +5130,7 @@ mod tests {
     }
 
     #[test]
-    fn reproject_stale_snapshot_sources_rebuilds_opencode_projection() {
+    fn reproject_stale_snapshot_sources_refreshes_opencode_index() {
         let opencode_dir = tempfile::tempdir().unwrap();
         let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
         let source_path = write_opencode_projection_sample(
@@ -5102,15 +5142,17 @@ mod tests {
         local_store::configure_connection(&conn).unwrap();
         local_store::apply_schema(&mut conn).unwrap();
 
-        let stored = crate::providers::opencode::project_session_to_store(
-            "ses_projection",
-            &source_path,
-            &mut ProjectionStore::new(&mut conn),
-        )
-        .unwrap();
+        let provider = providers::find_provider("opencode").unwrap();
+        let summary = provider
+            .get_session_meta("ses_projection")
+            .unwrap()
+            .unwrap();
+        let stored = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .write_session_summary("opencode", &summary, provider.capabilities())
+            .unwrap();
         conn.execute(
             "UPDATE session_snapshots SET stale = 1 WHERE session_id = ?1",
-            [stored.session_id.as_str()],
+            [stored.canonical_session_id.as_str()],
         )
         .unwrap();
         write_opencode_projection_sample(
@@ -5122,7 +5164,7 @@ mod tests {
         let report = reproject_stale_snapshot_sources(
             &mut conn,
             vec![StaleSnapshotSourceRow {
-                canonical_session_id: stored.session_id.clone(),
+                canonical_session_id: stored.canonical_session_id.clone(),
                 provider_id: "opencode".to_string(),
                 provider_session_id: Some("ses_projection".to_string()),
                 source_path: Some(source_path.to_string_lossy().to_string()),
@@ -5139,7 +5181,7 @@ mod tests {
         let snapshot: (String, i64) = conn
             .query_row(
                 "SELECT title, stale FROM session_snapshots WHERE session_id = ?1",
-                [stored.session_id.as_str()],
+                [stored.canonical_session_id.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
@@ -5172,7 +5214,7 @@ mod tests {
         assert_eq!(report.failures[0].session_id, "native-1");
     }
 
-    fn write_claude_projection_sample(file: &mut tempfile::NamedTempFile, title: &str) {
+    fn write_claude_projection_sample(file: &mut impl Write, title: &str) {
         writeln!(
             file,
             "{}",
@@ -5287,7 +5329,7 @@ mod tests {
             .sum()
     }
 
-    fn write_codex_projection_sample(file: &mut tempfile::NamedTempFile, title: &str) {
+    fn write_codex_projection_sample(file: &mut impl Write, title: &str) {
         writeln!(
             file,
             "{}",
@@ -5323,6 +5365,17 @@ mod tests {
         file.flush().unwrap();
     }
 
+    fn write_codex_index_sample(codex_dir: &Path, title: &str) {
+        std::fs::write(
+            codex_dir.join("session_index.jsonl"),
+            format!(
+                "{{\"id\":\"codex-projection-1\",\"thread_name\":{},\"updated_at\":\"2026-05-21T10:00:00Z\"}}\n",
+                serde_json::to_string(title).unwrap()
+            ),
+        )
+        .unwrap();
+    }
+
     struct TestConfigHomeGuard;
 
     impl TestConfigHomeGuard {
@@ -5335,6 +5388,21 @@ mod tests {
     impl Drop for TestConfigHomeGuard {
         fn drop(&mut self) {
             crate::config::reset_test_home_dir();
+        }
+    }
+
+    struct TestCodexDirGuard;
+
+    impl TestCodexDirGuard {
+        fn new(path: std::path::PathBuf) -> Self {
+            crate::providers::codex::set_test_codex_dir(Some(path));
+            Self
+        }
+    }
+
+    impl Drop for TestCodexDirGuard {
+        fn drop(&mut self) {
+            crate::providers::codex::set_test_codex_dir(None);
         }
     }
 

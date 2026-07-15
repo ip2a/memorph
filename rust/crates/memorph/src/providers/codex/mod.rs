@@ -2686,10 +2686,16 @@ pub fn import_canonical_session_page(
         report,
     };
 
+    let turns = crate::session_projection::project_session_turns(
+        &imported.session.identity.canonical_id,
+        &imported.session.events,
+        TurnQuality::Exact,
+    );
     Ok(ProviderSessionImportPage {
         imported,
         event_count: state.event_count,
         message_count: state.message_count,
+        turns,
     })
 }
 
@@ -4120,7 +4126,7 @@ fn get_codex_dir() -> PathBuf {
 }
 
 #[cfg(test)]
-fn set_test_codex_dir(path: Option<PathBuf>) {
+pub(crate) fn set_test_codex_dir(path: Option<PathBuf>) {
     *TEST_CODEX_DIR
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
