@@ -13,10 +13,6 @@ pub mod hooks;
 pub mod i18n;
 pub mod logging;
 pub mod provider;
-#[doc(hidden)]
-pub mod provider_controls;
-#[doc(hidden)]
-pub mod provider_features;
 pub mod provider_settings;
 pub mod providers;
 pub mod server;

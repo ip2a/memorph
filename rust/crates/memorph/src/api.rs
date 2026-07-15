@@ -15,7 +15,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crate::{
-    agent_management, cache, config, core, hooks, logging, provider_features, provider_settings,
+    agent_management, cache, config, core, hooks, logging, provider_settings,
     providers::catalog::{build_catalog, sort_catalog, CatalogInput, ProviderCatalog},
     storage::activity_store::{
         ActivityActor, ActivityOperationKind, ActivityQuery, ActivityStatus,
@@ -86,10 +86,6 @@ pub fn router() -> Router {
             get(get_provider_catalog_active),
         )
         .route(
-            "/api/v1/providers/{provider}/features",
-            get(list_legacy_provider_features),
-        )
-        .route(
             "/api/v1/providers/{provider}/activity",
             get(get_provider_activity),
         )
@@ -98,26 +94,10 @@ pub fn router() -> Router {
             get(list_provider_settings),
         )
         .route(
-            "/api/v1/providers/{provider}/controls",
-            get(list_legacy_provider_controls),
-        )
-        .route(
-            "/api/v1/providers/{provider}/features/{feature_id}",
-            get(get_legacy_provider_feature)
-                .put(update_legacy_provider_feature)
-                .post(run_legacy_provider_feature),
-        )
-        .route(
             "/api/v1/providers/{provider}/settings/{setting_id}",
             get(get_provider_setting)
                 .put(update_provider_setting)
                 .post(run_provider_setting),
-        )
-        .route(
-            "/api/v1/providers/{provider}/controls/{control_id}",
-            get(get_legacy_provider_control)
-                .put(update_legacy_provider_control)
-                .post(run_legacy_provider_control),
         )
         .route("/api/v1/settings", get(get_settings).put(update_settings))
         .route("/api/v1/system/select-folder", post(select_folder))
@@ -266,18 +246,6 @@ struct ProviderInfo {
     delete: bool,
     rename: bool,
     resume: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct LegacyProviderFeaturePayload {
-    provider_id: String,
-    features: Vec<provider_features::ResolvedProviderFeature>,
-}
-
-#[derive(Debug, Serialize)]
-struct LegacyProviderControlsPayload {
-    provider_id: String,
-    controls: Vec<provider_settings::ProviderSettingItem>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1136,28 +1104,6 @@ async fn update_provider_catalog(Json(body): Json<UpdateCatalogBody>) -> impl In
     }
 }
 
-async fn list_legacy_provider_features(Path(provider): Path<String>) -> impl IntoResponse {
-    match provider_features::list_provider_features(&provider) {
-        Ok(features) => ApiResponse::success(LegacyProviderFeaturePayload {
-            provider_id: provider,
-            features,
-        })
-        .into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    }
-}
-
-async fn list_legacy_provider_controls(Path(provider): Path<String>) -> impl IntoResponse {
-    match provider_settings::list_provider_settings(&provider) {
-        Ok(controls) => ApiResponse::success(LegacyProviderControlsPayload {
-            provider_id: provider,
-            controls,
-        })
-        .into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    }
-}
-
 async fn list_provider_settings(Path(provider): Path<String>) -> impl IntoResponse {
     match provider_settings::list_provider_settings(&provider) {
         Ok(settings) => ApiResponse::success(ProviderSettingsPayload {
@@ -1169,29 +1115,11 @@ async fn list_provider_settings(Path(provider): Path<String>) -> impl IntoRespon
     }
 }
 
-async fn get_legacy_provider_feature(
-    Path((provider, feature_id)): Path<(String, String)>,
-) -> impl IntoResponse {
-    match provider_features::get_provider_feature(&provider, &feature_id) {
-        Ok(feature) => ApiResponse::success(feature).into_response(),
-        Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
-    }
-}
-
 async fn get_provider_setting(
     Path((provider, setting_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     match provider_settings::get_provider_setting(&provider, &setting_id) {
         Ok(setting) => ApiResponse::success(setting).into_response(),
-        Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
-    }
-}
-
-async fn get_legacy_provider_control(
-    Path((provider, control_id)): Path<(String, String)>,
-) -> impl IntoResponse {
-    match provider_settings::get_provider_setting(&provider, &control_id) {
-        Ok(control) => ApiResponse::success(control).into_response(),
         Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
     }
 }
@@ -1751,49 +1679,12 @@ async fn update_session_local_state(
     }
 }
 
-async fn update_legacy_provider_feature(
-    Path((provider, feature_id)): Path<(String, String)>,
-    Json(body): Json<ProviderSettingUpdateBody>,
-) -> impl IntoResponse {
-    match provider_features::update_provider_feature(&provider, &feature_id, body.value) {
-        Ok(feature) => ApiResponse::success(feature).into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    }
-}
-
-async fn update_legacy_provider_control(
-    Path((provider, control_id)): Path<(String, String)>,
-    Json(body): Json<ProviderSettingUpdateBody>,
-) -> impl IntoResponse {
-    match provider_settings::update_provider_setting(&provider, &control_id, body.value) {
-        Ok(control) => ApiResponse::success(control).into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    }
-}
-
 async fn update_provider_setting(
     Path((provider, setting_id)): Path<(String, String)>,
     Json(body): Json<ProviderSettingUpdateBody>,
 ) -> impl IntoResponse {
     match provider_settings::update_provider_setting(&provider, &setting_id, body.value) {
         Ok(setting) => ApiResponse::success(setting).into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    }
-}
-
-async fn run_legacy_provider_feature(
-    Path((provider, feature_id)): Path<(String, String)>,
-    Json(body): Json<ProviderSettingRunBody>,
-) -> impl IntoResponse {
-    match provider_features::run_provider_feature(
-        &provider,
-        &feature_id,
-        provider_features::ProviderFeatureContext {
-            workspace: body.workspace,
-            actor: ActivityActor::Api,
-        },
-    ) {
-        Ok(output) => ApiResponse::success(output).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -1805,23 +1696,6 @@ async fn run_provider_setting(
     match provider_settings::run_provider_setting(
         &provider,
         &setting_id,
-        provider_settings::ProviderSettingContext {
-            workspace: body.workspace,
-            actor: ActivityActor::Api,
-        },
-    ) {
-        Ok(output) => ApiResponse::success(output).into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    }
-}
-
-async fn run_legacy_provider_control(
-    Path((provider, control_id)): Path<(String, String)>,
-    Json(body): Json<ProviderSettingRunBody>,
-) -> impl IntoResponse {
-    match provider_settings::run_provider_setting(
-        &provider,
-        &control_id,
         provider_settings::ProviderSettingContext {
             workspace: body.workspace,
             actor: ActivityActor::Api,
@@ -4327,78 +4201,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_features_route_matches_settings_route_for_codex_repair() {
-        let setting_request = Request::builder()
-            .uri("/api/v1/providers/codex/settings/repair_workspace_sessions")
-            .body(Body::empty())
-            .unwrap();
-        let feature_request = Request::builder()
-            .uri("/api/v1/providers/codex/features/repair_workspace_sessions")
-            .body(Body::empty())
-            .unwrap();
+    async fn provider_feature_and_control_routes_are_not_registered() {
+        for path in [
+            "/api/v1/providers/codex/features",
+            "/api/v1/providers/codex/controls",
+        ] {
+            let request = Request::builder().uri(path).body(Body::empty()).unwrap();
+            let response = router().oneshot(request).await.unwrap();
 
-        let (setting_status, setting_value) = read_json(router(), setting_request).await;
-        let (feature_status, feature_value) = read_json(router(), feature_request).await;
-
-        assert_eq!(setting_status, StatusCode::OK);
-        assert_eq!(feature_status, StatusCode::OK);
-        assert_eq!(setting_value["data"]["id"], feature_value["data"]["id"]);
-        assert_eq!(setting_value["data"]["kind"], feature_value["data"]["kind"]);
-        assert_eq!(
-            setting_value["data"]["scope"],
-            feature_value["data"]["scope"]
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_features_list_route_matches_settings_route_for_codex() {
-        let setting_request = Request::builder()
-            .uri("/api/v1/providers/codex/settings")
-            .body(Body::empty())
-            .unwrap();
-        let feature_request = Request::builder()
-            .uri("/api/v1/providers/codex/features")
-            .body(Body::empty())
-            .unwrap();
-
-        let (setting_status, setting_value) = read_json(router(), setting_request).await;
-        let (feature_status, feature_value) = read_json(router(), feature_request).await;
-
-        assert_eq!(setting_status, StatusCode::OK);
-        assert_eq!(feature_status, StatusCode::OK);
-        assert_eq!(
-            setting_value["data"]["settings"][0]["id"],
-            feature_value["data"]["features"][0]["id"]
-        );
-        assert_eq!(
-            setting_value["data"]["settings"][0]["kind"],
-            feature_value["data"]["features"][0]["kind"]
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_controls_route_matches_settings_route_for_codex() {
-        let settings_request = Request::builder()
-            .uri("/api/v1/providers/codex/settings")
-            .body(Body::empty())
-            .unwrap();
-        let controls_request = Request::builder()
-            .uri("/api/v1/providers/codex/controls")
-            .body(Body::empty())
-            .unwrap();
-
-        let (settings_status, settings_value) = read_json(router(), settings_request).await;
-        let (controls_status, controls_value) = read_json(router(), controls_request).await;
-
-        assert_eq!(settings_status, StatusCode::OK);
-        assert_eq!(controls_status, StatusCode::OK);
-        assert_eq!(
-            settings_value["data"]["settings"][0]["id"],
-            controls_value["data"]["controls"][0]["id"]
-        );
-        assert_eq!(
-            settings_value["data"]["settings"][0]["kind"],
-            controls_value["data"]["controls"][0]["kind"]
-        );
+            assert_eq!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "unexpected route: {path}"
+            );
+        }
     }
 }

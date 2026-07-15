@@ -183,12 +183,6 @@ pub enum Commands {
         #[arg(long, default_value = "5", value_name = "N")]
         keep: usize,
     },
-    #[command(name = "tool", hide = true)]
-    /// Legacy alias for provider-specific agent actions
-    LegacyTool {
-        #[command(subcommand)]
-        command: LegacyToolCommands,
-    },
     /// Update memorph using the detected install source
     Update,
     #[command(name = "__hook-bridge", hide = true)]
@@ -202,25 +196,6 @@ pub enum Commands {
         event: String,
         #[arg(long)]
         blocking: bool,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum LegacyToolCommands {
-    /// Codex-specific tools
-    Codex {
-        #[command(subcommand)]
-        command: LegacyCodexToolCommands,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum LegacyCodexToolCommands {
-    /// Repair Codex sessions for the current workspace so hidden sessions show up again
-    RepairWorkspaceSessions {
-        /// Workspace directory to repair (default: current directory)
-        #[arg(short, long, value_name = "DIR")]
-        workspace: Option<String>,
     },
 }
 

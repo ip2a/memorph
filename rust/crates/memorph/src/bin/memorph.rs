@@ -5,11 +5,11 @@ use clap::Parser;
 use memorph::{
     cli::{
         ArtifactCommands, BackupCommands, Cli, Commands, CompressionCommands, DatabaseCommands,
-        LegacyCodexToolCommands, LegacyToolCommands, SessionCommands, SyncCommands,
+        SessionCommands, SyncCommands,
     },
     config, core,
     provider::{ProviderCapabilities, ProviderContentFidelity},
-    provider_features, providers, server,
+    providers, server,
     storage::activity_store::ActivityActor,
     storage::artifact_store::{BackupQuery, BackupRestoreStatus},
     sync as session_sync, tui, web_assets,
@@ -249,8 +249,6 @@ fn run_command(command: Commands) -> Result<()> {
             }
             run_codex_sync_workspace_sessions(workspace, codex_home, keep)?;
         }
-
-        Commands::LegacyTool { command } => run_legacy_tool_command(command)?,
 
         Commands::Update => {
             update_memorph()?;
@@ -783,39 +781,6 @@ where
         Ok(serde_json::Value::String(label)) => label,
         _ => format!("{:?}", value),
     }
-}
-
-fn run_legacy_tool_command(command: LegacyToolCommands) -> Result<()> {
-    match command {
-        LegacyToolCommands::Codex { command } => match command {
-            LegacyCodexToolCommands::RepairWorkspaceSessions { workspace } => {
-                let output = provider_features::run_provider_feature(
-                    "codex",
-                    "repair_workspace_sessions",
-                    provider_features::ProviderFeatureContext {
-                        workspace,
-                        actor: ActivityActor::Cli,
-                    },
-                )?;
-                match output {
-                    provider_features::ProviderFeatureOutput::CodexWorkspaceRepair(report) => {
-                        print_codex_repair_report(report)
-                    }
-                    provider_features::ProviderFeatureOutput::HookOperation(report) => {
-                        println!(
-                            "{} {}: {:?}",
-                            report.provider, report.operation, report.status.status
-                        );
-                        if let Some(message) = report.message {
-                            println!("{}", message);
-                        }
-                    }
-                }
-            }
-        },
-    }
-
-    Ok(())
 }
 
 fn run_codex_sync_workspace_sessions(
