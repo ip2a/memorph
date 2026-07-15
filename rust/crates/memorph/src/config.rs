@@ -29,9 +29,10 @@ pub struct WebPreferences {
     pub sessions_per_provider: usize,
     #[serde(default)]
     pub language: UiLanguage,
-    #[serde(default = "default_show_opencode_subagents")]
-    pub show_opencode_subagents: bool,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(
+        default = "default_provider_prefs",
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
     pub provider_prefs: BTreeMap<String, Value>,
     #[serde(default = "default_sort_providers_by_session_count")]
     pub sort_providers_by_session_count: bool,
@@ -50,8 +51,7 @@ impl Default for WebPreferences {
         Self {
             sessions_per_provider: DEFAULT_SESSIONS_PER_PROVIDER,
             language: UiLanguage::default(),
-            show_opencode_subagents: default_show_opencode_subagents(),
-            provider_prefs: BTreeMap::new(),
+            provider_prefs: default_provider_prefs(),
             sort_providers_by_session_count: default_sort_providers_by_session_count(),
             default_backup_dir: default_backup_dir(),
             logging: LogPreferences::default(),
@@ -65,8 +65,13 @@ fn default_sessions_per_provider() -> usize {
     DEFAULT_SESSIONS_PER_PROVIDER
 }
 
-fn default_show_opencode_subagents() -> bool {
-    crate::providers::legacy_web_preference_default_bool("show_opencode_subagents").unwrap_or(false)
+fn default_provider_prefs() -> BTreeMap<String, Value> {
+    let mut provider_prefs = BTreeMap::new();
+    provider_prefs.insert(
+        "opencode".to_string(),
+        serde_json::json!({"show_subagents": false}),
+    );
+    provider_prefs
 }
 
 fn default_sort_providers_by_session_count() -> bool {
@@ -355,9 +360,7 @@ pub fn remember_workspace(path: &Path) -> Result<()> {
 }
 
 pub fn web_preferences() -> Result<WebPreferences> {
-    let mut prefs = load_config()?.web;
-    hydrate_legacy_provider_preferences(&mut prefs);
-    Ok(prefs)
+    Ok(load_config()?.web)
 }
 
 pub fn selected_workspace() -> Result<Option<String>> {
@@ -403,16 +406,12 @@ pub fn update_web_preferences(
         config.web.language = value;
     }
     if let Some(value) = show_opencode_subagents {
-        let handled = crate::providers::apply_legacy_web_preference(
+        set_provider_preference_in_prefs(
             &mut config.web,
-            "show_opencode_subagents",
-            &Value::Bool(value),
+            "opencode",
+            "show_subagents",
+            Some(Value::Bool(value)),
         )?;
-        if !handled {
-            anyhow::bail!(
-                "Missing provider compatibility handler for legacy setting: show_opencode_subagents"
-            );
-        }
     }
     if let Some(value) = sort_providers_by_session_count {
         config.web.sort_providers_by_session_count = value;
@@ -439,13 +438,7 @@ pub fn provider_preference(provider_id: &str, key: &str) -> Result<Option<Value>
 
 pub fn set_provider_preference(provider_id: &str, key: &str, value: Option<Value>) -> Result<()> {
     let mut config = load_config()?;
-    set_provider_preference_in_prefs(&mut config.web, provider_id, key, value.clone())?;
-    crate::providers::sync_legacy_field_from_provider_preference(
-        &mut config.web,
-        provider_id,
-        key,
-        value.as_ref(),
-    );
+    set_provider_preference_in_prefs(&mut config.web, provider_id, key, value)?;
 
     save_config(&config)
 }
@@ -639,10 +632,6 @@ pub(crate) fn provider_preference_from_prefs<'a>(
         .get(key)
 }
 
-fn hydrate_legacy_provider_preferences(prefs: &mut WebPreferences) {
-    crate::providers::hydrate_legacy_preferences(prefs);
-}
-
 fn ensure_known_provider(provider_id: &str) -> Result<()> {
     let provider_id = crate::providers::canonical_provider_id(provider_id);
     if crate::providers::all_provider_ids()
@@ -805,6 +794,37 @@ mod tests {
         set_provider_preference_in_prefs(&mut prefs, "codex", "sample_toggle", None).unwrap();
 
         assert!(!prefs.provider_prefs.contains_key("codex"));
+    }
+
+    #[test]
+    fn opencode_setting_has_one_provider_preference_source() {
+        let mut prefs = WebPreferences::default();
+
+        assert_eq!(
+            provider_preference_from_prefs(&prefs, "opencode", "show_subagents")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+
+        set_provider_preference_in_prefs(
+            &mut prefs,
+            "opencode",
+            "show_subagents",
+            Some(Value::Bool(true)),
+        )
+        .unwrap();
+
+        assert_eq!(
+            provider_preference_from_prefs(&prefs, "opencode", "show_subagents")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        let serialized = serde_json::to_value(&prefs).unwrap();
+        assert!(serialized.get("show_opencode_subagents").is_none());
+        assert_eq!(
+            serialized["provider_prefs"]["opencode"]["show_subagents"],
+            Value::Bool(true)
+        );
     }
 
     #[test]

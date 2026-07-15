@@ -950,7 +950,13 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
     Ok(SettingsPayload {
         sessions_per_provider: prefs.sessions_per_provider,
         language: prefs.language,
-        show_opencode_subagents: prefs.show_opencode_subagents,
+        show_opencode_subagents: config::provider_preference_from_prefs(
+            &prefs,
+            "opencode",
+            "show_subagents",
+        )
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false),
         sort_providers_by_session_count: prefs.sort_providers_by_session_count,
         default_backup_dir: prefs.default_backup_dir.clone(),
         logging: prefs.logging.clone(),
@@ -3915,7 +3921,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn provider_setting_update_syncs_legacy_settings_payload() {
+    async fn provider_setting_update_updates_settings_payload() {
         let dir = tempfile::tempdir().unwrap();
         let _home = ConfigTestHome::new(dir.path());
 
@@ -3943,7 +3949,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn legacy_settings_update_syncs_provider_setting_payload() {
+    async fn settings_update_updates_provider_setting_payload() {
         let dir = tempfile::tempdir().unwrap();
         let _home = ConfigTestHome::new(dir.path());
 

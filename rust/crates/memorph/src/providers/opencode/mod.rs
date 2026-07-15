@@ -1,7 +1,5 @@
 pub mod adapter;
 pub mod hook;
-pub(crate) mod settings_compat;
-
 use crate::canonical::{
     ArtifactKind, CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata,
     EventRole, EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,

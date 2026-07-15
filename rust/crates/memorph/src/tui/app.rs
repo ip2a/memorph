@@ -288,7 +288,13 @@ impl App {
             settings_selection: 0,
             settings_language: prefs.language,
             settings_sessions_per_provider: prefs.sessions_per_provider,
-            settings_show_opencode_subagents: prefs.show_opencode_subagents,
+            settings_show_opencode_subagents: config::provider_preference_from_prefs(
+                &prefs,
+                "opencode",
+                "show_subagents",
+            )
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
             settings_sort_providers_by_session_count: prefs.sort_providers_by_session_count,
             settings_agent_order: config::ordered_provider_ids(&prefs),
             settings_primary_agents: config::primary_provider_ids(&prefs),
@@ -1085,7 +1091,10 @@ impl App {
     fn reload_settings_preferences(&mut self, prefs: &config::WebPreferences) {
         self.settings_language = prefs.language;
         self.settings_sessions_per_provider = prefs.sessions_per_provider;
-        self.settings_show_opencode_subagents = prefs.show_opencode_subagents;
+        self.settings_show_opencode_subagents =
+            config::provider_preference_from_prefs(prefs, "opencode", "show_subagents")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
         self.settings_sort_providers_by_session_count = prefs.sort_providers_by_session_count;
         self.settings_agent_order = config::ordered_provider_ids(prefs);
         self.settings_primary_agents = config::primary_provider_ids(prefs);
@@ -2175,7 +2184,11 @@ fn apply_session_group_preferences(
     session_groups: &mut Vec<SessionGroup>,
     prefs: &config::WebPreferences,
 ) {
-    if !prefs.show_opencode_subagents {
+    let show_opencode_subagents =
+        config::provider_preference_from_prefs(prefs, "opencode", "show_subagents")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+    if !show_opencode_subagents {
         for group in session_groups.iter_mut() {
             if group.provider_id == "opencode" {
                 group

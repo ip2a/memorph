@@ -30,7 +30,6 @@ pub mod workbuddy;
 
 pub(crate) mod hook_profiles;
 mod hook_registry;
-pub(crate) mod setting_compat_registry;
 
 use crate::provider::Provider;
 
@@ -129,36 +128,6 @@ pub fn find_hook_adapter(
     provider: &str,
 ) -> Option<&'static dyn crate::hooks::contract::HookAdapter> {
     hook_registry::find_hook_adapter(provider)
-}
-
-pub(crate) fn legacy_web_preference_default_bool(key: &str) -> Option<bool> {
-    setting_compat_registry::legacy_web_preference_default_bool(key)
-}
-
-pub(crate) fn apply_legacy_web_preference(
-    prefs: &mut crate::config::WebPreferences,
-    key: &str,
-    value: &serde_json::Value,
-) -> anyhow::Result<bool> {
-    setting_compat_registry::apply_legacy_web_preference(prefs, key, value)
-}
-
-pub(crate) fn sync_legacy_field_from_provider_preference(
-    prefs: &mut crate::config::WebPreferences,
-    provider_id: &str,
-    key: &str,
-    value: Option<&serde_json::Value>,
-) {
-    setting_compat_registry::sync_legacy_field_from_provider_preference(
-        prefs,
-        provider_id,
-        key,
-        value,
-    );
-}
-
-pub(crate) fn hydrate_legacy_preferences(prefs: &mut crate::config::WebPreferences) {
-    setting_compat_registry::hydrate_legacy_preferences(prefs);
 }
 
 /// Default switch target for a given source provider.
