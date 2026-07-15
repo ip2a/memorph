@@ -994,15 +994,6 @@ pub(crate) fn persist_event_payload_at(
     })
 }
 
-pub(crate) fn register_path_in_transaction(
-    conn: &Transaction<'_>,
-    manifest: NewArtifactManifest,
-) -> Result<ArtifactManifest> {
-    let inspected = inspect_artifact_path(&manifest.path)?;
-    let links = resolve_artifact_links(conn, &manifest)?;
-    insert_artifact_manifest(conn, manifest, links, inspected)
-}
-
 pub(crate) fn read_event_payload(
     conn: &Connection,
     artifact_id: &str,

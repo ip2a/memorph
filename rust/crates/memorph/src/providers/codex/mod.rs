@@ -23,9 +23,7 @@ use crate::storage::{
         ActivityActor, ActivityCompletion, ActivityOperationKind, ActivityStore, NewActivity,
     },
     artifact_store::{ArtifactStore, BackupRecord, NewBackupRecord},
-    event_index, local_store,
-    projection_store::{ProjectionStore, StoredProjection},
-    session_state,
+    event_index, local_store, session_state,
 };
 use crate::utils;
 use anyhow::{Context, Result};
@@ -540,7 +538,14 @@ impl Provider for CodexProvider {
     }
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
-        import_canonical_session(Path::new(source_path))
+        let source_path = Path::new(source_path);
+        let mut imported = import_canonical_session(source_path)?;
+        imported.session.identity.source_title = resolve_codex_projection_title(
+            source_path,
+            &imported.session.identity.canonical_id,
+            imported.session.identity.source_title.as_deref(),
+        )?;
+        Ok(imported)
     }
 
     fn import_session_page(
@@ -549,7 +554,14 @@ impl Provider for CodexProvider {
         event_offset: usize,
         event_limit: Option<usize>,
     ) -> Result<ProviderSessionImportPage> {
-        import_canonical_session_page(Path::new(source_path), event_offset, event_limit)
+        let source_path = Path::new(source_path);
+        let mut page = import_canonical_session_page(source_path, event_offset, event_limit)?;
+        page.imported.session.identity.source_title = resolve_codex_projection_title(
+            source_path,
+            &page.imported.session.identity.canonical_id,
+            page.imported.session.identity.source_title.as_deref(),
+        )?;
+        Ok(page)
     }
 
     fn export_session(
@@ -1583,19 +1595,6 @@ fn delete_codex_sqlite_rows(conn: &Connection, session_id: &str) -> Result<()> {
         conn.execute("DELETE FROM threads WHERE id = ?1", [session_id])?;
     }
     Ok(())
-}
-
-pub fn project_session_to_store(
-    source_path: &Path,
-    store: &mut ProjectionStore<'_>,
-) -> Result<StoredProjection> {
-    let mut imported = import_canonical_session(source_path)?;
-    imported.session.identity.source_title = resolve_codex_projection_title(
-        source_path,
-        &imported.session.identity.canonical_id,
-        imported.session.identity.source_title.as_deref(),
-    )?;
-    store.write_imported_session(source_path, &imported, CodexProvider.capabilities())
 }
 
 pub fn sync_workspace_sessions(
@@ -5450,57 +5449,6 @@ mod tests {
     }
 
     #[test]
-    fn project_session_to_store_writes_codex_projection_rows() {
-        let mut conn = Connection::open_in_memory().unwrap();
-        crate::storage::local_store::configure_connection(&conn).unwrap();
-        crate::storage::local_store::apply_schema(&mut conn).unwrap();
-        let mut file = NamedTempFile::new().unwrap();
-        write_codex_projection_sample(&mut file, "Codex Projection Title");
-
-        let stored =
-            project_session_to_store(file.path(), &mut ProjectionStore::new(&mut conn)).unwrap();
-
-        let snapshot: (String, String, i64) = conn
-            .query_row(
-                "SELECT provider_id, title, event_count
-                 FROM session_snapshots
-                 WHERE session_id = ?1",
-                [stored.session_id.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(snapshot.0, PROVIDER_ID);
-        assert_eq!(snapshot.1, "Codex Projection Title");
-        assert!(snapshot.2 >= 2);
-
-        let alias_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*)
-                 FROM session_aliases
-                 WHERE session_id = ?1
-                   AND provider_id = ?2
-                   AND alias_value = ?3",
-                [
-                    stored.session_id.as_str(),
-                    PROVIDER_ID,
-                    "codex-projection-1",
-                ],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(alias_count, 1);
-
-        let report_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM projection_reports WHERE session_id = ?1",
-                [stored.session_id.as_str()],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(report_count, 1);
-    }
-
-    #[test]
     fn project_session_title_uses_codex_native_precedence_and_prompt_fallback() {
         let temp = tempdir().unwrap();
         let codex_dir = temp.path().join(".codex");
@@ -5570,20 +5518,17 @@ mod tests {
             )
             .unwrap();
 
-        let mut conn = Connection::open_in_memory().unwrap();
-        crate::storage::local_store::configure_connection(&conn).unwrap();
-        crate::storage::local_store::apply_schema(&mut conn).unwrap();
-        let projected_title = |conn: &Connection| -> String {
-            conn.query_row("SELECT title FROM session_snapshots", [], |row| row.get(0))
-                .unwrap()
+        let imported_title = || -> String {
+            let imported = CodexProvider
+                .import_session(source_path.to_string_lossy().as_ref())
+                .unwrap();
+            canonical_session_title(&imported.session)
         };
 
-        project_session_to_store(&source_path, &mut ProjectionStore::new(&mut conn)).unwrap();
-        assert_eq!(projected_title(&conn), "Index title");
+        assert_eq!(imported_title(), "Index title");
 
         write_index(session_id);
-        project_session_to_store(&source_path, &mut ProjectionStore::new(&mut conn)).unwrap();
-        assert_eq!(projected_title(&conn), "SQLite title");
+        assert_eq!(imported_title(), "SQLite title");
 
         sqlite
             .execute(
@@ -5591,12 +5536,10 @@ mod tests {
                 rusqlite::params![session_id, session_id],
             )
             .unwrap();
-        project_session_to_store(&source_path, &mut ProjectionStore::new(&mut conn)).unwrap();
-        assert_eq!(projected_title(&conn), "Rollout title");
+        assert_eq!(imported_title(), "Rollout title");
 
         write_rollout(session_id);
-        project_session_to_store(&source_path, &mut ProjectionStore::new(&mut conn)).unwrap();
-        assert_eq!(projected_title(&conn), "Prompt title");
+        assert_eq!(imported_title(), "Prompt title");
     }
 
     #[test]
@@ -7783,41 +7726,5 @@ mod tests {
                 provider_ext: BTreeMap::new(),
             },
         }
-    }
-
-    fn write_codex_projection_sample(file: &mut NamedTempFile, title: &str) {
-        writeln!(
-            file,
-            "{}",
-            json!({
-                "timestamp": "2026-05-21T10:00:00Z",
-                "type": "session_meta",
-                "payload": {
-                    "id": "codex-projection-1",
-                    "timestamp": "2026-05-21T10:00:00Z",
-                    "cwd": "/tmp/project",
-                    "title": title,
-                    "model": "gpt-5.3-codex"
-                }
-            })
-        )
-        .unwrap();
-        writeln!(
-            file,
-            "{}",
-            json!({
-                "timestamp": "2026-05-21T10:00:01Z",
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        { "type": "input_text", "text": "Build this" }
-                    ]
-                }
-            })
-        )
-        .unwrap();
-        file.flush().unwrap();
     }
 }

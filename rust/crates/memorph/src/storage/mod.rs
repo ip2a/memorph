@@ -4,7 +4,6 @@ pub mod atomic_write;
 pub mod database_backup;
 pub mod event_index;
 pub mod local_store;
-pub mod projection_store;
 pub mod session_index_store;
 pub mod session_state;
 pub mod snapshot_store;

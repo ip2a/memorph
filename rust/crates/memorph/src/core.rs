@@ -9,10 +9,11 @@ use crate::core::active_compression::{
     ActiveCompressionApplyParams, ActiveCompressionParams, ActiveCompressionPolicy,
     ActiveCompressionReport,
 };
-use crate::provider::ProviderSessionSummary;
+use crate::provider::{Provider, ProviderSessionSummary};
 use crate::storage::session_state;
 use crate::storage::snapshot_store::{
-    ProjectedSessionSnapshotRow, SnapshotStaleScanReport, StaleSnapshotSourceRow,
+    ProjectedSessionIdentityRow, ProjectedSessionSnapshotRow, SnapshotStaleScanReport,
+    StaleSnapshotSourceRow,
 };
 use crate::storage::{
     activity_store::{
@@ -1535,45 +1536,26 @@ fn compute_session_activity_timeline_in_connection(
 ) -> Result<SessionActivityTimeline> {
     use chrono::TimeDelta;
 
-    let projected = crate::storage::snapshot_store::SnapshotStore::new(conn)
-        .get_session_activity(provider_id, session_id)?
-        .with_context(|| format!("Projected session not found: {provider_id}/{session_id}"))?;
-    let mut event_timestamps = Vec::with_capacity(projected.events.len());
-    for event in &projected.events {
-        let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.timestamp_ms)
-            .with_context(|| {
-                format!(
-                    "Invalid projected activity timestamp for {provider_id}/{session_id}: {}",
-                    event.timestamp_ms
-                )
-            })?;
-        event_timestamps.push(timestamp);
-    }
-    let projected_created_at = projected
-        .created_at_ms
-        .map(|timestamp| {
-            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp).with_context(|| {
-                format!("Invalid projected session created_at timestamp: {timestamp}")
-            })
-        })
-        .transpose()?;
-    let projected_last_active_at = projected
-        .last_active_at_ms
-        .map(|timestamp| {
-            chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp).with_context(|| {
-                format!("Invalid projected session last_active_at timestamp: {timestamp}")
-            })
-        })
-        .transpose()?;
+    let identity = crate::storage::snapshot_store::SnapshotStore::new(conn)
+        .find_session_identity(provider_id, session_id)?
+        .with_context(|| format!("Session is not indexed: {provider_id}/{session_id}"))?;
+    let provider = providers::find_provider(provider_id)
+        .with_context(|| format!("Unknown provider: {provider_id}"))?;
+    let activity = import_session_activity(provider_id, provider.as_ref(), &identity)?;
+    let event_timestamps = activity
+        .events
+        .iter()
+        .map(|event| event.timestamp)
+        .collect::<Vec<_>>();
     let first_event_at = event_timestamps.iter().copied().min();
     let last_event_at = event_timestamps.iter().copied().max();
-    let created_at = match (projected_created_at, first_event_at) {
-        (Some(projected), Some(event)) => Some(projected.min(event)),
-        (projected, event) => projected.or(event),
+    let created_at = match (activity.created_at, first_event_at) {
+        (Some(source), Some(event)) => Some(source.min(event)),
+        (source, event) => source.or(event),
     };
-    let last_active_at = match (projected_last_active_at, last_event_at) {
-        (Some(projected), Some(event)) => Some(projected.max(event)),
-        (projected, event) => projected.or(event),
+    let last_active_at = match (activity.last_active_at, last_event_at) {
+        (Some(source), Some(event)) => Some(source.max(event)),
+        (source, event) => source.or(event),
     };
 
     let range_start = created_at
@@ -1611,14 +1593,14 @@ fn compute_session_activity_timeline_in_connection(
 
     let mut total_activity = 0.0;
     let mut total_messages = 0usize;
-    for (event, timestamp) in projected.events.iter().zip(event_timestamps) {
+    for event in &activity.events {
         let weight = event_activity_weight(&event.kind, event.visible_message);
         total_activity += weight;
         if event.visible_message {
             total_messages += 1;
         }
         if let Some(bucket) = bucket_for_timestamp(
-            timestamp,
+            event.timestamp,
             range_start,
             range_end,
             bucket_seconds,
@@ -1640,9 +1622,75 @@ fn compute_session_activity_timeline_in_connection(
         bucket_unit,
         bucket_seconds,
         buckets,
-        total_events: projected.events.len(),
+        total_events: activity.events.len(),
         total_messages,
         total_activity,
+    })
+}
+
+#[derive(Debug)]
+struct SourceActivityEvent {
+    kind: SessionEventKind,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    visible_message: bool,
+}
+
+#[derive(Debug)]
+struct SourceSessionActivity {
+    canonical_session_id: String,
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_active_at: Option<chrono::DateTime<chrono::Utc>>,
+    events: Vec<SourceActivityEvent>,
+}
+
+fn import_session_activity(
+    provider_id: &str,
+    provider: &dyn Provider,
+    identity: &ProjectedSessionIdentityRow,
+) -> Result<SourceSessionActivity> {
+    let source_path = identity
+        .source_path
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .with_context(|| {
+            format!(
+                "Session has no source locator: {provider_id}/{}",
+                identity.canonical_session_id
+            )
+        })?;
+    if !provider.capabilities().import {
+        anyhow::bail!("Provider does not support session activity reads: {provider_id}");
+    }
+    let imported = provider.import_session(source_path).with_context(|| {
+        format!(
+            "Failed to read session activity from provider source: {provider_id}/{}",
+            identity
+                .provider_session_id
+                .as_deref()
+                .unwrap_or(&identity.canonical_session_id)
+        )
+    })?;
+    let events = imported
+        .session
+        .events
+        .iter()
+        .map(|event| SourceActivityEvent {
+            kind: event.kind.clone(),
+            timestamp: event.timestamp,
+            visible_message: provider::canonical_event_is_visible_message(event),
+        })
+        .collect();
+    let last_active_at = imported.session.context.last_active_at.or_else(|| {
+        identity
+            .last_active_at_ms
+            .and_then(chrono::DateTime::from_timestamp_millis)
+    });
+
+    Ok(SourceSessionActivity {
+        canonical_session_id: identity.canonical_session_id.clone(),
+        created_at: imported.session.context.created_at,
+        last_active_at,
+        events,
     })
 }
 
@@ -1696,7 +1744,7 @@ fn compute_provider_activity_timeline_in_connection(
     let range_end = chrono::Utc::now();
     let requested_range_start = (!all_time).then(|| range_end - TimeDelta::hours(hours));
     let sessions = crate::storage::snapshot_store::SnapshotStore::new(conn)
-        .list_activity_sessions_for_provider(provider_id)?
+        .list_provider_session_identities(provider_id)?
         .into_iter()
         .filter(|session| {
             if all_workspaces {
@@ -1709,22 +1757,32 @@ fn compute_provider_activity_timeline_in_connection(
         })
         .collect::<Vec<_>>();
     let projected_sessions = sessions.len();
-    let selected_session_ids = sessions
+    let mut activities = Vec::with_capacity(sessions.len());
+    for session in &sessions {
+        activities.push(import_session_activity(
+            provider_id,
+            prov.as_ref(),
+            session,
+        )?);
+    }
+    let events = activities
         .iter()
-        .map(|session| session.canonical_session_id.as_str())
+        .flat_map(|activity| {
+            activity.events.iter().filter_map(|event| {
+                if requested_range_start.is_none_or(|start| event.timestamp >= start)
+                    && event.timestamp <= range_end
+                {
+                    Some((&activity.canonical_session_id, event))
+                } else {
+                    None
+                }
+            })
+        })
         .collect::<Vec<_>>();
-    let events = crate::storage::snapshot_store::SnapshotStore::new(conn)
-        .list_activity_events_for_sessions(
-            &selected_session_ids,
-            requested_range_start.map(|value| value.timestamp_millis()),
-            range_end.timestamp_millis(),
-        )?;
     let range_start = requested_range_start.unwrap_or_else(|| {
         events
             .iter()
-            .filter_map(|event| {
-                chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.timestamp_ms)
-            })
+            .map(|(_, event)| event.timestamp)
             .min()
             .unwrap_or(range_end)
     });
@@ -1760,15 +1818,9 @@ fn compute_provider_activity_timeline_in_connection(
     }
     let mut sessions_with_events = HashSet::new();
     let mut total_activity = 0.0f64;
-    for event in &events {
-        let timestamp = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.timestamp_ms)
-            .with_context(|| {
-                format!(
-                    "Invalid projected provider activity timestamp for {provider_id}: {}",
-                    event.timestamp_ms
-                )
-            })?;
-        sessions_with_events.insert(event.canonical_session_id.as_str());
+    for (canonical_session_id, event) in &events {
+        let timestamp = event.timestamp;
+        sessions_with_events.insert(canonical_session_id.as_str());
         let weight = event_activity_weight(&event.kind, event.visible_message);
         total_activity += weight;
         if let Some(bucket) = bucket_for_timestamp(
@@ -3563,7 +3615,7 @@ mod tests {
         HookToolCall, PermissionRequest, QuestionRequest, RuntimeSession, RuntimeSessionId,
         RuntimeSessionStatus,
     };
-    use crate::storage::projection_store::ProjectionStore;
+    use crate::provider::Provider;
     use crate::storage::{local_store, snapshot_store::StaleSnapshotSourceRow};
     use chrono::Utc;
     use std::collections::BTreeMap;
@@ -4870,18 +4922,25 @@ mod tests {
     }
 
     #[test]
-    fn activity_timelines_read_projection_without_provider_source() {
+    fn activity_timelines_read_provider_source_and_fail_when_it_is_missing() {
         let mut source = tempfile::NamedTempFile::new().unwrap();
         write_claude_projection_sample(&mut source, "Projected activity");
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
         local_store::apply_schema(&mut conn).unwrap();
-        crate::providers::claude::project_session_to_store(
-            source.path(),
-            &mut ProjectionStore::new(&mut conn),
-        )
-        .unwrap();
-        drop(source);
+        crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .write_session_summary(
+                "claude",
+                &ProviderSessionSummary {
+                    session_id: "session-projection-1".to_string(),
+                    title: Some("Projected activity".to_string()),
+                    project_dir: Some("/tmp/project".to_string()),
+                    last_active_at: Some(1_767_225_602_000),
+                    source_path: Some(source.path().to_string_lossy().to_string()),
+                },
+                crate::providers::claude::ClaudeProvider.capabilities(),
+            )
+            .unwrap();
 
         let session = compute_session_activity_timeline_in_connection(
             &conn,
@@ -4913,35 +4972,50 @@ mod tests {
                 .sum::<usize>(),
             2
         );
+
+        let source_path = source.path().to_path_buf();
+        drop(source);
+        let error = compute_session_activity_timeline_in_connection(
+            &conn,
+            "claude",
+            "session-projection-1",
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains(&source_path.to_string_lossy().to_string()));
     }
 
     #[test]
-    fn provider_activity_applies_projection_scope_range_and_deletion_rules() {
+    fn provider_activity_applies_index_scope_source_range_and_deletion_rules() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
         local_store::apply_schema(&mut conn).unwrap();
+        let sources = tempfile::tempdir().unwrap();
         let now = Utc::now();
 
         project_claude_activity_sample(
             &mut conn,
+            sources.path(),
             "activity-recent-a",
             "/tmp/project-a",
             now - chrono::TimeDelta::hours(2),
         );
         project_claude_activity_sample(
             &mut conn,
+            sources.path(),
             "activity-recent-b",
             "/tmp/project-b",
             now - chrono::TimeDelta::hours(3),
         );
         project_claude_activity_sample(
             &mut conn,
+            sources.path(),
             "activity-old-a",
             "/tmp/project-a",
             now - chrono::TimeDelta::days(40),
         );
         project_claude_activity_sample(
             &mut conn,
+            sources.path(),
             "activity-future-a",
             "/tmp/project-a",
             now + chrono::TimeDelta::hours(2),
@@ -5264,11 +5338,13 @@ mod tests {
 
     fn project_claude_activity_sample(
         conn: &mut rusqlite::Connection,
+        source_dir: &Path,
         session_id: &str,
         workspace: &str,
         timestamp: chrono::DateTime<Utc>,
     ) {
-        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let source_path = source_dir.join(format!("{session_id}.jsonl"));
+        let mut file = std::fs::File::create(&source_path).unwrap();
         writeln!(
             file,
             "{}",
@@ -5314,11 +5390,21 @@ mod tests {
         )
         .unwrap();
         file.flush().unwrap();
-        crate::providers::claude::project_session_to_store(
-            file.path(),
-            &mut ProjectionStore::new(conn),
-        )
-        .unwrap();
+        crate::storage::session_index_store::SessionIndexStore::new(conn)
+            .write_session_summary(
+                "claude",
+                &ProviderSessionSummary {
+                    session_id: session_id.to_string(),
+                    title: Some(session_id.to_string()),
+                    project_dir: Some(workspace.to_string()),
+                    last_active_at: Some(
+                        (timestamp + chrono::TimeDelta::seconds(2)).timestamp_millis(),
+                    ),
+                    source_path: Some(source_path.to_string_lossy().to_string()),
+                },
+                crate::providers::claude::ClaudeProvider.capabilities(),
+            )
+            .unwrap();
     }
 
     fn activity_event_count(timeline: &ProviderActivityTimeline) -> usize {
