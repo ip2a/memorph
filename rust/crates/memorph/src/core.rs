@@ -1311,15 +1311,16 @@ pub fn get_session_detail_view_page(
     );
     let stale =
         identity.stale || identity.source_fingerprint.as_deref() != Some(&source_fingerprint.value);
-    let counts_written = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
-        .record_complete_counts(
-            &identity.canonical_session_id,
-            &source_fingerprint.value,
-            page.event_count,
-            page.message_count,
-            page.turns.len(),
-        )?;
-    let _ = counts_written;
+    if let Some(turn_count) = page.turn_count {
+        crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .record_complete_counts(
+                &identity.canonical_session_id,
+                &source_fingerprint.value,
+                page.event_count,
+                page.message_count,
+                turn_count,
+            )?;
+    }
     let display_title = local_state
         .display_title
         .clone()

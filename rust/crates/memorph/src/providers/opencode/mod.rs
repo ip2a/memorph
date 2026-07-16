@@ -421,10 +421,13 @@ fn import_opencode_session_page(
         &imported.session.events,
         TurnQuality::Inferred,
     );
+    let turn_count = (event_offset == 0 && imported.session.events.len() == total_message_count)
+        .then_some(turns.len());
     Ok(ProviderSessionImportPage {
         imported,
         event_count: total_message_count,
         message_count: full_message_count,
+        turn_count,
         turns,
     })
 }
@@ -3432,12 +3435,14 @@ mod tests {
             .count();
         assert_eq!(full.message_count, expected_visible);
         assert_eq!(full.message_count, 3);
+        assert_eq!(full.turn_count, Some(full.turns.len()));
 
         // Page with limit returns a strict subset but keeps total counts.
         let page1 = import_opencode_session_page(&locator, 0, Some(2)).unwrap();
         assert_eq!(page1.imported.session.events.len(), 2);
         assert_eq!(page1.event_count, 3);
         assert_eq!(page1.message_count, full.message_count);
+        assert_eq!(page1.turn_count, None);
         assert_eq!(page1.imported.session.events[0].id, "msg-a");
         assert_eq!(page1.imported.session.events[1].id, "msg-b");
 
@@ -3445,6 +3450,7 @@ mod tests {
         let page2 = import_opencode_session_page(&locator, 2, Some(2)).unwrap();
         assert_eq!(page2.imported.session.events.len(), 1);
         assert_eq!(page2.event_count, 3);
+        assert_eq!(page2.turn_count, None);
         assert_eq!(page2.imported.session.events[0].id, "msg-c");
 
         // Identity and title carry across pages.

@@ -1027,10 +1027,13 @@ fn import_claude_session_page(
         &imported.session.events,
         TurnQuality::Inferred,
     );
+    let turn_count = (event_offset == 0 && imported.session.events.len() == state.event_count)
+        .then_some(turns.len());
     Ok(ProviderSessionImportPage {
         imported,
         event_count: state.event_count,
         message_count: state.message_count,
+        turn_count,
         turns,
     })
 }
@@ -1850,12 +1853,14 @@ mod tests {
             .count();
         assert_eq!(full.message_count, expected_messages);
         assert!(full.message_count >= 1);
+        assert_eq!(full.turn_count, Some(full.turns.len()));
 
         // Page with a limit returns a strict subset but keeps total counts.
         let page1 = import_claude_session_page(file.path(), 0, Some(2)).unwrap();
         assert_eq!(page1.imported.session.events.len(), 2);
         assert_eq!(page1.event_count, full.event_count);
         assert_eq!(page1.message_count, full.message_count);
+        assert_eq!(page1.turn_count, None);
         assert_eq!(
             page1.imported.session.events[0].id,
             full.imported.session.events[0].id
@@ -1865,6 +1870,7 @@ mod tests {
         let page2 = import_claude_session_page(file.path(), 2, Some(2)).unwrap();
         assert_eq!(page2.imported.session.events.len(), 2);
         assert_eq!(page2.event_count, full.event_count);
+        assert_eq!(page2.turn_count, None);
         assert_eq!(
             page2.imported.session.events[0].id,
             full.imported.session.events[2].id

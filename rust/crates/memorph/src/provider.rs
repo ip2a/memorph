@@ -30,6 +30,9 @@ pub struct ProviderSessionImportPage {
     pub imported: ImportedSession,
     pub event_count: usize,
     pub message_count: usize,
+    /// Complete-session turn count when the provider can establish it from this read.
+    pub turn_count: Option<usize>,
+    /// Turn projections derived only from the events returned in this page.
     pub turns: Vec<crate::session_projection::TurnProjection>,
 }
 
@@ -415,11 +418,12 @@ pub trait Provider: Send + Sync {
             .iter()
             .filter(|event| canonical_event_is_visible_message(event))
             .count();
-        let turns = crate::session_projection::project_session_turns(
+        let turn_count = crate::session_projection::project_session_turns(
             &imported.session.identity.canonical_id,
             &imported.session.events,
             self.capabilities().turn_quality,
-        );
+        )
+        .len();
         let offset = event_offset.min(imported.session.events.len());
 
         if let Some(limit) = event_limit {
@@ -434,10 +438,16 @@ pub trait Provider: Send + Sync {
             imported.session.events = imported.session.events.into_iter().skip(offset).collect();
         }
 
+        let turns = crate::session_projection::project_session_turns(
+            &imported.session.identity.canonical_id,
+            &imported.session.events,
+            self.capabilities().turn_quality,
+        );
         Ok(ProviderSessionImportPage {
             imported,
             event_count,
             message_count,
+            turn_count: Some(turn_count),
             turns,
         })
     }

@@ -2690,10 +2690,13 @@ pub fn import_canonical_session_page(
         &imported.session.events,
         TurnQuality::Exact,
     );
+    let turn_count = (event_offset == 0 && imported.session.events.len() == state.event_count)
+        .then_some(turns.len());
     Ok(ProviderSessionImportPage {
         imported,
         event_count: state.event_count,
         message_count: state.message_count,
+        turn_count,
         turns,
     })
 }
@@ -5837,6 +5840,7 @@ mod tests {
         crate::config::reset_test_home_dir();
 
         assert_eq!(page.imported.session.events.len(), 1);
+        assert_eq!(page.turn_count, None);
         let event = &page.imported.session.events[0];
         assert_eq!(event.links.provider_turn_id.as_deref(), Some("turn-page"));
         assert_eq!(event.links.turn_index, Some(0));
