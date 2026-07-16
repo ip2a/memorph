@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod hook;
+mod management;
 
 use crate::canonical::{
     CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
@@ -8,9 +9,11 @@ use crate::canonical::{
     SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary,
 };
 use crate::provider::{
-    canonical_event_is_visible_message, PageStrategy, Provider, ProviderCapabilities,
-    ProviderContentFidelity, ProviderSessionImportPage, ProviderSessionSummary,
-    ProviderSourceFingerprint, ScanStrategy, StorageShape, TurnQuality,
+    canonical_event_is_visible_message, PageStrategy, Provider, ProviderActivitySupport,
+    ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup,
+    ProviderSessionImportPage, ProviderSessionSummary, ProviderSourceFingerprint,
+    ProviderSourceMutation, ProviderWriteRisk, ScanStrategy, StorageShape, TurnQuality,
+    WriteRiskLevel,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -45,10 +48,29 @@ impl Provider for KiroProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
             import: true,
+            delete: true,
+            rename: true,
             scan_strategy: ScanStrategy::FullScan,
             page_strategy: PageStrategy::FullImport,
             storage_shape: StorageShape::Directory,
             turn_quality: TurnQuality::Exact,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::Medium,
+                multiple_files: true,
+                sqlite: false,
+                sidecar_files: true,
+                index_repair: false,
+            },
+            backup_support: ProviderBackupSupport {
+                before_write: true,
+                restore: true,
+                sync_only: false,
+            },
+            activity_support: ProviderActivitySupport {
+                hook_events: true,
+                runtime_endpoint: true,
+                session_activity: true,
+            },
             import_fidelity: ProviderContentFidelity {
                 text: Some(MappingDisposition::Preserved),
                 thinking: Some(MappingDisposition::Preserved),
@@ -99,6 +121,49 @@ impl Provider for KiroProvider {
         kiro_session_source_fingerprint(Path::new(source_path))
     }
 
+    fn delete_session(&self, session_id: &str) -> Result<()> {
+        let session_dir = management::validate_mutation_source(session_id)?;
+        std::fs::remove_dir_all(&session_dir)
+            .with_context(|| format!("Failed to delete Kiro session: {}", session_dir.display()))?;
+        fail_kiro_mutation_after_write(ProviderSourceMutation::Delete)?;
+        Ok(())
+    }
+
+    fn rename_session(&self, session_id: &str, new_title: &str) -> Result<()> {
+        let new_title = new_title.trim();
+        if new_title.is_empty() {
+            anyhow::bail!("Kiro session title cannot be empty");
+        }
+        let session_dir = management::validate_mutation_source(session_id)?;
+        let metadata_path = session_dir.join("session.json");
+        let mut metadata: Value = serde_json::from_slice(&std::fs::read(&metadata_path)?)
+            .with_context(|| {
+                format!("Failed to parse Kiro metadata: {}", metadata_path.display())
+            })?;
+        metadata
+            .as_object_mut()
+            .context("Kiro session metadata must contain a JSON object")?
+            .insert("title".to_string(), Value::String(new_title.to_string()));
+        let updated = serde_json::to_string_pretty(&metadata)? + "\n";
+        crate::storage::atomic_write::write_string_atomic(&metadata_path, &updated)?;
+        fail_kiro_mutation_after_write(ProviderSourceMutation::Rename)?;
+        Ok(())
+    }
+
+    fn create_session_backup(
+        &self,
+        mutation: ProviderSourceMutation,
+        operation_id: &str,
+        session_id: &str,
+        backup_root: &Path,
+    ) -> Result<ProviderSessionBackup> {
+        management::create_session_backup(mutation, operation_id, session_id, backup_root)
+    }
+
+    fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
+        management::restore_session_backup(backup)
+    }
+
     fn session_size(&self, session_id: &str) -> Result<u64> {
         let Some(session_dir) = find_session_dir(session_id)? else {
             return Ok(0);
@@ -118,6 +183,35 @@ impl Provider for KiroProvider {
     fn data_source_paths(&self) -> Vec<PathBuf> {
         kiro_sessions_dir().ok().into_iter().collect()
     }
+}
+
+#[cfg(test)]
+static TEST_KIRO_MUTATION_FAILURE: std::sync::OnceLock<
+    std::sync::Mutex<Option<ProviderSourceMutation>>,
+> = std::sync::OnceLock::new();
+
+fn fail_kiro_mutation_after_write(mutation: ProviderSourceMutation) -> Result<()> {
+    #[cfg(test)]
+    {
+        let mut configured = TEST_KIRO_MUTATION_FAILURE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if configured.as_ref() == Some(&mutation) {
+            *configured = None;
+            anyhow::bail!("injected Kiro mutation failure after provider write");
+        }
+    }
+    let _ = mutation;
+    Ok(())
+}
+
+#[cfg(test)]
+fn set_test_kiro_mutation_failure(mutation: Option<ProviderSourceMutation>) {
+    *TEST_KIRO_MUTATION_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = mutation;
 }
 
 #[derive(Debug, Deserialize)]
@@ -1287,7 +1381,10 @@ fn kiro_session_source_fingerprint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::provider::{PageStrategy, ProviderBackupSupport};
+    use crate::provider::{
+        PageStrategy, ProviderActivitySupport, ProviderBackupSupport, ProviderWriteRisk,
+        WriteRiskLevel,
+    };
     use crate::storage::local_store;
     use serde_json::{json, Value};
     use std::collections::BTreeSet;
@@ -1319,6 +1416,7 @@ mod tests {
     impl Drop for TestKiroSessionsDirGuard {
         fn drop(&mut self) {
             crate::cache::global_cache().invalidate(PROVIDER_ID);
+            set_test_kiro_mutation_failure(None);
             *TEST_KIRO_SESSIONS_DIR
                 .get_or_init(|| std::sync::Mutex::new(None))
                 .lock()
@@ -1530,8 +1628,8 @@ mod tests {
         assert!(capabilities.scan);
         assert!(capabilities.import);
         assert!(!capabilities.export);
-        assert!(!capabilities.delete);
-        assert!(!capabilities.rename);
+        assert!(capabilities.delete);
+        assert!(capabilities.rename);
         assert!(!capabilities.resume);
         assert_eq!(capabilities.scan_strategy, ScanStrategy::FullScan);
         assert_eq!(capabilities.page_strategy, PageStrategy::FullImport);
@@ -1546,11 +1644,29 @@ mod tests {
             Some(MappingDisposition::Preserved)
         );
         assert_eq!(
+            capabilities.write_risk,
+            ProviderWriteRisk {
+                level: WriteRiskLevel::Medium,
+                multiple_files: true,
+                sqlite: false,
+                sidecar_files: true,
+                index_repair: false,
+            }
+        );
+        assert_eq!(
             capabilities.backup_support,
             ProviderBackupSupport {
-                before_write: false,
-                restore: false,
+                before_write: true,
+                restore: true,
                 sync_only: false,
+            }
+        );
+        assert_eq!(
+            capabilities.activity_support,
+            ProviderActivitySupport {
+                hook_events: true,
+                runtime_endpoint: true,
+                session_activity: true,
             }
         );
 
@@ -2019,6 +2135,237 @@ mod tests {
     }
 
     #[test]
+    fn current_format_native_management_is_backed_up_restorable_and_activity_complete() -> Result<()>
+    {
+        use crate::storage::activity_store::ActivityActor;
+        use crate::storage::artifact_store::{
+            ArtifactVerificationStatus, BackupQuery, BackupRestoreStatus,
+        };
+
+        let temp = copy_fixture_sessions()?;
+        let home = tempfile::tempdir()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let session_id = "sess_11111111-1111-4111-8111-111111111111";
+        let session_dir = temp.path().join("8f3d1d8bb1bd8116").join(session_id);
+        let original_metadata = fs::read(session_dir.join("session.json"))?;
+        let original_messages = fs::read(session_dir.join("messages.jsonl"))?;
+        let original_tool_output = fs::read(session_dir.join("tool-outputs/tool-1-a1b2c3d4.txt"))?;
+        let original_snapshot = fs::read(session_dir.join("snapshots/snap0001/src/example.rs"))?;
+
+        let bootstrap =
+            crate::core::bootstrap_session_projections(Some(PROVIDER_ID), ActivityActor::System)?;
+        assert_eq!(bootstrap.projected_sessions, 2);
+        let timeline = crate::core::compute_session_activity_timeline(PROVIDER_ID, session_id)?;
+        assert_eq!(timeline.provider_id, PROVIDER_ID);
+        assert!(timeline.total_events > 0);
+        assert!(timeline.total_messages > 0);
+        assert!(crate::providers::hook_registry::find_provider_hook(PROVIDER_ID).is_some());
+        assert!(crate::providers::hook_registry::find_hook_adapter(PROVIDER_ID).is_some());
+
+        let renamed = crate::core::rename_session(
+            PROVIDER_ID,
+            session_id,
+            "Current Kiro title",
+            ActivityActor::Cli,
+        )?;
+        assert!(renamed.native_updated);
+        assert_eq!(renamed.warning, None);
+        assert_eq!(
+            read_validated_session_metadata(&session_dir)?
+                .title
+                .as_deref(),
+            Some("Current Kiro title")
+        );
+        assert_eq!(
+            fs::read(session_dir.join("messages.jsonl"))?,
+            original_messages
+        );
+        assert_eq!(
+            fs::read(session_dir.join("tool-outputs/tool-1-a1b2c3d4.txt"))?,
+            original_tool_output
+        );
+        assert_eq!(
+            fs::read(session_dir.join("snapshots/snap0001/src/example.rs"))?,
+            original_snapshot
+        );
+
+        let rename_backups =
+            crate::core::session_management::list_registered_backups(BackupQuery {
+                provider_id: Some(PROVIDER_ID.to_string()),
+                provider_session_id: Some(session_id.to_string()),
+                ..BackupQuery::default()
+            })?;
+        assert_eq!(rename_backups.len(), 1);
+        let rename_backup = &rename_backups[0];
+        assert_eq!(
+            rename_backup.verification.status,
+            ArtifactVerificationStatus::Verified
+        );
+        assert!(rename_backup
+            .entry
+            .backup
+            .artifact
+            .path
+            .join("session/tool-outputs/tool-1-a1b2c3d4.txt")
+            .is_file());
+        assert!(rename_backup
+            .entry
+            .backup
+            .artifact
+            .path
+            .join("session/snapshots/snap0001/src/example.rs")
+            .is_file());
+        let restore = crate::core::session_management::restore_registered_backup(
+            &rename_backup.entry.backup.id,
+            ActivityActor::Cli,
+        )?;
+        assert_eq!(restore.status, BackupRestoreStatus::Success);
+        assert_eq!(
+            fs::read(session_dir.join("session.json"))?,
+            original_metadata
+        );
+        let repeat_restore = crate::core::session_management::restore_registered_backup(
+            &rename_backup.entry.backup.id,
+            ActivityActor::Cli,
+        )?;
+        assert_eq!(repeat_restore.status, BackupRestoreStatus::Success);
+
+        set_test_kiro_mutation_failure(Some(ProviderSourceMutation::Rename));
+        let rename_error = crate::core::rename_session(
+            PROVIDER_ID,
+            session_id,
+            "Must roll back",
+            ActivityActor::Cli,
+        )
+        .unwrap_err();
+        assert!(format!("{rename_error:#}").contains("restored from registered backup"));
+        assert_eq!(
+            fs::read(session_dir.join("session.json"))?,
+            original_metadata
+        );
+
+        set_test_kiro_mutation_failure(Some(ProviderSourceMutation::Delete));
+        let delete_error =
+            crate::core::delete_session(PROVIDER_ID, session_id, ActivityActor::Cli).unwrap_err();
+        assert!(format!("{delete_error:#}").contains("restored from registered backup"));
+        assert!(session_dir.is_dir());
+        assert_eq!(
+            fs::read(session_dir.join("session.json"))?,
+            original_metadata
+        );
+        assert_eq!(
+            fs::read(session_dir.join("messages.jsonl"))?,
+            original_messages
+        );
+        assert_eq!(
+            fs::read(session_dir.join("tool-outputs/tool-1-a1b2c3d4.txt"))?,
+            original_tool_output
+        );
+        assert_eq!(
+            fs::read(session_dir.join("snapshots/snap0001/src/example.rs"))?,
+            original_snapshot
+        );
+
+        let before_delete =
+            crate::core::session_management::list_registered_backups(BackupQuery {
+                provider_id: Some(PROVIDER_ID.to_string()),
+                provider_session_id: Some(session_id.to_string()),
+                ..BackupQuery::default()
+            })?
+            .into_iter()
+            .map(|view| view.entry.backup.id)
+            .collect::<BTreeSet<_>>();
+        crate::core::delete_session(PROVIDER_ID, session_id, ActivityActor::Cli)?;
+        assert!(!session_dir.exists());
+        let after_delete = crate::core::session_management::list_registered_backups(BackupQuery {
+            provider_id: Some(PROVIDER_ID.to_string()),
+            provider_session_id: Some(session_id.to_string()),
+            ..BackupQuery::default()
+        })?;
+        let delete_backup = after_delete
+            .iter()
+            .find(|view| !before_delete.contains(&view.entry.backup.id))
+            .context("successful Kiro delete did not register a new backup")?;
+        assert_eq!(
+            delete_backup.entry.backup.artifact.metadata["mutation"],
+            "delete"
+        );
+        let delete_restore = crate::core::session_management::restore_registered_backup(
+            &delete_backup.entry.backup.id,
+            ActivityActor::Cli,
+        )?;
+        assert_eq!(delete_restore.status, BackupRestoreStatus::Success);
+        assert_eq!(
+            fs::read(session_dir.join("session.json"))?,
+            original_metadata
+        );
+        assert_eq!(
+            fs::read(session_dir.join("messages.jsonl"))?,
+            original_messages
+        );
+        assert_eq!(
+            fs::read(session_dir.join("tool-outputs/tool-1-a1b2c3d4.txt"))?,
+            original_tool_output
+        );
+        assert_eq!(
+            fs::read(session_dir.join("snapshots/snap0001/src/example.rs"))?,
+            original_snapshot
+        );
+        let repeat_delete_restore = crate::core::session_management::restore_registered_backup(
+            &delete_backup.entry.backup.id,
+            ActivityActor::Cli,
+        )?;
+        assert_eq!(repeat_delete_restore.status, BackupRestoreStatus::Success);
+
+        let conn = local_store::open_database()?;
+        for (operation, status) in [
+            ("rename", "success"),
+            ("rename", "failed"),
+            ("delete", "success"),
+            ("delete", "failed"),
+        ] {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM session_activity
+                 WHERE provider_id = 'kiro' AND provider_session_id = ?1
+                   AND operation_kind = ?2 AND status = ?3 AND finished_at_ms IS NOT NULL",
+                rusqlite::params![session_id, operation, status],
+                |row| row.get(0),
+            )?;
+            assert!(count >= 1, "missing terminal {operation}/{status} activity");
+        }
+        let running: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM session_activity
+             WHERE provider_id = 'kiro' AND provider_session_id = ?1 AND status = 'running'",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(running, 0);
+        let successful_restores: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM backup_restores WHERE status = 'success'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(successful_restores >= 4);
+        let body_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(body_table_count, 0);
+        assert!(after_delete.iter().all(|view| {
+            view.entry
+                .latest_restore
+                .as_ref()
+                .map(|restore| restore.status)
+                != Some(BackupRestoreStatus::Failed)
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifacts(
     ) -> Result<()> {
         let temp = copy_fixture_sessions()?;
@@ -2410,6 +2757,16 @@ mod tests {
             .contains("ambiguous"));
         assert!(KiroProvider
             .session_size(session_id)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        assert!(KiroProvider
+            .delete_session(session_id)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        assert!(KiroProvider
+            .rename_session(session_id, "not allowed")
             .unwrap_err()
             .to_string()
             .contains("ambiguous"));
