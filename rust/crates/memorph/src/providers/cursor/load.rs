@@ -4,24 +4,27 @@ use crate::canonical::{
     ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
     SessionProvenance,
 };
-use crate::providers::cursor::db::{list_bubbles, list_composers, BubbleData, ComposerData};
+use crate::providers::cursor::db::{load_source, BubbleData, ComposerData};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-pub fn import_session(composer_id: &str) -> Result<ImportedSession> {
-    let composer = list_composers()?
-        .into_iter()
-        .find(|composer| composer.composer_id == composer_id);
-    let bubbles = list_bubbles(composer_id)?;
-    Ok(imported_session_from_cursor(composer_id, composer, bubbles))
+pub fn import_session(source_locator: &str) -> Result<ImportedSession> {
+    let (composer_id, composer, bubbles) = load_source(source_locator)?;
+    Ok(imported_session_from_cursor(
+        &composer_id,
+        composer,
+        bubbles,
+        source_locator,
+    ))
 }
 
 fn imported_session_from_cursor(
     composer_id: &str,
     composer: Option<ComposerData>,
     mut bubbles: Vec<BubbleData>,
+    source_locator: &str,
 ) -> ImportedSession {
     bubbles.sort_by(|a, b| {
         let a_ts = a.created_at.as_deref().unwrap_or("");
@@ -122,7 +125,7 @@ fn imported_session_from_cursor(
                 primary_source: ProviderSessionRef {
                     provider_id: "cursor".to_string(),
                     session_id: composer_id.to_string(),
-                    source_path: Some(composer_id.to_string()),
+                    source_path: Some(source_locator.to_string()),
                 },
                 aliases: Vec::new(),
             },
@@ -236,7 +239,12 @@ mod tests {
             })),
         }];
 
-        let imported = imported_session_from_cursor("composer-1", Some(composer), bubbles);
+        let imported = imported_session_from_cursor(
+            "composer-1",
+            Some(composer),
+            bubbles,
+            "/tmp/state.vscdb#composer=composer-1",
+        );
         let event = &imported.session.events[0];
 
         assert_eq!(

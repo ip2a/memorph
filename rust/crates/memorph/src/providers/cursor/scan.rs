@@ -1,5 +1,7 @@
 use crate::provider::ProviderSessionSummary;
-use crate::providers::cursor::db::{global_state_db_path, list_composers, ComposerData};
+use crate::providers::cursor::db::{
+    cursor_source_locator, global_state_db_path, list_composers, ComposerData,
+};
 use anyhow::Result;
 use std::path::Path;
 
@@ -25,13 +27,17 @@ pub fn scan_sessions(workspace: Option<&Path>) -> Result<Vec<ProviderSessionSumm
             }
         }
 
-        sessions.push(composer_to_session_meta(&composer));
+        let source_path = cursor_source_locator(&composer.composer_id)?;
+        sessions.push(composer_to_session_meta(&composer, source_path));
     }
 
     Ok(sessions)
 }
 
-fn composer_to_session_meta(composer: &ComposerData) -> ProviderSessionSummary {
+fn composer_to_session_meta(
+    composer: &ComposerData,
+    source_path: String,
+) -> ProviderSessionSummary {
     let last_active = composer.created_at;
 
     ProviderSessionSummary {
@@ -46,7 +52,7 @@ fn composer_to_session_meta(composer: &ComposerData) -> ProviderSessionSummary {
             .as_ref()
             .map(|w| w.uri.fs_path.clone()),
         last_active_at: last_active,
-        source_path: Some(composer.composer_id.clone()),
+        source_path: Some(source_path),
     }
 }
 

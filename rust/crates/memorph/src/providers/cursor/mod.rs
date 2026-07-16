@@ -53,6 +53,13 @@ impl Provider for CursorProvider {
         load::import_session(source_path)
     }
 
+    fn session_source_fingerprint(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<crate::provider::ProviderSourceFingerprint>> {
+        db::source_fingerprint(source_path)
+    }
+
     fn export_session(
         &self,
         session: &CanonicalSession,
@@ -267,6 +274,215 @@ mod tests {
             manifest["source_plane_findings"]["global_state_database"],
             "only observed plane containing composerHeaders, composerData, and bubbleId session records"
         );
+    }
+
+    #[test]
+    fn cursor_current_locator_and_fingerprint_cover_database_and_session_rows() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        let _guard = use_test_cursor_db(db_path.clone());
+        let session_id = "composer-fingerprint";
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("fixtures/v3_11_19/schema.sql"))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO composerHeaders
+             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+              recency, checkpointAt, value)
+             VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, NULL, ?6)",
+            params![
+                session_id,
+                "workspace-fingerprint",
+                1_700_000_000_000_i64,
+                1_700_000_001_000_i64,
+                1_700_000_001_000_i64,
+                json!({"composerId": session_id, "name": "Sanitized"}).to_string(),
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            params![
+                format!("composerData:{session_id}"),
+                json!({
+                    "composerId": session_id,
+                    "text": "Sanitized session",
+                    "createdAt": 1_700_000_000_000_i64,
+                    "lastUpdatedAt": 1_700_000_001_000_i64,
+                    "workspaceIdentifier": {
+                        "id": "workspace-fingerprint",
+                        "uri": {"fsPath": "/workspace/sanitized"}
+                    }
+                })
+                .to_string(),
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            params![
+                format!("bubbleId:{session_id}:bubble-1"),
+                json!({
+                    "bubbleId": "bubble-1",
+                    "type": 1,
+                    "createdAt": "2024-01-01T00:00:00Z",
+                    "requestId": "request-1",
+                    "text": "Sanitized message"
+                })
+                .to_string(),
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+            params!["composer.composerHeaders.migratedToTable", "true"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let locator = db::cursor_source_locator(session_id).unwrap();
+        assert_eq!(
+            db::parse_cursor_source_locator(&locator).unwrap(),
+            (db_path.clone(), session_id.to_string())
+        );
+        assert!(db::parse_cursor_source_locator(session_id).is_err());
+
+        let first = CursorProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .expect("current session source");
+        assert!(first.value.starts_with("sqlite-rows-v1:"));
+        let imported = CursorProvider.import_session(&locator).unwrap();
+        assert_eq!(
+            imported
+                .session
+                .provenance
+                .primary_source
+                .source_path
+                .as_deref(),
+            Some(locator.as_str())
+        );
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE cursorDiskKV SET value = ?1 WHERE key = ?2",
+            params![
+                json!({
+                    "bubbleId": "bubble-1",
+                    "type": 1,
+                    "createdAt": "2024-01-01T00:00:00Z",
+                    "requestId": "request-1",
+                    "text": "Changed sanitized message"
+                })
+                .to_string(),
+                format!("bubbleId:{session_id}:bubble-1"),
+            ],
+        )
+        .unwrap();
+        drop(conn);
+        let bubble_changed = CursorProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .expect("updated current session source");
+        assert_ne!(first.value, bubble_changed.value);
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE composerHeaders SET lastUpdatedAt = lastUpdatedAt + 1 WHERE composerId = ?1",
+            [session_id],
+        )
+        .unwrap();
+        drop(conn);
+        let header_changed = CursorProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .expect("header-backed current session source");
+        assert_ne!(bubble_changed.value, header_changed.value);
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE cursorDiskKV SET value = ?1 WHERE key = ?2",
+            params![
+                json!({
+                    "composerId": session_id,
+                    "text": "Changed sanitized session",
+                    "createdAt": 1_700_000_000_000_i64,
+                    "lastUpdatedAt": 1_700_000_001_000_i64,
+                    "workspaceIdentifier": {
+                        "id": "workspace-fingerprint",
+                        "uri": {"fsPath": "/workspace/sanitized"}
+                    }
+                })
+                .to_string(),
+                format!("composerData:{session_id}"),
+            ],
+        )
+        .unwrap();
+        drop(conn);
+        let data_changed = CursorProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .expect("data-backed current session source");
+        assert_ne!(header_changed.value, data_changed.value);
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "UPDATE ItemTable SET value = 'false'
+             WHERE key = 'composer.composerHeaders.migratedToTable'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO composerHeaders
+             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+              recency, checkpointAt, value)
+             VALUES ('header-only', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            params![
+                "composerData:data-only",
+                json!({"composerId": "data-only"}).to_string()
+            ],
+        )
+        .unwrap();
+        drop(conn);
+        let marker_changed = CursorProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .expect("current session source after migration marker update");
+        assert_ne!(data_changed.value, marker_changed.value);
+        assert!(CursorProvider
+            .session_source_fingerprint(&db::cursor_source_locator("header-only").unwrap())
+            .unwrap()
+            .is_some());
+        assert!(CursorProvider
+            .session_source_fingerprint(&db::cursor_source_locator("data-only").unwrap())
+            .unwrap()
+            .is_some());
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute(
+            "DELETE FROM composerHeaders WHERE composerId = ?1",
+            [session_id],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM cursorDiskKV WHERE key = ?1 OR key LIKE ?2",
+            params![
+                format!("composerData:{session_id}"),
+                format!("bubbleId:{session_id}:%"),
+            ],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(CursorProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .is_none());
     }
 
     #[derive(Clone, Debug, PartialEq)]

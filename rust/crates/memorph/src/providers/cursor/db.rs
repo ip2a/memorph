@@ -1,8 +1,11 @@
+use crate::provider::ProviderSourceFingerprint;
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::types::Value as SqliteValue;
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 static TEST_CURSOR_DB_PATH: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
@@ -51,6 +54,55 @@ pub fn global_state_db_path() -> Result<PathBuf> {
         .join("User")
         .join("globalStorage")
         .join("state.vscdb"))
+}
+
+/// Build a provider-owned locator for a Cursor composer in the current global database.
+pub fn cursor_source_locator(composer_id: &str) -> Result<String> {
+    anyhow::ensure!(
+        !composer_id.is_empty(),
+        "Cursor composer ID cannot be empty"
+    );
+    anyhow::ensure!(
+        !composer_id.contains('#'),
+        "Cursor composer ID cannot contain locator separators"
+    );
+    Ok(format!(
+        "{}#composer={}",
+        global_state_db_path()?.display(),
+        composer_id
+    ))
+}
+
+/// Parse a current Cursor database locator. Raw composer IDs are not locators.
+pub fn parse_cursor_source_locator(source_locator: &str) -> Result<(PathBuf, String)> {
+    let (database_path, composer_id) = source_locator
+        .rsplit_once("#composer=")
+        .context("Cursor source locator must use '<database>#composer=<composerId>'")?;
+    anyhow::ensure!(
+        !database_path.is_empty() && !composer_id.is_empty(),
+        "Cursor source locator must include a database path and composer ID"
+    );
+    anyhow::ensure!(
+        !composer_id.contains('#'),
+        "Cursor source locator contains an invalid composer ID"
+    );
+    Ok((PathBuf::from(database_path), composer_id.to_string()))
+}
+
+fn open_read_only_db(path: &Path) -> Result<Connection> {
+    if !path.exists() {
+        anyhow::bail!("Cursor state database not found: {}", path.display());
+    }
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).with_context(|| {
+        format!(
+            "Failed to open Cursor state database read-only: {}",
+            path.display()
+        )
+    })
+}
+
+fn open_global_read_only_db() -> Result<Connection> {
+    open_read_only_db(&global_state_db_path()?)
 }
 
 #[cfg(test)]
@@ -130,9 +182,13 @@ pub struct BubbleData {
     pub model_info: Option<serde_json::Value>,
 }
 
-/// Read all composer session metadata from the global database.
+/// Read all composer session metadata from the current global database.
 pub fn list_composers() -> Result<Vec<ComposerData>> {
-    let conn = open_global_db()?;
+    let conn = open_global_read_only_db()?;
+    list_composers_from_connection(&conn)
+}
+
+fn list_composers_from_connection(conn: &Connection) -> Result<Vec<ComposerData>> {
     let (lower, upper) = key_prefix_bounds("composerData:");
     let mut stmt =
         conn.prepare("SELECT CAST(value AS TEXT) FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")?;
@@ -147,17 +203,15 @@ pub fn list_composers() -> Result<Vec<ComposerData>> {
 
     let mut composers = Vec::new();
     for row in rows {
-        if let Ok(c) = row {
-            composers.push(c);
+        if let Ok(composer) = row {
+            composers.push(composer);
         }
     }
     Ok(composers)
 }
 
-/// Read all bubbles for a given composer session.
-pub fn list_bubbles(composer_id: &str) -> Result<Vec<BubbleData>> {
-    let conn = open_global_db()?;
-    let prefix = format!("bubbleId:{}:", composer_id);
+fn list_bubbles_from_connection(conn: &Connection, composer_id: &str) -> Result<Vec<BubbleData>> {
+    let prefix = format!("bubbleId:{composer_id}:");
     let (lower, upper) = key_prefix_bounds(&prefix);
     let mut stmt =
         conn.prepare("SELECT CAST(value AS TEXT) FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")?;
@@ -172,11 +226,206 @@ pub fn list_bubbles(composer_id: &str) -> Result<Vec<BubbleData>> {
 
     let mut bubbles = Vec::new();
     for row in rows {
-        if let Ok(b) = row {
-            bubbles.push(b);
+        if let Ok(bubble) = row {
+            bubbles.push(bubble);
         }
     }
     Ok(bubbles)
+}
+
+/// Read composer metadata and bubbles from a current provider-owned locator.
+pub fn load_source(
+    source_locator: &str,
+) -> Result<(String, Option<ComposerData>, Vec<BubbleData>)> {
+    let (database_path, composer_id) = parse_cursor_source_locator(source_locator)?;
+    let conn = open_read_only_db(&database_path)?;
+    let composer = list_composers_from_connection(&conn)?
+        .into_iter()
+        .find(|composer| composer.composer_id == composer_id);
+    let bubbles = list_bubbles_from_connection(&conn, &composer_id)?;
+    Ok((composer_id, composer, bubbles))
+}
+
+/// Calculate a source fingerprint over the current Cursor rows for one composer.
+pub fn source_fingerprint(source_locator: &str) -> Result<Option<ProviderSourceFingerprint>> {
+    let (database_path, composer_id) = parse_cursor_source_locator(source_locator)?;
+    let Some(database_metadata) = database_path.metadata().ok() else {
+        return Ok(None);
+    };
+    let conn = open_read_only_db(&database_path)?;
+    validate_current_source_schema(&conn)?;
+
+    let composer_key = format!("composerData:{composer_id}");
+    let bubble_prefix = format!("bubbleId:{composer_id}:");
+    let (bubble_lower, bubble_upper) = key_prefix_bounds(&bubble_prefix);
+    let has_composer_data = conn
+        .query_row(
+            "SELECT 1 FROM cursorDiskKV WHERE key = ?1",
+            [&composer_key],
+            |_| Ok(()),
+        )
+        .optional()?;
+    let has_header = conn
+        .query_row(
+            "SELECT 1 FROM composerHeaders WHERE composerId = ?1",
+            [&composer_id],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if has_composer_data.is_none() && has_header.is_none() {
+        return Ok(None);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"cursor-source-v1\0");
+    hash_current_header(&conn, &mut hasher, &composer_id)?;
+    hash_keyed_value(&conn, &mut hasher, "cursorDiskKV", &composer_key)?;
+    let mut bubble_stmt = conn.prepare(
+        "SELECT key, value FROM cursorDiskKV
+         WHERE key >= ?1 AND key < ?2 ORDER BY key ASC",
+    )?;
+    let bubble_rows = bubble_stmt.query_map(params![bubble_lower, bubble_upper], |row| {
+        let value = row.get::<_, SqliteValue>(1)?;
+        Ok((row.get::<_, String>(0)?, sqlite_value_bytes(value)))
+    })?;
+    for row in bubble_rows {
+        let (key, value) = row?;
+        hash_bytes(&mut hasher, b"cursorDiskKV", key.as_bytes(), &value);
+    }
+    hash_keyed_value(
+        &conn,
+        &mut hasher,
+        "ItemTable",
+        "composer.composerHeaders.migratedToTable",
+    )?;
+
+    let wal_path = PathBuf::from(format!("{}-wal", database_path.display()));
+    let wal_metadata = wal_path.metadata().ok();
+    let modified_at_ms = source_modified_at_ms(&database_metadata).max(
+        wal_metadata
+            .as_ref()
+            .map(source_modified_at_ms)
+            .unwrap_or(0),
+    );
+    let size_bytes = i64::try_from(database_metadata.len())
+        .unwrap_or(i64::MAX)
+        .saturating_add(
+            wal_metadata
+                .as_ref()
+                .map(|metadata| i64::try_from(metadata.len()).unwrap_or(i64::MAX))
+                .unwrap_or(0),
+        );
+    Ok(Some(ProviderSourceFingerprint {
+        modified_at_ms,
+        size_bytes,
+        value: format!("sqlite-rows-v1:{:x}", hasher.finalize()),
+    }))
+}
+
+fn validate_current_source_schema(conn: &Connection) -> Result<()> {
+    for (table, expected_columns) in [
+        ("ItemTable", &["key", "value"][..]),
+        ("cursorDiskKV", &["key", "value"][..]),
+        (
+            "composerHeaders",
+            &[
+                "composerId",
+                "workspaceId",
+                "createdAt",
+                "lastUpdatedAt",
+                "isArchived",
+                "isSubagent",
+                "recency",
+                "checkpointAt",
+                "value",
+            ][..],
+        ),
+    ] {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        anyhow::ensure!(
+            columns == expected_columns,
+            "Cursor current source schema for {table} is not supported"
+        );
+    }
+    Ok(())
+}
+
+fn hash_current_header(conn: &Connection, hasher: &mut Sha256, composer_id: &str) -> Result<()> {
+    let row = conn
+        .query_row(
+            "SELECT composerId, workspaceId, createdAt, lastUpdatedAt, isArchived,
+                    isSubagent, recency, checkpointAt, value
+             FROM composerHeaders WHERE composerId = ?1",
+            [composer_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(row) = row else {
+        hasher.update(b"composerHeaders:missing\0");
+        return Ok(());
+    };
+    let encoded = serde_json::to_vec(&row)?;
+    hash_bytes(hasher, b"composerHeaders", composer_id.as_bytes(), &encoded);
+    Ok(())
+}
+
+fn hash_keyed_value(conn: &Connection, hasher: &mut Sha256, table: &str, key: &str) -> Result<()> {
+    let sql = format!("SELECT value FROM {table} WHERE key = ?1");
+    let value = conn
+        .query_row(&sql, [key], |row| {
+            Ok(sqlite_value_bytes(row.get::<_, SqliteValue>(0)?))
+        })
+        .optional()?;
+    if let Some(value) = value {
+        hash_bytes(hasher, table.as_bytes(), key.as_bytes(), &value);
+    } else {
+        hasher.update(table.as_bytes());
+        hasher.update(b":missing:");
+        hasher.update(key.as_bytes());
+        hasher.update([0]);
+    }
+    Ok(())
+}
+
+fn sqlite_value_bytes(value: SqliteValue) -> Vec<u8> {
+    match value {
+        SqliteValue::Blob(bytes) => bytes,
+        SqliteValue::Text(text) => text.into_bytes(),
+        SqliteValue::Integer(value) => value.to_le_bytes().to_vec(),
+        SqliteValue::Real(value) => value.to_le_bytes().to_vec(),
+        SqliteValue::Null => Vec::new(),
+    }
+}
+
+fn hash_bytes(hasher: &mut Sha256, table: &[u8], key: &[u8], value: &[u8]) {
+    for part in [table, key, value] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+}
+
+fn source_modified_at_ms(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 /// Calculate the total storage size (in bytes) of a composer and all its bubbles.
