@@ -178,6 +178,52 @@ pub fn load_recent_events(limit: usize) -> Result<Vec<HookEvent>> {
     load_recent_events_in(store.connection(), limit)
 }
 
+pub fn last_event_observed_at_ms_for_providers(
+    provider_ids: &[String],
+) -> Result<std::collections::HashMap<String, i64>> {
+    if provider_ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let store = open_store()?;
+    last_event_observed_at_ms_for_providers_in(store.connection(), provider_ids)
+}
+
+pub fn last_event_observed_at_ms_for_providers_in(
+    conn: &Connection,
+    provider_ids: &[String],
+) -> Result<std::collections::HashMap<String, i64>> {
+    if provider_ids.is_empty() {
+        return Ok(Default::default());
+    }
+    let placeholders = vec!["?"; provider_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT provider_id, MAX(observed_at_ms)
+         FROM hook_events
+         WHERE provider_id IN ({placeholders})
+         GROUP BY provider_id"
+    );
+    let params: Vec<&dyn rusqlite::ToSql> = provider_ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::ToSql)
+        .collect();
+    let mut stmt = conn
+        .prepare(&sql)
+        .context("Failed to prepare hook event provider max query")?;
+    let rows = stmt
+        .query_map(params.as_slice(), |row| {
+            let provider_id: String = row.get(0)?;
+            let max_ms: i64 = row.get(1)?;
+            Ok((provider_id, max_ms))
+        })
+        .context("Failed to query hook event provider max")?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (provider_id, max_ms) = row?;
+        out.insert(provider_id, max_ms);
+    }
+    Ok(out)
+}
+
 fn load_recent_events_in(conn: &Connection, limit: usize) -> Result<Vec<HookEvent>> {
     let mut stmt = conn
         .prepare(
@@ -577,6 +623,40 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_id, "event-1");
         assert_eq!(events[1].event_id, "event-2");
+    }
+
+    #[test]
+    fn last_event_observed_at_ms_for_providers_returns_max_per_provider() {
+        let mut store = test_store();
+        let base = chrono::Utc::now();
+
+        let mut early = HookEvent::new("claude", HookEventType::Heartbeat, Value::Null);
+        early.event_id = "claude-early".to_string();
+        early.timestamp = base - chrono::Duration::seconds(100);
+        append_event_in(store.connection_mut(), &early).unwrap();
+
+        let mut late = HookEvent::new("claude", HookEventType::Heartbeat, Value::Null);
+        late.event_id = "claude-late".to_string();
+        late.timestamp = base;
+        append_event_in(store.connection_mut(), &late).unwrap();
+
+        let mut codex_event = HookEvent::new("codex", HookEventType::Heartbeat, Value::Null);
+        codex_event.event_id = "codex-1".to_string();
+        codex_event.timestamp = base - chrono::Duration::seconds(10);
+        append_event_in(store.connection_mut(), &codex_event).unwrap();
+
+        let map = last_event_observed_at_ms_for_providers_in(
+            store.connection(),
+            &["claude".to_string(), "codex".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["claude"], base.timestamp_millis());
+        assert_eq!(map["codex"], codex_event.timestamp.timestamp_millis());
+
+        let empty = last_event_observed_at_ms_for_providers_in(store.connection(), &[]).unwrap();
+        assert!(empty.is_empty());
     }
 
     #[test]

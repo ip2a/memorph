@@ -25,6 +25,15 @@ pub fn status(provider: &str) -> Result<HookInstallStatus> {
     ))
 }
 
+pub fn status_with_cached_last_event_at(
+    provider: &str,
+    cache: &std::collections::HashMap<String, i64>,
+) -> Result<HookInstallStatus> {
+    let mut hook_status = status(provider)?;
+    hook_status.last_event_at = crate::hooks::health::last_event_at_in(provider, Some(cache));
+    Ok(hook_status)
+}
+
 pub fn run_operation(
     provider: &str,
     operation: HookConfigOperation,

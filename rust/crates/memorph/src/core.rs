@@ -734,28 +734,37 @@ fn list_projected_session_snapshots(params: &SessionListParams) -> Result<Vec<Se
             params.include_message_counts,
         )?;
     let hook_runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
-    let hook_statuses = provider_ids
-        .into_iter()
+    let providers_with_snapshots: Vec<String> = provider_ids
+        .iter()
         .filter(|provider_id| {
             snapshots
                 .iter()
-                .any(|snapshot| snapshot.provider_id == *provider_id)
+                .any(|snapshot| snapshot.provider_id == **provider_id)
         })
+        .cloned()
+        .collect();
+    let last_event_at_cache =
+        crate::hooks::store::last_event_observed_at_ms_for_providers(&providers_with_snapshots)
+            .unwrap_or_default();
+    let hook_statuses = providers_with_snapshots
+        .iter()
         .map(|provider_id| {
-            let hook_status = crate::hooks::operations::status(&provider_id).unwrap_or(
-                crate::hooks::model::HookInstallStatus {
-                    provider: provider_id.clone(),
-                    status: crate::hooks::model::HookHealthStatus::InstalledBrokenConfig,
-                    config_path: None,
-                    installed_version: None,
-                    current_version: None,
-                    message: Some(
-                        "Failed to inspect hook status while building session list.".to_string(),
-                    ),
-                    last_event_at: None,
-                },
-            );
-            (provider_id, hook_status)
+            let hook_status = crate::hooks::operations::status_with_cached_last_event_at(
+                provider_id,
+                &last_event_at_cache,
+            )
+            .unwrap_or(crate::hooks::model::HookInstallStatus {
+                provider: provider_id.clone(),
+                status: crate::hooks::model::HookHealthStatus::InstalledBrokenConfig,
+                config_path: None,
+                installed_version: None,
+                current_version: None,
+                message: Some(
+                    "Failed to inspect hook status while building session list.".to_string(),
+                ),
+                last_event_at: None,
+            });
+            (provider_id.clone(), hook_status)
         })
         .collect();
     Ok(projected_snapshot_groups(

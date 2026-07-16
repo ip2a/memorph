@@ -25,15 +25,21 @@ pub(crate) fn summarize_versions(versions: impl Iterator<Item = Option<String>>)
 }
 
 pub(crate) fn last_event_at(provider: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    crate::hooks::store::load_recent_events(500)
-        .ok()
-        .and_then(|events| {
-            events
-                .into_iter()
-                .filter(|event| event.provider == provider)
-                .map(|event| event.timestamp)
-                .max()
-        })
+    last_event_at_in(provider, None)
+}
+
+pub(crate) fn last_event_at_in(
+    provider: &str,
+    cached: Option<&std::collections::HashMap<String, i64>>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let max_ms = if let Some(map) = cached {
+        map.get(provider).copied()
+    } else {
+        crate::hooks::store::last_event_observed_at_ms_for_providers(&[provider.to_string()])
+            .ok()
+            .and_then(|map| map.get(provider).copied())
+    }?;
+    chrono::DateTime::from_timestamp_millis(max_ms)
 }
 
 #[cfg(test)]
