@@ -1,57 +1,47 @@
 use crate::provider::ProviderSessionSummary;
 use crate::providers::cursor::db::{
-    cursor_source_locator, global_state_db_path, list_composers, ComposerData,
+    cursor_source_locator, global_state_db_path, list_session_metadata, CursorSessionMetadata,
 };
 use anyhow::Result;
 use std::path::Path;
 
-/// Scan Cursor Composer sessions and filter by workspace path.
+/// Scan current Cursor Composer sessions and filter by workspace path.
 pub fn scan_sessions(workspace: Option<&Path>) -> Result<Vec<ProviderSessionSummary>> {
     if !global_state_db_path()?.exists() {
         return Ok(Vec::new());
     }
 
-    let composers = list_composers()?;
-    let mut sessions = Vec::new();
+    let sessions = list_session_metadata()?;
+    let mut summaries = Vec::new();
 
-    for composer in composers {
-        // Filter by workspace if provided
-        if let Some(ws) = workspace {
-            if let Some(ref wi) = composer.workspace_identifier {
-                let composer_path = Path::new(&wi.uri.fs_path);
-                if !paths_match(ws, composer_path) {
-                    continue;
-                }
-            } else {
+    for session in sessions {
+        let project_dir = session.workspace_dir();
+        if let Some(workspace) = workspace {
+            let Some(project_dir) = project_dir.as_deref() else {
+                continue;
+            };
+            if !paths_match(workspace, Path::new(project_dir)) {
                 continue;
             }
         }
 
-        let source_path = cursor_source_locator(&composer.composer_id)?;
-        sessions.push(composer_to_session_meta(&composer, source_path));
+        let source_path = cursor_source_locator(&session.composer_id)?;
+        summaries.push(session_to_summary(&session, project_dir, source_path));
     }
 
-    Ok(sessions)
+    Ok(summaries)
 }
 
-fn composer_to_session_meta(
-    composer: &ComposerData,
+fn session_to_summary(
+    session: &CursorSessionMetadata,
+    project_dir: Option<String>,
     source_path: String,
 ) -> ProviderSessionSummary {
-    let last_active = composer.created_at;
-
     ProviderSessionSummary {
-        session_id: composer.composer_id.clone(),
-        title: composer
-            .text
-            .clone()
-            .filter(|t| !t.trim().is_empty())
-            .or_else(|| composer.name.clone().filter(|n| !n.trim().is_empty())),
-        project_dir: composer
-            .workspace_identifier
-            .as_ref()
-            .map(|w| w.uri.fs_path.clone()),
-        last_active_at: last_active,
+        session_id: session.composer_id.clone(),
+        title: session.title(),
+        project_dir,
+        last_active_at: session.last_active_at_ms(),
         source_path: Some(source_path),
     }
 }

@@ -4,7 +4,7 @@ use rusqlite::types::Value as SqliteValue;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -148,6 +148,8 @@ pub struct ComposerData {
     pub workspace_identifier: Option<WorkspaceIdentifier>,
     #[serde(rename = "createdAt")]
     pub created_at: Option<i64>,
+    #[serde(rename = "lastUpdatedAt")]
+    pub last_updated_at: Option<i64>,
     #[serde(rename = "isAgentic")]
     pub is_agentic: Option<bool>,
 }
@@ -165,85 +167,328 @@ pub struct WorkspaceUri {
     pub fs_path: String,
 }
 
-/// Cursor bubble (message) stored in cursorDiskKV.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[allow(dead_code)]
-pub struct BubbleData {
-    #[serde(rename = "bubbleId")]
-    pub bubble_id: String,
-    #[serde(rename = "type")]
-    pub bubble_type: i32,
-    pub text: Option<String>,
-    #[serde(rename = "createdAt")]
-    pub created_at: Option<String>,
-    #[serde(rename = "requestId")]
-    pub request_id: Option<String>,
-    #[serde(rename = "modelInfo")]
-    pub model_info: Option<serde_json::Value>,
+#[derive(Debug, Clone)]
+pub struct CursorComposerHeader {
+    pub created_at: Option<i64>,
+    pub last_updated_at: Option<i64>,
+    pub recency: Option<i64>,
+    pub value: serde_json::Value,
 }
 
-/// Read all composer session metadata from the current global database.
-pub fn list_composers() -> Result<Vec<ComposerData>> {
+#[derive(Debug, Clone)]
+pub struct CursorComposerRecord {
+    pub data: ComposerData,
+    pub raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct CursorSessionMetadata {
+    pub composer_id: String,
+    pub header: Option<CursorComposerHeader>,
+    pub composer: Option<CursorComposerRecord>,
+}
+
+impl CursorSessionMetadata {
+    pub fn title(&self) -> Option<String> {
+        self.header
+            .as_ref()
+            .and_then(|header| json_nonempty_string(&header.value, "name"))
+            .or_else(|| {
+                self.composer
+                    .as_ref()
+                    .and_then(|composer| nonempty_string(composer.data.name.as_deref()))
+            })
+            .or_else(|| {
+                self.header
+                    .as_ref()
+                    .and_then(|header| json_nonempty_string(&header.value, "subtitle"))
+            })
+            .or_else(|| {
+                self.composer
+                    .as_ref()
+                    .and_then(|composer| nonempty_string(composer.data.text.as_deref()))
+            })
+    }
+
+    pub fn workspace_dir(&self) -> Option<String> {
+        self.header
+            .as_ref()
+            .and_then(|header| {
+                header
+                    .value
+                    .get("workspaceIdentifier")
+                    .and_then(|value| value.get("uri"))
+                    .and_then(|value| value.get("fsPath"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .or_else(|| {
+                self.composer.as_ref().and_then(|composer| {
+                    composer
+                        .data
+                        .workspace_identifier
+                        .as_ref()
+                        .map(|workspace| workspace.uri.fs_path.clone())
+                })
+            })
+    }
+
+    pub fn created_at_ms(&self) -> Option<i64> {
+        self.header
+            .as_ref()
+            .and_then(|header| header.created_at)
+            .or_else(|| {
+                self.composer
+                    .as_ref()
+                    .and_then(|composer| composer.data.created_at)
+            })
+    }
+
+    pub fn last_active_at_ms(&self) -> Option<i64> {
+        self.header
+            .as_ref()
+            .and_then(|header| header.recency)
+            .or_else(|| {
+                self.header
+                    .as_ref()
+                    .and_then(|header| header.last_updated_at)
+            })
+            .or_else(|| {
+                self.composer
+                    .as_ref()
+                    .and_then(|composer| composer.data.last_updated_at)
+            })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CursorBubbleRecord {
+    pub key: String,
+    pub raw: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct CursorInvalidRow {
+    pub key: String,
+    pub raw: serde_json::Value,
+    pub error: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CursorLoadedSource {
+    pub metadata: CursorSessionMetadata,
+    pub bubbles: Vec<CursorBubbleRecord>,
+    pub invalid_bubbles: Vec<CursorInvalidRow>,
+}
+
+const EMPTY_STATE_DRAFT_KEY: &str = "composerData:empty-state-draft";
+
+/// Read current Cursor session metadata by joining composerHeaders and composerData identities.
+pub fn list_session_metadata() -> Result<Vec<CursorSessionMetadata>> {
     let conn = open_global_read_only_db()?;
-    list_composers_from_connection(&conn)
+    validate_current_source_schema(&conn)?;
+    let mut sessions = BTreeMap::<String, CursorSessionMetadata>::new();
+
+    for (composer_id, header) in read_headers(&conn)? {
+        sessions.insert(
+            composer_id.clone(),
+            CursorSessionMetadata {
+                composer_id,
+                header: Some(header),
+                composer: None,
+            },
+        );
+    }
+    for (composer_id, composer) in read_composers(&conn)? {
+        let session =
+            sessions
+                .entry(composer_id.clone())
+                .or_insert_with(|| CursorSessionMetadata {
+                    composer_id,
+                    header: None,
+                    composer: None,
+                });
+        session.composer = Some(composer);
+    }
+
+    Ok(sessions.into_values().collect())
 }
 
-fn list_composers_from_connection(conn: &Connection) -> Result<Vec<ComposerData>> {
-    let (lower, upper) = key_prefix_bounds("composerData:");
-    let mut stmt =
-        conn.prepare("SELECT CAST(value AS TEXT) FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")?;
+/// Read one current Cursor session source from a provider-owned locator.
+pub fn load_source(source_locator: &str) -> Result<CursorLoadedSource> {
+    let (database_path, composer_id) = parse_cursor_source_locator(source_locator)?;
+    anyhow::ensure!(
+        composer_id != "empty-state-draft",
+        "Cursor empty-state draft sentinel is not a session source"
+    );
+    let conn = open_read_only_db(&database_path)?;
+    validate_current_source_schema(&conn)?;
+    let mut headers = read_headers(&conn)?;
+    let mut composers = read_composers(&conn)?;
+    let header = headers.remove(&composer_id);
+    let composer = composers.remove(&composer_id);
+    anyhow::ensure!(
+        header.is_some() || composer.is_some(),
+        "Cursor session source does not exist: {composer_id}"
+    );
 
+    let prefix = format!("bubbleId:{composer_id}:");
+    let (lower, upper) = key_prefix_bounds(&prefix);
+    let mut stmt = conn.prepare(
+        "SELECT key, value FROM cursorDiskKV
+         WHERE key >= ?1 AND key < ?2 ORDER BY key ASC",
+    )?;
     let rows = stmt.query_map(params![lower, upper], |row| {
-        let json: String = row.get(0)?;
-        let parsed: ComposerData = serde_json::from_str(&json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        Ok(parsed)
+        Ok((row.get::<_, String>(0)?, row.get::<_, SqliteValue>(1)?))
     })?;
-
-    let mut composers = Vec::new();
+    let mut bubbles = Vec::new();
+    let mut invalid_bubbles = Vec::new();
     for row in rows {
-        if let Ok(composer) = row {
-            composers.push(composer);
+        let (key, value) = row?;
+        match sqlite_json_value(value.clone()) {
+            Ok(raw) if raw.is_object() => bubbles.push(CursorBubbleRecord { key, raw }),
+            Ok(raw) => invalid_bubbles.push(CursorInvalidRow {
+                key,
+                raw,
+                error: "Cursor bubble row must contain a JSON object".to_string(),
+            }),
+            Err(error) => invalid_bubbles.push(CursorInvalidRow {
+                key,
+                raw: sqlite_value_for_report(value),
+                error: error.to_string(),
+            }),
         }
+    }
+
+    Ok(CursorLoadedSource {
+        metadata: CursorSessionMetadata {
+            composer_id,
+            header,
+            composer,
+        },
+        bubbles,
+        invalid_bubbles,
+    })
+}
+
+fn read_headers(conn: &Connection) -> Result<BTreeMap<String, CursorComposerHeader>> {
+    let mut stmt = conn.prepare(
+        "SELECT composerId, createdAt, lastUpdatedAt, recency, value
+         FROM composerHeaders ORDER BY composerId ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, SqliteValue>(4)?,
+        ))
+    })?;
+    let mut headers = BTreeMap::new();
+    for row in rows {
+        let (composer_id, created_at, last_updated_at, recency, value) = row?;
+        let raw = sqlite_json_value(value)
+            .with_context(|| format!("Invalid Cursor composerHeaders value for {composer_id}"))?;
+        anyhow::ensure!(
+            raw.is_object(),
+            "Cursor composerHeaders value must be a JSON object: {composer_id}"
+        );
+        anyhow::ensure!(
+            raw.get("composerId").and_then(serde_json::Value::as_str) == Some(composer_id.as_str()),
+            "Cursor composerHeaders identity mismatch: {composer_id}"
+        );
+        headers.insert(
+            composer_id.clone(),
+            CursorComposerHeader {
+                created_at,
+                last_updated_at,
+                recency,
+                value: raw,
+            },
+        );
+    }
+    Ok(headers)
+}
+
+fn read_composers(conn: &Connection) -> Result<BTreeMap<String, CursorComposerRecord>> {
+    let (lower, upper) = key_prefix_bounds("composerData:");
+    let mut stmt = conn.prepare(
+        "SELECT key, value FROM cursorDiskKV
+         WHERE key >= ?1 AND key < ?2 ORDER BY key ASC",
+    )?;
+    let rows = stmt.query_map(params![lower, upper], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, SqliteValue>(1)?))
+    })?;
+    let mut composers = BTreeMap::new();
+    for row in rows {
+        let (key, value) = row?;
+        if key == EMPTY_STATE_DRAFT_KEY && matches!(value, SqliteValue::Null) {
+            continue;
+        }
+        let composer_id = key
+            .strip_prefix("composerData:")
+            .context("Cursor composerData key is missing its prefix")?
+            .to_string();
+        let raw = sqlite_json_value(value)
+            .with_context(|| format!("Invalid Cursor composerData row: {key}"))?;
+        anyhow::ensure!(
+            raw.is_object(),
+            "Cursor composerData row must contain a JSON object: {key}"
+        );
+        let data: ComposerData = serde_json::from_value(raw.clone())
+            .with_context(|| format!("Invalid Cursor composerData fields: {key}"))?;
+        anyhow::ensure!(
+            data.composer_id == composer_id,
+            "Cursor composerData identity mismatch: key={composer_id}, value={}",
+            data.composer_id
+        );
+        composers.insert(composer_id, CursorComposerRecord { data, raw });
     }
     Ok(composers)
 }
 
-fn list_bubbles_from_connection(conn: &Connection, composer_id: &str) -> Result<Vec<BubbleData>> {
-    let prefix = format!("bubbleId:{composer_id}:");
-    let (lower, upper) = key_prefix_bounds(&prefix);
-    let mut stmt =
-        conn.prepare("SELECT CAST(value AS TEXT) FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")?;
-
-    let rows = stmt.query_map(params![lower, upper], |row| {
-        let json: String = row.get(0)?;
-        let parsed: BubbleData = serde_json::from_str(&json).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-        Ok(parsed)
-    })?;
-
-    let mut bubbles = Vec::new();
-    for row in rows {
-        if let Ok(bubble) = row {
-            bubbles.push(bubble);
+fn sqlite_json_value(value: SqliteValue) -> Result<serde_json::Value> {
+    let text = match value {
+        SqliteValue::Text(text) => text,
+        SqliteValue::Blob(bytes) => {
+            String::from_utf8(bytes).context("Cursor JSON blob is not UTF-8")?
         }
-    }
-    Ok(bubbles)
+        SqliteValue::Null => anyhow::bail!("Cursor JSON value is NULL"),
+        SqliteValue::Integer(_) | SqliteValue::Real(_) => {
+            anyhow::bail!("Cursor JSON value is not text or blob")
+        }
+    };
+    serde_json::from_str(&text).context("Cursor row contains invalid JSON")
 }
 
-/// Read composer metadata and bubbles from a current provider-owned locator.
-pub fn load_source(
-    source_locator: &str,
-) -> Result<(String, Option<ComposerData>, Vec<BubbleData>)> {
-    let (database_path, composer_id) = parse_cursor_source_locator(source_locator)?;
-    let conn = open_read_only_db(&database_path)?;
-    let composer = list_composers_from_connection(&conn)?
-        .into_iter()
-        .find(|composer| composer.composer_id == composer_id);
-    let bubbles = list_bubbles_from_connection(&conn, &composer_id)?;
-    Ok((composer_id, composer, bubbles))
+fn sqlite_value_for_report(value: SqliteValue) -> serde_json::Value {
+    match value {
+        SqliteValue::Text(text) => serde_json::Value::String(text),
+        SqliteValue::Blob(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => serde_json::Value::String(text),
+            Err(error) => serde_json::json!({
+                "sqlite_type": "blob",
+                "size_bytes": error.as_bytes().len()
+            }),
+        },
+        SqliteValue::Integer(value) => serde_json::Value::Number(value.into()),
+        SqliteValue::Real(value) => serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        SqliteValue::Null => serde_json::Value::Null,
+    }
+}
+
+fn json_nonempty_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    nonempty_string(value.get(key).and_then(serde_json::Value::as_str))
+}
+
+fn nonempty_string(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// Calculate a source fingerprint over the current Cursor rows for one composer.

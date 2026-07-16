@@ -485,6 +485,40 @@ mod tests {
             .is_none());
     }
 
+    #[test]
+    fn cursor_current_discovery_excludes_empty_state_draft_and_keeps_partial_sessions() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        let _guard = use_test_cursor_db(db_path.clone());
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("fixtures/v3_11_19/schema.sql"))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO composerHeaders
+             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+              recency, checkpointAt, value)
+             VALUES ('header-only', NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?1)",
+            [json!({"composerId": "header-only", "name": "Header only"}).to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES
+             ('composerData:data-only', ?1),
+             ('composerData:empty-state-draft', NULL)",
+            [json!({"composerId": "data-only", "name": "Data only"}).to_string()],
+        )
+        .unwrap();
+        drop(conn);
+
+        let sessions = db::list_session_metadata().unwrap();
+        let ids = sessions
+            .iter()
+            .map(|session| session.composer_id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["data-only", "header-only"]);
+        assert!(db::load_source(&db::cursor_source_locator("empty-state-draft").unwrap()).is_err());
+    }
+
     #[derive(Clone, Debug, PartialEq)]
     struct StoredCursorRow {
         value: SqliteValue,
@@ -633,6 +667,73 @@ mod tests {
             })
             .collect();
         NativeCursorFixture { target_rows }
+    }
+
+    fn write_current_cursor_rename_fixture(db_path: &Path, session_id: &str) {
+        let conn = Connection::open(db_path).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE cursorDiskKV (
+                key TEXT UNIQUE ON CONFLICT REPLACE,
+                value BLOB
+            );
+            CREATE TABLE ItemTable (
+                key TEXT UNIQUE ON CONFLICT REPLACE,
+                value BLOB
+            );
+            CREATE TABLE composerHeaders (
+                composerId TEXT PRIMARY KEY,
+                workspaceId TEXT,
+                createdAt INTEGER,
+                lastUpdatedAt INTEGER,
+                isArchived INTEGER,
+                isSubagent INTEGER,
+                recency INTEGER,
+                checkpointAt INTEGER,
+                value TEXT
+            );
+            ",
+        )
+        .unwrap();
+
+        let header = json!({
+            "composerId": session_id,
+            "name": "Before",
+            "workspaceIdentifier": {
+                "id": "workspace-1",
+                "uri": {"fsPath": "/tmp/cursor-project"}
+            }
+        });
+        conn.execute(
+            "INSERT INTO composerHeaders
+             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+              recency, checkpointAt, value)
+             VALUES (?1, 'workspace-1', 100, 100, 0, 0, 100, NULL, ?2)",
+            params![session_id, serde_json::to_string(&header).unwrap()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            params![
+                format!("composerData:{session_id}"),
+                serde_json::to_vec(&json!({
+                    "composerId": session_id,
+                    "name": "Before",
+                    "createdAt": 100
+                }))
+                .unwrap(),
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES ('composer.composerHeaders', ?1)",
+            [serde_json::to_vec(&json!({
+                "allComposers": [{"composerId": session_id, "name": "Before"}],
+                "indexGeneration": "original"
+            }))
+            .unwrap()],
+        )
+        .unwrap();
     }
 
     fn stored_row(conn: &Connection, table: &str, key: &str) -> Option<StoredCursorRow> {
@@ -1011,7 +1112,7 @@ mod tests {
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
         let session_id = "cursor-partial-rename";
-        write_native_cursor_fixture(&db_path, session_id, true);
+        write_current_cursor_rename_fixture(&db_path, session_id);
         let backup_root = dir.path().join("backups");
         let mut artifact_conn = Connection::open_in_memory().unwrap();
         local_store::configure_connection(&artifact_conn).unwrap();
@@ -1032,11 +1133,23 @@ mod tests {
             .to_string()
             .contains("Provider source was restored from registered backup"));
         let conn = Connection::open(&db_path).unwrap();
-        let composer =
-            stored_row(&conn, "cursorDiskKV", &format!("composerData:{session_id}")).unwrap();
-        assert_eq!(parse_stored_json(&composer.value)["name"], "Before");
+        let composer: SqliteValue = conn
+            .query_row(
+                "SELECT value FROM cursorDiskKV WHERE key = ?1",
+                [format!("composerData:{session_id}")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(parse_stored_json(&composer)["name"], "Before");
+        let index: SqliteValue = conn
+            .query_row(
+                "SELECT value FROM ItemTable WHERE key = 'composer.composerHeaders'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(
-            target_index_entry(&composer_index(&conn).0, session_id)["name"],
+            parse_stored_json(&index)["allComposers"][0]["name"],
             "Before"
         );
     }
