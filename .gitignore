@@ -107,3 +107,5 @@
 !/rust/crates/memorph/src/providers/kimi/fixtures/**
 !/rust/crates/memorph/src/providers/kiro/fixtures/
 !/rust/crates/memorph/src/providers/kiro/fixtures/**
+!/rust/crates/memorph/src/providers/cursor/fixtures/
+!/rust/crates/memorph/src/providers/cursor/fixtures/**

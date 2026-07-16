@@ -1,0 +1,1204 @@
+{
+  "inventory_version": 1,
+  "provider": "cursor",
+  "observed_cursor_version": "3.11.19",
+  "captured_on": "2026-07-16",
+  "content_policy": "field names, JSON types, and aggregate presence counts only; no source values",
+  "composerData": {
+    "rows": 28,
+    "valid_json_rows": 27,
+    "invalid_json_rows": 1,
+    "top_level_fields": {
+      "_v": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 27
+      },
+      "activeCustomMode": {
+        "types": [
+          "null"
+        ],
+        "present_in_rows": 27
+      },
+      "activeTabsShouldBeReactive": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "addedFiles": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 27
+      },
+      "agentBackend": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 23
+      },
+      "allAttachedFileCodeChunksUris": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "applied": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "applyAgentBackendTypeRestrictions": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 23
+      },
+      "blobEncryptionKey": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 27
+      },
+      "browserChipManuallyDisabled": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "browserChipManuallyEnabled": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "canvasPillCollapsed": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "capabilities": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "capabilityContexts": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "chatGenerationUUID": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 1
+      },
+      "codeBlockData": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 27
+      },
+      "composerId": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 27
+      },
+      "context": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 27
+      },
+      "contextTokenLimit": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 18
+      },
+      "contextTokensUsed": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 18
+      },
+      "contextUsagePercent": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 19
+      },
+      "conversationCheckpointLastUpdatedAt": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 21
+      },
+      "conversationMap": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 27
+      },
+      "conversationState": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 27
+      },
+      "createdAt": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 27
+      },
+      "debugModeSuggestionUsed": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "filesChangedCount": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 22
+      },
+      "forceMode": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 27
+      },
+      "fullConversationHeadersOnly": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "generatingBubbleIds": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "gitHubPromptDismissed": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "hasChangedContext": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "hasLoaded": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "hasUnreadMessages": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isAgentic": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isApplyingWorktree": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isBestOfNParent": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isBestOfNSubcomposer": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isContinuationInProgress": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isCreatingWorktree": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isDraft": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isFileListExpanded": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isNAL": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isProject": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isQueueExpanded": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isReadingLongFile": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isSpec": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isSpecSubagentDone": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "isUndoingWorktree": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "lastUpdatedAt": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 20
+      },
+      "latestChatGenerationUUID": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 22
+      },
+      "modelConfig": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 27
+      },
+      "name": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 22
+      },
+      "newlyCreatedFiles": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "newlyCreatedFolders": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "originalFileStates": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 27
+      },
+      "pendingCreateWorktree": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "pendingExitedCustomMode": {
+        "types": [
+          "null"
+        ],
+        "present_in_rows": 27
+      },
+      "planModeSuggestionUsed": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "promptContextUsageTree": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 21
+      },
+      "promptTokenBreakdown": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 21
+      },
+      "queueItems": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "removedFiles": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 27
+      },
+      "restrictAgentModeSwitching": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 20
+      },
+      "richText": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 27
+      },
+      "speculativeSummarizationEncryptionKey": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 27
+      },
+      "status": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 27
+      },
+      "stopHookLoopCount": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 27
+      },
+      "subComposerIds": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "subagentComposerIds": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "subagentInfo": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 2
+      },
+      "subtitle": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 23
+      },
+      "text": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 27
+      },
+      "todos": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "totalLinesAdded": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 27
+      },
+      "totalLinesRemoved": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 27
+      },
+      "trackedGitRepos": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 27
+      },
+      "unifiedMode": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 27
+      },
+      "usageData": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 27
+      },
+      "workspaceIdentifier": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 23
+      },
+      "worktreeStartedReadOnly": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      }
+    }
+  },
+  "bubbleId": {
+    "rows": 4633,
+    "valid_json_rows": 4633,
+    "invalid_json_rows": 0,
+    "top_level_fields": {
+      "_v": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 4633
+      },
+      "aiWebSearchResults": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "allThinkingBlocks": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "approximateLintErrors": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "assistantSuggestedDiffs": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "attachedCodeChunks": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "attachedFileCodeChunksMetadataOnly": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "attachedFolders": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "attachedFoldersListDirResults": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "attachedFoldersNew": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "attachedHumanChanges": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 4633
+      },
+      "bubbleId": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 4633
+      },
+      "capabilities": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "capabilityContexts": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "capabilityType": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 4025
+      },
+      "checkpointId": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 121
+      },
+      "codeBlocks": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 3008
+      },
+      "codebaseContextChunks": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "commits": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "consoleLogs": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "context": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 98
+      },
+      "contextPieces": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "contextWindowStatusAtCreation": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 78
+      },
+      "conversationState": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 4633
+      },
+      "createdAt": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 4633
+      },
+      "cursorCommands": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "cursorCommandsExplicitlySet": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 4633
+      },
+      "cursorRules": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "deletedFiles": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "diffHistories": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "diffsForCompressingFiles": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "diffsSinceLastApply": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "docsReferences": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "documentationSelections": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "editTrailContexts": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "errorDetails": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 24
+      },
+      "existedPreviousTerminalCommand": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 4633
+      },
+      "existedSubsequentTerminalCommand": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 4633
+      },
+      "externalLinks": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "fileDiffTrajectories": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "gitDiffs": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "humanChanges": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "images": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "interpreterResults": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "isAgentic": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 4633
+      },
+      "isPlanExecution": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 124
+      },
+      "isRefunded": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 4633
+      },
+      "isSimulatedMsg": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 6
+      },
+      "knowledgeItems": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "lints": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "mcpDescriptors": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "modelInfo": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 95
+      },
+      "multiFileLinterErrors": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "notepads": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "pastChats": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "pastChatsExplicitlySet": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 4633
+      },
+      "projectLayouts": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "pullRequests": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "recentLocationsHistory": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "recentlyViewedFiles": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "relevantFiles": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "requestId": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 4633
+      },
+      "richText": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 134
+      },
+      "serverBubbleId": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 1763
+      },
+      "simulatedMessageMetadata": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 6
+      },
+      "simulatedMsgReason": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 6
+      },
+      "subagentSpawnTaskToolCallId": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 2
+      },
+      "suggestedCodeBlocks": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "summarizedComposers": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "supportedTools": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "text": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 4633
+      },
+      "thinking": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 1306
+      },
+      "thinkingDurationMs": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 913
+      },
+      "thinkingStyle": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 778
+      },
+      "todos": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "tokenCount": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 4633
+      },
+      "toolFormerData": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 2718
+      },
+      "toolResults": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "turnDurationMs": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 100
+      },
+      "type": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 4633
+      },
+      "uiElementPicked": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "unifiedMode": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 4633
+      },
+      "userResponsesToSuggestedCodeBlocks": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "webReferences": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      },
+      "workspaceUris": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 4633
+      }
+    }
+  },
+  "composerHeaders_value": {
+    "rows": 37,
+    "valid_json_rows": 37,
+    "invalid_json_rows": 0,
+    "top_level_fields": {
+      "composerId": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 37
+      },
+      "contextUsagePercent": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 18
+      },
+      "conversationCheckpointLastUpdatedAt": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 20
+      },
+      "createdAt": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 37
+      },
+      "draftTarget": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 1
+      },
+      "filesChangedCount": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 21
+      },
+      "forceMode": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 37
+      },
+      "hasBeenInSidebar": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 1
+      },
+      "hasBlockingPendingActions": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "hasPendingPlan": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 27
+      },
+      "hasUnreadMessages": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 37
+      },
+      "isArchived": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 37
+      },
+      "isBestOfNSubcomposer": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 37
+      },
+      "isDraft": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 37
+      },
+      "isProject": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 37
+      },
+      "isSpec": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 37
+      },
+      "isWorktree": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 37
+      },
+      "lastUpdatedAt": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 20
+      },
+      "name": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 21
+      },
+      "numSubComposers": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 37
+      },
+      "referencedPlans": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 37
+      },
+      "subagentInfo": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 2
+      },
+      "subtitle": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 22
+      },
+      "totalLinesAdded": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 37
+      },
+      "totalLinesRemoved": {
+        "types": [
+          "number"
+        ],
+        "present_in_rows": 37
+      },
+      "trackedGitRepos": {
+        "types": [
+          "array"
+        ],
+        "present_in_rows": 37
+      },
+      "type": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 37
+      },
+      "unifiedMode": {
+        "types": [
+          "string"
+        ],
+        "present_in_rows": 37
+      },
+      "workspaceIdentifier": {
+        "types": [
+          "object"
+        ],
+        "present_in_rows": 37
+      },
+      "worktreeStartedReadOnly": {
+        "types": [
+          "boolean"
+        ],
+        "present_in_rows": 37
+      }
+    }
+  }
+}

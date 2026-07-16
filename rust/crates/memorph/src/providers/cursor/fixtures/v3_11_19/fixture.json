@@ -1,0 +1,100 @@
+{
+  "fixture_version": 1,
+  "provider": "cursor",
+  "observed_cursor_version": "3.11.19",
+  "captured_on": "2026-07-16",
+  "provenance": "sanitized-local-source",
+  "raw_user_content_committed": false,
+  "raw_user_identifiers_committed": false,
+  "live_source_mutated": false,
+  "source_plane": "global-storage-sqlite",
+  "source_database": "~/Library/Application Support/Cursor/User/globalStorage/state.vscdb",
+  "journal_mode": "wal",
+  "schema_file": "schema.sql",
+  "field_inventory_file": "field_inventory.json",
+  "tables": {
+    "ItemTable": ["key", "value"],
+    "cursorDiskKV": ["key", "value"],
+    "composerHeaders": [
+      "composerId",
+      "workspaceId",
+      "createdAt",
+      "lastUpdatedAt",
+      "isArchived",
+      "isSubagent",
+      "recency",
+      "checkpointAt",
+      "value"
+    ]
+  },
+  "observed_rows": {
+    "ItemTable": 159,
+    "cursorDiskKV": 12763,
+    "composerHeaders": 37,
+    "composerData": 28,
+    "valid_composerData_json": 27,
+    "sentinel_composerData_values": 1,
+    "bubbleId": 4633
+  },
+  "session_identity": {
+    "provider_session_id": "composerId",
+    "scope": "global state database",
+    "composer_id_only_is_physical_locator": false,
+    "required_locator_components": ["database path", "composerId"]
+  },
+  "session_source_fragment": {
+    "index_row": "composerHeaders WHERE composerId = ?",
+    "metadata_row": "cursorDiskKV WHERE key = 'composerData:<composerId>'",
+    "message_rows": "cursorDiskKV WHERE key has prefix 'bubbleId:<composerId>:'",
+    "linked_optional_rows_under_audit": [
+      "checkpointId:<composerId>:<checkpointId>",
+      "ofsContent:<composerId>:file:<opaque-path-key>",
+      "codeBlockPartialInlineDiffFates:<composerId>:<bubbleId>",
+      "composerVirtualRowHeights:<composerId>",
+      "agentKv:blob:<content-hash>",
+      "composer.content.<content-hash>"
+    ]
+  },
+  "observed_relationships": {
+    "composerData_ids": 28,
+    "composerHeaders_ids": 37,
+    "intersection_ids": 27,
+    "composerData_only_ids": 1,
+    "composerHeaders_only_ids": 10,
+    "bubble_key_suffix_matches_bubbleId": "4633/4633",
+    "composerHeaders_value_composerId_matches_primary_key": "37/37",
+    "composerData_createdAt_matches_header_createdAt_when_both_exist": "26/26",
+    "composerData_lastUpdatedAt_matches_header_lastUpdatedAt_when_both_exist": "19/20",
+    "composerData_fullConversationHeadersOnly_present": "27/27 valid composerData rows",
+    "fullConversationHeadersOnly_exactly_covers_bubble_rows": "15/27 sessions",
+    "fullConversationHeadersOnly_is_chronological": "25/27 sessions"
+  },
+  "source_plane_findings": {
+    "conversation_search_database": "derived FTS/search index; observed local/cloud-cache summaries, not authoritative message bodies",
+    "workspace_state_databases": "observed workspace UI metadata only; no composerHeaders or cursorDiskKV session rows in audited databases",
+    "global_state_database": "only observed plane containing composerHeaders, composerData, and bubbleId session records"
+  },
+  "pagination_finding": {
+    "sqlite_row_order_is_stable": false,
+    "fullConversationHeadersOnly_is_complete_for_all_sessions": false,
+    "native_cursor_proven": false,
+    "safe_initial_strategy": "FullImport",
+    "decision_status": "provisional until pagination milestone"
+  },
+  "mutation_boundary_finding": {
+    "current_index_table": "composerHeaders",
+    "legacy_itemtable_index_key_still_present": "composer.composerHeaders",
+    "migration_marker": "composer.composerHeaders.migratedToTable",
+    "required_write_audit_tables": ["cursorDiskKV", "composerHeaders", "ItemTable"],
+    "existing_synthetic_fixture_columns_not_observed": ["owner", "revision"],
+    "management_capabilities_require_revalidation": ["export", "rename", "delete", "backup", "restore"]
+  },
+  "fixture_matrix": {
+    "normal_session": "composerHeaders + valid composerData + bubble rows",
+    "multiple_turns": "multiple user/assistant bubble rows grouped by request/native metadata",
+    "tool_payload": "assistant bubbles with toolFormerData/toolResults/codeBlocks and linked blob families",
+    "partial_index": "header-only and composerData-only identities both observed",
+    "invalid_metadata": "one composerData value is a non-JSON sentinel",
+    "unknown_fields": "field inventory intentionally contains fields not modeled by current Rust structs"
+  }
+}

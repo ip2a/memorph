@@ -141,6 +141,134 @@ mod tests {
         TestCursorDbGuard { _lock: lock }
     }
 
+    fn cursor_audit_fixture_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/providers/cursor/fixtures/v3_11_19")
+    }
+
+    #[test]
+    fn cursor_3_11_19_audit_fixture_matches_current_sqlite_contract() {
+        let root = cursor_audit_fixture_root();
+        let manifest: Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("fixture.json")).unwrap())
+                .unwrap();
+
+        assert_eq!(manifest["provider"], "cursor");
+        assert_eq!(manifest["observed_cursor_version"], "3.11.19");
+        assert_eq!(manifest["captured_on"], "2026-07-16");
+        assert_eq!(manifest["provenance"], "sanitized-local-source");
+        assert_eq!(manifest["raw_user_content_committed"], false);
+        assert_eq!(manifest["raw_user_identifiers_committed"], false);
+        assert_eq!(manifest["live_source_mutated"], false);
+        assert_eq!(manifest["journal_mode"], "wal");
+        assert_eq!(
+            manifest["session_identity"]["provider_session_id"],
+            "composerId"
+        );
+        assert_eq!(
+            manifest["session_identity"]["composer_id_only_is_physical_locator"],
+            false
+        );
+        assert_eq!(
+            manifest["pagination_finding"]["native_cursor_proven"],
+            false
+        );
+        assert_eq!(
+            manifest["pagination_finding"]["safe_initial_strategy"],
+            "FullImport"
+        );
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(&std::fs::read_to_string(root.join("schema.sql")).unwrap())
+            .unwrap();
+        let table_columns = |table: &str| {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        assert_eq!(table_columns("ItemTable"), ["key", "value"]);
+        assert_eq!(table_columns("cursorDiskKV"), ["key", "value"]);
+        assert_eq!(
+            table_columns("composerHeaders"),
+            [
+                "composerId",
+                "workspaceId",
+                "createdAt",
+                "lastUpdatedAt",
+                "isArchived",
+                "isSubagent",
+                "recency",
+                "checkpointAt",
+                "value",
+            ]
+        );
+    }
+
+    #[test]
+    fn cursor_3_11_19_audit_fixture_is_structural_and_records_source_gaps() {
+        let root = cursor_audit_fixture_root();
+        let manifest_text = std::fs::read_to_string(root.join("fixture.json")).unwrap();
+        let inventory_text = std::fs::read_to_string(root.join("field_inventory.json")).unwrap();
+        let manifest: Value = serde_json::from_str(&manifest_text).unwrap();
+        let inventory: Value = serde_json::from_str(&inventory_text).unwrap();
+
+        assert!(!manifest_text.contains("/Users/"));
+        assert!(!inventory_text.contains("/Users/"));
+        assert!(!inventory_text.contains("file:///"));
+        assert_eq!(
+            inventory["content_policy"],
+            "field names, JSON types, and aggregate presence counts only; no source values"
+        );
+        assert_eq!(inventory["composerData"]["rows"], 28);
+        assert_eq!(inventory["composerData"]["invalid_json_rows"], 1);
+        assert_eq!(inventory["bubbleId"]["rows"], 4633);
+        assert_eq!(inventory["bubbleId"]["invalid_json_rows"], 0);
+        assert_eq!(inventory["composerHeaders_value"]["rows"], 37);
+
+        for field in [
+            "composerId",
+            "workspaceIdentifier",
+            "createdAt",
+            "lastUpdatedAt",
+            "fullConversationHeadersOnly",
+        ] {
+            assert!(inventory["composerData"]["top_level_fields"][field].is_object());
+        }
+        for field in [
+            "bubbleId",
+            "type",
+            "createdAt",
+            "requestId",
+            "toolFormerData",
+            "toolResults",
+        ] {
+            assert!(inventory["bubbleId"]["top_level_fields"][field].is_object());
+        }
+
+        assert_eq!(
+            manifest["observed_relationships"]
+                ["fullConversationHeadersOnly_exactly_covers_bubble_rows"],
+            "15/27 sessions"
+        );
+        assert_eq!(
+            manifest["mutation_boundary_finding"]
+                ["existing_synthetic_fixture_columns_not_observed"],
+            json!(["owner", "revision"])
+        );
+        assert_eq!(
+            manifest["mutation_boundary_finding"]["current_index_table"],
+            "composerHeaders"
+        );
+        assert_eq!(
+            manifest["source_plane_findings"]["global_state_database"],
+            "only observed plane containing composerHeaders, composerData, and bubbleId session records"
+        );
+    }
+
     #[derive(Clone, Debug, PartialEq)]
     struct StoredCursorRow {
         value: SqliteValue,
