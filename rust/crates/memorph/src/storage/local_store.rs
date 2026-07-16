@@ -230,6 +230,11 @@ fn applied_migrations(conn: &Connection) -> Result<BTreeSet<i64>> {
     Ok(versions)
 }
 
+/// Migration history. V1 creates the original schema including the session
+/// body tables (session_turns/session_events/session_event_blocks); V9 drops
+/// them. These definitions stay for existing databases that need to replay the
+/// full migration chain. New databases apply V1..V8 then V9 in one pass, so the
+/// body tables are created and dropped within a single schema initialization.
 const V1_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS session_index_state (
     provider_id TEXT NOT NULL,
@@ -576,6 +581,9 @@ CREATE TABLE IF NOT EXISTS hook_events (
     observed_at_ms INTEGER NOT NULL,
     correlation_id TEXT,
     payload_json TEXT,
+    -- Schema debt: payload_artifact_id has no production write/read path. V9
+    -- nulls existing references. Kept to avoid a destructive ALTER on existing
+    -- databases; cleanup deferred until hook payload projection is implemented.
     payload_artifact_id TEXT,
     FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE SET NULL,
     FOREIGN KEY(payload_artifact_id) REFERENCES artifact_manifests(id) ON DELETE SET NULL
@@ -839,6 +847,10 @@ CREATE INDEX idx_session_snapshots_provider_workspace_recent
     ON session_snapshots(provider_id, workspace_dir, last_active_at_ms DESC);
 "#;
 
+/// Drop persisted session body. ORDER is dependency-safe:
+/// session_event_blocks -> session_events -> session_turns. FK is OFF for the
+/// whole block, but the order is correct even if FK were ON. Also rebuilds
+/// artifact_manifests without event_id/block_id and purges event_payload rows.
 const V9_SCHEMA: &str = r#"
 UPDATE hook_events
 SET payload_artifact_id = NULL
