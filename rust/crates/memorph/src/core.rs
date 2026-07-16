@@ -5495,12 +5495,15 @@ mod tests {
         }
     }
 
-    struct TestOpenCodeDirGuard;
+    struct TestOpenCodeDirGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
 
     impl TestOpenCodeDirGuard {
         fn new(path: std::path::PathBuf) -> Self {
+            let lock = crate::providers::opencode::lock_test_opencode_state();
             crate::providers::opencode::set_test_opencode_dir(Some(path));
-            Self
+            Self { _lock: lock }
         }
     }
 

@@ -5792,6 +5792,10 @@ mod tests {
 
     #[test]
     fn paged_import_preserves_native_turn_context_when_page_starts_mid_turn() {
+        assert_eq!(
+            CodexProvider.capabilities().page_strategy,
+            PageStrategy::IndexedPage
+        );
         let home = tempdir().unwrap();
         crate::config::set_test_home_dir(home.path().to_path_buf());
         let mut file = NamedTempFile::new().unwrap();

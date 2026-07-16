@@ -69,7 +69,7 @@ impl Provider for ClaudeProvider {
             rename: true,
             resume: true,
             scan_strategy: ScanStrategy::FullScan,
-            page_strategy: PageStrategy::FullImport,
+            page_strategy: PageStrategy::IndexedPage,
             storage_shape: StorageShape::Jsonl,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
@@ -1830,6 +1830,10 @@ mod tests {
 
     #[test]
     fn import_session_page_reports_full_counts_and_paginates_events() {
+        assert_eq!(
+            ClaudeProvider.capabilities().page_strategy,
+            PageStrategy::IndexedPage
+        );
         let file = build_structured_claude_session();
 
         // Full page: counts must match a full import, every line yields one event.

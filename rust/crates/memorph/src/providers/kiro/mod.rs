@@ -1022,6 +1022,10 @@ mod tests {
 
     #[test]
     fn write_rename_delete_roundtrip() -> Result<()> {
+        let _lock = TEST_KIRO_TEST_LOCK
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir()?;
         let global_dir = temp.path().join("kiro.kiroagent");
         let target_dir = temp.path().join("project");

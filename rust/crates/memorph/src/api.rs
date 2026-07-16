@@ -3981,7 +3981,7 @@ mod tests {
         assert_eq!(claude["display_name"], "Claude");
         assert!(claude["capability_set"].is_object());
         assert_eq!(claude["capability_set"]["scan_strategy"], "full_scan");
-        assert_eq!(claude["capability_set"]["page_strategy"], "full_import");
+        assert_eq!(claude["capability_set"]["page_strategy"], "indexed_page");
         assert_eq!(claude["capability_set"]["storage_shape"], "jsonl");
         assert_eq!(claude["capability_set"]["turn_quality"], "inferred");
         assert_eq!(
@@ -4000,6 +4000,18 @@ mod tests {
         assert!(claude["sort_order"].is_object());
         assert!(claude["active_time"].is_object());
         assert!(claude["filter_tags"].is_array());
+
+        let codex = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "codex")
+            .expect("missing codex catalog entry");
+        assert_eq!(codex["capability_set"]["page_strategy"], "indexed_page");
+
+        let opencode = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "opencode")
+            .expect("missing opencode catalog entry");
+        assert_eq!(opencode["capability_set"]["page_strategy"], "native_page");
     }
 
     #[test]

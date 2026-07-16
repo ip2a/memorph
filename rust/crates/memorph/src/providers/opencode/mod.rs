@@ -38,6 +38,10 @@ const OPENCODE_BACKUP_MIME: &str = "application/vnd.memorph.opencode-session-bac
 const OPENCODE_BACKUP_DB_PATH: &str = "sqlite/opencode-session.db";
 
 #[cfg(test)]
+static TEST_OPENCODE_STATE_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
 static TEST_OPENCODE_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
     std::sync::OnceLock::new();
 
@@ -117,7 +121,7 @@ impl Provider for OpenCodeProvider {
             rename: true,
             resume: true,
             scan_strategy: ScanStrategy::Hybrid,
-            page_strategy: PageStrategy::FullImport,
+            page_strategy: PageStrategy::NativePage,
             storage_shape: StorageShape::Mixed,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
@@ -964,6 +968,14 @@ fn get_opencode_dir() -> PathBuf {
     dirs::home_dir()
         .map(|h| h.join(".local/share/opencode"))
         .unwrap_or_else(|| PathBuf::from(".local/share/opencode"))
+}
+
+#[cfg(test)]
+pub(crate) fn lock_test_opencode_state() -> std::sync::MutexGuard<'static, ()> {
+    TEST_OPENCODE_STATE_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .expect("test opencode state lock")
 }
 
 #[cfg(test)]
@@ -3391,6 +3403,10 @@ mod tests {
 
     #[test]
     fn import_session_page_paginates_messages_and_keeps_full_counts() {
+        assert_eq!(
+            OpenCodeProvider.capabilities().page_strategy,
+            PageStrategy::NativePage
+        );
         let opencode_dir = tempdir().unwrap();
         let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
         write_multimessage_opencode_db(opencode_dir.path(), "ses-paged");
@@ -3550,9 +3566,6 @@ mod tests {
         assert_eq!(assistant.links.turn_boundary, Some(TurnBoundary::Failed));
     }
 
-    static TEST_OPENCODE_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
-        std::sync::OnceLock::new();
-
     struct TestOpenCodeDirGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
     }
@@ -3565,10 +3578,7 @@ mod tests {
     }
 
     fn use_test_opencode_dir(path: PathBuf) -> TestOpenCodeDirGuard {
-        let lock = TEST_OPENCODE_TEST_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .expect("test opencode serial lock");
+        let lock = lock_test_opencode_state();
         set_test_opencode_dir(Some(path));
         TestOpenCodeDirGuard { _lock: lock }
     }
