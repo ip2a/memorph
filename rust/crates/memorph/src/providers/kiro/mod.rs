@@ -1288,14 +1288,32 @@ fn kiro_session_source_fingerprint(
 mod tests {
     use super::*;
     use crate::provider::{PageStrategy, ProviderBackupSupport};
+    use crate::storage::local_store;
     use serde_json::{json, Value};
+    use std::collections::BTreeSet;
     use std::fs;
+    use std::io::Write;
     use std::sync::{MutexGuard, OnceLock};
 
     static TEST_KIRO_TEST_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
 
     struct TestKiroSessionsDirGuard {
         _lock: MutexGuard<'static, ()>,
+    }
+
+    struct TestConfigHomeGuard;
+
+    impl TestConfigHomeGuard {
+        fn new(path: &Path) -> Self {
+            crate::config::set_test_home_dir(path.to_path_buf());
+            Self
+        }
+    }
+
+    impl Drop for TestConfigHomeGuard {
+        fn drop(&mut self) {
+            crate::config::reset_test_home_dir();
+        }
     }
 
     impl Drop for TestKiroSessionsDirGuard {
@@ -1605,6 +1623,168 @@ mod tests {
             page.turns[0].confidence,
             crate::session_projection::TurnConfidence::Inferred
         );
+        Ok(())
+    }
+
+    #[test]
+    fn current_format_index_and_detail_are_idempotent_source_backed_and_bodyless() -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home)?;
+        let _home_guard = TestConfigHomeGuard::new(&home);
+        let _kiro_guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_id = "sess_11111111-1111-4111-8111-111111111111";
+        let session_dir = temp.path().join("8f3d1d8bb1bd8116").join(session_id);
+        let summary = KiroProvider
+            .scan_sessions()?
+            .into_iter()
+            .find(|summary| summary.session_id == session_id)
+            .unwrap();
+        assert_eq!(
+            summary.source_path.as_deref(),
+            Some(session_dir.to_string_lossy().as_ref())
+        );
+        let fingerprint = KiroProvider
+            .session_source_fingerprint(summary.source_path.as_deref().unwrap())?
+            .unwrap();
+        assert!(fingerprint.value.starts_with("kiro-v2:"));
+        let full =
+            KiroProvider.import_session_page(summary.source_path.as_deref().unwrap(), 0, None)?;
+        let expected_turn_count = full.turn_count.unwrap();
+
+        let mut conn = local_store::open_database()?;
+        let first = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .write_session_summary(
+                PROVIDER_ID,
+                &summary,
+                KiroProvider.capabilities(),
+                &fingerprint,
+            )?;
+        let counts_after_first: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM session_sources WHERE provider_id = 'kiro'),
+                (SELECT COUNT(*) FROM sessions WHERE provider_id = 'kiro'),
+                (SELECT COUNT(*) FROM session_snapshots WHERE provider_id = 'kiro'),
+                (SELECT COUNT(*) FROM session_aliases WHERE provider_id = 'kiro')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let second = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .write_session_summary(
+                PROVIDER_ID,
+                &summary,
+                KiroProvider.capabilities(),
+                &fingerprint,
+            )?;
+        let counts_after_second: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM session_sources WHERE provider_id = 'kiro'),
+                (SELECT COUNT(*) FROM sessions WHERE provider_id = 'kiro'),
+                (SELECT COUNT(*) FROM session_snapshots WHERE provider_id = 'kiro'),
+                (SELECT COUNT(*) FROM session_aliases WHERE provider_id = 'kiro')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(first, second);
+        assert_eq!(counts_after_first, counts_after_second);
+        assert_eq!(counts_after_second.0, 1);
+        assert_eq!(counts_after_second.1, 1);
+        assert_eq!(counts_after_second.2, 1);
+
+        let (source_path, storage_shape, source_cursor): (String, String, String) = conn
+            .query_row(
+                "SELECT source_path, storage_shape, source_cursor
+                 FROM session_sources WHERE id = ?1",
+                [&first.source_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+        assert_eq!(source_path, session_dir.to_string_lossy());
+        assert_eq!(storage_shape, "directory");
+        assert_eq!(source_cursor, fingerprint.value);
+        let snapshot_json: String = conn.query_row(
+            "SELECT snapshot_json FROM session_snapshots WHERE session_id = ?1",
+            [&first.canonical_session_id],
+            |row| row.get(0),
+        )?;
+        let snapshot_json: Value = serde_json::from_str(&snapshot_json)?;
+        let snapshot_keys = snapshot_json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            snapshot_keys,
+            BTreeSet::from(["index_version", "source_fingerprint"])
+        );
+        let body_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(body_table_count, 0);
+        drop(conn);
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(detail.events.is_empty());
+        assert!(detail.turns.is_empty());
+        assert_eq!(detail.event_count, full.event_count);
+        assert_eq!(detail.message_count, full.message_count);
+        assert!(!detail.stale);
+        assert_eq!(
+            detail.source_path.as_deref(),
+            Some(session_dir.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            detail.projection_report.as_ref().unwrap().id,
+            format!("source-read:{PROVIDER_ID}:{session_id}")
+        );
+
+        let conn = local_store::open_database()?;
+        let cached_counts: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT event_count, message_count, turn_count, counts_complete
+             FROM session_snapshots WHERE session_id = ?1",
+            [&first.canonical_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(cached_counts.0, full.event_count as i64);
+        assert_eq!(cached_counts.1, full.message_count as i64);
+        assert_eq!(cached_counts.2, expected_turn_count as i64);
+        assert_eq!(cached_counts.3, 1);
+        drop(conn);
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(session_dir.join("messages.jsonl"))?
+            .write_all(b"\n")?;
+        let stale_detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(stale_detail.stale);
+
+        fs::remove_dir_all(&session_dir)?;
+        let groups = crate::core::list_sessions(&crate::core::SessionListParams {
+            all: true,
+            providers: vec![PROVIDER_ID.to_string()],
+            cwd: None,
+            include_message_counts: true,
+            limit: None,
+            offset: None,
+            sort: crate::core::SessionListSort::Recent,
+            hook_filter: crate::core::SessionHookFilter::All,
+        })?;
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].sessions.len(), 1);
+        assert_eq!(groups[0].sessions[0].session_id, session_id);
+        assert_eq!(
+            groups[0].sessions[0].message_count,
+            Some(full.message_count)
+        );
+        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("Session source is missing"));
         Ok(())
     }
 
