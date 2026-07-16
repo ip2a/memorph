@@ -40,125 +40,6 @@ fn random_base64_key() -> String {
     STANDARD.encode(&bytes)
 }
 
-/// Read the current composer.composerHeaders index from ItemTable.
-fn read_composer_index(
-    conn: &rusqlite::Connection,
-) -> Result<(serde_json::Value, Option<SqliteValue>)> {
-    let stored = conn
-        .query_row(
-            "SELECT value FROM ItemTable WHERE key = 'composer.composerHeaders'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let index = match stored.as_ref() {
-        Some(SqliteValue::Text(text)) => serde_json::from_str(text)?,
-        Some(SqliteValue::Blob(bytes)) => serde_json::from_slice(bytes)?,
-        Some(_) => anyhow::bail!("Cursor composer index is not stored as TEXT or BLOB"),
-        None => json!({"allComposers": []}),
-    };
-    Ok((index, stored))
-}
-
-/// Write the composer.composerHeaders index back to ItemTable.
-fn write_composer_index(
-    conn: &rusqlite::Connection,
-    index: &serde_json::Value,
-    storage: Option<&SqliteValue>,
-) -> Result<()> {
-    let value = match storage {
-        Some(SqliteValue::Text(_)) => SqliteValue::Text(serde_json::to_string(index)?),
-        Some(SqliteValue::Blob(_)) | None => SqliteValue::Blob(serde_json::to_vec(index)?),
-        Some(_) => anyhow::bail!("Cursor composer index is not stored as TEXT or BLOB"),
-    };
-    let updated = conn.execute(
-        "UPDATE ItemTable SET value = ?1 WHERE key = ?2",
-        params![value, "composer.composerHeaders"],
-    )?;
-    if updated == 0 {
-        conn.execute(
-            "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
-            params!["composer.composerHeaders", value],
-        )?;
-    }
-    Ok(())
-}
-
-/// Add or update a composer entry in the composer.composerHeaders index.
-fn upsert_composer_index(
-    conn: &rusqlite::Connection,
-    composer_id: &str,
-    name: &str,
-    subtitle: &str,
-    workspace_id: &str,
-    workspace_path: &str,
-    created_at: i64,
-    last_updated_at: i64,
-) -> Result<()> {
-    let (mut index, storage) = read_composer_index(conn)?;
-    let all_composers = index
-        .get_mut("allComposers")
-        .and_then(|v| v.as_array_mut())
-        .context("Invalid composer.composerHeaders format")?;
-
-    // Remove existing entry if present
-    all_composers.retain(|c| c.get("composerId").and_then(|v| v.as_str()) != Some(composer_id));
-
-    let entry = json!({
-        "type": "head",
-        "composerId": composer_id,
-        "name": name,
-        "subtitle": subtitle,
-        "lastUpdatedAt": last_updated_at,
-        "createdAt": created_at,
-        "unifiedMode": "agent",
-        "forceMode": "edit",
-        "hasUnreadMessages": false,
-        "totalLinesAdded": 0,
-        "totalLinesRemoved": 0,
-        "filesChangedCount": 0,
-        "hasBlockingPendingActions": false,
-        "isArchived": false,
-        "isDraft": false,
-        "isWorktree": false,
-        "worktreeStartedReadOnly": false,
-        "isSpec": false,
-        "isProject": false,
-        "glassMetaParentAgent": false,
-        "isBestOfNSubcomposer": false,
-        "numSubComposers": 0,
-        "referencedPlans": [],
-        "branches": [],
-        "workspaceIdentifier": {
-            "id": workspace_id,
-            "uri": {
-                "$mid": 1,
-                "fsPath": workspace_path,
-                "external": format!("file://{}", workspace_path),
-                "path": workspace_path,
-                "scheme": "file"
-            }
-        }
-    });
-
-    all_composers.insert(0, entry);
-    write_composer_index(conn, &index, storage.as_ref())?;
-    Ok(())
-}
-
-/// Remove a composer from the composer.composerHeaders index.
-fn remove_composer_index(conn: &rusqlite::Connection, composer_id: &str) -> Result<()> {
-    let (mut index, storage) = read_composer_index(conn)?;
-    if storage.is_none() {
-        return Ok(());
-    }
-    if let Some(all_composers) = index.get_mut("allComposers").and_then(|v| v.as_array_mut()) {
-        all_composers.retain(|c| c.get("composerId").and_then(|v| v.as_str()) != Some(composer_id));
-        write_composer_index(conn, &index, storage.as_ref())?;
-    }
-    Ok(())
-}
-
 /// Minimal bubble context matching Cursor's expected shape.
 fn empty_bubble_context() -> serde_json::Value {
     json!({
@@ -312,78 +193,92 @@ fn delete_session_with_conn(conn: &rusqlite::Connection, session_id: &str) -> Re
     conn.execute("DELETE FROM cursorDiskKV WHERE key = ?1", [&composer_key])
         .with_context(|| format!("Failed to delete composer {}", session_id))?;
 
-    remove_composer_index(conn, session_id)?;
+    conn.execute(
+        "DELETE FROM composerHeaders WHERE composerId = ?1",
+        [session_id],
+    )
+    .with_context(|| format!("Failed to delete composer header {}", session_id))?;
 
     Ok(bubbles_deleted)
 }
 
-/// Rename a Cursor Composer session by updating its name field.
+/// Rename a current Cursor Composer session by updating only provider-owned name fields.
 pub fn rename_session(session_id: &str, new_title: &str) -> Result<()> {
     let mut conn = open_global_db()?;
     let tx = conn.transaction()?;
     let composer_key = format!("composerData:{}", session_id);
 
-    // Read existing composer data
-    let existing: Option<SqliteValue> = tx
-        .query_row(
-            "SELECT value FROM cursorDiskKV WHERE key = ?1",
-            [&composer_key],
-            |row| row.get(0),
-        )
-        .optional()
-        .with_context(|| format!("Failed to read composer {}", session_id))?;
-
-    let existing_value = match existing {
-        Some(value) => value,
-        None => anyhow::bail!("Cursor composer not found: {}", session_id),
-    };
-    let mut composer_json: serde_json::Value = match &existing_value {
-        SqliteValue::Text(text) => serde_json::from_str(text),
-        SqliteValue::Blob(bytes) => serde_json::from_slice(bytes),
-        _ => anyhow::bail!(
-            "Cursor composer {} is not stored as TEXT or BLOB",
-            session_id
-        ),
-    }
-    .with_context(|| format!("Failed to parse composer {} JSON", session_id))?;
-
-    // Update the name field (title)
-    if let Some(obj) = composer_json.as_object_mut() {
-        obj.insert("name".to_string(), json!(new_title));
-    }
-
-    // Write back
-    let updated_value = match existing_value {
-        SqliteValue::Text(_) => SqliteValue::Text(serde_json::to_string(&composer_json)?),
-        SqliteValue::Blob(_) => SqliteValue::Blob(serde_json::to_vec(&composer_json)?),
-        _ => unreachable!("Cursor composer storage type was validated above"),
-    };
-    tx.execute(
+    let header_updated = rename_json_value(
+        &tx,
+        "SELECT value FROM composerHeaders WHERE composerId = ?1",
+        "UPDATE composerHeaders SET value = ?1 WHERE composerId = ?2",
+        session_id,
+        new_title,
+        "composer header",
+    )?;
+    let composer_updated = rename_json_value(
+        &tx,
+        "SELECT value FROM cursorDiskKV WHERE key = ?1",
         "UPDATE cursorDiskKV SET value = ?1 WHERE key = ?2",
-        params![updated_value, &composer_key],
-    )
-    .with_context(|| format!("Failed to rename composer {}", session_id))?;
-
-    // Update index
-    let (mut index, index_storage) = read_composer_index(&tx)?;
-    if let Some(all_composers) = index.get_mut("allComposers").and_then(|v| v.as_array_mut()) {
-        let mut changed = false;
-        for c in all_composers.iter_mut() {
-            if c.get("composerId").and_then(|v| v.as_str()) == Some(session_id) {
-                c.as_object_mut()
-                    .map(|o| o.insert("name".to_string(), json!(new_title)));
-                changed = true;
-                break;
-            }
-        }
-        if changed {
-            write_composer_index(&tx, &index, index_storage.as_ref())?;
-        }
-    }
+        &composer_key,
+        new_title,
+        "composer data",
+    )?;
+    anyhow::ensure!(
+        header_updated || composer_updated,
+        "Cursor composer not found: {session_id}"
+    );
 
     tx.commit()?;
     fail_cursor_mutation_after_database_write(ProviderSourceMutation::Rename)?;
     Ok(())
+}
+
+fn rename_json_value(
+    conn: &rusqlite::Connection,
+    select_sql: &str,
+    update_sql: &str,
+    identity: &str,
+    new_title: &str,
+    row_name: &str,
+) -> Result<bool> {
+    let stored = conn
+        .query_row(select_sql, [identity], |row| row.get::<_, SqliteValue>(0))
+        .optional()
+        .with_context(|| format!("Failed to read Cursor {row_name} {identity}"))?;
+    let Some(stored) = stored else {
+        return Ok(false);
+    };
+    let mut value = parse_json_value(&stored, row_name, identity)?;
+    value
+        .as_object_mut()
+        .with_context(|| format!("Cursor {row_name} {identity} is not a JSON object"))?
+        .insert("name".to_string(), json!(new_title));
+    let updated = serialize_json_value(&stored, &value)?;
+    conn.execute(update_sql, params![updated, identity])
+        .with_context(|| format!("Failed to rename Cursor {row_name} {identity}"))?;
+    Ok(true)
+}
+
+fn parse_json_value(
+    stored: &SqliteValue,
+    row_name: &str,
+    identity: &str,
+) -> Result<serde_json::Value> {
+    match stored {
+        SqliteValue::Text(text) => serde_json::from_str(text),
+        SqliteValue::Blob(bytes) => serde_json::from_slice(bytes),
+        _ => anyhow::bail!("Cursor {row_name} {identity} is not stored as TEXT or BLOB"),
+    }
+    .with_context(|| format!("Failed to parse Cursor {row_name} {identity}"))
+}
+
+fn serialize_json_value(template: &SqliteValue, value: &serde_json::Value) -> Result<SqliteValue> {
+    match template {
+        SqliteValue::Text(_) => Ok(SqliteValue::Text(serde_json::to_string(value)?)),
+        SqliteValue::Blob(_) => Ok(SqliteValue::Blob(serde_json::to_vec(value)?)),
+        _ => anyhow::bail!("Cursor JSON value is not stored as TEXT or BLOB"),
+    }
 }
 
 #[cfg(test)]
@@ -500,7 +395,8 @@ fn build_bubble_json(
 }
 
 pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
-    let conn = open_global_db()?;
+    let mut conn = open_global_db()?;
+    let tx = conn.transaction()?;
     let composer_id = Uuid::new_v4().to_string();
     let workspace_id = Uuid::new_v4().to_string().replace("-", "");
     let workspace_path = target_dir.to_string_lossy().to_string();
@@ -642,7 +538,7 @@ pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<S
     });
 
     let composer_key = format!("composerData:{}", composer_id);
-    conn.execute(
+    tx.execute(
         "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
         (&composer_key, composer_data.to_string().as_bytes()),
     )
@@ -662,23 +558,45 @@ pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<S
             &request_id,
         );
         let bubble_key = format!("bubbleId:{}:{}", composer_id, bubble.id);
-        conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
             (&bubble_key, bubble_data.to_string().as_bytes()),
         )
         .with_context(|| format!("Failed to insert bubble {}", idx))?;
     }
 
-    let _ = upsert_composer_index(
-        &conn,
-        &composer_id,
-        &title,
-        "",
-        &workspace_id,
-        &workspace_path,
-        first_active,
-        last_active,
-    );
+    let header = json!({
+        "composerId": composer_id,
+        "name": title,
+        "subtitle": "",
+        "createdAt": first_active,
+        "lastUpdatedAt": last_active,
+        "workspaceIdentifier": {
+            "id": workspace_id,
+            "uri": {
+                "$mid": 1,
+                "fsPath": workspace_path,
+                "external": format!("file://{}", workspace_path),
+                "path": workspace_path,
+                "scheme": "file"
+            }
+        }
+    });
+    tx.execute(
+        "INSERT INTO composerHeaders
+         (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+          recency, checkpointAt, value)
+         VALUES (?1, ?2, ?3, ?4, 0, 0, ?4, NULL, ?5)",
+        params![
+            &composer_id,
+            &workspace_id,
+            first_active,
+            last_active,
+            serde_json::to_string(&header)?,
+        ],
+    )
+    .context("Failed to insert current Cursor composer header")?;
+    tx.commit()?;
     let _ = conn.execute("PRAGMA wal_checkpoint(PASSIVE)", []);
 
     Ok(composer_id)

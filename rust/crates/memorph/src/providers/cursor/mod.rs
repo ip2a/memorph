@@ -8,8 +8,10 @@ mod write;
 
 use crate::canonical::{CanonicalSession, ExportedSession, ImportedSession};
 use crate::provider::{
-    canonical_export_result, PageStrategy, Provider, ProviderBackupSupport, ProviderCapabilities,
-    ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation, StorageShape,
+    canonical_export_result, PageStrategy, Provider, ProviderActivitySupport,
+    ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary,
+    ProviderSourceMutation, ProviderWriteRisk, ScanStrategy, StorageShape, TurnQuality,
+    WriteRiskLevel,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -36,12 +38,26 @@ impl Provider for CursorProvider {
             delete: true,
             rename: true,
             resume: false,
+            scan_strategy: ScanStrategy::Indexed,
             page_strategy: PageStrategy::FullImport,
             storage_shape: StorageShape::Sqlite,
+            turn_quality: TurnQuality::Inferred,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::High,
+                multiple_files: false,
+                sqlite: true,
+                sidecar_files: false,
+                index_repair: false,
+            },
             backup_support: ProviderBackupSupport {
                 before_write: true,
                 restore: true,
                 sync_only: false,
+            },
+            activity_support: ProviderActivitySupport {
+                hook_events: true,
+                runtime_endpoint: true,
+                session_activity: true,
             },
             ..ProviderCapabilities::default()
         }
@@ -119,7 +135,14 @@ impl Provider for CursorProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{core::session_management, storage::local_store};
+    use crate::{
+        core::session_management,
+        storage::{
+            activity_store::{ActivityActor, ActivityOperationKind, ActivityQuery, ActivityStatus},
+            artifact_store::{ArtifactVerificationStatus, BackupQuery, BackupRestoreStatus},
+            local_store,
+        },
+    };
     use rusqlite::types::Value as SqliteValue;
     use rusqlite::{params, Connection, OptionalExtension};
     use serde_json::{json, Value};
@@ -537,233 +560,246 @@ mod tests {
     }
 
     #[derive(Clone, Debug, PartialEq)]
-    struct StoredCursorRow {
+    struct CurrentHeaderRow {
+        composer_id: String,
+        workspace_id: Option<String>,
+        created_at: Option<i64>,
+        last_updated_at: Option<i64>,
+        is_archived: Option<i64>,
+        is_subagent: Option<i64>,
+        recency: Option<i64>,
+        checkpoint_at: Option<i64>,
+        value: Option<String>,
+    }
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct CurrentDiskRow {
+        key: String,
         value: SqliteValue,
-        owner: String,
-        revision: i64,
     }
 
-    struct NativeCursorFixture {
-        target_rows: Vec<(String, StoredCursorRow)>,
+    struct CurrentCursorFixture {
+        target_header: CurrentHeaderRow,
+        target_disk_rows: Vec<CurrentDiskRow>,
+        unrelated_header: CurrentHeaderRow,
+        unrelated_disk_rows: Vec<CurrentDiskRow>,
+        item_rows: Vec<CurrentDiskRow>,
     }
 
-    fn write_native_cursor_fixture(
+    fn write_current_cursor_management_fixture(
         db_path: &Path,
         session_id: &str,
-        include_index: bool,
-    ) -> NativeCursorFixture {
+    ) -> CurrentCursorFixture {
         let conn = Connection::open(db_path).unwrap();
-        conn.execute_batch(
-            "
-            CREATE TABLE cursorDiskKV (
-                key TEXT UNIQUE ON CONFLICT REPLACE,
-                value BLOB,
-                owner TEXT NOT NULL,
-                revision INTEGER NOT NULL
-            );
-            CREATE TABLE ItemTable (
-                key TEXT UNIQUE ON CONFLICT REPLACE,
-                value BLOB,
-                owner TEXT NOT NULL,
-                revision INTEGER NOT NULL
-            );
-            ",
-        )
-        .unwrap();
-
-        let composer_key = format!("composerData:{session_id}");
-        let bubble_blob_key = format!("bubbleId:{session_id}:bubble-blob");
-        let bubble_text_key = format!("bubbleId:{session_id}:bubble-text");
-        let rows = vec![
-            (
-                composer_key,
-                SqliteValue::Text(
-                    serde_json::to_string(&json!({
-                        "composerId": session_id,
-                        "status": "completed",
-                        "text": "Before",
-                        "name": "Before",
-                        "workspaceIdentifier": {
-                            "id": "workspace-1",
-                            "uri": {"fsPath": "/tmp/cursor-project"}
-                        },
-                        "createdAt": 100,
-                        "isAgentic": true,
-                        "independentComposerField": "original"
-                    }))
-                    .unwrap(),
-                ),
-                "target-composer",
-                10,
-            ),
-            (
-                bubble_blob_key,
-                SqliteValue::Blob(
-                    serde_json::to_vec(&json!({
-                        "bubbleId": "bubble-blob",
-                        "type": 1,
-                        "text": "blob message"
-                    }))
-                    .unwrap(),
-                ),
-                "target-bubble-blob",
-                11,
-            ),
-            (
-                bubble_text_key,
-                SqliteValue::Text(
-                    serde_json::to_string(&json!({
-                        "bubbleId": "bubble-text",
-                        "type": 2,
-                        "text": "text message"
-                    }))
-                    .unwrap(),
-                ),
-                "target-bubble-text",
-                12,
-            ),
-            (
-                "composerData:other-session".to_string(),
-                SqliteValue::Blob(
-                    serde_json::to_vec(&json!({
-                        "composerId": "other-session",
-                        "name": "Other"
-                    }))
-                    .unwrap(),
-                ),
-                "unrelated-composer",
-                20,
-            ),
-        ];
-        for (key, value, owner, revision) in &rows {
-            conn.execute(
-                "INSERT INTO cursorDiskKV (key, value, owner, revision)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![key, value, owner, revision],
-            )
+        conn.execute_batch(include_str!("fixtures/v3_11_19/schema.sql"))
             .unwrap();
-        }
-
-        if include_index {
-            let index = json!({
-                "allComposers": [
-                    {
-                        "composerId": session_id,
-                        "name": "Before",
-                        "subtitle": "target original",
-                        "targetOnly": true
-                    },
-                    {
-                        "composerId": "other-session",
-                        "name": "Other",
-                        "subtitle": "other original"
-                    }
-                ],
-                "indexGeneration": "original"
-            });
-            conn.execute(
-                "INSERT INTO ItemTable (key, value, owner, revision)
-                 VALUES ('composer.composerHeaders', ?1, 'shared-index', 30)",
-                [SqliteValue::Blob(serde_json::to_vec(&index).unwrap())],
-            )
-            .unwrap();
-        }
-
-        let target_rows = rows
-            .into_iter()
-            .take(3)
-            .map(|(key, value, owner, revision)| {
-                (
-                    key,
-                    StoredCursorRow {
-                        value,
-                        owner: owner.to_string(),
-                        revision,
-                    },
-                )
-            })
-            .collect();
-        NativeCursorFixture { target_rows }
-    }
-
-    fn write_current_cursor_rename_fixture(db_path: &Path, session_id: &str) {
-        let conn = Connection::open(db_path).unwrap();
-        conn.execute_batch(
-            "
-            CREATE TABLE cursorDiskKV (
-                key TEXT UNIQUE ON CONFLICT REPLACE,
-                value BLOB
-            );
-            CREATE TABLE ItemTable (
-                key TEXT UNIQUE ON CONFLICT REPLACE,
-                value BLOB
-            );
-            CREATE TABLE composerHeaders (
-                composerId TEXT PRIMARY KEY,
-                workspaceId TEXT,
-                createdAt INTEGER,
-                lastUpdatedAt INTEGER,
-                isArchived INTEGER,
-                isSubagent INTEGER,
-                recency INTEGER,
-                checkpointAt INTEGER,
-                value TEXT
-            );
-            ",
-        )
-        .unwrap();
-
-        let header = json!({
+        let other_session_id = "other-session";
+        let target_header = json!({
             "composerId": session_id,
             "name": "Before",
             "workspaceIdentifier": {
                 "id": "workspace-1",
                 "uri": {"fsPath": "/tmp/cursor-project"}
+            },
+            "independentHeaderField": "original"
+        });
+        let other_header = json!({
+            "composerId": other_session_id,
+            "name": "Other",
+            "workspaceIdentifier": {
+                "id": "workspace-2",
+                "uri": {"fsPath": "/tmp/other-project"}
             }
         });
         conn.execute(
-            "INSERT INTO composerHeaders
-             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
-              recency, checkpointAt, value)
-             VALUES (?1, 'workspace-1', 100, 100, 0, 0, 100, NULL, ?2)",
-            params![session_id, serde_json::to_string(&header).unwrap()],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
             params![
-                format!("composerData:{session_id}"),
-                serde_json::to_vec(&json!({
-                    "composerId": session_id,
-                    "name": "Before",
-                    "createdAt": 100
-                }))
-                .unwrap(),
+                "composer.composerHeaders.migratedToTable",
+                SqliteValue::Text("true".to_string())
             ],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO ItemTable (key, value) VALUES ('composer.composerHeaders', ?1)",
-            [serde_json::to_vec(&json!({
-                "allComposers": [{"composerId": session_id, "name": "Before"}],
-                "indexGeneration": "original"
-            }))
-            .unwrap()],
+            "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+            params![
+                "composer.composerHeaders",
+                SqliteValue::Blob(
+                    serde_json::to_vec(&json!({
+                        "allComposers": [{"composerId": session_id, "name": "Stale legacy"}],
+                        "sentinel": "must-not-change"
+                    }))
+                    .unwrap()
+                )
+            ],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
+            params![
+                "unrelated.config",
+                SqliteValue::Text("unrelated-value".to_string())
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO composerHeaders
+             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+              recency, checkpointAt, value)
+             VALUES (?1, 'workspace-1', 100, 300, 0, 0, 300, NULL, ?2)",
+            params![session_id, target_header.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO composerHeaders
+             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+              recency, checkpointAt, value)
+             VALUES (?1, 'workspace-2', 400, 500, 0, 0, 500, NULL, ?2)",
+            params![other_session_id, other_header.to_string()],
+        )
+        .unwrap();
+
+        let target_composer = json!({
+            "composerId": session_id,
+            "name": "Before",
+            "createdAt": 100,
+            "lastUpdatedAt": 300,
+            "fullConversationHeadersOnly": [
+                {"bubbleId": "user-1", "type": 1},
+                {"bubbleId": "assistant-1", "type": 2}
+            ],
+            "independentComposerField": "original"
+        });
+        let target_user_bubble = json!({
+            "bubbleId": "user-1",
+            "type": 1,
+            "createdAt": "2026-07-16T01:00:00Z",
+            "text": "hello"
+        });
+        let target_assistant_bubble = json!({
+            "bubbleId": "assistant-1",
+            "type": 2,
+            "createdAt": "2026-07-16T01:00:01Z",
+            "requestId": "request-1",
+            "text": "world"
+        });
+        let other_composer = json!({
+            "composerId": other_session_id,
+            "name": "Other",
+            "createdAt": 400,
+            "lastUpdatedAt": 500
+        });
+        let rows = [
+            (
+                format!("composerData:{session_id}"),
+                SqliteValue::Blob(serde_json::to_vec(&target_composer).unwrap()),
+            ),
+            (
+                format!("bubbleId:{session_id}:user-1"),
+                SqliteValue::Blob(serde_json::to_vec(&target_user_bubble).unwrap()),
+            ),
+            (
+                format!("bubbleId:{session_id}:assistant-1"),
+                SqliteValue::Text(target_assistant_bubble.to_string()),
+            ),
+            (
+                format!("composerData:{other_session_id}"),
+                SqliteValue::Text(other_composer.to_string()),
+            ),
+            (
+                format!("bubbleId:{other_session_id}:other-1"),
+                SqliteValue::Text(
+                    json!({
+                        "bubbleId": "other-1",
+                        "type": 1,
+                        "createdAt": "2026-07-16T02:00:00Z",
+                        "text": "other"
+                    })
+                    .to_string(),
+                ),
+            ),
+        ];
+        for (key, value) in rows {
+            conn.execute(
+                "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )
+            .unwrap();
+        }
+
+        CurrentCursorFixture {
+            target_header: current_header_row(&conn, session_id).unwrap(),
+            target_disk_rows: current_session_disk_rows(&conn, session_id),
+            unrelated_header: current_header_row(&conn, other_session_id).unwrap(),
+            unrelated_disk_rows: current_session_disk_rows(&conn, other_session_id),
+            item_rows: current_table_rows(&conn, "ItemTable"),
+        }
     }
 
-    fn stored_row(conn: &Connection, table: &str, key: &str) -> Option<StoredCursorRow> {
+    fn current_header_row(conn: &Connection, session_id: &str) -> Option<CurrentHeaderRow> {
         conn.query_row(
-            &format!("SELECT value, owner, revision FROM {table} WHERE key = ?1"),
-            [key],
+            "SELECT composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+                    recency, checkpointAt, value
+             FROM composerHeaders WHERE composerId = ?1",
+            [session_id],
             |row| {
-                Ok(StoredCursorRow {
-                    value: row.get(0)?,
-                    owner: row.get(1)?,
-                    revision: row.get(2)?,
+                Ok(CurrentHeaderRow {
+                    composer_id: row.get(0)?,
+                    workspace_id: row.get(1)?,
+                    created_at: row.get(2)?,
+                    last_updated_at: row.get(3)?,
+                    is_archived: row.get(4)?,
+                    is_subagent: row.get(5)?,
+                    recency: row.get(6)?,
+                    checkpoint_at: row.get(7)?,
+                    value: row.get(8)?,
                 })
             },
+        )
+        .optional()
+        .unwrap()
+    }
+
+    fn current_table_rows(conn: &Connection, table: &str) -> Vec<CurrentDiskRow> {
+        let mut stmt = conn
+            .prepare(&format!("SELECT key, value FROM {table} ORDER BY key ASC"))
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok(CurrentDiskRow {
+                key: row.get(0)?,
+                value: row.get(1)?,
+            })
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    }
+
+    fn current_session_disk_rows(conn: &Connection, session_id: &str) -> Vec<CurrentDiskRow> {
+        let composer_key = format!("composerData:{session_id}");
+        let bubble_prefix = format!("bubbleId:{session_id}:");
+        let mut stmt = conn
+            .prepare(
+                "SELECT key, value FROM cursorDiskKV
+                 WHERE key = ?1 OR key LIKE ?2
+                 ORDER BY key ASC",
+            )
+            .unwrap();
+        stmt.query_map(params![composer_key, format!("{bubble_prefix}%")], |row| {
+            Ok(CurrentDiskRow {
+                key: row.get(0)?,
+                value: row.get(1)?,
+            })
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    }
+
+    fn current_disk_value(conn: &Connection, key: &str) -> Option<SqliteValue> {
+        conn.query_row(
+            "SELECT value FROM cursorDiskKV WHERE key = ?1",
+            [key],
+            |row| row.get(0),
         )
         .optional()
         .unwrap()
@@ -777,50 +813,74 @@ mod tests {
         }
     }
 
-    fn write_json_value(conn: &Connection, table: &str, key: &str, value: &Value, as_text: bool) {
-        let stored = if as_text {
-            SqliteValue::Text(serde_json::to_string(value).unwrap())
-        } else {
-            SqliteValue::Blob(serde_json::to_vec(value).unwrap())
+    fn update_current_json_value(
+        conn: &Connection,
+        table: &str,
+        identity_column: &str,
+        identity: &str,
+        value: &Value,
+    ) {
+        let stored: SqliteValue = conn
+            .query_row(
+                &format!("SELECT value FROM {table} WHERE {identity_column} = ?1"),
+                [identity],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let updated = match stored {
+            SqliteValue::Text(_) => SqliteValue::Text(value.to_string()),
+            SqliteValue::Blob(_) => SqliteValue::Blob(serde_json::to_vec(value).unwrap()),
+            _ => panic!("expected TEXT or BLOB JSON"),
         };
         conn.execute(
-            &format!("UPDATE {table} SET value = ?1 WHERE key = ?2"),
-            params![stored, key],
+            &format!("UPDATE {table} SET value = ?1 WHERE {identity_column} = ?2"),
+            params![updated, identity],
         )
         .unwrap();
     }
 
-    fn composer_index(conn: &Connection) -> (Value, String, i64, &'static str) {
-        let row = stored_row(conn, "ItemTable", "composer.composerHeaders").unwrap();
-        let storage = match row.value {
-            SqliteValue::Text(_) => "text",
-            SqliteValue::Blob(_) => "blob",
-            _ => "other",
-        };
-        (
-            parse_stored_json(&row.value),
-            row.owner,
-            row.revision,
-            storage,
-        )
-    }
+    #[test]
+    fn cursor_current_export_writes_discoverable_header_data_and_bubbles() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        let _guard = use_test_cursor_db(db_path.clone());
+        let session_id = "cursor-export-source";
+        let fixture = write_current_cursor_management_fixture(&db_path, session_id);
+        let source = db::cursor_source_locator(session_id).unwrap();
+        let canonical = CursorProvider.import_session(&source).unwrap().session;
 
-    fn target_index_entry<'a>(index: &'a Value, session_id: &str) -> &'a Value {
-        index["allComposers"]
-            .as_array()
-            .unwrap()
+        let exported = CursorProvider
+            .export_session(&canonical, &dir.path().join("workspace"))
+            .unwrap();
+        let exported_id = exported.session_id;
+        assert_ne!(exported_id, session_id);
+        let scanned = CursorProvider.scan_sessions().unwrap();
+        assert!(scanned
             .iter()
-            .find(|entry| entry["composerId"] == session_id)
-            .unwrap()
+            .any(|session| session.session_id == exported_id));
+        let imported = CursorProvider
+            .import_session(&db::cursor_source_locator(&exported_id).unwrap())
+            .unwrap();
+        assert_eq!(imported.session.events.len(), canonical.events.len());
+
+        let conn = Connection::open(&db_path).unwrap();
+        let header = current_header_row(&conn, &exported_id).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(header.value.as_deref().unwrap()).unwrap()["composerId"],
+            exported_id
+        );
+        assert!(current_disk_value(&conn, &format!("composerData:{exported_id}")).is_some());
+        assert_eq!(current_session_disk_rows(&conn, &exported_id).len(), 3);
+        assert_eq!(current_table_rows(&conn, "ItemTable"), fixture.item_rows);
     }
 
     #[test]
-    fn delete_backup_restores_exact_cursor_rows_and_preserves_shared_state() {
+    fn cursor_current_delete_backup_restores_exact_target_rows_and_preserves_unrelated_state() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
         let session_id = "cursor-delete-backup";
-        let fixture = write_native_cursor_fixture(&db_path, session_id, true);
+        let fixture = write_current_cursor_management_fixture(&db_path, session_id);
         let backup = CursorProvider
             .create_session_backup(
                 ProviderSourceMutation::Delete,
@@ -829,32 +889,30 @@ mod tests {
                 &dir.path().join("backups"),
             )
             .unwrap();
+        assert_eq!(backup.format, "cursor-session-backup-v2");
+        let backup_conn =
+            Connection::open(backup.backup_path.join("sqlite/cursor-session.db")).unwrap();
+        let backup_tables = backup_conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(backup_tables, ["composerHeaders", "cursorDiskKV"]);
+        drop(backup_conn);
 
         write::delete_session(session_id).unwrap();
         let conn = Connection::open(&db_path).unwrap();
-        for (key, _) in &fixture.target_rows {
-            assert!(stored_row(&conn, "cursorDiskKV", key).is_none());
-        }
+        assert!(current_header_row(&conn, session_id).is_none());
+        assert!(current_session_disk_rows(&conn, session_id).is_empty());
+        assert!(!CursorProvider
+            .scan_sessions()
+            .unwrap()
+            .iter()
+            .any(|session| session.session_id == session_id));
         conn.execute(
-            "UPDATE cursorDiskKV
-             SET owner = 'unrelated-changed', revision = 99
-             WHERE key = 'composerData:other-session'",
-            [],
-        )
-        .unwrap();
-        let mut index = composer_index(&conn).0;
-        let entries = index["allComposers"].as_array_mut().unwrap();
-        entries[0]["name"] = json!("Other changed");
-        entries.push(json!({
-            "composerId": "new-session",
-            "name": "New during restore window"
-        }));
-        index["indexGeneration"] = json!("current");
-        write_json_value(&conn, "ItemTable", "composer.composerHeaders", &index, true);
-        conn.execute(
-            "UPDATE ItemTable
-             SET owner = 'shared-index-current', revision = 77
-             WHERE key = 'composer.composerHeaders'",
+            "UPDATE composerHeaders SET recency = 777 WHERE composerId = 'other-session'",
             [],
         )
         .unwrap();
@@ -862,61 +920,44 @@ mod tests {
 
         CursorProvider.restore_session_backup(&backup).unwrap();
         CursorProvider.restore_session_backup(&backup).unwrap();
-
         let conn = Connection::open(&db_path).unwrap();
-        for (key, original) in &fixture.target_rows {
-            assert_eq!(
-                stored_row(&conn, "cursorDiskKV", key).as_ref(),
-                Some(original)
-            );
-        }
-        let unrelated = stored_row(&conn, "cursorDiskKV", "composerData:other-session").unwrap();
-        assert_eq!(unrelated.owner, "unrelated-changed");
-        assert_eq!(unrelated.revision, 99);
-
-        let (restored_index, owner, revision, storage) = composer_index(&conn);
         assert_eq!(
-            target_index_entry(&restored_index, session_id),
-            &json!({
-                "composerId": session_id,
-                "name": "Before",
-                "subtitle": "target original",
-                "targetOnly": true
-            })
+            current_header_row(&conn, session_id),
+            Some(fixture.target_header)
         );
         assert_eq!(
-            target_index_entry(&restored_index, "other-session")["name"],
-            "Other changed"
+            current_session_disk_rows(&conn, session_id),
+            fixture.target_disk_rows
+        );
+        let mut current_other = current_header_row(&conn, "other-session").unwrap();
+        let mut expected_other = fixture.unrelated_header;
+        current_other.recency = Some(500);
+        expected_other.recency = Some(500);
+        assert_eq!(current_other, expected_other);
+        assert_eq!(
+            current_header_row(&conn, "other-session").unwrap().recency,
+            Some(777)
         );
         assert_eq!(
-            target_index_entry(&restored_index, "new-session")["name"],
-            "New during restore window"
+            current_session_disk_rows(&conn, "other-session"),
+            fixture.unrelated_disk_rows
         );
-        assert_eq!(restored_index["indexGeneration"], "current");
-        assert_eq!(owner, "shared-index-current");
-        assert_eq!(revision, 77);
-        assert_eq!(storage, "text");
-
-        let backup_conn =
-            Connection::open(backup.backup_path.join("sqlite/cursor-session.db")).unwrap();
-        let disk_count: i64 = backup_conn
-            .query_row("SELECT COUNT(*) FROM cursorDiskKV", [], |row| row.get(0))
-            .unwrap();
-        let item_count: i64 = backup_conn
-            .query_row("SELECT COUNT(*) FROM ItemTable", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(disk_count, 3);
-        assert_eq!(item_count, 1);
-        assert!(stored_row(&backup_conn, "cursorDiskKV", "composerData:other-session").is_none());
+        assert_eq!(current_table_rows(&conn, "ItemTable"), fixture.item_rows);
     }
 
     #[test]
-    fn rename_backup_restores_only_cursor_owned_name_fields() {
+    fn cursor_current_rename_backup_restores_only_cursor_owned_name_fields() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
         let session_id = "cursor-rename-backup";
-        write_native_cursor_fixture(&db_path, session_id, true);
+        let fixture = write_current_cursor_management_fixture(&db_path, session_id);
+        let original_bubbles = fixture
+            .target_disk_rows
+            .iter()
+            .filter(|row| row.key.starts_with("bubbleId:"))
+            .cloned()
+            .collect::<Vec<_>>();
         let backup = CursorProvider
             .create_session_backup(
                 ProviderSourceMutation::Rename,
@@ -928,82 +969,76 @@ mod tests {
 
         write::rename_session(session_id, "After").unwrap();
         let conn = Connection::open(&db_path).unwrap();
-        let composer_key = format!("composerData:{session_id}");
-        let composer = stored_row(&conn, "cursorDiskKV", &composer_key).unwrap();
-        assert!(matches!(composer.value, SqliteValue::Text(_)));
-        assert_eq!(parse_stored_json(&composer.value)["name"], "After");
-        assert_eq!(composer_index(&conn).3, "blob");
-
-        let mut current_composer = parse_stored_json(&composer.value);
-        current_composer["independentComposerField"] = json!("changed independently");
-        current_composer["newComposerField"] = json!(42);
-        write_json_value(
-            &conn,
-            "cursorDiskKV",
-            &composer_key,
-            &current_composer,
-            false,
-        );
-        conn.execute(
-            "UPDATE cursorDiskKV
-             SET owner = 'composer-current', revision = 88
-             WHERE key = ?1",
-            [&composer_key],
+        let mut header_json: Value = serde_json::from_str(
+            current_header_row(&conn, session_id)
+                .unwrap()
+                .value
+                .as_deref()
+                .unwrap(),
         )
         .unwrap();
-
-        let mut current_index = composer_index(&conn).0;
-        target_index_entry(&current_index, session_id);
-        let entries = current_index["allComposers"].as_array_mut().unwrap();
-        entries[0]["subtitle"] = json!("target changed independently");
-        entries[0]["newIndexField"] = json!(true);
-        entries[1]["name"] = json!("Other changed");
-        current_index["indexGeneration"] = json!("current");
-        write_json_value(
-            &conn,
-            "ItemTable",
-            "composer.composerHeaders",
-            &current_index,
-            false,
+        let composer_key = format!("composerData:{session_id}");
+        let mut composer_json =
+            parse_stored_json(&current_disk_value(&conn, &composer_key).unwrap());
+        assert_eq!(header_json["name"], "After");
+        assert_eq!(composer_json["name"], "After");
+        assert_eq!(
+            CursorProvider
+                .scan_sessions()
+                .unwrap()
+                .into_iter()
+                .find(|session| session.session_id == session_id)
+                .unwrap()
+                .title,
+            Some("After".to_string())
         );
+
+        header_json["independentHeaderField"] = json!("changed independently");
+        header_json["newHeaderField"] = json!(true);
+        composer_json["independentComposerField"] = json!("changed independently");
+        composer_json["newComposerField"] = json!(42);
+        update_current_json_value(
+            &conn,
+            "composerHeaders",
+            "composerId",
+            session_id,
+            &header_json,
+        );
+        update_current_json_value(&conn, "cursorDiskKV", "key", &composer_key, &composer_json);
         conn.execute(
-            "UPDATE ItemTable
-             SET owner = 'index-current', revision = 89
-             WHERE key = 'composer.composerHeaders'",
-            [],
+            "UPDATE composerHeaders SET recency = 888 WHERE composerId = ?1",
+            [session_id],
         )
         .unwrap();
         drop(conn);
 
         CursorProvider.restore_session_backup(&backup).unwrap();
         CursorProvider.restore_session_backup(&backup).unwrap();
-
         let conn = Connection::open(&db_path).unwrap();
-        let composer = stored_row(&conn, "cursorDiskKV", &composer_key).unwrap();
-        let composer_json = parse_stored_json(&composer.value);
+        let header = current_header_row(&conn, session_id).unwrap();
+        let header_json: Value = serde_json::from_str(header.value.as_deref().unwrap()).unwrap();
+        let composer_json = parse_stored_json(&current_disk_value(&conn, &composer_key).unwrap());
+        assert_eq!(header_json["name"], "Before");
+        assert_eq!(
+            header_json["independentHeaderField"],
+            "changed independently"
+        );
+        assert_eq!(header_json["newHeaderField"], true);
+        assert_eq!(header.recency, Some(888));
         assert_eq!(composer_json["name"], "Before");
         assert_eq!(
             composer_json["independentComposerField"],
             "changed independently"
         );
         assert_eq!(composer_json["newComposerField"], 42);
-        assert_eq!(composer.owner, "composer-current");
-        assert_eq!(composer.revision, 88);
-        assert!(matches!(composer.value, SqliteValue::Blob(_)));
-
-        let (index, owner, revision, storage) = composer_index(&conn);
-        let target = target_index_entry(&index, session_id);
-        assert_eq!(target["name"], "Before");
-        assert_eq!(target["subtitle"], "target changed independently");
-        assert_eq!(target["newIndexField"], true);
         assert_eq!(
-            target_index_entry(&index, "other-session")["name"],
-            "Other changed"
+            current_session_disk_rows(&conn, session_id)
+                .into_iter()
+                .filter(|row| row.key.starts_with("bubbleId:"))
+                .collect::<Vec<_>>(),
+            original_bubbles
         );
-        assert_eq!(index["indexGeneration"], "current");
-        assert_eq!(owner, "index-current");
-        assert_eq!(revision, 89);
-        assert_eq!(storage, "blob");
+        assert_eq!(current_table_rows(&conn, "ItemTable"), fixture.item_rows);
     }
 
     #[test]
@@ -1012,8 +1047,7 @@ mod tests {
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
         let session_id = "cursor-backup-contract";
-        write_native_cursor_fixture(&db_path, session_id, true);
-
+        write_current_cursor_management_fixture(&db_path, session_id);
         let backup = CursorProvider
             .create_session_backup(
                 ProviderSourceMutation::Delete,
@@ -1024,18 +1058,32 @@ mod tests {
             .unwrap();
 
         let capabilities = CursorProvider.capabilities();
+        assert_eq!(capabilities.scan_strategy, ScanStrategy::Indexed);
+        assert_eq!(capabilities.turn_quality, TurnQuality::Inferred);
+        assert_eq!(capabilities.write_risk.level, WriteRiskLevel::High);
+        assert!(capabilities.write_risk.sqlite);
+        assert!(!capabilities.write_risk.multiple_files);
         assert!(capabilities.backup_support.before_write);
         assert!(capabilities.backup_support.restore);
         assert!(!capabilities.backup_support.sync_only);
+        assert!(capabilities.activity_support.hook_events);
+        assert!(capabilities.activity_support.runtime_endpoint);
+        assert!(capabilities.activity_support.session_activity);
         assert_eq!(backup.mutation, ProviderSourceMutation::Delete);
         assert_eq!(backup.operation_id, "operation-contract-1");
         assert_eq!(backup.provider_session_id, session_id);
         assert_eq!(backup.source_path, db_path.canonicalize().unwrap());
-        assert_eq!(backup.format, "cursor-session-backup-v1");
+        assert_eq!(backup.format, "cursor-session-backup-v2");
         assert_eq!(
             backup.mime_type,
             "application/vnd.memorph.cursor-session-backup"
         );
+        let metadata: Value = serde_json::from_slice(
+            &std::fs::read(backup.backup_path.join("metadata.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["version"], 2);
+        assert_eq!(metadata["sqlite_tables"].as_array().unwrap().len(), 2);
         assert_eq!(
             backup
                 .restore_metadata
@@ -1043,11 +1091,6 @@ mod tests {
                 .and_then(Value::as_str),
             Some("cursor_session_restore")
         );
-        assert!(backup.backup_path.join("metadata.json").is_file());
-        assert!(backup
-            .backup_path
-            .join("sqlite/cursor-session.db")
-            .is_file());
     }
 
     #[test]
@@ -1709,7 +1752,7 @@ mod tests {
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
         let session_id = "cursor-registration-failure";
-        let fixture = write_native_cursor_fixture(&db_path, session_id, true);
+        let fixture = write_current_cursor_management_fixture(&db_path, session_id);
         let backup_root = dir.path().join("backups");
         let mut artifact_conn = Connection::open_in_memory().unwrap();
 
@@ -1726,12 +1769,15 @@ mod tests {
             .to_string()
             .contains("Delete cancelled before provider write"));
         let conn = Connection::open(&db_path).unwrap();
-        for (key, original) in &fixture.target_rows {
-            assert_eq!(
-                stored_row(&conn, "cursorDiskKV", key).as_ref(),
-                Some(original)
-            );
-        }
+        assert_eq!(
+            current_header_row(&conn, session_id),
+            Some(fixture.target_header)
+        );
+        assert_eq!(
+            current_session_disk_rows(&conn, session_id),
+            fixture.target_disk_rows
+        );
+        assert_eq!(current_table_rows(&conn, "ItemTable"), fixture.item_rows);
         assert!(backup_root
             .join(PROVIDER_ID)
             .join("operation-registration-failure")
@@ -1744,7 +1790,7 @@ mod tests {
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
         let session_id = "cursor-partial-delete";
-        let fixture = write_native_cursor_fixture(&db_path, session_id, true);
+        let fixture = write_current_cursor_management_fixture(&db_path, session_id);
         let backup_root = dir.path().join("backups");
         let mut artifact_conn = Connection::open_in_memory().unwrap();
         local_store::configure_connection(&artifact_conn).unwrap();
@@ -1764,16 +1810,15 @@ mod tests {
             .to_string()
             .contains("Provider source was restored from registered backup"));
         let conn = Connection::open(&db_path).unwrap();
-        for (key, original) in &fixture.target_rows {
-            assert_eq!(
-                stored_row(&conn, "cursorDiskKV", key).as_ref(),
-                Some(original)
-            );
-        }
         assert_eq!(
-            target_index_entry(&composer_index(&conn).0, session_id)["name"],
-            "Before"
+            current_header_row(&conn, session_id),
+            Some(fixture.target_header)
         );
+        assert_eq!(
+            current_session_disk_rows(&conn, session_id),
+            fixture.target_disk_rows
+        );
+        assert_eq!(current_table_rows(&conn, "ItemTable"), fixture.item_rows);
     }
 
     #[test]
@@ -1782,7 +1827,7 @@ mod tests {
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
         let session_id = "cursor-partial-rename";
-        write_current_cursor_rename_fixture(&db_path, session_id);
+        let fixture = write_current_cursor_management_fixture(&db_path, session_id);
         let backup_root = dir.path().join("backups");
         let mut artifact_conn = Connection::open_in_memory().unwrap();
         local_store::configure_connection(&artifact_conn).unwrap();
@@ -1803,237 +1848,183 @@ mod tests {
             .to_string()
             .contains("Provider source was restored from registered backup"));
         let conn = Connection::open(&db_path).unwrap();
-        let composer: SqliteValue = conn
-            .query_row(
-                "SELECT value FROM cursorDiskKV WHERE key = ?1",
-                [format!("composerData:{session_id}")],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(parse_stored_json(&composer)["name"], "Before");
-        let index: SqliteValue = conn
-            .query_row(
-                "SELECT value FROM ItemTable WHERE key = 'composer.composerHeaders'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
         assert_eq!(
-            parse_stored_json(&index)["allComposers"][0]["name"],
-            "Before"
+            current_header_row(&conn, session_id),
+            Some(fixture.target_header)
+        );
+        assert_eq!(
+            current_session_disk_rows(&conn, session_id),
+            fixture.target_disk_rows
+        );
+        assert_eq!(current_table_rows(&conn, "ItemTable"), fixture.item_rows);
+    }
+
+    #[test]
+    fn cursor_backup_rejects_non_current_or_non_primary_header_schema_before_mutation() {
+        let dir = tempdir().unwrap();
+        let backup_root = dir.path().join("backups");
+        {
+            let db_path = dir.path().join("missing-header.vscdb");
+            let guard = use_test_cursor_db(db_path.clone());
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE ItemTable (
+                     key TEXT UNIQUE ON CONFLICT REPLACE,
+                     value BLOB
+                 );
+                 CREATE TABLE cursorDiskKV (
+                     key TEXT UNIQUE ON CONFLICT REPLACE,
+                     value BLOB
+                 );",
+            )
+            .unwrap();
+            drop(conn);
+            let error = CursorProvider
+                .create_session_backup(
+                    ProviderSourceMutation::Delete,
+                    "operation-missing-header",
+                    "missing-header",
+                    &backup_root,
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("composerHeaders"));
+            drop(guard);
+        }
+        {
+            let db_path = dir.path().join("non-primary-header.vscdb");
+            let guard = use_test_cursor_db(db_path.clone());
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE ItemTable (
+                     key TEXT UNIQUE ON CONFLICT REPLACE,
+                     value BLOB
+                 );
+                 CREATE TABLE cursorDiskKV (
+                     key TEXT UNIQUE ON CONFLICT REPLACE,
+                     value BLOB
+                 );
+                 CREATE TABLE composerHeaders (
+                     composerId TEXT,
+                     workspaceId TEXT,
+                     createdAt INTEGER,
+                     lastUpdatedAt INTEGER,
+                     isArchived INTEGER,
+                     isSubagent INTEGER,
+                     recency INTEGER,
+                     checkpointAt INTEGER,
+                     value TEXT
+                 );",
+            )
+            .unwrap();
+            drop(conn);
+            let error = CursorProvider
+                .create_session_backup(
+                    ProviderSourceMutation::Rename,
+                    "operation-non-primary-header",
+                    "non-primary-header",
+                    &backup_root,
+                )
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("must use composerId as its primary key"));
+            drop(guard);
+        }
+    }
+
+    #[test]
+    fn cursor_restore_rejects_tampered_current_backup_selection() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        let _guard = use_test_cursor_db(db_path.clone());
+        let session_id = "cursor-tampered-backup";
+        let fixture = write_current_cursor_management_fixture(&db_path, session_id);
+        let backup = CursorProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-tampered-backup",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+        let backup_db = backup.backup_path.join("sqlite/cursor-session.db");
+        let conn = Connection::open(&backup_db).unwrap();
+        conn.execute(
+            "UPDATE composerHeaders
+             SET composerId = 'outside-session', value = ?1",
+            [json!({"composerId": "outside-session", "name": "Outside"}).to_string()],
+        )
+        .unwrap();
+        drop(conn);
+
+        let error = CursorProvider.restore_session_backup(&backup).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("composer header outside the target session"));
+        let conn = Connection::open(&db_path).unwrap();
+        assert_eq!(
+            current_header_row(&conn, session_id),
+            Some(fixture.target_header)
+        );
+        assert_eq!(
+            current_session_disk_rows(&conn, session_id),
+            fixture.target_disk_rows
         );
     }
 
     #[test]
-    fn cursor_backup_rejects_missing_or_non_unique_key_schema_before_mutation() {
+    fn cursor_restore_rejects_tampered_backup_row_count() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
-        let backup_root = dir.path().join("backups");
-
-        let conn = Connection::open(&db_path).unwrap();
-        conn.execute_batch(
-            "
-            CREATE TABLE cursorDiskKV (id TEXT, value BLOB);
-            CREATE TABLE ItemTable (key TEXT UNIQUE, value BLOB);
-            INSERT INTO cursorDiskKV (id, value)
-            VALUES ('composerData:invalid-schema', '{}');
-            ",
-        )
-        .unwrap();
-        drop(conn);
-        let error = CursorProvider
+        let session_id = "cursor-tampered-row-count";
+        let fixture = write_current_cursor_management_fixture(&db_path, session_id);
+        let backup = CursorProvider
             .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-missing-key",
-                "invalid-schema",
-                &backup_root,
+                ProviderSourceMutation::Rename,
+                "operation-tampered-row-count",
+                session_id,
+                &dir.path().join("backups"),
             )
-            .unwrap_err();
-        assert!(error.to_string().contains("must contain key and value"));
-        assert!(!backup_root.exists());
-
-        std::fs::remove_file(&db_path).unwrap();
-        let conn = Connection::open(&db_path).unwrap();
-        conn.execute_batch(
-            "
-            CREATE TABLE cursorDiskKV (key TEXT, value BLOB);
-            CREATE TABLE ItemTable (key TEXT UNIQUE, value BLOB);
-            INSERT INTO cursorDiskKV (key, value)
-            VALUES ('composerData:invalid-schema', '{}');
-            ",
-        )
-        .unwrap();
-        drop(conn);
-        let error = CursorProvider
-            .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-non-unique-key",
-                "invalid-schema",
-                &backup_root,
-            )
-            .unwrap_err();
-        assert!(error.to_string().contains("does not enforce a unique key"));
-        assert!(!backup_root.exists());
-    }
-
-    #[test]
-    fn cursor_backup_rejects_duplicate_target_index_entries() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("state.vscdb");
-        let _guard = use_test_cursor_db(db_path.clone());
-        let session_id = "cursor-duplicate-index";
-        write_native_cursor_fixture(&db_path, session_id, true);
-        let conn = Connection::open(&db_path).unwrap();
-        let mut index = composer_index(&conn).0;
-        index["allComposers"]
+            .unwrap();
+        let metadata_path = backup.backup_path.join("metadata.json");
+        let mut metadata: Value =
+            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+        let disk_manifest = metadata["sqlite_tables"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"composerId": session_id, "name": "Duplicate"}));
-        write_json_value(
-            &conn,
-            "ItemTable",
-            "composer.composerHeaders",
-            &index,
-            false,
-        );
-        drop(conn);
-
-        let error = CursorProvider
-            .create_session_backup(
-                ProviderSourceMutation::Rename,
-                "operation-duplicate-index",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap_err();
-
-        assert!(error.to_string().contains("contains duplicate entries"));
-        assert!(!dir
-            .path()
-            .join("backups/cursor/operation-duplicate-index")
-            .exists());
-    }
-
-    #[test]
-    fn delete_restore_preserves_concurrently_created_nonempty_index() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("state.vscdb");
-        let _guard = use_test_cursor_db(db_path.clone());
-        let session_id = "cursor-index-absent";
-        write_native_cursor_fixture(&db_path, session_id, false);
-        let backup = CursorProvider
-            .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-index-absent",
-                session_id,
-                &dir.path().join("backups"),
-            )
+            .iter_mut()
+            .find(|manifest| manifest["table"] == "cursorDiskKV")
             .unwrap();
-        write::delete_session(session_id).unwrap();
-
-        let conn = Connection::open(&db_path).unwrap();
-        conn.execute(
-            "INSERT INTO ItemTable (key, value, owner, revision)
-             VALUES ('composer.composerHeaders', ?1, 'created-current', 55)",
-            [SqliteValue::Text(
-                serde_json::to_string(&json!({
-                    "allComposers": [{
-                        "composerId": "new-session",
-                        "name": "Created during restore window"
-                    }],
-                    "indexGeneration": "current"
-                }))
-                .unwrap(),
-            )],
+        disk_manifest["row_count"] = json!(2);
+        std::fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&metadata).unwrap(),
         )
         .unwrap();
-        drop(conn);
 
-        CursorProvider.restore_session_backup(&backup).unwrap();
-
+        let error = CursorProvider.restore_session_backup(&backup).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("backup row count does not match manifest for cursorDiskKV"));
         let conn = Connection::open(&db_path).unwrap();
-        let (index, owner, revision, storage) = composer_index(&conn);
-        assert_eq!(index["allComposers"].as_array().unwrap().len(), 1);
         assert_eq!(
-            target_index_entry(&index, "new-session")["name"],
-            "Created during restore window"
+            current_header_row(&conn, session_id),
+            Some(fixture.target_header)
         );
-        assert_eq!(index["indexGeneration"], "current");
-        assert_eq!(owner, "created-current");
-        assert_eq!(revision, 55);
-        assert_eq!(storage, "text");
+        assert_eq!(
+            current_session_disk_rows(&conn, session_id),
+            fixture.target_disk_rows
+        );
     }
 
     #[test]
-    fn rename_restore_preserves_index_created_after_indexless_backup() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("state.vscdb");
-        let _guard = use_test_cursor_db(db_path.clone());
-        let session_id = "cursor-rename-index-absent";
-        write_native_cursor_fixture(&db_path, session_id, false);
-        let backup = CursorProvider
-            .create_session_backup(
-                ProviderSourceMutation::Rename,
-                "operation-rename-index-absent",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap();
-        write::rename_session(session_id, "After").unwrap();
-
-        let conn = Connection::open(&db_path).unwrap();
-        let current_index = json!({
-            "allComposers": [
-                {
-                    "composerId": session_id,
-                    "name": "Created independently"
-                },
-                {
-                    "composerId": "new-session",
-                    "name": "New session"
-                }
-            ],
-            "indexGeneration": "current"
-        });
-        conn.execute(
-            "INSERT INTO ItemTable (key, value, owner, revision)
-             VALUES ('composer.composerHeaders', ?1, 'created-current', 61)",
-            [SqliteValue::Text(
-                serde_json::to_string(&current_index).unwrap(),
-            )],
-        )
-        .unwrap();
-        drop(conn);
-
-        CursorProvider.restore_session_backup(&backup).unwrap();
-
-        let conn = Connection::open(&db_path).unwrap();
-        let composer =
-            stored_row(&conn, "cursorDiskKV", &format!("composerData:{session_id}")).unwrap();
-        assert_eq!(parse_stored_json(&composer.value)["name"], "Before");
-        let (index, owner, revision, storage) = composer_index(&conn);
-        assert_eq!(
-            target_index_entry(&index, session_id)["name"],
-            "Created independently"
-        );
-        assert_eq!(
-            target_index_entry(&index, "new-session")["name"],
-            "New session"
-        );
-        assert_eq!(index["indexGeneration"], "current");
-        assert_eq!(owner, "created-current");
-        assert_eq!(revision, 61);
-        assert_eq!(storage, "text");
-    }
-
-    #[test]
-    fn rename_restore_does_not_recreate_concurrently_deleted_rows() {
+    fn rename_restore_does_not_recreate_concurrently_deleted_current_rows() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
         let session_id = "cursor-rename-concurrent-delete";
-        write_native_cursor_fixture(&db_path, session_id, true);
+        let fixture = write_current_cursor_management_fixture(&db_path, session_id);
         let backup = CursorProvider
             .create_session_backup(
                 ProviderSourceMutation::Rename,
@@ -2046,56 +2037,138 @@ mod tests {
 
         let conn = Connection::open(&db_path).unwrap();
         conn.execute(
+            "DELETE FROM composerHeaders WHERE composerId = ?1",
+            [session_id],
+        )
+        .unwrap();
+        conn.execute(
             "DELETE FROM cursorDiskKV WHERE key = ?1",
             [format!("composerData:{session_id}")],
         )
         .unwrap();
-        conn.execute(
-            "DELETE FROM ItemTable WHERE key = 'composer.composerHeaders'",
-            [],
-        )
-        .unwrap();
         drop(conn);
 
         CursorProvider.restore_session_backup(&backup).unwrap();
-
         let conn = Connection::open(&db_path).unwrap();
-        assert!(stored_row(&conn, "cursorDiskKV", &format!("composerData:{session_id}")).is_none());
-        assert!(stored_row(&conn, "ItemTable", "composer.composerHeaders").is_none());
+        assert!(current_header_row(&conn, session_id).is_none());
+        assert!(current_disk_value(&conn, &format!("composerData:{session_id}")).is_none());
+        assert_eq!(
+            current_session_disk_rows(&conn, session_id)
+                .into_iter()
+                .filter(|row| row.key.starts_with("bubbleId:"))
+                .collect::<Vec<_>>(),
+            fixture
+                .target_disk_rows
+                .into_iter()
+                .filter(|row| row.key.starts_with("bubbleId:"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(current_table_rows(&conn, "ItemTable"), fixture.item_rows);
     }
 
     #[test]
-    fn delete_restore_does_not_resurrect_unrelated_entries_from_missing_current_index() {
+    fn core_cursor_mutations_register_backups_restore_failures_and_finish_activity() {
         let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
         let db_path = dir.path().join("state.vscdb");
         let _guard = use_test_cursor_db(db_path.clone());
-        let session_id = "cursor-delete-index-missing";
-        write_native_cursor_fixture(&db_path, session_id, true);
-        let backup = CursorProvider
-            .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-delete-index-missing",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap();
-        write::delete_session(session_id).unwrap();
+        let _home_guard = TestConfigHomeGuard::new(&home);
+        let session_id = "cursor-core-management";
+        write_current_cursor_management_fixture(&db_path, session_id);
 
-        let conn = Connection::open(&db_path).unwrap();
-        conn.execute(
-            "DELETE FROM ItemTable WHERE key = 'composer.composerHeaders'",
-            [],
+        let renamed = crate::core::rename_session(
+            PROVIDER_ID,
+            session_id,
+            "Renamed through core",
+            ActivityActor::Cli,
         )
         .unwrap();
+        assert!(renamed.native_updated);
+        let conn = Connection::open(&db_path).unwrap();
+        let renamed_header = current_header_row(&conn, session_id).unwrap();
+        let renamed_disk_rows = current_session_disk_rows(&conn, session_id);
+        assert_eq!(
+            serde_json::from_str::<Value>(renamed_header.value.as_deref().unwrap()).unwrap()
+                ["name"],
+            "Renamed through core"
+        );
         drop(conn);
 
-        CursorProvider.restore_session_backup(&backup).unwrap();
+        let rename_activity = crate::core::list_management_activity(&ActivityQuery {
+            session_id: Some(session_id.to_string()),
+            provider_id: Some(PROVIDER_ID.to_string()),
+            operation_kind: Some(ActivityOperationKind::Rename),
+            ..ActivityQuery::default()
+        })
+        .unwrap();
+        assert_eq!(rename_activity.len(), 1);
+        assert_eq!(rename_activity[0].status, ActivityStatus::Success);
+        assert!(rename_activity[0].finished_at_ms.is_some());
 
+        write::set_test_cursor_mutation_failure(Some(ProviderSourceMutation::Delete));
+        let error =
+            crate::core::delete_session(PROVIDER_ID, session_id, ActivityActor::Cli).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Provider source was restored from registered backup")
+        );
         let conn = Connection::open(&db_path).unwrap();
-        let (index, _, _, _) = composer_index(&conn);
-        let entries = index["allComposers"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["composerId"], session_id);
-        assert_eq!(entries[0]["name"], "Before");
+        assert_eq!(current_header_row(&conn, session_id), Some(renamed_header));
+        assert_eq!(
+            current_session_disk_rows(&conn, session_id),
+            renamed_disk_rows
+        );
+        drop(conn);
+
+        let delete_activity = crate::core::list_management_activity(&ActivityQuery {
+            session_id: Some(session_id.to_string()),
+            provider_id: Some(PROVIDER_ID.to_string()),
+            operation_kind: Some(ActivityOperationKind::Delete),
+            ..ActivityQuery::default()
+        })
+        .unwrap();
+        assert_eq!(delete_activity.len(), 1);
+        assert_eq!(delete_activity[0].status, ActivityStatus::Failed);
+        assert!(delete_activity[0].finished_at_ms.is_some());
+        assert!(delete_activity[0].error.is_some());
+
+        let backups = session_management::list_registered_backups(BackupQuery {
+            provider_id: Some(PROVIDER_ID.to_string()),
+            provider_session_id: Some(session_id.to_string()),
+            ..BackupQuery::default()
+        })
+        .unwrap();
+        assert_eq!(backups.len(), 2);
+        assert!(backups
+            .iter()
+            .all(|backup| backup.verification.status == ArtifactVerificationStatus::Verified));
+        let delete_backup = backups
+            .iter()
+            .find(|backup| backup.entry.backup.metadata["mutation"] == "delete")
+            .expect("delete backup should be registered");
+        let restore = session_management::restore_registered_backup(
+            &delete_backup.entry.backup.id,
+            ActivityActor::Cli,
+        )
+        .unwrap();
+        assert_eq!(restore.status, BackupRestoreStatus::Success);
+        assert!(restore.finished_at_ms.is_some());
+        let repeated = session_management::restore_registered_backup(
+            &delete_backup.entry.backup.id,
+            ActivityActor::Cli,
+        )
+        .unwrap();
+        assert_eq!(repeated.status, BackupRestoreStatus::Success);
+
+        let activities = crate::core::list_management_activity(&ActivityQuery {
+            session_id: Some(session_id.to_string()),
+            provider_id: Some(PROVIDER_ID.to_string()),
+            ..ActivityQuery::default()
+        })
+        .unwrap();
+        assert_eq!(activities.len(), 2);
+        assert!(activities
+            .iter()
+            .all(|activity| activity.status != ActivityStatus::Running
+                && activity.finished_at_ms.is_some()));
     }
 }

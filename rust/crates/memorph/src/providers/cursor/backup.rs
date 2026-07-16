@@ -9,11 +9,10 @@ use std::collections::HashSet;
 use std::path::Path;
 
 const PROVIDER_ID: &str = "cursor";
-const CURSOR_BACKUP_FORMAT: &str = "cursor-session-backup-v1";
+const CURSOR_BACKUP_FORMAT: &str = "cursor-session-backup-v2";
 const CURSOR_BACKUP_MIME: &str = "application/vnd.memorph.cursor-session-backup";
 const CURSOR_BACKUP_DB_PATH: &str = "sqlite/cursor-session.db";
-const COMPOSER_INDEX_KEY: &str = "composer.composerHeaders";
-const CURSOR_TABLES: [&str; 2] = ["cursorDiskKV", "ItemTable"];
+const CURSOR_BACKUP_TABLES: [&str; 2] = ["composerHeaders", "cursorDiskKV"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CursorSessionBackupMetadata {
@@ -53,18 +52,10 @@ pub(super) fn create_session_backup(
         )
     })?;
     validate_source_schema(&conn)?;
-    let composer_key = composer_key(session_id);
-    let composer_present = conn
-        .query_row(
-            "SELECT 1 FROM cursorDiskKV WHERE key = ?1",
-            [&composer_key],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    if !composer_present {
-        anyhow::bail!("Cursor composer not found: {session_id}");
-    }
+    anyhow::ensure!(
+        target_session_exists(&conn, session_id)?,
+        "Cursor composer not found: {session_id}"
+    );
 
     let provider_backup_root = backup_root.join(PROVIDER_ID);
     std::fs::create_dir_all(&provider_backup_root).with_context(|| {
@@ -88,9 +79,8 @@ pub(super) fn create_session_backup(
             session_id,
             &backup_path.join(CURSOR_BACKUP_DB_PATH),
         )?;
-
         let metadata = CursorSessionBackupMetadata {
-            version: 1,
+            version: 2,
             provider_id: PROVIDER_ID.to_string(),
             mutation,
             operation_id: operation_id.to_string(),
@@ -160,7 +150,7 @@ pub(super) fn restore_session_backup(backup: &ProviderSessionBackup) -> Result<(
                 metadata_path.display()
             )
         })?)?;
-    if metadata.version != 1
+    if metadata.version != 2
         || metadata.provider_id != PROVIDER_ID
         || metadata.operation_id != backup.operation_id
         || metadata.provider_session_id != backup.provider_session_id
@@ -207,11 +197,15 @@ fn capture_sqlite_backup(
 
     let capture_result = (|| -> Result<Vec<CursorSqliteTableManifest>> {
         let tx = conn.transaction()?;
+        tx.execute(
+            "CREATE TABLE memorph_backup.composerHeaders AS
+             SELECT * FROM main.composerHeaders WHERE composerId = ?1",
+            [session_id],
+        )?;
         let composer_key = composer_key(session_id);
-        let bubble_prefix = bubble_prefix(session_id);
-        let (bubble_lower, bubble_upper) = key_prefix_bounds(&bubble_prefix);
         match mutation {
             ProviderSourceMutation::Delete => {
+                let (bubble_lower, bubble_upper) = key_prefix_bounds(&bubble_prefix(session_id));
                 tx.execute(
                     "CREATE TABLE memorph_backup.cursorDiskKV AS
                      SELECT * FROM main.cursorDiskKV
@@ -227,12 +221,7 @@ fn capture_sqlite_backup(
                 )?;
             }
         }
-        tx.execute(
-            "CREATE TABLE memorph_backup.ItemTable AS
-             SELECT * FROM main.ItemTable WHERE key = ?1",
-            [COMPOSER_INDEX_KEY],
-        )?;
-        let manifests = CURSOR_TABLES
+        let manifests = CURSOR_BACKUP_TABLES
             .iter()
             .map(|table| table_manifest(&tx, "memorph_backup", table))
             .collect::<Result<Vec<_>>>()?;
@@ -291,14 +280,8 @@ fn restore_sqlite_backup(
         validate_manifest_schemas(&conn, manifests)?;
         let tx = conn.transaction()?;
         match mutation {
-            ProviderSourceMutation::Delete => {
-                restore_deleted_cursor_rows(&tx, session_id, manifests)?;
-                restore_composer_index(&tx, mutation, session_id)?;
-            }
-            ProviderSourceMutation::Rename => {
-                restore_composer_name(&tx, session_id)?;
-                restore_composer_index(&tx, mutation, session_id)?;
-            }
+            ProviderSourceMutation::Delete => restore_deleted_rows(&tx, session_id, manifests)?,
+            ProviderSourceMutation::Rename => restore_renamed_fields(&tx, session_id)?,
         }
         tx.commit()?;
         Ok(())
@@ -316,40 +299,67 @@ fn restore_sqlite_backup(
     }
 }
 
-fn restore_deleted_cursor_rows(
+fn restore_deleted_rows(
     tx: &Transaction<'_>,
     session_id: &str,
     manifests: &[CursorSqliteTableManifest],
 ) -> Result<()> {
-    let bubble_prefix = bubble_prefix(session_id);
-    let (bubble_lower, bubble_upper) = key_prefix_bounds(&bubble_prefix);
+    let (bubble_lower, bubble_upper) = key_prefix_bounds(&bubble_prefix(session_id));
     tx.execute(
         "DELETE FROM main.cursorDiskKV
          WHERE key = ?1 OR (key >= ?2 AND key < ?3)",
         params![composer_key(session_id), bubble_lower, bubble_upper],
     )?;
-    let manifest = manifest_for_table(manifests, "cursorDiskKV")?;
-    insert_all_backup_rows(tx, manifest)?;
+    tx.execute(
+        "DELETE FROM main.composerHeaders WHERE composerId = ?1",
+        [session_id],
+    )?;
+    insert_all_backup_rows(tx, manifest_for_table(manifests, "cursorDiskKV")?)?;
+    insert_all_backup_rows(tx, manifest_for_table(manifests, "composerHeaders")?)?;
     Ok(())
 }
 
-fn restore_composer_name(tx: &Transaction<'_>, session_id: &str) -> Result<()> {
-    let key = composer_key(session_id);
-    let backup_value = stored_value(tx, "memorph_backup", "cursorDiskKV", &key)?
-        .context("Cursor rename backup is missing the composer row")?;
-    let current_value = stored_value(tx, "main", "cursorDiskKV", &key)?;
+fn restore_renamed_fields(tx: &Transaction<'_>, session_id: &str) -> Result<()> {
+    restore_json_name(
+        tx,
+        "composerHeaders",
+        "composerId",
+        session_id,
+        "composer header",
+    )?;
+    restore_json_name(
+        tx,
+        "cursorDiskKV",
+        "key",
+        &composer_key(session_id),
+        "composer data",
+    )?;
+    Ok(())
+}
+
+fn restore_json_name(
+    tx: &Transaction<'_>,
+    table: &str,
+    identity_column: &str,
+    identity: &str,
+    row_name: &str,
+) -> Result<()> {
+    let backup_value = stored_value(tx, "memorph_backup", table, identity_column, identity)?;
+    let Some(backup_value) = backup_value else {
+        return Ok(());
+    };
+    let current_value = stored_value(tx, "main", table, identity_column, identity)?;
     let Some(current_value) = current_value else {
         return Ok(());
     };
-
-    let backup_json = parse_json_value(&backup_value, "Cursor backup composer")?;
-    let mut current_json = parse_json_value(&current_value, "current Cursor composer")?;
+    let backup_json = parse_json_value(&backup_value, &format!("Cursor backup {row_name}"))?;
+    let mut current_json = parse_json_value(&current_value, &format!("current Cursor {row_name}"))?;
     let backup_object = backup_json
         .as_object()
-        .context("Cursor backup composer is not a JSON object")?;
+        .with_context(|| format!("Cursor backup {row_name} is not a JSON object"))?;
     let current_object = current_json
         .as_object_mut()
-        .context("Current Cursor composer is not a JSON object")?;
+        .with_context(|| format!("Current Cursor {row_name} is not a JSON object"))?;
     match backup_object.get("name") {
         Some(name) => {
             current_object.insert("name".to_string(), name.clone());
@@ -360,229 +370,86 @@ fn restore_composer_name(tx: &Transaction<'_>, session_id: &str) -> Result<()> {
     }
     let restored_value = serialize_json_value(&current_value, &current_json)?;
     tx.execute(
-        "UPDATE main.cursorDiskKV SET value = ?1 WHERE key = ?2",
-        params![restored_value, key],
+        &format!(
+            "UPDATE main.{} SET value = ?1 WHERE {} = ?2",
+            quote_identifier(table),
+            quote_identifier(identity_column)
+        ),
+        params![restored_value, identity],
     )?;
     Ok(())
 }
 
-fn restore_composer_index(
-    tx: &Transaction<'_>,
-    mutation: ProviderSourceMutation,
-    session_id: &str,
-) -> Result<()> {
-    let backup_value = stored_value(tx, "memorph_backup", "ItemTable", COMPOSER_INDEX_KEY)?;
-    let current_value = stored_value(tx, "main", "ItemTable", COMPOSER_INDEX_KEY)?;
-    match (backup_value, current_value) {
-        (Some(backup_value), None) => {
-            if mutation == ProviderSourceMutation::Rename {
-                return Ok(());
-            }
-            let backup_json = parse_json_value(&backup_value, "Cursor backup composer index")?;
-            let backup_entries = target_index_entries(&backup_json, session_id)?;
-            if backup_entries.is_empty() {
-                return Ok(());
-            }
-            insert_backup_row(tx, "ItemTable", COMPOSER_INDEX_KEY)?;
-            let target_only_index = index_with_entries(
-                &backup_json,
-                backup_entries.into_iter().map(|(_, entry)| entry),
-            )?;
-            let restored_value = serialize_json_value(&backup_value, &target_only_index)?;
-            tx.execute(
-                "UPDATE main.ItemTable SET value = ?1 WHERE key = ?2",
-                params![restored_value, COMPOSER_INDEX_KEY],
-            )?;
-            Ok(())
-        }
-        (Some(backup_value), Some(current_value)) => {
-            let backup_json = parse_json_value(&backup_value, "Cursor backup composer index")?;
-            let mut current_json =
-                parse_json_value(&current_value, "current Cursor composer index")?;
-            let backup_entries = target_index_entries(&backup_json, session_id)?;
-
-            match mutation {
-                ProviderSourceMutation::Delete => {
-                    target_index_entries(&current_json, session_id)?;
-                    let current_entries = index_entries_mut(&mut current_json)?;
-                    current_entries.retain(|entry| !is_target_index_entry(entry, session_id));
-                    for (position, entry) in backup_entries {
-                        current_entries.insert(position.min(current_entries.len()), entry);
-                    }
-                }
-                ProviderSourceMutation::Rename => {
-                    let backup_entry = backup_entries.first().map(|(_, entry)| entry);
-                    let Some(backup_entry) = backup_entry else {
-                        return Ok(());
-                    };
-                    target_index_entries(&current_json, session_id)?;
-                    let current_entries = index_entries_mut(&mut current_json)?;
-                    let mut found = false;
-                    for entry in current_entries
-                        .iter_mut()
-                        .filter(|entry| is_target_index_entry(entry, session_id))
-                    {
-                        found = true;
-                        restore_json_field(entry, backup_entry, "name")?;
-                    }
-                    if !found {
-                        if let Some((position, entry)) = backup_entries.into_iter().next() {
-                            current_entries.insert(position.min(current_entries.len()), entry);
-                        }
-                    }
-                }
-            }
-
-            let restored_value = serialize_json_value(&current_value, &current_json)?;
-            tx.execute(
-                "UPDATE main.ItemTable SET value = ?1 WHERE key = ?2",
-                params![restored_value, COMPOSER_INDEX_KEY],
-            )?;
-            Ok(())
-        }
-        (None, Some(current_value)) => {
-            if mutation == ProviderSourceMutation::Rename {
-                return Ok(());
-            }
-            let mut current_json =
-                parse_json_value(&current_value, "current Cursor composer index")?;
-            target_index_entries(&current_json, session_id)?;
-            index_entries_mut(&mut current_json)?
-                .retain(|entry| !is_target_index_entry(entry, session_id));
-            if is_empty_default_index(&current_json) {
-                tx.execute(
-                    "DELETE FROM main.ItemTable WHERE key = ?1",
-                    [COMPOSER_INDEX_KEY],
-                )?;
-            } else {
-                let restored_value = serialize_json_value(&current_value, &current_json)?;
-                tx.execute(
-                    "UPDATE main.ItemTable SET value = ?1 WHERE key = ?2",
-                    params![restored_value, COMPOSER_INDEX_KEY],
-                )?;
-            }
-            Ok(())
-        }
-        (None, None) => Ok(()),
-    }
-}
-
-fn index_with_entries(
-    template: &JsonValue,
-    entries: impl IntoIterator<Item = JsonValue>,
-) -> Result<JsonValue> {
-    let mut index = template.clone();
-    *index_entries_mut(&mut index)? = entries.into_iter().collect();
-    Ok(index)
-}
-
-fn restore_json_field(
-    current_entry: &mut JsonValue,
-    backup_entry: &JsonValue,
-    field: &str,
-) -> Result<()> {
-    let current_object = current_entry
-        .as_object_mut()
-        .context("Cursor composer index entry is not a JSON object")?;
-    let backup_object = backup_entry
-        .as_object()
-        .context("Cursor backup composer index entry is missing")?;
-    match backup_object.get(field) {
-        Some(value) => {
-            current_object.insert(field.to_string(), value.clone());
-        }
-        None => {
-            current_object.remove(field);
-        }
-    }
-    Ok(())
-}
-
-fn target_index_entries(index: &JsonValue, session_id: &str) -> Result<Vec<(usize, JsonValue)>> {
-    let entries = index
-        .get("allComposers")
-        .and_then(JsonValue::as_array)
-        .context("Cursor composer index does not contain an allComposers array")?;
-    let matches = entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| is_target_index_entry(entry, session_id))
-        .map(|(position, entry)| (position, entry.clone()))
-        .collect::<Vec<_>>();
-    if matches.len() > 1 {
-        anyhow::bail!("Cursor composer index contains duplicate entries for {session_id}");
-    }
-    Ok(matches)
-}
-
-fn index_entries_mut(index: &mut JsonValue) -> Result<&mut Vec<JsonValue>> {
-    index
-        .get_mut("allComposers")
-        .and_then(JsonValue::as_array_mut)
-        .context("Cursor composer index does not contain an allComposers array")
-}
-
-fn is_target_index_entry(entry: &JsonValue, session_id: &str) -> bool {
-    entry.get("composerId").and_then(JsonValue::as_str) == Some(session_id)
-}
-
-fn is_empty_default_index(index: &JsonValue) -> bool {
-    index.as_object().is_some_and(|object| object.len() == 1)
-        && index
-            .get("allComposers")
-            .and_then(JsonValue::as_array)
-            .is_some_and(Vec::is_empty)
+fn target_session_exists(conn: &Connection, session_id: &str) -> Result<bool> {
+    let header = conn
+        .query_row(
+            "SELECT 1 FROM composerHeaders WHERE composerId = ?1",
+            [session_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    let composer = conn
+        .query_row(
+            "SELECT 1 FROM cursorDiskKV WHERE key = ?1",
+            [composer_key(session_id)],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    Ok(header || composer)
 }
 
 fn validate_source_schema(conn: &Connection) -> Result<()> {
-    for table in CURSOR_TABLES {
+    for (table, expected_columns) in [
+        ("ItemTable", &["key", "value"][..]),
+        ("cursorDiskKV", &["key", "value"][..]),
+        (
+            "composerHeaders",
+            &[
+                "composerId",
+                "workspaceId",
+                "createdAt",
+                "lastUpdatedAt",
+                "isArchived",
+                "isSubagent",
+                "recency",
+                "checkpointAt",
+                "value",
+            ][..],
+        ),
+    ] {
         let columns = table_columns(conn, "main", table)?;
-        if !columns.iter().any(|column| column == "key")
-            || !columns.iter().any(|column| column == "value")
-        {
-            anyhow::bail!("Cursor table {table} must contain key and value columns");
-        }
-        if !table_has_unique_key(conn, table)? {
-            anyhow::bail!("Cursor table {table} does not enforce a unique key");
-        }
+        anyhow::ensure!(
+            columns == expected_columns,
+            "Cursor current source schema for {table} is not supported"
+        );
     }
+    anyhow::ensure!(
+        table_has_unique_key(conn, "ItemTable")?,
+        "Cursor table ItemTable does not enforce a unique key"
+    );
+    anyhow::ensure!(
+        table_has_unique_key(conn, "cursorDiskKV")?,
+        "Cursor table cursorDiskKV does not enforce a unique key"
+    );
+    anyhow::ensure!(
+        primary_key_columns(conn, "composerHeaders")? == ["composerId"],
+        "Cursor table composerHeaders must use composerId as its primary key"
+    );
     Ok(())
-}
-
-fn table_has_unique_key(conn: &Connection, table: &str) -> Result<bool> {
-    let table_arg = quote_sqlite_string(table);
-    let mut stmt = conn.prepare(&format!("PRAGMA main.index_list({table_arg})"))?;
-    let indexes = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(2)? != 0))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (index, unique) in indexes {
-        if !unique {
-            continue;
-        }
-        let index_arg = quote_sqlite_string(&index);
-        let mut index_stmt = conn.prepare(&format!("PRAGMA main.index_info({index_arg})"))?;
-        let columns = index_stmt
-            .query_map([], |row| row.get::<_, Option<String>>(2))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        if columns == vec![Some("key".to_string())] {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn validate_manifest_schemas(
     conn: &Connection,
     manifests: &[CursorSqliteTableManifest],
 ) -> Result<()> {
-    if manifests.len() != CURSOR_TABLES.len()
+    if manifests.len() != CURSOR_BACKUP_TABLES.len()
         || manifests
             .iter()
             .map(|manifest| manifest.table.as_str())
             .collect::<HashSet<_>>()
-            != CURSOR_TABLES.into_iter().collect::<HashSet<_>>()
+            != CURSOR_BACKUP_TABLES.into_iter().collect::<HashSet<_>>()
     {
         anyhow::bail!("Cursor backup table manifest is incomplete");
     }
@@ -612,47 +479,112 @@ fn validate_backup_selection(
     session_id: &str,
     manifests: &[CursorSqliteTableManifest],
 ) -> Result<()> {
+    let header_manifest = manifest_for_table(manifests, "composerHeaders")?;
     let disk_manifest = manifest_for_table(manifests, "cursorDiskKV")?;
-    let item_manifest = manifest_for_table(manifests, "ItemTable")?;
-    if disk_manifest.row_count == 0 || item_manifest.row_count > 1 {
-        anyhow::bail!("Cursor backup row selection is invalid");
-    }
-    let composer_key = composer_key(session_id);
-    let bubble_prefix = bubble_prefix(session_id);
-    let mut stmt = conn.prepare("SELECT key FROM memorph_backup.cursorDiskKV ORDER BY key ASC")?;
-    let keys = stmt
+    anyhow::ensure!(
+        header_manifest.row_count <= 1,
+        "Cursor backup contains duplicate composer headers"
+    );
+
+    let header_ids = conn
+        .prepare("SELECT composerId FROM memorph_backup.composerHeaders")?
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if keys.iter().filter(|key| *key == &composer_key).count() != 1 {
-        anyhow::bail!("Cursor backup does not contain exactly one composer row");
+    anyhow::ensure!(
+        header_ids
+            .iter()
+            .all(|composer_id| composer_id == session_id),
+        "Cursor backup contains a composer header outside the target session"
+    );
+    if let Some(value) = stored_value(
+        conn,
+        "memorph_backup",
+        "composerHeaders",
+        "composerId",
+        session_id,
+    )? {
+        validate_json_identity(&value, session_id, "Cursor backup composer header")?;
     }
+
+    let composer_key = composer_key(session_id);
+    let bubble_prefix = bubble_prefix(session_id);
+    let keys = conn
+        .prepare("SELECT key FROM memorph_backup.cursorDiskKV ORDER BY key ASC")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        keys.iter().filter(|key| *key == &composer_key).count() <= 1,
+        "Cursor backup contains duplicate composer data rows"
+    );
     if keys.iter().any(|key| {
         key != &composer_key
             && (mutation != ProviderSourceMutation::Delete || !key.starts_with(&bubble_prefix))
     }) {
         anyhow::bail!("Cursor backup contains rows outside the target session");
     }
-    if mutation == ProviderSourceMutation::Rename && keys.len() != 1 {
-        anyhow::bail!("Cursor rename backup contains non-composer rows");
+    if mutation == ProviderSourceMutation::Rename && keys.len() > 1 {
+        anyhow::bail!("Cursor rename backup contains bubble rows");
     }
-
-    let item_keys = conn
-        .prepare("SELECT key FROM memorph_backup.ItemTable")?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    if item_keys
-        .iter()
-        .any(|key| key.as_str() != COMPOSER_INDEX_KEY)
+    if let Some(value) = stored_value(conn, "memorph_backup", "cursorDiskKV", "key", &composer_key)?
     {
-        anyhow::bail!("Cursor backup contains an unexpected ItemTable row");
+        validate_json_identity(&value, session_id, "Cursor backup composer data")?;
     }
-    if let Some(index_value) =
-        stored_value(conn, "memorph_backup", "ItemTable", COMPOSER_INDEX_KEY)?
-    {
-        let index = parse_json_value(&index_value, "Cursor backup composer index")?;
-        target_index_entries(&index, session_id)?;
-    }
+    anyhow::ensure!(
+        header_manifest.row_count > 0 || disk_manifest.row_count > 0,
+        "Cursor backup does not contain the target session"
+    );
     Ok(())
+}
+
+fn validate_json_identity(value: &SqliteValue, session_id: &str, context: &str) -> Result<()> {
+    let json = parse_json_value(value, context)?;
+    anyhow::ensure!(json.is_object(), "{context} is not a JSON object");
+    anyhow::ensure!(
+        json.get("composerId").and_then(JsonValue::as_str) == Some(session_id),
+        "{context} identity does not match {session_id}"
+    );
+    Ok(())
+}
+
+fn table_has_unique_key(conn: &Connection, table: &str) -> Result<bool> {
+    let table_arg = quote_sqlite_string(table);
+    let mut stmt = conn.prepare(&format!("PRAGMA main.index_list({table_arg})"))?;
+    let indexes = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(2)? != 0))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for (index, unique) in indexes {
+        if !unique {
+            continue;
+        }
+        let index_arg = quote_sqlite_string(&index);
+        let mut index_stmt = conn.prepare(&format!("PRAGMA main.index_info({index_arg})"))?;
+        let columns = index_stmt
+            .query_map([], |row| row.get::<_, Option<String>>(2))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if columns == vec![Some("key".to_string())] {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn primary_key_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let table_arg = quote_sqlite_string(table);
+    let mut stmt = conn.prepare(&format!("PRAGMA main.table_info({table_arg})"))?;
+    let mut columns = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+        })?
+        .filter_map(|row| match row {
+            Ok((name, position)) if position > 0 => Some(Ok((position, name))),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    columns.sort_by_key(|(position, _)| *position);
+    Ok(columns.into_iter().map(|(_, name)| name).collect())
 }
 
 fn table_manifest(
@@ -719,33 +651,21 @@ fn insert_all_backup_rows(
     Ok(())
 }
 
-fn insert_backup_row(tx: &Transaction<'_>, table: &str, key: &str) -> Result<()> {
-    let columns = table_columns(tx, "memorph_backup", table)?;
-    let columns = quoted_columns(&columns);
-    tx.execute(
-        &format!(
-            "INSERT INTO main.{table} ({columns})
-             SELECT {columns} FROM memorph_backup.{table} WHERE key = ?1",
-            table = quote_identifier(table)
-        ),
-        [key],
-    )?;
-    Ok(())
-}
-
 fn stored_value(
     conn: &Connection,
     schema: &str,
     table: &str,
-    key: &str,
+    identity_column: &str,
+    identity: &str,
 ) -> Result<Option<SqliteValue>> {
     conn.query_row(
         &format!(
-            "SELECT value FROM {}.{} WHERE key = ?1",
+            "SELECT value FROM {}.{} WHERE {} = ?1",
             quote_identifier(schema),
-            quote_identifier(table)
+            quote_identifier(table),
+            quote_identifier(identity_column)
         ),
-        [key],
+        [identity],
         |row| row.get(0),
     )
     .optional()
