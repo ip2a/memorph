@@ -1,42 +1,28 @@
 pub mod adapter;
-mod backup;
 pub mod hook;
 
-use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
-    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
-};
+use crate::canonical::ImportedSession;
 use crate::provider::{
-    canonical_event_visible_message_role, canonical_export_result, canonical_session_title,
-    canonical_visible_block_text, Provider, ProviderBackupSupport, ProviderCapabilities,
-    ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation,
+    Provider, ProviderCapabilities, ProviderSessionSummary, ProviderSourceFingerprint,
+    ScanStrategy, StorageShape,
 };
-use crate::utils::truncate_summary;
 use anyhow::{Context, Result};
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use chrono::Utc;
-use serde_json::{json, Value};
+use chrono::DateTime;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs::File;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use uuid::Uuid;
+use walkdir::WalkDir;
 
 pub struct KiroProvider;
 
 const PROVIDER_ID: &str = "kiro";
-const TITLE_MAX_CHARS: usize = 80;
+const CURRENT_SCHEMA_VERSION: &str = "1.0.0";
+const CURRENT_DATA_MODEL_VERSION: u64 = 1;
 
 #[cfg(test)]
-static TEST_KIRO_GLOBAL_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+static TEST_KIRO_SESSIONS_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
     std::sync::OnceLock::new();
-
-#[cfg(test)]
-static TEST_KIRO_MUTATION_FAILURE: std::sync::OnceLock<
-    std::sync::Mutex<Option<ProviderSourceMutation>>,
-> = std::sync::OnceLock::new();
 
 impl Provider for KiroProvider {
     fn id(&self) -> &'static str {
@@ -49,763 +35,507 @@ impl Provider for KiroProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            scan: true,
-            import: true,
-            export: true,
-            delete: true,
-            rename: true,
-            resume: false,
-            backup_support: ProviderBackupSupport {
-                before_write: true,
-                restore: true,
-                sync_only: false,
-            },
+            import: false,
+            scan_strategy: ScanStrategy::FullScan,
+            storage_shape: StorageShape::Directory,
             ..ProviderCapabilities::default()
         }
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
-        let global_dir = kiro_global_storage_dir()?;
-        if !global_dir.exists() {
+        let sessions_root = kiro_sessions_dir()?;
+        if !sessions_root.exists() {
             return Ok(Vec::new());
         }
-        scan_sessions_in(&global_dir)
+        scan_sessions_in(&sessions_root)
     }
 
     fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
-        let global_dir = kiro_global_storage_dir()?;
-        if !global_dir.exists() {
+        let Some(session_dir) = find_session_dir(session_id)? else {
             return Ok(None);
-        }
-
-        for list_path in session_list_paths(&global_dir)? {
-            let Some(session_dir) = list_path.parent() else {
-                continue;
-            };
-            for entry in read_session_list(&list_path)? {
-                if entry.get("hidden").and_then(|v| v.as_bool()) == Some(true) {
-                    continue;
-                }
-                let Some(id) = entry.get("sessionId").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                if id != session_id {
-                    continue;
-                }
-
-                let session_path = session_dir.join(format!("{}.json", session_id));
-                let title = entry
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .filter(|value| !value.trim().is_empty())
-                    .map(str::to_string);
-                let project_dir = entry
-                    .get("workspaceDirectory")
-                    .and_then(|v| v.as_str())
-                    .filter(|value| !value.trim().is_empty())
-                    .map(str::to_string);
-                let last_active_at = path_mtime_ms(&session_path)
-                    .or_else(|| entry.get("dateCreated").and_then(parse_ms));
-
-                return Ok(Some(ProviderSessionSummary {
-                    session_id: session_id.to_string(),
-                    title,
-                    project_dir,
-                    last_active_at,
-                    source_path: Some(session_path.to_string_lossy().to_string()),
-                }));
-            }
-        }
-
-        Ok(None)
+        };
+        session_summary_from_dir(&session_dir).map(Some)
     }
 
-    fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
-        import_canonical_session_from_path(Path::new(source_path))
+    fn import_session(&self, _source_path: &str) -> Result<ImportedSession> {
+        anyhow::bail!("Canonical import is not implemented for the current Kiro session format")
     }
 
-    fn export_session(
+    fn session_source_fingerprint(
         &self,
-        session: &CanonicalSession,
-        target_dir: &Path,
-    ) -> Result<ExportedSession> {
-        let global_dir = kiro_global_storage_dir()?;
-        let session_id = export_canonical_session_in(&global_dir, session, target_dir)?;
-        Ok(canonical_export_result(
-            PROVIDER_ID,
-            session_id.clone(),
-            self.resume_command(&session_id),
-            session,
-            self.capabilities(),
-        ))
-    }
-
-    fn delete_session(&self, session_id: &str) -> Result<()> {
-        let global_dir = kiro_global_storage_dir()?;
-        backup::delete_session(&global_dir, session_id)
-    }
-
-    fn rename_session(&self, session_id: &str, new_title: &str) -> Result<()> {
-        let global_dir = kiro_global_storage_dir()?;
-        backup::rename_session(&global_dir, session_id, new_title)
-    }
-
-    fn create_session_backup(
-        &self,
-        mutation: ProviderSourceMutation,
-        operation_id: &str,
-        session_id: &str,
-        backup_root: &Path,
-    ) -> Result<ProviderSessionBackup> {
-        let global_dir = kiro_global_storage_dir()?;
-        backup::create_session_backup(&global_dir, mutation, operation_id, session_id, backup_root)
-    }
-
-    fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
-        backup::restore_session_backup(backup)
+        source_path: &str,
+    ) -> Result<Option<ProviderSourceFingerprint>> {
+        kiro_session_source_fingerprint(Path::new(source_path))
     }
 
     fn session_size(&self, session_id: &str) -> Result<u64> {
-        let global_dir = kiro_global_storage_dir()?;
-        for list_path in session_list_paths(&global_dir)? {
-            let Some(session_dir) = list_path.parent() else {
-                continue;
-            };
-            let session_path = session_dir.join(format!("{}.json", session_id));
-            if session_path.exists() {
-                return Ok(std::fs::metadata(session_path)?.len());
+        let Some(session_dir) = find_session_dir(session_id)? else {
+            return Ok(0);
+        };
+        let mut total = 0_u64;
+        for entry in WalkDir::new(&session_dir).follow_links(false) {
+            let entry = entry.with_context(|| {
+                format!("Failed to walk Kiro session: {}", session_dir.display())
+            })?;
+            if entry.file_type().is_file() {
+                total = total.saturating_add(entry.metadata()?.len());
             }
         }
-        Ok(0)
+        Ok(total)
     }
 
     fn data_source_paths(&self) -> Vec<PathBuf> {
-        kiro_global_storage_dir().ok().into_iter().collect()
+        kiro_sessions_dir().ok().into_iter().collect()
     }
 }
 
-fn kiro_data_dir() -> Result<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        let home = dirs::home_dir().context("Unable to locate user home directory")?;
-        return Ok(home.join("Library/Application Support/Kiro"));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let appdata = std::env::var("APPDATA")
-            .map_err(|_| anyhow::anyhow!("APPDATA environment variable not found"))?;
-        return Ok(PathBuf::from(appdata).join("Kiro"));
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let home = dirs::home_dir().context("Unable to locate user home directory")?;
-        return Ok(home.join(".config/Kiro"));
-    }
-
-    #[allow(unreachable_code)]
-    Err(anyhow::anyhow!(
-        "Kiro data directory not supported on this platform"
-    ))
+#[derive(Debug, Deserialize)]
+struct KiroSessionMetadata {
+    #[serde(rename = "schemaVersion")]
+    schema_version: String,
+    #[serde(rename = "dataModelVersion")]
+    data_model_version: u64,
+    id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(rename = "workspacePaths", default)]
+    workspace_paths: Vec<String>,
+    #[serde(rename = "createdAt", default)]
+    created_at: Option<String>,
+    #[serde(rename = "lastModifiedAt", default)]
+    last_modified_at: Option<String>,
 }
 
-fn kiro_global_storage_dir() -> Result<PathBuf> {
+fn kiro_sessions_dir() -> Result<PathBuf> {
     #[cfg(test)]
-    if let Some(path) = TEST_KIRO_GLOBAL_DIR
+    if let Some(path) = TEST_KIRO_SESSIONS_DIR
         .get_or_init(|| std::sync::Mutex::new(None))
         .lock()
-        .expect("test Kiro global dir lock")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
     {
         return Ok(path);
     }
 
-    Ok(kiro_data_dir()?
-        .join("User")
-        .join("globalStorage")
-        .join("kiro.kiroagent"))
+    let home = dirs::home_dir().context("Unable to locate user home directory")?;
+    Ok(home.join(".kiro").join("sessions"))
 }
 
-fn scan_sessions_in(global_dir: &Path) -> Result<Vec<ProviderSessionSummary>> {
+fn scan_sessions_in(sessions_root: &Path) -> Result<Vec<ProviderSessionSummary>> {
+    let mut seen_session_ids = BTreeMap::new();
     let mut sessions = Vec::new();
 
-    for list_path in session_list_paths(global_dir)? {
-        let Some(session_dir) = list_path.parent() else {
-            continue;
-        };
-        for entry in read_session_list(&list_path)? {
-            if entry.get("hidden").and_then(|v| v.as_bool()) == Some(true) {
+    for bucket_dir in sorted_child_directories(sessions_root)? {
+        for session_dir in sorted_child_directories(&bucket_dir)? {
+            if !has_current_source_files(&session_dir)? {
                 continue;
             }
-
-            let Some(session_id) = entry.get("sessionId").and_then(|v| v.as_str()) else {
-                continue;
-            };
-
-            let session_path = session_dir.join(format!("{}.json", session_id));
-            let title = entry
-                .get("title")
-                .and_then(|v| v.as_str())
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_string);
-            let project_dir = entry
-                .get("workspaceDirectory")
-                .and_then(|v| v.as_str())
-                .filter(|value| !value.trim().is_empty())
-                .map(str::to_string);
-            let last_active_at = path_mtime_ms(&session_path)
-                .or_else(|| entry.get("dateCreated").and_then(parse_ms));
-
-            sessions.push(ProviderSessionSummary {
-                session_id: session_id.to_string(),
-                title,
-                project_dir,
-                last_active_at,
-                source_path: Some(session_path.to_string_lossy().to_string()),
-            });
+            let summary = session_summary_from_dir(&session_dir)?;
+            if let Some(previous) =
+                seen_session_ids.insert(summary.session_id.clone(), session_dir.to_path_buf())
+            {
+                anyhow::bail!(
+                    "Ambiguous Kiro session id {}: {} and {}",
+                    summary.session_id,
+                    previous.display(),
+                    session_dir.display()
+                );
+            }
+            sessions.push(summary);
         }
     }
 
+    sessions.sort_by(|left, right| {
+        right
+            .last_active_at
+            .cmp(&left.last_active_at)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
     Ok(sessions)
 }
 
-fn import_canonical_session_from_path(path: &Path) -> Result<ImportedSession> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read Kiro session: {}", path.display()))?;
-    let value: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("Failed to parse Kiro session: {}", path.display()))?;
-    import_canonical_session_from_value(path, value)
-}
-
-fn import_canonical_session_from_value(path: &Path, value: Value) -> Result<ImportedSession> {
-    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-    let fallback_id = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_string();
-    let session_id = value
-        .get("sessionId")
-        .and_then(|v| v.as_str())
-        .unwrap_or(&fallback_id)
-        .to_string();
-    let title = value
-        .get("title")
-        .and_then(|v| v.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string);
-    let workspace_dir = value
-        .get("workspaceDirectory")
-        .and_then(|v| v.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string);
-    let session_time = path_mtime_ms(path).unwrap_or_else(|| Utc::now().timestamp_millis());
-    let session_dt = chrono::DateTime::from_timestamp_millis(session_time).unwrap_or_else(Utc::now);
-
-    let mut events = Vec::new();
-    if let Some(history) = value.get("history").and_then(|v| v.as_array()) {
-        for (index, item) in history.iter().enumerate() {
-            match canonical_event_from_kiro_history_item(index, item, session_dt, &mut report) {
-                Some(event) => events.push(event),
-                None => report.push_issue(MappingIssue {
-                    level: MappingIssueLevel::Info,
-                    disposition: MappingDisposition::Dropped,
-                    code: "empty_history_item_dropped".to_string(),
-                    message: "Dropped Kiro history item without message content".to_string(),
-                    path: Some(format!("history:{}", index)),
-                    raw: Some(item.clone()),
-                }),
-            }
-        }
-    }
-
-    let mut extensions = BTreeMap::new();
-    extensions.insert("kiro_session".to_string(), value);
-
-    Ok(ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
-                canonical_id: session_id.clone(),
-                source_title: title,
-            },
-            provenance: SessionProvenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id,
-                    source_path: Some(path.to_string_lossy().to_string()),
-                },
-                aliases: Vec::new(),
-            },
-            context: SessionContext {
-                workspace_dir,
-                created_at: Some(session_dt),
-                last_active_at: Some(session_dt),
-                tags: Vec::new(),
-            },
-            events,
-            artifacts: Vec::new(),
-            extensions,
-        },
-        report,
-    })
-}
-
-fn canonical_event_from_kiro_history_item(
-    index: usize,
-    item: &Value,
-    timestamp: chrono::DateTime<Utc>,
-    report: &mut MappingReport,
-) -> Option<SessionEvent> {
-    let message = item.get("message")?;
-    let role_str = message
-        .get("role")
-        .and_then(|v| v.as_str())
-        .unwrap_or("user");
-    let role = match role_str {
-        "user" => EventRole::User,
-        "assistant" | "bot" => EventRole::Assistant,
-        "tool" => EventRole::Tool,
-        "system" => EventRole::System,
-        "developer" => EventRole::Developer,
-        other => {
-            report.push_issue(MappingIssue {
-                level: MappingIssueLevel::Info,
-                disposition: MappingDisposition::Normalized,
-                code: "unknown_role_normalized".to_string(),
-                message: format!("Normalized unknown Kiro role '{}'", other),
-                path: Some(format!("history:{}", index)),
-                raw: Some(item.clone()),
-            });
-            EventRole::Unknown
-        }
-    };
-    let blocks = kiro_event_blocks(message.get("content"), item, index, report);
-    if blocks.is_empty() {
-        return None;
-    }
-    let id = message
-        .get("id")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("kiro:history:{}", index));
-
-    Some(SessionEvent {
-        id,
-        kind: kiro_event_kind(&blocks),
-        role,
-        timestamp,
-        links: EventLinks {
-            parent_event_id: None,
-            provider_parent_id: None,
-            provider_turn_id: None,
-            turn_index: Some(index as u32),
-            turn_boundary: None,
-            related_event_ids: Vec::new(),
-        },
-        blocks,
-        metadata: EventMetadata {
-            source: EventSource {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id: message
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                original_role: Some(role_str.to_string()),
-                phase: None,
-            },
-            model: None,
-            usage: None,
-            fidelity: MappingDisposition::Preserved,
-            provider_ext: {
-                let mut ext = BTreeMap::new();
-                ext.insert("kiro_history_item".to_string(), item.clone());
-                ext
-            },
-        },
-    })
-}
-
-fn kiro_event_blocks(
-    content: Option<&Value>,
-    raw_item: &Value,
-    index: usize,
-    report: &mut MappingReport,
-) -> Vec<EventBlock> {
-    match content {
-        Some(Value::String(text)) => {
-            if text.trim().is_empty() {
-                Vec::new()
-            } else {
-                vec![EventBlock::Text { text: text.clone() }]
-            }
-        }
-        Some(Value::Array(items)) => items
-            .iter()
-            .enumerate()
-            .map(|(block_index, item)| {
-                kiro_content_event_block(item, raw_item, index, block_index, report)
+fn sorted_child_directories(parent: &Path) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Failed to read Kiro source directory: {}", parent.display())
             })
-            .collect(),
-        Some(Value::Object(object)) => {
-            if let Some(text) = object.get("text").and_then(|v| v.as_str()) {
-                if text.trim().is_empty() {
-                    Vec::new()
-                } else {
-                    vec![EventBlock::Text {
-                        text: text.to_string(),
-                    }]
-                }
-            } else {
-                vec![EventBlock::ProviderPayload {
-                    kind: "content".to_string(),
-                    payload: content.cloned().unwrap_or(Value::Null),
-                }]
-            }
         }
-        Some(other) => vec![EventBlock::Unknown { raw: other.clone() }],
-        None => Vec::new(),
-    }
-}
-
-fn kiro_content_event_block(
-    value: &Value,
-    raw_item: &Value,
-    index: usize,
-    block_index: usize,
-    report: &mut MappingReport,
-) -> EventBlock {
-    if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
-        return EventBlock::Text {
-            text: text.to_string(),
-        };
-    }
-    if let Some(thinking) = value.get("thinking").and_then(|v| v.as_str()) {
-        return EventBlock::Thinking {
-            text: thinking.to_string(),
-            signature: None,
-        };
-    }
-
-    let kind = value
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("content");
-    report.push_issue(MappingIssue {
-        level: MappingIssueLevel::Info,
-        disposition: MappingDisposition::Preserved,
-        code: "provider_block_preserved".to_string(),
-        message: format!("Preserved unsupported Kiro content block '{}'", kind),
-        path: Some(format!("history:{}:block:{}", index, block_index)),
-        raw: Some(raw_item.clone()),
-    });
-    EventBlock::ProviderPayload {
-        kind: kind.to_string(),
-        payload: value.clone(),
-    }
-}
-
-fn kiro_event_kind(blocks: &[EventBlock]) -> SessionEventKind {
-    if blocks
-        .iter()
-        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
-    {
-        SessionEventKind::ToolResult
-    } else if blocks
-        .iter()
-        .any(|block| matches!(block, EventBlock::ToolCall { .. }))
-    {
-        SessionEventKind::ToolCall
-    } else if blocks.iter().all(|block| {
-        matches!(
-            block,
-            EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
-        )
-    }) {
-        SessionEventKind::Unknown
-    } else {
-        SessionEventKind::Message
-    }
-}
-
-fn export_canonical_session_in(
-    global_dir: &Path,
-    session: &CanonicalSession,
-    target_dir: &Path,
-) -> Result<String> {
-    let session_id = Uuid::new_v4().to_string();
-    let target_dir_str = target_dir.to_string_lossy().to_string();
-    let title = truncate_summary(&canonical_session_title(session), TITLE_MAX_CHARS);
-    let now = Utc::now().timestamp_millis();
-    let created = session
-        .context
-        .created_at
-        .map(|dt| dt.timestamp_millis())
-        .unwrap_or(now);
-
-    let history: Vec<Value> = session
-        .events
-        .iter()
-        .filter_map(canonical_event_to_kiro_history_item)
-        .collect();
-
-    let session_json = json!({
-        "history": history,
-        "sessionId": session_id,
-        "title": title,
-        "workspaceDirectory": target_dir_str,
-        "sessionType": "vibe",
-        "contextUsagePercentage": 0
-    });
-
-    let sessions_dir = sessions_folder(global_dir, Some(&target_dir_str));
-    std::fs::create_dir_all(&sessions_dir)?;
-    let session_path = sessions_dir.join(format!("{}.json", session_id));
-    std::fs::write(&session_path, serde_json::to_string_pretty(&session_json)?)?;
-
-    let list_path = sessions_dir.join("sessions.json");
-    upsert_session_list_entry(
-        &list_path,
-        json!({
-            "sessionId": session_id,
-            "title": title,
-            "dateCreated": created.to_string(),
-            "workspaceDirectory": target_dir_str,
-            "hidden": false
-        }),
-    )?;
-
-    Ok(session_id)
-}
-
-fn canonical_event_to_kiro_history_item(event: &SessionEvent) -> Option<Value> {
-    let visible_role = canonical_event_visible_message_role(event)?;
-    let content = canonical_event_kiro_content(event);
-    if content.is_empty() {
-        return None;
-    }
-    let role = match visible_role {
-        EventRole::Assistant => "assistant",
-        _ => "user",
     };
-
-    Some(json!({
-        "message": {
-            "id": event.id,
-            "role": role,
-            "content": content
-        },
-        "contextItems": [],
-        "editorState": {}
-    }))
-}
-
-fn canonical_event_kiro_content(event: &SessionEvent) -> Vec<Value> {
-    event
-        .blocks
-        .iter()
-        .filter_map(|block| match block {
-            EventBlock::Text { text } => Some(json!({
-                "type": "text",
-                "text": text
-            })),
-            EventBlock::Thinking { text, .. } => Some(json!({
-                "thinking": text
-            })),
-            _ => {
-                let text = canonical_visible_block_text(block)?;
-                (!text.trim().is_empty()).then(|| {
-                    json!({
-                        "type": "text",
-                        "text": text
-                    })
-                })
-            }
-        })
-        .collect()
-}
-
-fn session_list_paths(global_dir: &Path) -> Result<Vec<PathBuf>> {
-    let mut paths = Vec::new();
-    let global_sessions = global_dir.join("sessions").join("sessions.json");
-    if global_sessions.exists() {
-        paths.push(global_sessions);
-    }
-
-    let workspace_root = global_dir.join("workspace-sessions");
-    if workspace_root.exists() {
-        for entry in std::fs::read_dir(&workspace_root)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                let list_path = path.join("sessions.json");
-                if list_path.exists() {
-                    paths.push(list_path);
-                }
-            }
+    let mut directories = Vec::new();
+    for entry in entries {
+        let entry = entry
+            .with_context(|| format!("Failed to read Kiro source entry: {}", parent.display()))?;
+        if entry.file_type()?.is_dir() {
+            directories.push(entry.path());
         }
     }
-
-    Ok(paths)
+    directories.sort();
+    Ok(directories)
 }
 
-fn sessions_folder(global_dir: &Path, workspace_dir: Option<&str>) -> PathBuf {
-    match workspace_dir.filter(|value| !value.trim().is_empty()) {
-        Some(workspace) => global_dir
-            .join("workspace-sessions")
-            .join(workspace_hash(workspace)),
-        None => global_dir.join("sessions"),
+fn has_current_source_files(session_dir: &Path) -> Result<bool> {
+    Ok(required_regular_file(&session_dir.join("session.json"))?
+        && required_regular_file(&session_dir.join("messages.jsonl"))?)
+}
+
+fn required_regular_file(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() && !metadata.file_type().is_symlink() => {
+            Ok(true)
+        }
+        Ok(_) => anyhow::bail!("Kiro source is not a regular file: {}", path.display()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("Failed to inspect Kiro source: {}", path.display()))
+        }
     }
 }
 
-fn workspace_hash(path: &str) -> String {
-    STANDARD.encode(path).replace(['/', '+', '='], "_")
-}
-
-fn read_session_list(path: &Path) -> Result<Vec<Value>> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("Failed to read Kiro session list: {}", path.display()))?;
-    if raw.trim().is_empty() {
+fn find_session_dirs(session_id: &str) -> Result<Vec<PathBuf>> {
+    validate_session_id(session_id)?;
+    let sessions_root = kiro_sessions_dir()?;
+    if !sessions_root.exists() {
         return Ok(Vec::new());
     }
-    let value: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("Failed to parse Kiro session list: {}", path.display()))?;
-    Ok(value.as_array().cloned().unwrap_or_default())
-}
-
-fn write_session_list(path: &Path, entries: &[Value]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    write_file_atomically(path, &serde_json::to_vec_pretty(entries)?)
-}
-
-fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .context("Kiro write target has no parent directory")?;
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .context("Kiro write target has an invalid file name")?;
-    let temporary_path = parent.join(format!(".{file_name}.memorph-{}.tmp", Uuid::new_v4()));
-    let write_result = (|| -> Result<()> {
-        let mut file = File::create(&temporary_path)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        std::fs::rename(&temporary_path, path)?;
-        Ok(())
-    })();
-    if write_result.is_err() {
-        let _ = std::fs::remove_file(&temporary_path);
-    }
-    write_result
-}
-
-fn fail_kiro_mutation_after_write(mutation: ProviderSourceMutation) -> Result<()> {
-    #[cfg(test)]
-    {
-        let mut configured = TEST_KIRO_MUTATION_FAILURE
-            .get_or_init(|| std::sync::Mutex::new(None))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if configured.as_ref() == Some(&mutation) {
-            *configured = None;
-            anyhow::bail!("injected Kiro mutation failure after provider write");
+    let mut matches = Vec::new();
+    for bucket_dir in sorted_child_directories(&sessions_root)? {
+        let session_dir = bucket_dir.join(session_id);
+        let metadata = match std::fs::symlink_metadata(&session_dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Failed to inspect Kiro session: {}", session_dir.display())
+                })
+            }
+        };
+        if metadata.file_type().is_dir()
+            && !metadata.file_type().is_symlink()
+            && has_current_source_files(&session_dir)?
+        {
+            matches.push(session_dir);
         }
     }
-    let _ = mutation;
+    matches.sort();
+    Ok(matches)
+}
+
+fn validate_session_id(session_id: &str) -> Result<()> {
+    let mut components = Path::new(session_id).components();
+    let is_single_normal_component = matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    );
+    if !is_single_normal_component {
+        anyhow::bail!("Invalid Kiro session id: {session_id}");
+    }
     Ok(())
 }
 
-fn upsert_session_list_entry(path: &Path, entry: Value) -> Result<()> {
-    let mut entries = if path.exists() {
-        read_session_list(path)?
-    } else {
-        Vec::new()
-    };
-    let session_id = entry.get("sessionId").and_then(|v| v.as_str());
-    let mut replaced = false;
+fn find_session_dir(session_id: &str) -> Result<Option<PathBuf>> {
+    let matches = find_session_dirs(session_id)?;
+    match matches.as_slice() {
+        [] => Ok(None),
+        [session_dir] => Ok(Some(session_dir.clone())),
+        _ => anyhow::bail!("Kiro session id is ambiguous: {session_id}"),
+    }
+}
 
-    if let Some(session_id) = session_id {
-        for existing in &mut entries {
-            if existing.get("sessionId").and_then(|v| v.as_str()) == Some(session_id) {
-                *existing = entry.clone();
-                replaced = true;
-                break;
+fn session_summary_from_dir(session_dir: &Path) -> Result<ProviderSessionSummary> {
+    let metadata = read_validated_session_metadata(session_dir)?;
+    let title = metadata
+        .title
+        .map(|title| title.trim().to_string())
+        .filter(|title| !title.is_empty());
+    let project_dir = metadata.workspace_paths.first().cloned();
+    let last_active_at = metadata
+        .last_modified_at
+        .as_deref()
+        .and_then(parse_timestamp_ms)
+        .or_else(|| metadata.created_at.as_deref().and_then(parse_timestamp_ms))
+        .or_else(|| source_file_modified_ms(&session_dir.join("messages.jsonl")));
+
+    Ok(ProviderSessionSummary {
+        session_id: metadata.id,
+        title,
+        project_dir,
+        last_active_at,
+        source_path: Some(session_dir.to_string_lossy().to_string()),
+    })
+}
+
+fn read_validated_session_metadata(session_dir: &Path) -> Result<KiroSessionMetadata> {
+    let session_id = session_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|id| !id.is_empty())
+        .context("Kiro session directory has no valid session id")?;
+    let bucket = session_dir
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .context("Kiro session directory has no workspace bucket")?;
+    let metadata_path = session_dir.join("session.json");
+    let raw = std::fs::read_to_string(&metadata_path)
+        .with_context(|| format!("Failed to read Kiro metadata: {}", metadata_path.display()))?;
+    let metadata: KiroSessionMetadata = serde_json::from_str(&raw)
+        .with_context(|| format!("Failed to parse Kiro metadata: {}", metadata_path.display()))?;
+
+    if metadata.schema_version != CURRENT_SCHEMA_VERSION
+        || metadata.data_model_version != CURRENT_DATA_MODEL_VERSION
+    {
+        anyhow::bail!(
+            "Unsupported Kiro session schema {}/{}: {}",
+            metadata.schema_version,
+            metadata.data_model_version,
+            metadata_path.display()
+        );
+    }
+    if metadata.id != session_id {
+        anyhow::bail!(
+            "Kiro metadata id {} does not match session directory {}",
+            metadata.id,
+            session_id
+        );
+    }
+    let expected_bucket = workspace_bucket(&metadata.workspace_paths)?;
+    if expected_bucket != bucket {
+        anyhow::bail!(
+            "Kiro workspace bucket {} does not match metadata workspacePaths (expected {})",
+            bucket,
+            expected_bucket
+        );
+    }
+    Ok(metadata)
+}
+
+fn workspace_bucket(workspace_paths: &[String]) -> Result<String> {
+    if workspace_paths.is_empty() {
+        return Ok("_global".to_string());
+    }
+    let mut normalized = workspace_paths
+        .iter()
+        .map(|path| normalize_workspace_path(path))
+        .collect::<Result<Vec<_>>>()?;
+    normalized.sort();
+    let joined = normalized.join("\0");
+    let digest = format!("{:x}", Sha256::digest(joined.as_bytes()));
+    Ok(digest[..16].to_string())
+}
+
+fn normalize_workspace_path(path: &str) -> Result<String> {
+    if path.is_empty() {
+        anyhow::bail!("Kiro workspace path must not be empty");
+    }
+    if !Path::new(path).is_absolute() {
+        anyhow::bail!("Kiro workspace path must be absolute: {path}");
+    }
+    let normalized = path.replace('\\', "/");
+    #[cfg(target_os = "windows")]
+    let normalized = normalized.to_lowercase();
+    Ok(normalized)
+}
+
+fn parse_timestamp_ms(value: &str) -> Option<i64> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.timestamp_millis())
+}
+
+fn source_file_modified_ms(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+}
+
+struct SourceFileMarker {
+    value: String,
+    modified_at_ms: i64,
+    size_bytes: i64,
+}
+
+fn source_file_marker(path: &Path) -> Result<Option<SourceFileMarker>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to inspect Kiro source: {}", path.display()))
+        }
+    };
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        anyhow::bail!("Kiro source is not a regular file: {}", path.display());
+    }
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok());
+    let modified_at_ms = modified
+        .as_ref()
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0);
+    let modified_at_ns = modified.map(|duration| duration.as_nanos()).unwrap_or(0);
+    let size_bytes = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+    Ok(Some(SourceFileMarker {
+        value: format!("present:{modified_at_ns}:{size_bytes}"),
+        modified_at_ms,
+        size_bytes,
+    }))
+}
+
+fn kiro_session_source_fingerprint(
+    session_dir: &Path,
+) -> Result<Option<ProviderSourceFingerprint>> {
+    let sessions_root = kiro_sessions_dir()?;
+    if session_dir.parent().and_then(Path::parent) != Some(sessions_root.as_path()) {
+        anyhow::bail!(
+            "Kiro session source locator is outside the configured sessions root: {}",
+            session_dir.display()
+        );
+    }
+
+    let directory_metadata = match std::fs::symlink_metadata(session_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to inspect Kiro session source: {}",
+                    session_dir.display()
+                )
+            })
+        }
+    };
+    if !directory_metadata.file_type().is_dir() || directory_metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "Kiro session source locator must be a directory: {}",
+            session_dir.display()
+        );
+    }
+
+    let Some(session_marker) = source_file_marker(&session_dir.join("session.json"))? else {
+        return Ok(None);
+    };
+    let Some(messages_marker) = source_file_marker(&session_dir.join("messages.jsonl"))? else {
+        return Ok(None);
+    };
+    read_validated_session_metadata(session_dir)?;
+
+    let sub_executions_dir = session_dir.join("sub-executions");
+    let mut sub_execution_markers = Vec::new();
+    let mut modified_at_ms = session_marker
+        .modified_at_ms
+        .max(messages_marker.modified_at_ms);
+    let mut size_bytes = session_marker
+        .size_bytes
+        .saturating_add(messages_marker.size_bytes);
+
+    match std::fs::symlink_metadata(&sub_executions_dir) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+                anyhow::bail!(
+                    "Kiro sub-executions source is not a directory: {}",
+                    sub_executions_dir.display()
+                );
             }
+            let mut entries = std::fs::read_dir(&sub_executions_dir)
+                .with_context(|| {
+                    format!(
+                        "Failed to read Kiro sub-executions: {}",
+                        sub_executions_dir.display()
+                    )
+                })?
+                .collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                let path = entry.path();
+                if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let marker = source_file_marker(&path)?.with_context(|| {
+                    format!(
+                        "Kiro sub-execution disappeared while scanning: {}",
+                        path.display()
+                    )
+                })?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                modified_at_ms = modified_at_ms.max(marker.modified_at_ms);
+                size_bytes = size_bytes.saturating_add(marker.size_bytes);
+                sub_execution_markers.push(format!("{name}:{}", marker.value));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to inspect Kiro sub-executions: {}",
+                    sub_executions_dir.display()
+                )
+            })
         }
     }
 
-    if !replaced {
-        entries.push(entry);
-    }
-    write_session_list(path, &entries)
-}
+    let sub_execution_value = if sub_execution_markers.is_empty() {
+        "absent".to_string()
+    } else {
+        let joined = sub_execution_markers.join("\0");
+        format!(
+            "{}:{:x}",
+            sub_execution_markers.len(),
+            Sha256::digest(joined.as_bytes())
+        )
+    };
 
-fn parse_ms(value: &Value) -> Option<i64> {
-    if let Some(ms) = value.as_i64() {
-        return Some(ms);
-    }
-    value.as_str()?.parse::<i64>().ok()
-}
-
-fn path_mtime_ms(path: &Path) -> Option<i64> {
-    std::fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_millis() as i64)
+    Ok(Some(ProviderSourceFingerprint {
+        modified_at_ms,
+        size_bytes,
+        value: format!(
+            "kiro-v2:session:{}:messages:{}:sub-executions:{}",
+            session_marker.value, messages_marker.value, sub_execution_value
+        ),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{core::session_management, storage::local_store};
-    use tempfile::tempdir;
+    use crate::provider::{PageStrategy, ProviderBackupSupport};
+    use serde_json::{json, Value};
+    use std::fs;
+    use std::sync::{MutexGuard, OnceLock};
 
-    static TEST_KIRO_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
-        std::sync::OnceLock::new();
+    static TEST_KIRO_TEST_LOCK: OnceLock<std::sync::Mutex<()>> = OnceLock::new();
 
-    struct TestKiroGlobalDirGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
+    struct TestKiroSessionsDirGuard {
+        _lock: MutexGuard<'static, ()>,
     }
 
-    impl Drop for TestKiroGlobalDirGuard {
+    impl Drop for TestKiroSessionsDirGuard {
         fn drop(&mut self) {
             crate::cache::global_cache().invalidate(PROVIDER_ID);
-            set_test_kiro_mutation_failure(None);
-            backup::set_test_backup_failure(false);
-            *TEST_KIRO_GLOBAL_DIR
+            *TEST_KIRO_SESSIONS_DIR
                 .get_or_init(|| std::sync::Mutex::new(None))
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         }
     }
 
-    fn use_test_kiro_global_dir(path: PathBuf) -> TestKiroGlobalDirGuard {
+    fn use_test_kiro_sessions_dir(path: PathBuf) -> TestKiroSessionsDirGuard {
         let lock = TEST_KIRO_TEST_LOCK
             .get_or_init(|| std::sync::Mutex::new(()))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *TEST_KIRO_GLOBAL_DIR
+        *TEST_KIRO_SESSIONS_DIR
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(path);
         crate::cache::global_cache().invalidate(PROVIDER_ID);
-        TestKiroGlobalDirGuard { _lock: lock }
-    }
-
-    fn set_test_kiro_mutation_failure(mutation: Option<ProviderSourceMutation>) {
-        *TEST_KIRO_MUTATION_FAILURE
-            .get_or_init(|| std::sync::Mutex::new(None))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = mutation;
+        TestKiroSessionsDirGuard { _lock: lock }
     }
 
     fn kiro_audit_fixture_root() -> PathBuf {
@@ -821,54 +551,31 @@ mod tests {
             .collect()
     }
 
-    fn write_native_kiro_scope(global_dir: &Path, scope_dir: &Path, session_id: &str, title: &str) {
-        let scope_dir = global_dir.join(scope_dir);
-        std::fs::create_dir_all(&scope_dir).unwrap();
-        write_session_list(
-            &scope_dir.join("sessions.json"),
-            &[
-                json!({
-                    "sessionId": "other-session",
-                    "title": "Other",
-                    "nativeIndex": "preserve"
-                }),
-                json!({
-                    "sessionId": session_id,
-                    "title": title,
-                    "nativeIndex": "target"
-                }),
-            ],
-        )
-        .unwrap();
-        std::fs::write(
-            scope_dir.join(format!("{session_id}.json")),
-            serde_json::to_vec_pretty(&json!({
-                "sessionId": session_id,
-                "title": title,
-                "history": [],
-                "nativeSession": {"preserve": true}
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+    fn copy_tree(source: &Path, target: &Path) -> Result<()> {
+        for entry in WalkDir::new(source).follow_links(false) {
+            let entry = entry?;
+            let relative = entry.path().strip_prefix(source)?;
+            let destination = target.join(relative);
+            if entry.file_type().is_dir() {
+                fs::create_dir_all(&destination)?;
+            } else if entry.file_type().is_file() {
+                if let Some(parent) = destination.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::copy(entry.path(), destination)?;
+            }
+        }
+        Ok(())
     }
 
-    fn target_entry(path: &Path, session_id: &str) -> Value {
-        read_session_list(path)
-            .unwrap()
-            .into_iter()
-            .find(|entry| entry.get("sessionId").and_then(Value::as_str) == Some(session_id))
-            .unwrap()
-    }
-
-    fn session_value(path: &Path) -> Value {
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    fn copy_fixture_sessions() -> Result<tempfile::TempDir> {
+        let temp = tempfile::tempdir()?;
+        copy_tree(&kiro_audit_fixture_root().join("sessions"), temp.path())?;
+        Ok(temp)
     }
 
     #[test]
     fn kiro_v2_audit_fixture_matches_official_session_directory_contract() {
-        use sha2::{Digest, Sha256};
-
         let root = kiro_audit_fixture_root();
         let manifest: Value =
             serde_json::from_str(&std::fs::read_to_string(root.join("fixture.json")).unwrap())
@@ -888,11 +595,15 @@ mod tests {
 
         let session_id = manifest["normal_session_id"].as_str().unwrap();
         let workspace_path = "/workspace/sanitized-project";
-        let workspace_hash = format!("{:x}", Sha256::digest(workspace_path.as_bytes()));
-        let workspace_hash = &workspace_hash[..16];
-        assert_eq!(workspace_hash, "8f3d1d8bb1bd8116");
+        assert_eq!(
+            workspace_bucket(&[workspace_path.to_string()]).unwrap(),
+            "8f3d1d8bb1bd8116"
+        );
 
-        let session_dir = root.join("sessions").join(workspace_hash).join(session_id);
+        let session_dir = root
+            .join("sessions")
+            .join("8f3d1d8bb1bd8116")
+            .join(session_id);
         let metadata: Value = serde_json::from_str(
             &std::fs::read_to_string(session_dir.join("session.json")).unwrap(),
         )
@@ -1010,714 +721,200 @@ mod tests {
     }
 
     #[test]
-    fn scans_and_loads_workspace_session() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let global_dir = temp.path().join("kiro.kiroagent");
-        let workspace = "/tmp/kiro-project";
-        let sessions_dir = sessions_folder(&global_dir, Some(workspace));
-        std::fs::create_dir_all(&sessions_dir)?;
+    fn current_format_scan_uses_directory_locators_and_truthful_capabilities() -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
 
-        let session_id = "kiro-session-1";
-        write_session_list(
-            &sessions_dir.join("sessions.json"),
-            &[json!({
-                "sessionId": session_id,
-                "title": "Hello Kiro",
-                "dateCreated": "1700000000000",
-                "workspaceDirectory": workspace,
-                "hidden": false
-            })],
-        )?;
-        std::fs::write(
-            sessions_dir.join(format!("{}.json", session_id)),
-            serde_json::to_string_pretty(&json!({
-                "history": [
-                    {
-                        "message": {
-                            "id": "m1",
-                            "role": "user",
-                            "content": [{"type": "text", "text": "hi"}]
-                        }
-                    },
-                    {
-                        "message": {
-                            "id": "m2",
-                            "role": "assistant",
-                            "content": [
-                                {"thinking": "checking"},
-                                {"type": "text", "text": "hello"},
-                                {"type": "kiro_extra", "payload": {"ok": true}}
-                            ]
-                        }
-                    }
-                ],
-                "sessionId": session_id,
-                "title": "Hello Kiro",
-                "workspaceDirectory": workspace,
-                "sessionType": "vibe",
-                "contextUsagePercentage": 0
-            }))?,
-        )?;
-
-        let sessions = scan_sessions_in(&global_dir)?;
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_id, session_id);
-        assert_eq!(sessions[0].title.as_deref(), Some("Hello Kiro"));
-        assert_eq!(sessions[0].project_dir.as_deref(), Some(workspace));
-
-        let imported = import_canonical_session_from_path(Path::new(
-            sessions[0].source_path.as_ref().unwrap(),
-        ))?;
-        assert_eq!(imported.session.identity.canonical_id, session_id);
-        assert_eq!(
-            imported.session.identity.source_title.as_deref(),
-            Some("Hello Kiro")
-        );
-        assert_eq!(
-            imported.session.context.workspace_dir.as_deref(),
-            Some(workspace)
-        );
-        assert_eq!(imported.session.events.len(), 2);
-        assert!(matches!(
-            imported.session.events[0].blocks.first(),
-            Some(EventBlock::Text { text }) if text == "hi"
-        ));
-        assert!(imported.session.events[1]
-            .blocks
-            .iter()
-            .any(|block| matches!(
-                block,
-                EventBlock::Thinking { text, .. } if text == "checking"
-            )));
-        assert!(imported.session.events[1]
-            .blocks
-            .iter()
-            .any(|block| matches!(
-                block,
-                EventBlock::ProviderPayload { kind, .. } if kind == "kiro_extra"
-            )));
-
-        Ok(())
-    }
-
-    #[test]
-    fn compressed_segment_exports_as_portable_kiro_text() {
-        let event = SessionEvent {
-            id: "compressed-source".to_string(),
-            kind: SessionEventKind::Message,
-            role: EventRole::Assistant,
-            timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Compressed {
-                source_provider_id: "opencode".to_string(),
-                summary: "compressed summary".to_string(),
-                source_event_ids: vec![
-                    "old-event-1".to_string(),
-                    "old-event-2".to_string(),
-                    "old-event-3".to_string(),
-                ],
-                source_event_count: None,
-                archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
-            }],
-            metadata: EventMetadata {
-                source: EventSource {
-                    provider_id: "memorph".to_string(),
-                    original_id: None,
-                    original_role: Some("assistant".to_string()),
-                    phase: Some("compression".to_string()),
-                },
-                model: None,
-                usage: None,
-                fidelity: MappingDisposition::Normalized,
-                provider_ext: BTreeMap::new(),
-            },
-        };
-
-        let item = canonical_event_to_kiro_history_item(&event).expect("kiro history item");
-        let text = item
-            .pointer("/message/content/0/text")
-            .and_then(Value::as_str)
-            .expect("portable compressed text");
-
-        assert!(text.contains("[Compressed session segment from opencode]"));
-        assert!(text.contains("compressed summary"));
-        assert!(text.contains("Source event count: 3"));
-        assert!(text.contains("Archive: memorph-archive://s1/archive.json.gz"));
-        assert!(text.contains("memorph compression retrieve memorph-archive://s1/archive.json.gz --query <terms> --max-results 5"));
-        assert!(!text.contains("old-event-1"));
-        assert!(!text.contains("old-event-2"));
-        assert!(!text.contains("old-event-3"));
-    }
-
-    #[test]
-    fn internal_events_do_not_export_as_kiro_history_items() {
-        let event = SessionEvent {
-            id: "internal".to_string(),
-            kind: SessionEventKind::Lifecycle,
-            role: EventRole::System,
-            timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Text {
-                text: "internal context".to_string(),
-            }],
-            metadata: EventMetadata {
-                source: EventSource {
-                    provider_id: "codex".to_string(),
-                    original_id: None,
-                    original_role: Some("user".to_string()),
-                    phase: None,
-                },
-                model: None,
-                usage: None,
-                fidelity: MappingDisposition::Normalized,
-                provider_ext: BTreeMap::new(),
-            },
-        };
-
-        assert!(canonical_event_to_kiro_history_item(&event).is_none());
-    }
-
-    #[test]
-    fn write_rename_delete_roundtrip() -> Result<()> {
-        let _lock = TEST_KIRO_TEST_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let temp = tempfile::tempdir()?;
-        let global_dir = temp.path().join("kiro.kiroagent");
-        let target_dir = temp.path().join("project");
-        std::fs::create_dir_all(&target_dir)?;
-
-        let now = Utc::now();
-        let source = CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
-                canonical_id: "source-session".to_string(),
-                source_title: Some("Imported Session".to_string()),
-            },
-            provenance: SessionProvenance {
-                imported_at: now,
-                imported_by: Some("memorph-test".to_string()),
-                primary_source: ProviderSessionRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id: "source-session".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
-            },
-            context: SessionContext {
-                workspace_dir: Some(target_dir.to_string_lossy().to_string()),
-                created_at: Some(now),
-                last_active_at: Some(now),
-                tags: Vec::new(),
-            },
-            events: vec![
-                SessionEvent {
-                    id: "user-1".to_string(),
-                    kind: SessionEventKind::Message,
-                    role: EventRole::User,
-                    timestamp: now,
-                    links: EventLinks::default(),
-                    blocks: vec![EventBlock::Text {
-                        text: "Build this".to_string(),
-                    }],
-                    metadata: EventMetadata {
-                        source: EventSource {
-                            provider_id: PROVIDER_ID.to_string(),
-                            original_id: None,
-                            original_role: Some("user".to_string()),
-                            phase: None,
-                        },
-                        model: None,
-                        usage: None,
-                        fidelity: MappingDisposition::Preserved,
-                        provider_ext: BTreeMap::new(),
-                    },
-                },
-                SessionEvent {
-                    id: "assistant-1".to_string(),
-                    kind: SessionEventKind::Message,
-                    role: EventRole::Assistant,
-                    timestamp: now,
-                    links: EventLinks::default(),
-                    blocks: vec![EventBlock::Text {
-                        text: "Done".to_string(),
-                    }],
-                    metadata: EventMetadata {
-                        source: EventSource {
-                            provider_id: PROVIDER_ID.to_string(),
-                            original_id: None,
-                            original_role: Some("assistant".to_string()),
-                            phase: None,
-                        },
-                        model: None,
-                        usage: None,
-                        fidelity: MappingDisposition::Preserved,
-                        provider_ext: BTreeMap::new(),
-                    },
-                },
-            ],
-            artifacts: Vec::new(),
-            extensions: BTreeMap::new(),
-        };
-
-        let new_id = export_canonical_session_in(&global_dir, &source, &target_dir)?;
-        let sessions = scan_sessions_in(&global_dir)?;
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].session_id, new_id);
-        assert_eq!(sessions[0].title.as_deref(), Some("Imported Session"));
-
-        let imported = import_canonical_session_from_path(Path::new(
-            sessions[0].source_path.as_ref().unwrap(),
-        ))?;
-        let canonical_global_dir = temp.path().join("canonical-kiro.kiroagent");
-        let canonical_id =
-            export_canonical_session_in(&canonical_global_dir, &imported.session, &target_dir)?;
-        let canonical_sessions = scan_sessions_in(&canonical_global_dir)?;
-        assert_eq!(canonical_sessions.len(), 1);
-        assert_eq!(canonical_sessions[0].session_id, canonical_id);
-        assert_eq!(
-            canonical_sessions[0].title.as_deref(),
-            Some("Imported Session")
-        );
-
-        backup::rename_session(&global_dir, &new_id, "Renamed")?;
-        let renamed = scan_sessions_in(&global_dir)?;
-        assert_eq!(renamed[0].title.as_deref(), Some("Renamed"));
-
-        backup::delete_session(&global_dir, &new_id)?;
-        assert!(scan_sessions_in(&global_dir)?.is_empty());
-
-        Ok(())
-    }
-
-    #[test]
-    fn delete_backup_restores_all_kiro_scopes_and_preserves_unrelated_index_changes() {
-        let dir = tempdir().unwrap();
-        let global_dir = dir.path().join("kiro.kiroagent");
-        let _guard = use_test_kiro_global_dir(global_dir.clone());
-        let session_id = "kiro-delete";
-        let scopes = [
-            PathBuf::from("sessions"),
-            PathBuf::from("workspace-sessions/workspace-a"),
-            PathBuf::from("workspace-sessions/workspace-b"),
-        ];
-        for scope in &scopes {
-            write_native_kiro_scope(&global_dir, scope, session_id, "Before");
-        }
-        let backup = KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-kiro-delete",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap();
-
-        KiroProvider.delete_session(session_id).unwrap();
-        for scope in &scopes {
-            let list_path = global_dir.join(scope).join("sessions.json");
-            let mut entries = read_session_list(&list_path).unwrap();
-            entries.push(json!({
-                "sessionId": format!("concurrent-{}", scope.display()),
-                "title": "Concurrent"
-            }));
-            write_session_list(&list_path, &entries).unwrap();
-        }
-
-        KiroProvider.restore_session_backup(&backup).unwrap();
-        KiroProvider.restore_session_backup(&backup).unwrap();
-
-        for scope in &scopes {
-            let scope_dir = global_dir.join(scope);
-            assert_eq!(
-                target_entry(&scope_dir.join("sessions.json"), session_id)["title"],
-                "Before"
-            );
-            assert!(read_session_list(&scope_dir.join("sessions.json"))
-                .unwrap()
-                .iter()
-                .any(|entry| entry["title"] == "Concurrent"));
-            assert_eq!(
-                session_value(&scope_dir.join(format!("{session_id}.json")))["nativeSession"]
-                    ["preserve"],
-                true
-            );
-        }
-    }
-
-    #[test]
-    fn rename_restore_only_restores_titles_and_preserves_concurrent_changes() {
-        let dir = tempdir().unwrap();
-        let global_dir = dir.path().join("kiro.kiroagent");
-        let _guard = use_test_kiro_global_dir(global_dir.clone());
-        let session_id = "kiro-rename";
-        let scope = PathBuf::from("workspace-sessions/workspace-a");
-        write_native_kiro_scope(&global_dir, &scope, session_id, "Before");
-        let backup = KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Rename,
-                "operation-kiro-rename",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap();
-
-        KiroProvider.rename_session(session_id, "After").unwrap();
-        let scope_dir = global_dir.join(&scope);
-        let list_path = scope_dir.join("sessions.json");
-        let mut entries = read_session_list(&list_path).unwrap();
-        entries
-            .iter_mut()
-            .find(|entry| entry["sessionId"] == session_id)
-            .unwrap()["concurrentIndex"] = json!("keep");
-        entries.push(json!({"sessionId": "concurrent", "title": "Concurrent"}));
-        write_session_list(&list_path, &entries).unwrap();
-        let session_path = scope_dir.join(format!("{session_id}.json"));
-        let mut session = session_value(&session_path);
-        session["concurrentSession"] = json!("keep");
-        write_file_atomically(&session_path, &serde_json::to_vec_pretty(&session).unwrap())
-            .unwrap();
-
-        KiroProvider.restore_session_backup(&backup).unwrap();
-
-        let restored_entry = target_entry(&list_path, session_id);
-        assert_eq!(restored_entry["title"], "Before");
-        assert_eq!(restored_entry["concurrentIndex"], "keep");
-        assert!(read_session_list(&list_path)
-            .unwrap()
-            .iter()
-            .any(|entry| entry["sessionId"] == "concurrent"));
-        let restored_session = session_value(&session_path);
-        assert_eq!(restored_session["title"], "Before");
-        assert_eq!(restored_session["concurrentSession"], "keep");
-    }
-
-    #[test]
-    fn rename_restore_does_not_recreate_concurrently_deleted_targets() {
-        let dir = tempdir().unwrap();
-        let global_dir = dir.path().join("kiro.kiroagent");
-        let _guard = use_test_kiro_global_dir(global_dir.clone());
-        let session_id = "kiro-concurrent-delete";
-        let scope = PathBuf::from("sessions");
-        write_native_kiro_scope(&global_dir, &scope, session_id, "Before");
-        let backup = KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Rename,
-                "operation-kiro-concurrent-delete",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap();
-        KiroProvider.rename_session(session_id, "After").unwrap();
-
-        let scope_dir = global_dir.join(scope);
-        let list_path = scope_dir.join("sessions.json");
-        let mut entries = read_session_list(&list_path).unwrap();
-        entries.retain(|entry| entry["sessionId"] != session_id);
-        write_session_list(&list_path, &entries).unwrap();
-        let session_path = scope_dir.join(format!("{session_id}.json"));
-        std::fs::remove_file(&session_path).unwrap();
-
-        KiroProvider.restore_session_backup(&backup).unwrap();
-
-        assert!(!read_session_list(&list_path)
-            .unwrap()
-            .iter()
-            .any(|entry| entry["sessionId"] == session_id));
-        assert!(!session_path.exists());
-    }
-
-    #[test]
-    fn kiro_backup_rejects_ambiguous_invalid_and_unsafe_sources() {
-        let dir = tempdir().unwrap();
-        let global_dir = dir.path().join("kiro.kiroagent");
-        let _guard = use_test_kiro_global_dir(global_dir.clone());
-        let session_id = "kiro-invalid";
-        let scope = global_dir.join("sessions");
-        std::fs::create_dir_all(&scope).unwrap();
-        write_session_list(
-            &scope.join("sessions.json"),
-            &[
-                json!({"sessionId": session_id, "title": "One"}),
-                json!({"sessionId": session_id, "title": "Two"}),
-            ],
-        )
-        .unwrap();
-        std::fs::write(
-            scope.join(format!("{session_id}.json")),
-            serde_json::to_vec(&json!({"sessionId": session_id})).unwrap(),
-        )
-        .unwrap();
-        assert!(KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-duplicate",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("duplicate entries"));
-
-        std::fs::write(scope.join("sessions.json"), b"{}").unwrap();
-        assert!(KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-non-array",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("must contain a JSON array"));
-
-        write_session_list(
-            &scope.join("sessions.json"),
-            &[json!({"sessionId": session_id})],
-        )
-        .unwrap();
-        std::fs::write(
-            scope.join(format!("{session_id}.json")),
-            serde_json::to_vec(&json!({"sessionId": "wrong"})).unwrap(),
-        )
-        .unwrap();
-        assert!(KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Rename,
-                "operation-wrong-id",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("identity does not match"));
-
-        std::fs::write(
-            scope.join(format!("{session_id}.json")),
-            serde_json::to_vec(&json!(["not", "an", "object"])).unwrap(),
-        )
-        .unwrap();
-        assert!(KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Rename,
-                "operation-non-object",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap_err()
-            .to_string()
-            .contains("must contain a JSON object"));
-
-        #[cfg(unix)]
-        {
-            let real_list = scope.join("real-sessions.json");
-            write_session_list(&real_list, &[json!({"sessionId": session_id})]).unwrap();
-            std::fs::remove_file(scope.join("sessions.json")).unwrap();
-            std::os::unix::fs::symlink(&real_list, scope.join("sessions.json")).unwrap();
-            assert!(KiroProvider
-                .create_session_backup(
-                    ProviderSourceMutation::Delete,
-                    "operation-symlink",
-                    session_id,
-                    &dir.path().join("backups"),
-                )
-                .unwrap_err()
-                .to_string()
-                .contains("not a regular file"));
-        }
-    }
-
-    #[test]
-    fn kiro_restore_rejects_payload_and_source_path_tampering_before_writes() {
-        let dir = tempdir().unwrap();
-        let global_dir = dir.path().join("kiro.kiroagent");
-        let _guard = use_test_kiro_global_dir(global_dir.clone());
-        let session_id = "kiro-tamper";
-        write_native_kiro_scope(&global_dir, Path::new("sessions"), session_id, "Before");
-        let backup_root = dir.path().join("backups");
-        let payload_backup = KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-payload-tamper",
-                session_id,
-                &backup_root,
-            )
-            .unwrap();
-        KiroProvider.delete_session(session_id).unwrap();
-        std::fs::write(
-            payload_backup.backup_path.join("files/0000-session.json"),
-            b"tampered",
-        )
-        .unwrap();
-        assert!(KiroProvider
-            .restore_session_backup(&payload_backup)
-            .unwrap_err()
-            .to_string()
-            .contains("does not match its manifest"));
-        assert!(
-            !read_session_list(&global_dir.join("sessions/sessions.json"))
-                .unwrap()
-                .iter()
-                .any(|entry| entry["sessionId"] == session_id)
-        );
-        assert!(!global_dir
-            .join("sessions")
-            .join(format!("{session_id}.json"))
-            .exists());
-
-        write_native_kiro_scope(&global_dir, Path::new("sessions"), session_id, "Before");
-        let path_backup = KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Rename,
-                "operation-path-tamper",
-                session_id,
-                &backup_root,
-            )
-            .unwrap();
-        let metadata_path = path_backup.backup_path.join("metadata.json");
-        let mut metadata: Value =
-            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
-        metadata["scopes"][0]["scope_dir"] = json!("../outside");
-        std::fs::write(
-            &metadata_path,
-            serde_json::to_vec_pretty(&metadata).unwrap(),
-        )
-        .unwrap();
-        assert!(KiroProvider
-            .restore_session_backup(&path_backup)
-            .unwrap_err()
-            .to_string()
-            .contains("scope path is invalid"));
-    }
-
-    #[test]
-    fn kiro_backup_contract_registration_and_partial_failure_recovery() {
-        let dir = tempdir().unwrap();
-        let global_dir = dir.path().join("kiro.kiroagent");
-        let _guard = use_test_kiro_global_dir(global_dir.clone());
-        let delete_id = "kiro-partial-delete";
-        let rename_id = "kiro-partial-rename";
-        write_native_kiro_scope(
-            &global_dir,
-            Path::new("sessions"),
-            delete_id,
-            "Delete Before",
-        );
-        write_native_kiro_scope(
-            &global_dir,
-            Path::new("workspace-sessions/workspace-a"),
-            rename_id,
-            "Rename Before",
-        );
-        let backup_root = dir.path().join("backups");
-        let contract = KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-contract",
-                delete_id,
-                &backup_root,
-            )
-            .unwrap();
         let capabilities = KiroProvider.capabilities();
-        assert!(capabilities.backup_support.before_write);
-        assert!(capabilities.backup_support.restore);
-        assert!(!capabilities.backup_support.sync_only);
-        assert_eq!(contract.source_path, global_dir.canonicalize().unwrap());
-        assert_eq!(contract.format, "kiro-session-backup-v1");
+        assert!(capabilities.scan);
+        assert!(!capabilities.import);
+        assert!(!capabilities.export);
+        assert!(!capabilities.delete);
+        assert!(!capabilities.rename);
+        assert!(!capabilities.resume);
+        assert_eq!(capabilities.scan_strategy, ScanStrategy::FullScan);
+        assert_eq!(capabilities.page_strategy, PageStrategy::Unknown);
+        assert_eq!(capabilities.storage_shape, StorageShape::Directory);
         assert_eq!(
-            contract.mime_type,
-            "application/vnd.memorph.kiro-session-backup"
+            capabilities.backup_support,
+            ProviderBackupSupport {
+                before_write: false,
+                restore: false,
+                sync_only: false,
+            }
         );
-        assert!(contract.backup_path.join("metadata.json").is_file());
-        assert!(contract
-            .backup_path
-            .join("files/0000-session.json")
-            .is_file());
 
-        let mut unconfigured_artifact_conn = rusqlite::Connection::open_in_memory().unwrap();
-        let registration_results = session_management::delete_sessions(
-            PROVIDER_ID,
-            &[delete_id],
-            &["operation-registration".to_string()],
-            &backup_root,
-            &mut unconfigured_artifact_conn,
+        let sessions = KiroProvider.scan_sessions()?;
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(
+            sessions[0].session_id,
+            "sess_22222222-2222-4222-8222-222222222222"
         );
-        assert!(registration_results[0]
-            .as_ref()
+        assert_eq!(sessions[0].project_dir, None);
+        assert_eq!(
+            sessions[1].session_id,
+            "sess_11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(sessions[1].title.as_deref(), Some("Sanitized Kiro session"));
+        assert_eq!(
+            sessions[1].project_dir.as_deref(),
+            Some("/workspace/sanitized-project")
+        );
+        let source_path = PathBuf::from(sessions[1].source_path.as_ref().unwrap());
+        assert!(source_path.is_dir());
+        assert_eq!(
+            source_path.file_name().and_then(|name| name.to_str()),
+            Some(sessions[1].session_id.as_str())
+        );
+        assert_eq!(
+            KiroProvider
+                .get_session_meta(&sessions[1].session_id)?
+                .unwrap()
+                .source_path,
+            sessions[1].source_path
+        );
+        assert!(KiroProvider.session_size(&sessions[1].session_id)? > 0);
+        assert!(KiroProvider
+            .import_session(source_path.to_str().unwrap())
             .unwrap_err()
             .to_string()
-            .contains("Delete cancelled before provider write"));
-        assert!(global_dir
-            .join("sessions")
-            .join(format!("{delete_id}.json"))
-            .is_file());
-
-        let mut artifact_conn = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&artifact_conn).unwrap();
-        local_store::apply_schema(&mut artifact_conn).unwrap();
-        set_test_kiro_mutation_failure(Some(ProviderSourceMutation::Delete));
-        let delete_results = session_management::delete_sessions(
-            PROVIDER_ID,
-            &[delete_id],
-            &["operation-partial-delete".to_string()],
-            &backup_root,
-            &mut artifact_conn,
-        );
-        assert!(delete_results[0]
-            .as_ref()
-            .unwrap_err()
-            .to_string()
-            .contains("Provider source was restored from registered backup"));
-        assert_eq!(
-            target_entry(&global_dir.join("sessions/sessions.json"), delete_id)["title"],
-            "Delete Before"
-        );
-
-        set_test_kiro_mutation_failure(Some(ProviderSourceMutation::Rename));
-        let rename_error = session_management::rename_session(
-            PROVIDER_ID,
-            rename_id,
-            "After",
-            "operation-partial-rename",
-            &backup_root,
-            &mut artifact_conn,
-        )
-        .unwrap_err();
-        assert!(rename_error
-            .to_string()
-            .contains("Provider source was restored from registered backup"));
-        assert_eq!(
-            target_entry(
-                &global_dir.join("workspace-sessions/workspace-a/sessions.json"),
-                rename_id,
-            )["title"],
-            "Rename Before"
-        );
+            .contains("current Kiro session format"));
+        assert_eq!(KiroProvider.data_source_paths(), vec![temp.path()]);
+        Ok(())
     }
 
     #[test]
-    fn failed_kiro_backup_creation_removes_operation_directory() {
-        let dir = tempdir().unwrap();
-        let global_dir = dir.path().join("kiro.kiroagent");
-        let _guard = use_test_kiro_global_dir(global_dir.clone());
-        let session_id = "kiro-backup-failure";
-        write_native_kiro_scope(&global_dir, Path::new("sessions"), session_id, "Before");
-        backup::set_test_backup_failure(true);
-
-        let error = KiroProvider
-            .create_session_backup(
-                ProviderSourceMutation::Delete,
-                "operation-backup-failure",
-                session_id,
-                &dir.path().join("backups"),
-            )
-            .unwrap_err();
-
-        assert!(error.to_string().contains("injected Kiro backup failure"));
-        assert!(!dir
+    fn current_format_fingerprint_covers_metadata_messages_and_sub_executions() -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_dir = temp
             .path()
-            .join("backups/kiro/operation-backup-failure")
-            .exists());
+            .join("8f3d1d8bb1bd8116/sess_11111111-1111-4111-8111-111111111111");
+        let variants = kiro_audit_fixture_root().join("variants");
+        let fingerprint = || {
+            KiroProvider
+                .session_source_fingerprint(session_dir.to_str().unwrap())
+                .unwrap()
+                .unwrap()
+                .value
+        };
+
+        let baseline = fingerprint();
+        assert!(baseline.starts_with("kiro-v2:"));
+        assert!(baseline.contains(":sub-executions:1:"));
+
+        let session_path = session_dir.join("session.json");
+        let original_session = fs::read(&session_path)?;
+        fs::copy(variants.join("session.updated.json"), &session_path)?;
+        assert_ne!(fingerprint(), baseline);
+        fs::write(&session_path, original_session)?;
+
+        let messages_path = session_dir.join("messages.jsonl");
+        let original_messages = fs::read(&messages_path)?;
+        let restored_session_fingerprint = fingerprint();
+        fs::copy(variants.join("messages.updated.jsonl"), &messages_path)?;
+        assert_ne!(fingerprint(), restored_session_fingerprint);
+        fs::write(&messages_path, original_messages)?;
+
+        let sub_execution_path = session_dir.join("sub-executions/subexec-1.jsonl");
+        let original_sub_execution = fs::read(&sub_execution_path)?;
+        let restored_messages_fingerprint = fingerprint();
+        fs::copy(
+            variants.join("sub-execution.updated.jsonl"),
+            &sub_execution_path,
+        )?;
+        assert_ne!(fingerprint(), restored_messages_fingerprint);
+        fs::write(&sub_execution_path, original_sub_execution)?;
+
+        let source_fingerprint = fingerprint();
+        fs::write(
+            session_dir.join("tool-outputs/tool-1-a1b2c3d4.txt"),
+            "[changed artifact outside C2 canonical source scope]",
+        )?;
+        assert_eq!(fingerprint(), source_fingerprint);
+
+        assert!(KiroProvider
+            .session_source_fingerprint(session_path.to_str().unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("outside the configured sessions root"));
+        fs::remove_file(&messages_path)?;
+        assert!(KiroProvider
+            .session_source_fingerprint(session_dir.to_str().unwrap())?
+            .is_none());
+        assert!(KiroProvider
+            .session_source_fingerprint(
+                temp.path()
+                    .join("missing/session")
+                    .to_string_lossy()
+                    .as_ref()
+            )?
+            .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn current_format_rejects_duplicate_ids_and_invalid_identity_buckets() -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_id = "sess_11111111-1111-4111-8111-111111111111";
+        let source_dir = temp.path().join("8f3d1d8bb1bd8116").join(session_id);
+        let duplicate_workspace = "/workspace/duplicate".to_string();
+        let duplicate_bucket = workspace_bucket(std::slice::from_ref(&duplicate_workspace))?;
+        let duplicate_dir = temp.path().join(duplicate_bucket).join(session_id);
+        copy_tree(&source_dir, &duplicate_dir)?;
+        let metadata_path = duplicate_dir.join("session.json");
+        let mut metadata: Value = serde_json::from_slice(&fs::read(&metadata_path)?)?;
+        metadata["workspacePaths"] = json!([duplicate_workspace]);
+        fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)?;
+
+        assert!(KiroProvider
+            .scan_sessions()
+            .unwrap_err()
+            .to_string()
+            .contains("Ambiguous Kiro session id"));
+        assert!(KiroProvider
+            .get_session_meta(session_id)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        assert!(KiroProvider
+            .session_size(session_id)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        assert!(KiroProvider
+            .get_session_meta("../outside")
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid Kiro session id"));
+
+        fs::remove_dir_all(duplicate_dir)?;
+        let original_metadata = fs::read(source_dir.join("session.json"))?;
+        let mut invalid_id: Value = serde_json::from_slice(&original_metadata)?;
+        invalid_id["id"] = Value::String("different-session-id".to_string());
+        fs::write(
+            source_dir.join("session.json"),
+            serde_json::to_vec_pretty(&invalid_id)?,
+        )?;
+        assert!(KiroProvider
+            .scan_sessions()
+            .unwrap_err()
+            .to_string()
+            .contains("does not match session directory"));
+
+        fs::write(source_dir.join("session.json"), &original_metadata)?;
+        let mut invalid_bucket: Value = serde_json::from_slice(&original_metadata)?;
+        invalid_bucket["workspacePaths"] = json!(["/workspace/different"]);
+        fs::write(
+            source_dir.join("session.json"),
+            serde_json::to_vec_pretty(&invalid_bucket)?,
+        )?;
+        assert!(KiroProvider
+            .scan_sessions()
+            .unwrap_err()
+            .to_string()
+            .contains("does not match metadata workspacePaths"));
+        Ok(())
     }
 }
