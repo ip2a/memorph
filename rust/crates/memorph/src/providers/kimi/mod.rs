@@ -1006,7 +1006,7 @@ fn parse_wire_timestamp(value: &Value) -> Option<chrono::DateTime<Utc>> {
 mod tests {
     use super::*;
     use crate::{core::session_management, storage::local_store};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use tempfile::tempdir;
 
     static TEST_KIMI_TEST_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
@@ -1078,6 +1078,208 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    fn kimi_audit_fixture_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/providers/kimi/fixtures/v1_37_0")
+    }
+
+    fn read_jsonl_values(path: &Path) -> Vec<Result<Value, serde_json::Error>> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(serde_json::from_str)
+            .collect()
+    }
+
+    #[test]
+    fn sanitized_kimi_fixture_records_real_source_plane() {
+        let root = kimi_audit_fixture_root();
+        let manifest: Value =
+            serde_json::from_slice(&std::fs::read(root.join("fixture.json")).unwrap()).unwrap();
+        assert_eq!(manifest["provider"], "kimi");
+        assert_eq!(manifest["observed_cli_version"], "1.37.0");
+        assert_eq!(manifest["provenance"], "sanitized-local-source");
+        assert_eq!(manifest["raw_user_content_committed"], false);
+
+        let metadata: Value =
+            serde_json::from_slice(&std::fs::read(root.join("kimi.json")).unwrap()).unwrap();
+        let work_dirs = metadata["work_dirs"].as_array().unwrap();
+        assert_eq!(work_dirs.len(), 2);
+        for work_dir in work_dirs {
+            assert_eq!(work_dir["kaos"], "local");
+            let path = work_dir["path"].as_str().unwrap();
+            let session_id = work_dir["last_session_id"].as_str().unwrap();
+            assert!(Uuid::parse_str(session_id).is_ok());
+            let session_dir = root
+                .join("sessions")
+                .join(md5_hex(path.as_bytes()))
+                .join(session_id);
+            assert!(session_dir.join("context.jsonl").is_file());
+        }
+
+        let normal = root
+            .join("sessions/2030c6ce97e98c160351b18f097eb584")
+            .join("11111111-1111-4111-8111-111111111111");
+        assert!(normal.join("wire.jsonl").is_file());
+        assert!(normal.join("state.json").is_file());
+
+        let context_only = root
+            .join("sessions/0017cc2b0eee031e9194d1384b4bcdd8")
+            .join("22222222-2222-4222-8222-222222222222");
+        assert!(context_only.join("context.jsonl").is_file());
+        assert!(!context_only.join("wire.jsonl").exists());
+        assert!(!context_only.join("state.json").exists());
+    }
+
+    #[test]
+    fn sanitized_kimi_wire_fixture_preserves_observed_v1_37_schema() {
+        let path = kimi_audit_fixture_root().join(
+            "sessions/2030c6ce97e98c160351b18f097eb584/11111111-1111-4111-8111-111111111111/wire.jsonl",
+        );
+        let values = read_jsonl_values(&path)
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(values[0]["type"], "metadata");
+        assert_eq!(values[0]["protocol_version"], "1.3");
+        assert!(values[0].get("timestamp").is_none());
+        assert!(values[0].get("message").is_none());
+
+        let message_types: Vec<_> = values[1..]
+            .iter()
+            .map(|value| value["message"]["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            message_types,
+            [
+                "TurnBegin",
+                "StepBegin",
+                "ContentPart",
+                "ContentPart",
+                "StatusUpdate",
+                "TurnEnd",
+                "TurnBegin",
+                "StepBegin",
+                "ContentPart",
+                "TurnEnd",
+            ]
+        );
+
+        let content_part_types: Vec<_> = values[1..]
+            .iter()
+            .filter(|value| value["message"]["type"] == "ContentPart")
+            .map(|value| value["message"]["payload"]["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(content_part_types, ["think", "text", "text"]);
+
+        let status = values[1..]
+            .iter()
+            .find(|value| value["message"]["type"] == "StatusUpdate")
+            .unwrap();
+        let status_keys: BTreeSet<_> = status["message"]["payload"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            status_keys,
+            BTreeSet::from([
+                "context_tokens",
+                "context_usage",
+                "max_context_tokens",
+                "mcp_status",
+                "message_id",
+                "plan_mode",
+                "token_usage",
+            ])
+        );
+
+        let timestamps: Vec<_> = values[1..]
+            .iter()
+            .map(|value| value["timestamp"].as_f64().unwrap())
+            .collect();
+        assert!(timestamps.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn sanitized_kimi_fixture_covers_context_state_updates_and_damage() {
+        let root = kimi_audit_fixture_root();
+        let session = root
+            .join("sessions/2030c6ce97e98c160351b18f097eb584/11111111-1111-4111-8111-111111111111");
+        let context = read_jsonl_values(&session.join("context.jsonl"))
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        let roles: Vec<_> = context
+            .iter()
+            .map(|value| value["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                "_system_prompt",
+                "_checkpoint",
+                "user",
+                "_usage",
+                "assistant",
+                "_checkpoint",
+                "user",
+                "_usage",
+                "assistant",
+            ]
+        );
+        assert!(context
+            .iter()
+            .filter(|value| value["role"] == "user")
+            .all(|value| value["content"].is_string()));
+        assert!(context
+            .iter()
+            .filter(|value| value["role"] == "assistant")
+            .all(|value| value["content"].is_array()));
+
+        let state: Value =
+            serde_json::from_slice(&std::fs::read(session.join("state.json")).unwrap()).unwrap();
+        let updated_state: Value = serde_json::from_slice(
+            &std::fs::read(root.join("variants/state.updated.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            state.as_object().unwrap().keys().collect::<BTreeSet<_>>(),
+            updated_state
+                .as_object()
+                .unwrap()
+                .keys()
+                .collect::<BTreeSet<_>>()
+        );
+        assert_eq!(state["archived"], false);
+        assert_eq!(updated_state["archived"], true);
+        assert_ne!(state["custom_title"], updated_state["custom_title"]);
+
+        let updated_context = read_jsonl_values(&root.join("variants/context.updated.jsonl"))
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(&updated_context[..context.len()], context.as_slice());
+        assert_eq!(updated_context.len(), context.len() + 2);
+
+        let wire = read_jsonl_values(&session.join("wire.jsonl"))
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        let updated_wire = read_jsonl_values(&root.join("variants/wire.updated.jsonl"))
+            .into_iter()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(&updated_wire[..wire.len()], wire.as_slice());
+        assert_eq!(updated_wire.len(), wire.len() + 4);
+
+        let malformed = read_jsonl_values(&root.join("variants/wire.malformed.jsonl"));
+        assert_eq!(malformed.iter().filter(|line| line.is_ok()).count(), 3);
+        assert_eq!(malformed.iter().filter(|line| line.is_err()).count(), 1);
     }
 
     #[test]

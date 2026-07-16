@@ -1,0 +1,9 @@
+{"role":"_system_prompt","content":"[sanitized system prompt]"}
+{"role":"_checkpoint","id":0}
+{"role":"user","content":"[sanitized user request]"}
+{"role":"_usage","token_count":42}
+{"role":"assistant","content":[{"type":"think","think":"[sanitized reasoning]","encrypted":null},{"type":"text","text":"[sanitized assistant response]"}]}
+{"role":"_checkpoint","id":1}
+{"role":"user","content":"[sanitized follow-up]"}
+{"role":"_usage","token_count":64}
+{"role":"assistant","content":[{"type":"text","text":"[sanitized follow-up response]"}]}

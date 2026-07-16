@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "custom_title": "Sanitized session",
+  "title_generated": true,
+  "title_generate_attempts": 1,
+  "archived": false,
+  "archived_at": null,
+  "auto_archive_exempt": false,
+  "approval": {
+    "yolo": false,
+    "auto_approve_actions": []
+  },
+  "plan_mode": false,
+  "plan_session_id": null,
+  "plan_slug": null,
+  "additional_dirs": [],
+  "todos": [],
+  "wire_mtime": null
+}

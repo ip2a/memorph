@@ -1,0 +1,11 @@
+{"type":"metadata","protocol_version":"1.3"}
+{"timestamp":1784160001.0,"message":{"type":"TurnBegin","payload":{"user_input":[{"type":"text","text":"[sanitized user request]"}]}}}
+{"timestamp":1784160002.0,"message":{"type":"StepBegin","payload":{"n":1}}}
+{"timestamp":1784160003.0,"message":{"type":"ContentPart","payload":{"type":"think","think":"[sanitized reasoning]","encrypted":null}}}
+{"timestamp":1784160004.0,"message":{"type":"ContentPart","payload":{"type":"text","text":"[sanitized assistant response]"}}}
+{"timestamp":1784160005.0,"message":{"type":"StatusUpdate","payload":{"context_tokens":128,"context_usage":0.125,"max_context_tokens":1024,"mcp_status":null,"message_id":"33333333-3333-4333-8333-333333333333","plan_mode":false,"token_usage":{"input_cache_creation":0,"input_cache_read":0,"input_other":42,"output":16}}}}
+{"timestamp":1784160006.0,"message":{"type":"TurnEnd","payload":{}}}
+{"timestamp":1784160010.0,"message":{"type":"TurnBegin","payload":{"user_input":[{"type":"text","text":"[sanitized follow-up]"}]}}}
+{"timestamp":1784160011.0,"message":{"type":"StepBegin","payload":{"n":1}}}
+{"timestamp":1784160012.0,"message":{"type":"ContentPart","payload":{"type":"text","text":"[sanitized follow-up response]"}}}
+{"timestamp":1784160013.0,"message":{"type":"TurnEnd","payload":{}}}

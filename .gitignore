@@ -101,3 +101,7 @@
 # Research notes (not part of the project source).
 /headroom的调研报告.md
 /memorph基于headroom完善压缩机制。md
+
+# Provider-native test fixtures.
+!/rust/crates/memorph/src/providers/kimi/fixtures/
+!/rust/crates/memorph/src/providers/kimi/fixtures/**

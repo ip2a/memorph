@@ -1,0 +1,4 @@
+{"type":"metadata","protocol_version":"1.3"}
+{"timestamp":1784160001.0,"message":{"type":"TurnBegin","payload":{"user_input":[{"type":"text","text":"[sanitized request before malformed line]"}]}}}
+{"timestamp":1784160002.0,"message":{"type":"ContentPart","payload":{"type":"text","text":"[truncated]"}}
+{"timestamp":1784160003.0,"message":{"type":"TurnEnd","payload":{}}}

@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "custom_title": "Renamed sanitized session",
+  "title_generated": false,
+  "title_generate_attempts": 1,
+  "archived": true,
+  "archived_at": 1784160100.0,
+  "auto_archive_exempt": false,
+  "approval": {
+    "yolo": false,
+    "auto_approve_actions": []
+  },
+  "plan_mode": false,
+  "plan_session_id": null,
+  "plan_slug": null,
+  "additional_dirs": [],
+  "todos": [],
+  "wire_mtime": 1784160013.0
+}
