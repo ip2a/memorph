@@ -8,12 +8,15 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary, UsageStats,
 };
 use crate::provider::{
-    canonical_block_text, canonical_event_visible_message_role, canonical_event_visible_text,
-    canonical_export_result, canonical_session_title, PageStrategy, Provider,
-    ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity,
-    ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk,
-    ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
+    canonical_block_text, canonical_event_is_visible_message, canonical_event_visible_message_role,
+    canonical_event_visible_text, canonical_export_result, canonical_session_title, PageStrategy,
+    Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
+    ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
+    ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
+    StorageShape, TurnQuality, WriteRiskLevel,
 };
+use crate::session_projection::project_session_turns;
+use crate::storage::event_index;
 use crate::utils::{
     encode_project_dir, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,
 };
@@ -23,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 use walkdir::WalkDir;
@@ -178,6 +181,15 @@ impl Provider for ClaudeProvider {
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         import_canonical_session(Path::new(source_path))
+    }
+
+    fn import_session_page(
+        &self,
+        source_path: &str,
+        event_offset: usize,
+        event_limit: Option<usize>,
+    ) -> Result<ProviderSessionImportPage> {
+        import_claude_session_page(Path::new(source_path), event_offset, event_limit)
     }
 
     fn export_session(
@@ -908,6 +920,301 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
     })
 }
 
+/// Build (or load) a byte-offset event index for a Claude session and return the
+/// requested page of canonical events plus full event/message counts.
+///
+/// Claude JSONL sessions append one JSON object per line; every non-empty valid
+/// line produces exactly one canonical event, so the index records one location
+/// per line. The index is persisted in the shared `session_event_index` table
+/// and reused as long as the source file fingerprint is unchanged, mirroring the
+/// Codex provider. Counts and page slicing are therefore stable across detail
+/// views without re-parsing the full session on every open.
+fn import_claude_session_page(
+    path: &Path,
+    event_offset: usize,
+    event_limit: Option<usize>,
+) -> Result<ProviderSessionImportPage> {
+    let (state, locations) =
+        load_or_build_claude_event_index_page(path, event_offset, event_limit)?;
+
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let mut events = Vec::with_capacity(locations.len());
+    let mut file = File::open(path)
+        .with_context(|| format!("Failed to open Claude session: {}", path.display()))?;
+    let mut extensions = BTreeMap::new();
+
+    for location in locations {
+        file.seek(SeekFrom::Start(location.byte_offset))
+            .with_context(|| format!("Failed to seek Claude session: {}", path.display()))?;
+        let mut line_bytes = vec![0u8; location.byte_length as usize];
+        file.read_exact(&mut line_bytes)
+            .with_context(|| format!("Failed to read Claude session: {}", path.display()))?;
+        let line = String::from_utf8_lossy(&line_bytes);
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(error) => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Warning,
+                    disposition: MappingDisposition::Dropped,
+                    code: "invalid_jsonl_line".to_string(),
+                    message: format!("Failed to parse Claude session line: {}", error),
+                    path: Some(format!("line:{}", location.line_no)),
+                    raw: Some(Value::String(line.into_owned())),
+                });
+                continue;
+            }
+        };
+
+        let line_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        if line_type == "custom-title" {
+            extensions.insert("claude_custom_title".to_string(), value.clone());
+        }
+
+        let timestamp = claude_line_timestamp(&value, location.line_no);
+        if let Some(event) = canonical_event_from_claude_line(
+            location.line_no,
+            line_type,
+            timestamp,
+            &value,
+            &mut report,
+        ) {
+            events.push(event);
+        }
+    }
+
+    let imported = ImportedSession {
+        session: CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: state.session_id.clone(),
+                source_title: state.source_title.clone(),
+            },
+            provenance: SessionProvenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".to_string()),
+                primary_source: ProviderSessionRef {
+                    provider_id: PROVIDER_ID.to_string(),
+                    session_id: state.session_id.clone(),
+                    source_path: Some(path.to_string_lossy().to_string()),
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir: state.workspace_dir.clone(),
+                created_at: state
+                    .created_at_ms
+                    .and_then(chrono::DateTime::from_timestamp_millis),
+                last_active_at: state
+                    .last_active_at_ms
+                    .and_then(chrono::DateTime::from_timestamp_millis),
+                tags: Vec::new(),
+            },
+            events,
+            artifacts: Vec::new(),
+            extensions,
+        },
+        report,
+    };
+
+    let turns = project_session_turns(
+        &imported.session.identity.canonical_id,
+        &imported.session.events,
+        TurnQuality::Inferred,
+    );
+    Ok(ProviderSessionImportPage {
+        imported,
+        event_count: state.event_count,
+        message_count: state.message_count,
+        turns,
+    })
+}
+
+fn load_or_build_claude_event_index_page(
+    path: &Path,
+    event_offset: usize,
+    event_limit: Option<usize>,
+) -> Result<(
+    event_index::IndexedSessionState,
+    Vec<event_index::IndexedEventLocation>,
+)> {
+    let source_path = path.to_string_lossy().to_string();
+    let fingerprint = event_index::source_file_fingerprint(path)?;
+    let mut conn = event_index::open_database()?;
+    let mut state =
+        match event_index::load_fresh_session_state(&conn, PROVIDER_ID, &source_path, fingerprint)?
+        {
+            Some(state) => state,
+            None => {
+                let (state, locations) = build_claude_event_index(path, fingerprint)?;
+                event_index::replace_session_index(&mut conn, &state, &locations)?;
+                state
+            }
+        };
+
+    let mut locations = event_index::load_event_locations(
+        &conn,
+        PROVIDER_ID,
+        &source_path,
+        fingerprint,
+        event_offset,
+        event_limit,
+    )?;
+
+    // If the requested range is empty but counts disagree with the file (e.g.
+    // the index predates an append since the last build because the fingerprint
+    // check above matched a stale entry), rebuild once. The fingerprint guard
+    // above normally makes this a no-op, but rebuilding keeps counts correct
+    // when the index was populated by an older build that did not record the
+    // same count semantics.
+    let needs_rebuild = locations.is_empty() && event_offset < state.event_count;
+    if needs_rebuild {
+        let (rebuilt_state, rebuilt_locations) = build_claude_event_index(path, fingerprint)?;
+        event_index::replace_session_index(&mut conn, &rebuilt_state, &rebuilt_locations)?;
+        state = rebuilt_state;
+        locations = event_index::load_event_locations(
+            &conn,
+            PROVIDER_ID,
+            &source_path,
+            fingerprint,
+            event_offset,
+            event_limit,
+        )?;
+    }
+
+    Ok((state, locations))
+}
+
+/// Single-pass index builder for a Claude JSONL session.
+///
+/// Records one `IndexedEventLocation` per non-empty valid line (every such line
+/// yields exactly one canonical event). `event_count`/`message_count` are
+/// computed by reusing the same canonical mapping used at import time, so the
+/// counts stay identical to a full import. Claude has no native turn ids, so
+/// turn fields are left empty and turns are derived per page at read time.
+fn build_claude_event_index(
+    path: &Path,
+    fingerprint: event_index::SourceFileFingerprint,
+) -> Result<(
+    event_index::IndexedSessionState,
+    Vec<event_index::IndexedEventLocation>,
+)> {
+    let file = File::open(path)
+        .with_context(|| format!("Failed to open Claude session: {}", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut line = String::new();
+    let mut byte_offset = 0u64;
+    let mut line_no = 0usize;
+    let mut event_count = 0usize;
+    let mut message_count = 0usize;
+    let mut session_id: Option<String> = None;
+    let mut project_dir: Option<String> = None;
+    let mut created_at_ms: Option<i64> = None;
+    let mut last_active_at_ms: Option<i64> = None;
+    let mut source_title: Option<String> = None;
+    let mut locations = Vec::new();
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+
+    loop {
+        line.clear();
+        let byte_length = reader
+            .read_line(&mut line)
+            .with_context(|| format!("Failed to read Claude session: {}", path.display()))?;
+        if byte_length == 0 {
+            break;
+        }
+        line_no += 1;
+        let line_offset = byte_offset;
+        byte_offset += byte_length as u64;
+
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+
+        let line_type = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let timestamp = claude_line_timestamp(&value, line_no);
+        let timestamp_ms = timestamp.timestamp_millis();
+        created_at_ms = created_at_ms.or(Some(timestamp_ms));
+        last_active_at_ms = Some(timestamp_ms);
+
+        session_id = value
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or(session_id);
+        project_dir = value
+            .get("cwd")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .or(project_dir);
+
+        if line_type == "custom-title" {
+            source_title = value
+                .get("customTitle")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(str::to_string)
+                .or(source_title);
+        }
+
+        // Reuse the canonical mapper to decide visible-message membership so
+        // counts stay identical to a full import.
+        if let Some(event) =
+            canonical_event_from_claude_line(line_no, line_type, timestamp, &value, &mut report)
+        {
+            if canonical_event_is_visible_message(&event) {
+                message_count += 1;
+            }
+        }
+
+        locations.push(event_index::IndexedEventLocation {
+            event_index: event_count,
+            byte_offset: line_offset,
+            byte_length: byte_length as u64,
+            line_no,
+            provider_turn_id: None,
+            turn_index: None,
+            turn_boundary: None,
+        });
+        event_count += 1;
+    }
+
+    let fallback_id = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    let source_session_id = session_id.unwrap_or(fallback_id);
+
+    Ok((
+        event_index::IndexedSessionState {
+            provider_id: PROVIDER_ID.to_string(),
+            session_id: source_session_id,
+            source_path: path.to_string_lossy().to_string(),
+            file_fingerprint: fingerprint,
+            workspace_dir: project_dir,
+            created_at_ms,
+            last_active_at_ms,
+            source_title,
+            event_count,
+            message_count,
+        },
+        locations,
+    ))
+}
+
 fn claude_line_timestamp(value: &Value, line_number: usize) -> chrono::DateTime<Utc> {
     value
         .get("timestamp")
@@ -1431,6 +1738,144 @@ mod tests {
         let session_path = project_dir.join(format!("{session_id}.jsonl"));
         std::fs::write(&session_path, content).unwrap();
         session_path
+    }
+
+    fn build_structured_claude_session() -> NamedTempFile {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "permission-mode",
+                "permissionMode": "bypassPermissions",
+                "sessionId": "session-page",
+                "timestamp": "2026-01-01T00:00:00Z"
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "custom-title",
+                "customTitle": "Claude Page Title",
+                "sessionId": "session-page",
+                "timestamp": "2026-01-01T00:00:01Z"
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "user-1",
+                "sessionId": "session-page",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:02Z",
+                "message": { "role": "user", "content": "Build this" }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "assistant",
+                "uuid": "assistant-1",
+                "parentUuid": "user-1",
+                "sessionId": "session-page",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:03Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet",
+                    "content": [{ "type": "text", "text": "Hello" }]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "tool-result-1",
+                "parentUuid": "assistant-1",
+                "sessionId": "session-page",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:04Z",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "ok", "is_error": false }
+                    ]
+                }
+            })
+        )
+        .unwrap();
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "type": "file-history-snapshot",
+                "sessionId": "session-page",
+                "timestamp": "2026-01-01T00:00:05Z",
+                "files": [{ "path": "Cargo.toml" }]
+            })
+        )
+        .unwrap();
+        file
+    }
+
+    #[test]
+    fn import_session_page_reports_full_counts_and_paginates_events() {
+        let file = build_structured_claude_session();
+
+        // Full page: counts must match a full import, every line yields one event.
+        let full = import_claude_session_page(file.path(), 0, None).unwrap();
+        let full_import = import_canonical_session(file.path()).unwrap();
+        assert_eq!(full.event_count, full_import.session.events.len());
+        assert_eq!(full.imported.session.events.len(), full.event_count);
+        // Three visible messages: user "Build this", assistant text, tool result.
+        let expected_messages = full_import
+            .session
+            .events
+            .iter()
+            .filter(|event| canonical_event_is_visible_message(event))
+            .count();
+        assert_eq!(full.message_count, expected_messages);
+        assert!(full.message_count >= 1);
+
+        // Page with a limit returns a strict subset but keeps total counts.
+        let page1 = import_claude_session_page(file.path(), 0, Some(2)).unwrap();
+        assert_eq!(page1.imported.session.events.len(), 2);
+        assert_eq!(page1.event_count, full.event_count);
+        assert_eq!(page1.message_count, full.message_count);
+        assert_eq!(
+            page1.imported.session.events[0].id,
+            full.imported.session.events[0].id
+        );
+
+        // Second page starts at offset 2.
+        let page2 = import_claude_session_page(file.path(), 2, Some(2)).unwrap();
+        assert_eq!(page2.imported.session.events.len(), 2);
+        assert_eq!(page2.event_count, full.event_count);
+        assert_eq!(
+            page2.imported.session.events[0].id,
+            full.imported.session.events[2].id
+        );
+
+        // Identity carries the session id and title for every page.
+        assert_eq!(page1.imported.session.identity.canonical_id, "session-page");
+        assert_eq!(
+            page1.imported.session.identity.source_title.as_deref(),
+            Some("Claude Page Title")
+        );
+        assert_eq!(
+            page1.imported.session.context.workspace_dir.as_deref(),
+            Some("/tmp/project")
+        );
     }
 
     #[test]
