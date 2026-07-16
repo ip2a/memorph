@@ -8,7 +8,7 @@ mod write;
 
 use crate::canonical::{CanonicalSession, ExportedSession, ImportedSession};
 use crate::provider::{
-    canonical_export_result, Provider, ProviderBackupSupport, ProviderCapabilities,
+    canonical_export_result, PageStrategy, Provider, ProviderBackupSupport, ProviderCapabilities,
     ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation,
 };
 use anyhow::Result;
@@ -36,6 +36,7 @@ impl Provider for CursorProvider {
             delete: true,
             rename: true,
             resume: false,
+            page_strategy: PageStrategy::FullImport,
             backup_support: ProviderBackupSupport {
                 before_write: true,
                 restore: true,
@@ -1031,6 +1032,137 @@ mod tests {
             .backup_path
             .join("sqlite/cursor-session.db")
             .is_file());
+    }
+
+    #[test]
+    fn cursor_full_import_pages_keep_total_counts_and_project_only_page_events() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("state.vscdb");
+        let _guard = use_test_cursor_db(db_path.clone());
+        let session_id = "cursor-pagination";
+        let created_at = 1_700_000_000_000_i64;
+
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(include_str!("fixtures/v3_11_19/schema.sql"))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO composerHeaders
+             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+              recency, checkpointAt, value)
+             VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, NULL, ?6)",
+            params![
+                session_id,
+                "workspace-pagination",
+                created_at,
+                created_at + 3_000,
+                created_at + 3_000,
+                json!({"composerId": session_id, "name": "Pagination"}).to_string(),
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            params![
+                format!("composerData:{session_id}"),
+                json!({
+                    "composerId": session_id,
+                    "name": "Pagination",
+                    "createdAt": created_at,
+                    "lastUpdatedAt": created_at + 3_000
+                })
+                .to_string(),
+            ],
+        )
+        .unwrap();
+
+        let bubbles = [
+            ("a", 1, created_at, None, "first"),
+            ("b", 2, created_at, Some("turn-1"), "second"),
+            ("c", 1, created_at + 1_000, None, "third"),
+            ("d", 2, created_at + 2_000, Some("turn-2"), "fourth"),
+        ];
+        for (bubble_id, bubble_type, bubble_created_at, request_id, text) in bubbles {
+            let mut bubble = json!({
+                "bubbleId": bubble_id,
+                "type": bubble_type,
+                "createdAt": chrono::DateTime::from_timestamp_millis(bubble_created_at)
+                    .unwrap()
+                    .to_rfc3339(),
+                "text": text,
+            });
+            if let Some(request_id) = request_id {
+                bubble["requestId"] = Value::String(request_id.to_string());
+            }
+            conn.execute(
+                "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+                params![
+                    format!("bubbleId:{session_id}:{bubble_id}"),
+                    bubble.to_string(),
+                ],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let capabilities = CursorProvider.capabilities();
+        assert_eq!(capabilities.page_strategy, PageStrategy::FullImport);
+
+        let locator = db::cursor_source_locator(session_id).unwrap();
+        let full = CursorProvider
+            .import_session_page(&locator, 0, None)
+            .unwrap();
+        assert_eq!(full.imported.session.events.len(), 4);
+        assert_eq!(full.imported.session.events[0].id, "a");
+        assert_eq!(full.imported.session.events[1].id, "b");
+        assert_eq!(full.event_count, 4);
+        assert_eq!(full.message_count, 4);
+        assert_eq!(full.turn_count, Some(full.turns.len()));
+
+        let page = CursorProvider
+            .import_session_page(&locator, 1, Some(2))
+            .unwrap();
+        assert_eq!(page.imported.session.events.len(), 2);
+        assert_eq!(
+            page.imported
+                .session
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
+        assert_eq!(page.event_count, full.event_count);
+        assert_eq!(page.message_count, full.message_count);
+        assert_eq!(page.turn_count, full.turn_count);
+        assert!(page.turns.iter().all(|turn| {
+            turn.source_range
+                .start_cursor
+                .as_deref()
+                .is_some_and(|cursor| ["b", "c"].contains(&cursor))
+                && turn
+                    .source_range
+                    .end_cursor
+                    .as_deref()
+                    .is_some_and(|cursor| ["b", "c"].contains(&cursor))
+        }));
+
+        let empty = CursorProvider
+            .import_session_page(&locator, 0, Some(0))
+            .unwrap();
+        assert!(empty.imported.session.events.is_empty());
+        assert!(empty.turns.is_empty());
+        assert_eq!(empty.event_count, full.event_count);
+        assert_eq!(empty.message_count, full.message_count);
+        assert_eq!(empty.turn_count, full.turn_count);
+
+        let beyond_end = CursorProvider
+            .import_session_page(&locator, full.event_count + 10, Some(5))
+            .unwrap();
+        assert!(beyond_end.imported.session.events.is_empty());
+        assert!(beyond_end.turns.is_empty());
+        assert_eq!(beyond_end.event_count, full.event_count);
+        assert_eq!(beyond_end.message_count, full.message_count);
+        assert_eq!(beyond_end.turn_count, full.turn_count);
     }
 
     #[test]
