@@ -1,0 +1,14 @@
+{"id":"msg-session-start","timestamp":"2026-07-16T00:00:00.000Z","payload":{"type":"session_start","agentType":"vibe","content":"[sanitized session start]","forcedRole":false,"messageId":"msg-user-1"}}
+{"id":"exec-1-turn-start","timestamp":"2026-07-16T00:00:01.000Z","payload":{"type":"turn_start","executionId":"exec-1"}}
+{"id":"msg-user-1","timestamp":"2026-07-16T00:00:02.000Z","payload":{"type":"user","content":"[sanitized user request]","source":"chat"}}
+{"id":"msg-reasoning-1","timestamp":"2026-07-16T00:00:03.000Z","payload":{"type":"assistant","content":"[sanitized reasoning]","operationType":"Reasoning","executionId":"exec-1"}}
+{"id":"msg-tool-call-1","timestamp":"2026-07-16T00:00:04.000Z","payload":{"type":"tool_call","toolCallId":"tool-1","toolName":"read_file","args":{"path":"src/example.rs"},"status":"completed","kind":"read","executionId":"exec-1"}}
+{"id":"msg-tool-result-1","timestamp":"2026-07-16T00:00:05.000Z","payload":{"type":"tool_result","toolCallId":"tool-1","content":"[sanitized tool output]","success":true,"durationMs":12,"executionId":"exec-1"}}
+{"id":"msg-assistant-1","timestamp":"2026-07-16T00:00:06.000Z","payload":{"type":"assistant","content":"[sanitized assistant response]","operationType":"Say","executionId":"exec-1"}}
+{"id":"msg-usage-1","timestamp":"2026-07-16T00:00:07.000Z","payload":{"type":"usage_summary","promptTurnSummaries":[{"usedTools":["read_file"],"unit":"credit","unitPlural":"credits","usage":1}],"elapsedTime":6000,"status":"success","executionId":"exec-1","requestIds":["request-1"]}}
+{"id":"exec-1-turn-end","timestamp":"2026-07-16T00:00:08.000Z","payload":{"type":"turn_end","stopReason":"end_turn","executionId":"exec-1"}}
+{"id":"msg-metadata-1","timestamp":"2026-07-16T00:00:09.000Z","payload":{"type":"session_metadata","key":"contextUsage","value":{"usagePercentage":12},"executionId":"exec-1"}}
+{"id":"exec-2-turn-start","timestamp":"2026-07-16T00:02:01.000Z","payload":{"type":"turn_start","executionId":"exec-2"}}
+{"id":"msg-user-2","timestamp":"2026-07-16T00:02:02.000Z","payload":{"type":"user","content":"[sanitized follow-up]","source":"chat"}}
+{"id":"msg-assistant-2","timestamp":"2026-07-16T00:02:03.000Z","payload":{"type":"assistant","content":"[sanitized follow-up response]","operationType":"Say","executionId":"exec-2"}}
+{"id":"exec-2-turn-end","timestamp":"2026-07-16T00:02:04.000Z","payload":{"type":"turn_end","stopReason":"end_turn","executionId":"exec-2"}}

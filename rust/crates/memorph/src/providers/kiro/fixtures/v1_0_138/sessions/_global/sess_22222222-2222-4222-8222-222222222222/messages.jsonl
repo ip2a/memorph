@@ -1,0 +1,4 @@
+{"id":"global-turn-start","timestamp":"2026-07-16T01:00:00.000Z","payload":{"type":"turn_start","executionId":"exec-global"}}
+{"id":"global-user","timestamp":"2026-07-16T01:00:01.000Z","payload":{"type":"user","content":"[sanitized global request]","source":"chat"}}
+{"id":"global-assistant","timestamp":"2026-07-16T01:00:02.000Z","payload":{"type":"assistant","content":"[sanitized global response]","operationType":"Say","executionId":"exec-global"}}
+{"id":"global-turn-end","timestamp":"2026-07-16T01:00:03.000Z","payload":{"type":"turn_end","stopReason":"end_turn","executionId":"exec-global"}}

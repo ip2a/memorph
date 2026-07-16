@@ -1,0 +1,2 @@
+{"id":"sub-msg-user-1","timestamp":"2026-07-16T00:00:04.100Z","payload":{"type":"user","content":"[sanitized sub-execution request]","source":"api"}}
+{"id":"sub-msg-assistant-1","timestamp":"2026-07-16T00:00:04.200Z","payload":{"type":"assistant","content":"[sanitized sub-execution response]","operationType":"Say","executionId":"subexec-1","subExecutionId":"subexec-1"}}

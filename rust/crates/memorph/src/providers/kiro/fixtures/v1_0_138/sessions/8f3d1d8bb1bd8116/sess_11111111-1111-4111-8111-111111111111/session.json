@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0.0",
+  "dataModelVersion": 1,
+  "id": "sess_11111111-1111-4111-8111-111111111111",
+  "title": "Sanitized Kiro session",
+  "agentMode": "vibe",
+  "workspacePaths": [
+    "/workspace/sanitized-project"
+  ],
+  "createdAt": "2026-07-16T00:00:00.000Z",
+  "lastModifiedAt": "2026-07-16T00:01:00.000Z",
+  "modelId": "sanitized-model",
+  "createdReason": "human",
+  "status": "completed",
+  "titleSetByUser": true
+}

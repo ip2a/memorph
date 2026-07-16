@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "1.0.0",
+  "dataModelVersion": 1,
+  "id": "sess_22222222-2222-4222-8222-222222222222",
+  "title": "Sanitized global Kiro session",
+  "agentMode": "vibe",
+  "workspacePaths": [],
+  "createdAt": "2026-07-16T01:00:00.000Z",
+  "lastModifiedAt": "2026-07-16T01:00:04.000Z",
+  "status": "idle"
+}

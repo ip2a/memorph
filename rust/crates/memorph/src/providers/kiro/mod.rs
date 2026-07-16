@@ -808,6 +808,19 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = mutation;
     }
 
+    fn kiro_audit_fixture_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/providers/kiro/fixtures/v1_0_138")
+    }
+
+    fn read_jsonl_values(path: &Path) -> Vec<Result<Value, serde_json::Error>> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(serde_json::from_str)
+            .collect()
+    }
+
     fn write_native_kiro_scope(global_dir: &Path, scope_dir: &Path, session_id: &str, title: &str) {
         let scope_dir = global_dir.join(scope_dir);
         std::fs::create_dir_all(&scope_dir).unwrap();
@@ -850,6 +863,150 @@ mod tests {
 
     fn session_value(path: &Path) -> Value {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn kiro_v2_audit_fixture_matches_official_session_directory_contract() {
+        use sha2::{Digest, Sha256};
+
+        let root = kiro_audit_fixture_root();
+        let manifest: Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("fixture.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["provider"], "kiro");
+        assert_eq!(manifest["source_plane"], "kiro-agent-v2");
+        assert_eq!(manifest["observed_ide_version"], "1.0.138");
+        assert_eq!(manifest["observed_extension_version"], "1.0.231");
+        assert_eq!(manifest["observed_schema_version"], "1.0.0");
+        assert_eq!(manifest["observed_data_model_version"], 1);
+        assert_eq!(manifest["raw_user_content_committed"], false);
+        assert_eq!(manifest["storage_root"], "~/.kiro/sessions");
+        assert_eq!(
+            manifest["official_artifact_sha256"],
+            "29c7541056b4ca6849d73c1062ae1d215a80a9f7fc74a8240cb2bf9b8e1fd68b"
+        );
+
+        let session_id = manifest["normal_session_id"].as_str().unwrap();
+        let workspace_path = "/workspace/sanitized-project";
+        let workspace_hash = format!("{:x}", Sha256::digest(workspace_path.as_bytes()));
+        let workspace_hash = &workspace_hash[..16];
+        assert_eq!(workspace_hash, "8f3d1d8bb1bd8116");
+
+        let session_dir = root.join("sessions").join(workspace_hash).join(session_id);
+        let metadata: Value = serde_json::from_str(
+            &std::fs::read_to_string(session_dir.join("session.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["schemaVersion"], "1.0.0");
+        assert_eq!(metadata["dataModelVersion"], 1);
+        assert_eq!(metadata["id"], session_id);
+        assert_eq!(metadata["workspacePaths"], json!([workspace_path]));
+        assert_eq!(metadata["title"], "Sanitized Kiro session");
+        assert_eq!(metadata["status"], "completed");
+
+        assert!(session_dir.join("messages.jsonl").is_file());
+        assert!(session_dir.join("sub-executions/subexec-1.jsonl").is_file());
+        assert!(session_dir
+            .join("tool-outputs/tool-1-a1b2c3d4.txt")
+            .is_file());
+        assert!(session_dir
+            .join("snapshots/snap0001/src/example.rs")
+            .is_file());
+        assert!(session_dir.join("snapshots/snap0001/.hash").is_file());
+
+        let messages = read_jsonl_values(&session_dir.join("messages.jsonl"));
+        assert_eq!(messages.len(), 10);
+        assert!(messages.iter().all(Result::is_ok));
+        let payload_types = messages
+            .into_iter()
+            .map(Result::unwrap)
+            .map(|message| message["payload"]["type"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            payload_types,
+            [
+                "session_start",
+                "turn_start",
+                "user",
+                "assistant",
+                "tool_call",
+                "tool_result",
+                "assistant",
+                "usage_summary",
+                "turn_end",
+                "session_metadata",
+            ]
+        );
+
+        let global_id = manifest["global_session_id"].as_str().unwrap();
+        let global_dir = root.join("sessions").join("_global").join(global_id);
+        let global_metadata: Value = serde_json::from_str(
+            &std::fs::read_to_string(global_dir.join("session.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(global_metadata["id"], global_id);
+        assert_eq!(global_metadata["workspacePaths"], json!([]));
+        assert_eq!(
+            read_jsonl_values(&global_dir.join("messages.jsonl")).len(),
+            4
+        );
+    }
+
+    #[test]
+    fn kiro_v2_audit_fixture_covers_projection_changes_and_invalid_records() {
+        let root = kiro_audit_fixture_root();
+        let variants = root.join("variants");
+        let normal_dir = root
+            .join("sessions/8f3d1d8bb1bd8116")
+            .join("sess_11111111-1111-4111-8111-111111111111");
+
+        let original_metadata: Value = serde_json::from_str(
+            &std::fs::read_to_string(normal_dir.join("session.json")).unwrap(),
+        )
+        .unwrap();
+        let updated_metadata: Value = serde_json::from_str(
+            &std::fs::read_to_string(variants.join("session.updated.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(original_metadata["id"], updated_metadata["id"]);
+        assert_ne!(original_metadata["title"], updated_metadata["title"]);
+        assert_ne!(
+            original_metadata["lastModifiedAt"],
+            updated_metadata["lastModifiedAt"]
+        );
+
+        assert_eq!(
+            read_jsonl_values(&normal_dir.join("messages.jsonl")).len(),
+            10
+        );
+        assert_eq!(
+            read_jsonl_values(&variants.join("messages.updated.jsonl")).len(),
+            14
+        );
+        assert_eq!(
+            read_jsonl_values(&normal_dir.join("sub-executions/subexec-1.jsonl")).len(),
+            2
+        );
+        assert_eq!(
+            read_jsonl_values(&variants.join("sub-execution.updated.jsonl")).len(),
+            3
+        );
+
+        let malformed = read_jsonl_values(&variants.join("messages.malformed.jsonl"));
+        assert_eq!(malformed.len(), 3);
+        assert_eq!(malformed.iter().filter(|value| value.is_ok()).count(), 2);
+        assert_eq!(malformed.iter().filter(|value| value.is_err()).count(), 1);
+
+        let unknown = read_jsonl_values(&variants.join("messages.unknown.jsonl"));
+        assert_eq!(unknown.len(), 1);
+        assert_eq!(
+            unknown[0].as_ref().unwrap()["payload"]["type"],
+            "future_kiro_payload"
+        );
+        assert_eq!(
+            unknown[0].as_ref().unwrap()["payload"]["futureField"]["preserve"],
+            true
+        );
     }
 
     #[test]
