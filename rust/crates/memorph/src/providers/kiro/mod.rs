@@ -1789,6 +1789,236 @@ mod tests {
     }
 
     #[test]
+    fn current_format_bootstrap_stale_and_system_sync_are_incremental_and_bodyless() -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let home = tempfile::tempdir()?;
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let _kiro_guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_id = "sess_11111111-1111-4111-8111-111111111111";
+        let session_dir = temp.path().join("8f3d1d8bb1bd8116").join(session_id);
+
+        let first = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(first.scanned_providers, 1);
+        assert_eq!(first.discovered_sessions, 2);
+        assert_eq!(first.projected_sessions, 2);
+        assert_eq!(first.unchanged_sessions, 0);
+        assert!(first.failures.is_empty());
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(detail.events.is_empty());
+        assert!(detail.turns.is_empty());
+        assert!(!detail.stale);
+
+        let conn = local_store::open_database()?;
+        let initial: (String, String, i64, i64, i64, i64) = conn.query_row(
+            "SELECT ss.title, ss.workspace_dir, ss.counts_complete, ss.stale,
+                    src.scan_generation,
+                    (SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'table'
+                       AND name IN ('session_turns', 'session_events', 'session_event_blocks'))
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE ss.provider_id = 'kiro' AND s.provider_session_id = ?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
+        let initial_fingerprint: String = conn.query_row(
+            "SELECT src.source_cursor
+             FROM session_sources src
+             WHERE src.provider_id = 'kiro' AND src.provider_session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(initial.0, "Sanitized Kiro session");
+        assert_eq!(initial.1, "/workspace/sanitized-project");
+        assert_eq!(initial.2, 1);
+        assert_eq!(initial.3, 0);
+        assert_eq!(initial.4, 1);
+        assert_eq!(initial.5, 0);
+        drop(conn);
+
+        let unchanged = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(unchanged.scanned_providers, 1);
+        assert_eq!(unchanged.discovered_sessions, 2);
+        assert_eq!(unchanged.projected_sessions, 0);
+        assert_eq!(unchanged.unchanged_sessions, 2);
+        assert!(unchanged.failures.is_empty());
+
+        let conn = local_store::open_database()?;
+        let unchanged_state: (i64, i64) = conn.query_row(
+            "SELECT src.scan_generation, ss.counts_complete
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE ss.provider_id = 'kiro' AND s.provider_session_id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(unchanged_state, (1, 1));
+        drop(conn);
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(session_dir.join("messages.jsonl"))?
+            .write_all(b"\n")?;
+        let stale = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(stale.checked_sources, 2);
+        assert_eq!(stale.fresh_snapshots, 1);
+        assert_eq!(stale.stale_snapshots, 1);
+        assert_eq!(stale.missing_sources, 0);
+
+        let refreshed = crate::core::reproject_stale_sessions(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(refreshed.candidate_snapshots, 1);
+        assert_eq!(refreshed.reprojected_snapshots, 1);
+        assert_eq!(refreshed.missing_sources, 0);
+        assert!(refreshed.failures.is_empty());
+
+        let conn = local_store::open_database()?;
+        let after_messages: (String, i64, i64) = conn.query_row(
+            "SELECT src.source_cursor, ss.stale, ss.counts_complete
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE ss.provider_id = 'kiro' AND s.provider_session_id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_ne!(after_messages.0, initial_fingerprint);
+        assert_eq!(after_messages.1, 0);
+        assert_eq!(after_messages.2, 0);
+        drop(conn);
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(!detail.stale);
+        let session_path = session_dir.join("session.json");
+        fs::copy(
+            kiro_audit_fixture_root().join("variants/session.updated.json"),
+            &session_path,
+        )?;
+        let metadata_sync = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(metadata_sync.projected_sessions, 1);
+        assert_eq!(metadata_sync.unchanged_sessions, 1);
+
+        let conn = local_store::open_database()?;
+        let after_metadata: (String, String) = conn.query_row(
+            "SELECT ss.title, src.source_cursor
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE ss.provider_id = 'kiro' AND s.provider_session_id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(after_metadata.0, "Sanitized Kiro session (updated)");
+        assert_ne!(after_metadata.1, after_messages.0);
+        drop(conn);
+
+        fs::OpenOptions::new()
+            .append(true)
+            .open(session_dir.join("sub-executions/subexec-1.jsonl"))?
+            .write_all(b"\n")?;
+        let sub_execution_sync = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(sub_execution_sync.projected_sessions, 1);
+        assert_eq!(sub_execution_sync.unchanged_sessions, 1);
+
+        let conn = local_store::open_database()?;
+        let after_sub_execution: String = conn.query_row(
+            "SELECT src.source_cursor
+             FROM session_sources src
+             WHERE src.provider_id = 'kiro' AND src.provider_session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        assert_ne!(after_sub_execution, after_metadata.1);
+        drop(conn);
+
+        fs::remove_dir_all(&session_dir)?;
+        let missing = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(missing.checked_sources, 1);
+        assert_eq!(missing.fresh_snapshots, 1);
+        assert_eq!(missing.missing_sources, 1);
+        assert_eq!(missing.stale_snapshots, 1);
+
+        let missing_reprojection = crate::core::reproject_stale_sessions(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(missing_reprojection.candidate_snapshots, 1);
+        assert_eq!(missing_reprojection.reprojected_snapshots, 0);
+        assert_eq!(missing_reprojection.missing_sources, 1);
+
+        let groups = crate::core::list_sessions(&crate::core::SessionListParams {
+            all: true,
+            providers: vec![PROVIDER_ID.to_string()],
+            cwd: None,
+            include_message_counts: true,
+            limit: None,
+            offset: None,
+            sort: crate::core::SessionListSort::Recent,
+            hook_filter: crate::core::SessionHookFilter::All,
+        })?;
+        let session = groups
+            .iter()
+            .flat_map(|group| &group.sessions)
+            .find(|session| session.session_id == session_id)
+            .unwrap();
+        assert!(session.stale);
+
+        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("Session source is missing"));
+
+        let conn = local_store::open_database()?;
+        let system_scan_activities: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM session_activity
+             WHERE actor = 'system' AND operation_kind = 'scan' AND status != 'running'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(system_scan_activities >= 7);
+        let body_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(body_table_count, 0);
+        Ok(())
+    }
+
+    #[test]
     fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifacts(
     ) -> Result<()> {
         let temp = copy_fixture_sessions()?;
