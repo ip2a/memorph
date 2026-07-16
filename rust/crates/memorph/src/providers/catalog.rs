@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn mature_provider_catalogs_have_complete_quality_metadata() {
-        for provider_id in ["claude", "codex", "opencode"] {
+        for provider_id in ["claude", "codex", "kimi", "opencode"] {
             let capabilities = find_provider(provider_id).unwrap().capabilities();
             assert_ne!(capabilities.scan_strategy, ScanStrategy::Unknown);
             assert_ne!(capabilities.page_strategy, PageStrategy::Unknown);
