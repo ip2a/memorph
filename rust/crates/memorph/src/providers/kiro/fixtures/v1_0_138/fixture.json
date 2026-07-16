@@ -29,6 +29,7 @@
     "messages_update": "variants/messages.updated.jsonl",
     "sub_execution_update": "variants/sub-execution.updated.jsonl",
     "malformed_messages": "variants/messages.malformed.jsonl",
-    "unknown_payload": "variants/messages.unknown.jsonl"
+    "unknown_payload": "variants/messages.unknown.jsonl",
+    "payload_matrix": "variants/messages.payload-matrix.jsonl"
   }
 }

@@ -1,0 +1,11 @@
+{"id":"payload-system","timestamp":"2026-07-16T04:00:00.000Z","payload":{"type":"system","content":"[sanitized system message]","executionId":"exec-payloads"}}
+{"id":"payload-agent-note","timestamp":"2026-07-16T04:00:01.000Z","payload":{"type":"agent_note","content":"[sanitized agent note]","executionId":"exec-payloads"}}
+{"id":"payload-session-event","timestamp":"2026-07-16T04:00:02.000Z","payload":{"type":"session_event","event":"sanitized-event","executionId":"exec-payloads"}}
+{"id":"payload-sub-agent-start","timestamp":"2026-07-16T04:00:03.000Z","payload":{"type":"sub_agent_start","subExecutionId":"subexec-payload","executionId":"exec-payloads"}}
+{"id":"payload-sub-agent-progress","timestamp":"2026-07-16T04:00:04.000Z","payload":{"type":"sub_agent_progress","subExecutionId":"subexec-payload","executionId":"exec-payloads"}}
+{"id":"payload-sub-agent-complete","timestamp":"2026-07-16T04:00:05.000Z","payload":{"type":"sub_agent_complete","subExecutionId":"subexec-payload","executionId":"exec-payloads"}}
+{"id":"payload-steering","timestamp":"2026-07-16T04:00:06.000Z","payload":{"type":"steering_inclusion","name":"sanitized-steering","executionId":"exec-payloads"}}
+{"id":"payload-tombstone","timestamp":"2026-07-16T04:00:07.000Z","payload":{"type":"tombstone","targetId":"sanitized-target","executionId":"exec-payloads"}}
+{"id":"payload-hook","timestamp":"2026-07-16T04:00:08.000Z","payload":{"type":"ContextualHookInvoked","hookName":"sanitized-hook","executionId":"exec-payloads"}}
+{"id":"payload-pending","timestamp":"2026-07-16T04:00:09.000Z","payload":{"type":"pending_interaction","interactionId":"sanitized-interaction","executionId":"exec-payloads"}}
+{"id":"payload-resolved","timestamp":"2026-07-16T04:00:10.000Z","payload":{"type":"interaction_resolved","interactionId":"sanitized-interaction","executionId":"exec-payloads"}}

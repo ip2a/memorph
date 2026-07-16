@@ -1,16 +1,24 @@
 pub mod adapter;
 pub mod hook;
 
-use crate::canonical::ImportedSession;
+use crate::canonical::{
+    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
+    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingIssue,
+    MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext, SessionEvent,
+    SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary,
+};
 use crate::provider::{
-    Provider, ProviderCapabilities, ProviderSessionSummary, ProviderSourceFingerprint,
-    ScanStrategy, StorageShape,
+    Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
+    ProviderSourceFingerprint, ScanStrategy, StorageShape, TurnQuality,
 };
 use anyhow::{Context, Result};
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -35,9 +43,21 @@ impl Provider for KiroProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            import: false,
+            import: true,
             scan_strategy: ScanStrategy::FullScan,
             storage_shape: StorageShape::Directory,
+            turn_quality: TurnQuality::Exact,
+            import_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Preserved),
+                tool_result: Some(MappingDisposition::Preserved),
+                patch: Some(MappingDisposition::Unsupported),
+                image: Some(MappingDisposition::Unsupported),
+                file: Some(MappingDisposition::Unsupported),
+                compressed: Some(MappingDisposition::Unsupported),
+                provider_payload: Some(MappingDisposition::Preserved),
+            },
             ..ProviderCapabilities::default()
         }
     }
@@ -57,8 +77,8 @@ impl Provider for KiroProvider {
         session_summary_from_dir(&session_dir).map(Some)
     }
 
-    fn import_session(&self, _source_path: &str) -> Result<ImportedSession> {
-        anyhow::bail!("Canonical import is not implemented for the current Kiro session format")
+    fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        import_canonical_session_from_dir(Path::new(source_path))
     }
 
     fn session_source_fingerprint(
@@ -351,6 +371,690 @@ fn source_file_modified_ms(path: &Path) -> Option<i64> {
         .and_then(|metadata| metadata.modified().ok())
         .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+}
+
+struct KiroImportedEvent {
+    event: SessionEvent,
+    source_file: String,
+    source_line: usize,
+}
+
+#[derive(Default)]
+struct KiroStreamImport {
+    events: Vec<KiroImportedEvent>,
+    sub_execution_parents: BTreeMap<String, String>,
+}
+
+struct KiroStreamState {
+    default_turn_id: Option<String>,
+    model_id: Option<String>,
+    timestamp_base: DateTime<Utc>,
+    active_turn_id: Option<String>,
+    tool_call_events: BTreeMap<String, String>,
+}
+
+fn import_canonical_session_from_dir(session_dir: &Path) -> Result<ImportedSession> {
+    if kiro_session_source_fingerprint(session_dir)?.is_none() {
+        anyhow::bail!(
+            "Current Kiro session source is missing required files: {}",
+            session_dir.display()
+        );
+    }
+
+    let metadata = read_validated_session_metadata(session_dir)?;
+    let metadata_path = session_dir.join("session.json");
+    let raw_metadata: Value =
+        serde_json::from_str(&std::fs::read_to_string(&metadata_path).with_context(|| {
+            format!("Failed to read Kiro metadata: {}", metadata_path.display())
+        })?)
+        .with_context(|| format!("Failed to parse Kiro metadata: {}", metadata_path.display()))?;
+    let created_at = metadata.created_at.as_deref().and_then(parse_utc_timestamp);
+    let metadata_last_active_at = metadata
+        .last_modified_at
+        .as_deref()
+        .and_then(parse_utc_timestamp);
+    let timestamp_base = created_at.unwrap_or_else(|| DateTime::<Utc>::from(std::time::UNIX_EPOCH));
+    let model_id = raw_metadata
+        .get("modelId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+
+    let messages_path = session_dir.join("messages.jsonl");
+    let mut imported = read_kiro_event_stream(
+        &messages_path,
+        "messages",
+        None,
+        model_id.as_deref(),
+        timestamp_base,
+        &mut report,
+    )?;
+
+    let sub_executions_dir = session_dir.join("sub-executions");
+    if sub_executions_dir.exists() {
+        for sub_execution_path in sorted_jsonl_files(&sub_executions_dir)? {
+            let sub_execution_id = sub_execution_path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .context("Kiro sub-execution file has no valid execution id")?
+                .to_string();
+            let source_file = format!(
+                "sub-executions/{}",
+                sub_execution_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .context("Kiro sub-execution file has no valid name")?
+            );
+            let parent_event_id = imported
+                .sub_execution_parents
+                .get(&sub_execution_id)
+                .cloned();
+            let mut sub_import = read_kiro_event_stream(
+                &sub_execution_path,
+                &source_file,
+                Some(&sub_execution_id),
+                model_id.as_deref(),
+                timestamp_base,
+                &mut report,
+            )?;
+            if let Some(parent_event_id) = parent_event_id {
+                for event in &mut sub_import.events {
+                    event.event.links.parent_event_id = Some(parent_event_id.clone());
+                    event.event.links.provider_parent_id = Some(parent_event_id.clone());
+                }
+            } else if !sub_import.events.is_empty() {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Info,
+                    disposition: MappingDisposition::Preserved,
+                    code: "sub_execution_parent_unresolved".to_string(),
+                    message: format!(
+                        "Preserved Kiro sub-execution {sub_execution_id} by native timestamp without inventing a parent relation"
+                    ),
+                    path: Some(source_file),
+                    raw: None,
+                });
+            }
+            imported.events.extend(sub_import.events);
+        }
+    }
+
+    imported.events.sort_by(|left, right| {
+        left.event
+            .timestamp
+            .cmp(&right.event.timestamp)
+            .then_with(|| left.source_file.cmp(&right.source_file))
+            .then_with(|| left.source_line.cmp(&right.source_line))
+    });
+    let events = imported
+        .events
+        .into_iter()
+        .map(|event| event.event)
+        .collect::<Vec<_>>();
+    let event_last_active_at = events.iter().map(|event| event.timestamp).max();
+    let source_title = metadata
+        .title
+        .map(|title| title.trim().to_string())
+        .filter(|title| !title.is_empty());
+    let workspace_dir = metadata.workspace_paths.first().cloned();
+    let mut extensions = BTreeMap::new();
+    extensions.insert("kiro_session_metadata".to_string(), raw_metadata);
+
+    Ok(ImportedSession {
+        session: CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: metadata.id.clone(),
+                source_title,
+            },
+            provenance: SessionProvenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".to_string()),
+                primary_source: ProviderSessionRef {
+                    provider_id: PROVIDER_ID.to_string(),
+                    session_id: metadata.id,
+                    source_path: Some(session_dir.to_string_lossy().to_string()),
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir,
+                created_at,
+                last_active_at: metadata_last_active_at.max(event_last_active_at),
+                tags: Vec::new(),
+            },
+            events,
+            artifacts: Vec::new(),
+            extensions,
+        },
+        report,
+    })
+}
+
+fn sorted_jsonl_files(directory: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = std::fs::read_dir(directory)
+        .with_context(|| {
+            format!(
+                "Failed to read Kiro source directory: {}",
+                directory.display()
+            )
+        })?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    files.sort_by_key(|entry| entry.file_name());
+    files
+        .into_iter()
+        .filter(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("jsonl"))
+        .map(|entry| {
+            let path = entry.path();
+            source_file_marker(&path)?.with_context(|| {
+                format!(
+                    "Kiro source disappeared while importing: {}",
+                    path.display()
+                )
+            })?;
+            Ok(path)
+        })
+        .collect()
+}
+
+fn read_kiro_event_stream(
+    path: &Path,
+    source_file: &str,
+    default_turn_id: Option<&str>,
+    model_id: Option<&str>,
+    timestamp_base: DateTime<Utc>,
+    report: &mut MappingReport,
+) -> Result<KiroStreamImport> {
+    let file = File::open(path)
+        .with_context(|| format!("Failed to read Kiro event stream: {}", path.display()))?;
+    let mut imported = KiroStreamImport::default();
+    let mut state = KiroStreamState {
+        default_turn_id: default_turn_id.map(str::to_string),
+        model_id: model_id.map(str::to_string),
+        timestamp_base,
+        active_turn_id: default_turn_id.map(str::to_string),
+        tool_call_events: BTreeMap::new(),
+    };
+
+    for (line_index, line) in BufReader::new(file).lines().enumerate() {
+        let line_number = line_index + 1;
+        let line = line.with_context(|| {
+            format!(
+                "Failed to read Kiro event stream line: {}:{}",
+                path.display(),
+                line_number
+            )
+        })?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: Value = match serde_json::from_str(&line) {
+            Ok(record) => record,
+            Err(error) => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Warning,
+                    disposition: MappingDisposition::Dropped,
+                    code: "invalid_jsonl_line".to_string(),
+                    message: format!("Failed to parse Kiro event stream line: {error}"),
+                    path: Some(format!("{source_file}:line:{line_number}")),
+                    raw: Some(Value::String(line)),
+                });
+                continue;
+            }
+        };
+        let event =
+            canonical_event_from_kiro_record(record, source_file, line_number, &mut state, report);
+        if let Some(sub_execution_id) = event
+            .metadata
+            .provider_ext
+            .get("kiro_record")
+            .and_then(|record| record.get("payload"))
+            .and_then(|payload| payload.get("subExecutionId"))
+            .and_then(Value::as_str)
+        {
+            imported
+                .sub_execution_parents
+                .insert(sub_execution_id.to_string(), event.id.clone());
+        }
+        imported.events.push(KiroImportedEvent {
+            event,
+            source_file: source_file.to_string(),
+            source_line: line_number,
+        });
+    }
+
+    Ok(imported)
+}
+
+fn canonical_event_from_kiro_record(
+    record: Value,
+    source_file: &str,
+    line_number: usize,
+    state: &mut KiroStreamState,
+    report: &mut MappingReport,
+) -> SessionEvent {
+    let path = format!("{source_file}:line:{line_number}");
+    let payload = record.get("payload").cloned().unwrap_or(Value::Null);
+    let payload_type = payload
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let original_id = record.get("id").and_then(Value::as_str).map(str::to_string);
+    let event_id = match (source_file, original_id.as_deref()) {
+        ("messages", Some(id)) => id.to_string(),
+        (_, Some(id)) => format!("kiro:{source_file}:{id}"),
+        _ => format!("kiro:{source_file}:line:{line_number}"),
+    };
+    if original_id.is_none() {
+        report.push_issue(MappingIssue {
+            level: MappingIssueLevel::Warning,
+            disposition: MappingDisposition::Normalized,
+            code: "missing_event_id".to_string(),
+            message: "Generated a stable Kiro canonical event id from source location".to_string(),
+            path: Some(path.clone()),
+            raw: Some(record.clone()),
+        });
+    }
+    let timestamp = record
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(parse_utc_timestamp)
+        .unwrap_or_else(|| {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Normalized,
+                code: "invalid_event_timestamp".to_string(),
+                message: "Used the session timestamp plus source line offset for a Kiro event"
+                    .to_string(),
+                path: Some(path.clone()),
+                raw: record.get("timestamp").cloned(),
+            });
+            state.timestamp_base + chrono::Duration::milliseconds(line_number as i64)
+        });
+
+    // `subExecutionId` identifies a child stream from the main stream; it is
+    // not the event's own turn id. Child stream events inherit their native
+    // turn id from the file name through `default_turn_id`.
+    let explicit_turn_id = payload
+        .get("executionId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    if payload_type == "turn_start" {
+        state.active_turn_id = explicit_turn_id
+            .clone()
+            .or_else(|| state.default_turn_id.clone());
+    }
+    let provider_turn_id = explicit_turn_id
+        .or_else(|| state.active_turn_id.clone())
+        .or_else(|| state.default_turn_id.clone());
+    let mut links = EventLinks {
+        provider_turn_id,
+        ..EventLinks::default()
+    };
+    let mut fidelity = MappingDisposition::Preserved;
+
+    let (kind, role, blocks) = match payload_type {
+        "user" => (
+            SessionEventKind::Message,
+            EventRole::User,
+            kiro_message_blocks(&payload, false, payload_type, &path, report),
+        ),
+        "assistant" => {
+            let operation_type = payload
+                .get("operationType")
+                .and_then(Value::as_str)
+                .unwrap_or("Say");
+            let reasoning = operation_type.eq_ignore_ascii_case("reasoning");
+            if !reasoning && !operation_type.eq_ignore_ascii_case("say") {
+                fidelity = MappingDisposition::Normalized;
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Info,
+                    disposition: MappingDisposition::Normalized,
+                    code: "unknown_assistant_operation".to_string(),
+                    message: format!(
+                        "Mapped Kiro assistant operation {operation_type} as visible text"
+                    ),
+                    path: Some(path.clone()),
+                    raw: Some(payload.clone()),
+                });
+            }
+            (
+                SessionEventKind::Message,
+                EventRole::Assistant,
+                kiro_message_blocks(&payload, reasoning, payload_type, &path, report),
+            )
+        }
+        "system" => (
+            SessionEventKind::Message,
+            EventRole::System,
+            kiro_message_blocks(&payload, false, payload_type, &path, report),
+        ),
+        "agent_note" => (
+            SessionEventKind::Message,
+            EventRole::Assistant,
+            kiro_message_blocks(&payload, false, payload_type, &path, report),
+        ),
+        "tool_call" => {
+            let tool_call_id = payload
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    report.push_issue(MappingIssue {
+                        level: MappingIssueLevel::Warning,
+                        disposition: MappingDisposition::Normalized,
+                        code: "missing_tool_call_id".to_string(),
+                        message: "Generated a stable tool call id from the Kiro event id"
+                            .to_string(),
+                        path: Some(path.clone()),
+                        raw: Some(payload.clone()),
+                    });
+                    event_id.clone()
+                });
+            let name = payload
+                .get("toolName")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    report.push_issue(MappingIssue {
+                        level: MappingIssueLevel::Warning,
+                        disposition: MappingDisposition::Normalized,
+                        code: "missing_tool_name".to_string(),
+                        message: "Used `unknown` because the Kiro tool call had no tool name"
+                            .to_string(),
+                        path: Some(path.clone()),
+                        raw: Some(payload.clone()),
+                    });
+                    "unknown".to_string()
+                });
+            state
+                .tool_call_events
+                .insert(tool_call_id.clone(), event_id.clone());
+            (
+                SessionEventKind::ToolCall,
+                EventRole::Assistant,
+                vec![EventBlock::ToolCall {
+                    tool_call_id,
+                    name,
+                    input: payload.get("args").cloned(),
+                }],
+            )
+        }
+        "tool_result" => {
+            let tool_call_id = payload
+                .get("toolCallId")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    report.push_issue(MappingIssue {
+                        level: MappingIssueLevel::Warning,
+                        disposition: MappingDisposition::Normalized,
+                        code: "missing_tool_result_call_id".to_string(),
+                        message: "Used `unknown` because the Kiro tool result had no tool call id"
+                            .to_string(),
+                        path: Some(path.clone()),
+                        raw: Some(payload.clone()),
+                    });
+                    "unknown".to_string()
+                });
+            links.provider_parent_id = Some(tool_call_id.clone());
+            if let Some(parent_event_id) = state.tool_call_events.get(&tool_call_id) {
+                links.parent_event_id = Some(parent_event_id.clone());
+            }
+            let content = kiro_tool_result_content(payload.get("content"), &path, report);
+            let is_error = payload.get("success").and_then(Value::as_bool) == Some(false)
+                || matches!(
+                    payload.get("status").and_then(Value::as_str),
+                    Some("error" | "failed")
+                );
+            (
+                SessionEventKind::ToolResult,
+                EventRole::Tool,
+                vec![EventBlock::ToolResult {
+                    tool_call_id,
+                    content,
+                    is_error,
+                }],
+            )
+        }
+        "turn_start" => {
+            links.turn_boundary = Some(TurnBoundary::Started);
+            (
+                SessionEventKind::Lifecycle,
+                EventRole::System,
+                vec![EventBlock::ProviderPayload {
+                    kind: payload_type.to_string(),
+                    payload: payload.clone(),
+                }],
+            )
+        }
+        "turn_end" => {
+            links.turn_boundary = Some(kiro_turn_end_boundary(&payload));
+            (
+                SessionEventKind::Lifecycle,
+                EventRole::System,
+                vec![EventBlock::ProviderPayload {
+                    kind: payload_type.to_string(),
+                    payload: payload.clone(),
+                }],
+            )
+        }
+        "session_start"
+        | "usage_summary"
+        | "session_metadata"
+        | "session_event"
+        | "sub_agent_start"
+        | "sub_agent_complete"
+        | "sub_agent_progress"
+        | "steering_inclusion"
+        | "tombstone"
+        | "ContextualHookInvoked"
+        | "pending_interaction"
+        | "interaction_resolved" => (
+            SessionEventKind::Lifecycle,
+            EventRole::System,
+            vec![EventBlock::ProviderPayload {
+                kind: payload_type.to_string(),
+                payload: payload.clone(),
+            }],
+        ),
+        unknown => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Info,
+                disposition: MappingDisposition::Preserved,
+                code: "unknown_payload_preserved".to_string(),
+                message: format!("Preserved unknown Kiro payload type {unknown}"),
+                path: Some(path.clone()),
+                raw: Some(payload.clone()),
+            });
+            (
+                SessionEventKind::Unknown,
+                EventRole::Unknown,
+                vec![EventBlock::ProviderPayload {
+                    kind: unknown.to_string(),
+                    payload: payload.clone(),
+                }],
+            )
+        }
+    };
+
+    if payload_type == "session_start" {
+        if let Some(message_id) = payload.get("messageId").and_then(Value::as_str) {
+            links.related_event_ids.push(message_id.to_string());
+        }
+    }
+    if payload_type == "turn_end" {
+        state.active_turn_id = state.default_turn_id.clone();
+    }
+
+    SessionEvent {
+        id: event_id,
+        kind,
+        role,
+        timestamp,
+        links,
+        blocks,
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id,
+                original_role: Some(payload_type.to_string()),
+                phase: payload
+                    .get("operationType")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            },
+            model: state.model_id.clone(),
+            usage: None,
+            fidelity,
+            provider_ext: BTreeMap::from([
+                ("kiro_record".to_string(), record),
+                (
+                    "kiro_source".to_string(),
+                    json!({"file": source_file, "line": line_number}),
+                ),
+            ]),
+        },
+    }
+}
+
+fn kiro_message_blocks(
+    payload: &Value,
+    reasoning: bool,
+    payload_type: &str,
+    path: &str,
+    report: &mut MappingReport,
+) -> Vec<EventBlock> {
+    let Some(content) = payload.get("content") else {
+        return vec![EventBlock::ProviderPayload {
+            kind: payload_type.to_string(),
+            payload: payload.clone(),
+        }];
+    };
+    let mut blocks = Vec::new();
+    match content {
+        Value::String(text) => push_kiro_text_block(&mut blocks, text, reasoning),
+        Value::Array(items) => {
+            for item in items {
+                match item {
+                    Value::String(text) => push_kiro_text_block(&mut blocks, text, reasoning),
+                    Value::Object(object) => {
+                        if let Some(text) = object.get("text").and_then(Value::as_str) {
+                            push_kiro_text_block(&mut blocks, text, reasoning);
+                        } else if let Some(thinking) =
+                            object.get("thinking").and_then(Value::as_str)
+                        {
+                            blocks.push(EventBlock::Thinking {
+                                text: thinking.to_string(),
+                                signature: object
+                                    .get("signature")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                            });
+                        } else {
+                            blocks.push(EventBlock::ProviderPayload {
+                                kind: object
+                                    .get("type")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("content")
+                                    .to_string(),
+                                payload: item.clone(),
+                            });
+                        }
+                    }
+                    _ => blocks.push(EventBlock::Unknown { raw: item.clone() }),
+                }
+            }
+        }
+        Value::Object(object) => {
+            if let Some(text) = object.get("text").and_then(Value::as_str) {
+                push_kiro_text_block(&mut blocks, text, reasoning);
+            } else {
+                blocks.push(EventBlock::ProviderPayload {
+                    kind: object
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("content")
+                        .to_string(),
+                    payload: content.clone(),
+                });
+            }
+        }
+        _ => blocks.push(EventBlock::Unknown {
+            raw: content.clone(),
+        }),
+    }
+    if blocks.is_empty() {
+        report.push_issue(MappingIssue {
+            level: MappingIssueLevel::Info,
+            disposition: MappingDisposition::Normalized,
+            code: "empty_message_content".to_string(),
+            message: "Preserved an empty Kiro message as provider payload".to_string(),
+            path: Some(path.to_string()),
+            raw: Some(payload.clone()),
+        });
+        blocks.push(EventBlock::ProviderPayload {
+            kind: payload_type.to_string(),
+            payload: payload.clone(),
+        });
+    }
+    blocks
+}
+
+fn push_kiro_text_block(blocks: &mut Vec<EventBlock>, text: &str, reasoning: bool) {
+    if text.is_empty() {
+        return;
+    }
+    if reasoning {
+        blocks.push(EventBlock::Thinking {
+            text: text.to_string(),
+            signature: None,
+        });
+    } else {
+        blocks.push(EventBlock::Text {
+            text: text.to_string(),
+        });
+    }
+}
+
+fn kiro_tool_result_content(
+    content: Option<&Value>,
+    path: &str,
+    report: &mut MappingReport,
+) -> String {
+    match content {
+        Some(Value::String(content)) => content.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(content) => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Info,
+                disposition: MappingDisposition::Normalized,
+                code: "structured_tool_result_normalized".to_string(),
+                message: "Serialized structured Kiro tool result content as JSON".to_string(),
+                path: Some(path.to_string()),
+                raw: Some(content.clone()),
+            });
+            serde_json::to_string(content).unwrap_or_default()
+        }
+    }
+}
+
+fn kiro_turn_end_boundary(payload: &Value) -> TurnBoundary {
+    match payload
+        .get("stopReason")
+        .or_else(|| payload.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("end_turn")
+    {
+        "error" | "failed" | "failure" => TurnBoundary::Failed,
+        "interrupted" | "cancelled" | "canceled" | "aborted" => TurnBoundary::Interrupted,
+        _ => TurnBoundary::Completed,
+    }
+}
+
+fn parse_utc_timestamp(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc))
 }
 
 struct SourceFileMarker {
@@ -727,7 +1431,7 @@ mod tests {
 
         let capabilities = KiroProvider.capabilities();
         assert!(capabilities.scan);
-        assert!(!capabilities.import);
+        assert!(capabilities.import);
         assert!(!capabilities.export);
         assert!(!capabilities.delete);
         assert!(!capabilities.rename);
@@ -735,6 +1439,15 @@ mod tests {
         assert_eq!(capabilities.scan_strategy, ScanStrategy::FullScan);
         assert_eq!(capabilities.page_strategy, PageStrategy::Unknown);
         assert_eq!(capabilities.storage_shape, StorageShape::Directory);
+        assert_eq!(capabilities.turn_quality, TurnQuality::Exact);
+        assert_eq!(
+            capabilities.import_fidelity.tool_call,
+            Some(MappingDisposition::Preserved)
+        );
+        assert_eq!(
+            capabilities.import_fidelity.provider_payload,
+            Some(MappingDisposition::Preserved)
+        );
         assert_eq!(
             capabilities.backup_support,
             ProviderBackupSupport {
@@ -774,12 +1487,310 @@ mod tests {
             sessions[1].source_path
         );
         assert!(KiroProvider.session_size(&sessions[1].session_id)? > 0);
-        assert!(KiroProvider
-            .import_session(source_path.to_str().unwrap())
-            .unwrap_err()
-            .to_string()
-            .contains("current Kiro session format"));
+        assert_eq!(
+            KiroProvider
+                .import_session(source_path.to_str().unwrap())?
+                .session
+                .identity
+                .canonical_id,
+            sessions[1].session_id
+        );
         assert_eq!(KiroProvider.data_source_paths(), vec![temp.path()]);
+        Ok(())
+    }
+
+    #[test]
+    fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifacts(
+    ) -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_dir = temp
+            .path()
+            .join("8f3d1d8bb1bd8116/sess_11111111-1111-4111-8111-111111111111");
+
+        let imported = KiroProvider.import_session(session_dir.to_str().unwrap())?;
+        assert_eq!(
+            imported.session.identity.canonical_id,
+            "sess_11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(
+            imported.session.identity.source_title.as_deref(),
+            Some("Sanitized Kiro session")
+        );
+        assert_eq!(
+            imported.session.context.workspace_dir.as_deref(),
+            Some("/workspace/sanitized-project")
+        );
+        assert_eq!(imported.session.events.len(), 12);
+        assert!(imported.session.artifacts.is_empty());
+        assert_eq!(imported.report.overall, MappingDisposition::Preserved);
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "sub_execution_parent_unresolved"));
+        assert_eq!(
+            imported.session.extensions["kiro_session_metadata"]["modelId"],
+            "sanitized-model"
+        );
+
+        let event = |id: &str| {
+            imported
+                .session
+                .events
+                .iter()
+                .find(|event| event.metadata.source.original_id.as_deref() == Some(id))
+                .unwrap()
+        };
+        assert_eq!(
+            event("msg-user-1").links.provider_turn_id.as_deref(),
+            Some("exec-1")
+        );
+        assert!(matches!(
+            event("msg-reasoning-1").blocks.as_slice(),
+            [EventBlock::Thinking { text, .. }] if text == "[sanitized reasoning]"
+        ));
+        assert!(matches!(
+            event("msg-assistant-1").blocks.as_slice(),
+            [EventBlock::Text { text }] if text == "[sanitized assistant response]"
+        ));
+        assert!(matches!(
+            event("msg-tool-call-1").blocks.as_slice(),
+            [EventBlock::ToolCall { tool_call_id, name, input: Some(input) }]
+                if tool_call_id == "tool-1"
+                    && name == "read_file"
+                    && input["path"] == "src/example.rs"
+        ));
+        assert_eq!(
+            event("msg-tool-result-1").links.parent_event_id.as_deref(),
+            Some("msg-tool-call-1")
+        );
+        assert!(matches!(
+            event("msg-tool-result-1").blocks.as_slice(),
+            [EventBlock::ToolResult { tool_call_id, content, is_error }]
+                if tool_call_id == "tool-1"
+                    && content == "[sanitized tool output]"
+                    && !is_error
+        ));
+        assert_eq!(
+            event("exec-1-turn-start").links.turn_boundary,
+            Some(TurnBoundary::Started)
+        );
+        assert_eq!(
+            event("exec-1-turn-end").links.turn_boundary,
+            Some(TurnBoundary::Completed)
+        );
+        assert_eq!(
+            event("sub-msg-user-1").links.provider_turn_id.as_deref(),
+            Some("subexec-1")
+        );
+        assert_eq!(
+            event("sub-msg-assistant-1").metadata.provider_ext["kiro_source"]["file"],
+            "sub-executions/subexec-1.jsonl"
+        );
+
+        let ordered_ids = imported
+            .session
+            .events
+            .iter()
+            .map(|event| event.metadata.source.original_id.as_deref().unwrap())
+            .collect::<Vec<_>>();
+        let tool_call_index = ordered_ids
+            .iter()
+            .position(|id| *id == "msg-tool-call-1")
+            .unwrap();
+        let sub_user_index = ordered_ids
+            .iter()
+            .position(|id| *id == "sub-msg-user-1")
+            .unwrap();
+        let tool_result_index = ordered_ids
+            .iter()
+            .position(|id| *id == "msg-tool-result-1")
+            .unwrap();
+        assert!(tool_call_index < sub_user_index && sub_user_index < tool_result_index);
+        assert!(!serde_json::to_string(&imported.session.events)?
+            .contains("sanitized external tool output"));
+        Ok(())
+    }
+
+    #[test]
+    fn current_format_import_keeps_exact_multi_turn_ids_and_explicit_sub_parent() -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_dir = temp
+            .path()
+            .join("8f3d1d8bb1bd8116/sess_11111111-1111-4111-8111-111111111111");
+        let messages_path = session_dir.join("messages.jsonl");
+        let mut messages =
+            fs::read_to_string(kiro_audit_fixture_root().join("variants/messages.updated.jsonl"))?;
+        messages.push_str(
+            "{\"id\":\"sub-parent\",\"timestamp\":\"2026-07-16T00:00:04.050Z\",\"payload\":{\"type\":\"sub_agent_start\",\"executionId\":\"exec-1\",\"subExecutionId\":\"subexec-1\"}}\n",
+        );
+        fs::write(&messages_path, messages)?;
+
+        let imported = KiroProvider.import_session(session_dir.to_str().unwrap())?;
+        let event = |id: &str| {
+            imported
+                .session
+                .events
+                .iter()
+                .find(|event| event.metadata.source.original_id.as_deref() == Some(id))
+                .unwrap()
+        };
+        assert_eq!(
+            event("msg-user-2").links.provider_turn_id.as_deref(),
+            Some("exec-2")
+        );
+        assert_eq!(
+            event("exec-2-turn-start").links.turn_boundary,
+            Some(TurnBoundary::Started)
+        );
+        assert_eq!(
+            event("exec-2-turn-end").links.turn_boundary,
+            Some(TurnBoundary::Completed)
+        );
+        assert_eq!(
+            event("sub-parent").links.provider_turn_id.as_deref(),
+            Some("exec-1")
+        );
+        assert_eq!(
+            event("sub-msg-user-1").links.parent_event_id.as_deref(),
+            Some("sub-parent")
+        );
+        assert_eq!(
+            event("sub-msg-assistant-1")
+                .links
+                .parent_event_id
+                .as_deref(),
+            Some("sub-parent")
+        );
+        assert!(!imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "sub_execution_parent_unresolved"));
+        Ok(())
+    }
+
+    #[test]
+    fn current_format_import_reports_malformed_and_preserves_unknown_payloads() -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_dir = temp
+            .path()
+            .join("8f3d1d8bb1bd8116/sess_11111111-1111-4111-8111-111111111111");
+        fs::remove_dir_all(session_dir.join("sub-executions"))?;
+        let variants = kiro_audit_fixture_root().join("variants");
+        let messages_path = session_dir.join("messages.jsonl");
+
+        fs::copy(variants.join("messages.malformed.jsonl"), &messages_path)?;
+        let malformed = KiroProvider.import_session(session_dir.to_str().unwrap())?;
+        assert_eq!(malformed.session.events.len(), 2);
+        assert_eq!(malformed.report.overall, MappingDisposition::Dropped);
+        let issue = malformed
+            .report
+            .issues
+            .iter()
+            .find(|issue| issue.code == "invalid_jsonl_line")
+            .unwrap();
+        assert_eq!(issue.path.as_deref(), Some("messages:line:2"));
+        assert!(matches!(issue.raw, Some(Value::String(_))));
+
+        fs::copy(variants.join("messages.unknown.jsonl"), &messages_path)?;
+        let unknown = KiroProvider.import_session(session_dir.to_str().unwrap())?;
+        assert_eq!(unknown.session.events.len(), 1);
+        assert_eq!(unknown.report.overall, MappingDisposition::Preserved);
+        assert!(unknown
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "unknown_payload_preserved"));
+        assert_eq!(unknown.session.events[0].kind, SessionEventKind::Unknown);
+        assert_eq!(unknown.session.events[0].role, EventRole::Unknown);
+        assert!(matches!(
+            unknown.session.events[0].blocks.as_slice(),
+            [EventBlock::ProviderPayload { kind, payload }]
+                if kind == "future_kiro_payload"
+                    && payload["futureField"]["preserve"] == true
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn current_format_import_reports_missing_tool_identifiers() -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_dir = temp
+            .path()
+            .join("8f3d1d8bb1bd8116/sess_11111111-1111-4111-8111-111111111111");
+        fs::remove_dir_all(session_dir.join("sub-executions"))?;
+        fs::write(
+            session_dir.join("messages.jsonl"),
+            concat!(
+                "{\"id\":\"tool-call-missing-id\",\"timestamp\":\"2026-07-16T00:00:01.000Z\",\"payload\":{\"type\":\"tool_call\",\"args\":{\"path\":\"src/example.rs\"}}}\n",
+                "{\"id\":\"tool-result-missing-id\",\"timestamp\":\"2026-07-16T00:00:02.000Z\",\"payload\":{\"type\":\"tool_result\",\"content\":\"[sanitized result]\"}}\n",
+            ),
+        )?;
+
+        let imported = KiroProvider.import_session(session_dir.to_str().unwrap())?;
+        assert_eq!(imported.report.overall, MappingDisposition::Normalized);
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "missing_tool_call_id"));
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "missing_tool_name"));
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "missing_tool_result_call_id"));
+        assert!(matches!(
+            imported.session.events[0].blocks.as_slice(),
+            [EventBlock::ToolCall { tool_call_id, name, .. }]
+                if tool_call_id == "tool-call-missing-id" && name == "unknown"
+        ));
+        assert!(matches!(
+            imported.session.events[1].blocks.as_slice(),
+            [EventBlock::ToolResult { tool_call_id, .. }]
+                if tool_call_id == "unknown"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn current_format_import_classifies_known_payload_matrix() -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_dir = temp
+            .path()
+            .join("8f3d1d8bb1bd8116/sess_11111111-1111-4111-8111-111111111111");
+        fs::remove_dir_all(session_dir.join("sub-executions"))?;
+        fs::copy(
+            kiro_audit_fixture_root().join("variants/messages.payload-matrix.jsonl"),
+            session_dir.join("messages.jsonl"),
+        )?;
+
+        let imported = KiroProvider.import_session(session_dir.to_str().unwrap())?;
+        assert_eq!(imported.session.events.len(), 11);
+        assert_eq!(imported.report.overall, MappingDisposition::Preserved);
+        assert_eq!(imported.session.events[0].kind, SessionEventKind::Message);
+        assert_eq!(imported.session.events[0].role, EventRole::System);
+        assert_eq!(imported.session.events[1].kind, SessionEventKind::Message);
+        assert_eq!(imported.session.events[1].role, EventRole::Assistant);
+        assert!(imported.session.events[2..]
+            .iter()
+            .all(|event| event.kind == SessionEventKind::Lifecycle));
+        assert!(imported.session.events[2..].iter().all(|event| {
+            matches!(
+                event.blocks.as_slice(),
+                [EventBlock::ProviderPayload { .. }]
+            )
+        }));
         Ok(())
     }
 
