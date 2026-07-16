@@ -3,7 +3,7 @@ use crate::canonical::{
     MappingDisposition, MappingIssue, MappingIssueLevel, MappingReport, SessionEvent,
     SessionEventKind,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -16,6 +16,13 @@ pub struct ProviderSessionSummary {
     pub project_dir: Option<String>,
     pub last_active_at: Option<i64>,
     pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderSourceFingerprint {
+    pub modified_at_ms: i64,
+    pub size_bytes: i64,
+    pub value: String,
 }
 
 #[derive(Debug, Clone)]
@@ -277,6 +284,59 @@ pub fn default_resolve_workspace_dir(input: Option<&str>) -> Result<PathBuf> {
     crate::config::resolve_workspace(input)
 }
 
+fn file_source_fingerprint(path: &Path) -> Result<Option<ProviderSourceFingerprint>> {
+    let path_text = path.to_string_lossy();
+    let file_path = match path_text.split_once('#') {
+        Some((file_path, fragment)) if fragment.starts_with("session=") => PathBuf::from(file_path),
+        _ => path.to_path_buf(),
+    };
+    let metadata = match std::fs::metadata(&file_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to read session source metadata: {}",
+                    file_path.display()
+                )
+            })
+        }
+    };
+    let mut modified_at_ms = source_metadata_modified_ms(&metadata);
+    let mut size_bytes = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+    let mut wal_modified_at_ms = 0;
+    let mut wal_size_bytes = 0;
+
+    if file_path.extension().and_then(|value| value.to_str()) == Some("db")
+        || path_text.contains("#session=")
+    {
+        let wal_path = PathBuf::from(format!("{}-wal", file_path.to_string_lossy()));
+        if let Ok(wal_metadata) = std::fs::metadata(&wal_path) {
+            wal_modified_at_ms = source_metadata_modified_ms(&wal_metadata);
+            wal_size_bytes = i64::try_from(wal_metadata.len()).unwrap_or(i64::MAX);
+            modified_at_ms = modified_at_ms.max(wal_modified_at_ms);
+            size_bytes = size_bytes.saturating_add(wal_size_bytes);
+        }
+    }
+
+    Ok(Some(ProviderSourceFingerprint {
+        modified_at_ms,
+        size_bytes,
+        value: format!(
+            "metadata-v1:{modified_at_ms}:{size_bytes}:{wal_modified_at_ms}:{wal_size_bytes}"
+        ),
+    }))
+}
+
+fn source_metadata_modified_ms(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
 /// Provider trait: each AI coding tool implements this interface
 pub trait Provider: Send + Sync {
     fn id(&self) -> &'static str;
@@ -325,6 +385,17 @@ pub trait Provider: Send + Sync {
 
     /// Load a high-fidelity canonical session plus a mapping report.
     fn import_session(&self, source_path: &str) -> Result<ImportedSession>;
+
+    /// Fingerprint the provider-native source addressed by this session locator.
+    ///
+    /// Single-file providers use the default metadata/WAL fingerprint. Providers whose
+    /// session source spans multiple files must override this contract.
+    fn session_source_fingerprint(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<ProviderSourceFingerprint>> {
+        file_source_fingerprint(Path::new(source_path))
+    }
 
     /// Load a page of canonical events while preserving total event/message counts.
     ///

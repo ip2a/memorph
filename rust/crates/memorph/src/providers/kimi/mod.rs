@@ -11,12 +11,12 @@ use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
     canonical_export_result, canonical_session_title, canonical_visible_block_text, Provider,
     ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary,
-    ProviderSourceMutation,
+    ProviderSourceFingerprint, ProviderSourceMutation,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -65,117 +65,96 @@ impl Provider for KimiProvider {
             return Ok(Vec::new());
         }
 
-        let dir_map = load_work_dir_map()?;
+        let work_dirs = load_work_dir_map()?;
+        let mut seen_session_ids = BTreeMap::new();
         let mut sessions = Vec::new();
 
-        for entry in WalkDir::new(&root)
-            .max_depth(2)
-            .into_iter()
-            .filter_map(|e| e.ok())
-        {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let depth = path.components().count() - root.components().count();
-            if depth != 2 {
-                continue;
-            }
-
-            let wire_path = path.join("wire.jsonl");
-            if !wire_path.exists() {
-                continue;
-            }
-
-            let session_id = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-            if session_id.is_empty() {
-                continue;
-            }
-
-            let project_hash = path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
-
-            let state_path = path.join("state.json");
-            let (title, archived) = if state_path.exists() {
-                match read_state_json(&state_path) {
-                    Ok(s) => (s.custom_title, s.archived),
-                    Err(_) => (None, false),
+        for (work_dir_key, work_dir) in &work_dirs {
+            let sessions_dir = root.join(work_dir_key);
+            let entries = match std::fs::read_dir(&sessions_dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "Failed to read Kimi work-dir sessions: {}",
+                            sessions_dir.display()
+                        )
+                    })
                 }
-            } else {
-                (None, false)
             };
+            let mut session_dirs = entries
+                .filter_map(|entry| entry.ok())
+                .map(|entry| entry.path())
+                .filter(|path| path.is_dir() && path.join("context.jsonl").is_file())
+                .collect::<Vec<_>>();
+            session_dirs.sort();
 
-            if archived {
-                continue;
+            for session_dir in session_dirs {
+                let Some(session_id) = session_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|session_id| !session_id.is_empty())
+                    .map(str::to_string)
+                else {
+                    continue;
+                };
+                if let Some(previous) =
+                    seen_session_ids.insert(session_id.clone(), session_dir.clone())
+                {
+                    anyhow::bail!(
+                        "Ambiguous Kimi session id {session_id}: {} and {}",
+                        previous.display(),
+                        session_dir.display()
+                    );
+                }
+                if let Some(summary) = kimi_session_summary(
+                    &session_dir,
+                    session_id,
+                    Some(work_dir.project_dir.clone()),
+                )? {
+                    sessions.push(summary);
+                }
             }
-
-            let project_dir = dir_map.get(&project_hash).cloned();
-
-            let last_active_at = wire_last_timestamp(&wire_path);
-
-            sessions.push(ProviderSessionSummary {
-                session_id,
-                title: title.filter(|t| !t.is_empty()),
-                project_dir,
-                last_active_at,
-                source_path: Some(wire_path.to_string_lossy().to_string()),
-            });
         }
 
+        sessions.sort_by(|left, right| {
+            right
+                .last_active_at
+                .cmp(&left.last_active_at)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
         Ok(sessions)
     }
 
     fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
-        let dir = match find_session_dir(session_id) {
-            Some(d) => d,
-            None => return Ok(None),
+        let Some(session_dir) = find_session_dir(session_id)? else {
+            return Ok(None);
         };
-
-        let state_path = dir.join("state.json");
-        let (title, archived) = if state_path.exists() {
-            match read_state_json(&state_path) {
-                Ok(s) => (s.custom_title, s.archived),
-                Err(_) => (None, false),
-            }
-        } else {
-            (None, false)
-        };
-
-        if archived {
+        if !session_dir.join("context.jsonl").is_file() {
             return Ok(None);
         }
 
-        let project_hash = dir
+        let work_dir_key = session_dir
             .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-        let dir_map = load_work_dir_map().unwrap_or_default();
-        let project_dir = dir_map.get(&project_hash).cloned();
-
-        let wire_path = dir.join("wire.jsonl");
-        let last_active_at = wire_last_timestamp(&wire_path);
-
-        Ok(Some(ProviderSessionSummary {
-            session_id: session_id.to_string(),
-            title: title.filter(|t| !t.is_empty()),
-            project_dir,
-            last_active_at,
-            source_path: Some(wire_path.to_string_lossy().to_string()),
-        }))
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str());
+        let work_dirs = load_work_dir_map()?;
+        let project_dir = work_dir_key
+            .and_then(|key| work_dirs.get(key))
+            .map(|work_dir| work_dir.project_dir.clone());
+        kimi_session_summary(&session_dir, session_id.to_string(), project_dir)
     }
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
-        import_canonical_session_from_wire(Path::new(source_path))
+        import_canonical_session_from_dir(Path::new(source_path))
+    }
+
+    fn session_source_fingerprint(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<ProviderSourceFingerprint>> {
+        kimi_session_source_fingerprint(Path::new(source_path))
     }
 
     fn export_session(
@@ -241,7 +220,7 @@ impl Provider for KimiProvider {
     }
 
     fn session_size(&self, session_id: &str) -> Result<u64> {
-        let dir = find_session_dir(session_id)
+        let dir = find_session_dir(session_id)?
             .with_context(|| format!("Kimi session not found: {}", session_id))?;
         let mut total: u64 = 0;
         for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
@@ -280,6 +259,19 @@ fn get_kimi_sessions_dir() -> PathBuf {
 }
 
 fn get_kimi_json_path() -> PathBuf {
+    #[cfg(test)]
+    if let Some(sessions_dir) = TEST_KIMI_SESSIONS_DIR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .expect("test Kimi sessions dir lock")
+        .clone()
+    {
+        return sessions_dir
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("kimi.json");
+    }
+
     dirs::home_dir()
         .map(|h| h.join(".kimi").join("kimi.json"))
         .unwrap_or_else(|| PathBuf::from(".kimi").join("kimi.json"))
@@ -303,6 +295,13 @@ struct KimiState {
     archived: bool,
 }
 
+#[derive(Debug, Clone)]
+struct KimiWorkDir {
+    project_dir: String,
+    mapping_fingerprint: String,
+    mapping_size_bytes: i64,
+}
+
 fn read_state_json(path: &Path) -> Result<KimiState> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read state.json: {}", path.display()))?;
@@ -310,45 +309,263 @@ fn read_state_json(path: &Path) -> Result<KimiState> {
         .with_context(|| format!("Failed to parse state.json: {}", path.display()))
 }
 
-fn load_work_dir_map() -> Result<HashMap<String, String>> {
+fn load_work_dir_map() -> Result<BTreeMap<String, KimiWorkDir>> {
     let path = get_kimi_json_path();
     if !path.exists() {
-        return Ok(HashMap::new());
+        return Ok(BTreeMap::new());
     }
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read kimi.json: {}", path.display()))?;
     let value: Value = serde_json::from_str(&raw)
         .with_context(|| format!("Failed to parse kimi.json: {}", path.display()))?;
 
-    let mut map = HashMap::new();
-    if let Some(dirs) = value.get("work_dirs").and_then(|v| v.as_array()) {
+    let mut map = BTreeMap::new();
+    if let Some(dirs) = value.get("work_dirs").and_then(Value::as_array) {
         for entry in dirs {
-            if let Some(path_str) = entry.get("path").and_then(|v| v.as_str()) {
-                let hash = md5_hex(path_str.as_bytes());
-                map.insert(hash, path_str.to_string());
+            let Some(path_str) = entry.get("path").and_then(Value::as_str) else {
+                continue;
+            };
+            let kaos = entry.get("kaos").and_then(Value::as_str).unwrap_or("local");
+            let path_hash = md5_hex(path_str.as_bytes());
+            let key = if kaos == "local" {
+                path_hash
+            } else {
+                format!("{kaos}_{path_hash}")
+            };
+            let mapping_bytes = serde_json::to_vec(entry)?;
+            let work_dir = KimiWorkDir {
+                project_dir: path_str.to_string(),
+                mapping_fingerprint: md5_hex(&mapping_bytes),
+                mapping_size_bytes: i64::try_from(mapping_bytes.len()).unwrap_or(i64::MAX),
+            };
+            if map.insert(key.clone(), work_dir).is_some() {
+                anyhow::bail!("Duplicate Kimi work-dir key in kimi.json: {key}");
             }
         }
     }
     Ok(map)
 }
 
-fn find_session_dir(session_id: &str) -> Option<PathBuf> {
+fn find_session_dirs(session_id: &str) -> Result<Vec<PathBuf>> {
     let root = get_kimi_sessions_dir();
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut matches = Vec::new();
     for entry in WalkDir::new(&root)
         .max_depth(2)
-        .into_iter()
-        .filter_map(|e| e.ok())
+        .min_depth(2)
+        .follow_links(false)
     {
-        let path = entry.path();
-        if path.is_dir() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name == session_id {
-                    return Some(path.to_path_buf());
+        let entry =
+            entry.with_context(|| format!("Failed to walk Kimi sessions: {}", root.display()))?;
+        if entry.file_type().is_dir()
+            && entry.path().file_name().and_then(|name| name.to_str()) == Some(session_id)
+        {
+            matches.push(entry.path().to_path_buf());
+        }
+    }
+    matches.sort();
+    Ok(matches)
+}
+
+fn find_session_dir(session_id: &str) -> Result<Option<PathBuf>> {
+    let matches = find_session_dirs(session_id)?;
+    match matches.as_slice() {
+        [] => Ok(None),
+        [session_dir] => Ok(Some(session_dir.clone())),
+        _ => anyhow::bail!("Kimi session id is ambiguous: {session_id}"),
+    }
+}
+
+fn kimi_session_summary(
+    session_dir: &Path,
+    session_id: String,
+    project_dir: Option<String>,
+) -> Result<Option<ProviderSessionSummary>> {
+    let state_path = session_dir.join("state.json");
+    let (state_title, archived) = if state_path.exists() {
+        match read_state_json(&state_path) {
+            Ok(state) => (state.custom_title, state.archived),
+            Err(_) => (None, false),
+        }
+    } else {
+        (None, false)
+    };
+    if archived {
+        return Ok(None);
+    }
+
+    let title = state_title
+        .map(|title| title.trim().to_string())
+        .filter(|title| !title.is_empty())
+        .or_else(|| first_turn_begin_text(&session_dir.join("wire.jsonl")));
+    let last_active_at = file_modified_ms(&session_dir.join("context.jsonl"))?;
+
+    Ok(Some(ProviderSessionSummary {
+        session_id,
+        title,
+        project_dir,
+        last_active_at,
+        source_path: Some(session_dir.to_string_lossy().to_string()),
+    }))
+}
+
+fn first_turn_begin_text(wire_path: &Path) -> Option<String> {
+    let file = File::open(wire_path).ok()?;
+    for line in BufReader::new(file).lines().map_while(|line| line.ok()) {
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        let Some(message) = value.get("message") else {
+            continue;
+        };
+        if message.get("type").and_then(Value::as_str) != Some("TurnBegin") {
+            continue;
+        }
+        let Some(inputs) = message
+            .get("payload")
+            .and_then(|payload| payload.get("user_input"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for input in inputs {
+            if input.get("type").and_then(Value::as_str) == Some("text") {
+                if let Some(text) = input
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    return Some(text.to_string());
                 }
             }
         }
     }
     None
+}
+
+fn file_modified_ms(path: &Path) -> Result<Option<i64>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata_modified_ms(&metadata))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error)
+            .with_context(|| format!("Failed to read Kimi source metadata: {}", path.display())),
+    }
+}
+
+fn metadata_modified_ms(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+fn kimi_file_fingerprint(path: &Path, required: bool) -> Result<Option<(String, i64, i64)>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return if required {
+                Ok(None)
+            } else {
+                Ok(Some(("absent".to_string(), 0, 0)))
+            };
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Failed to read Kimi source metadata: {}", path.display())
+            })
+        }
+    };
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        anyhow::bail!("Kimi source is not a regular file: {}", path.display());
+    }
+    let modified_at_ms = metadata_modified_ms(&metadata);
+    let size_bytes = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
+    Ok(Some((
+        format!("present:{modified_at_ms}:{size_bytes}"),
+        modified_at_ms,
+        size_bytes,
+    )))
+}
+
+fn kimi_session_source_fingerprint(
+    session_dir: &Path,
+) -> Result<Option<ProviderSourceFingerprint>> {
+    let metadata = match std::fs::symlink_metadata(session_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to read Kimi session source metadata: {}",
+                    session_dir.display()
+                )
+            })
+        }
+    };
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "Kimi session source locator must be a directory: {}",
+            session_dir.display()
+        );
+    }
+    let sessions_root = get_kimi_sessions_dir();
+    if session_dir.parent().and_then(Path::parent) != Some(sessions_root.as_path()) {
+        anyhow::bail!(
+            "Kimi session source locator is outside the configured sessions root: {}",
+            session_dir.display()
+        );
+    }
+
+    let Some((context_marker, context_modified_at_ms, context_size_bytes)) =
+        kimi_file_fingerprint(&session_dir.join("context.jsonl"), true)?
+    else {
+        return Ok(None);
+    };
+    let (wire_marker, wire_modified_at_ms, wire_size_bytes) =
+        kimi_file_fingerprint(&session_dir.join("wire.jsonl"), false)?
+            .expect("optional Kimi fingerprint marker");
+    let (state_marker, state_modified_at_ms, state_size_bytes) =
+        kimi_file_fingerprint(&session_dir.join("state.json"), false)?
+            .expect("optional Kimi fingerprint marker");
+
+    let work_dir_key = session_dir
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .context("Kimi session source has no work-dir key")?;
+    let work_dirs = load_work_dir_map()?;
+    let (mapping_marker, mapping_size_bytes) = work_dirs
+        .get(work_dir_key)
+        .map(|work_dir| {
+            (
+                format!("present:{}", work_dir.mapping_fingerprint),
+                work_dir.mapping_size_bytes,
+            )
+        })
+        .unwrap_or_else(|| ("absent".to_string(), 0));
+    let kimi_json_modified_at_ms = file_modified_ms(&get_kimi_json_path())?.unwrap_or(0);
+    let modified_at_ms = context_modified_at_ms
+        .max(wire_modified_at_ms)
+        .max(state_modified_at_ms)
+        .max(kimi_json_modified_at_ms);
+    let size_bytes = context_size_bytes
+        .saturating_add(wire_size_bytes)
+        .saturating_add(state_size_bytes)
+        .saturating_add(mapping_size_bytes);
+
+    Ok(Some(ProviderSourceFingerprint {
+        modified_at_ms,
+        size_bytes,
+        value: format!(
+            "kimi-v1:context:{context_marker}:wire:{wire_marker}:state:{state_marker}:mapping:{mapping_marker}"
+        ),
+    }))
 }
 
 fn write_kimi_state_atomically(state_path: &Path, bytes: &[u8]) -> Result<()> {
@@ -401,23 +618,6 @@ fn fail_kimi_mutation_after_write(mutation: ProviderSourceMutation) -> Result<()
 #[cfg(not(test))]
 fn fail_kimi_mutation_after_write(_mutation: ProviderSourceMutation) -> Result<()> {
     Ok(())
-}
-
-fn wire_last_timestamp(wire_path: &Path) -> Option<i64> {
-    let file = File::open(wire_path).ok()?;
-    let reader = BufReader::new(file);
-    let mut last_ts: Option<f64> = None;
-    for line in reader.lines() {
-        let line = line.ok()?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: Value = serde_json::from_str(&line).ok()?;
-        if let Some(ts) = value.get("timestamp").and_then(|v| v.as_f64()) {
-            last_ts = Some(ts);
-        }
-    }
-    last_ts.map(|ts| ts as i64)
 }
 
 fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
@@ -590,10 +790,24 @@ fn canonical_block_to_kimi_content_part(block: &EventBlock) -> Option<Value> {
     }
 }
 
-fn import_canonical_session_from_wire(wire_path: &Path) -> Result<ImportedSession> {
-    let session_dir = wire_path
-        .parent()
-        .with_context(|| format!("Invalid Kimi session path: {}", wire_path.display()))?;
+fn import_canonical_session_from_dir(session_dir: &Path) -> Result<ImportedSession> {
+    let metadata = std::fs::symlink_metadata(session_dir).with_context(|| {
+        format!(
+            "Failed to read Kimi session directory: {}",
+            session_dir.display()
+        )
+    })?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "Kimi session source locator must be a directory: {}",
+            session_dir.display()
+        );
+    }
+    let context_path = session_dir.join("context.jsonl");
+    if !context_path.is_file() {
+        anyhow::bail!("Kimi context.jsonl not found: {}", context_path.display());
+    }
+    let wire_path = session_dir.join("wire.jsonl");
     let state_path = session_dir.join("state.json");
     let state_value = if state_path.exists() {
         std::fs::read_to_string(&state_path)
@@ -617,7 +831,7 @@ fn import_canonical_session_from_wire(wire_path: &Path) -> Result<ImportedSessio
     let project_dir = kimi_project_dir_for_session_dir(session_dir);
 
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-    let (events, created_at, last_active_at) = canonical_events_from_wire(wire_path, &mut report)?;
+    let (events, created_at, last_active_at) = canonical_events_from_wire(&wire_path, &mut report)?;
     let mut extensions = BTreeMap::new();
     if let Some(state) = state_value {
         extensions.insert("kimi_state".to_string(), state);
@@ -636,7 +850,7 @@ fn import_canonical_session_from_wire(wire_path: &Path) -> Result<ImportedSessio
                 primary_source: ProviderSessionRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id,
-                    source_path: Some(wire_path.to_string_lossy().to_string()),
+                    source_path: Some(session_dir.to_string_lossy().to_string()),
                 },
                 aliases: Vec::new(),
             },
@@ -992,7 +1206,10 @@ fn kimi_project_dir_for_session_dir(session_dir: &Path) -> Option<String> {
         .parent()
         .and_then(|parent| parent.file_name())
         .and_then(|name| name.to_str())?;
-    load_work_dir_map().ok()?.get(project_hash).cloned()
+    load_work_dir_map()
+        .ok()?
+        .get(project_hash)
+        .map(|work_dir| work_dir.project_dir.clone())
 }
 
 fn parse_wire_timestamp(value: &Value) -> Option<chrono::DateTime<Utc>> {
@@ -1036,7 +1253,32 @@ mod tests {
     }
 
     fn write_native_kimi_fixture(root: &Path, project: &str, session_id: &str) -> PathBuf {
-        let session_dir = root.join(project).join(session_id);
+        let project_dir = format!("/workspace/{project}");
+        let project_key = md5_hex(project_dir.as_bytes());
+        let metadata_path = root.parent().unwrap().join("kimi.json");
+        let mut metadata = if metadata_path.exists() {
+            serde_json::from_slice::<Value>(&std::fs::read(&metadata_path).unwrap()).unwrap()
+        } else {
+            serde_json::json!({ "work_dirs": [] })
+        };
+        let work_dirs = metadata["work_dirs"].as_array_mut().unwrap();
+        if !work_dirs
+            .iter()
+            .any(|work_dir| work_dir["path"] == project_dir)
+        {
+            work_dirs.push(serde_json::json!({
+                "path": project_dir,
+                "kaos": "local",
+                "last_session_id": session_id
+            }));
+            std::fs::write(
+                &metadata_path,
+                serde_json::to_vec_pretty(&metadata).unwrap(),
+            )
+            .unwrap();
+        }
+
+        let session_dir = root.join(project_key).join(session_id);
         std::fs::create_dir_all(session_dir.join("nested")).unwrap();
         std::fs::write(
             session_dir.join("state.json"),
@@ -1091,6 +1333,280 @@ mod tests {
             .filter(|line| !line.trim().is_empty())
             .map(serde_json::from_str)
             .collect()
+    }
+
+    fn copy_kimi_audit_fixture(target: &Path) {
+        let source = kimi_audit_fixture_root();
+        for entry in WalkDir::new(&source).into_iter().map(Result::unwrap) {
+            let relative = entry.path().strip_prefix(&source).unwrap();
+            let destination = target.join(relative);
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(&destination).unwrap();
+            } else {
+                std::fs::copy(entry.path(), destination).unwrap();
+            }
+        }
+    }
+
+    fn write_kimi_metadata(root: &Path, work_dirs: Value) {
+        std::fs::write(
+            root.join("kimi.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({ "work_dirs": work_dirs })).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_context_only_session(root: &Path, work_dir_key: &str, session_id: &str) -> PathBuf {
+        let session_dir = root.join("sessions").join(work_dir_key).join(session_id);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("context.jsonl"),
+            b"{\"role\":\"user\",\"content\":\"sanitized\"}\n",
+        )
+        .unwrap();
+        session_dir
+    }
+
+    #[test]
+    fn scans_known_kimi_work_dirs_from_context_and_uses_directory_locators() {
+        let dir = tempdir().unwrap();
+        copy_kimi_audit_fixture(dir.path());
+        let sessions_root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+
+        let sessions = KimiProvider.scan_sessions().unwrap();
+        assert_eq!(sessions.len(), 2);
+
+        let normal = sessions
+            .iter()
+            .find(|session| session.session_id == "11111111-1111-4111-8111-111111111111")
+            .unwrap();
+        let normal_dir = sessions_root
+            .join("2030c6ce97e98c160351b18f097eb584")
+            .join(&normal.session_id);
+        assert_eq!(normal.title.as_deref(), Some("Sanitized session"));
+        assert_eq!(
+            normal.project_dir.as_deref(),
+            Some("/workspace/sanitized-project")
+        );
+        assert_eq!(
+            normal.source_path.as_deref(),
+            Some(normal_dir.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            normal.last_active_at,
+            file_modified_ms(&normal_dir.join("context.jsonl")).unwrap()
+        );
+
+        let context_only = sessions
+            .iter()
+            .find(|session| session.session_id == "22222222-2222-4222-8222-222222222222")
+            .unwrap();
+        assert_eq!(context_only.title, None);
+        assert_eq!(
+            context_only.source_path.as_deref(),
+            Some(
+                sessions_root
+                    .join("0017cc2b0eee031e9194d1384b4bcdd8")
+                    .join(&context_only.session_id)
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+
+        std::fs::remove_file(normal_dir.join("state.json")).unwrap();
+        let fallback = KimiProvider
+            .get_session_meta(&normal.session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(fallback.title.as_deref(), Some("[sanitized user request]"));
+    }
+
+    #[test]
+    fn scan_supports_local_and_remote_kaos_keys_and_ignores_orphans() {
+        let dir = tempdir().unwrap();
+        let sessions_root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let local_path = "/workspace/local";
+        let remote_path = "/workspace/remote";
+        let local_key = md5_hex(local_path.as_bytes());
+        let remote_key = format!("ssh_{}", md5_hex(remote_path.as_bytes()));
+        write_kimi_metadata(
+            dir.path(),
+            serde_json::json!([
+                { "path": local_path, "kaos": "local", "last_session_id": "local-session" },
+                { "path": remote_path, "kaos": "ssh", "last_session_id": "remote-session" }
+            ]),
+        );
+        write_context_only_session(dir.path(), &local_key, "local-session");
+        write_context_only_session(dir.path(), &remote_key, "remote-session");
+        write_context_only_session(dir.path(), "orphan-key", "orphan-session");
+
+        let sessions = KimiProvider.scan_sessions().unwrap();
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| (
+                    session.session_id.as_str(),
+                    session.project_dir.as_deref().unwrap()
+                ))
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                ("local-session", local_path),
+                ("remote-session", remote_path),
+            ])
+        );
+        assert!(sessions
+            .iter()
+            .all(|session| session.session_id != "orphan-session"));
+    }
+
+    #[test]
+    fn duplicate_kimi_session_ids_are_rejected_by_scan_and_identity_reads() {
+        let dir = tempdir().unwrap();
+        let sessions_root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root);
+        let first_path = "/workspace/first";
+        let second_path = "/workspace/second";
+        let first_key = md5_hex(first_path.as_bytes());
+        let second_key = md5_hex(second_path.as_bytes());
+        write_kimi_metadata(
+            dir.path(),
+            serde_json::json!([
+                { "path": first_path, "kaos": "local" },
+                { "path": second_path, "kaos": "local" }
+            ]),
+        );
+        write_context_only_session(dir.path(), &first_key, "duplicate-session");
+        write_context_only_session(dir.path(), &second_key, "duplicate-session");
+
+        assert!(KimiProvider
+            .scan_sessions()
+            .unwrap_err()
+            .to_string()
+            .contains("Ambiguous Kimi session id"));
+        assert!(KimiProvider
+            .get_session_meta("duplicate-session")
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        assert!(KimiProvider
+            .session_size("duplicate-session")
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+    }
+
+    #[test]
+    fn kimi_fingerprint_covers_context_wire_state_and_relevant_mapping() {
+        let dir = tempdir().unwrap();
+        copy_kimi_audit_fixture(dir.path());
+        let sessions_root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let session_dir = sessions_root
+            .join("2030c6ce97e98c160351b18f097eb584")
+            .join("11111111-1111-4111-8111-111111111111");
+        let variants = dir.path().join("variants");
+        let fingerprint = || {
+            KimiProvider
+                .session_source_fingerprint(session_dir.to_str().unwrap())
+                .unwrap()
+                .unwrap()
+                .value
+        };
+
+        let before_state = fingerprint();
+        std::fs::copy(
+            variants.join("state.updated.json"),
+            session_dir.join("state.json"),
+        )
+        .unwrap();
+        assert_ne!(fingerprint(), before_state);
+
+        let before_context = fingerprint();
+        std::fs::copy(
+            variants.join("context.updated.jsonl"),
+            session_dir.join("context.jsonl"),
+        )
+        .unwrap();
+        assert_ne!(fingerprint(), before_context);
+
+        let before_wire = fingerprint();
+        std::fs::copy(
+            variants.join("wire.updated.jsonl"),
+            session_dir.join("wire.jsonl"),
+        )
+        .unwrap();
+        assert_ne!(fingerprint(), before_wire);
+
+        let before_mapping = fingerprint();
+        let mut metadata: Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("kimi.json")).unwrap()).unwrap();
+        metadata["work_dirs"][0]["last_session_id"] = Value::String("changed-session".to_string());
+        std::fs::write(
+            dir.path().join("kimi.json"),
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(fingerprint(), before_mapping);
+
+        std::fs::copy(
+            variants.join("wire.malformed.jsonl"),
+            session_dir.join("wire.jsonl"),
+        )
+        .unwrap();
+        assert!(fingerprint().starts_with("kimi-v1:"));
+        std::fs::remove_file(session_dir.join("wire.jsonl")).unwrap();
+        assert!(fingerprint().contains("wire:absent"));
+
+        assert!(KimiProvider
+            .session_source_fingerprint(session_dir.join("state.json").to_str().unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("must be a directory"));
+        std::fs::remove_file(session_dir.join("context.jsonl")).unwrap();
+        assert!(KimiProvider
+            .session_source_fingerprint(session_dir.to_str().unwrap())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn kimi_import_accepts_only_directory_locators() {
+        let dir = tempdir().unwrap();
+        copy_kimi_audit_fixture(dir.path());
+        let sessions_root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let session_dir = sessions_root
+            .join("2030c6ce97e98c160351b18f097eb584")
+            .join("11111111-1111-4111-8111-111111111111");
+
+        let imported = KimiProvider
+            .import_session(session_dir.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            imported
+                .session
+                .provenance
+                .primary_source
+                .source_path
+                .as_deref(),
+            Some(session_dir.to_string_lossy().as_ref())
+        );
+        assert!(KimiProvider
+            .import_session(session_dir.join("wire.jsonl").to_str().unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("must be a directory"));
+
+        let context_only_dir = sessions_root
+            .join("0017cc2b0eee031e9194d1384b4bcdd8")
+            .join("22222222-2222-4222-8222-222222222222");
+        assert!(KimiProvider
+            .import_session(context_only_dir.to_str().unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("wire.jsonl"));
     }
 
     #[test]
@@ -1498,7 +2014,7 @@ mod tests {
         let _guard = use_test_kimi_sessions_dir(root.clone());
         let session_id = "kimi-ambiguous";
         let first = write_native_kimi_fixture(&root, "project-a", session_id);
-        write_native_kimi_fixture(&root, "project-b", session_id);
+        let second = write_native_kimi_fixture(&root, "project-b", session_id);
 
         let error = KimiProvider
             .create_session_backup(
@@ -1511,7 +2027,7 @@ mod tests {
         assert!(error.to_string().contains("not found or ambiguous"));
         assert!(first.exists());
 
-        std::fs::remove_dir_all(root.join("project-b").join(session_id)).unwrap();
+        std::fs::remove_dir_all(second).unwrap();
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(first.join("wire.jsonl"), first.join("unsafe-wire-link"))
@@ -1611,7 +2127,12 @@ mod tests {
         let session_dir = temp.path().join("project-hash").join("kimi-session-1");
         std::fs::create_dir_all(&session_dir)?;
         let wire_path = session_dir.join("wire.jsonl");
+        let context_path = session_dir.join("context.jsonl");
         let state_path = session_dir.join("state.json");
+        std::fs::write(
+            &context_path,
+            b"{\"role\":\"user\",\"content\":\"Hello\"}\n",
+        )?;
 
         std::fs::write(
             &state_path,
@@ -1694,7 +2215,7 @@ mod tests {
             })
         )?;
 
-        let imported = import_canonical_session_from_wire(&wire_path)?;
+        let imported = import_canonical_session_from_dir(&session_dir)?;
 
         assert_eq!(imported.session.identity.canonical_id, "kimi-session-1");
         assert_eq!(

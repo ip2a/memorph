@@ -224,7 +224,13 @@ pub fn refresh_projected_session_staleness(
     let result = (|| {
         let conn = local_store::open_database()?;
         crate::storage::snapshot_store::SnapshotStore::new(&conn)
-            .refresh_session_snapshot_staleness()
+            .refresh_session_snapshot_staleness(|provider_id, source_path| {
+                let provider = providers::find_provider(provider_id)
+                    .with_context(|| format!("Unknown provider: {provider_id}"))?;
+                Ok(provider
+                    .session_source_fingerprint(source_path)?
+                    .map(|fingerprint| fingerprint.value))
+            })
     })();
     match result {
         Ok(report) => {
@@ -451,18 +457,44 @@ fn bootstrap_provider_session(
         ));
         return;
     };
-    if !session_source_exists(source_path) {
-        report.missing_sources += 1;
+    let Some(provider) = providers::find_provider(provider_id) else {
+        report.failed_sessions += 1;
         report.failures.push(bootstrap_failure(
             provider_id,
             session,
-            format!("source file not found: {source_path}"),
+            format!("provider is not registered: {provider_id}"),
         ));
         return;
-    }
+    };
+    let fingerprint = match provider.session_source_fingerprint(source_path) {
+        Ok(Some(fingerprint)) => fingerprint,
+        Ok(None) => {
+            report.missing_sources += 1;
+            report.failures.push(bootstrap_failure(
+                provider_id,
+                session,
+                format!("session source not found: {source_path}"),
+            ));
+            return;
+        }
+        Err(error) => {
+            report.failed_sessions += 1;
+            report.failures.push(bootstrap_failure(
+                provider_id,
+                session,
+                format!("failed to fingerprint provider session source: {error:#}"),
+            ));
+            return;
+        }
+    };
 
     let freshness = crate::storage::snapshot_store::SnapshotStore::new(conn)
-        .session_source_is_fresh(provider_id, &session.session_id, source_path);
+        .session_source_is_fresh(
+            provider_id,
+            &session.session_id,
+            source_path,
+            &fingerprint.value,
+        );
     match freshness {
         Ok(true) => {
             report.unchanged_sessions += 1;
@@ -480,19 +512,11 @@ fn bootstrap_provider_session(
         }
     }
 
-    let Some(provider) = providers::find_provider(provider_id) else {
-        report.failed_sessions += 1;
-        report.failures.push(bootstrap_failure(
-            provider_id,
-            session,
-            format!("provider is not registered: {provider_id}"),
-        ));
-        return;
-    };
     match crate::storage::session_index_store::SessionIndexStore::new(conn).write_session_summary(
         provider_id,
         session,
         provider.capabilities(),
+        &fingerprint,
     ) {
         Ok(_) => report.projected_sessions += 1,
         Err(error) => {
@@ -603,18 +627,6 @@ fn reproject_stale_snapshot_sources(
         ..SessionReprojectionReport::default()
     };
     for source in sources {
-        let Some(source_path) = source
-            .source_path
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        else {
-            report.missing_sources += 1;
-            report.failures.push(reprojection_failure(
-                &source,
-                "projected session has no source path".to_string(),
-            ));
-            continue;
-        };
         if !provider_supports_session_projection(&source.provider_id) {
             report.unsupported_providers += 1;
             report.failures.push(reprojection_failure(
@@ -623,14 +635,6 @@ fn reproject_stale_snapshot_sources(
                     "provider does not support projected store reprojection yet: {}",
                     source.provider_id
                 ),
-            ));
-            continue;
-        }
-        if !session_source_exists(source_path) {
-            report.missing_sources += 1;
-            report.failures.push(reprojection_failure(
-                &source,
-                format!("source file not found: {source_path}"),
             ));
             continue;
         }
@@ -657,7 +661,7 @@ fn reproject_stale_snapshot_sources(
         let summary = match provider.get_session_meta(provider_session_id) {
             Ok(Some(summary)) => summary,
             Ok(None) => {
-                report.failed_snapshots += 1;
+                report.missing_sources += 1;
                 report.failures.push(reprojection_failure(
                     &source,
                     "provider no longer reports the indexed session".to_string(),
@@ -673,9 +677,44 @@ fn reproject_stale_snapshot_sources(
                 continue;
             }
         };
+        let Some(summary_source_path) = summary
+            .source_path
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        else {
+            report.missing_sources += 1;
+            report.failures.push(reprojection_failure(
+                &source,
+                "provider session summary has no source locator".to_string(),
+            ));
+            continue;
+        };
+        let fingerprint = match provider.session_source_fingerprint(summary_source_path) {
+            Ok(Some(fingerprint)) => fingerprint,
+            Ok(None) => {
+                report.missing_sources += 1;
+                report.failures.push(reprojection_failure(
+                    &source,
+                    format!("session source not found: {summary_source_path}"),
+                ));
+                continue;
+            }
+            Err(error) => {
+                report.failed_snapshots += 1;
+                report.failures.push(reprojection_failure(
+                    &source,
+                    format!("failed to fingerprint provider session source: {error:#}"),
+                ));
+                continue;
+            }
+        };
         match crate::storage::session_index_store::SessionIndexStore::new(conn)
-            .write_session_summary(&source.provider_id, &summary, provider.capabilities())
-        {
+            .write_session_summary(
+                &source.provider_id,
+                &summary,
+                provider.capabilities(),
+                &fingerprint,
+            ) {
             Ok(_) => report.reprojected_snapshots += 1,
             Err(error) => {
                 report.failed_snapshots += 1;
@@ -690,11 +729,6 @@ fn reproject_stale_snapshot_sources(
 
 fn provider_supports_session_projection(provider_id: &str) -> bool {
     PROJECTED_SESSION_PROVIDER_IDS.contains(&provider_id)
-}
-
-fn session_source_exists(source_path: &str) -> bool {
-    crate::storage::session_index_store::source_file_path(std::path::Path::new(source_path))
-        .exists()
 }
 
 fn reprojection_failure(
@@ -1229,11 +1263,11 @@ pub fn get_session_detail_view_page(
         .as_deref()
         .filter(|value| !value.is_empty())
         .with_context(|| format!("Session has no source locator: {provider_id}/{session_id}"))?;
-    let source_fingerprint =
-        crate::storage::session_index_store::source_fingerprint(std::path::Path::new(source_path))?
-            .with_context(|| format!("Session source is missing: {source_path}"))?;
     let provider = providers::find_provider(provider_id)
         .with_context(|| format!("Unknown provider: {provider_id}"))?;
+    let source_fingerprint = provider
+        .session_source_fingerprint(source_path)?
+        .with_context(|| format!("Session source is missing: {source_path}"))?;
     if !provider.capabilities().import {
         anyhow::bail!("Provider does not support session detail reads: {provider_id}");
     }
@@ -3629,6 +3663,16 @@ mod tests {
     use std::path::Path;
     use tempfile::Builder;
 
+    fn required_provider_source_fingerprint(
+        provider: &dyn Provider,
+        source_path: &Path,
+    ) -> crate::provider::ProviderSourceFingerprint {
+        provider
+            .session_source_fingerprint(source_path.to_str().unwrap())
+            .unwrap()
+            .expect("provider source fingerprint")
+    }
+
     #[test]
     fn registers_canonical_export_files_with_operation_identity() {
         let dir = tempfile::tempdir().unwrap();
@@ -4863,6 +4907,7 @@ mod tests {
                     source_path: Some(source.path().to_string_lossy().to_string()),
                 },
                 provider.capabilities(),
+                &required_provider_source_fingerprint(provider.as_ref(), source.path()),
             )
             .unwrap();
         crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
@@ -4942,6 +4987,10 @@ mod tests {
                     source_path: Some(source.path().to_string_lossy().to_string()),
                 },
                 crate::providers::claude::ClaudeProvider.capabilities(),
+                &required_provider_source_fingerprint(
+                    &crate::providers::claude::ClaudeProvider,
+                    source.path(),
+                ),
             )
             .unwrap();
 
@@ -5109,7 +5158,15 @@ mod tests {
             .unwrap()
             .unwrap();
         let stored = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
-            .write_session_summary("claude", &summary, provider.capabilities())
+            .write_session_summary(
+                "claude",
+                &summary,
+                provider.capabilities(),
+                &required_provider_source_fingerprint(
+                    provider.as_ref(),
+                    Path::new(summary.source_path.as_deref().unwrap()),
+                ),
+            )
             .unwrap();
         conn.execute(
             "UPDATE session_snapshots SET stale = 1 WHERE session_id = ?1",
@@ -5167,7 +5224,15 @@ mod tests {
             .unwrap()
             .unwrap();
         let stored = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
-            .write_session_summary("codex", &summary, provider.capabilities())
+            .write_session_summary(
+                "codex",
+                &summary,
+                provider.capabilities(),
+                &required_provider_source_fingerprint(
+                    provider.as_ref(),
+                    Path::new(summary.source_path.as_deref().unwrap()),
+                ),
+            )
             .unwrap();
         conn.execute(
             "UPDATE session_snapshots SET stale = 1 WHERE session_id = ?1",
@@ -5225,7 +5290,15 @@ mod tests {
             .unwrap()
             .unwrap();
         let stored = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
-            .write_session_summary("opencode", &summary, provider.capabilities())
+            .write_session_summary(
+                "opencode",
+                &summary,
+                provider.capabilities(),
+                &required_provider_source_fingerprint(
+                    provider.as_ref(),
+                    Path::new(summary.source_path.as_deref().unwrap()),
+                ),
+            )
             .unwrap();
         conn.execute(
             "UPDATE session_snapshots SET stale = 1 WHERE session_id = ?1",
@@ -5406,6 +5479,10 @@ mod tests {
                     source_path: Some(source_path.to_string_lossy().to_string()),
                 },
                 crate::providers::claude::ClaudeProvider.capabilities(),
+                &required_provider_source_fingerprint(
+                    &crate::providers::claude::ClaudeProvider,
+                    &source_path,
+                ),
             )
             .unwrap();
     }

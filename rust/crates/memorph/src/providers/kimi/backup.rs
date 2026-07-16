@@ -200,7 +200,7 @@ pub(super) fn validate_mutation_source(
         anyhow::bail!("Kimi session id cannot be empty");
     }
     let root = canonical_sessions_root()?;
-    let matches = find_session_dirs(session_id)?;
+    let matches = super::find_session_dirs(session_id)?;
     if matches.len() != 1 {
         anyhow::bail!("Kimi session not found or ambiguous: {session_id}");
     }
@@ -247,28 +247,6 @@ fn canonical_sessions_root() -> Result<PathBuf> {
     }
     root.canonicalize()
         .with_context(|| format!("Failed to resolve Kimi sessions root: {}", root.display()))
-}
-
-fn find_session_dirs(session_id: &str) -> Result<Vec<PathBuf>> {
-    let root = get_kimi_sessions_dir();
-    if !root.exists() {
-        return Ok(Vec::new());
-    }
-    let mut matches = Vec::new();
-    for entry in WalkDir::new(&root)
-        .max_depth(2)
-        .min_depth(2)
-        .follow_links(false)
-    {
-        let entry =
-            entry.with_context(|| format!("Failed to walk Kimi sessions: {}", root.display()))?;
-        if entry.file_type().is_dir()
-            && entry.path().file_name().and_then(|name| name.to_str()) == Some(session_id)
-        {
-            matches.push(entry.path().to_path_buf());
-        }
-    }
-    Ok(matches)
 }
 
 fn validate_session_tree_shape(source: &Path) -> Result<()> {

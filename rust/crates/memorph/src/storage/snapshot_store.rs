@@ -62,7 +62,13 @@ impl<'a> SnapshotStore<'a> {
         Self { conn }
     }
 
-    pub fn refresh_session_snapshot_staleness(&self) -> Result<SnapshotStaleScanReport> {
+    pub fn refresh_session_snapshot_staleness<F>(
+        &self,
+        mut source_fingerprint: F,
+    ) -> Result<SnapshotStaleScanReport>
+    where
+        F: FnMut(&str, &str) -> Result<Option<String>>,
+    {
         let rows = self.session_snapshot_sources()?;
         let mut report = SnapshotStaleScanReport::default();
         for row in rows {
@@ -84,8 +90,7 @@ impl<'a> SnapshotStore<'a> {
                 continue;
             };
 
-            let Some(current_fingerprint) =
-                source_fingerprint_for_path(std::path::Path::new(source_path))?
+            let Some(current_fingerprint) = source_fingerprint(&row.provider_id, source_path)?
             else {
                 report.missing_sources += 1;
                 report.stale_snapshots += 1;
@@ -392,12 +397,8 @@ impl<'a> SnapshotStore<'a> {
         provider_id: &str,
         provider_session_id: &str,
         source_path: &str,
+        current_fingerprint: &str,
     ) -> Result<bool> {
-        let Some(current_fingerprint) =
-            source_fingerprint_for_path(std::path::Path::new(source_path))?
-        else {
-            return Ok(false);
-        };
         let exists = self
             .conn
             .query_row(
@@ -428,7 +429,7 @@ impl<'a> SnapshotStore<'a> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT ss.session_id, src.source_path, ss.source_fingerprint
+                "SELECT ss.session_id, s.provider_id, src.source_path, ss.source_fingerprint
                  FROM session_snapshots ss
                  JOIN sessions s ON s.id = ss.session_id
                  LEFT JOIN session_sources src ON src.id = s.primary_source_id
@@ -440,8 +441,9 @@ impl<'a> SnapshotStore<'a> {
             .query_map([], |row| {
                 Ok(SnapshotSourceRow {
                     session_id: row.get(0)?,
-                    source_path: row.get(1)?,
-                    source_fingerprint: row.get(2)?,
+                    provider_id: row.get(1)?,
+                    source_path: row.get(2)?,
+                    source_fingerprint: row.get(3)?,
                 })
             })
             .context("Failed to query projected session source staleness scan")?;
@@ -469,6 +471,7 @@ impl<'a> SnapshotStore<'a> {
 #[derive(Debug, Clone)]
 struct SnapshotSourceRow {
     session_id: String,
+    provider_id: String,
     source_path: Option<String>,
     source_fingerprint: Option<String>,
 }
@@ -491,13 +494,6 @@ fn parse_string_list(value: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn source_fingerprint_for_path(path: &std::path::Path) -> Result<Option<String>> {
-    Ok(
-        crate::storage::session_index_store::source_fingerprint(path)?
-            .map(|fingerprint| fingerprint.value),
-    )
-}
-
 fn sql_bool(value: i64) -> bool {
     value != 0
 }
@@ -505,10 +501,22 @@ fn sql_bool(value: i64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::local_store;
+    use crate::{provider::Provider, providers::claude::ClaudeProvider, storage::local_store};
     use rusqlite::params;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    fn test_source_fingerprint(source_path: &str) -> Result<Option<String>> {
+        Ok(ClaudeProvider
+            .session_source_fingerprint(source_path)?
+            .map(|fingerprint| fingerprint.value))
+    }
+
+    fn required_test_source_fingerprint(source_path: &str) -> String {
+        test_source_fingerprint(source_path)
+            .unwrap()
+            .expect("test source fingerprint")
+    }
 
     #[test]
     fn reads_projected_session_snapshots() {
@@ -661,7 +669,7 @@ mod tests {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "one").unwrap();
         file.flush().unwrap();
-        let fingerprint = source_fingerprint_for_path(file.path()).unwrap().unwrap();
+        let fingerprint = required_test_source_fingerprint(file.path().to_str().unwrap());
         insert_projected_snapshot_source(
             &conn,
             "canonical-1",
@@ -673,7 +681,9 @@ mod tests {
         );
 
         let report = SnapshotStore::new(&conn)
-            .refresh_session_snapshot_staleness()
+            .refresh_session_snapshot_staleness(|_, source_path| {
+                test_source_fingerprint(source_path)
+            })
             .unwrap();
 
         assert_eq!(
@@ -697,7 +707,7 @@ mod tests {
         writeln!(file, "one").unwrap();
         file.flush().unwrap();
         let source_path = file.path().to_string_lossy().to_string();
-        let fingerprint = source_fingerprint_for_path(file.path()).unwrap().unwrap();
+        let fingerprint = required_test_source_fingerprint(file.path().to_str().unwrap());
         insert_projected_snapshot_source(
             &conn,
             "canonical-1",
@@ -710,19 +720,24 @@ mod tests {
         let store = SnapshotStore::new(&conn);
 
         assert!(store
-            .session_source_is_fresh("claude", "native-1", &source_path)
+            .session_source_is_fresh("claude", "native-1", &source_path, &fingerprint)
             .unwrap());
         assert!(!store
-            .session_source_is_fresh("claude", "native-2", &source_path)
+            .session_source_is_fresh("claude", "native-2", &source_path, &fingerprint)
             .unwrap());
         assert!(!store
-            .session_source_is_fresh("codex", "native-1", &source_path)
+            .session_source_is_fresh("codex", "native-1", &source_path, &fingerprint)
             .unwrap());
 
         writeln!(file, "two").unwrap();
         file.flush().unwrap();
         assert!(!store
-            .session_source_is_fresh("claude", "native-1", &source_path)
+            .session_source_is_fresh(
+                "claude",
+                "native-1",
+                &source_path,
+                &required_test_source_fingerprint(&source_path),
+            )
             .unwrap());
     }
 
@@ -733,7 +748,7 @@ mod tests {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "one").unwrap();
         file.flush().unwrap();
-        let fingerprint = source_fingerprint_for_path(file.path()).unwrap().unwrap();
+        let fingerprint = required_test_source_fingerprint(file.path().to_str().unwrap());
         insert_projected_snapshot_source(
             &conn,
             "canonical-1",
@@ -747,7 +762,9 @@ mod tests {
         file.flush().unwrap();
 
         let report = SnapshotStore::new(&conn)
-            .refresh_session_snapshot_staleness()
+            .refresh_session_snapshot_staleness(|_, source_path| {
+                test_source_fingerprint(source_path)
+            })
             .unwrap();
 
         assert_eq!(report.checked_sources, 1);
@@ -773,7 +790,7 @@ mod tests {
         writeln!(file, "one").unwrap();
         file.flush().unwrap();
         let source_path = file.path().to_string_lossy().to_string();
-        let fingerprint = source_fingerprint_for_path(file.path()).unwrap().unwrap();
+        let fingerprint = required_test_source_fingerprint(file.path().to_str().unwrap());
         insert_projected_snapshot_source(
             &conn,
             "canonical-1",
@@ -786,7 +803,9 @@ mod tests {
         drop(file);
 
         let report = SnapshotStore::new(&conn)
-            .refresh_session_snapshot_staleness()
+            .refresh_session_snapshot_staleness(|_, source_path| {
+                test_source_fingerprint(source_path)
+            })
             .unwrap();
 
         assert_eq!(report.checked_sources, 0);

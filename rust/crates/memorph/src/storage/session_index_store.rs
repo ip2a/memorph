@@ -1,10 +1,11 @@
-use crate::provider::{ProviderCapabilities, ProviderSessionSummary, StorageShape};
+use crate::provider::{
+    ProviderCapabilities, ProviderSessionSummary, ProviderSourceFingerprint, StorageShape,
+};
 use crate::session_projection::{SessionIdentity, SessionIdentityInput};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde_json::json;
-use std::path::{Path, PathBuf};
 
 const SESSION_INDEX_VERSION: i64 = 1;
 
@@ -13,13 +14,6 @@ pub struct StoredSessionIndex {
     pub canonical_session_id: String,
     pub source_id: String,
     pub source_fingerprint: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SourceFingerprint {
-    pub modified_at_ms: i64,
-    pub size_bytes: i64,
-    pub value: String,
 }
 
 pub struct SessionIndexStore<'a> {
@@ -36,18 +30,13 @@ impl<'a> SessionIndexStore<'a> {
         provider_id: &str,
         summary: &ProviderSessionSummary,
         capabilities: ProviderCapabilities,
+        fingerprint: &ProviderSourceFingerprint,
     ) -> Result<StoredSessionIndex> {
         let source_path = summary
             .source_path
             .as_deref()
             .filter(|value| !value.is_empty())
             .context("Provider session summary has no source path")?;
-        let fingerprint = source_fingerprint(Path::new(source_path))?.with_context(|| {
-            format!(
-                "Session source does not exist: {}",
-                source_file_path(Path::new(source_path)).display()
-            )
-        })?;
         let identity = SessionIdentity::from_source(SessionIdentityInput {
             provider_id,
             provider_session_id: Some(&summary.session_id),
@@ -206,7 +195,7 @@ impl<'a> SessionIndexStore<'a> {
         Ok(StoredSessionIndex {
             canonical_session_id,
             source_id,
-            source_fingerprint: fingerprint.value,
+            source_fingerprint: fingerprint.value.clone(),
         })
     }
 
@@ -240,64 +229,6 @@ impl<'a> SessionIndexStore<'a> {
     }
 }
 
-pub fn source_file_path(path: &Path) -> PathBuf {
-    let path_text = path.to_string_lossy();
-    let file_path = match path_text.split_once('#') {
-        Some((file_path, fragment)) if fragment.starts_with("session=") => file_path,
-        _ => path_text.as_ref(),
-    };
-    PathBuf::from(file_path)
-}
-
-pub fn source_fingerprint(path: &Path) -> Result<Option<SourceFingerprint>> {
-    let file_path = source_file_path(path);
-    let metadata = match std::fs::metadata(&file_path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "Failed to read session source metadata: {}",
-                    file_path.display()
-                )
-            })
-        }
-    };
-    let mut modified_at_ms = metadata_modified_ms(&metadata);
-    let mut size_bytes = i64::try_from(metadata.len()).unwrap_or(i64::MAX);
-    let mut wal_modified_at_ms = 0;
-    let mut wal_size_bytes = 0;
-
-    if file_path.extension().and_then(|value| value.to_str()) == Some("db")
-        || path.to_string_lossy().contains("#session=")
-    {
-        let wal_path = PathBuf::from(format!("{}-wal", file_path.to_string_lossy()));
-        if let Ok(wal_metadata) = std::fs::metadata(&wal_path) {
-            wal_modified_at_ms = metadata_modified_ms(&wal_metadata);
-            wal_size_bytes = i64::try_from(wal_metadata.len()).unwrap_or(i64::MAX);
-            modified_at_ms = modified_at_ms.max(wal_modified_at_ms);
-            size_bytes = size_bytes.saturating_add(wal_size_bytes);
-        }
-    }
-
-    Ok(Some(SourceFingerprint {
-        modified_at_ms,
-        size_bytes,
-        value: format!(
-            "metadata-v1:{modified_at_ms}:{size_bytes}:{wal_modified_at_ms}:{wal_size_bytes}"
-        ),
-    }))
-}
-
-fn metadata_modified_ms(metadata: &std::fs::Metadata) -> i64 {
-    metadata
-        .modified()
-        .ok()
-        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
-        .unwrap_or(0)
-}
-
 fn storage_shape_name(shape: StorageShape) -> &'static str {
     match shape {
         StorageShape::Unknown => "unknown",
@@ -323,4 +254,59 @@ fn stable_row_id(kind: &str, left: &str, right: &str) -> String {
         kind,
         md5::compute(format!("{}\0{}", left, right).as_bytes())
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::local_store;
+
+    #[test]
+    fn persists_provider_supplied_fingerprint_without_interpreting_locator() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let summary = ProviderSessionSummary {
+            session_id: "native-session".to_string(),
+            title: Some("Indexed session".to_string()),
+            project_dir: Some("/workspace/project".to_string()),
+            last_active_at: Some(123),
+            source_path: Some("/provider/native/session-directory".to_string()),
+        };
+        let fingerprint = ProviderSourceFingerprint {
+            modified_at_ms: 456,
+            size_bytes: 789,
+            value: "provider-native-fingerprint".to_string(),
+        };
+
+        let stored = SessionIndexStore::new(&mut conn)
+            .write_session_summary(
+                "test-provider",
+                &summary,
+                ProviderCapabilities::default(),
+                &fingerprint,
+            )
+            .unwrap();
+
+        assert_eq!(stored.source_fingerprint, fingerprint.value);
+        let source: (String, i64, i64, String) = conn
+            .query_row(
+                "SELECT source_path, file_mtime_ms, file_size_bytes, source_cursor
+                 FROM session_sources WHERE id = ?1",
+                [stored.source_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(source.0, "/provider/native/session-directory");
+        assert_eq!(source.1, fingerprint.modified_at_ms);
+        assert_eq!(source.2, fingerprint.size_bytes);
+        assert_eq!(source.3, fingerprint.value);
+        let snapshot_fingerprint: String = conn
+            .query_row(
+                "SELECT source_fingerprint FROM session_snapshots WHERE session_id = ?1",
+                [stored.canonical_session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(snapshot_fingerprint, fingerprint.value);
+    }
 }

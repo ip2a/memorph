@@ -3819,12 +3819,10 @@ mod tests {
                 .as_str()
             )
         );
-        assert_eq!(
-            crate::storage::session_index_store::source_file_path(Path::new(
-                session.source_path.as_deref().unwrap()
-            )),
-            opencode_dir.path().join("opencode.db")
-        );
+        assert!(OpenCodeProvider
+            .session_source_fingerprint(session.source_path.as_deref().unwrap())
+            .unwrap()
+            .is_some());
         let imported = OpenCodeProvider
             .import_session(session.source_path.as_deref().unwrap())
             .unwrap();
