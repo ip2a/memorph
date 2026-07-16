@@ -13,9 +13,11 @@ use crate::provider::{
     canonical_export_result, canonical_session_title, canonical_visible_block_text,
     compression_retrieval_hint, CompressionProjection, PageStrategy, Provider,
     ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity,
-    ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk,
-    ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
+    ProviderSessionBackup, ProviderSessionImportPage, ProviderSessionSummary,
+    ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
+    TurnQuality, WriteRiskLevel,
 };
+use crate::session_projection::project_session_turns;
 use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
@@ -201,6 +203,15 @@ impl Provider for OpenCodeProvider {
         Ok(imported)
     }
 
+    fn import_session_page(
+        &self,
+        source_path: &str,
+        event_offset: usize,
+        event_limit: Option<usize>,
+    ) -> Result<ProviderSessionImportPage> {
+        import_opencode_session_page(source_path, event_offset, event_limit)
+    }
+
     fn export_session(
         &self,
         session: &CanonicalSession,
@@ -346,6 +357,72 @@ fn import_canonical_session_from_source(
         }
     };
     imported_session_from_data(session_id, data)
+}
+
+/// Load a single page of an OpenCode session by event (message) range.
+///
+/// OpenCode stores sessions as structured rows/files rather than an append-only
+/// line stream, so pagination is native to the source plane: the database plane
+/// uses SQL LIMIT/OFFSET and the filesystem plane skips/takes sorted message
+/// files. No separate byte-offset index is needed because the source itself is
+/// the index. `event_count` is the total message count for the session.
+///
+/// `message_count` (visible messages across the whole session) and the page
+/// events are derived from the same canonical mapping used by a full import, so
+/// counts and per-page visibility stay identical. The full message list is read
+/// for counting (cheap: SQL rows / file list) but only the requested page is
+/// materialized into canonical events, which is where the prior full-import
+/// cost came from.
+fn import_opencode_session_page(
+    source_locator: &str,
+    event_offset: usize,
+    event_limit: Option<usize>,
+) -> Result<ProviderSessionImportPage> {
+    let session_id = opencode_session_id_from_source_locator(source_locator)?;
+
+    let (session_json, messages_page, parts_page, total_message_count, full_message_count) =
+        if let Some((database_path, locator_session_id)) = opencode_database_source(source_locator)
+        {
+            anyhow::ensure!(
+                locator_session_id == session_id,
+                "OpenCode database source locator session does not match projected session"
+            );
+            load_session_page_from_db_path(
+                Path::new(database_path),
+                &session_id,
+                event_offset,
+                event_limit,
+            )?
+        } else {
+            let source_path = Path::new(source_locator);
+            if source_path.is_file() {
+                load_session_page_from_filesystem_path(
+                    &session_id,
+                    source_path,
+                    event_offset,
+                    event_limit,
+                )?
+            } else {
+                anyhow::bail!(
+                    "OpenCode source locator does not identify a native source plane: {source_locator}"
+                );
+            }
+        };
+
+    let imported =
+        imported_session_from_data(&session_id, (session_json, messages_page, parts_page))?;
+
+    let turns = project_session_turns(
+        &imported.session.identity.canonical_id,
+        &imported.session.events,
+        TurnQuality::Inferred,
+    );
+    Ok(ProviderSessionImportPage {
+        imported,
+        event_count: total_message_count,
+        message_count: full_message_count,
+        turns,
+    })
 }
 
 fn opencode_database_source(source_locator: &str) -> Option<(&str, &str)> {
@@ -2639,6 +2716,378 @@ fn load_session_from_filesystem_path(
     Ok((session_json, messages, parts_map))
 }
 
+/// Paged variant of [`load_session_from_db_path`].
+///
+/// Messages are fetched with SQL `LIMIT ? OFFSET ?` so only the requested page
+/// of message rows is read; parts are loaded only for the message ids on that
+/// page. `event_count` is the total message count (`SELECT COUNT(*)`) and
+/// `visible_message_count` is computed by reusing the canonical block mapper
+/// over the full message list so it matches a full import exactly.
+///
+/// Returns `(session_json, page_messages, page_parts, total_messages, visible_messages)`.
+fn load_session_page_from_db_path(
+    db_path: &Path,
+    session_id: &str,
+    event_offset: usize,
+    event_limit: Option<usize>,
+) -> Result<(
+    Value,
+    Vec<(Option<i64>, Value)>,
+    HashMap<String, Vec<Value>>,
+    usize,
+    usize,
+)> {
+    let mut conn = Connection::open(db_path)?;
+    let tx = conn.transaction()?;
+
+    let session_json: Value = tx.query_row(
+        "SELECT id, project_id, parent_id, slug, directory, title, version, share_url, summary_additions, summary_deletions, summary_files, summary_diffs, revert, permission, time_created, time_updated, time_compacting, time_archived, workspace_id FROM session WHERE id = ?1",
+        [session_id],
+        |row| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("id".to_string(), Value::String(row.get(0)?));
+            obj.insert("projectID".to_string(), Value::String(row.get(1)?));
+            if let Ok(Some(v)) = row.get::<_, Option<String>>(2) {
+                obj.insert("parentID".to_string(), Value::String(v));
+            }
+            obj.insert("slug".to_string(), Value::String(row.get(3)?));
+            obj.insert("directory".to_string(), Value::String(row.get(4)?));
+            obj.insert("title".to_string(), Value::String(row.get(5)?));
+            obj.insert("version".to_string(), Value::String(row.get(6)?));
+            if let Ok(Some(v)) = row.get::<_, Option<String>>(7) {
+                obj.insert("shareURL".to_string(), Value::String(v));
+            }
+            if let Ok(Some(v)) = row.get::<_, Option<i64>>(8) {
+                obj.insert("summaryAdditions".to_string(), Value::Number(v.into()));
+            }
+            if let Ok(Some(v)) = row.get::<_, Option<i64>>(9) {
+                obj.insert("summaryDeletions".to_string(), Value::Number(v.into()));
+            }
+            if let Ok(Some(v)) = row.get::<_, Option<i64>>(10) {
+                obj.insert("summaryFiles".to_string(), Value::Number(v.into()));
+            }
+            if let Ok(Some(v)) = row.get::<_, Option<String>>(11) {
+                obj.insert("summaryDiffs".to_string(), Value::String(v));
+            }
+            if let Ok(Some(v)) = row.get::<_, Option<String>>(12) {
+                obj.insert("revert".to_string(), Value::String(v));
+            }
+            if let Ok(Some(v)) = row.get::<_, Option<String>>(13) {
+                obj.insert("permission".to_string(), Value::String(v));
+            }
+            let created: i64 = row.get(14)?;
+            let updated: i64 = row.get(15)?;
+            let mut time = serde_json::Map::new();
+            time.insert("created".to_string(), Value::Number(created.into()));
+            time.insert("updated".to_string(), Value::Number(updated.into()));
+            if let Ok(Some(v)) = row.get::<_, Option<i64>>(16) {
+                time.insert("compacting".to_string(), Value::Number(v.into()));
+            }
+            if let Ok(Some(v)) = row.get::<_, Option<i64>>(17) {
+                time.insert("archived".to_string(), Value::Number(v.into()));
+            }
+            obj.insert("time".to_string(), Value::Object(time));
+            if let Ok(Some(v)) = row.get::<_, Option<String>>(18) {
+                obj.insert("workspaceID".to_string(), Value::String(v));
+            }
+            Ok(Value::Object(obj))
+        },
+    )?;
+
+    // Total message count across the whole session.
+    let total_messages: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM message WHERE session_id = ?1",
+        [session_id],
+        |row| row.get(0),
+    )?;
+
+    // Full message list (for accurate visible-message counting) is cheap to
+    // read from SQL; the expensive part is event/block materialization, which
+    // only happens for the requested page via imported_session_from_data.
+    let mut full_messages: Vec<(Option<i64>, Value)> = Vec::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT id, session_id, time_created, time_updated, data
+             FROM message
+             WHERE session_id = ?1
+             ORDER BY time_created, id",
+        )?;
+        let rows = stmt.query_map([session_id], |row| {
+            let msg_id: String = row.get(0)?;
+            let session_id: String = row.get(1)?;
+            let created: i64 = row.get(2)?;
+            let _updated: i64 = row.get(3)?;
+            let data_str: String = row.get(4)?;
+            let mut data: Value = serde_json::from_str(&data_str).unwrap_or_default();
+            if let Value::Object(ref mut map) = data {
+                map.insert("id".to_string(), Value::String(msg_id));
+                map.insert("sessionID".to_string(), Value::String(session_id));
+            }
+            Ok((Some(created), data))
+        })?;
+        for row in rows {
+            if let Ok(r) = row {
+                full_messages.push(r);
+            }
+        }
+    }
+
+    // Page slice.
+    let page_messages: Vec<(Option<i64>, Value)> = full_messages
+        .iter()
+        .cloned()
+        .skip(event_offset)
+        .take(event_limit.unwrap_or(usize::MAX))
+        .collect();
+    let page_msg_ids: HashSet<String> = page_messages
+        .iter()
+        .filter_map(|(_, msg)| msg.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+
+    // Parts only for the page messages.
+    let mut page_parts: HashMap<String, Vec<Value>> = HashMap::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT id, message_id, session_id, time_created, time_updated, data
+             FROM part
+             WHERE session_id = ?1
+             ORDER BY message_id, time_created, id",
+        )?;
+        let rows = stmt.query_map([session_id], |row| {
+            let part_id: String = row.get(0)?;
+            let message_id: String = row.get(1)?;
+            let session_id: String = row.get(2)?;
+            let _created: i64 = row.get(3)?;
+            let _updated: i64 = row.get(4)?;
+            let data_str: String = row.get(5)?;
+            let mut data: Value = serde_json::from_str(&data_str).unwrap_or_default();
+            if let Value::Object(ref mut map) = data {
+                map.insert("id".to_string(), Value::String(part_id));
+                map.insert("messageID".to_string(), Value::String(message_id.clone()));
+                map.insert("sessionID".to_string(), Value::String(session_id));
+            }
+            Ok((message_id, data))
+        })?;
+        for row in rows {
+            if let Ok((msg_id, part)) = row {
+                if page_msg_ids.contains(&msg_id) {
+                    page_parts.entry(msg_id).or_default().push(part);
+                }
+            }
+        }
+    }
+
+    // All parts, grouped by message id, for accurate visible counting.
+    let mut full_parts: HashMap<String, Vec<Value>> = HashMap::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT message_id, data
+             FROM part
+             WHERE session_id = ?1",
+        )?;
+        let rows = stmt.query_map([session_id], |row| {
+            let message_id: String = row.get(0)?;
+            let data_str: String = row.get(1)?;
+            let data: Value = serde_json::from_str(&data_str).unwrap_or_default();
+            Ok((message_id, data))
+        })?;
+        for row in rows {
+            if let Ok((msg_id, part)) = row {
+                full_parts.entry(msg_id).or_default().push(part);
+            }
+        }
+    }
+
+    let visible_messages = count_visible_opencode_messages(&full_messages, &full_parts);
+
+    Ok((
+        session_json,
+        page_messages,
+        page_parts,
+        total_messages as usize,
+        visible_messages,
+    ))
+}
+
+/// Paged variant of [`load_session_from_filesystem_path`].
+///
+/// Message files are enumerated and sorted once; only the requested page is
+/// parsed into JSON. Parts are loaded for the whole session (they are needed
+/// for accurate visible-message counting and are cheap to read as small JSON
+/// files), but only parts belonging to the page messages are returned for
+/// event materialization.
+fn load_session_page_from_filesystem_path(
+    session_id: &str,
+    session_path: &Path,
+    event_offset: usize,
+    event_limit: Option<usize>,
+) -> Result<(
+    Value,
+    Vec<(Option<i64>, Value)>,
+    HashMap<String, Vec<Value>>,
+    usize,
+    usize,
+)> {
+    let storage_dir = get_opencode_dir().join("storage");
+    let session_json: Value = serde_json::from_reader(File::open(&session_path)?)?;
+
+    // Enumerate all message files in stable order, then parse only the page.
+    let msg_dir = storage_dir.join("message").join(session_id);
+    let mut all_msg_paths: Vec<PathBuf> = Vec::new();
+    if msg_dir.exists() {
+        let mut entries = std::fs::read_dir(&msg_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                all_msg_paths.push(path);
+            }
+        }
+    }
+    let total_messages = all_msg_paths.len();
+
+    let page_paths: Vec<&PathBuf> = all_msg_paths
+        .iter()
+        .skip(event_offset)
+        .take(event_limit.unwrap_or(usize::MAX))
+        .collect();
+
+    let mut page_messages: Vec<(Option<i64>, Value)> = Vec::new();
+    for path in &page_paths {
+        let msg_json: Value = serde_json::from_reader(File::open(path)?)?;
+        let created = msg_json
+            .get("time")
+            .and_then(|v| v.get("created"))
+            .and_then(|v| v.as_i64());
+        page_messages.push((created, msg_json));
+    }
+
+    // Load all parts (small JSON files) for accurate visible counting.
+    let mut full_parts: HashMap<String, Vec<Value>> = HashMap::new();
+    let parts_dir = storage_dir.join("part");
+    if parts_dir.exists() {
+        let mut entries = std::fs::read_dir(&parts_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|entry| entry.path());
+        for entry in entries {
+            let msg_id = entry.file_name().to_string_lossy().to_string();
+            let msg_parts_dir = entry.path();
+            if !msg_parts_dir.is_dir() {
+                continue;
+            }
+            let mut part_entries =
+                std::fs::read_dir(&msg_parts_dir)?.collect::<std::io::Result<Vec<_>>>()?;
+            part_entries.sort_by_key(|entry| entry.path());
+            for part_entry in part_entries {
+                let part_path = part_entry.path();
+                if part_path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let part_json: Value = serde_json::from_reader(File::open(&part_path)?)?;
+                full_parts
+                    .entry(msg_id.clone())
+                    .or_default()
+                    .push(part_json);
+            }
+        }
+    }
+
+    // Build full message list metadata for counting without re-parsing page
+    // files. We re-parse all message files here to get role/data for counting;
+    // opencode filesystem sessions are small and this keeps counts identical to
+    // a full import.
+    let mut full_messages: Vec<(Option<i64>, Value)> = Vec::new();
+    for path in &all_msg_paths {
+        let msg_json: Value = serde_json::from_reader(File::open(path)?)?;
+        let created = msg_json
+            .get("time")
+            .and_then(|v| v.get("created"))
+            .and_then(|v| v.as_i64());
+        full_messages.push((created, msg_json));
+    }
+
+    // Restrict page parts to the page messages.
+    let page_msg_ids: HashSet<String> = page_messages
+        .iter()
+        .filter_map(|(_, msg)| msg.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let mut page_parts: HashMap<String, Vec<Value>> = HashMap::new();
+    for (msg_id, parts) in &full_parts {
+        if page_msg_ids.contains(msg_id) {
+            page_parts.insert(msg_id.clone(), parts.clone());
+        }
+    }
+
+    let visible_messages = count_visible_opencode_messages(&full_messages, &full_parts);
+
+    Ok((
+        session_json,
+        page_messages,
+        page_parts,
+        total_messages,
+        visible_messages,
+    ))
+}
+
+/// Count messages that would be visible under the same rules as
+/// [`canonical_event_is_visible_message`], reusing the canonical block mapper
+/// so the result is identical to a full import. This is the single source of
+/// truth for `ProviderSessionImportPage::message_count` for OpenCode.
+fn count_visible_opencode_messages(
+    messages: &[(Option<i64>, Value)],
+    parts: &HashMap<String, Vec<Value>>,
+) -> usize {
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let mut artifacts = Vec::new();
+    let mut count = 0usize;
+    for (_, msg_json) in messages {
+        let role_str = msg_json
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("user");
+        let role = match role_str {
+            "user" => EventRole::User,
+            "assistant" => EventRole::Assistant,
+            _ => EventRole::Unknown,
+        };
+        if !matches!(
+            role,
+            EventRole::User | EventRole::Assistant | EventRole::Tool
+        ) {
+            continue;
+        }
+        let msg_id = msg_json
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let msg_parts: Vec<Value> = parts.get(&msg_id).cloned().unwrap_or_default();
+        let mut blocks =
+            canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report, &mut artifacts);
+        if blocks.is_empty() {
+            blocks = vec![EventBlock::ProviderPayload {
+                kind: "message_without_mappable_parts".to_string(),
+                payload: msg_json.clone(),
+            }];
+        }
+        let kind = derive_event_kind(&blocks);
+        if matches!(
+            kind,
+            SessionEventKind::Lifecycle | SessionEventKind::Unknown
+        ) {
+            continue;
+        }
+        let visible_text: String = blocks
+            .iter()
+            .filter_map(|block| crate::provider::canonical_visible_block_text(block))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !visible_text.trim().is_empty() {
+            count += 1;
+        }
+    }
+    count
+}
+
 fn parse_session_file(path: &Path) -> Option<ProviderSessionSummary> {
     let file = File::open(path).ok()?;
     let json: Value = serde_json::from_reader(file).ok()?;
@@ -2836,6 +3285,159 @@ mod tests {
     use chrono::TimeZone;
     use rusqlite::Connection;
     use tempfile::tempdir;
+
+    fn write_multimessage_opencode_db(opencode_dir: &Path, session_id: &str) {
+        std::fs::create_dir_all(opencode_dir).unwrap();
+        let conn = Connection::open(opencode_dir.join("opencode.db")).unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE project (
+                id TEXT PRIMARY KEY,
+                worktree TEXT NOT NULL
+            );
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                parent_id TEXT,
+                slug TEXT NOT NULL,
+                directory TEXT NOT NULL,
+                title TEXT NOT NULL,
+                version TEXT NOT NULL,
+                share_url TEXT,
+                summary_additions INTEGER,
+                summary_deletions INTEGER,
+                summary_files INTEGER,
+                summary_diffs TEXT,
+                revert TEXT,
+                permission TEXT,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                time_compacting INTEGER,
+                time_archived INTEGER,
+                workspace_id TEXT,
+                path TEXT,
+                agent TEXT,
+                model TEXT,
+                FOREIGN KEY (project_id) REFERENCES project(id) ON DELETE CASCADE
+            );
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                time_created INTEGER NOT NULL,
+                time_updated INTEGER NOT NULL,
+                data TEXT NOT NULL,
+                FOREIGN KEY (message_id) REFERENCES message(id) ON DELETE CASCADE
+            );
+            ",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project (id, worktree) VALUES ('p1', '/tmp/project')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session (
+                id, project_id, parent_id, slug, directory, title, version,
+                share_url, summary_additions, summary_deletions, summary_files,
+                summary_diffs, revert, permission, time_created, time_updated,
+                time_compacting, time_archived, workspace_id, path, agent, model
+             ) VALUES (
+                ?1, 'p1', NULL, 's', '/tmp/project', 'Multi', '1.0',
+                NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                1700000000000, 1700000000500, NULL, NULL, NULL, NULL, NULL, NULL
+             )",
+            [session_id],
+        )
+        .unwrap();
+
+        let messages = [
+            ("msg-a", 1700000000010_i64, "user", "Build feature"),
+            ("msg-b", 1700000000020, "assistant", "On it"),
+            ("msg-c", 1700000000030, "user", "Thanks"),
+        ];
+        for (msg_id, created, role, text) in messages {
+            let data = serde_json::json!({ "role": role }).to_string();
+            conn.execute(
+                "INSERT INTO message (id, session_id, time_created, time_updated, data)
+                 VALUES (?1, ?2, ?3, ?3, ?4)",
+                rusqlite::params![msg_id, session_id, created, data],
+            )
+            .unwrap();
+            let part_data = serde_json::json!({ "type": "text", "text": text }).to_string();
+            conn.execute(
+                "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+                 VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+                rusqlite::params![
+                    format!("{msg_id}-p1"),
+                    msg_id,
+                    session_id,
+                    created,
+                    part_data
+                ],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn import_session_page_paginates_messages_and_keeps_full_counts() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        write_multimessage_opencode_db(opencode_dir.path(), "ses-paged");
+
+        let locator = format!(
+            "{}#session=ses-paged",
+            opencode_dir.path().join("opencode.db").display()
+        );
+
+        // Full import baseline.
+        let full_import = OpenCodeProvider.import_session(&locator).unwrap();
+        assert_eq!(full_import.session.events.len(), 3);
+
+        // Full page: counts match a full import, all events present.
+        let full = import_opencode_session_page(&locator, 0, None).unwrap();
+        assert_eq!(full.event_count, 3);
+        assert_eq!(full.imported.session.events.len(), 3);
+        let expected_visible = full_import
+            .session
+            .events
+            .iter()
+            .filter(|event| canonical_event_is_visible_message(event))
+            .count();
+        assert_eq!(full.message_count, expected_visible);
+        assert_eq!(full.message_count, 3);
+
+        // Page with limit returns a strict subset but keeps total counts.
+        let page1 = import_opencode_session_page(&locator, 0, Some(2)).unwrap();
+        assert_eq!(page1.imported.session.events.len(), 2);
+        assert_eq!(page1.event_count, 3);
+        assert_eq!(page1.message_count, full.message_count);
+        assert_eq!(page1.imported.session.events[0].id, "msg-a");
+        assert_eq!(page1.imported.session.events[1].id, "msg-b");
+
+        // Second page starts at offset 2.
+        let page2 = import_opencode_session_page(&locator, 2, Some(2)).unwrap();
+        assert_eq!(page2.imported.session.events.len(), 1);
+        assert_eq!(page2.event_count, 3);
+        assert_eq!(page2.imported.session.events[0].id, "msg-c");
+
+        // Identity and title carry across pages.
+        assert_eq!(page1.imported.session.identity.canonical_id, "ses-paged");
+        assert_eq!(
+            page1.imported.session.identity.source_title.as_deref(),
+            Some("Multi")
+        );
+    }
 
     #[test]
     fn opencode_malformed_parts_are_preserved_and_reported() {
