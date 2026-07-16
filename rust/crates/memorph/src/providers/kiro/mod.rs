@@ -8,7 +8,8 @@ use crate::canonical::{
     SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary,
 };
 use crate::provider::{
-    Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
+    canonical_event_is_visible_message, PageStrategy, Provider, ProviderCapabilities,
+    ProviderContentFidelity, ProviderSessionImportPage, ProviderSessionSummary,
     ProviderSourceFingerprint, ScanStrategy, StorageShape, TurnQuality,
 };
 use anyhow::{Context, Result};
@@ -45,6 +46,7 @@ impl Provider for KiroProvider {
         ProviderCapabilities {
             import: true,
             scan_strategy: ScanStrategy::FullScan,
+            page_strategy: PageStrategy::FullImport,
             storage_shape: StorageShape::Directory,
             turn_quality: TurnQuality::Exact,
             import_fidelity: ProviderContentFidelity {
@@ -79,6 +81,15 @@ impl Provider for KiroProvider {
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         import_canonical_session_from_dir(Path::new(source_path))
+    }
+
+    fn import_session_page(
+        &self,
+        source_path: &str,
+        event_offset: usize,
+        event_limit: Option<usize>,
+    ) -> Result<ProviderSessionImportPage> {
+        import_kiro_session_page(Path::new(source_path), event_offset, event_limit)
     }
 
     fn session_source_fingerprint(
@@ -391,6 +402,74 @@ struct KiroStreamState {
     timestamp_base: DateTime<Utc>,
     active_turn_id: Option<String>,
     tool_call_events: BTreeMap<String, String>,
+}
+
+fn import_kiro_session_page(
+    session_dir: &Path,
+    event_offset: usize,
+    event_limit: Option<usize>,
+) -> Result<ProviderSessionImportPage> {
+    let mut imported = import_canonical_session_from_dir(session_dir)?;
+    let full_events = imported.session.events.clone();
+    let event_count = full_events.len();
+    let message_count = full_events
+        .iter()
+        .filter(|event| canonical_event_is_visible_message(event))
+        .count();
+    let full_turns = crate::session_projection::project_session_turns(
+        &imported.session.identity.canonical_id,
+        &full_events,
+        TurnQuality::Exact,
+    );
+    let offset = event_offset.min(event_count);
+    imported.session.events = match event_limit {
+        Some(limit) => full_events
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect(),
+        None => full_events.iter().skip(offset).cloned().collect(),
+    };
+
+    let mut turns = crate::session_projection::project_session_turns(
+        &imported.session.identity.canonical_id,
+        &imported.session.events,
+        TurnQuality::Inferred,
+    );
+    let full_event_counts =
+        full_events
+            .iter()
+            .fold(BTreeMap::<String, usize>::new(), |mut counts, event| {
+                if let Some(turn_id) = event.links.provider_turn_id.as_ref() {
+                    *counts.entry(turn_id.clone()).or_default() += 1;
+                }
+                counts
+            });
+    let page_event_counts = imported.session.events.iter().fold(
+        BTreeMap::<String, usize>::new(),
+        |mut counts, event| {
+            if let Some(turn_id) = event.links.provider_turn_id.as_ref() {
+                *counts.entry(turn_id.clone()).or_default() += 1;
+            }
+            counts
+        },
+    );
+    for turn in &mut turns {
+        if let Some(turn_id) = turn.provider_turn_id.as_ref() {
+            if page_event_counts.get(turn_id) != full_event_counts.get(turn_id) {
+                turn.confidence = crate::session_projection::TurnConfidence::Inferred;
+            }
+        }
+    }
+
+    Ok(ProviderSessionImportPage {
+        imported,
+        event_count,
+        message_count,
+        turn_count: Some(full_turns.len()),
+        turns,
+    })
 }
 
 fn import_canonical_session_from_dir(session_dir: &Path) -> Result<ImportedSession> {
@@ -1437,7 +1516,7 @@ mod tests {
         assert!(!capabilities.rename);
         assert!(!capabilities.resume);
         assert_eq!(capabilities.scan_strategy, ScanStrategy::FullScan);
-        assert_eq!(capabilities.page_strategy, PageStrategy::Unknown);
+        assert_eq!(capabilities.page_strategy, PageStrategy::FullImport);
         assert_eq!(capabilities.storage_shape, StorageShape::Directory);
         assert_eq!(capabilities.turn_quality, TurnQuality::Exact);
         assert_eq!(
@@ -1496,6 +1575,36 @@ mod tests {
             sessions[1].session_id
         );
         assert_eq!(KiroProvider.data_source_paths(), vec![temp.path()]);
+        Ok(())
+    }
+
+    #[test]
+    fn current_format_full_import_page_keeps_total_counts_and_marks_partial_turns_inferred(
+    ) -> Result<()> {
+        let temp = copy_fixture_sessions()?;
+        let _guard = use_test_kiro_sessions_dir(temp.path().to_path_buf());
+        let session_dir = temp
+            .path()
+            .join("8f3d1d8bb1bd8116/sess_11111111-1111-4111-8111-111111111111");
+        let full = KiroProvider.import_session_page(session_dir.to_str().unwrap(), 0, None)?;
+        assert_eq!(full.event_count, full.imported.session.events.len());
+        assert_eq!(full.turn_count, Some(full.turns.len()));
+        assert!(full
+            .turns
+            .iter()
+            .all(|turn| { turn.confidence == crate::session_projection::TurnConfidence::Exact }));
+
+        let page = KiroProvider.import_session_page(session_dir.to_str().unwrap(), 3, Some(2))?;
+        assert_eq!(page.event_count, full.event_count);
+        assert_eq!(page.message_count, full.message_count);
+        assert_eq!(page.turn_count, full.turn_count);
+        assert_eq!(page.imported.session.events.len(), 2);
+        assert_eq!(page.turns.len(), 1);
+        assert_eq!(page.turns[0].provider_turn_id.as_deref(), Some("exec-1"));
+        assert_eq!(
+            page.turns[0].confidence,
+            crate::session_projection::TurnConfidence::Inferred
+        );
         Ok(())
     }
 
