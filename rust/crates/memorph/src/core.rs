@@ -35,7 +35,8 @@ pub mod manager;
 pub mod session_management;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
-const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &["claude", "codex", "kimi", "kiro", "opencode"];
+const PROJECTED_SESSION_PROVIDER_IDS: &[&str] =
+    &["claude", "codex", "cursor", "kimi", "kiro", "opencode"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListParams {
@@ -4879,6 +4880,12 @@ mod tests {
     }
 
     #[test]
+    fn cursor_is_enabled_for_default_projection_bootstrap() {
+        assert!(PROJECTED_SESSION_PROVIDER_IDS.contains(&"cursor"));
+        assert!(provider_supports_session_projection("cursor"));
+    }
+
+    #[test]
     fn kiro_is_enabled_for_default_projection_bootstrap() {
         assert!(PROJECTED_SESSION_PROVIDER_IDS.contains(&"kiro"));
         assert!(provider_supports_session_projection("kiro"));
@@ -4891,12 +4898,12 @@ mod tests {
         local_store::apply_schema(&mut conn).unwrap();
 
         let report =
-            bootstrap_session_projections_in_connection(&mut conn, Some("cursor")).unwrap();
+            bootstrap_session_projections_in_connection(&mut conn, Some("deepseek")).unwrap();
 
         assert_eq!(report.scanned_providers, 0);
         assert_eq!(report.unsupported_providers, 1);
         assert_eq!(report.failures.len(), 1);
-        assert_eq!(report.failures[0].provider_id, "cursor");
+        assert_eq!(report.failures[0].provider_id, "deepseek");
         assert_eq!(report.failures[0].session_id, None);
     }
 

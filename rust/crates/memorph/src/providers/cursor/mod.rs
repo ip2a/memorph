@@ -1360,6 +1360,350 @@ mod tests {
     }
 
     #[test]
+    fn cursor_current_bootstrap_stale_and_system_sync_are_incremental_and_bodyless() -> Result<()> {
+        let dir = tempdir()?;
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home)?;
+        let _home_guard = TestConfigHomeGuard::new(&home);
+        let db_path = dir.path().join("state.vscdb");
+        let _db_guard = use_test_cursor_db(db_path.clone());
+        let session_id = "cursor-bootstrap";
+        let created_at = 1_700_000_000_000_i64;
+
+        let conn = Connection::open(&db_path)?;
+        conn.execute_batch(include_str!("fixtures/v3_11_19/schema.sql"))?;
+        conn.execute(
+            "INSERT INTO composerHeaders
+             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+              recency, checkpointAt, value)
+             VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, NULL, ?6)",
+            params![
+                session_id,
+                "workspace-bootstrap",
+                created_at,
+                created_at + 1_000,
+                created_at + 1_000,
+                json!({
+                    "composerId": session_id,
+                    "name": "Cursor bootstrap",
+                    "workspaceIdentifier": {
+                        "id": "workspace-bootstrap",
+                        "uri": {"fsPath": "/workspace/cursor-bootstrap"}
+                    }
+                })
+                .to_string(),
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            params![
+                format!("composerData:{session_id}"),
+                json!({
+                    "composerId": session_id,
+                    "name": "Cursor bootstrap",
+                    "createdAt": created_at,
+                    "lastUpdatedAt": created_at + 1_000,
+                    "workspaceIdentifier": {
+                        "id": "workspace-bootstrap",
+                        "uri": {"fsPath": "/workspace/cursor-bootstrap"}
+                    }
+                })
+                .to_string(),
+            ],
+        )?;
+        for (bubble_id, bubble_type, timestamp, text) in [
+            ("user-1", 1, "2023-11-14T22:13:20Z", "hello"),
+            ("assistant-1", 2, "2023-11-14T22:13:21Z", "answer"),
+        ] {
+            conn.execute(
+                "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+                params![
+                    format!("bubbleId:{session_id}:{bubble_id}"),
+                    json!({
+                        "bubbleId": bubble_id,
+                        "type": bubble_type,
+                        "createdAt": timestamp,
+                        "text": text
+                    })
+                    .to_string(),
+                ],
+            )?;
+        }
+        drop(conn);
+
+        let first = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(first.scanned_providers, 1);
+        assert_eq!(first.discovered_sessions, 1);
+        assert_eq!(first.projected_sessions, 1);
+        assert_eq!(first.unchanged_sessions, 0);
+        assert!(first.failures.is_empty());
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(detail.events.is_empty());
+        assert!(detail.turns.is_empty());
+        assert!(!detail.stale);
+
+        let conn = local_store::open_database()?;
+        let initial: (String, String, i64, i64, i64, i64) = conn.query_row(
+            "SELECT ss.title, ss.workspace_dir, ss.counts_complete, ss.stale,
+                    src.scan_generation,
+                    (SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'table'
+                       AND name IN ('session_turns', 'session_events', 'session_event_blocks'))
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE ss.provider_id = 'cursor' AND s.provider_session_id = ?1",
+            [session_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
+        let initial_fingerprint: String = conn.query_row(
+            "SELECT source_cursor FROM session_sources
+             WHERE provider_id = 'cursor' AND provider_session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(initial.0, "Cursor bootstrap");
+        assert_eq!(initial.1, "/workspace/cursor-bootstrap");
+        assert_eq!(initial.2, 1);
+        assert_eq!(initial.3, 0);
+        assert_eq!(initial.4, 1);
+        assert_eq!(initial.5, 0);
+        drop(conn);
+
+        let unchanged = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(unchanged.scanned_providers, 1);
+        assert_eq!(unchanged.discovered_sessions, 1);
+        assert_eq!(unchanged.projected_sessions, 0);
+        assert_eq!(unchanged.unchanged_sessions, 1);
+        assert!(unchanged.failures.is_empty());
+
+        let conn = local_store::open_database()?;
+        let unchanged_state: (i64, i64) = conn.query_row(
+            "SELECT src.scan_generation, ss.counts_complete
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE ss.provider_id = 'cursor' AND s.provider_session_id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(unchanged_state, (1, 1));
+        drop(conn);
+
+        let conn = Connection::open(&db_path)?;
+        conn.execute(
+            "UPDATE cursorDiskKV SET value = ?1 WHERE key = ?2",
+            params![
+                json!({
+                    "bubbleId": "assistant-1",
+                    "type": 2,
+                    "createdAt": "2023-11-14T22:13:21Z",
+                    "text": "changed answer"
+                })
+                .to_string(),
+                format!("bubbleId:{session_id}:assistant-1"),
+            ],
+        )?;
+        drop(conn);
+
+        let stale = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(stale.checked_sources, 1);
+        assert_eq!(stale.fresh_snapshots, 0);
+        assert_eq!(stale.stale_snapshots, 1);
+        assert_eq!(stale.missing_sources, 0);
+
+        let refreshed = crate::core::reproject_stale_sessions(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(refreshed.candidate_snapshots, 1);
+        assert_eq!(refreshed.reprojected_snapshots, 1);
+        assert_eq!(refreshed.missing_sources, 0);
+        assert!(refreshed.failures.is_empty());
+
+        let conn = local_store::open_database()?;
+        let after_bubble: (String, i64, i64) = conn.query_row(
+            "SELECT src.source_cursor, ss.stale, ss.counts_complete
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE ss.provider_id = 'cursor' AND s.provider_session_id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_ne!(after_bubble.0, initial_fingerprint);
+        assert_eq!(after_bubble.1, 0);
+        assert_eq!(after_bubble.2, 0);
+        drop(conn);
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(!detail.stale);
+
+        let conn = Connection::open(&db_path)?;
+        conn.execute(
+            "UPDATE composerHeaders SET recency = ?2, value = ?3 WHERE composerId = ?1",
+            params![
+                session_id,
+                created_at + 2_000,
+                json!({
+                    "composerId": session_id,
+                    "name": "Cursor bootstrap updated",
+                    "workspaceIdentifier": {
+                        "id": "workspace-bootstrap",
+                        "uri": {"fsPath": "/workspace/cursor-bootstrap"}
+                    }
+                })
+                .to_string(),
+            ],
+        )?;
+        drop(conn);
+
+        let header_sync = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(header_sync.projected_sessions, 1);
+        assert_eq!(header_sync.unchanged_sessions, 0);
+        assert!(header_sync.failures.is_empty());
+
+        let conn = local_store::open_database()?;
+        let after_header: (String, i64, String, i64) = conn.query_row(
+            "SELECT ss.title, ss.last_active_at_ms, src.source_cursor, ss.counts_complete
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE ss.provider_id = 'cursor' AND s.provider_session_id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(after_header.0, "Cursor bootstrap updated");
+        assert_eq!(after_header.1, created_at + 2_000);
+        assert_ne!(after_header.2, after_bubble.0);
+        assert_eq!(after_header.3, 0);
+        drop(conn);
+
+        crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let conn = Connection::open(&db_path)?;
+        conn.execute(
+            "UPDATE cursorDiskKV SET value = ?1 WHERE key = ?2",
+            params![
+                json!({
+                    "composerId": session_id,
+                    "name": "Cursor bootstrap",
+                    "text": "composer data changed",
+                    "createdAt": created_at,
+                    "lastUpdatedAt": created_at + 3_000,
+                    "workspaceIdentifier": {
+                        "id": "workspace-bootstrap",
+                        "uri": {"fsPath": "/workspace/cursor-bootstrap"}
+                    }
+                })
+                .to_string(),
+                format!("composerData:{session_id}"),
+            ],
+        )?;
+        drop(conn);
+
+        let composer_sync = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(composer_sync.projected_sessions, 1);
+        assert_eq!(composer_sync.unchanged_sessions, 0);
+        assert!(composer_sync.failures.is_empty());
+
+        let conn = local_store::open_database()?;
+        let after_composer: (String, i64) = conn.query_row(
+            "SELECT src.source_cursor, ss.counts_complete
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             JOIN session_sources src ON src.id = s.primary_source_id
+             WHERE ss.provider_id = 'cursor' AND s.provider_session_id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_ne!(after_composer.0, after_header.2);
+        assert_eq!(after_composer.1, 0);
+        drop(conn);
+
+        std::fs::remove_file(&db_path)?;
+        let missing = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(missing.checked_sources, 0);
+        assert_eq!(missing.fresh_snapshots, 0);
+        assert_eq!(missing.missing_sources, 1);
+        assert_eq!(missing.stale_snapshots, 1);
+
+        let missing_reprojection = crate::core::reproject_stale_sessions(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(missing_reprojection.candidate_snapshots, 1);
+        assert_eq!(missing_reprojection.reprojected_snapshots, 0);
+        assert_eq!(missing_reprojection.missing_sources, 1);
+
+        let groups = crate::core::list_sessions(&crate::core::SessionListParams {
+            all: true,
+            providers: vec![PROVIDER_ID.to_string()],
+            cwd: None,
+            include_message_counts: true,
+            limit: None,
+            offset: None,
+            sort: crate::core::SessionListSort::Recent,
+            hook_filter: crate::core::SessionHookFilter::All,
+        })?;
+        let session = groups
+            .iter()
+            .flat_map(|group| &group.sessions)
+            .find(|session| session.session_id == session_id)
+            .unwrap();
+        assert!(session.stale);
+
+        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("Session source is missing"));
+
+        let conn = local_store::open_database()?;
+        let system_scan_activities: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM session_activity
+             WHERE actor = 'system' AND operation_kind = 'scan' AND status != 'running'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert!(system_scan_activities >= 7);
+        let body_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(body_table_count, 0);
+        Ok(())
+    }
+
+    #[test]
     fn backup_registration_failure_prevents_cursor_provider_write() {
         let dir = tempdir().unwrap();
         let db_path = dir.path().join("state.vscdb");
