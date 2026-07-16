@@ -1041,6 +1041,125 @@ mod tests {
     }
 
     #[test]
+    fn migrates_body_tables_to_bodyless_v9() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema_migrations_table(&conn).unwrap();
+        conn.execute_batch(V1_SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (1, 'local_session_store_v1', 0)",
+            [],
+        )
+        .unwrap();
+
+        // Seed a full body chain plus both an event_payload manifest and a
+        // non-event_payload manifest, and hook events referencing each. This
+        // exercises the v9 DROP of the body tables, the event_payload manifest
+        // purge, the hook reference nulling, and survival of other manifests.
+        conn.execute_batch(
+            r#"
+            INSERT INTO session_sources (id, provider_id, provider_session_id, source_path, first_seen_at_ms, last_seen_at_ms)
+            VALUES ('src_1', 'claude', 'p_sess_1', '/tmp/session.jsonl', 1, 1);
+
+            INSERT INTO sessions (id, provider_id, provider_session_id, primary_source_id)
+            VALUES ('sess_1', 'claude', 'p_sess_1', 'src_1');
+
+            INSERT INTO session_turns (id, session_id, turn_order)
+            VALUES ('turn_1', 'sess_1', 0);
+
+            INSERT INTO session_events (id, session_id, turn_id, kind, source_order, stable_cursor)
+            VALUES ('event_1', 'sess_1', 'turn_1', 'message', 0, 'cursor_0');
+
+            INSERT INTO artifact_manifests (id, artifact_kind, session_id, event_id, path, content_hash, byte_size, created_at_ms)
+            VALUES ('art_payload', 'event_payload', 'sess_1', 'event_1', '/tmp/blob_payload.bin', 'hash_payload', 11, 1);
+
+            INSERT INTO artifact_manifests (id, artifact_kind, session_id, path, content_hash, byte_size, created_at_ms)
+            VALUES ('art_backup', 'session_backup', 'sess_1', '/tmp/blob_backup.bin', 'hash_backup', 22, 1);
+
+            INSERT INTO session_event_blocks (id, event_id, block_order, block_kind, artifact_id)
+            VALUES ('block_1', 'event_1', 0, 'content', 'art_payload');
+
+            INSERT INTO hook_events (id, provider_id, provider_session_id, session_id, event_name, observed_at_ms, payload_artifact_id)
+            VALUES ('hook_payload', 'claude', 'p_sess_1', 'sess_1', 'session.start', 1, 'art_payload');
+
+            INSERT INTO hook_events (id, provider_id, provider_session_id, session_id, event_name, observed_at_ms, payload_artifact_id)
+            VALUES ('hook_backup', 'claude', 'p_sess_1', 'sess_1', 'session.stop', 2, 'art_backup');
+            "#,
+        )
+        .unwrap();
+
+        apply_schema(&mut conn).unwrap();
+
+        assert!(!table_exists(&conn, "session_turns"));
+        assert!(!table_exists(&conn, "session_events"));
+        assert!(!table_exists(&conn, "session_event_blocks"));
+
+        let payload_remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artifact_manifests WHERE id = 'art_payload'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(payload_remaining, 0);
+
+        let backup_remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM artifact_manifests WHERE id = 'art_backup'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(backup_remaining, 1);
+
+        let nulled_hook: Option<String> = conn
+            .query_row(
+                "SELECT payload_artifact_id FROM hook_events WHERE id = 'hook_payload'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(nulled_hook.is_none());
+
+        let preserved_hook: Option<String> = conn
+            .query_row(
+                "SELECT payload_artifact_id FROM hook_events WHERE id = 'hook_backup'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved_hook.as_deref(), Some("art_backup"));
+
+        // The rebuilt manifest table no longer carries the body-only columns.
+        let event_id_col_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('artifact_manifests')
+                    WHERE name = 'event_id'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!event_id_col_exists);
+
+        let foreign_key_violations: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_key_violations, 0);
+
+        let migration_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(migration_count, SCHEMA_VERSION);
+    }
+
+    #[test]
     fn migrates_existing_v2_schema_to_v3() {
         let mut conn = Connection::open_in_memory().unwrap();
         configure_connection(&conn).unwrap();
