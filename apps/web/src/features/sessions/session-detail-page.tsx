@@ -118,32 +118,36 @@ function SessionDetailsDialog({
                 ) : <Badge variant="outline">No report</Badge>}
               </div>
               {view.projection_report ? (
-                <>
-                  <div className="grid grid-cols-3 gap-2">
-                    <StatItem label="Preserved" value={view.projection_report.summary.preserved_count} />
-                    <StatItem label="Normalized" value={view.projection_report.summary.normalized_count} />
-                    <StatItem label="Dropped" value={view.projection_report.summary.dropped_count} />
-                  </div>
-                  <MetaLine columns="wide" label="Operation" value={readable(view.projection_report.operation_kind)} />
-                  <MetaLine columns="wide" label="Version" value={String(view.projection_report.projection_version)} />
-                  <MetaLine columns="wide" label="Projected" value={formatDateTime(view.projection_report.created_at)} />
-                  {view.projection_report.items.length ? (
-                    <div className="flex flex-col border-t">
-                      {view.projection_report.items.map((item) => (
-                        <div key={`${item.item_order}-${item.field_path ?? item.scope}`} className="grid gap-1 border-b py-2 sm:grid-cols-[auto_minmax(0,1fr)]">
-                          <Badge variant={qualityBadgeVariant(item.fidelity)}>{readable(item.fidelity)}</Badge>
-                          <div className="min-w-0">
-                            <div className="break-all font-mono text-xs">{item.field_path || item.scope}</div>
-                            {item.reason ? <div className="text-xs text-muted-foreground">{item.reason}</div> : null}
-                          </div>
+                (() => {
+                  const projectionItems = view.projection_report.items ?? [];
+                  return (
+                    <>
+                      <div className="grid grid-cols-3 gap-2">
+                        <StatItem label="Preserved" value={view.projection_report.summary.preserved_count} />
+                        <StatItem label="Normalized" value={view.projection_report.summary.normalized_count} />
+                        <StatItem label="Dropped" value={view.projection_report.summary.dropped_count} />
+                      </div>
+                      <MetaLine columns="wide" label="Operation" value={readable(view.projection_report.operation_kind)} />
+                      <MetaLine columns="wide" label="Version" value={String(view.projection_report.projection_version)} />
+                      <MetaLine columns="wide" label="Projected" value={formatDateTime(view.projection_report.created_at)} />
+                      {projectionItems.length ? (
+                        <div className="flex flex-col border-t">
+                          {projectionItems.map((item) => (
+                            <div key={`${item.item_order}-${item.field_path ?? item.scope}`} className="grid gap-1 border-b py-2 sm:grid-cols-[auto_minmax(0,1fr)]">
+                              <Badge variant={qualityBadgeVariant(item.fidelity)}>{readable(item.fidelity)}</Badge>
+                              <div className="min-w-0">
+                                <div className="break-all font-mono text-xs">{item.field_path || item.scope}</div>
+                                {item.reason ? <div className="text-xs text-muted-foreground">{item.reason}</div> : null}
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </>
+                      ) : null}
+                    </>
+                  );
+                })()
               ) : null}
             </section>
-
             <section className="flex flex-col gap-3 border-t pt-4">
               <strong>Turns</strong>
               {view.turns.length ? view.turns.map((turn) => (

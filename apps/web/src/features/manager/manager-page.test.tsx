@@ -154,6 +154,12 @@ function renderManager(initialEntry = "/manager") {
   );
 }
 
+function rowForText(text: string) {
+  const row = screen.getByText(text).closest("[data-manager-row]");
+  expect(row).toBeTruthy();
+  return row as HTMLElement;
+}
+
 afterEach(() => cleanup());
 
 beforeEach(() => {
@@ -215,31 +221,22 @@ describe("ManagerPage interaction model", () => {
 
     expect(screen.getByRole("button", { name: /All providers/i })).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: /All providers/i }));
-    await user.click(screen.getByRole("menuitemcheckbox", { name: "Codex" }));
+    await user.click(screen.getByRole("button", { name: /Codex/i }));
 
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toContain(
         "providers=codex",
       );
     });
-    expect(
-      screen
-        .getByRole("menuitemcheckbox", { name: "Codex" })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
 
-    await user.click(
-      screen.getByRole("menuitemcheckbox", { name: "All providers" }),
-    );
+    await user.click(screen.getByRole("button", { name: /All providers/i }));
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/manager");
     });
     expect(screen.getByRole("button", { name: /All providers/i })).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: /All providers/i }));
-    await user.click(screen.getByRole("menuitemcheckbox", { name: "Codex" }));
-    await user.click(screen.getByRole("menuitemcheckbox", { name: "Codex" }));
+    await user.click(screen.getByRole("button", { name: /Codex/i }));
+    await user.click(screen.getByRole("button", { name: /Codex/i }));
 
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/manager");
@@ -248,13 +245,11 @@ describe("ManagerPage interaction model", () => {
     expect(screen.getByRole("button", { name: /All providers/i })).toBeTruthy();
   });
 
-  it("keeps checkbox selection separate from opening the session row", async () => {
+  it("keeps row selection separate from opening the session link", async () => {
     const user = userEvent.setup();
     renderManager();
 
-    await user.click(
-      screen.getByRole("checkbox", { name: "Select Alpha session" }),
-    );
+    await user.click(rowForText("Alpha session"));
 
     expect(screen.getByText("1 selected")).toBeTruthy();
     expect(screen.getByTestId("location").textContent).toBe("/manager");
@@ -277,14 +272,10 @@ describe("ManagerPage interaction model", () => {
     await user.click(screen.getByRole("button", { name: "Select visible" }));
 
     expect(screen.getByText("1 selected")).toBeTruthy();
-    expect(
-      screen
-        .getByRole("checkbox", { name: "Select Beta session" })
-        .getAttribute("data-state"),
-    ).toBe("checked");
-    expect(
-      screen.queryByRole("checkbox", { name: "Select Alpha session" }),
-    ).toBeNull();
+    expect(rowForText("Beta session").getAttribute("data-selected")).toBe(
+      "true",
+    );
+    expect(screen.queryByText("Alpha session")).toBeNull();
   });
 
   it("opens a workspace row in its specified provider workspace scope", async () => {
@@ -336,9 +327,7 @@ describe("ManagerPage interaction model", () => {
     );
     renderManager();
 
-    await user.click(
-      screen.getByRole("checkbox", { name: "Select Alpha session" }),
-    );
+    await user.click(rowForText("Alpha session"));
     await user.click(screen.getByRole("button", { name: "Delete" }));
 
     const dialog = screen.getByRole("alertdialog");
@@ -400,9 +389,7 @@ describe("ManagerPage interaction model", () => {
     );
     renderManager();
 
-    await user.click(
-      screen.getByRole("checkbox", { name: "Select Alpha session" }),
-    );
+    await user.click(rowForText("Alpha session"));
     await user.click(screen.getByRole("button", { name: "Back up" }));
     await user.click(screen.getByRole("button", { name: "Start backup" }));
 
