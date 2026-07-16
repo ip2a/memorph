@@ -5,7 +5,7 @@ use crate::canonical::{
     CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
     EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
     MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
+    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary,
 };
 use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
@@ -809,17 +809,12 @@ fn import_canonical_session_from_dir(session_dir: &Path) -> Result<ImportedSessi
     }
     let wire_path = session_dir.join("wire.jsonl");
     let state_path = session_dir.join("state.json");
-    let state_value = if state_path.exists() {
-        std::fs::read_to_string(&state_path)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-    } else {
-        None
-    };
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let state_value = read_optional_kimi_state(&state_path, &mut report)?;
     let title = state_value
         .as_ref()
         .and_then(|state| state.get("custom_title"))
-        .and_then(|value| value.as_str())
+        .and_then(Value::as_str)
         .map(str::trim)
         .filter(|title| !title.is_empty())
         .map(str::to_string);
@@ -829,12 +824,29 @@ fn import_canonical_session_from_dir(session_dir: &Path) -> Result<ImportedSessi
         .map(str::to_string)
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let project_dir = kimi_project_dir_for_session_dir(session_dir);
+    let context_modified_at = kimi_file_modified_at(&context_path)?;
 
-    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-    let (events, created_at, last_active_at) = canonical_events_from_wire(&wire_path, &mut report)?;
+    let mut context_events =
+        canonical_events_from_context(&context_path, context_modified_at, &mut report)?;
+    let wire = canonical_events_from_wire(&wire_path, &mut report)?;
+    reconcile_kimi_context_with_wire(&mut context_events, &wire.visible_events, &mut report);
+    context_events.extend(wire.lifecycle_events);
+
     let mut extensions = BTreeMap::new();
     if let Some(state) = state_value {
         extensions.insert("kimi_state".to_string(), state);
+    }
+    if !wire.metadata_headers.is_empty() {
+        extensions.insert(
+            "kimi_wire_metadata".to_string(),
+            Value::Array(wire.metadata_headers),
+        );
+    }
+    if !wire.unsequenced_records.is_empty() {
+        extensions.insert(
+            "kimi_wire_unsequenced_records".to_string(),
+            Value::Array(wire.unsequenced_records),
+        );
     }
 
     Ok(ImportedSession {
@@ -856,11 +868,11 @@ fn import_canonical_session_from_dir(session_dir: &Path) -> Result<ImportedSessi
             },
             context: SessionContext {
                 workspace_dir: project_dir,
-                created_at,
-                last_active_at,
+                created_at: wire.first_timestamp.or(Some(context_modified_at)),
+                last_active_at: Some(context_modified_at),
                 tags: Vec::new(),
             },
-            events,
+            events: context_events,
             artifacts: Vec::new(),
             extensions,
         },
@@ -868,27 +880,84 @@ fn import_canonical_session_from_dir(session_dir: &Path) -> Result<ImportedSessi
     })
 }
 
+fn read_optional_kimi_state(
+    state_path: &Path,
+    report: &mut MappingReport,
+) -> Result<Option<Value>> {
+    let raw = match std::fs::read_to_string(state_path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to read Kimi state: {}", state_path.display()))
+        }
+    };
+    match serde_json::from_str(&raw) {
+        Ok(state) => Ok(Some(state)),
+        Err(error) => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Dropped,
+                code: "invalid_state_json".to_string(),
+                message: format!("Failed to parse Kimi state.json: {error}"),
+                path: Some("state.json".to_string()),
+                raw: Some(Value::String(raw)),
+            });
+            Ok(None)
+        }
+    }
+}
+
+fn kimi_file_modified_at(path: &Path) -> Result<chrono::DateTime<Utc>> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("Failed to read Kimi source metadata: {}", path.display()))?;
+    let modified = metadata
+        .modified()
+        .with_context(|| format!("Failed to read Kimi source mtime: {}", path.display()))?;
+    Ok(chrono::DateTime::<Utc>::from(modified))
+}
+
+#[derive(Default)]
+struct KimiWireImport {
+    visible_events: Vec<SessionEvent>,
+    lifecycle_events: Vec<SessionEvent>,
+    metadata_headers: Vec<Value>,
+    unsequenced_records: Vec<Value>,
+    first_timestamp: Option<chrono::DateTime<Utc>>,
+}
+
+#[derive(Clone)]
+struct KimiWireTurn {
+    provider_turn_id: String,
+    turn_index: u32,
+}
+
 fn canonical_events_from_wire(
     wire_path: &Path,
     report: &mut MappingReport,
-) -> Result<(
-    Vec<SessionEvent>,
-    Option<chrono::DateTime<Utc>>,
-    Option<chrono::DateTime<Utc>>,
-)> {
-    let file = File::open(wire_path)
-        .with_context(|| format!("Failed to open Kimi wire.jsonl: {}", wire_path.display()))?;
+) -> Result<KimiWireImport> {
+    let file = match File::open(wire_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(KimiWireImport::default())
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("Failed to open Kimi wire.jsonl: {}", wire_path.display())
+            })
+        }
+    };
     let reader = BufReader::new(file);
-    let mut events = Vec::new();
-    let mut pending_user: Option<SessionEvent> = None;
+    let mut imported = KimiWireImport::default();
+    let mut active_turn: Option<KimiWireTurn> = None;
     let mut assistant_blocks: Vec<EventBlock> = Vec::new();
     let mut assistant_raw_parts: Vec<Value> = Vec::new();
-    let mut assistant_ts = Utc::now();
-    let mut turn_index = 0u32;
-    let mut first_ts: Option<chrono::DateTime<Utc>> = None;
-    let mut last_ts: Option<chrono::DateTime<Utc>> = None;
+    let mut assistant_timestamp: Option<chrono::DateTime<Utc>> = None;
+    let mut assistant_line_number: Option<usize> = None;
+    let mut next_turn_index = 0u32;
 
     for (line_idx, line) in reader.lines().enumerate() {
+        let line_number = line_idx + 1;
         let line = line?;
         if line.trim().is_empty() {
             continue;
@@ -899,81 +968,169 @@ fn canonical_events_from_wire(
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Warning,
                     disposition: MappingDisposition::Dropped,
-                    code: "invalid_jsonl_line".to_string(),
-                    message: format!("Failed to parse Kimi wire line: {}", error),
-                    path: Some(format!("line:{}", line_idx + 1)),
+                    code: "invalid_wire_jsonl_line".to_string(),
+                    message: format!("Failed to parse Kimi wire line: {error}"),
+                    path: Some(format!("wire.jsonl:line:{line_number}")),
                     raw: Some(Value::String(line)),
                 });
                 continue;
             }
         };
 
-        let ts = parse_wire_timestamp(&value).unwrap_or_else(Utc::now);
-        first_ts = first_ts.or(Some(ts));
-        last_ts = Some(ts);
-        let msg_type = value
+        if value.get("type").and_then(Value::as_str) == Some("metadata")
+            && value.get("message").is_none()
+        {
+            imported.metadata_headers.push(value);
+            continue;
+        }
+
+        let Some(timestamp) = parse_wire_timestamp(&value) else {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Downgraded,
+                code: "wire_record_without_timestamp".to_string(),
+                message: "Preserved Kimi wire record without inventing an event timestamp"
+                    .to_string(),
+                path: Some(format!("wire.jsonl:line:{line_number}")),
+                raw: Some(value.clone()),
+            });
+            imported.unsequenced_records.push(value);
+            continue;
+        };
+        imported.first_timestamp = imported.first_timestamp.or(Some(timestamp));
+
+        let message_type = value
             .get("message")
             .and_then(|message| message.get("type"))
-            .and_then(|kind| kind.as_str())
+            .and_then(Value::as_str)
             .unwrap_or("unknown");
 
-        match msg_type {
+        match message_type {
             "TurnBegin" => {
-                flush_kimi_pending_user(&mut events, &mut pending_user);
-                flush_kimi_assistant(
-                    &mut events,
+                flush_kimi_wire_assistant(
+                    &mut imported.visible_events,
                     &mut assistant_blocks,
                     &mut assistant_raw_parts,
-                    assistant_ts,
-                    turn_index,
+                    &mut assistant_timestamp,
+                    &mut assistant_line_number,
+                    active_turn.as_ref(),
                 );
+                let turn = KimiWireTurn {
+                    provider_turn_id: format!("kimi:wire-turn:{line_number}"),
+                    turn_index: next_turn_index,
+                };
+                next_turn_index = next_turn_index.saturating_add(1);
+                active_turn = Some(turn.clone());
+                imported.lifecycle_events.push(kimi_wire_event(
+                    format!("kimi:wire:TurnBegin:{line_number}"),
+                    SessionEventKind::Lifecycle,
+                    EventRole::System,
+                    timestamp,
+                    Some((&turn, Some(TurnBoundary::Started))),
+                    vec![EventBlock::ProviderPayload {
+                        kind: "TurnBegin".to_string(),
+                        payload: value.clone(),
+                    }],
+                    vec![value.clone()],
+                ));
                 let payload = value
                     .get("message")
                     .and_then(|message| message.get("payload"));
-                let blocks = kimi_user_input_event_blocks(payload, &value, line_idx + 1, report);
+                let blocks = kimi_user_input_event_blocks(payload, &value, line_number, report);
                 if !blocks.is_empty() {
-                    pending_user = Some(kimi_event(
-                        format!("kimi:user:{}:{}", turn_index, line_idx + 1),
+                    imported.visible_events.push(kimi_wire_event(
+                        format!("kimi:wire:user:{line_number}"),
                         SessionEventKind::Message,
                         EventRole::User,
-                        ts,
-                        turn_index,
+                        timestamp,
+                        Some((&turn, None)),
                         blocks,
-                        vec![value.clone()],
+                        vec![value],
                     ));
                 }
             }
             "ContentPart" => {
-                flush_kimi_pending_user(&mut events, &mut pending_user);
                 let payload = value
                     .get("message")
                     .and_then(|message| message.get("payload"));
                 if let Some(block) =
-                    kimi_content_part_event_block(payload, &value, line_idx + 1, report)
+                    kimi_content_part_event_block(payload, &value, line_number, report)
                 {
-                    assistant_blocks.push(block);
-                    assistant_raw_parts.push(value.clone());
-                    assistant_ts = ts;
+                    if matches!(
+                        block,
+                        EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
+                    ) {
+                        imported.lifecycle_events.push(kimi_wire_event(
+                            format!("kimi:wire:ContentPart:{line_number}"),
+                            SessionEventKind::Unknown,
+                            EventRole::Assistant,
+                            timestamp,
+                            active_turn.as_ref().map(|turn| (turn, None)),
+                            vec![block],
+                            vec![value],
+                        ));
+                    } else {
+                        assistant_blocks.push(block);
+                        assistant_raw_parts.push(value);
+                        assistant_timestamp = assistant_timestamp.or(Some(timestamp));
+                        assistant_line_number = assistant_line_number.or(Some(line_number));
+                    }
                 }
             }
             "TurnEnd" => {
-                flush_kimi_pending_user(&mut events, &mut pending_user);
-                flush_kimi_assistant(
-                    &mut events,
+                flush_kimi_wire_assistant(
+                    &mut imported.visible_events,
                     &mut assistant_blocks,
                     &mut assistant_raw_parts,
-                    assistant_ts,
-                    turn_index,
+                    &mut assistant_timestamp,
+                    &mut assistant_line_number,
+                    active_turn.as_ref(),
                 );
-                turn_index += 1;
-            }
-            other => {
-                events.push(kimi_event(
-                    format!("kimi:{}:{}", other, line_idx + 1),
+                imported.lifecycle_events.push(kimi_wire_event(
+                    format!("kimi:wire:TurnEnd:{line_number}"),
                     SessionEventKind::Lifecycle,
                     EventRole::System,
-                    ts,
-                    turn_index,
+                    timestamp,
+                    active_turn
+                        .as_ref()
+                        .map(|turn| (turn, Some(TurnBoundary::Completed))),
+                    vec![EventBlock::ProviderPayload {
+                        kind: "TurnEnd".to_string(),
+                        payload: value.clone(),
+                    }],
+                    vec![value],
+                ));
+                active_turn = None;
+            }
+            "StepBegin" | "StatusUpdate" => {
+                imported.lifecycle_events.push(kimi_wire_event(
+                    format!("kimi:wire:{message_type}:{line_number}"),
+                    SessionEventKind::Lifecycle,
+                    EventRole::System,
+                    timestamp,
+                    active_turn.as_ref().map(|turn| (turn, None)),
+                    vec![EventBlock::ProviderPayload {
+                        kind: message_type.to_string(),
+                        payload: value.clone(),
+                    }],
+                    vec![value],
+                ));
+            }
+            other => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Info,
+                    disposition: MappingDisposition::Preserved,
+                    code: "provider_wire_message_preserved".to_string(),
+                    message: format!("Preserved unsupported Kimi wire message '{other}'"),
+                    path: Some(format!("wire.jsonl:line:{line_number}")),
+                    raw: Some(value.clone()),
+                });
+                imported.lifecycle_events.push(kimi_wire_event(
+                    format!("kimi:wire:{other}:{line_number}"),
+                    SessionEventKind::Unknown,
+                    EventRole::System,
+                    timestamp,
+                    active_turn.as_ref().map(|turn| (turn, None)),
                     vec![EventBlock::ProviderPayload {
                         kind: other.to_string(),
                         payload: value.clone(),
@@ -984,78 +1141,376 @@ fn canonical_events_from_wire(
         }
     }
 
-    flush_kimi_pending_user(&mut events, &mut pending_user);
-    flush_kimi_assistant(
-        &mut events,
+    flush_kimi_wire_assistant(
+        &mut imported.visible_events,
         &mut assistant_blocks,
         &mut assistant_raw_parts,
-        assistant_ts,
-        turn_index,
+        &mut assistant_timestamp,
+        &mut assistant_line_number,
+        active_turn.as_ref(),
     );
-
-    Ok((events, first_ts, last_ts))
+    Ok(imported)
 }
 
-fn flush_kimi_pending_user(
-    events: &mut Vec<SessionEvent>,
-    pending_user: &mut Option<SessionEvent>,
-) {
-    if let Some(event) = pending_user.take() {
-        events.push(event);
-    }
-}
-
-fn flush_kimi_assistant(
+fn flush_kimi_wire_assistant(
     events: &mut Vec<SessionEvent>,
     assistant_blocks: &mut Vec<EventBlock>,
     assistant_raw_parts: &mut Vec<Value>,
-    timestamp: chrono::DateTime<Utc>,
-    turn_index: u32,
+    assistant_timestamp: &mut Option<chrono::DateTime<Utc>>,
+    assistant_line_number: &mut Option<usize>,
+    turn: Option<&KimiWireTurn>,
 ) {
     if assistant_blocks.is_empty() {
         assistant_raw_parts.clear();
+        *assistant_timestamp = None;
+        *assistant_line_number = None;
         return;
     }
     let blocks = std::mem::take(assistant_blocks);
     let raw_parts = std::mem::take(assistant_raw_parts);
-    events.push(kimi_event(
-        format!("kimi:assistant:{}", events.len()),
+    let timestamp = assistant_timestamp
+        .take()
+        .expect("Kimi assistant content has a timestamp");
+    let line_number = assistant_line_number
+        .take()
+        .expect("Kimi assistant content has a line number");
+    events.push(kimi_wire_event(
+        format!("kimi:wire:assistant:{line_number}"),
         kimi_event_kind(&blocks),
         EventRole::Assistant,
         timestamp,
-        turn_index,
+        turn.map(|turn| (turn, None)),
         blocks,
         raw_parts,
     ));
 }
 
-fn kimi_event(
+fn canonical_events_from_context(
+    context_path: &Path,
+    fallback_timestamp: chrono::DateTime<Utc>,
+    report: &mut MappingReport,
+) -> Result<Vec<SessionEvent>> {
+    let file = File::open(context_path).with_context(|| {
+        format!(
+            "Failed to open Kimi context.jsonl: {}",
+            context_path.display()
+        )
+    })?;
+    let mut events = Vec::new();
+    for (line_idx, line) in BufReader::new(file).lines().enumerate() {
+        let line_number = line_idx + 1;
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = match serde_json::from_str(&line) {
+            Ok(value) => value,
+            Err(error) => {
+                report.push_issue(MappingIssue {
+                    level: MappingIssueLevel::Warning,
+                    disposition: MappingDisposition::Dropped,
+                    code: "invalid_context_jsonl_line".to_string(),
+                    message: format!("Failed to parse Kimi context line: {error}"),
+                    path: Some(format!("context.jsonl:line:{line_number}")),
+                    raw: Some(Value::String(line)),
+                });
+                continue;
+            }
+        };
+        events.push(kimi_context_event(
+            value,
+            line_number,
+            fallback_timestamp,
+            report,
+        ));
+    }
+    Ok(events)
+}
+
+fn kimi_context_event(
+    value: Value,
+    line_number: usize,
+    timestamp: chrono::DateTime<Utc>,
+    report: &mut MappingReport,
+) -> SessionEvent {
+    let role = value
+        .get("role")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let (kind, event_role, blocks) = match role.as_deref() {
+        Some("_system_prompt") => (
+            SessionEventKind::Message,
+            EventRole::System,
+            kimi_context_content_blocks(value.get("content"), &value, line_number, report),
+        ),
+        Some("user") => (
+            SessionEventKind::Message,
+            EventRole::User,
+            kimi_context_content_blocks(value.get("content"), &value, line_number, report),
+        ),
+        Some("assistant") => {
+            let blocks =
+                kimi_context_content_blocks(value.get("content"), &value, line_number, report);
+            (kimi_event_kind(&blocks), EventRole::Assistant, blocks)
+        }
+        Some(control @ ("_checkpoint" | "_usage")) => (
+            SessionEventKind::Lifecycle,
+            EventRole::System,
+            vec![EventBlock::ProviderPayload {
+                kind: control.to_string(),
+                payload: value.clone(),
+            }],
+        ),
+        Some(other) => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Info,
+                disposition: MappingDisposition::Preserved,
+                code: "provider_context_role_preserved".to_string(),
+                message: format!("Preserved unsupported Kimi context role '{other}'"),
+                path: Some(format!("context.jsonl:line:{line_number}")),
+                raw: Some(value.clone()),
+            });
+            (
+                SessionEventKind::Unknown,
+                EventRole::Unknown,
+                vec![EventBlock::ProviderPayload {
+                    kind: other.to_string(),
+                    payload: value.clone(),
+                }],
+            )
+        }
+        None => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Warning,
+                disposition: MappingDisposition::Downgraded,
+                code: "context_record_without_role".to_string(),
+                message: "Preserved Kimi context record without a role".to_string(),
+                path: Some(format!("context.jsonl:line:{line_number}")),
+                raw: Some(value.clone()),
+            });
+            (
+                SessionEventKind::Unknown,
+                EventRole::Unknown,
+                vec![EventBlock::Unknown { raw: value.clone() }],
+            )
+        }
+    };
+
+    let mut provider_ext = BTreeMap::new();
+    provider_ext.insert("kimi_context_line".to_string(), value);
+    provider_ext.insert(
+        "kimi_context_line_number".to_string(),
+        Value::from(line_number as u64),
+    );
+    SessionEvent {
+        id: format!("kimi:context:{line_number}"),
+        kind,
+        role: event_role,
+        timestamp,
+        links: EventLinks::default(),
+        blocks,
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id: Some(format!("context.jsonl:{line_number}")),
+                original_role: role,
+                phase: Some("context".to_string()),
+            },
+            model: None,
+            usage: None,
+            fidelity: MappingDisposition::Preserved,
+            provider_ext,
+        },
+    }
+}
+
+fn kimi_context_content_blocks(
+    content: Option<&Value>,
+    raw_line: &Value,
+    line_number: usize,
+    report: &mut MappingReport,
+) -> Vec<EventBlock> {
+    match content {
+        Some(Value::String(text)) => vec![EventBlock::Text { text: text.clone() }],
+        Some(Value::Array(items)) => items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                kimi_context_content_block(item, raw_line, line_number, index, report)
+            })
+            .collect(),
+        Some(value) => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Info,
+                disposition: MappingDisposition::Preserved,
+                code: "provider_context_content_preserved".to_string(),
+                message: "Preserved non-string Kimi context content".to_string(),
+                path: Some(format!("context.jsonl:line:{line_number}:content")),
+                raw: Some(raw_line.clone()),
+            });
+            vec![EventBlock::ProviderPayload {
+                kind: "context_content".to_string(),
+                payload: value.clone(),
+            }]
+        }
+        None => Vec::new(),
+    }
+}
+
+fn kimi_context_content_block(
+    item: &Value,
+    raw_line: &Value,
+    line_number: usize,
+    item_index: usize,
+    report: &mut MappingReport,
+) -> EventBlock {
+    if let Some(text) = item.as_str() {
+        return EventBlock::Text {
+            text: text.to_string(),
+        };
+    }
+    match item.get("type").and_then(Value::as_str) {
+        Some("text") => EventBlock::Text {
+            text: item
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        },
+        Some("think") => EventBlock::Thinking {
+            text: item
+                .get("think")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            signature: item
+                .get("encrypted")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        },
+        Some("image_url") => EventBlock::Image {
+            mime_type: "image/png".to_string(),
+            data: item
+                .get("image_url")
+                .and_then(|image| image.get("url"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            path: None,
+        },
+        Some(kind) => {
+            report.push_issue(MappingIssue {
+                level: MappingIssueLevel::Info,
+                disposition: MappingDisposition::Preserved,
+                code: "provider_context_block_preserved".to_string(),
+                message: format!("Preserved unsupported Kimi context block '{kind}'"),
+                path: Some(format!(
+                    "context.jsonl:line:{line_number}:content:{item_index}"
+                )),
+                raw: Some(raw_line.clone()),
+            });
+            EventBlock::ProviderPayload {
+                kind: kind.to_string(),
+                payload: item.clone(),
+            }
+        }
+        None => EventBlock::Unknown { raw: item.clone() },
+    }
+}
+
+fn reconcile_kimi_context_with_wire(
+    context_events: &mut [SessionEvent],
+    wire_events: &[SessionEvent],
+    report: &mut MappingReport,
+) {
+    let mut used = vec![false; wire_events.len()];
+    let mut cursor = 0usize;
+    for context_event in context_events {
+        let Some(context_text) = canonical_event_visible_message_text(context_event) else {
+            continue;
+        };
+        let Some((wire_index, wire_event)) =
+            wire_events
+                .iter()
+                .enumerate()
+                .skip(cursor)
+                .find(|(_, wire_event)| {
+                    wire_event.role == context_event.role
+                        && canonical_event_visible_message_text(wire_event)
+                            .is_some_and(|wire_text| wire_text.trim() == context_text.trim())
+                })
+        else {
+            continue;
+        };
+        used[wire_index] = true;
+        cursor = wire_index + 1;
+        context_event.timestamp = wire_event.timestamp;
+        context_event.links = wire_event.links.clone();
+        if let Some(raw_lines) = wire_event.metadata.provider_ext.get("kimi_wire_lines") {
+            context_event
+                .metadata
+                .provider_ext
+                .insert("kimi_wire_lines".to_string(), raw_lines.clone());
+        }
+        for block in &wire_event.blocks {
+            if matches!(
+                block,
+                EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
+            ) && !context_event.blocks.iter().any(|existing| {
+                serde_json::to_value(existing).ok() == serde_json::to_value(block).ok()
+            }) {
+                context_event.blocks.push(block.clone());
+            }
+        }
+    }
+
+    for (wire_index, wire_event) in wire_events.iter().enumerate() {
+        if used[wire_index] {
+            continue;
+        }
+        report.push_issue(MappingIssue {
+            level: MappingIssueLevel::Warning,
+            disposition: MappingDisposition::Dropped,
+            code: "wire_content_not_in_context".to_string(),
+            message:
+                "Dropped Kimi wire content that was not present in authoritative context.jsonl"
+                    .to_string(),
+            path: wire_event.metadata.source.original_id.clone(),
+            raw: wire_event
+                .metadata
+                .provider_ext
+                .get("kimi_wire_lines")
+                .cloned(),
+        });
+    }
+}
+
+fn kimi_wire_event(
     id: String,
     kind: SessionEventKind,
     role: EventRole,
     timestamp: chrono::DateTime<Utc>,
-    turn_index: u32,
+    turn: Option<(&KimiWireTurn, Option<TurnBoundary>)>,
     blocks: Vec<EventBlock>,
     raw_parts: Vec<Value>,
 ) -> SessionEvent {
     SessionEvent {
-        id,
+        id: id.clone(),
         kind,
         role,
         timestamp,
         links: EventLinks {
             parent_event_id: None,
             provider_parent_id: None,
-            provider_turn_id: None,
-            turn_index: Some(turn_index),
-            turn_boundary: None,
+            provider_turn_id: turn.map(|(turn, _)| turn.provider_turn_id.clone()),
+            turn_index: turn.map(|(turn, _)| turn.turn_index),
+            turn_boundary: turn.and_then(|(_, boundary)| boundary),
             related_event_ids: Vec::new(),
         },
         blocks,
         metadata: EventMetadata {
             source: EventSource {
                 provider_id: PROVIDER_ID.to_string(),
-                original_id: None,
+                original_id: Some(id),
                 original_role: Some(
                     match role {
                         EventRole::User => "user",
@@ -1067,7 +1522,7 @@ fn kimi_event(
                     }
                     .to_string(),
                 ),
-                phase: None,
+                phase: Some("wire".to_string()),
             },
             model: None,
             usage: None,
@@ -1089,7 +1544,7 @@ fn kimi_user_input_event_blocks(
 ) -> Vec<EventBlock> {
     let Some(inputs) = payload
         .and_then(|payload| payload.get("user_input"))
-        .and_then(|value| value.as_array())
+        .and_then(Value::as_array)
     else {
         return Vec::new();
     };
@@ -1098,11 +1553,11 @@ fn kimi_user_input_event_blocks(
         .iter()
         .enumerate()
         .map(
-            |(idx, item)| match item.get("type").and_then(|value| value.as_str()) {
+            |(idx, item)| match item.get("type").and_then(Value::as_str) {
                 Some("text") => EventBlock::Text {
                     text: item
                         .get("text")
-                        .and_then(|value| value.as_str())
+                        .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string(),
                 },
@@ -1111,7 +1566,7 @@ fn kimi_user_input_event_blocks(
                     data: item
                         .get("image_url")
                         .and_then(|value| value.get("url"))
-                        .and_then(|value| value.as_str())
+                        .and_then(Value::as_str)
                         .map(str::to_string),
                     path: None,
                 },
@@ -1120,8 +1575,8 @@ fn kimi_user_input_event_blocks(
                         level: MappingIssueLevel::Info,
                         disposition: MappingDisposition::Preserved,
                         code: "provider_block_preserved".to_string(),
-                        message: format!("Preserved unsupported Kimi user input '{}'", kind),
-                        path: Some(format!("line:{}:input:{}", line_number, idx)),
+                        message: format!("Preserved unsupported Kimi user input '{kind}'"),
+                        path: Some(format!("wire.jsonl:line:{line_number}:input:{idx}")),
                         raw: Some(raw_line.clone()),
                     });
                     EventBlock::ProviderPayload {
@@ -1142,29 +1597,32 @@ fn kimi_content_part_event_block(
     report: &mut MappingReport,
 ) -> Option<EventBlock> {
     let payload = payload?;
-    match payload.get("type").and_then(|value| value.as_str()) {
+    match payload.get("type").and_then(Value::as_str) {
         Some("text") => Some(EventBlock::Text {
             text: payload
                 .get("text")
-                .and_then(|value| value.as_str())
+                .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
         }),
         Some("think") => Some(EventBlock::Thinking {
             text: payload
                 .get("think")
-                .and_then(|value| value.as_str())
+                .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string(),
-            signature: None,
+            signature: payload
+                .get("encrypted")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         }),
         Some(kind) => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Info,
                 disposition: MappingDisposition::Preserved,
                 code: "provider_block_preserved".to_string(),
-                message: format!("Preserved unsupported Kimi content part '{}'", kind),
-                path: Some(format!("line:{}", line_number)),
+                message: format!("Preserved unsupported Kimi content part '{kind}'"),
+                path: Some(format!("wire.jsonl:line:{line_number}")),
                 raw: Some(raw_line.clone()),
             });
             Some(EventBlock::ProviderPayload {
@@ -1333,6 +1791,13 @@ mod tests {
             .filter(|line| !line.trim().is_empty())
             .map(serde_json::from_str)
             .collect()
+    }
+
+    fn provider_payload_kind(event: &SessionEvent) -> Option<&str> {
+        event.blocks.iter().find_map(|block| match block {
+            EventBlock::ProviderPayload { kind, .. } => Some(kind.as_str()),
+            _ => None,
+        })
     }
 
     fn copy_kimi_audit_fixture(target: &Path) {
@@ -1572,7 +2037,7 @@ mod tests {
     }
 
     #[test]
-    fn kimi_import_accepts_only_directory_locators() {
+    fn kimi_import_accepts_only_directory_locators_and_context_only_sessions() {
         let dir = tempdir().unwrap();
         copy_kimi_audit_fixture(dir.path());
         let sessions_root = dir.path().join("sessions");
@@ -1602,11 +2067,33 @@ mod tests {
         let context_only_dir = sessions_root
             .join("0017cc2b0eee031e9194d1384b4bcdd8")
             .join("22222222-2222-4222-8222-222222222222");
-        assert!(KimiProvider
+        let context_only = KimiProvider
             .import_session(context_only_dir.to_str().unwrap())
-            .unwrap_err()
-            .to_string()
-            .contains("wire.jsonl"));
+            .unwrap();
+        assert_eq!(
+            context_only
+                .session
+                .events
+                .iter()
+                .filter_map(canonical_event_visible_message_text)
+                .collect::<Vec<_>>(),
+            vec!["[sanitized context-only request]".to_string()]
+        );
+        assert!(context_only.session.events.iter().any(|event| {
+            event.role == EventRole::System
+                && matches!(
+                    event.blocks.first(),
+                    Some(EventBlock::Text { text })
+                        if text == "[sanitized context-only system prompt]"
+                )
+        }));
+        assert!(!context_only.session.extensions.contains_key("kimi_state"));
+        assert!(!context_only
+            .session
+            .extensions
+            .contains_key("kimi_wire_metadata"));
+        assert_eq!(context_only.report.overall, MappingDisposition::Preserved);
+        assert!(!context_only_dir.join("wire.jsonl").exists());
     }
 
     #[test]
@@ -2122,7 +2609,7 @@ mod tests {
     }
 
     #[test]
-    fn import_canonical_session_preserves_kimi_wire_events_and_state() -> Result<()> {
+    fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let session_dir = temp.path().join("project-hash").join("kimi-session-1");
         std::fs::create_dir_all(&session_dir)?;
@@ -2131,9 +2618,14 @@ mod tests {
         let state_path = session_dir.join("state.json");
         std::fs::write(
             &context_path,
-            b"{\"role\":\"user\",\"content\":\"Hello\"}\n",
+            concat!(
+                "{\"role\":\"_system_prompt\",\"content\":\"system\"}\n",
+                "{\"role\":\"_checkpoint\",\"id\":0}\n",
+                "{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"},{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,abc\"}}]}\n",
+                "{\"role\":\"_usage\",\"token_count\":42}\n",
+                "{\"role\":\"assistant\",\"content\":[{\"type\":\"think\",\"think\":\"reasoning\",\"encrypted\":null},{\"type\":\"text\",\"text\":\"answer\"},{\"type\":\"custom\",\"payload\":{\"kept\":true}}]}\n"
+            ),
         )?;
-
         std::fs::write(
             &state_path,
             serde_json::to_string_pretty(&serde_json::json!({
@@ -2143,77 +2635,49 @@ mod tests {
             }))?,
         )?;
         let mut wire_file = File::create(&wire_path)?;
-        writeln!(
-            wire_file,
-            "{}",
-            serde_json::json!({
-                "timestamp": 1710000000.0,
-                "message": {
-                    "type": "metadata",
-                    "payload": {"protocol_version": "1.9"}
-                }
-            })
-        )?;
-        writeln!(
-            wire_file,
-            "{}",
+        for value in [
+            serde_json::json!({"type": "metadata", "protocol_version": "1.9"}),
             serde_json::json!({
                 "timestamp": 1710000001.0,
                 "message": {
                     "type": "TurnBegin",
-                    "payload": {
-                        "user_input": [
-                            {"type": "text", "text": "hello"},
-                            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
-                        ]
-                    }
+                    "payload": {"user_input": [
+                        {"type": "text", "text": "hello"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
+                    ]}
                 }
-            })
-        )?;
-        writeln!(
-            wire_file,
-            "{}",
+            }),
             serde_json::json!({
                 "timestamp": 1710000002.0,
-                "message": {
-                    "type": "ContentPart",
-                    "payload": {"type": "think", "think": "reasoning"}
-                }
-            })
-        )?;
-        writeln!(
-            wire_file,
-            "{}",
+                "message": {"type": "StepBegin", "payload": {"n": 1}}
+            }),
             serde_json::json!({
                 "timestamp": 1710000003.0,
-                "message": {
-                    "type": "ContentPart",
-                    "payload": {"type": "text", "text": "answer"}
-                }
-            })
-        )?;
-        writeln!(
-            wire_file,
-            "{}",
+                "message": {"type": "ContentPart", "payload": {"type": "think", "think": "reasoning"}}
+            }),
             serde_json::json!({
                 "timestamp": 1710000004.0,
-                "message": {
-                    "type": "ContentPart",
-                    "payload": {"type": "custom", "payload": {"kept": true}}
-                }
-            })
-        )?;
-        writeln!(
-            wire_file,
-            "{}",
+                "message": {"type": "ContentPart", "payload": {"type": "text", "text": "answer"}}
+            }),
+            serde_json::json!({
+                "timestamp": 1710000004.5,
+                "message": {"type": "ContentPart", "payload": {"type": "custom", "payload": {"kept": true}}}
+            }),
             serde_json::json!({
                 "timestamp": 1710000005.0,
-                "message": {
-                    "type": "TurnEnd",
-                    "payload": {}
-                }
-            })
-        )?;
+                "message": {"type": "StatusUpdate", "payload": {"context_tokens": 42}}
+            }),
+            serde_json::json!({
+                "timestamp": 1710000006.0,
+                "message": {"type": "TurnEnd", "payload": {}}
+            }),
+            serde_json::json!({
+                "timestamp": 1710000007.0,
+                "message": {"type": "FutureRecord", "payload": {"kept": true}}
+            }),
+        ] {
+            writeln!(wire_file, "{value}")?;
+        }
 
         let imported = import_canonical_session_from_dir(&session_dir)?;
 
@@ -2223,45 +2687,219 @@ mod tests {
             Some("Kimi Title")
         );
         assert!(imported.session.extensions.contains_key("kimi_state"));
-        assert!(imported.session.events.iter().any(|event| {
-            event.kind == SessionEventKind::Lifecycle
-                && matches!(
-                    event.blocks.first(),
-                    Some(EventBlock::ProviderPayload { kind, .. }) if kind == "metadata"
-                )
+        assert_eq!(
+            imported.session.extensions["kimi_wire_metadata"][0]["protocol_version"],
+            "1.9"
+        );
+        assert!(!imported.session.events.iter().any(|event| {
+            event.blocks.iter().any(
+                |block| matches!(block, EventBlock::ProviderPayload { kind, .. } if kind == "metadata"),
+            )
         }));
+
+        let visible = imported
+            .session
+            .events
+            .iter()
+            .filter_map(|event| {
+                canonical_event_visible_message_text(event).map(|text| (event.role, text))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            visible,
+            vec![
+                (
+                    EventRole::User,
+                    "hello\n[Image: image/png]\ndata:image/png;base64,abc".to_string()
+                ),
+                (EventRole::Assistant, "reasoning\nanswer".to_string()),
+            ]
+        );
         let user = imported
             .session
             .events
             .iter()
             .find(|event| event.role == EventRole::User)
             .unwrap();
-        assert!(matches!(
-            user.blocks.first(),
-            Some(EventBlock::Text { text }) if text == "hello"
+        assert!(user.blocks.iter().any(
+            |block| matches!(block, EventBlock::Image { data: Some(data), .. } if data == "data:image/png;base64,abc")
         ));
-        assert!(user
-            .blocks
-            .iter()
-            .any(|block| matches!(block, EventBlock::Image { data: Some(data), .. } if data == "data:image/png;base64,abc")));
         let assistant = imported
             .session
             .events
             .iter()
-            .find(|event| event.role == EventRole::Assistant)
+            .find(|event| {
+                event.role == EventRole::Assistant && event.kind == SessionEventKind::Message
+            })
             .unwrap();
         assert!(assistant.blocks.iter().any(
             |block| matches!(block, EventBlock::Thinking { text, .. } if text == "reasoning")
         ));
-        assert!(assistant
-            .blocks
-            .iter()
-            .any(|block| matches!(block, EventBlock::Text { text } if text == "answer")));
         assert!(assistant.blocks.iter().any(
             |block| matches!(block, EventBlock::ProviderPayload { kind, .. } if kind == "custom")
         ));
 
+        let turn_begin = imported
+            .session
+            .events
+            .iter()
+            .find(|event| provider_payload_kind(event) == Some("TurnBegin"))
+            .unwrap();
+        let turn_end = imported
+            .session
+            .events
+            .iter()
+            .find(|event| provider_payload_kind(event) == Some("TurnEnd"))
+            .unwrap();
+        assert_eq!(turn_begin.links.turn_boundary, Some(TurnBoundary::Started));
+        assert_eq!(turn_end.links.turn_boundary, Some(TurnBoundary::Completed));
+        assert_eq!(
+            turn_begin.links.provider_turn_id,
+            turn_end.links.provider_turn_id
+        );
+        assert_eq!(
+            user.links.provider_turn_id,
+            turn_begin.links.provider_turn_id
+        );
+        assert_eq!(
+            assistant.links.provider_turn_id,
+            turn_begin.links.provider_turn_id
+        );
+        for kind in ["StepBegin", "StatusUpdate", "custom", "FutureRecord"] {
+            assert!(imported
+                .session
+                .events
+                .iter()
+                .any(|event| provider_payload_kind(event) == Some(kind)));
+        }
+        assert_eq!(imported.report.overall, MappingDisposition::Preserved);
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "provider_block_preserved"));
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "provider_wire_message_preserved"));
         Ok(())
+    }
+
+    #[test]
+    fn sanitized_kimi_fixture_imports_context_authoritatively_with_native_turns() {
+        let dir = tempdir().unwrap();
+        copy_kimi_audit_fixture(dir.path());
+        let sessions_root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let session_dir = sessions_root
+            .join("2030c6ce97e98c160351b18f097eb584")
+            .join("11111111-1111-4111-8111-111111111111");
+
+        let imported = KimiProvider
+            .import_session(session_dir.to_str().unwrap())
+            .unwrap();
+        let visible = imported
+            .session
+            .events
+            .iter()
+            .filter_map(|event| {
+                canonical_event_visible_message_text(event).map(|text| (event.role, text))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            visible,
+            vec![
+                (EventRole::User, "[sanitized user request]".to_string()),
+                (
+                    EventRole::Assistant,
+                    "[sanitized reasoning]\n[sanitized assistant response]".to_string()
+                ),
+                (EventRole::User, "[sanitized follow-up]".to_string()),
+                (
+                    EventRole::Assistant,
+                    "[sanitized follow-up response]".to_string()
+                ),
+            ]
+        );
+        assert_eq!(
+            imported.session.extensions["kimi_wire_metadata"][0]["protocol_version"],
+            "1.3"
+        );
+        assert!(imported
+            .session
+            .events
+            .iter()
+            .any(|event| provider_payload_kind(event) == Some("StepBegin")));
+        assert!(imported
+            .session
+            .events
+            .iter()
+            .any(|event| provider_payload_kind(event) == Some("StatusUpdate")));
+        let turn_ids = imported
+            .session
+            .events
+            .iter()
+            .filter(|event| matches!(event.role, EventRole::User | EventRole::Assistant))
+            .filter_map(|event| event.links.provider_turn_id.as_deref())
+            .collect::<Vec<_>>();
+        assert_eq!(turn_ids.len(), 4);
+        assert_eq!(turn_ids[0], turn_ids[1]);
+        assert_eq!(turn_ids[2], turn_ids[3]);
+        assert_ne!(turn_ids[0], turn_ids[2]);
+        assert_eq!(imported.report.overall, MappingDisposition::Preserved);
+        assert!(imported.report.issues.is_empty());
+    }
+
+    #[test]
+    fn malformed_wire_line_is_reported_without_losing_context_messages() {
+        let dir = tempdir().unwrap();
+        copy_kimi_audit_fixture(dir.path());
+        let sessions_root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let session_dir = sessions_root
+            .join("2030c6ce97e98c160351b18f097eb584")
+            .join("11111111-1111-4111-8111-111111111111");
+        std::fs::copy(
+            dir.path().join("variants/wire.malformed.jsonl"),
+            session_dir.join("wire.jsonl"),
+        )
+        .unwrap();
+
+        let imported = KimiProvider
+            .import_session(session_dir.to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            imported
+                .session
+                .events
+                .iter()
+                .filter_map(canonical_event_visible_message_text)
+                .collect::<Vec<_>>(),
+            vec![
+                "[sanitized user request]".to_string(),
+                "[sanitized reasoning]\n[sanitized assistant response]".to_string(),
+                "[sanitized follow-up]".to_string(),
+                "[sanitized follow-up response]".to_string(),
+            ]
+        );
+        assert!(imported
+            .report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid_wire_jsonl_line"
+                && issue.disposition == MappingDisposition::Dropped));
+        assert!(imported
+            .session
+            .events
+            .iter()
+            .any(|event| provider_payload_kind(event) == Some("TurnBegin")));
+        assert!(imported
+            .session
+            .events
+            .iter()
+            .any(|event| provider_payload_kind(event) == Some("TurnEnd")));
+        assert_eq!(imported.report.overall, MappingDisposition::Dropped);
     }
 
     #[test]
