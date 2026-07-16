@@ -10,9 +10,11 @@ use crate::canonical::{
 use crate::provider::{
     canonical_event_is_visible_message, canonical_event_visible_message_role,
     canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
-    canonical_visible_block_text, PageStrategy, Provider, ProviderBackupSupport,
-    ProviderCapabilities, ProviderSessionBackup, ProviderSessionImportPage, ProviderSessionSummary,
-    ProviderSourceFingerprint, ProviderSourceMutation, StorageShape, TurnQuality,
+    canonical_visible_block_text, PageStrategy, Provider, ProviderActivitySupport,
+    ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup,
+    ProviderSessionImportPage, ProviderSessionSummary, ProviderSourceFingerprint,
+    ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
+    TurnQuality, WriteRiskLevel,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -51,13 +53,49 @@ impl Provider for KimiProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
+            scan_strategy: ScanStrategy::Hybrid,
             page_strategy: PageStrategy::FullImport,
             storage_shape: StorageShape::Directory,
             turn_quality: TurnQuality::Inferred,
+            import_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Downgraded),
+                tool_result: Some(MappingDisposition::Downgraded),
+                patch: Some(MappingDisposition::Unsupported),
+                image: Some(MappingDisposition::Normalized),
+                file: Some(MappingDisposition::Downgraded),
+                compressed: Some(MappingDisposition::Unsupported),
+                provider_payload: Some(MappingDisposition::Preserved),
+            },
+            export_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Downgraded),
+                tool_result: Some(MappingDisposition::Downgraded),
+                patch: Some(MappingDisposition::Downgraded),
+                image: Some(MappingDisposition::Downgraded),
+                file: Some(MappingDisposition::Downgraded),
+                compressed: Some(MappingDisposition::Downgraded),
+                provider_payload: Some(MappingDisposition::Dropped),
+            },
+            resume_quality: ResumeQuality::Native,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::Medium,
+                multiple_files: true,
+                sqlite: false,
+                sidecar_files: true,
+                index_repair: false,
+            },
             backup_support: ProviderBackupSupport {
                 before_write: true,
                 restore: true,
                 sync_only: false,
+            },
+            activity_support: ProviderActivitySupport {
+                hook_events: true,
+                runtime_endpoint: true,
+                session_activity: true,
             },
             ..ProviderCapabilities::full_session_management()
         }
@@ -229,7 +267,7 @@ impl Provider for KimiProvider {
     }
 
     fn resume_command(&self, session_id: &str) -> Option<String> {
-        Some(format!("kimi resume {}", session_id))
+        Some(format!("kimi --resume {}", session_id))
     }
 
     fn session_size(&self, session_id: &str) -> Result<u64> {
@@ -581,22 +619,71 @@ fn kimi_session_source_fingerprint(
     }))
 }
 
-fn write_kimi_state_atomically(state_path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = state_path
-        .parent()
-        .context("Kimi state.json has no parent directory")?;
-    let temporary_path = parent.join(format!(".state.json.memorph-{}.tmp", Uuid::new_v4()));
+fn write_kimi_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path.parent().context("Kimi file has no parent directory")?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("Kimi file name is not valid UTF-8")?;
+    let temporary_path = parent.join(format!(".{file_name}.memorph-{}.tmp", Uuid::new_v4()));
     let write_result = (|| -> Result<()> {
         let mut file = File::create(&temporary_path)?;
         file.write_all(bytes)?;
         file.sync_all()?;
-        std::fs::rename(&temporary_path, state_path)?;
+        std::fs::rename(&temporary_path, path)?;
         Ok(())
     })();
     if write_result.is_err() {
         let _ = std::fs::remove_file(&temporary_path);
     }
     write_result
+}
+
+fn write_kimi_state_atomically(state_path: &Path, bytes: &[u8]) -> Result<()> {
+    write_kimi_file_atomically(state_path, bytes)
+}
+
+fn register_exported_kimi_session(target_dir: &Path, session_id: &str) -> Result<()> {
+    let metadata_path = get_kimi_json_path();
+    let mut metadata = if metadata_path.exists() {
+        let raw = std::fs::read_to_string(&metadata_path)
+            .with_context(|| format!("Failed to read kimi.json: {}", metadata_path.display()))?;
+        serde_json::from_str::<Value>(&raw)
+            .with_context(|| format!("Failed to parse kimi.json: {}", metadata_path.display()))?
+    } else {
+        serde_json::json!({})
+    };
+    let metadata_object = metadata
+        .as_object_mut()
+        .context("Kimi kimi.json root must be an object")?;
+    let work_dirs = metadata_object
+        .entry("work_dirs")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()
+        .context("Kimi kimi.json work_dirs must be an array")?;
+    let target_path = target_dir.to_string_lossy().to_string();
+    let existing = work_dirs.iter_mut().find(|entry| {
+        entry.get("path").and_then(Value::as_str) == Some(target_path.as_str())
+            && entry.get("kaos").and_then(Value::as_str).unwrap_or("local") == "local"
+    });
+    if let Some(entry) = existing {
+        let entry_object = entry
+            .as_object_mut()
+            .context("Kimi kimi.json work-dir entry must be an object")?;
+        entry_object.insert(
+            "last_session_id".to_string(),
+            Value::String(session_id.to_string()),
+        );
+    } else {
+        work_dirs.push(serde_json::json!({
+            "path": target_path,
+            "kaos": "local",
+            "last_session_id": session_id
+        }));
+    }
+    let updated = serde_json::to_vec_pretty(&metadata)?;
+    write_kimi_file_atomically(&metadata_path, &updated)
+        .with_context(|| format!("Failed to update kimi.json: {}", metadata_path.display()))
 }
 
 #[cfg(test)]
@@ -660,30 +747,33 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
         let ts = event.timestamp.timestamp_millis() as f64 / 1000.0;
         match visible_role {
             EventRole::Assistant => {
-                let Some(text) = canonical_event_visible_message_text(event) else {
+                let content_parts = event
+                    .blocks
+                    .iter()
+                    .filter_map(canonical_block_to_kimi_content_part)
+                    .collect::<Vec<_>>();
+                if content_parts.is_empty() {
                     continue;
-                };
-                for block in &event.blocks {
-                    if let Some(payload) = canonical_block_to_kimi_content_part(block) {
-                        writeln!(
-                            wire_file,
-                            "{}",
-                            serde_json::json!({
-                                "timestamp": ts,
-                                "message": {
-                                    "type": "ContentPart",
-                                    "payload": payload
-                                }
-                            })
-                        )?;
-                    }
+                }
+                for payload in &content_parts {
+                    writeln!(
+                        wire_file,
+                        "{}",
+                        serde_json::json!({
+                            "timestamp": ts,
+                            "message": {
+                                "type": "ContentPart",
+                                "payload": payload
+                            }
+                        })
+                    )?;
                 }
                 writeln!(
                     context_file,
                     "{}",
                     serde_json::json!({
                         "role": "assistant",
-                        "content": text
+                        "content": content_parts
                     })
                 )?;
             }
@@ -779,7 +869,14 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     });
     let mut state_file = File::create(&state_path)?;
     write!(state_file, "{}", serde_json::to_string_pretty(&state)?)?;
+    wire_file.sync_all()?;
+    context_file.sync_all()?;
+    state_file.sync_all()?;
 
+    if let Err(error) = register_exported_kimi_session(target_dir, &session_id) {
+        let _ = std::fs::remove_dir_all(&session_dir);
+        return Err(error);
+    }
     Ok(session_id)
 }
 
@@ -1738,7 +1835,14 @@ fn parse_wire_timestamp(value: &Value) -> Option<chrono::DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{core::session_management, storage::local_store};
+    use crate::{
+        core::session_management,
+        storage::{
+            activity_store::{ActivityActor, ActivityOperationKind, ActivityQuery, ActivityStatus},
+            artifact_store::{ArtifactVerificationStatus, BackupQuery, BackupRestoreStatus},
+            local_store,
+        },
+    };
     use std::collections::{BTreeMap, BTreeSet};
     use tempfile::tempdir;
 
@@ -1787,6 +1891,7 @@ mod tests {
         let project_dir = format!("/workspace/{project}");
         let project_key = md5_hex(project_dir.as_bytes());
         let metadata_path = root.parent().unwrap().join("kimi.json");
+        std::fs::create_dir_all(metadata_path.parent().unwrap()).unwrap();
         let mut metadata = if metadata_path.exists() {
             serde_json::from_slice::<Value>(&std::fs::read(&metadata_path).unwrap()).unwrap()
         } else {
@@ -2472,9 +2577,60 @@ mod tests {
             .unwrap();
 
         let capabilities = KimiProvider.capabilities();
+        assert_eq!(capabilities.scan_strategy, ScanStrategy::Hybrid);
+        assert_eq!(capabilities.page_strategy, PageStrategy::FullImport);
+        assert_eq!(capabilities.storage_shape, StorageShape::Directory);
+        assert_eq!(capabilities.turn_quality, TurnQuality::Inferred);
+        assert_eq!(
+            capabilities.import_fidelity,
+            ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Downgraded),
+                tool_result: Some(MappingDisposition::Downgraded),
+                patch: Some(MappingDisposition::Unsupported),
+                image: Some(MappingDisposition::Normalized),
+                file: Some(MappingDisposition::Downgraded),
+                compressed: Some(MappingDisposition::Unsupported),
+                provider_payload: Some(MappingDisposition::Preserved),
+            }
+        );
+        assert_eq!(
+            capabilities.export_fidelity,
+            ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Downgraded),
+                tool_result: Some(MappingDisposition::Downgraded),
+                patch: Some(MappingDisposition::Downgraded),
+                image: Some(MappingDisposition::Downgraded),
+                file: Some(MappingDisposition::Downgraded),
+                compressed: Some(MappingDisposition::Downgraded),
+                provider_payload: Some(MappingDisposition::Dropped),
+            }
+        );
+        assert_eq!(capabilities.resume_quality, ResumeQuality::Native);
+        assert_eq!(
+            capabilities.write_risk,
+            ProviderWriteRisk {
+                level: WriteRiskLevel::Medium,
+                multiple_files: true,
+                sqlite: false,
+                sidecar_files: true,
+                index_repair: false,
+            }
+        );
         assert!(capabilities.backup_support.before_write);
         assert!(capabilities.backup_support.restore);
         assert!(!capabilities.backup_support.sync_only);
+        assert_eq!(
+            capabilities.activity_support,
+            ProviderActivitySupport {
+                hook_events: true,
+                runtime_endpoint: true,
+                session_activity: true,
+            }
+        );
         assert_eq!(backup.source_path, session_dir.canonicalize().unwrap());
         assert_eq!(backup.format, "kimi-session-backup-v1");
         assert_eq!(
@@ -2487,6 +2643,151 @@ mod tests {
             .backup_path
             .join("session/nested/native.bin")
             .is_file());
+    }
+
+    #[test]
+    fn native_export_is_discoverable_resumable_and_round_trips_declared_fidelity() {
+        let dir = tempdir().unwrap();
+        let sessions_root = dir.path().join("provider-home/sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let source_dir = dir.path().join("source/source-session");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(
+            source_dir.join("context.jsonl"),
+            concat!(
+                "{\"role\":\"user\",\"content\":\"hello\"}\n",
+                "{\"role\":\"assistant\",\"content\":[{\"type\":\"think\",\"think\":\"reasoning\",\"encrypted\":null},{\"type\":\"text\",\"text\":\"answer\"}]}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            source_dir.join("state.json"),
+            br#"{"version":1,"custom_title":"Exported Kimi"}"#,
+        )
+        .unwrap();
+        let canonical = KimiProvider
+            .import_session(source_dir.to_str().unwrap())
+            .unwrap()
+            .session;
+        let target_dir = dir.path().join("workspace");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let metadata_path = sessions_root.parent().unwrap().join("kimi.json");
+        std::fs::create_dir_all(metadata_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "future_top_level": {"keep": true},
+                "work_dirs": [{
+                    "path": "/sanitized/existing",
+                    "kaos": "local",
+                    "last_session_id": "existing-session",
+                    "future_entry": 7
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let exported = KimiProvider
+            .export_session(&canonical, &target_dir)
+            .unwrap();
+        assert_eq!(
+            exported.resume_command.as_deref(),
+            Some(format!("kimi --resume {}", exported.session_id).as_str())
+        );
+        let project_hash = md5_hex(target_dir.to_string_lossy().as_bytes());
+        let session_dir = sessions_root.join(project_hash).join(&exported.session_id);
+        assert!(session_dir.join("wire.jsonl").is_file());
+        assert!(session_dir.join("context.jsonl").is_file());
+        assert!(session_dir.join("state.json").is_file());
+
+        let metadata: Value =
+            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+        assert_eq!(metadata["future_top_level"]["keep"], true);
+        assert_eq!(metadata["work_dirs"][0]["future_entry"], 7);
+        let target_entries = metadata["work_dirs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["path"] == target_dir.to_string_lossy().as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(target_entries.len(), 1);
+        assert_eq!(target_entries[0]["kaos"], "local");
+        assert_eq!(target_entries[0]["last_session_id"], exported.session_id);
+
+        let scanned = KimiProvider.scan_sessions().unwrap();
+        let summary = scanned
+            .iter()
+            .find(|summary| summary.session_id == exported.session_id)
+            .expect("exported Kimi session should be discoverable");
+        assert_eq!(
+            summary.source_path.as_deref(),
+            Some(session_dir.to_string_lossy().as_ref())
+        );
+        let imported = KimiProvider
+            .import_session(summary.source_path.as_deref().unwrap())
+            .unwrap();
+        let assistant = imported
+            .session
+            .events
+            .iter()
+            .find(|event| event.role == EventRole::Assistant)
+            .unwrap();
+        assert!(assistant.blocks.iter().any(
+            |block| matches!(block, EventBlock::Thinking { text, .. } if text == "reasoning")
+        ));
+        assert!(assistant
+            .blocks
+            .iter()
+            .any(|block| matches!(block, EventBlock::Text { text } if text == "answer")));
+
+        let second = KimiProvider
+            .export_session(&canonical, &target_dir)
+            .unwrap();
+        let metadata: Value =
+            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+        let target_entries = metadata["work_dirs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry["path"] == target_dir.to_string_lossy().as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(target_entries.len(), 1);
+        assert_eq!(target_entries[0]["last_session_id"], second.session_id);
+        assert_eq!(target_entries[0]["kaos"], "local");
+    }
+
+    #[test]
+    fn failed_metadata_registration_removes_new_kimi_session_directory() {
+        let dir = tempdir().unwrap();
+        let sessions_root = dir.path().join("provider-home/sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let source_dir = dir.path().join("source/source-session");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        std::fs::write(
+            source_dir.join("context.jsonl"),
+            b"{\"role\":\"user\",\"content\":\"hello\"}\n",
+        )
+        .unwrap();
+        let canonical = KimiProvider
+            .import_session(source_dir.to_str().unwrap())
+            .unwrap()
+            .session;
+        let target_dir = dir.path().join("workspace");
+        std::fs::create_dir_all(&target_dir).unwrap();
+        let metadata_path = sessions_root.parent().unwrap().join("kimi.json");
+        std::fs::create_dir_all(metadata_path.parent().unwrap()).unwrap();
+        std::fs::write(&metadata_path, br#"{"work_dirs":{}}"#).unwrap();
+
+        let error = KimiProvider
+            .export_session(&canonical, &target_dir)
+            .unwrap_err();
+        assert!(error.to_string().contains("work_dirs must be an array"));
+        let project_dir = sessions_root.join(md5_hex(target_dir.to_string_lossy().as_bytes()));
+        assert!(
+            !project_dir.exists() || std::fs::read_dir(project_dir).unwrap().next().is_none(),
+            "failed export must not leave an orphan Kimi session directory"
+        );
     }
 
     #[test]
@@ -3555,6 +3856,143 @@ mod tests {
             .iter()
             .any(|event| provider_payload_kind(event) == Some("TurnEnd")));
         assert_eq!(imported.report.overall, MappingDisposition::Dropped);
+    }
+
+    #[test]
+    fn core_kimi_mutations_register_backups_restore_failures_and_finish_activity() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        let sessions_root = dir.path().join("provider-home/sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let _home_guard = TestConfigHomeGuard::new(&home);
+        let session_id = "kimi-core-management";
+        let session_dir = write_native_kimi_fixture(&sessions_root, "core-management", session_id);
+
+        let renamed = crate::core::rename_session(
+            PROVIDER_ID,
+            session_id,
+            "Renamed through core",
+            ActivityActor::Cli,
+        )
+        .unwrap();
+        assert!(renamed.native_updated);
+        let state: Value =
+            serde_json::from_slice(&std::fs::read(session_dir.join("state.json")).unwrap())
+                .unwrap();
+        assert_eq!(state["custom_title"], "Renamed through core");
+
+        let rename_activity = crate::core::list_management_activity(&ActivityQuery {
+            session_id: Some(session_id.to_string()),
+            provider_id: Some(PROVIDER_ID.to_string()),
+            operation_kind: Some(ActivityOperationKind::Rename),
+            ..ActivityQuery::default()
+        })
+        .unwrap();
+        assert_eq!(rename_activity.len(), 1);
+        assert_eq!(rename_activity[0].status, ActivityStatus::Success);
+        assert!(rename_activity[0].finished_at_ms.is_some());
+
+        let before_failed_delete = session_tree_bytes(&session_dir);
+        set_test_kimi_mutation_failure(Some(ProviderSourceMutation::Delete));
+        let error =
+            crate::core::delete_session(PROVIDER_ID, session_id, ActivityActor::Cli).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Provider source was restored from registered backup")
+        );
+        assert_eq!(session_tree_bytes(&session_dir), before_failed_delete);
+
+        let delete_activity = crate::core::list_management_activity(&ActivityQuery {
+            session_id: Some(session_id.to_string()),
+            provider_id: Some(PROVIDER_ID.to_string()),
+            operation_kind: Some(ActivityOperationKind::Delete),
+            ..ActivityQuery::default()
+        })
+        .unwrap();
+        assert_eq!(delete_activity.len(), 1);
+        assert_eq!(delete_activity[0].status, ActivityStatus::Failed);
+        assert!(delete_activity[0].finished_at_ms.is_some());
+        assert!(delete_activity[0].error.is_some());
+
+        let backups = session_management::list_registered_backups(BackupQuery {
+            provider_id: Some(PROVIDER_ID.to_string()),
+            provider_session_id: Some(session_id.to_string()),
+            ..BackupQuery::default()
+        })
+        .unwrap();
+        assert_eq!(backups.len(), 2);
+        assert!(backups
+            .iter()
+            .all(|backup| backup.verification.status == ArtifactVerificationStatus::Verified));
+        let delete_backup = backups
+            .iter()
+            .find(|backup| backup.entry.backup.metadata["mutation"] == "delete")
+            .expect("delete backup should be registered");
+        let restore = session_management::restore_registered_backup(
+            &delete_backup.entry.backup.id,
+            ActivityActor::Cli,
+        )
+        .unwrap();
+        assert_eq!(restore.status, BackupRestoreStatus::Success);
+        assert!(restore.finished_at_ms.is_some());
+        let repeated = session_management::restore_registered_backup(
+            &delete_backup.entry.backup.id,
+            ActivityActor::Cli,
+        )
+        .unwrap();
+        assert_eq!(repeated.status, BackupRestoreStatus::Success);
+        assert_eq!(session_tree_bytes(&session_dir), before_failed_delete);
+
+        let activities = crate::core::list_management_activity(&ActivityQuery {
+            session_id: Some(session_id.to_string()),
+            provider_id: Some(PROVIDER_ID.to_string()),
+            ..ActivityQuery::default()
+        })
+        .unwrap();
+        assert_eq!(activities.len(), 2);
+        assert!(activities
+            .iter()
+            .all(|activity| activity.status != ActivityStatus::Running
+                && activity.finished_at_ms.is_some()));
+    }
+
+    #[test]
+    fn kimi_session_activity_is_computed_from_the_live_source() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        let sessions_root = dir.path().join("provider-home/sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let _home_guard = TestConfigHomeGuard::new(&home);
+        let session_id = "kimi-source-activity";
+        let session_dir = write_native_kimi_fixture(&sessions_root, "source-activity", session_id);
+
+        let bootstrap =
+            crate::core::bootstrap_session_projections(Some(PROVIDER_ID), ActivityActor::System)
+                .unwrap();
+        assert_eq!(bootstrap.projected_sessions, 1);
+        let timeline =
+            crate::core::compute_session_activity_timeline(PROVIDER_ID, session_id).unwrap();
+        assert_eq!(timeline.provider_id, PROVIDER_ID);
+        assert_eq!(timeline.session_id, session_id);
+        assert!(timeline.total_events > 0);
+        assert!(timeline.total_messages > 0);
+        assert_eq!(
+            timeline.total_events,
+            timeline
+                .buckets
+                .iter()
+                .map(|bucket| bucket.event_count)
+                .sum::<usize>()
+        );
+
+        std::fs::remove_dir_all(&session_dir).unwrap();
+        let error =
+            crate::core::compute_session_activity_timeline(PROVIDER_ID, session_id).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Session source is missing")
+                || message.contains("Failed to read Kimi session directory"),
+            "unexpected missing-source error: {message}"
+        );
     }
 
     #[test]
