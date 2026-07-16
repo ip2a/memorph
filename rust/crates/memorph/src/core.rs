@@ -713,7 +713,6 @@ fn reprojection_failure(
 }
 
 fn list_projected_session_snapshots(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
-    let conn = crate::storage::local_store::open_database()?;
     let provider_ids = resolve_providers(&params.providers);
     let workspace_scopes = if params.all {
         None
@@ -727,6 +726,8 @@ fn list_projected_session_snapshots(params: &SessionListParams) -> Result<Vec<Se
             .collect();
         Some(scopes)
     };
+
+    let conn = crate::storage::local_store::open_database()?;
     let snapshots = crate::storage::snapshot_store::SnapshotStore::new(&conn)
         .list_session_snapshots_filtered(
             Some(&provider_ids),

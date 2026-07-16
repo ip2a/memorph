@@ -29,8 +29,40 @@ pub fn build_api_router() -> Router {
     api::router().layer(cors)
 }
 
+/// Background sync interval. The loop runs an incremental projection pass
+/// every 60 seconds. Each pass is cheap when nothing has changed: it scans
+/// provider session directories (stat calls) and skips already-indexed
+/// sessions by fingerprint comparison. New or modified sessions are written
+/// to SQLite.
+const BACKGROUND_SYNC_INTERVAL_SECS: u64 = 60;
+
+/// Spawn a long-running background thread that continuously synchronizes
+/// provider sessions into SQLite. The first pass runs immediately so data
+/// appears within seconds of server start; subsequent passes pick up new
+/// or modified sessions incrementally. The request path is never blocked.
+fn spawn_background_sync_loop() {
+    std::thread::Builder::new()
+        .name("memorph-background-sync".to_string())
+        .spawn(|| loop {
+            if let Err(error) = crate::core::bootstrap_session_projections(
+                None,
+                crate::storage::activity_store::ActivityActor::System,
+            ) {
+                crate::logging::error(
+                    "background_sync",
+                    &format!("Background sync pass failed: {error:#}"),
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_secs(
+                BACKGROUND_SYNC_INTERVAL_SECS,
+            ));
+        })
+        .ok();
+}
+
 pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
     crate::cache::init_watcher();
+    spawn_background_sync_loop();
 
     let app = build_router();
     let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
@@ -52,6 +84,7 @@ pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
 
 pub async fn run_api(port: u16, allow_fallback: bool) -> Result<()> {
     crate::cache::init_watcher();
+    spawn_background_sync_loop();
 
     let app = build_api_router();
     let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
