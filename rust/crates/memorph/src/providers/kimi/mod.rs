@@ -8,10 +8,11 @@ use crate::canonical::{
     SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary,
 };
 use crate::provider::{
-    canonical_event_visible_message_role, canonical_event_visible_message_text,
-    canonical_export_result, canonical_session_title, canonical_visible_block_text, Provider,
-    ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary,
-    ProviderSourceFingerprint, ProviderSourceMutation,
+    canonical_event_is_visible_message, canonical_event_visible_message_role,
+    canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
+    canonical_visible_block_text, PageStrategy, Provider, ProviderBackupSupport,
+    ProviderCapabilities, ProviderSessionBackup, ProviderSessionImportPage, ProviderSessionSummary,
+    ProviderSourceFingerprint, ProviderSourceMutation, StorageShape, TurnQuality,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -50,6 +51,9 @@ impl Provider for KimiProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
+            page_strategy: PageStrategy::FullImport,
+            storage_shape: StorageShape::Directory,
+            turn_quality: TurnQuality::Inferred,
             backup_support: ProviderBackupSupport {
                 before_write: true,
                 restore: true,
@@ -148,6 +152,15 @@ impl Provider for KimiProvider {
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         import_canonical_session_from_dir(Path::new(source_path))
+    }
+
+    fn import_session_page(
+        &self,
+        source_path: &str,
+        event_offset: usize,
+        event_limit: Option<usize>,
+    ) -> Result<ProviderSessionImportPage> {
+        import_kimi_session_page(Path::new(source_path), event_offset, event_limit)
     }
 
     fn session_source_fingerprint(
@@ -788,6 +801,44 @@ fn canonical_block_to_kimi_content_part(block: &EventBlock) -> Option<Value> {
             })
         }),
     }
+}
+
+fn import_kimi_session_page(
+    session_dir: &Path,
+    event_offset: usize,
+    event_limit: Option<usize>,
+) -> Result<ProviderSessionImportPage> {
+    let mut imported = import_canonical_session_from_dir(session_dir)?;
+    let event_count = imported.session.events.len();
+    let message_count = imported
+        .session
+        .events
+        .iter()
+        .filter(|event| canonical_event_is_visible_message(event))
+        .count();
+    let offset = event_offset.min(event_count);
+    imported.session.events = match event_limit {
+        Some(limit) => imported
+            .session
+            .events
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect(),
+        None => imported.session.events.into_iter().skip(offset).collect(),
+    };
+    let turns = crate::session_projection::project_session_turns(
+        &imported.session.identity.canonical_id,
+        &imported.session.events,
+        TurnQuality::Inferred,
+    );
+
+    Ok(ProviderSessionImportPage {
+        imported,
+        event_count,
+        message_count,
+        turns,
+    })
 }
 
 fn import_canonical_session_from_dir(session_dir: &Path) -> Result<ImportedSession> {
@@ -2606,6 +2657,90 @@ mod tests {
             .path()
             .join("backups/kimi/operation-kimi-backup-failure")
             .exists());
+    }
+
+    #[test]
+    fn kimi_full_import_pages_keep_total_counts_and_project_only_page_turns() {
+        let dir = tempdir().unwrap();
+        copy_kimi_audit_fixture(dir.path());
+        let sessions_root = dir.path().join("sessions");
+        let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let session_dir = sessions_root
+            .join("2030c6ce97e98c160351b18f097eb584")
+            .join("11111111-1111-4111-8111-111111111111");
+        let source_path = session_dir.to_str().unwrap();
+
+        let capabilities = KimiProvider.capabilities();
+        assert_eq!(capabilities.page_strategy, PageStrategy::FullImport);
+        assert_eq!(capabilities.storage_shape, StorageShape::Directory);
+        assert_eq!(capabilities.turn_quality, TurnQuality::Inferred);
+
+        let full = KimiProvider
+            .import_session_page(source_path, 0, None)
+            .unwrap();
+        assert_eq!(full.imported.session.events.len(), full.event_count);
+        assert_eq!(
+            full.message_count,
+            full.imported
+                .session
+                .events
+                .iter()
+                .filter(|event| canonical_event_is_visible_message(event))
+                .count()
+        );
+        assert_eq!(full.turns.len(), 2);
+
+        let assistant_index = full
+            .imported
+            .session
+            .events
+            .iter()
+            .position(|event| {
+                event.role == EventRole::Assistant && event.links.provider_turn_id.is_some()
+            })
+            .unwrap();
+        let expected_turn_id = full.imported.session.events[assistant_index]
+            .links
+            .provider_turn_id
+            .clone()
+            .unwrap();
+        let page = KimiProvider
+            .import_session_page(source_path, assistant_index, Some(1))
+            .unwrap();
+
+        assert_eq!(page.imported.session.events.len(), 1);
+        assert_eq!(page.event_count, full.event_count);
+        assert_eq!(page.message_count, full.message_count);
+        assert_eq!(page.turns.len(), 1);
+        assert_eq!(
+            page.turns[0].provider_turn_id.as_deref(),
+            Some(expected_turn_id.as_str())
+        );
+        assert_eq!(
+            page.turns[0].confidence,
+            crate::session_projection::TurnConfidence::Exact
+        );
+
+        let empty = KimiProvider
+            .import_session_page(source_path, full.event_count, Some(0))
+            .unwrap();
+        assert!(empty.imported.session.events.is_empty());
+        assert!(empty.turns.is_empty());
+        assert_eq!(empty.event_count, full.event_count);
+        assert_eq!(empty.message_count, full.message_count);
+
+        let context_only_dir = sessions_root
+            .join("0017cc2b0eee031e9194d1384b4bcdd8")
+            .join("22222222-2222-4222-8222-222222222222");
+        let context_only = KimiProvider
+            .import_session_page(context_only_dir.to_str().unwrap(), 0, None)
+            .unwrap();
+        assert_eq!(context_only.turns.len(), 1);
+        assert_eq!(context_only.turns[0].provider_turn_id, None);
+        assert_eq!(
+            context_only.turns[0].confidence,
+            crate::session_projection::TurnConfidence::Inferred
+        );
     }
 
     #[test]
