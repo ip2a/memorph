@@ -2938,6 +2938,332 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_stale_and_system_sync_are_incremental_source_backed_and_bodyless() {
+        let dir = tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let _home_guard = TestConfigHomeGuard::new(&home);
+        let sessions_root = dir.path().join("sessions");
+        let _kimi_guard = use_test_kimi_sessions_dir(sessions_root.clone());
+        let session_id = "44444444-4444-4444-8444-444444444444";
+        let project = "project-bootstrap";
+        let project_dir = format!("/workspace/{project}");
+        let session_dir = write_native_kimi_fixture(&sessions_root, project, session_id);
+
+        let first = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )
+        .unwrap();
+        assert_eq!(first.scanned_providers, 1);
+        assert_eq!(first.discovered_sessions, 1);
+        assert_eq!(first.projected_sessions, 1);
+        assert_eq!(first.unchanged_sessions, 0);
+        assert!(first.failures.is_empty());
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0)).unwrap();
+        assert!(detail.events.is_empty());
+        assert!(detail.turns.is_empty());
+
+        let conn = local_store::open_database().unwrap();
+        let initial: (String, String, i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT ss.title, ss.workspace_dir, ss.counts_complete, ss.stale,
+                        src.scan_generation,
+                        (SELECT COUNT(*) FROM sqlite_master
+                         WHERE type = 'table'
+                           AND name IN ('session_turns', 'session_events', 'session_event_blocks'))
+                 FROM session_snapshots ss
+                 JOIN sessions s ON s.id = ss.session_id
+                 JOIN session_sources src ON src.id = s.primary_source_id
+                 WHERE ss.provider_id = 'kimi'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let initial_fingerprint: String = conn
+            .query_row(
+                "SELECT source_cursor FROM session_sources WHERE provider_id = 'kimi'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(initial.0, "Before");
+        assert_eq!(initial.1, project_dir);
+        assert_eq!(initial.2, 1);
+        assert_eq!(initial.3, 0);
+        assert_eq!(initial.4, 1);
+        assert_eq!(initial.5, 0);
+        drop(conn);
+
+        let unchanged = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )
+        .unwrap();
+        assert_eq!(unchanged.scanned_providers, 1);
+        assert_eq!(unchanged.discovered_sessions, 1);
+        assert_eq!(unchanged.projected_sessions, 0);
+        assert_eq!(unchanged.unchanged_sessions, 1);
+        assert!(unchanged.failures.is_empty());
+
+        let conn = local_store::open_database().unwrap();
+        let unchanged_state: (i64, i64) = conn
+            .query_row(
+                "SELECT src.scan_generation, ss.counts_complete
+                 FROM session_snapshots ss
+                 JOIN sessions s ON s.id = ss.session_id
+                 JOIN session_sources src ON src.id = s.primary_source_id
+                 WHERE ss.provider_id = 'kimi'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(unchanged_state, (1, 1));
+        drop(conn);
+
+        let mut context = std::fs::OpenOptions::new()
+            .append(true)
+            .open(session_dir.join("context.jsonl"))
+            .unwrap();
+        writeln!(
+            context,
+            "{}",
+            serde_json::json!({"role": "assistant", "content": "background refresh"})
+        )
+        .unwrap();
+        drop(context);
+
+        let stale = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::System,
+        )
+        .unwrap();
+        assert_eq!(stale.checked_sources, 1);
+        assert_eq!(stale.fresh_snapshots, 0);
+        assert_eq!(stale.stale_snapshots, 1);
+        assert_eq!(stale.missing_sources, 0);
+
+        let conn = local_store::open_database().unwrap();
+        let stale_flag: i64 = conn
+            .query_row(
+                "SELECT stale FROM session_snapshots WHERE provider_id = 'kimi'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale_flag, 1);
+        drop(conn);
+
+        let reprojected = crate::core::reproject_stale_sessions(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )
+        .unwrap();
+        assert_eq!(reprojected.candidate_snapshots, 1);
+        assert_eq!(reprojected.reprojected_snapshots, 1);
+        assert_eq!(reprojected.missing_sources, 0);
+        assert!(reprojected.failures.is_empty());
+
+        let conn = local_store::open_database().unwrap();
+        let after_context: (String, i64, i64) = conn
+            .query_row(
+                "SELECT src.source_cursor, ss.stale, ss.counts_complete
+                 FROM session_snapshots ss
+                 JOIN sessions s ON s.id = ss.session_id
+                 JOIN session_sources src ON src.id = s.primary_source_id
+                 WHERE ss.provider_id = 'kimi'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_ne!(after_context.0, initial_fingerprint);
+        assert_eq!(after_context.1, 0);
+        assert_eq!(after_context.2, 0);
+        drop(conn);
+
+        crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0)).unwrap();
+        let conn = local_store::open_database().unwrap();
+        let counts_complete: i64 = conn
+            .query_row(
+                "SELECT counts_complete FROM session_snapshots WHERE provider_id = 'kimi'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(counts_complete, 1);
+        drop(conn);
+
+        std::fs::write(
+            session_dir.join("state.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 1,
+                "custom_title": "After background refresh",
+                "archived": false,
+                "native": {"keep": true}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let state_sync = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )
+        .unwrap();
+        assert_eq!(state_sync.projected_sessions, 1);
+        assert_eq!(state_sync.unchanged_sessions, 0);
+
+        let conn = local_store::open_database().unwrap();
+        let after_state: (String, String, i64) = conn
+            .query_row(
+                "SELECT ss.title, src.source_cursor, ss.counts_complete
+                 FROM session_snapshots ss
+                 JOIN sessions s ON s.id = ss.session_id
+                 JOIN session_sources src ON src.id = s.primary_source_id
+                 WHERE ss.provider_id = 'kimi'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(after_state.0, "After background refresh");
+        assert_ne!(after_state.1, after_context.0);
+        assert_eq!(after_state.2, 0);
+        drop(conn);
+
+        let mut wire = std::fs::OpenOptions::new()
+            .append(true)
+            .open(session_dir.join("wire.jsonl"))
+            .unwrap();
+        writeln!(
+            wire,
+            "{}",
+            serde_json::json!({
+                "timestamp": 1710000001.0,
+                "message": {"type": "StatusUpdate", "payload": {"status": "synced"}}
+            })
+        )
+        .unwrap();
+        drop(wire);
+        let wire_sync = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )
+        .unwrap();
+        assert_eq!(wire_sync.projected_sessions, 1);
+
+        let conn = local_store::open_database().unwrap();
+        let after_wire: String = conn
+            .query_row(
+                "SELECT source_cursor FROM session_sources WHERE provider_id = 'kimi'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_ne!(after_wire, after_state.1);
+        drop(conn);
+
+        let metadata_path = sessions_root.parent().unwrap().join("kimi.json");
+        let mut metadata: Value =
+            serde_json::from_slice(&std::fs::read(&metadata_path).unwrap()).unwrap();
+        metadata["work_dirs"][0]["sync_marker"] = Value::String("changed".to_string());
+        std::fs::write(
+            &metadata_path,
+            serde_json::to_vec_pretty(&metadata).unwrap(),
+        )
+        .unwrap();
+        let mapping_sync = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )
+        .unwrap();
+        assert_eq!(mapping_sync.projected_sessions, 1);
+
+        let conn = local_store::open_database().unwrap();
+        let after_mapping: (String, String) = conn
+            .query_row(
+                "SELECT src.source_cursor, ss.workspace_dir
+                 FROM session_snapshots ss
+                 JOIN sessions s ON s.id = ss.session_id
+                 JOIN session_sources src ON src.id = s.primary_source_id
+                 WHERE ss.provider_id = 'kimi'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_ne!(after_mapping.0, after_wire);
+        assert_eq!(after_mapping.1, project_dir);
+        drop(conn);
+
+        std::fs::remove_dir_all(&session_dir).unwrap();
+        let missing = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::System,
+        )
+        .unwrap();
+        assert_eq!(missing.checked_sources, 0);
+        assert_eq!(missing.missing_sources, 1);
+        assert_eq!(missing.stale_snapshots, 1);
+
+        let missing_reprojection = crate::core::reproject_stale_sessions(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )
+        .unwrap();
+        assert_eq!(missing_reprojection.candidate_snapshots, 1);
+        assert_eq!(missing_reprojection.reprojected_snapshots, 0);
+        assert_eq!(missing_reprojection.missing_sources, 1);
+
+        let groups = crate::core::list_sessions(&crate::core::SessionListParams {
+            all: true,
+            providers: vec![PROVIDER_ID.to_string()],
+            cwd: None,
+            include_message_counts: true,
+            limit: None,
+            offset: None,
+            sort: crate::core::SessionListSort::Recent,
+            hook_filter: crate::core::SessionHookFilter::All,
+        })
+        .unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].sessions.len(), 1);
+        assert_eq!(groups[0].sessions[0].session_id, session_id);
+        assert!(groups[0].sessions[0].stale);
+
+        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("Session source is missing"));
+
+        let conn = local_store::open_database().unwrap();
+        let system_scan_activities: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_activity
+                 WHERE actor = 'system' AND operation_kind = 'scan' AND status != 'running'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(system_scan_activities >= 8);
+        let body_table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table'
+                   AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(body_table_count, 0);
+    }
+
+    #[test]
     fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let session_dir = temp.path().join("project-hash").join("kimi-session-1");

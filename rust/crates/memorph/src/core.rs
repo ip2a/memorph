@@ -35,7 +35,7 @@ pub mod manager;
 pub mod session_management;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
-const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &["claude", "codex", "opencode"];
+const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &["claude", "codex", "kimi", "opencode"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListParams {
@@ -4870,6 +4870,12 @@ mod tests {
         assert!(report.failures[0]
             .reason
             .contains("failed to scan provider sessions"));
+    }
+
+    #[test]
+    fn kimi_is_enabled_for_default_projection_bootstrap() {
+        assert!(PROJECTED_SESSION_PROVIDER_IDS.contains(&"kimi"));
+        assert!(provider_supports_session_projection("kimi"));
     }
 
     #[test]
