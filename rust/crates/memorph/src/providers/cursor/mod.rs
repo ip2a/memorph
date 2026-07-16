@@ -9,7 +9,7 @@ mod write;
 use crate::canonical::{CanonicalSession, ExportedSession, ImportedSession};
 use crate::provider::{
     canonical_export_result, PageStrategy, Provider, ProviderBackupSupport, ProviderCapabilities,
-    ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation,
+    ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation, StorageShape,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -37,6 +37,7 @@ impl Provider for CursorProvider {
             rename: true,
             resume: false,
             page_strategy: PageStrategy::FullImport,
+            storage_shape: StorageShape::Sqlite,
             backup_support: ProviderBackupSupport {
                 before_write: true,
                 restore: true,
@@ -129,6 +130,21 @@ mod tests {
 
     struct TestCursorDbGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    struct TestConfigHomeGuard;
+
+    impl TestConfigHomeGuard {
+        fn new(path: &Path) -> Self {
+            crate::config::set_test_home_dir(path.to_path_buf());
+            Self
+        }
+    }
+
+    impl Drop for TestConfigHomeGuard {
+        fn drop(&mut self) {
+            crate::config::reset_test_home_dir();
+        }
     }
 
     impl Drop for TestCursorDbGuard {
@@ -1163,6 +1179,184 @@ mod tests {
         assert_eq!(beyond_end.event_count, full.event_count);
         assert_eq!(beyond_end.message_count, full.message_count);
         assert_eq!(beyond_end.turn_count, full.turn_count);
+    }
+
+    #[test]
+    fn cursor_current_index_and_detail_are_idempotent_source_backed_and_bodyless() -> Result<()> {
+        let dir = tempdir()?;
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home)?;
+        let _home_guard = TestConfigHomeGuard::new(&home);
+        let db_path = dir.path().join("state.vscdb");
+        let _db_guard = use_test_cursor_db(db_path.clone());
+        let session_id = "cursor-bodyless";
+        let created_at = 1_700_000_000_000_i64;
+
+        let conn = Connection::open(&db_path)?;
+        conn.execute_batch(include_str!("fixtures/v3_11_19/schema.sql"))?;
+        conn.execute(
+            "INSERT INTO composerHeaders
+             (composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent,
+              recency, checkpointAt, value)
+             VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, NULL, ?6)",
+            params![
+                session_id,
+                "workspace-bodyless",
+                created_at,
+                created_at + 1_000,
+                created_at + 1_000,
+                json!({"composerId": session_id, "name": "Bodyless"}).to_string(),
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+            params![
+                format!("composerData:{session_id}"),
+                json!({
+                    "composerId": session_id,
+                    "name": "Bodyless",
+                    "createdAt": created_at,
+                    "lastUpdatedAt": created_at + 1_000
+                })
+                .to_string(),
+            ],
+        )?;
+        for (bubble_id, bubble_type, timestamp, text) in [
+            ("user-1", 1, "2023-11-14T22:13:20Z", "hello"),
+            ("assistant-1", 2, "2023-11-14T22:13:21Z", "answer"),
+        ] {
+            conn.execute(
+                "INSERT INTO cursorDiskKV (key, value) VALUES (?1, ?2)",
+                params![
+                    format!("bubbleId:{session_id}:{bubble_id}"),
+                    json!({
+                        "bubbleId": bubble_id,
+                        "type": bubble_type,
+                        "createdAt": timestamp,
+                        "text": text
+                    })
+                    .to_string(),
+                ],
+            )?;
+        }
+        drop(conn);
+
+        let capabilities = CursorProvider.capabilities();
+        assert_eq!(capabilities.storage_shape, StorageShape::Sqlite);
+        let summary = CursorProvider
+            .scan_sessions()?
+            .into_iter()
+            .find(|summary| summary.session_id == session_id)
+            .expect("current Cursor session summary");
+        let source_path = summary.source_path.clone().expect("Cursor locator");
+        let fingerprint = CursorProvider
+            .session_source_fingerprint(&source_path)?
+            .expect("current Cursor source");
+        let full = CursorProvider.import_session_page(&source_path, 0, None)?;
+
+        let mut conn = local_store::open_database()?;
+        let first = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .write_session_summary(PROVIDER_ID, &summary, capabilities, &fingerprint)?;
+        let second = crate::storage::session_index_store::SessionIndexStore::new(&mut conn)
+            .write_session_summary(PROVIDER_ID, &summary, capabilities, &fingerprint)?;
+        assert_eq!(first, second);
+
+        let counts: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM session_sources WHERE provider_id = 'cursor'),
+                (SELECT COUNT(*) FROM sessions WHERE provider_id = 'cursor'),
+                (SELECT COUNT(*) FROM session_snapshots WHERE provider_id = 'cursor'),
+                (SELECT COUNT(*) FROM session_aliases WHERE provider_id = 'cursor')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(counts, (1, 1, 1, 2));
+
+        let indexed_source: (String, String, String) = conn.query_row(
+            "SELECT source_path, storage_shape, source_cursor
+             FROM session_sources WHERE id = ?1",
+            [&first.source_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(indexed_source.0, source_path);
+        assert_eq!(indexed_source.1, "sqlite");
+        assert_eq!(indexed_source.2, fingerprint.value);
+
+        let snapshot_json: String = conn.query_row(
+            "SELECT snapshot_json FROM session_snapshots WHERE session_id = ?1",
+            [&first.canonical_session_id],
+            |row| row.get(0),
+        )?;
+        let snapshot_json: Value = serde_json::from_str(&snapshot_json)?;
+        assert_eq!(
+            snapshot_json
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from(["index_version", "source_fingerprint"]),
+        );
+        let body_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(body_table_count, 0);
+        drop(conn);
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(detail.events.is_empty());
+        assert!(detail.turns.is_empty());
+        assert_eq!(detail.event_count, full.event_count);
+        assert_eq!(detail.message_count, full.message_count);
+        assert!(!detail.stale);
+        assert_eq!(detail.source_path.as_deref(), Some(source_path.as_str()));
+        assert_eq!(
+            detail.projection_report.as_ref().unwrap().id,
+            format!("source-read:{PROVIDER_ID}:{session_id}")
+        );
+
+        let conn = local_store::open_database()?;
+        let cached_counts: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT event_count, message_count, turn_count, counts_complete
+             FROM session_snapshots WHERE session_id = ?1",
+            [&first.canonical_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(cached_counts.0, full.event_count as i64);
+        assert_eq!(cached_counts.1, full.message_count as i64);
+        assert_eq!(cached_counts.2, full.turn_count.unwrap() as i64);
+        assert_eq!(cached_counts.3, 1);
+        drop(conn);
+
+        let conn = Connection::open(&db_path)?;
+        conn.execute(
+            "UPDATE cursorDiskKV SET value = ?1 WHERE key = ?2",
+            params![
+                json!({
+                    "bubbleId": "assistant-1",
+                    "type": 2,
+                    "createdAt": "2023-11-14T22:13:21Z",
+                    "text": "changed"
+                })
+                .to_string(),
+                format!("bubbleId:{session_id}:assistant-1"),
+            ],
+        )?;
+        drop(conn);
+        let stale_detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(stale_detail.stale);
+
+        std::fs::remove_file(&db_path)?;
+        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("Session source is missing"));
+        Ok(())
     }
 
     #[test]
