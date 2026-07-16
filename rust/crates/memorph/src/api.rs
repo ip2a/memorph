@@ -4059,6 +4059,47 @@ mod tests {
         assert_eq!(capabilities["activity_support"]["runtime_endpoint"], true);
         assert_eq!(capabilities["activity_support"]["session_activity"], true);
 
+        let kiro = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "kiro")
+            .expect("missing kiro catalog entry");
+        let capabilities = &kiro["capability_set"];
+        assert_eq!(kiro["display_name"], "Kiro");
+        assert_eq!(capabilities["scan"], true);
+        assert_eq!(capabilities["import"], true);
+        assert_eq!(capabilities["export"], false);
+        assert_eq!(capabilities["delete"], true);
+        assert_eq!(capabilities["rename"], true);
+        assert_eq!(capabilities["resume"], false);
+        assert_eq!(capabilities["scan_strategy"], "full_scan");
+        assert_eq!(capabilities["page_strategy"], "full_import");
+        assert_eq!(capabilities["storage_shape"], "directory");
+        assert_eq!(capabilities["turn_quality"], "exact");
+        assert_eq!(capabilities["import_fidelity"]["text"], "preserved");
+        assert_eq!(capabilities["import_fidelity"]["thinking"], "preserved");
+        assert_eq!(capabilities["import_fidelity"]["tool_call"], "preserved");
+        assert_eq!(capabilities["import_fidelity"]["tool_result"], "preserved");
+        assert_eq!(capabilities["import_fidelity"]["patch"], "unsupported");
+        assert_eq!(capabilities["import_fidelity"]["image"], "unsupported");
+        assert_eq!(capabilities["import_fidelity"]["file"], "unsupported");
+        assert_eq!(capabilities["import_fidelity"]["compressed"], "unsupported");
+        assert_eq!(
+            capabilities["import_fidelity"]["provider_payload"],
+            "preserved"
+        );
+        assert_eq!(capabilities["resume_quality"], "none");
+        assert_eq!(capabilities["write_risk"]["level"], "medium");
+        assert_eq!(capabilities["write_risk"]["multiple_files"], true);
+        assert_eq!(capabilities["write_risk"]["sqlite"], false);
+        assert_eq!(capabilities["write_risk"]["sidecar_files"], true);
+        assert_eq!(capabilities["write_risk"]["index_repair"], false);
+        assert_eq!(capabilities["backup_support"]["before_write"], true);
+        assert_eq!(capabilities["backup_support"]["restore"], true);
+        assert_eq!(capabilities["backup_support"]["sync_only"], false);
+        assert_eq!(capabilities["activity_support"]["hook_events"], true);
+        assert_eq!(capabilities["activity_support"]["runtime_endpoint"], true);
+        assert_eq!(capabilities["activity_support"]["session_activity"], true);
+
         let opencode = providers
             .iter()
             .find(|provider| provider["provider_id"] == "opencode")

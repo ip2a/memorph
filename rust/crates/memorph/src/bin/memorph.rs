@@ -1731,4 +1731,23 @@ mod tests {
         assert!(output.contains("  compressed: normalized"));
         assert!(output.contains("  provider_payload: dropped"));
     }
+
+    #[test]
+    fn kiro_cli_capability_detail_matches_current_format_contract() {
+        let capabilities = providers::find_provider("kiro").unwrap().capabilities();
+
+        let output = provider_capability_detail("kiro", "Kiro", capabilities);
+
+        assert!(output.contains("Provider: Kiro (kiro)"));
+        assert!(output.contains("Discovery: scan=full_scan page=full_import storage=directory"));
+        assert!(output.contains("Turn quality: exact"));
+        assert!(output.contains("Resume quality: none"));
+        assert!(output.contains("Operations: scan,import,delete,rename"));
+        assert!(output.contains("Write risk: level=medium"));
+        assert!(output.contains("Backup: before_write=true restore=true sync_only=false"));
+        assert!(output
+            .contains("Activity: hook_events=true runtime_endpoint=true session_activity=true"));
+        assert!(output.contains("  tool_call: preserved"));
+        assert!(output.contains("  provider_payload: preserved"));
+    }
 }
