@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod hook;
+mod management;
 
 use crate::canonical::{
     CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
@@ -9,8 +10,9 @@ use crate::canonical::{
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
-    ProviderContentFidelity, ProviderSessionSummary, ProviderSourceFingerprint, ProviderWriteRisk,
-    ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
+    ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
+    ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
+    ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
 use crate::utils::{extract_text, parse_timestamp_to_ms, truncate_summary};
 use anyhow::{bail, Context, Result};
@@ -29,6 +31,25 @@ const SESSION_FILE_EXTENSION: &str = "jsonl";
 #[cfg(test)]
 static TEST_GEMINI_HOME: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
     std::sync::OnceLock::new();
+
+#[cfg(test)]
+static TEST_GEMINI_MUTATION_FAILURE: std::sync::OnceLock<
+    std::sync::Mutex<Option<ProviderSourceMutation>>,
+> = std::sync::OnceLock::new();
+
+fn fail_gemini_mutation_after_write(_mutation: ProviderSourceMutation) -> Result<()> {
+    #[cfg(test)]
+    {
+        let configured = TEST_GEMINI_MUTATION_FAILURE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if configured.as_ref() == Some(&_mutation) {
+            anyhow::bail!("configured Gemini mutation failure after native write");
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug)]
 struct ParsedGeminiSession {
@@ -51,7 +72,7 @@ impl Provider for GeminiProvider {
             scan: true,
             import: true,
             export: false,
-            delete: false,
+            delete: true,
             rename: false,
             resume: true,
             scan_strategy: ScanStrategy::FullScan,
@@ -89,8 +110,8 @@ impl Provider for GeminiProvider {
                 index_repair: false,
             },
             backup_support: ProviderBackupSupport {
-                before_write: false,
-                restore: false,
+                before_write: true,
+                restore: true,
                 sync_only: false,
             },
             activity_support: ProviderActivitySupport {
@@ -173,6 +194,24 @@ impl Provider for GeminiProvider {
             size_bytes,
             value: format!("gemini-jsonl-v1:{digest:x}"),
         }))
+    }
+
+    fn delete_session(&self, session_id: &str) -> Result<()> {
+        management::delete_session(session_id)
+    }
+
+    fn create_session_backup(
+        &self,
+        mutation: ProviderSourceMutation,
+        operation_id: &str,
+        session_id: &str,
+        backup_root: &Path,
+    ) -> Result<ProviderSessionBackup> {
+        management::create_session_backup(mutation, operation_id, session_id, backup_root)
+    }
+
+    fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
+        management::restore_session_backup(backup)
     }
 
     fn resume_command(&self, session_id: &str) -> Option<String> {
@@ -693,7 +732,7 @@ mod tests {
     use super::*;
     use crate::provider::Provider;
     use crate::storage::local_store;
-    use rusqlite::params;
+    use rusqlite::{params, Connection};
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
@@ -725,6 +764,13 @@ mod tests {
                 .lock()
                 .expect("Gemini test home lock poisoned") = None;
         }
+    }
+
+    fn set_test_gemini_mutation_failure(mutation: Option<ProviderSourceMutation>) {
+        *TEST_GEMINI_MUTATION_FAILURE
+            .get_or_init(|| std::sync::Mutex::new(None))
+            .lock()
+            .expect("Gemini mutation failure lock poisoned") = mutation;
     }
 
     struct TestConfigHomeGuard;
@@ -1091,6 +1137,138 @@ mod tests {
     }
 
     #[test]
+    fn native_delete_and_backup_cover_main_subagent_and_sidecar_artifacts() -> Result<()> {
+        let source_home = tempdir()?;
+        let _gemini_guard = TestGeminiHomeGuard::new(source_home.path());
+        let session_id = "gemini-delete-session";
+        let source_path = write_session(
+            source_home.path(),
+            "project-hash",
+            "session-2026-07-17-01-00-abc12345.jsonl",
+            &[metadata(session_id)],
+        );
+        let temp_dir = source_path.parent().unwrap().parent().unwrap();
+        let safe_session_id = "gemini-delete-session";
+        let subagent_dir = temp_dir.join("chats").join(safe_session_id);
+        let artifact_paths = [
+            temp_dir.join("logs/session-gemini-delete-session.jsonl"),
+            temp_dir.join("tool-outputs/session-gemini-delete-session/output.txt"),
+            temp_dir.join("gemini-delete-session/metadata.json"),
+            subagent_dir.join("agent-123.jsonl"),
+            temp_dir.join("logs/session-agent-123.jsonl"),
+            temp_dir.join("tool-outputs/session-agent-123/output.txt"),
+            temp_dir.join("agent-123/state.json"),
+        ];
+        for artifact in &artifact_paths {
+            fs::create_dir_all(artifact.parent().unwrap())?;
+            fs::write(artifact, artifact.to_string_lossy().as_bytes())?;
+        }
+
+        let backup_root = tempdir()?;
+        let backup = GeminiProvider.create_session_backup(
+            ProviderSourceMutation::Delete,
+            "gemini-delete-op",
+            session_id,
+            backup_root.path(),
+        )?;
+        assert_eq!(backup.format, "gemini-current-session-backup-v1");
+        assert_eq!(
+            backup.mime_type,
+            "application/vnd.memorph.gemini-current-session-backup"
+        );
+        assert!(backup.backup_path.join("metadata.json").is_file());
+
+        GeminiProvider.delete_session(session_id)?;
+        assert!(!source_path.exists());
+        for artifact in &artifact_paths {
+            assert!(
+                !artifact.exists(),
+                "artifact was not deleted: {}",
+                artifact.display()
+            );
+        }
+
+        GeminiProvider.restore_session_backup(&backup)?;
+        assert!(source_path.is_file());
+        for artifact in &artifact_paths {
+            assert!(
+                artifact.is_file(),
+                "artifact was not restored: {}",
+                artifact.display()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_delete_rejects_duplicate_and_short_session_identity() {
+        let source_home = tempdir().unwrap();
+        let _gemini_guard = TestGeminiHomeGuard::new(source_home.path());
+        let session_id = "gemini-duplicate-session";
+        write_session(
+            source_home.path(),
+            "project-a",
+            "session-2026-07-17-01-00-aaaabbbb.jsonl",
+            &[metadata(session_id)],
+        );
+        write_session(
+            source_home.path(),
+            "project-b",
+            "session-2026-07-17-01-01-ccccdddd.jsonl",
+            &[metadata(session_id)],
+        );
+
+        let duplicate = GeminiProvider.delete_session(session_id).unwrap_err();
+        assert!(duplicate.to_string().contains("multiple current sources"));
+        let short_id = GeminiProvider.delete_session("aaaabbbb").unwrap_err();
+        assert!(short_id.to_string().contains("session not found"));
+        let reserved = GeminiProvider.delete_session("chats").unwrap_err();
+        assert!(reserved.to_string().contains("reserved Gemini session ID"));
+        let traversal = GeminiProvider.delete_session("../outside").unwrap_err();
+        assert!(traversal.to_string().contains("Invalid Gemini session id"));
+    }
+
+    #[test]
+    fn core_delete_failure_restores_complete_gemini_source_backup() -> Result<()> {
+        let source_home = tempdir()?;
+        let config_home = tempdir()?;
+        let _gemini_guard = TestGeminiHomeGuard::new(source_home.path());
+        let _config_guard = TestConfigHomeGuard::new(config_home.path());
+        let session_id = "gemini-delete-recovery";
+        let source_path = write_session(
+            source_home.path(),
+            "project-hash",
+            "session-2026-07-17-01-00-efgh5678.jsonl",
+            &[metadata(session_id)],
+        );
+        let temp_dir = source_path.parent().unwrap().parent().unwrap();
+        let artifact = temp_dir.join("logs/session-gemini-delete-recovery.jsonl");
+        fs::create_dir_all(artifact.parent().unwrap())?;
+        fs::write(&artifact, b"log")?;
+
+        let mut artifact_conn = Connection::open_in_memory()?;
+        local_store::configure_connection(&artifact_conn)?;
+        local_store::apply_schema(&mut artifact_conn)?;
+        let backup_root = tempdir()?;
+        set_test_gemini_mutation_failure(Some(ProviderSourceMutation::Delete));
+        let results = crate::core::session_management::delete_sessions(
+            PROVIDER_ID,
+            &[session_id],
+            &["gemini-delete-recovery-op".to_string()],
+            backup_root.path(),
+            &mut artifact_conn,
+        );
+        set_test_gemini_mutation_failure(None);
+
+        assert_eq!(results.len(), 1);
+        let error = results[0].as_ref().unwrap_err().to_string();
+        assert!(error.contains("Provider source was restored"));
+        assert!(source_path.is_file());
+        assert!(artifact.is_file());
+        Ok(())
+    }
+
+    #[test]
     fn locator_is_required_and_missing_sources_have_no_fingerprint() {
         let home = tempdir().unwrap();
         let provider = GeminiProvider;
@@ -1148,7 +1326,9 @@ mod tests {
             provider.capabilities().resume_quality,
             ResumeQuality::Native
         );
-        assert!(!provider.capabilities().delete);
+        assert!(provider.capabilities().delete);
         assert!(!provider.capabilities().rename);
+        assert!(provider.capabilities().backup_support.before_write);
+        assert!(provider.capabilities().backup_support.restore);
     }
 }
