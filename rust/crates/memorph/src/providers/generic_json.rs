@@ -41,7 +41,7 @@ pub fn scan_sessions(spec: JsonProviderSpec) -> Result<Vec<ProviderSessionSummar
             if !is_json_session_candidate(path) {
                 continue;
             }
-            let Ok(value) = read_json(path) else {
+            let Ok(value) = read_session_value(path) else {
                 continue;
             };
             if !looks_like_session(&value) {
@@ -60,7 +60,7 @@ pub fn scan_sessions(spec: JsonProviderSpec) -> Result<Vec<ProviderSessionSummar
 
 pub fn import_session(spec: JsonProviderSpec, source_path: &str) -> Result<ImportedSession> {
     let path = Path::new(source_path);
-    let value = read_json(path).with_context(|| {
+    let value = read_session_value(path).with_context(|| {
         format!(
             "Failed to read {} session: {}",
             spec.provider_id, source_path
@@ -133,9 +133,129 @@ fn read_json(path: &Path) -> Result<Value> {
     serde_json::from_str(&raw).with_context(|| format!("Failed to parse JSON: {}", path.display()))
 }
 
+/// Read a session file that may be either a single JSON object or JSONL.
+///
+/// For `.jsonl`, each non-empty line is parsed independently. Lines that look like
+/// session metadata (carry `sessionId`/`session_id`/`cwd`/timestamp fields) are
+/// merged into the returned object's top level; all other lines are collected
+/// under a synthesized `messages` array so the downstream `extract_message_items`
+/// pipeline can process them uniformly.
+fn read_session_value(path: &Path) -> Result<Value> {
+    let is_jsonl = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|ext| ext == "jsonl")
+        .unwrap_or(false);
+    if !is_jsonl {
+        return read_json(path);
+    }
+    read_jsonl_as_session_value(path)
+}
+
+fn read_jsonl_as_session_value(path: &Path) -> Result<Value> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read JSONL: {}", path.display()))?;
+    let mut map = serde_json::Map::new();
+    let mut messages = Vec::<Value>::new();
+    let metadata_keys = [
+        "sessionId",
+        "session_id",
+        "id",
+        "conversationId",
+        "conversation_id",
+        "cwd",
+        "workspace",
+        "project",
+        "projectDir",
+        "model",
+        "startTime",
+        "createdAt",
+        "created_at",
+        "lastUpdated",
+        "updatedAt",
+        "updated_at",
+    ];
+    for (line_index, raw_line) in raw.lines().enumerate() {
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(line) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+
+        let is_meta_line = line.get("type").and_then(value_to_string).is_some_and(|ty| {
+            matches!(
+                ty.as_str(),
+                "session_meta" | "sessionMeta" | "metadata" | "meta"
+            )
+        }) || line.get("isMeta").and_then(Value::as_bool).is_some_and(|v| v);
+
+        if is_meta_line {
+            if let Some(obj) = line.as_object() {
+                for (key, value) in obj {
+                    if key == "type" || key == "isMeta" {
+                        continue;
+                    }
+                    if metadata_keys.contains(&key.as_str()) {
+                        map.entry(key.clone()).or_insert(value.clone());
+                    }
+                }
+            }
+            // Prefer the nested payload block if present (codex-style {type:"session_meta", payload:{...}}).
+            if let Some(payload) = line.get("payload") {
+                if let Some(obj) = payload.as_object() {
+                    for (key, value) in obj {
+                        if metadata_keys.contains(&key.as_str()) {
+                            map.entry(key.clone()).or_insert(value.clone());
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Promote metadata-looking keys from any line into the top-level map, but only
+        // when they haven't been seen yet. This lets a Claude-style jsonl where every
+        // row carries `sessionId`/`cwd` still surface those fields.
+        if let Some(obj) = line.as_object() {
+            for key in metadata_keys {
+                if let Some(value) = obj.get(key) {
+                    map.entry(key.to_string()).or_insert(value.clone());
+                }
+            }
+        }
+
+        // Anything that isn't a pure metadata marker becomes a message candidate.
+        // Skip lines that are obviously control records without message content.
+        let looks_like_control = line.get("type").and_then(value_to_string).is_some_and(|ty| {
+            matches!(
+                ty.as_str(),
+                "turn_context" | "compacted" | "summary" | "custom-title" | "ai-title" | "tag"
+            )
+        });
+        if looks_like_control {
+            continue;
+        }
+
+        let mut entry = line.clone();
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("__line__".to_string(), Value::Number(line_index.into()));
+        }
+        messages.push(entry);
+    }
+
+    map.insert("messages".to_string(), Value::Array(messages));
+    Ok(Value::Object(map))
+}
+
 fn is_json_session_candidate(path: &Path) -> bool {
     path.is_file()
-        && path.extension().and_then(|value| value.to_str()) == Some("json")
+        && path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|ext| matches!(ext, "json" | "jsonl"))
+            .unwrap_or(false)
         && path
             .file_name()
             .and_then(|value| value.to_str())
@@ -146,6 +266,9 @@ fn is_json_session_candidate(path: &Path) -> bool {
                     || name.contains("conversation")
                     || name.contains("history")
                     || name.contains("thread")
+                    || name.contains("rollout")
+                    || name.contains("transcript")
+                    || name.contains("events")
             })
             .unwrap_or(false)
 }
@@ -515,6 +638,21 @@ fn path_mtime_ms(path: &Path) -> Option<i64> {
 mod tests {
     use super::*;
     use serde_json::json;
+    const JSONL_WITH_SESSION_META: &str = r#"{"type":"session_meta","payload":{"id":"sess-1","cwd":"/tmp/proj","model_provider":"codex"}}
+{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}}
+"#;
+
+    const JSONL_CLAUDE_STYLE: &str = r#"{"sessionId":"abc","cwd":"/work","type":"user","message":{"role":"user","content":"ping"}}
+{"sessionId":"abc","cwd":"/work","type":"assistant","message":{"role":"assistant","content":"pong"}}
+"#;
+
+    const JSONL_WITH_CONTROL_LINES: &str = r#"{"sessionId":"ctrl","type":"session_meta","payload":{"id":"ctrl","cwd":"/x"}}
+{"type":"turn_context","payload":{"turn_id":"t1"}}
+{"type":"compacted","message":"summarized"}
+{"sessionId":"ctrl","type":"user","message":{"role":"user","content":"hi"}}
+"#;
+
 
     fn spec() -> JsonProviderSpec {
         JsonProviderSpec {
@@ -558,4 +696,44 @@ mod tests {
         let value = json!({"theme": "dark", "enabled": true});
         assert!(!looks_like_session(&value));
     }
+
+    #[test]
+    fn read_jsonl_merges_session_meta_and_messages() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("rollout-test.jsonl");
+        std::fs::write(&file, JSONL_WITH_SESSION_META).unwrap();
+
+        let value = read_session_value(&file).expect("read jsonl");
+        assert_eq!(value.get("id").and_then(|v| v.as_str()), Some("sess-1"));
+        assert_eq!(value.get("cwd").and_then(|v| v.as_str()), Some("/tmp/proj"));
+        let messages = value.get("messages").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(messages.len(), 2, "two message lines preserved");
+    }
+
+    #[test]
+    fn read_jsonl_promotes_metadata_from_repeated_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("session-abc.jsonl");
+        std::fs::write(&file, JSONL_CLAUDE_STYLE).unwrap();
+
+        let value = read_session_value(&file).expect("read");
+        assert_eq!(value.get("sessionId").and_then(|v| v.as_str()), Some("abc"));
+        assert_eq!(value.get("cwd").and_then(|v| v.as_str()), Some("/work"));
+        assert_eq!(
+            value.get("messages").and_then(|v| v.as_array()).unwrap().len(),
+            2,
+        );
+    }
+
+    #[test]
+    fn read_jsonl_skips_control_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("session-ctrl.jsonl");
+        std::fs::write(&file, JSONL_WITH_CONTROL_LINES).unwrap();
+
+        let value = read_session_value(&file).expect("read");
+        let messages = value.get("messages").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(messages.len(), 1, "only the user message survives");
+    }
+
 }
