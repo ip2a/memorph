@@ -241,6 +241,7 @@ pub(super) fn create_session_backup(
         format: BACKUP_FORMAT.to_string(),
         artifact_metadata: serde_json::json!({
             "role": "qwen_code_native_prewrite_session_backup",
+            "mutation": mutation,
             "complete_source_boundary": true,
             "selected_artifacts": artifacts,
             "runtime_root": metadata.runtime_root,
