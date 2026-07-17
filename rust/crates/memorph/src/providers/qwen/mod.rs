@@ -81,7 +81,7 @@ impl Provider for QwenProvider {
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
         let mut sessions = Vec::new();
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = BTreeMap::<String, PathBuf>::new();
 
         for projects_dir in qwen_projects_dirs() {
             let mut project_dirs = direct_child_directories(&projects_dir)?;
@@ -99,8 +99,15 @@ impl Provider for QwenProvider {
                         Ok(parsed) => parsed,
                         Err(_) => continue,
                     };
-                    if !seen.insert(parsed.session_id.clone()) {
-                        continue;
+                    if let Some(previous_path) =
+                        seen.insert(parsed.session_id.clone(), path.clone())
+                    {
+                        bail!(
+                            "Ambiguous Qwen Code session identity {}: found in {} and {}",
+                            parsed.session_id,
+                            previous_path.display(),
+                            path.display()
+                        );
                     }
                     sessions.push(summary_from_parsed(&path, &parsed));
                 }
@@ -241,16 +248,26 @@ fn canonical_source_path(path: &Path) -> Result<PathBuf> {
             path.display()
         )
     })?;
+    let runtime_base = qwen_runtime_base()
+        .and_then(|base| base.canonicalize().ok())
+        .with_context(|| "Qwen Code runtime root is not configured")?;
+    let relative = canonical.strip_prefix(&runtime_base).with_context(|| {
+        format!(
+            "Qwen Code session source is outside the configured runtime root {}: {}",
+            runtime_base.display(),
+            canonical.display()
+        )
+    })?;
     let file_name = canonical.file_name().and_then(|name| name.to_str());
     let session_id = file_name
         .and_then(|name| name.strip_suffix(".jsonl"))
         .filter(|name| is_session_id(name));
-    let is_current_layout = canonical
+    let is_current_layout = relative
         .parent()
         .and_then(Path::file_name)
         .and_then(|name| name.to_str())
         == Some("chats")
-        && canonical
+        && relative
             .parent()
             .and_then(Path::parent)
             .and_then(Path::parent)
@@ -753,6 +770,9 @@ mod tests {
     }
 
     fn write_fixture(path: &Path, session_id: &str) {
+        // The base ChatRecord shape mirrors QwenLM/qwen-code's
+        // session-transcript-reader.test.ts at c56ae42f; provider-specific
+        // thinking/tool/title/usage records extend that fixed source contract.
         let records = vec![
             json!({
                 "uuid": "u1",
@@ -816,6 +836,13 @@ mod tests {
         let session_id = "11111111-1111-1111-1111-111111111111";
         let path = session_file(runtime.path(), session_id);
         write_fixture(&path, session_id);
+        fs::write(
+            runtime
+                .path()
+                .join("projects/-workspace/chats/22222222-2222-2222-2222-222222222222.jsonl"),
+            "{malformed\n",
+        )
+        .unwrap();
         fs::create_dir_all(runtime.path().join("projects/-workspace/chats/archive")).unwrap();
         fs::write(
             runtime.path().join(
@@ -935,6 +962,96 @@ mod tests {
     }
 
     #[test]
+    fn rejects_duplicate_session_identity_across_project_sources() {
+        let runtime = tempdir().unwrap();
+        let _guard = TestQwenRuntimeGuard::new(runtime.path());
+        let session_id = "66666666-6666-6666-6666-666666666666";
+        write_fixture(&session_file(runtime.path(), session_id), session_id);
+        let second_path = runtime
+            .path()
+            .join("projects/other-project/chats")
+            .join(format!("{session_id}.jsonl"));
+        fs::create_dir_all(second_path.parent().unwrap()).unwrap();
+        write_fixture(&second_path, session_id);
+
+        let error = QwenProvider.scan_sessions().unwrap_err().to_string();
+        assert!(error.contains("Ambiguous Qwen Code session identity"));
+        assert!(error.contains("-workspace"));
+        assert!(error.contains("other-project"));
+    }
+
+    #[test]
+    fn rejects_valid_current_layout_outside_configured_runtime_root() {
+        let runtime = tempdir().unwrap();
+        let outside_runtime = tempdir().unwrap();
+        let _guard = TestQwenRuntimeGuard::new(runtime.path());
+        let session_id = "77777777-7777-7777-7777-777777777777";
+        let path = session_file(outside_runtime.path(), session_id);
+        write_fixture(&path, session_id);
+
+        let import_error = QwenProvider
+            .import_session(path.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(import_error.contains("outside the configured runtime root"));
+        let fingerprint_error = QwenProvider
+            .session_source_fingerprint(path.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(fingerprint_error.contains("outside the configured runtime root"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_current_source() {
+        let runtime = tempdir().unwrap();
+        let _guard = TestQwenRuntimeGuard::new(runtime.path());
+        let session_id = "88888888-8888-8888-8888-888888888888";
+        let target = session_file(runtime.path(), session_id);
+        write_fixture(&target, session_id);
+        let link = runtime
+            .path()
+            .join("projects/-workspace/chats/99999999-9999-9999-9999-999999999999.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let error = QwenProvider
+            .import_session(link.to_str().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("must not be a symlink"));
+    }
+
+    #[test]
+    fn rejects_record_session_identity_mismatch() {
+        let runtime = tempdir().unwrap();
+        let _guard = TestQwenRuntimeGuard::new(runtime.path());
+        let session_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let path = session_file(runtime.path(), session_id);
+        fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&json!({
+                    "uuid": "mismatch-1",
+                    "sessionId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    "type": "user",
+                    "message": {"parts": [{"text": "wrong identity"}]}
+                }))
+                .unwrap()
+            ),
+        )
+        .unwrap();
+
+        let error = QwenProvider
+            .import_session(path.to_str().unwrap())
+            .unwrap_err();
+        assert!(
+            format!("{error:?}").contains("sessionId mismatch"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn fingerprint_changes_with_source_bytes_and_rejects_non_current_locator() {
         let runtime = tempdir().unwrap();
         let _guard = TestQwenRuntimeGuard::new(runtime.path());
@@ -951,11 +1068,28 @@ mod tests {
             .unwrap()
             .write_all(b"\n")
             .unwrap();
+        let appended = json!({
+            "uuid": "growth-1",
+            "parentUuid": "title-1",
+            "sessionId": session_id,
+            "timestamp": "2026-07-17T00:00:04Z",
+            "type": "assistant",
+            "cwd": "/workspace",
+            "message": {"parts": [{"text": "appended"}]}
+        });
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(format!("{}\n", serde_json::to_string(&appended).unwrap()).as_bytes())
+            .unwrap();
         let second = QwenProvider
             .session_source_fingerprint(path.to_str().unwrap())
             .unwrap()
             .unwrap();
         assert_ne!(first.value, second.value);
+        let imported_after_growth = QwenProvider.import_session(path.to_str().unwrap()).unwrap();
+        assert_eq!(imported_after_growth.session.events.len(), 5);
         let archive_path = runtime
             .path()
             .join("projects/-workspace/chats/archive/x.jsonl");
