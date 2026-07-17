@@ -184,12 +184,19 @@ fn read_jsonl_as_session_value(path: &Path) -> Result<Value> {
             continue;
         };
 
-        let is_meta_line = line.get("type").and_then(value_to_string).is_some_and(|ty| {
-            matches!(
-                ty.as_str(),
-                "session_meta" | "sessionMeta" | "metadata" | "meta"
-            )
-        }) || line.get("isMeta").and_then(Value::as_bool).is_some_and(|v| v);
+        let is_meta_line = line
+            .get("type")
+            .and_then(value_to_string)
+            .is_some_and(|ty| {
+                matches!(
+                    ty.as_str(),
+                    "session_meta" | "sessionMeta" | "metadata" | "meta"
+                )
+            })
+            || line
+                .get("isMeta")
+                .and_then(Value::as_bool)
+                .is_some_and(|v| v);
 
         if is_meta_line {
             if let Some(obj) = line.as_object() {
@@ -228,12 +235,15 @@ fn read_jsonl_as_session_value(path: &Path) -> Result<Value> {
 
         // Anything that isn't a pure metadata marker becomes a message candidate.
         // Skip lines that are obviously control records without message content.
-        let looks_like_control = line.get("type").and_then(value_to_string).is_some_and(|ty| {
-            matches!(
-                ty.as_str(),
-                "turn_context" | "compacted" | "summary" | "custom-title" | "ai-title" | "tag"
-            )
-        });
+        let looks_like_control = line
+            .get("type")
+            .and_then(value_to_string)
+            .is_some_and(|ty| {
+                matches!(
+                    ty.as_str(),
+                    "turn_context" | "compacted" | "summary" | "custom-title" | "ai-title" | "tag"
+                )
+            });
         if looks_like_control {
             continue;
         }
@@ -653,7 +663,6 @@ mod tests {
 {"sessionId":"ctrl","type":"user","message":{"role":"user","content":"hi"}}
 "#;
 
-
     fn spec() -> JsonProviderSpec {
         JsonProviderSpec {
             provider_id: "example",
@@ -720,7 +729,11 @@ mod tests {
         assert_eq!(value.get("sessionId").and_then(|v| v.as_str()), Some("abc"));
         assert_eq!(value.get("cwd").and_then(|v| v.as_str()), Some("/work"));
         assert_eq!(
-            value.get("messages").and_then(|v| v.as_array()).unwrap().len(),
+            value
+                .get("messages")
+                .and_then(|v| v.as_array())
+                .unwrap()
+                .len(),
             2,
         );
     }
@@ -735,5 +748,4 @@ mod tests {
         let messages = value.get("messages").and_then(|v| v.as_array()).unwrap();
         assert_eq!(messages.len(), 1, "only the user message survives");
     }
-
 }
