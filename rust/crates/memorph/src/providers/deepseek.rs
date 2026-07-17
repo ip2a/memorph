@@ -7,8 +7,10 @@ use crate::canonical::{
 use crate::provider::{
     canonical_event_role_label, canonical_event_visible_message_role,
     canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
-    Provider, ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup,
-    ProviderSessionSummary, ProviderSourceFingerprint, ProviderSourceMutation,
+    PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
+    ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
+    ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
+    ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -47,12 +49,57 @@ impl Provider for DeepseekProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
+            scan: true,
+            import: true,
+            export: true,
+            delete: true,
+            rename: true,
+            resume: true,
+            scan_strategy: ScanStrategy::FullScan,
+            page_strategy: PageStrategy::FullImport,
+            storage_shape: StorageShape::Sqlite,
+            turn_quality: TurnQuality::Inferred,
+            import_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Unsupported),
+                tool_call: Some(MappingDisposition::Preserved),
+                tool_result: Some(MappingDisposition::Preserved),
+                patch: Some(MappingDisposition::Unsupported),
+                image: Some(MappingDisposition::Unsupported),
+                file: Some(MappingDisposition::Unsupported),
+                compressed: Some(MappingDisposition::Unsupported),
+                provider_payload: Some(MappingDisposition::Preserved),
+            },
+            export_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Unsupported),
+                tool_call: Some(MappingDisposition::Downgraded),
+                tool_result: Some(MappingDisposition::Downgraded),
+                patch: Some(MappingDisposition::Unsupported),
+                image: Some(MappingDisposition::Unsupported),
+                file: Some(MappingDisposition::Unsupported),
+                compressed: Some(MappingDisposition::Unsupported),
+                provider_payload: Some(MappingDisposition::Dropped),
+            },
+            resume_quality: ResumeQuality::Native,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::High,
+                multiple_files: true,
+                sqlite: true,
+                sidecar_files: true,
+                index_repair: true,
+            },
             backup_support: ProviderBackupSupport {
                 before_write: true,
                 restore: true,
                 sync_only: false,
             },
-            ..ProviderCapabilities::full_session_management()
+            activity_support: ProviderActivitySupport {
+                hook_events: false,
+                runtime_endpoint: false,
+                session_activity: false,
+            },
+            ..ProviderCapabilities::default()
         }
     }
 
@@ -986,6 +1033,21 @@ mod tests {
         }
     }
 
+    struct TestConfigHomeGuard;
+
+    impl TestConfigHomeGuard {
+        fn new(path: &Path) -> Self {
+            crate::config::set_test_home_dir(path.to_path_buf());
+            Self
+        }
+    }
+
+    impl Drop for TestConfigHomeGuard {
+        fn drop(&mut self) {
+            crate::config::reset_test_home_dir();
+        }
+    }
+
     fn use_test_deepseek_dir(path: PathBuf) -> TestDeepseekDirGuard {
         let lock = TEST_DEEPSEEK_TEST_LOCK
             .get_or_init(|| std::sync::Mutex::new(()))
@@ -1222,6 +1284,156 @@ mod tests {
             Some(expected_locator.as_str())
         );
         assert_eq!(imported.session.identity.canonical_id, session_id);
+    }
+
+    #[test]
+    fn deepseek_capabilities_describe_sqlite_projection_and_management_boundaries() {
+        let capabilities = DeepseekProvider.capabilities();
+
+        assert!(capabilities.scan);
+        assert!(capabilities.import);
+        assert!(capabilities.export);
+        assert!(capabilities.delete);
+        assert!(capabilities.rename);
+        assert!(capabilities.resume);
+        assert_eq!(capabilities.scan_strategy, ScanStrategy::FullScan);
+        assert_eq!(capabilities.page_strategy, PageStrategy::FullImport);
+        assert_eq!(capabilities.storage_shape, StorageShape::Sqlite);
+        assert_eq!(capabilities.turn_quality, TurnQuality::Inferred);
+        assert_eq!(capabilities.resume_quality, ResumeQuality::Native);
+        assert_eq!(capabilities.write_risk.level, WriteRiskLevel::High);
+        assert!(capabilities.write_risk.multiple_files);
+        assert!(capabilities.write_risk.sqlite);
+        assert!(capabilities.write_risk.sidecar_files);
+        assert!(capabilities.write_risk.index_repair);
+        assert!(!capabilities.activity_support.hook_events);
+        assert!(!capabilities.activity_support.runtime_endpoint);
+        assert!(!capabilities.activity_support.session_activity);
+        assert_eq!(
+            capabilities.import_fidelity.provider_payload,
+            Some(MappingDisposition::Preserved)
+        );
+        assert_eq!(
+            capabilities.export_fidelity.provider_payload,
+            Some(MappingDisposition::Dropped)
+        );
+    }
+
+    #[test]
+    fn deepseek_projection_bootstrap_is_bodyless_and_detail_reads_locator_source() -> Result<()> {
+        let source_root = tempdir()?;
+        let home = tempdir()?;
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let _deepseek_guard = use_test_deepseek_dir(source_root.path().join("deepseek"));
+        let session_id = "thread-projection";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+
+        let first = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(first.scanned_providers, 1);
+        assert_eq!(first.discovered_sessions, 2);
+        assert_eq!(first.projected_sessions, 2);
+        assert_eq!(first.unchanged_sessions, 0);
+        assert!(first.failures.is_empty());
+
+        let conn = local_store::open_database()?;
+        let stored: (String, String, String, String, i64) = conn.query_row(
+            "SELECT s.id, src.source_path, src.storage_shape, src.source_cursor,
+                    ss.stale
+             FROM sessions s
+             JOIN session_sources src ON src.id = s.primary_source_id
+             JOIN session_snapshots ss ON ss.session_id = s.id
+             WHERE s.provider_id = ?1 AND s.provider_session_id = ?2",
+            params![PROVIDER_ID, session_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        let expected_locator = deepseek_source_locator(session_id)?;
+        let expected_fingerprint = DeepseekProvider
+            .session_source_fingerprint(&expected_locator)?
+            .expect("fixture fingerprint");
+        assert_eq!(stored.1, expected_locator);
+        assert_eq!(stored.2, "sqlite");
+        assert_eq!(stored.3, expected_fingerprint.value);
+        assert_eq!(stored.4, 0);
+
+        let body_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(body_table_count, 0);
+        drop(conn);
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(detail.events.is_empty());
+        assert!(detail.turns.is_empty());
+        assert_eq!(detail.event_count, 1);
+        assert_eq!(detail.message_count, 1);
+        assert!(!detail.stale);
+        assert_eq!(
+            detail.source_path.as_deref(),
+            Some(expected_locator.as_str())
+        );
+        assert_eq!(
+            detail.projection_report.as_ref().unwrap().id,
+            format!("source-read:{PROVIDER_ID}:{session_id}")
+        );
+
+        let conn = local_store::open_database()?;
+        let cached_counts: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT event_count, message_count, turn_count, counts_complete
+             FROM session_snapshots WHERE session_id = ?1",
+            [stored.0.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(cached_counts, (1, 1, 1, 1));
+        drop(conn);
+
+        let second = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(second.projected_sessions, 0);
+        assert_eq!(second.unchanged_sessions, 2);
+        assert!(second.failures.is_empty());
+
+        let conn = Connection::open(get_state_db_path())?;
+        conn.execute(
+            "UPDATE messages SET content = 'changed' WHERE thread_id = ?1",
+            [session_id],
+        )?;
+        drop(conn);
+
+        let stale_detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(stale_detail.stale);
+
+        let refreshed = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(refreshed.projected_sessions, 1);
+        assert_eq!(refreshed.unchanged_sessions, 1);
+        assert!(refreshed.failures.is_empty());
+
+        let fresh_detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(!fresh_detail.stale);
+        assert_eq!(fresh_detail.message_count, 1);
+        Ok(())
     }
 
     #[test]

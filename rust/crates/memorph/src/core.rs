@@ -35,8 +35,9 @@ pub mod manager;
 pub mod session_management;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
-const PROJECTED_SESSION_PROVIDER_IDS: &[&str] =
-    &["claude", "codex", "cursor", "kimi", "kiro", "opencode"];
+const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
+    "claude", "codex", "cursor", "deepseek", "kimi", "kiro", "opencode",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListParams {
