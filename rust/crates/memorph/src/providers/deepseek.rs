@@ -8,14 +8,17 @@ use crate::provider::{
     canonical_event_role_label, canonical_event_visible_message_role,
     canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
     Provider, ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup,
-    ProviderSessionSummary, ProviderSourceMutation,
+    ProviderSessionSummary, ProviderSourceFingerprint, ProviderSourceMutation,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::types::ValueRef;
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use uuid::Uuid;
 
 mod backup;
@@ -66,13 +69,20 @@ impl Provider for DeepseekProvider {
             "SELECT id, preview, cwd, title, created_at, updated_at FROM threads WHERE archived = 0 ORDER BY updated_at DESC"
         )?;
         let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let preview: String = row.get(1)?;
-            let cwd: String = row.get(2)?;
-            let title: Option<String> = row.get(3)?;
-            let _created: i64 = row.get(4)?;
-            let updated: i64 = row.get(5)?;
-            Ok(ProviderSessionSummary {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+
+        let mut sessions = Vec::new();
+        for row in rows {
+            let (id, preview, cwd, title, _created, updated) = row?;
+            sessions.push(ProviderSessionSummary {
                 session_id: id.clone(),
                 title: title.or_else(|| {
                     let p = preview.trim();
@@ -84,15 +94,8 @@ impl Provider for DeepseekProvider {
                 }),
                 project_dir: Some(cwd),
                 last_active_at: Some(updated),
-                source_path: Some(id),
-            })
-        })?;
-
-        let mut sessions = Vec::new();
-        for row in rows {
-            if let Ok(s) = row {
-                sessions.push(s);
-            }
+                source_path: Some(deepseek_source_locator(&id)?),
+            });
         }
         Ok(sessions)
     }
@@ -111,38 +114,47 @@ impl Provider for DeepseekProvider {
                 "SELECT id, preview, cwd, title, updated_at FROM threads WHERE id = ?1 AND archived = 0",
                 [session_id],
                 |row| {
-                    let id: String = row.get(0)?;
-                    let preview: String = row.get(1)?;
-                    let cwd: String = row.get(2)?;
-                    let title: Option<String> = row.get(3)?;
-                    let updated: i64 = row.get(4)?;
-                    Ok(ProviderSessionSummary {
-                        session_id: id.clone(),
-                        title: title.or_else(|| {
-                            let p = preview.trim();
-                            if p.is_empty() {
-                                None
-                            } else {
-                                Some(p.to_string())
-                            }
-                        }),
-                        project_dir: Some(cwd),
-                        last_active_at: Some(updated),
-                        source_path: Some(id),
-                    })
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
                 },
             )
             .optional()?;
 
-        Ok(meta)
+        meta.map(|(id, preview, cwd, title, updated)| {
+            Ok(ProviderSessionSummary {
+                session_id: id.clone(),
+                title: title.or_else(|| {
+                    let p = preview.trim();
+                    if p.is_empty() {
+                        None
+                    } else {
+                        Some(p.to_string())
+                    }
+                }),
+                project_dir: Some(cwd),
+                last_active_at: Some(updated),
+                source_path: Some(deepseek_source_locator(&id)?),
+            })
+        })
+        .transpose()
     }
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
-        let db_path = get_state_db_path();
-        let conn = Connection::open(&db_path).with_context(|| {
-            format!("failed to open DeepSeek state db at {}", db_path.display())
-        })?;
-        import_canonical_session_from_connection(&conn, source_path)
+        let (db_path, thread_id) = parse_deepseek_source_locator(source_path)?;
+        let conn = open_deepseek_read_only_db(&db_path)?;
+        import_canonical_session_from_connection(&conn, &thread_id, source_path)
+    }
+
+    fn session_source_fingerprint(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<ProviderSourceFingerprint>> {
+        deepseek_source_fingerprint(source_path)
     }
 
     fn export_session(
@@ -258,6 +270,141 @@ impl Provider for DeepseekProvider {
     }
 }
 
+fn deepseek_source_fingerprint(source_locator: &str) -> Result<Option<ProviderSourceFingerprint>> {
+    let (db_path, thread_id) = parse_deepseek_source_locator(source_locator)?;
+    let Some(db_metadata) = std::fs::metadata(&db_path).ok() else {
+        return Ok(None);
+    };
+    let conn = open_deepseek_read_only_db(&db_path)?;
+    let thread_exists = conn
+        .query_row("SELECT 1 FROM threads WHERE id = ?1", [&thread_id], |_| {
+            Ok(())
+        })
+        .optional()?;
+    if thread_exists.is_none() {
+        return Ok(None);
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"deepseek-source-v1\0");
+    hash_deepseek_bytes(&mut hasher, b"thread", thread_id.as_bytes());
+    hash_deepseek_table_rows(&conn, &mut hasher, "threads", "id", &thread_id)?;
+    for table in ["messages", "checkpoints", "thread_dynamic_tools"] {
+        hash_deepseek_table_rows(&conn, &mut hasher, table, "thread_id", &thread_id)?;
+    }
+
+    let wal_path = PathBuf::from(format!("{}-wal", db_path.display()));
+    let wal_metadata = std::fs::metadata(&wal_path).ok();
+    let modified_at_ms = deepseek_metadata_modified_at_ms(&db_metadata).max(
+        wal_metadata
+            .as_ref()
+            .map(deepseek_metadata_modified_at_ms)
+            .unwrap_or(0),
+    );
+    let size_bytes = i64::try_from(db_metadata.len())
+        .unwrap_or(i64::MAX)
+        .saturating_add(
+            wal_metadata
+                .as_ref()
+                .map(|metadata| i64::try_from(metadata.len()).unwrap_or(i64::MAX))
+                .unwrap_or(0),
+        );
+    Ok(Some(ProviderSourceFingerprint {
+        modified_at_ms,
+        size_bytes,
+        value: format!("sqlite-rows-v1:{:x}", hasher.finalize()),
+    }))
+}
+
+fn hash_deepseek_table_rows(
+    conn: &Connection,
+    hasher: &mut Sha256,
+    table: &str,
+    selection_column: &str,
+    thread_id: &str,
+) -> Result<()> {
+    let columns = deepseek_table_columns(conn, table)?;
+    anyhow::ensure!(
+        columns.iter().any(|column| column == selection_column),
+        "DeepSeek table {table} must contain selection column {selection_column}"
+    );
+    let selected_columns = columns
+        .iter()
+        .map(|column| quote_deepseek_identifier(column))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let order_columns = selected_columns.clone();
+    let query = format!(
+        "SELECT {selected_columns} FROM {} WHERE {} = ?1 ORDER BY {order_columns}",
+        quote_deepseek_identifier(table),
+        quote_deepseek_identifier(selection_column),
+    );
+    let mut stmt = conn.prepare(&query)?;
+    let mut rows = stmt.query([thread_id])?;
+    hash_deepseek_bytes(hasher, b"table", table.as_bytes());
+    for column in &columns {
+        hash_deepseek_bytes(hasher, b"column", column.as_bytes());
+    }
+    while let Some(row) = rows.next()? {
+        hasher.update(b"row\0");
+        for index in 0..columns.len() {
+            hash_deepseek_value(hasher, row.get_ref(index)?);
+        }
+    }
+    Ok(())
+}
+
+fn deepseek_table_columns(conn: &Connection, table: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!(
+        "PRAGMA table_info({})",
+        quote_deepseek_identifier(table)
+    ))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        !columns.is_empty(),
+        "DeepSeek managed table does not exist: {table}"
+    );
+    Ok(columns)
+}
+
+fn hash_deepseek_value(hasher: &mut Sha256, value: ValueRef<'_>) {
+    match value {
+        ValueRef::Null => hasher.update(b"null\0"),
+        ValueRef::Integer(value) => {
+            hasher.update(b"integer\0");
+            hasher.update(value.to_le_bytes());
+        }
+        ValueRef::Real(value) => {
+            hasher.update(b"real\0");
+            hasher.update(value.to_bits().to_le_bytes());
+        }
+        ValueRef::Text(value) => hash_deepseek_bytes(hasher, b"text", value),
+        ValueRef::Blob(value) => hash_deepseek_bytes(hasher, b"blob", value),
+    }
+}
+
+fn hash_deepseek_bytes(hasher: &mut Sha256, kind: &[u8], value: &[u8]) {
+    hasher.update(kind);
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value);
+    hasher.update(b"\0");
+}
+
+fn quote_deepseek_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn deepseek_metadata_modified_at_ms(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
 fn deepseek_session_size_with_conn(conn: &Connection, session_id: &str) -> Result<u64> {
     let mut total: u64 = 0;
 
@@ -300,6 +447,41 @@ fn get_deepseek_dir() -> PathBuf {
 
 fn get_state_db_path() -> PathBuf {
     get_deepseek_dir().join("state.db")
+}
+
+fn deepseek_source_locator(thread_id: &str) -> Result<String> {
+    anyhow::ensure!(!thread_id.is_empty(), "DeepSeek thread ID cannot be empty");
+    anyhow::ensure!(
+        !thread_id.contains('#'),
+        "DeepSeek thread ID cannot contain locator separators"
+    );
+    Ok(format!(
+        "{}#thread={thread_id}",
+        get_state_db_path().display()
+    ))
+}
+
+fn parse_deepseek_source_locator(source_locator: &str) -> Result<(PathBuf, String)> {
+    let (database_path, thread_id) = source_locator
+        .rsplit_once("#thread=")
+        .context("DeepSeek source locator must use '<database>#thread=<threadId>'")?;
+    anyhow::ensure!(
+        !database_path.is_empty() && !thread_id.is_empty(),
+        "DeepSeek source locator must include a database path and thread ID"
+    );
+    anyhow::ensure!(
+        !thread_id.contains('#'),
+        "DeepSeek source locator contains an invalid thread ID"
+    );
+    Ok((PathBuf::from(database_path), thread_id.to_string()))
+}
+
+fn open_deepseek_read_only_db(path: &Path) -> Result<Connection> {
+    if !path.is_file() {
+        anyhow::bail!("DeepSeek state database not found: {}", path.display());
+    }
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("failed to open DeepSeek state db at {}", path.display()))
 }
 
 fn get_session_index_path() -> PathBuf {
@@ -407,10 +589,11 @@ struct MessageRow {
 
 fn import_canonical_session_from_connection(
     conn: &Connection,
+    thread_id: &str,
     source_path: &str,
 ) -> Result<ImportedSession> {
-    let thread = load_thread_row(conn, source_path)?;
-    let messages = load_message_rows(conn, source_path)?;
+    let thread = load_thread_row(conn, thread_id)?;
+    let messages = load_message_rows(conn, thread_id)?;
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
     let mut events = Vec::new();
 
@@ -995,6 +1178,131 @@ mod tests {
             )
             .optional()
             .unwrap()
+    }
+
+    #[test]
+    fn deepseek_scan_locator_roundtrips_and_import_uses_the_locator() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-locator";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let db_path = get_state_db_path();
+        let expected_locator = format!("{}#thread={session_id}", db_path.display());
+
+        let sessions = DeepseekProvider.scan_sessions().unwrap();
+        let summary = sessions
+            .iter()
+            .find(|session| session.session_id == session_id)
+            .unwrap();
+        assert_eq!(
+            summary.source_path.as_deref(),
+            Some(expected_locator.as_str())
+        );
+        assert_eq!(
+            parse_deepseek_source_locator(summary.source_path.as_deref().unwrap()).unwrap(),
+            (db_path.clone(), session_id.to_string())
+        );
+        assert!(parse_deepseek_source_locator(session_id).is_err());
+
+        let meta = DeepseekProvider
+            .get_session_meta(session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(meta.source_path, summary.source_path);
+        let imported = DeepseekProvider
+            .import_session(summary.source_path.as_deref().unwrap())
+            .unwrap();
+        assert_eq!(
+            imported
+                .session
+                .provenance
+                .primary_source
+                .source_path
+                .as_deref(),
+            Some(expected_locator.as_str())
+        );
+        assert_eq!(imported.session.identity.canonical_id, session_id);
+    }
+
+    #[test]
+    fn deepseek_locator_rejects_raw_thread_ids_and_reports_missing_sources() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-source-errors";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+
+        assert!(DeepseekProvider.import_session(session_id).is_err());
+        assert!(DeepseekProvider
+            .session_source_fingerprint(session_id)
+            .is_err());
+
+        let missing_thread_locator = deepseek_source_locator("thread-missing").unwrap();
+        assert!(DeepseekProvider
+            .session_source_fingerprint(&missing_thread_locator)
+            .unwrap()
+            .is_none());
+        let missing_db_locator = format!(
+            "{}#thread={session_id}",
+            dir.path().join("missing").join("state.db").display()
+        );
+        assert!(DeepseekProvider
+            .session_source_fingerprint(&missing_db_locator)
+            .unwrap()
+            .is_none());
+        assert!(DeepseekProvider
+            .import_session(&missing_db_locator)
+            .is_err());
+    }
+
+    #[test]
+    fn deepseek_fingerprint_is_thread_scoped_and_allows_empty_message_sets() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
+        let session_id = "thread-fingerprint";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let locator = deepseek_source_locator(session_id).unwrap();
+
+        let first = DeepseekProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .unwrap();
+        let conn = Connection::open(get_state_db_path()).unwrap();
+        conn.execute(
+            "UPDATE threads SET unrelated_note = 'changed other' WHERE id = 'thread-other'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let unrelated_change = DeepseekProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.value, unrelated_change.value);
+
+        let conn = Connection::open(get_state_db_path()).unwrap();
+        conn.execute("DELETE FROM messages WHERE thread_id = ?1", [session_id])
+            .unwrap();
+        drop(conn);
+        let empty_messages = DeepseekProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.value, empty_messages.value);
+        let imported = DeepseekProvider.import_session(&locator).unwrap();
+        assert!(imported.session.events.is_empty());
+
+        let conn = Connection::open(get_state_db_path()).unwrap();
+        conn.execute(
+            "UPDATE checkpoints SET note = 'changed target' WHERE thread_id = ?1",
+            [session_id],
+        )
+        .unwrap();
+        drop(conn);
+        let target_change = DeepseekProvider
+            .session_source_fingerprint(&locator)
+            .unwrap()
+            .unwrap();
+        assert_ne!(empty_messages.value, target_change.value);
     }
 
     #[test]
@@ -1626,7 +1934,9 @@ mod tests {
         )
         .unwrap();
 
-        let imported = import_canonical_session_from_connection(&conn, "thread-1").unwrap();
+        let imported =
+            import_canonical_session_from_connection(&conn, "thread-1", "state.db#thread=thread-1")
+                .unwrap();
 
         assert_eq!(
             imported.session.context.workspace_dir.as_deref(),
