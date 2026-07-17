@@ -1862,6 +1862,98 @@ mod tests {
     }
 
     #[test]
+    fn core_qwen_public_management_registers_backups_and_activity() -> Result<()> {
+        let global_qwen = tempdir()?;
+        let runtime = tempdir()?;
+        let memorph_home = tempdir()?;
+        let _guard = TestQwenEnvironmentGuard::new(global_qwen.path());
+        let _home_guard = TestConfigHomeGuard::new(memorph_home.path());
+        std::env::set_var("QWEN_RUNTIME_DIR", runtime.path());
+        let session_id = "78787878-7878-7878-7878-787878787878";
+        let active = session_file(runtime.path(), session_id);
+        write_fixture(&active, session_id);
+
+        let bootstrap = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(bootstrap.projected_sessions, 1);
+        assert!(bootstrap.failures.is_empty());
+
+        let renamed = crate::core::rename_session(
+            PROVIDER_ID,
+            session_id,
+            "Renamed through public core",
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert!(renamed.native_updated);
+        assert_eq!(
+            parse_jsonl_session(&active)?.records.last().unwrap()["subtype"],
+            "custom_title"
+        );
+
+        let rename_backups = crate::core::session_management::list_registered_backups(
+            crate::storage::artifact_store::BackupQuery {
+                provider_id: Some(PROVIDER_ID.to_string()),
+                provider_session_id: Some(session_id.to_string()),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(rename_backups.len(), 1);
+        assert!(rename_backups.iter().all(|backup| {
+            backup.verification.status
+                == crate::storage::artifact_store::ArtifactVerificationStatus::Verified
+        }));
+
+        crate::core::delete_session(
+            PROVIDER_ID,
+            session_id,
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert!(!active.exists());
+
+        let backups = crate::core::session_management::list_registered_backups(
+            crate::storage::artifact_store::BackupQuery {
+                provider_id: Some(PROVIDER_ID.to_string()),
+                provider_session_id: Some(session_id.to_string()),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(backups.len(), 2);
+        assert!(backups.iter().all(|backup| {
+            backup.verification.status
+                == crate::storage::artifact_store::ArtifactVerificationStatus::Verified
+        }));
+        let delete_backup = backups
+            .iter()
+            .find(|backup| backup.entry.backup.metadata["mutation"] == "delete")
+            .expect("public delete should register a native backup");
+        let restored = crate::core::session_management::restore_registered_backup(
+            &delete_backup.entry.backup.id,
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(
+            restored.status,
+            crate::storage::artifact_store::BackupRestoreStatus::Success
+        );
+        assert!(active.is_file());
+
+        let activities = crate::core::list_management_activity(
+            &crate::storage::activity_store::ActivityQuery {
+                session_id: Some(session_id.to_string()),
+                provider_id: Some(PROVIDER_ID.to_string()),
+                ..Default::default()
+            },
+        )?;
+        assert_eq!(activities.len(), 2);
+        assert!(activities.iter().all(|activity| {
+            activity.status == crate::storage::activity_store::ActivityStatus::Success
+                && activity.finished_at_ms.is_some()
+        }));
+        Ok(())
+    }
+
+    #[test]
     fn core_delete_failure_restores_complete_qwen_source_backup() -> Result<()> {
         let global_qwen = tempdir()?;
         let runtime = tempdir()?;

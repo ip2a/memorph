@@ -4148,6 +4148,40 @@ mod tests {
             false
         );
 
+        let qwen = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "qwen")
+            .expect("missing qwen catalog entry");
+        let qwen_capabilities = &qwen["capability_set"];
+        assert_eq!(qwen["display_name"], "Qwen");
+        assert_eq!(qwen_capabilities["scan"], true);
+        assert_eq!(qwen_capabilities["import"], true);
+        assert_eq!(qwen_capabilities["export"], false);
+        assert_eq!(qwen_capabilities["delete"], true);
+        assert_eq!(qwen_capabilities["rename"], true);
+        assert_eq!(qwen_capabilities["resume"], true);
+        assert_eq!(qwen_capabilities["scan_strategy"], "full_scan");
+        assert_eq!(qwen_capabilities["page_strategy"], "full_import");
+        assert_eq!(qwen_capabilities["storage_shape"], "jsonl");
+        assert_eq!(qwen_capabilities["turn_quality"], "inferred");
+        assert_eq!(qwen_capabilities["resume_quality"], "native");
+        assert_eq!(qwen_capabilities["write_risk"]["level"], "high");
+        assert_eq!(qwen_capabilities["write_risk"]["multiple_files"], true);
+        assert_eq!(qwen_capabilities["write_risk"]["sqlite"], false);
+        assert_eq!(qwen_capabilities["write_risk"]["sidecar_files"], true);
+        assert_eq!(qwen_capabilities["write_risk"]["index_repair"], false);
+        assert_eq!(qwen_capabilities["backup_support"]["before_write"], true);
+        assert_eq!(qwen_capabilities["backup_support"]["restore"], true);
+        assert_eq!(qwen_capabilities["backup_support"]["sync_only"], false);
+        assert_eq!(
+            qwen_capabilities["import_fidelity"]["tool_call"],
+            "preserved"
+        );
+        assert_eq!(
+            qwen_capabilities["import_fidelity"]["provider_payload"],
+            "preserved"
+        );
+
         let deepseek = providers
             .iter()
             .find(|provider| provider["provider_id"] == "deepseek")
