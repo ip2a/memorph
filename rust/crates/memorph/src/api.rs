@@ -4106,6 +4106,48 @@ mod tests {
             .expect("missing opencode catalog entry");
         assert_eq!(opencode["capability_set"]["page_strategy"], "native_page");
 
+        let gemini = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "gemini")
+            .expect("missing gemini catalog entry");
+        let gemini_capabilities = &gemini["capability_set"];
+        assert_eq!(gemini["display_name"], "Gemini");
+        assert_eq!(gemini_capabilities["scan"], true);
+        assert_eq!(gemini_capabilities["import"], true);
+        assert_eq!(gemini_capabilities["export"], false);
+        assert_eq!(gemini_capabilities["delete"], true);
+        assert_eq!(gemini_capabilities["rename"], false);
+        assert_eq!(gemini_capabilities["resume"], true);
+        assert_eq!(gemini_capabilities["scan_strategy"], "full_scan");
+        assert_eq!(gemini_capabilities["page_strategy"], "full_import");
+        assert_eq!(gemini_capabilities["storage_shape"], "jsonl");
+        assert_eq!(gemini_capabilities["turn_quality"], "inferred");
+        assert_eq!(gemini_capabilities["resume_quality"], "native");
+        assert_eq!(gemini_capabilities["import_fidelity"]["text"], "preserved");
+        assert_eq!(
+            gemini_capabilities["import_fidelity"]["provider_payload"],
+            "preserved"
+        );
+        assert_eq!(
+            gemini_capabilities["export_fidelity"]["text"],
+            "unsupported"
+        );
+        assert_eq!(gemini_capabilities["write_risk"]["level"], "medium");
+        assert_eq!(gemini_capabilities["write_risk"]["multiple_files"], true);
+        assert_eq!(gemini_capabilities["write_risk"]["sqlite"], false);
+        assert_eq!(gemini_capabilities["write_risk"]["sidecar_files"], true);
+        assert_eq!(gemini_capabilities["backup_support"]["before_write"], true);
+        assert_eq!(gemini_capabilities["backup_support"]["restore"], true);
+        assert_eq!(gemini_capabilities["activity_support"]["hook_events"], true);
+        assert_eq!(
+            gemini_capabilities["activity_support"]["runtime_endpoint"],
+            false
+        );
+        assert_eq!(
+            gemini_capabilities["activity_support"]["session_activity"],
+            false
+        );
+
         let deepseek = providers
             .iter()
             .find(|provider| provider["provider_id"] == "deepseek")

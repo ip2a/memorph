@@ -274,6 +274,7 @@ mod tests {
         assert_eq!(display_name("claude"), "Claude");
         assert_eq!(display_name("opencode"), "OpenCode");
         assert_eq!(display_name("deepseek"), "DeepSeek");
+        assert_eq!(display_name("gemini"), "Gemini");
         // Aliases are canonicalized before looking up the display name.
         assert_eq!(display_name("trae-cn"), "Trae CN");
         assert_eq!(display_name("oh-my-pi"), "OMP");
