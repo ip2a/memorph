@@ -36,7 +36,30 @@ pub mod session_management;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
 const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
-    "claude", "codex", "cursor", "deepseek", "gemini", "kimi", "kiro", "opencode", "qwen",
+    // Tier 1: full L4 providers with independent modules and verified projections.
+    "claude",
+    "codex",
+    "cursor",
+    "deepseek",
+    "gemini",
+    "kimi",
+    "kiro",
+    "opencode",
+    "qwen",
+    // Tier 2: emerging providers onboarded via generic_json (minimal visibility).
+    // Their sessions are discoverable in the UI, but capability mapping is unverified.
+    "antigravity",
+    "cline",
+    "copilot",
+    "windsurf",
+    "codebuddy",
+    "qoder",
+    "trae",
+    "droid",
+    "stepfun",
+    "workbuddy",
+    "hermes",
+    "pi",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3082,6 +3105,10 @@ pub fn import_session(params: &ImportParams, actor: ActivityActor) -> Result<Imp
                     error: None,
                 },
             )?;
+            // Same index-refresh rationale as switch_session: the UI opens the
+            // imported session immediately, so project it now rather than wait
+            // for the background sync.
+            index_target_provider_sessions(&params.provider);
             Ok(imported)
         }
         Err(error) => {
@@ -3515,6 +3542,32 @@ pub struct SwitchResult {
     pub removed_original: bool,
 }
 
+/// Immediately project the target provider into the SQLite session index after
+/// `switch_session` or `import_session` writes its file.
+///
+/// Both the session list (`list_sessions`) and the detail view read session
+/// identities straight from the SQLite index, which the 60s background sync
+/// loop (`spawn_background_sync_loop`) only fills in after a delay. Without
+/// this synchronous pass the UI opens the freshly written session and hits
+/// "Session is not indexed" for up to a minute. Best-effort: a failure only
+/// logs, because the export already succeeded and the background sync will
+/// still catch up.
+fn index_target_provider_sessions(provider_id: &str) {
+    let provider_id = providers::canonical_provider_id(provider_id);
+    if let Err(error) = (|| -> anyhow::Result<()> {
+        let mut conn = local_store::open_database()?;
+        bootstrap_session_projections_in_connection(&mut conn, Some(provider_id.as_str()))?;
+        Ok(())
+    })() {
+        crate::logging::error(
+            "target_provider_index_refresh",
+            &format!(
+                "Failed to project {provider_id} sessions into the index after writing a session: {error:#}"
+            ),
+        );
+    }
+}
+
 pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
     let cwd = std::env::current_dir()?;
 
@@ -3588,6 +3641,11 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
         source_prov.delete_session(&source_session_id)?;
         removed_original = true;
     }
+
+    // Make the freshly exported session visible to list/detail views without
+    // waiting on the 60s background sync, which otherwise leaves a
+    // "Session is not indexed" window for the UI.
+    index_target_provider_sessions(&params.to);
 
     Ok(SwitchResult {
         from_name: source_prov.name().to_string(),
@@ -4902,6 +4960,32 @@ mod tests {
     fn kiro_is_enabled_for_default_projection_bootstrap() {
         assert!(PROJECTED_SESSION_PROVIDER_IDS.contains(&"kiro"));
         assert!(provider_supports_session_projection("kiro"));
+    }
+
+    #[test]
+    fn emerging_providers_are_onboarded_into_projection_whitelist() {
+        // Route A: all 12 generic providers must be on the projection whitelist so their
+        // sessions are visible in the UI even before per-provider capability verification.
+        for id in [
+            "antigravity",
+            "cline",
+            "copilot",
+            "windsurf",
+            "codebuddy",
+            "qoder",
+            "trae",
+            "droid",
+            "stepfun",
+            "workbuddy",
+            "hermes",
+            "pi",
+        ] {
+            assert!(
+                PROJECTED_SESSION_PROVIDER_IDS.contains(&id),
+                "emerging provider {id} must be whitelisted for projection",
+            );
+            assert!(provider_supports_session_projection(id));
+        }
     }
 
     #[test]
