@@ -172,8 +172,15 @@ fn vscode_global_storage(app: &str) -> Vec<PathBuf> {
 }
 
 fn antigravity_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("Antigravity");
-    roots.extend(vscode_global_storage("Google/Antigravity"));
+    // Antigravity (Google) reuses the Gemini CLI backend for conversations.
+    // CodeIsland reference: ~/.gemini/tmp/<project_hash>/chats/*.json
+    let mut roots = Vec::new();
+    if let Some(root) = home_join(".gemini/tmp") {
+        roots.push(root);
+    }
+    let mut vscode = vscode_global_storage("Antigravity");
+    vscode.extend(vscode_global_storage("Google/Antigravity"));
+    roots.extend(vscode);
     if let Some(root) = home_join(".antigravity") {
         roots.push(root);
     }
@@ -181,18 +188,26 @@ fn antigravity_roots() -> Vec<PathBuf> {
 }
 
 fn droid_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("Factory");
-    roots.extend(vscode_global_storage("Droid"));
-    if let Some(root) = home_join(".factory") {
+    // Factory/Droid stores Claude-style transcripts per project.
+    // CodeIsland reference: ~/.factory/sessions/<encoded-cwd>/<sessionId>.jsonl
+    let mut roots = Vec::new();
+    if let Some(root) = home_join(".factory/sessions") {
         roots.push(root);
     }
+    roots.extend(vscode_global_storage("Factory"));
+    roots.extend(vscode_global_storage("Droid"));
     roots
 }
 
 fn cline_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("Code");
-    roots.extend(vscode_global_storage("Code - Insiders"));
-    roots.extend(vscode_global_storage("VSCodium"));
+    // Cline (VS Code ext "saoudrizwan.claude-dev") writes per-task history.
+    // CodeIsland reference: globalStorage/saoudrizwan.claude-dev/tasks/<id>/api_conversation_history.json
+    let mut roots = Vec::new();
+    for app in ["Code", "Code - Insiders", "VSCodium"] {
+        for storage in vscode_global_storage(app) {
+            roots.push(storage.join("saoudrizwan.claude-dev").join("tasks"));
+        }
+    }
     if let Some(root) = home_join("Documents/Cline") {
         roots.push(root);
     }
@@ -200,15 +215,20 @@ fn cline_roots() -> Vec<PathBuf> {
 }
 
 fn copilot_roots() -> Vec<PathBuf> {
+    // GitHub Copilot CLI session state.
+    // local-llm-proxy reference: ~/.copilot/session-state/<sessionId>/events.jsonl
     let mut roots = Vec::new();
+    if let Some(root) = home_join(".copilot/session-state") {
+        roots.push(root);
+    }
+    if let Some(root) = home_join(".copilot") {
+        roots.push(root);
+    }
     for app in ["Code", "Code - Insiders", "VSCodium"] {
         for root in vscode_global_storage(app) {
             roots.push(root.join("github.copilot-chat"));
             roots.push(root.join("github.copilot"));
         }
-    }
-    if let Some(root) = home_join(".copilot") {
-        roots.push(root);
     }
     roots
 }
@@ -222,26 +242,35 @@ fn windsurf_roots() -> Vec<PathBuf> {
 }
 
 fn codebuddy_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("CodeBuddy");
-    if let Some(root) = home_join(".codebuddy") {
+    // CodeBuddy stores Claude-style transcripts per project.
+    // CodeIsland reference: ~/.codebuddy/projects/<encoded-cwd>/<sessionId>.jsonl
+    let mut roots = Vec::new();
+    if let Some(root) = home_join(".codebuddy/projects") {
         roots.push(root);
     }
+    roots.extend(vscode_global_storage("CodeBuddy"));
     roots
 }
 
 fn qoder_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("Qoder");
-    if let Some(root) = home_join(".qoder") {
+    // Qoder stores Claude-style transcripts per project.
+    // CodeIsland reference: ~/.qoder/projects/<encoded-cwd>/{<id>.jsonl, transcript/<id>.jsonl}
+    let mut roots = Vec::new();
+    if let Some(root) = home_join(".qoder/projects") {
         roots.push(root);
     }
+    roots.extend(vscode_global_storage("Qoder"));
     roots
 }
 
 fn qwen_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("Qwen");
-    if let Some(root) = home_join(".qwen") {
+    // Qwen Code CLI stores Claude-style transcripts per project.
+    // local-llm-proxy reference: ~/.qwen/projects/<encoded-cwd>/chats/*.jsonl
+    let mut roots = Vec::new();
+    if let Some(root) = home_join(".qwen/projects") {
         roots.push(root);
     }
+    roots.extend(vscode_global_storage("Qwen"));
     roots
 }
 
@@ -254,10 +283,13 @@ fn stepfun_roots() -> Vec<PathBuf> {
 }
 
 fn workbuddy_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("WorkBuddy");
-    if let Some(root) = home_join(".workbuddy") {
+    // WorkBuddy emits OpenTelemetry-style trace files.
+    // local-llm-proxy reference: ~/.workbuddy/traces/trace_*.json
+    let mut roots = Vec::new();
+    if let Some(root) = home_join(".workbuddy/traces") {
         roots.push(root);
     }
+    roots.extend(vscode_global_storage("WorkBuddy"));
     roots
 }
 
