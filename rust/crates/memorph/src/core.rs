@@ -4893,7 +4893,9 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_reports_unsupported_provider_without_scanning() {
+    fn bootstrap_scans_deepseek_without_source() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
         local_store::apply_schema(&mut conn).unwrap();
@@ -4901,11 +4903,10 @@ mod tests {
         let report =
             bootstrap_session_projections_in_connection(&mut conn, Some("deepseek")).unwrap();
 
-        assert_eq!(report.scanned_providers, 0);
-        assert_eq!(report.unsupported_providers, 1);
-        assert_eq!(report.failures.len(), 1);
-        assert_eq!(report.failures[0].provider_id, "deepseek");
-        assert_eq!(report.failures[0].session_id, None);
+        assert_eq!(report.scanned_providers, 1);
+        assert_eq!(report.unsupported_providers, 0);
+        assert_eq!(report.discovered_sessions, 0);
+        assert!(report.failures.is_empty());
     }
 
     #[test]
