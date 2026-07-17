@@ -1,6 +1,8 @@
 pub mod adapter;
 pub mod hook;
 
+mod management;
+
 use crate::canonical::{
     CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
     EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingIssue,
@@ -8,8 +10,10 @@ use crate::canonical::{
     SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
 };
 use crate::provider::{
-    PageStrategy, Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
-    ProviderSourceFingerprint, ResumeQuality, ScanStrategy, StorageShape, TurnQuality,
+    PageStrategy, Provider, ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity,
+    ProviderSessionBackup, ProviderSessionSummary, ProviderSourceFingerprint,
+    ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
+    TurnQuality, WriteRiskLevel,
 };
 use crate::utils::{extract_text, parse_timestamp_to_ms, truncate_summary};
 use anyhow::{bail, Context, Result};
@@ -59,8 +63,8 @@ impl Provider for QwenProvider {
             scan: true,
             import: true,
             export: false,
-            delete: false,
-            rename: false,
+            delete: true,
+            rename: true,
             resume: true,
             scan_strategy: ScanStrategy::FullScan,
             page_strategy: PageStrategy::FullImport,
@@ -75,6 +79,18 @@ impl Provider for QwenProvider {
                 ..ProviderContentFidelity::unknown()
             },
             resume_quality: ResumeQuality::Native,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::High,
+                multiple_files: true,
+                sqlite: false,
+                sidecar_files: true,
+                index_repair: false,
+            },
+            backup_support: ProviderBackupSupport {
+                before_write: true,
+                restore: true,
+                sync_only: false,
+            },
             ..ProviderCapabilities::default()
         }
     }
@@ -153,6 +169,28 @@ impl Provider for QwenProvider {
         }))
     }
 
+    fn delete_session(&self, session_id: &str) -> Result<()> {
+        management::delete_session(session_id)
+    }
+
+    fn rename_session(&self, session_id: &str, new_title: &str) -> Result<()> {
+        management::rename_session(session_id, new_title)
+    }
+
+    fn create_session_backup(
+        &self,
+        mutation: ProviderSourceMutation,
+        operation_id: &str,
+        session_id: &str,
+        backup_root: &Path,
+    ) -> Result<ProviderSessionBackup> {
+        management::create_session_backup(mutation, operation_id, session_id, backup_root)
+    }
+
+    fn restore_session_backup(&self, backup: &ProviderSessionBackup) -> Result<()> {
+        management::restore_session_backup(backup)
+    }
+
     fn resume_command(&self, session_id: &str) -> Option<String> {
         Some(format!("qwen --resume {session_id}"))
     }
@@ -172,6 +210,36 @@ impl Provider for QwenProvider {
         };
         Ok(std::fs::metadata(source_path)?.len())
     }
+}
+
+#[cfg(test)]
+static TEST_QWEN_MUTATION_FAILURE: std::sync::OnceLock<
+    std::sync::Mutex<Option<ProviderSourceMutation>>,
+> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn fail_qwen_mutation_after_write(mutation: ProviderSourceMutation) -> Result<()> {
+    let configured = TEST_QWEN_MUTATION_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *configured == Some(mutation) {
+        bail!("configured Qwen Code mutation failure after native write");
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn fail_qwen_mutation_after_write(_mutation: ProviderSourceMutation) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+fn set_test_qwen_mutation_failure(mutation: Option<ProviderSourceMutation>) {
+    *TEST_QWEN_MUTATION_FAILURE
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = mutation;
 }
 
 fn qwen_runtime_base() -> Option<PathBuf> {
@@ -1502,5 +1570,364 @@ mod tests {
         assert!(QwenProvider
             .session_source_fingerprint(archive_path.to_str().unwrap())
             .is_err());
+    }
+
+    #[test]
+    fn native_delete_backup_and_restore_cover_the_official_qwen_boundary() -> Result<()> {
+        let global_qwen = tempdir()?;
+        let runtime = tempdir()?;
+        let _guard = TestQwenEnvironmentGuard::new(global_qwen.path());
+        std::env::set_var("QWEN_RUNTIME_DIR", runtime.path());
+
+        let session_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let active = session_file(runtime.path(), session_id);
+        write_fixture(&active, session_id);
+        let archived = runtime
+            .path()
+            .join("projects/-workspace/chats/archive")
+            .join(format!("{session_id}.jsonl"));
+        fs::create_dir_all(archived.parent().unwrap())?;
+        fs::copy(&active, &archived)?;
+
+        let active_sidecar = active.with_file_name(format!("{session_id}.worktree.json"));
+        let archived_sidecar = archived.with_file_name(format!("{session_id}.worktree.json"));
+        fs::write(&active_sidecar, b"active-sidecar")?;
+        fs::write(&archived_sidecar, b"archived-sidecar")?;
+        let file_history = global_qwen
+            .path()
+            .join("file-history")
+            .join(session_id)
+            .join("nested.json");
+        fs::create_dir_all(file_history.parent().unwrap())?;
+        fs::write(&file_history, b"file-history")?;
+        let organization = runtime
+            .path()
+            .join("projects/-workspace/session-organization.v1.json");
+        fs::write(
+            &organization,
+            serde_json::to_vec_pretty(&json!({
+                "schemaVersion": 1,
+                "groups": [{"id": "group-1", "name": "Keep", "color": "blue", "order": 0}],
+                "sessions": {
+                    session_id: {"groupId": "group-1"},
+                    "other-session": {"groupId": "group-1"}
+                }
+            }))?,
+        )?;
+        let runtime_status = active.with_file_name(format!("{session_id}.runtime.json"));
+        fs::write(
+            &runtime_status,
+            br#"{"schema_version":1,"pid":1,"session_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","work_dir":"/workspace","hostname":"test","started_at":1,"qwen_version":null}"#,
+        )?;
+
+        let original_active = fs::read(&active)?;
+        let original_archived = fs::read(&archived)?;
+        let original_active_sidecar = fs::read(&active_sidecar)?;
+        let original_archived_sidecar = fs::read(&archived_sidecar)?;
+        let original_file_history = fs::read(&file_history)?;
+        let original_organization = fs::read(&organization)?;
+
+        let backup_root = tempdir()?;
+        let backup = QwenProvider.create_session_backup(
+            ProviderSourceMutation::Delete,
+            "qwen-delete-boundary-op",
+            session_id,
+            backup_root.path(),
+        )?;
+        QwenProvider.delete_session(session_id)?;
+
+        assert!(!active.exists());
+        assert!(!archived.exists());
+        assert!(!active_sidecar.exists());
+        assert!(!archived_sidecar.exists());
+        assert!(!file_history.parent().unwrap().exists());
+        assert!(
+            runtime_status.is_file(),
+            "runtime status is outside delete boundary"
+        );
+        let organization_after: Value = serde_json::from_slice(&fs::read(&organization)?)?;
+        assert!(organization_after["sessions"][session_id].is_null());
+        assert!(organization_after["sessions"]["other-session"].is_object());
+        assert_eq!(organization_after["groups"].as_array().unwrap().len(), 1);
+
+        QwenProvider.restore_session_backup(&backup)?;
+        assert_eq!(fs::read(&active)?, original_active);
+        assert_eq!(fs::read(&archived)?, original_archived);
+        assert_eq!(fs::read(&active_sidecar)?, original_active_sidecar);
+        assert_eq!(fs::read(&archived_sidecar)?, original_archived_sidecar);
+        assert_eq!(fs::read(&file_history)?, original_file_history);
+        assert_eq!(fs::read(&organization)?, original_organization);
+        Ok(())
+    }
+
+    #[test]
+    fn native_rename_appends_chained_custom_title_and_restores_exactly() -> Result<()> {
+        let global_qwen = tempdir()?;
+        let runtime = tempdir()?;
+        let _guard = TestQwenEnvironmentGuard::new(global_qwen.path());
+        std::env::set_var("QWEN_RUNTIME_DIR", runtime.path());
+        let session_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+        let active = session_file(runtime.path(), session_id);
+        write_fixture(&active, session_id);
+        let original = fs::read(&active)?;
+        let backup_root = tempdir()?;
+        let backup = QwenProvider.create_session_backup(
+            ProviderSourceMutation::Rename,
+            "qwen-rename-op",
+            session_id,
+            backup_root.path(),
+        )?;
+
+        QwenProvider.rename_session(session_id, "A renamed Qwen session")?;
+        let renamed = parse_jsonl_session(&active)?;
+        let title = renamed.records.last().unwrap();
+        assert_eq!(title["type"], "system");
+        assert_eq!(title["subtype"], "custom_title");
+        assert_eq!(title["parentUuid"], "title-1");
+        assert_eq!(title["sessionId"], session_id);
+        assert_eq!(title["cwd"], "/workspace");
+        assert_eq!(title["version"], "0.1.0");
+        assert_eq!(
+            title["systemPayload"]["customTitle"],
+            "A renamed Qwen session"
+        );
+        assert_eq!(title["systemPayload"]["titleSource"], "manual");
+
+        QwenProvider.restore_session_backup(&backup)?;
+        assert_eq!(fs::read(&active)?, original);
+        let archived = runtime
+            .path()
+            .join("projects/-workspace/chats/archive")
+            .join(format!("{session_id}.jsonl"));
+        fs::create_dir_all(archived.parent().unwrap())?;
+        fs::copy(&active, &archived)?;
+        let archived_before = fs::read(&archived)?;
+        fs::remove_file(&active)?;
+        assert!(QwenProvider
+            .rename_session(session_id, "should fail")
+            .is_err());
+        assert_eq!(fs::read(&archived)?, archived_before);
+        Ok(())
+    }
+
+    #[test]
+    fn archived_only_delete_is_native_and_restorable_but_rename_is_rejected() -> Result<()> {
+        let global_qwen = tempdir()?;
+        let runtime = tempdir()?;
+        let _guard = TestQwenEnvironmentGuard::new(global_qwen.path());
+        std::env::set_var("QWEN_RUNTIME_DIR", runtime.path());
+        let session_id = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+        let active = session_file(runtime.path(), session_id);
+        write_fixture(&active, session_id);
+        let archived = runtime
+            .path()
+            .join("projects/-workspace/chats/archive")
+            .join(format!("{session_id}.jsonl"));
+        fs::create_dir_all(archived.parent().unwrap())?;
+        fs::copy(&active, &archived)?;
+        fs::remove_file(&active)?;
+
+        assert!(QwenProvider
+            .rename_session(session_id, "not active")
+            .is_err());
+        let backup_root = tempdir()?;
+        let backup = QwenProvider.create_session_backup(
+            ProviderSourceMutation::Delete,
+            "qwen-archived-delete-op",
+            session_id,
+            backup_root.path(),
+        )?;
+        QwenProvider.delete_session(session_id)?;
+        assert!(!archived.exists());
+        QwenProvider.restore_session_backup(&backup)?;
+        assert!(archived.is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn restore_rejects_tampered_qwen_boundary_and_digest_before_writing() -> Result<()> {
+        let global_qwen = tempdir()?;
+        let runtime = tempdir()?;
+        let _guard = TestQwenEnvironmentGuard::new(global_qwen.path());
+        std::env::set_var("QWEN_RUNTIME_DIR", runtime.path());
+        let session_id = "12121212-1212-1212-1212-121212121212";
+        let active = session_file(runtime.path(), session_id);
+        write_fixture(&active, session_id);
+        let original = fs::read(&active)?;
+        let backup_root = tempdir()?;
+
+        let boundary_backup = QwenProvider.create_session_backup(
+            ProviderSourceMutation::Rename,
+            "qwen-boundary-tamper-op",
+            session_id,
+            backup_root.path(),
+        )?;
+        let metadata_path = boundary_backup.backup_path.join("metadata.json");
+        let mut metadata: Value = serde_json::from_slice(&fs::read(&metadata_path)?)?;
+        metadata["selected_artifacts"][0]["relative_path"] =
+            json!("projects/-workspace/session-organization.v1.json");
+        fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)?;
+        let boundary_error = QwenProvider
+            .restore_session_backup(&boundary_backup)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            boundary_error.contains("official source boundary"),
+            "{boundary_error}"
+        );
+        assert_eq!(fs::read(&active)?, original);
+
+        let digest_backup = QwenProvider.create_session_backup(
+            ProviderSourceMutation::Rename,
+            "qwen-digest-tamper-op",
+            session_id,
+            backup_root.path(),
+        )?;
+        let metadata_path = digest_backup.backup_path.join("metadata.json");
+        let mut metadata: Value = serde_json::from_slice(&fs::read(&metadata_path)?)?;
+        metadata["artifact_digest"] = json!("sha256:tampered");
+        fs::write(&metadata_path, serde_json::to_vec_pretty(&metadata)?)?;
+        let digest_error = QwenProvider
+            .restore_session_backup(&digest_backup)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            digest_error.contains("digest does not match"),
+            "{digest_error}"
+        );
+        assert_eq!(fs::read(&active)?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn destructive_mutations_reject_duplicate_and_unowned_qwen_sources() -> Result<()> {
+        let global_qwen = tempdir()?;
+        let runtime = tempdir()?;
+        let _guard = TestQwenEnvironmentGuard::new(global_qwen.path());
+        std::env::set_var("QWEN_RUNTIME_DIR", runtime.path());
+
+        let duplicate_id = "34343434-3434-3434-3434-343434343434";
+        let workspace_source = session_file(runtime.path(), duplicate_id);
+        write_fixture(&workspace_source, duplicate_id);
+        let other_source = runtime
+            .path()
+            .join("projects/-other/chats")
+            .join(format!("{duplicate_id}.jsonl"));
+        fs::create_dir_all(other_source.parent().unwrap())?;
+        write_fixture(&other_source, duplicate_id);
+        fs::write(
+            &other_source,
+            fs::read_to_string(&other_source)?.replace("/workspace", "/other"),
+        )?;
+        let duplicate_error = QwenProvider
+            .delete_session(duplicate_id)
+            .unwrap_err()
+            .to_string();
+        assert!(duplicate_error.contains("Ambiguous"), "{duplicate_error}");
+        assert!(workspace_source.is_file());
+        assert!(other_source.is_file());
+
+        let unowned_id = "56565656-5656-5656-5656-565656565656";
+        let unowned_source = runtime
+            .path()
+            .join("projects/-not-workspace/chats")
+            .join(format!("{unowned_id}.jsonl"));
+        fs::create_dir_all(unowned_source.parent().unwrap())?;
+        write_fixture(&unowned_source, unowned_id);
+        let ownership_error = QwenProvider
+            .rename_session(unowned_id, "must not write")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            ownership_error.contains("does not belong"),
+            "{ownership_error}"
+        );
+        assert_eq!(parse_jsonl_session(&unowned_source)?.records.len(), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn qwen_mutation_capabilities_are_truthful_and_invalid_identity_is_non_destructive() {
+        let capabilities = QwenProvider.capabilities();
+        assert!(capabilities.delete);
+        assert!(capabilities.rename);
+        assert!(!capabilities.export);
+        assert!(capabilities.backup_support.before_write);
+        assert!(capabilities.backup_support.restore);
+        assert_eq!(capabilities.write_risk.level, WriteRiskLevel::High);
+        assert!(QwenProvider.delete_session("short-id").is_err());
+        assert!(QwenProvider
+            .delete_session("../aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+            .is_err());
+    }
+
+    #[test]
+    fn core_delete_failure_restores_complete_qwen_source_backup() -> Result<()> {
+        let global_qwen = tempdir()?;
+        let runtime = tempdir()?;
+        let _guard = TestQwenEnvironmentGuard::new(global_qwen.path());
+        std::env::set_var("QWEN_RUNTIME_DIR", runtime.path());
+        let session_id = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+        let active = session_file(runtime.path(), session_id);
+        write_fixture(&active, session_id);
+        let sidecar = active.with_file_name(format!("{session_id}.worktree.json"));
+        fs::write(&sidecar, b"sidecar")?;
+        let backup_root = tempdir()?;
+        let mut artifact_conn = rusqlite::Connection::open_in_memory()?;
+        local_store::configure_connection(&artifact_conn)?;
+        local_store::apply_schema(&mut artifact_conn)?;
+
+        set_test_qwen_mutation_failure(Some(ProviderSourceMutation::Delete));
+        let results = crate::core::session_management::delete_sessions(
+            PROVIDER_ID,
+            &[session_id],
+            &["qwen-core-delete-recovery-op".to_string()],
+            backup_root.path(),
+            &mut artifact_conn,
+        );
+        set_test_qwen_mutation_failure(None);
+
+        assert_eq!(results.len(), 1);
+        let error = results[0].as_ref().unwrap_err().to_string();
+        assert!(error.contains("Provider source was restored"), "{error}");
+        assert!(active.is_file());
+        assert_eq!(fs::read(&sidecar)?, b"sidecar");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn core_backup_failure_blocks_qwen_delete_before_any_source_write() -> Result<()> {
+        let global_qwen = tempdir()?;
+        let runtime = tempdir()?;
+        let _guard = TestQwenEnvironmentGuard::new(global_qwen.path());
+        std::env::set_var("QWEN_RUNTIME_DIR", runtime.path());
+        let session_id = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+        let active = session_file(runtime.path(), session_id);
+        write_fixture(&active, session_id);
+        let external_root = tempdir()?;
+        let external = external_root.path().join("external-sidecar");
+        fs::write(&external, b"outside")?;
+        let sidecar = active.with_file_name(format!("{session_id}.worktree.json"));
+        std::os::unix::fs::symlink(&external, &sidecar)?;
+
+        let backup_root = tempdir()?;
+        let mut artifact_conn = rusqlite::Connection::open_in_memory()?;
+        local_store::configure_connection(&artifact_conn)?;
+        local_store::apply_schema(&mut artifact_conn)?;
+        let results = crate::core::session_management::delete_sessions(
+            PROVIDER_ID,
+            &[session_id],
+            &["qwen-backup-failure-op".to_string()],
+            backup_root.path(),
+            &mut artifact_conn,
+        );
+
+        assert_eq!(results.len(), 1);
+        let error = results[0].as_ref().unwrap_err().to_string();
+        assert!(error.contains("native backup failed"), "{error}");
+        assert!(active.is_file());
+        assert!(sidecar.is_symlink());
+        Ok(())
     }
 }

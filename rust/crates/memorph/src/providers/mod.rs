@@ -188,9 +188,18 @@ mod tests {
             crate::provider::StorageShape::Jsonl
         );
         assert!(capabilities.resume);
-        assert!(!capabilities.delete);
-        assert!(!capabilities.rename);
+        assert!(capabilities.delete);
+        assert!(capabilities.rename);
         assert!(!capabilities.export);
+        assert!(capabilities.backup_support.before_write);
+        assert!(capabilities.backup_support.restore);
+        assert_eq!(
+            capabilities.write_risk.level,
+            crate::provider::WriteRiskLevel::High
+        );
+        assert!(capabilities.write_risk.multiple_files);
+        assert!(capabilities.write_risk.sidecar_files);
+        assert!(!capabilities.write_risk.sqlite);
     }
 
     #[test]
