@@ -185,10 +185,116 @@ fn qwen_runtime_base() -> Option<PathBuf> {
         return Some(base);
     }
 
-    std::env::var_os("QWEN_RUNTIME_DIR")
-        .or_else(|| std::env::var_os("QWEN_HOME"))
+    if let Some(runtime_dir) = non_empty_env_path("QWEN_RUNTIME_DIR") {
+        return resolve_qwen_path(runtime_dir);
+    }
+
+    let global_qwen_dir = qwen_global_dir()?;
+    qwen_settings_runtime_output_dir(&global_qwen_dir).or(Some(global_qwen_dir))
+}
+
+fn qwen_global_dir() -> Option<PathBuf> {
+    if let Some(qwen_home) = non_empty_env_path("QWEN_HOME") {
+        return resolve_qwen_path(qwen_home);
+    }
+    dirs::home_dir().map(|home| home.join(".qwen"))
+}
+
+fn qwen_settings_runtime_output_dir(global_qwen_dir: &Path) -> Option<PathBuf> {
+    let raw = std::fs::read_to_string(global_qwen_dir.join("settings.json")).ok()?;
+    let settings: Value = serde_json::from_str(&strip_json_comments(&raw)).ok()?;
+    let configured = settings
+        .get("advanced")?
+        .get("runtimeOutputDir")?
+        .as_str()?
+        .trim();
+    if configured.is_empty() {
+        return None;
+    }
+    resolve_qwen_path(PathBuf::from(configured))
+}
+
+fn non_empty_env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name)
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|home| home.join(".qwen")))
+}
+
+fn resolve_qwen_path(path: PathBuf) -> Option<PathBuf> {
+    let expanded = path.to_str().and_then(|value| {
+        if value == "~" {
+            dirs::home_dir()
+        } else if let Some(relative) = value
+            .strip_prefix("~/")
+            .or_else(|| value.strip_prefix("~\\"))
+        {
+            dirs::home_dir().map(|home| {
+                relative
+                    .split(['/', '\\'])
+                    .filter(|segment| !segment.is_empty())
+                    .fold(home, |base, segment| base.join(segment))
+            })
+        } else {
+            None
+        }
+    });
+    let expanded = expanded.unwrap_or(path);
+    if expanded.is_absolute() {
+        Some(expanded)
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(expanded))
+    }
+}
+
+fn strip_json_comments(raw: &str) -> String {
+    let mut stripped = String::with_capacity(raw.len());
+    let mut chars = raw.chars().peekable();
+    let mut in_string = false;
+    let mut escaped = false;
+    while let Some(ch) = chars.next() {
+        if in_string {
+            stripped.push(ch);
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            stripped.push(ch);
+            continue;
+        }
+        if ch == '/' && chars.peek() == Some(&'/') {
+            chars.next();
+            for comment_ch in chars.by_ref() {
+                if comment_ch == '\n' {
+                    stripped.push('\n');
+                    break;
+                }
+            }
+            continue;
+        }
+        if ch == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            let mut previous = '\0';
+            for comment_ch in chars.by_ref() {
+                if comment_ch == '\n' {
+                    stripped.push('\n');
+                }
+                if previous == '*' && comment_ch == '/' {
+                    break;
+                }
+                previous = comment_ch;
+            }
+            continue;
+        }
+        stripped.push(ch);
+    }
+    stripped
 }
 
 fn qwen_projects_dirs() -> Vec<PathBuf> {
@@ -763,6 +869,53 @@ mod tests {
         }
     }
 
+    struct TestQwenEnvironmentGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        qwen_home: Option<std::ffi::OsString>,
+        qwen_runtime_dir: Option<std::ffi::OsString>,
+    }
+
+    impl TestQwenEnvironmentGuard {
+        fn new(qwen_home: &Path) -> Self {
+            let lock = TEST_QWEN_LOCK
+                .get_or_init(|| std::sync::Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let qwen_home_original = std::env::var_os("QWEN_HOME");
+            let qwen_runtime_dir_original = std::env::var_os("QWEN_RUNTIME_DIR");
+            std::env::set_var("QWEN_HOME", qwen_home);
+            std::env::remove_var("QWEN_RUNTIME_DIR");
+            *TEST_QWEN_RUNTIME_BASE
+                .get_or_init(|| std::sync::Mutex::new(None))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+            Self {
+                _lock: lock,
+                qwen_home: qwen_home_original,
+                qwen_runtime_dir: qwen_runtime_dir_original,
+            }
+        }
+    }
+
+    impl Drop for TestQwenEnvironmentGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.qwen_home.take() {
+                std::env::set_var("QWEN_HOME", value);
+            } else {
+                std::env::remove_var("QWEN_HOME");
+            }
+            if let Some(value) = self.qwen_runtime_dir.take() {
+                std::env::set_var("QWEN_RUNTIME_DIR", value);
+            } else {
+                std::env::remove_var("QWEN_RUNTIME_DIR");
+            }
+            *TEST_QWEN_RUNTIME_BASE
+                .get_or_init(|| std::sync::Mutex::new(None))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+    }
+
     fn session_file(runtime: &Path, session_id: &str) -> PathBuf {
         let project = runtime.join("projects").join("-workspace").join("chats");
         fs::create_dir_all(&project).unwrap();
@@ -827,6 +980,50 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(path, format!("{body}\n")).unwrap();
+    }
+
+    #[test]
+    fn honors_official_runtime_root_priority_and_settings_resolution() {
+        let qwen_home = tempdir().unwrap();
+        let _guard = TestQwenEnvironmentGuard::new(qwen_home.path());
+        let settings_path = qwen_home.path().join("settings.json");
+        let current_dir = std::env::current_dir().unwrap();
+        let settings_runtime = current_dir.join("qwen-settings-runtime");
+        fs::write(
+            &settings_path,
+            r#"{
+                // Qwen JSONC settings are accepted by the official loader.
+                "advanced": {"runtimeOutputDir": "qwen-settings-runtime"}
+            }"#,
+        )
+        .unwrap();
+
+        let env_runtime = qwen_home.path().join("env-runtime");
+        std::env::set_var("QWEN_RUNTIME_DIR", &env_runtime);
+        assert_eq!(qwen_runtime_base().as_deref(), Some(env_runtime.as_path()));
+
+        std::env::remove_var("QWEN_RUNTIME_DIR");
+        assert_eq!(
+            qwen_runtime_base().as_deref(),
+            Some(settings_runtime.as_path())
+        );
+
+        fs::write(
+            &settings_path,
+            r#"{"advanced":{"runtimeOutputDir":"~/qwen-settings-runtime"}}"#,
+        )
+        .unwrap();
+        let tilde_runtime = dirs::home_dir().unwrap().join("qwen-settings-runtime");
+        assert_eq!(
+            qwen_runtime_base().as_deref(),
+            Some(tilde_runtime.as_path())
+        );
+
+        fs::write(&settings_path, "{malformed").unwrap();
+        assert_eq!(qwen_runtime_base().as_deref(), Some(qwen_home.path()));
+
+        fs::remove_file(&settings_path).unwrap();
+        assert_eq!(qwen_runtime_base().as_deref(), Some(qwen_home.path()));
     }
 
     #[test]
