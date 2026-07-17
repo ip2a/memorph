@@ -1733,6 +1733,25 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_cli_capability_detail_matches_sqlite_contract() {
+        let capabilities = providers::find_provider("deepseek").unwrap().capabilities();
+
+        let output = provider_capability_detail("deepseek", "DeepSeek", capabilities);
+
+        assert!(output.contains("Provider: DeepSeek (deepseek)"));
+        assert!(output.contains("Discovery: scan=full_scan page=full_import storage=sqlite"));
+        assert!(output.contains("Turn quality: inferred"));
+        assert!(output.contains("Resume quality: native"));
+        assert!(output.contains("Operations: scan,import,export,delete,rename,resume"));
+        assert!(output.contains("Write risk: level=high"));
+        assert!(output.contains("Backup: before_write=true restore=true sync_only=false"));
+        assert!(output
+            .contains("Activity: hook_events=false runtime_endpoint=false session_activity=false"));
+        assert!(output.contains("  tool_call: downgraded"));
+        assert!(output.contains("  provider_payload: dropped"));
+    }
+
+    #[test]
     fn kiro_cli_capability_detail_matches_current_format_contract() {
         let capabilities = providers::find_provider("kiro").unwrap().capabilities();
 

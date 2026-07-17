@@ -4105,6 +4105,52 @@ mod tests {
             .find(|provider| provider["provider_id"] == "opencode")
             .expect("missing opencode catalog entry");
         assert_eq!(opencode["capability_set"]["page_strategy"], "native_page");
+
+        let deepseek = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "deepseek")
+            .expect("missing deepseek catalog entry");
+        let deepseek_capabilities = &deepseek["capability_set"];
+        assert_eq!(deepseek_capabilities["scan"], true);
+        assert_eq!(deepseek_capabilities["import"], true);
+        assert_eq!(deepseek_capabilities["export"], true);
+        assert_eq!(deepseek_capabilities["delete"], true);
+        assert_eq!(deepseek_capabilities["rename"], true);
+        assert_eq!(deepseek_capabilities["resume"], true);
+        assert_eq!(deepseek_capabilities["scan_strategy"], "full_scan");
+        assert_eq!(deepseek_capabilities["page_strategy"], "full_import");
+        assert_eq!(deepseek_capabilities["storage_shape"], "sqlite");
+        assert_eq!(deepseek_capabilities["turn_quality"], "inferred");
+        assert_eq!(deepseek_capabilities["resume_quality"], "native");
+        assert_eq!(deepseek_capabilities["write_risk"]["level"], "high");
+        assert_eq!(deepseek_capabilities["write_risk"]["sqlite"], true);
+        assert_eq!(deepseek_capabilities["write_risk"]["sidecar_files"], true);
+        assert_eq!(deepseek_capabilities["write_risk"]["index_repair"], true);
+        assert_eq!(
+            deepseek_capabilities["backup_support"]["before_write"],
+            true
+        );
+        assert_eq!(deepseek_capabilities["backup_support"]["restore"], true);
+        assert_eq!(
+            deepseek_capabilities["activity_support"]["hook_events"],
+            false
+        );
+        assert_eq!(
+            deepseek_capabilities["activity_support"]["runtime_endpoint"],
+            false
+        );
+        assert_eq!(
+            deepseek_capabilities["activity_support"]["session_activity"],
+            false
+        );
+        assert_eq!(
+            deepseek_capabilities["export_fidelity"]["tool_call"],
+            "downgraded"
+        );
+        assert_eq!(
+            deepseek_capabilities["export_fidelity"]["provider_payload"],
+            "dropped"
+        );
     }
 
     #[test]
