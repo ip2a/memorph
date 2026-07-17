@@ -36,7 +36,7 @@ pub mod session_management;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
 const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
-    "claude", "codex", "cursor", "deepseek", "kimi", "kiro", "opencode",
+    "claude", "codex", "cursor", "deepseek", "gemini", "kimi", "kiro", "opencode",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4872,6 +4872,12 @@ mod tests {
         assert!(report.failures[0]
             .reason
             .contains("failed to scan provider sessions"));
+    }
+
+    #[test]
+    fn gemini_is_enabled_for_default_projection_bootstrap() {
+        assert!(PROJECTED_SESSION_PROVIDER_IDS.contains(&"gemini"));
+        assert!(provider_supports_session_projection("gemini"));
     }
 
     #[test]

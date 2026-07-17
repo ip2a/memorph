@@ -692,27 +692,59 @@ fn path_mtime_ms(path: &Path) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::provider::Provider;
+    use crate::storage::local_store;
+    use rusqlite::params;
     use std::fs;
     use std::io::Write;
     use tempfile::tempdir;
 
     static TEST_GEMINI_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
 
+    struct TestGeminiHomeGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestGeminiHomeGuard {
+        fn new(home: &Path) -> Self {
+            let lock = TEST_GEMINI_LOCK
+                .get_or_init(|| std::sync::Mutex::new(()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *TEST_GEMINI_HOME
+                .get_or_init(|| std::sync::Mutex::new(None))
+                .lock()
+                .expect("Gemini test home lock poisoned") = Some(home.to_path_buf());
+            Self { _lock: lock }
+        }
+    }
+
+    impl Drop for TestGeminiHomeGuard {
+        fn drop(&mut self) {
+            *TEST_GEMINI_HOME
+                .get_or_init(|| std::sync::Mutex::new(None))
+                .lock()
+                .expect("Gemini test home lock poisoned") = None;
+        }
+    }
+
+    struct TestConfigHomeGuard;
+
+    impl TestConfigHomeGuard {
+        fn new(home: &Path) -> Self {
+            crate::config::set_test_home_dir(home.to_path_buf());
+            Self
+        }
+    }
+
+    impl Drop for TestConfigHomeGuard {
+        fn drop(&mut self) {
+            crate::config::reset_test_home_dir();
+        }
+    }
+
     fn with_test_home<T>(home: &Path, action: impl FnOnce() -> T) -> T {
-        let _guard = TEST_GEMINI_LOCK
-            .get_or_init(|| std::sync::Mutex::new(()))
-            .lock()
-            .expect("Gemini test lock poisoned");
-        *TEST_GEMINI_HOME
-            .get_or_init(|| std::sync::Mutex::new(None))
-            .lock()
-            .expect("Gemini test home lock poisoned") = Some(home.to_path_buf());
-        let result = action();
-        *TEST_GEMINI_HOME
-            .get_or_init(|| std::sync::Mutex::new(None))
-            .lock()
-            .expect("Gemini test home lock poisoned") = None;
-        result
+        let _guard = TestGeminiHomeGuard::new(home);
+        action()
     }
 
     fn write_session(
@@ -850,6 +882,212 @@ mod tests {
             |block| matches!(block, EventBlock::ToolResult { content, .. } if content == "ok")
         ));
         assert_eq!(event.metadata.usage.as_ref().unwrap().total_tokens, Some(5));
+    }
+
+    #[test]
+    fn gemini_projection_bootstrap_is_bodyless_and_detail_reads_jsonl_source() -> Result<()> {
+        let source_home = tempdir()?;
+        let config_home = tempdir()?;
+        let _gemini_guard = TestGeminiHomeGuard::new(source_home.path());
+        let _config_guard = TestConfigHomeGuard::new(config_home.path());
+        let session_id = "gemini-projection";
+        let path = write_session(
+            source_home.path(),
+            "project-hash",
+            "session-2026-07-17-01-00-abc12345.jsonl",
+            &[
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "projectHash": "project-hash",
+                    "startTime": "2026-07-17T01:00:00Z",
+                    "lastUpdated": "2026-07-17T01:00:02Z",
+                    "summary": "projection fixture",
+                    "messages": []
+                }),
+                serde_json::json!({
+                    "id": "u1",
+                    "type": "user",
+                    "timestamp": "2026-07-17T01:00:01Z",
+                    "content": "first question"
+                }),
+                serde_json::json!({
+                    "id": "g1",
+                    "type": "gemini",
+                    "timestamp": "2026-07-17T01:00:02Z",
+                    "content": [{"text": "first answer"}]
+                }),
+            ],
+        );
+        let expected_locator = path.canonicalize()?.to_string_lossy().to_string();
+
+        let first = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(first.scanned_providers, 1);
+        assert_eq!(first.discovered_sessions, 1);
+        assert_eq!(first.projected_sessions, 1);
+        assert_eq!(first.unchanged_sessions, 0);
+        assert!(first.failures.is_empty());
+
+        let conn = local_store::open_database()?;
+        let stored: (String, String, String, String, i64) = conn.query_row(
+            "SELECT s.id, src.source_path, src.storage_shape, src.source_cursor, ss.stale
+             FROM sessions s
+             JOIN session_sources src ON src.id = s.primary_source_id
+             JOIN session_snapshots ss ON ss.session_id = s.id
+             WHERE s.provider_id = ?1 AND s.provider_session_id = ?2",
+            params![PROVIDER_ID, session_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        let initial_fingerprint = GeminiProvider
+            .session_source_fingerprint(&expected_locator)?
+            .expect("fixture fingerprint");
+        assert_eq!(stored.1, expected_locator);
+        assert_eq!(stored.2, "jsonl");
+        assert_eq!(stored.3, initial_fingerprint.value);
+        assert_eq!(stored.4, 0);
+
+        let body_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(body_table_count, 0);
+        drop(conn);
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(detail.events.is_empty());
+        assert!(detail.turns.is_empty());
+        assert_eq!(detail.event_count, 2);
+        assert_eq!(detail.message_count, 2);
+        assert!(!detail.stale);
+        assert_eq!(
+            detail.source_path.as_deref(),
+            Some(expected_locator.as_str())
+        );
+        assert_eq!(
+            detail.projection_report.as_ref().unwrap().id,
+            format!("source-read:{PROVIDER_ID}:{session_id}")
+        );
+
+        let conn = local_store::open_database()?;
+        let cached_counts: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT event_count, message_count, turn_count, counts_complete
+             FROM session_snapshots WHERE session_id = ?1",
+            [stored.0.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(cached_counts, (2, 2, 1, 1));
+        drop(conn);
+
+        let second = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(second.projected_sessions, 0);
+        assert_eq!(second.unchanged_sessions, 1);
+        assert!(second.failures.is_empty());
+
+        let mut file = fs::OpenOptions::new().append(true).open(&path)?;
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({"$set": {"lastUpdated": "2026-07-17T01:00:03Z"}})
+        )?;
+        writeln!(
+            file,
+            "{}",
+            serde_json::json!({
+                "id": "u2",
+                "type": "user",
+                "timestamp": "2026-07-17T01:00:03Z",
+                "content": "second question"
+            })
+        )?;
+        file.flush()?;
+
+        let changed_fingerprint = GeminiProvider
+            .session_source_fingerprint(&expected_locator)?
+            .expect("changed fixture fingerprint");
+        assert_ne!(changed_fingerprint.value, initial_fingerprint.value);
+
+        let stale_scan = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(stale_scan.checked_sources, 1);
+        assert_eq!(stale_scan.stale_snapshots, 1);
+        assert_eq!(stale_scan.missing_sources, 0);
+
+        let stale_detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(stale_detail.stale);
+        assert_eq!(stale_detail.event_count, 3);
+        assert_eq!(stale_detail.message_count, 3);
+
+        let refreshed = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(refreshed.projected_sessions, 1);
+        assert_eq!(refreshed.unchanged_sessions, 0);
+        assert!(refreshed.failures.is_empty());
+
+        let fresh_detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(!fresh_detail.stale);
+        assert_eq!(fresh_detail.event_count, 3);
+        assert_eq!(fresh_detail.message_count, 3);
+
+        let conn = local_store::open_database()?;
+        let refreshed_counts: (i64, i64, i64, i64, i64) = conn.query_row(
+            "SELECT event_count, message_count, turn_count, counts_complete, stale
+             FROM session_snapshots WHERE session_id = ?1",
+            [stored.0.as_str()],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(refreshed_counts, (3, 3, 2, 1, 0));
+        drop(conn);
+
+        fs::remove_file(&path)?;
+        fs::write(
+            path.with_extension("json"),
+            "{\"sessionId\":\"gemini-projection\"}\n",
+        )?;
+        let missing_scan = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(missing_scan.checked_sources, 0);
+        assert_eq!(missing_scan.missing_sources, 1);
+        assert_eq!(missing_scan.stale_snapshots, 1);
+        assert!(GeminiProvider
+            .session_source_fingerprint(&expected_locator)?
+            .is_none());
+        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))
+            .unwrap_err();
+        assert!(error.to_string().contains("Session source is missing"));
+        assert!(error.to_string().contains(&expected_locator));
+
+        Ok(())
     }
 
     #[test]
