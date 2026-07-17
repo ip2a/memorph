@@ -118,6 +118,7 @@ pub(super) fn create_session_backup(
         format: BACKUP_FORMAT.to_string(),
         artifact_metadata: serde_json::json!({
             "role": "gemini_current_prewrite_session_backup",
+            "mutation": mutation,
             "complete_source_boundary": true,
             "selected_paths": metadata.selected_paths,
             "entry_count": metadata.entry_count,
@@ -126,6 +127,7 @@ pub(super) fn create_session_backup(
         restore_metadata: serde_json::json!({
             "restore_mode": "exact_gemini_current_source_bundle",
             "provider_id": PROVIDER_ID,
+            "mutation": mutation,
             "temp_dir": metadata.temp_dir,
             "source_path": metadata.source_path,
             "artifact_digest": metadata.artifact_digest,
