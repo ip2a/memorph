@@ -835,6 +835,8 @@ fn path_mtime_ms(path: &Path) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::provider::Provider;
+    use crate::storage::local_store;
+    use rusqlite::params;
     use serde_json::json;
     use std::fs;
     use std::io::Write;
@@ -913,6 +915,21 @@ mod tests {
                 .get_or_init(|| std::sync::Mutex::new(None))
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        }
+    }
+
+    struct TestConfigHomeGuard;
+
+    impl TestConfigHomeGuard {
+        fn new(home: &Path) -> Self {
+            crate::config::set_test_home_dir(home.to_path_buf());
+            Self
+        }
+    }
+
+    impl Drop for TestConfigHomeGuard {
+        fn drop(&mut self) {
+            crate::config::reset_test_home_dir();
         }
     }
 
@@ -1102,6 +1119,196 @@ mod tests {
             4
         );
         assert_eq!(imported.report.overall, MappingDisposition::Preserved);
+    }
+
+    #[test]
+    fn shared_projection_is_bodyless_source_backed_and_reprojects_qwen_changes() -> Result<()> {
+        let runtime = tempdir()?;
+        let config_home = tempdir()?;
+        let _runtime_guard = TestQwenRuntimeGuard::new(runtime.path());
+        let _config_guard = TestConfigHomeGuard::new(config_home.path());
+        let session_id = "12121212-1212-1212-1212-121212121212";
+        let path = session_file(runtime.path(), session_id);
+        write_fixture(&path, session_id);
+        let expected_locator = path.canonicalize()?.to_string_lossy().to_string();
+
+        let first = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(first.scanned_providers, 1);
+        assert_eq!(first.discovered_sessions, 1);
+        assert_eq!(first.projected_sessions, 1);
+        assert_eq!(first.unchanged_sessions, 0);
+        assert!(first.failures.is_empty());
+
+        let conn = local_store::open_database()?;
+        let stored: (String, String, String, String, i64) = conn.query_row(
+            "SELECT s.id, src.source_path, src.storage_shape, src.source_cursor, ss.stale
+             FROM sessions s
+             JOIN session_sources src ON src.id = s.primary_source_id
+             JOIN session_snapshots ss ON ss.session_id = s.id
+             WHERE s.provider_id = ?1 AND s.provider_session_id = ?2",
+            params![PROVIDER_ID, session_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        let initial_fingerprint = QwenProvider
+            .session_source_fingerprint(&expected_locator)?
+            .expect("fixture fingerprint");
+        assert_eq!(stored.1, expected_locator);
+        assert_eq!(stored.2, "jsonl");
+        assert_eq!(stored.3, initial_fingerprint.value);
+        assert_eq!(stored.4, 0);
+        let body_table_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table'
+               AND name IN ('session_turns', 'session_events', 'session_event_blocks')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(body_table_count, 0);
+        drop(conn);
+
+        let detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))?;
+        assert_eq!(detail.events.len(), 1);
+        assert_eq!(detail.turns.len(), 1);
+        assert_eq!(detail.event_count, 4);
+        assert_eq!(detail.message_count, 3);
+        assert!(!detail.stale);
+        assert_eq!(
+            detail.source_path.as_deref(),
+            Some(expected_locator.as_str())
+        );
+        assert_eq!(
+            detail.projection_report.as_ref().unwrap().id,
+            format!("source-read:{PROVIDER_ID}:{session_id}")
+        );
+
+        let conn = local_store::open_database()?;
+        let cached_counts: (i64, i64, i64, i64) = conn.query_row(
+            "SELECT event_count, message_count, turn_count, counts_complete
+             FROM session_snapshots WHERE session_id = ?1",
+            [stored.0.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(cached_counts, (4, 3, 1, 1));
+        drop(conn);
+
+        let second = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::Cli,
+        )?;
+        assert_eq!(second.projected_sessions, 0);
+        assert_eq!(second.unchanged_sessions, 1);
+        assert!(second.failures.is_empty());
+
+        let appended = json!({
+            "uuid": "a2",
+            "parentUuid": "title-1",
+            "sessionId": session_id,
+            "timestamp": "2026-07-17T00:00:04Z",
+            "type": "assistant",
+            "cwd": "/workspace",
+            "version": "0.1.0",
+            "message": {"role": "model", "parts": [{"text": "appended answer"}]}
+        });
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&path)?,
+            "{}",
+            serde_json::to_string(&appended)?
+        )?;
+        let changed_fingerprint = QwenProvider
+            .session_source_fingerprint(&expected_locator)?
+            .expect("changed fixture fingerprint");
+        assert_ne!(changed_fingerprint.value, initial_fingerprint.value);
+
+        let stale_scan = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(stale_scan.checked_sources, 1);
+        assert_eq!(stale_scan.stale_snapshots, 1);
+        assert_eq!(stale_scan.missing_sources, 0);
+
+        let stale_detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(stale_detail.stale);
+        assert_eq!(stale_detail.event_count, 5);
+
+        let refreshed = crate::core::reproject_stale_sessions(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(refreshed.candidate_snapshots, 1);
+        assert_eq!(refreshed.reprojected_snapshots, 1);
+        assert_eq!(refreshed.missing_sources, 0);
+        assert!(refreshed.failures.is_empty());
+
+        let fresh_detail =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        assert!(!fresh_detail.stale);
+        assert_eq!(fresh_detail.event_count, 5);
+        assert_eq!(fresh_detail.message_count, 4);
+        assert!(fresh_detail.events.is_empty());
+        assert!(fresh_detail.turns.is_empty());
+
+        let background_sync = crate::core::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(background_sync.projected_sessions, 0);
+        assert_eq!(background_sync.unchanged_sessions, 1);
+        assert!(background_sync.failures.is_empty());
+
+        fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&json!({
+                    "uuid": "invalid-identity",
+                    "sessionId": "34343434-3434-3434-3434-343434343434",
+                    "type": "user",
+                    "message": {"parts": [{"text": "wrong identity"}]}
+                }))?
+            ),
+        )?;
+        let invalid_scan = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(invalid_scan.checked_sources, 1);
+        assert_eq!(invalid_scan.stale_snapshots, 1);
+        let invalid_error =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))
+                .unwrap_err();
+        assert!(format!("{invalid_error:#}").contains("sessionId mismatch"));
+
+        fs::remove_file(&path)?;
+        let missing_scan = crate::core::refresh_projected_session_staleness(
+            crate::storage::activity_store::ActivityActor::System,
+        )?;
+        assert_eq!(missing_scan.checked_sources, 0);
+        assert_eq!(missing_scan.missing_sources, 1);
+        assert_eq!(missing_scan.stale_snapshots, 1);
+        assert!(QwenProvider
+            .session_source_fingerprint(&expected_locator)?
+            .is_none());
+        let missing_error =
+            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))
+                .unwrap_err();
+        assert!(missing_error
+            .to_string()
+            .contains("Session source is missing"));
+        assert!(missing_error.to_string().contains(&expected_locator));
+
+        Ok(())
     }
 
     #[test]

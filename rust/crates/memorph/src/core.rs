@@ -36,7 +36,7 @@ pub mod session_management;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
 const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
-    "claude", "codex", "cursor", "deepseek", "gemini", "kimi", "kiro", "opencode",
+    "claude", "codex", "cursor", "deepseek", "gemini", "kimi", "kiro", "opencode", "qwen",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4878,6 +4878,12 @@ mod tests {
     fn gemini_is_enabled_for_default_projection_bootstrap() {
         assert!(PROJECTED_SESSION_PROVIDER_IDS.contains(&"gemini"));
         assert!(provider_supports_session_projection("gemini"));
+    }
+
+    #[test]
+    fn qwen_is_enabled_for_default_projection_bootstrap() {
+        assert!(PROJECTED_SESSION_PROVIDER_IDS.contains(&"qwen"));
+        assert!(provider_supports_session_projection("qwen"));
     }
 
     #[test]
