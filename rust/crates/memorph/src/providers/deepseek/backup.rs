@@ -98,7 +98,7 @@ pub(super) fn create_session_backup(
         )?;
         let session_index = if mutation == ProviderSourceMutation::Rename {
             std::fs::create_dir(backup_path.join("files"))?;
-            Some(capture_session_index(&backup_path)?)
+            Some(capture_session_index(&source_path, &backup_path)?)
         } else {
             None
         };
@@ -185,6 +185,19 @@ pub(super) fn restore_session_backup(backup: &ProviderSessionBackup) -> Result<(
     }
     if (metadata.mutation == ProviderSourceMutation::Rename) != metadata.session_index.is_some() {
         anyhow::bail!("DeepSeek backup has an invalid session index restore contract");
+    }
+    let current_source_path = get_state_db_path().canonicalize().with_context(|| {
+        format!(
+            "Failed to resolve current DeepSeek state database: {}",
+            get_state_db_path().display()
+        )
+    })?;
+    if current_source_path != metadata.db_path {
+        anyhow::bail!(
+            "DeepSeek backup source database does not match the current state database: captured={} current={}",
+            metadata.db_path.display(),
+            current_source_path.display()
+        );
     }
 
     let backup_db_path = backup.backup_path.join(DEEPSEEK_BACKUP_DB_PATH);
@@ -574,9 +587,8 @@ fn restore_renamed_fields(tx: &Transaction<'_>, session_id: &str) -> Result<()> 
     Ok(())
 }
 
-fn capture_session_index(backup_path: &Path) -> Result<DeepseekFileManifest> {
-    let source_path = get_state_db_path()
-        .canonicalize()?
+fn capture_session_index(db_path: &Path, backup_path: &Path) -> Result<DeepseekFileManifest> {
+    let source_path = db_path
         .parent()
         .context("DeepSeek database path has no parent directory")?
         .join("session_index.jsonl");

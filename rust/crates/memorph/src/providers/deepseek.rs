@@ -2015,6 +2015,41 @@ mod tests {
     }
 
     #[test]
+    fn restore_rejects_backup_when_current_state_database_changes() {
+        let dir = tempdir().unwrap();
+        let _guard = use_test_deepseek_dir(dir.path().join("deepseek-a"));
+        let session_id = "thread-source-boundary";
+        write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
+        let backup = DeepseekProvider
+            .create_session_backup(
+                ProviderSourceMutation::Delete,
+                "operation-source-boundary",
+                session_id,
+                &dir.path().join("backups"),
+            )
+            .unwrap();
+
+        let other_dir = dir.path().join("deepseek-b");
+        write_native_deepseek_fixture(&other_dir, session_id);
+        set_test_deepseek_dir(Some(other_dir.clone()));
+        crate::cache::global_cache().invalidate(PROVIDER_ID);
+
+        let error = DeepseekProvider
+            .restore_session_backup(&backup)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match the current state database"),
+            "{error:#}"
+        );
+        assert_eq!(
+            deepseek_session_row_counts(&other_dir, session_id),
+            vec![1, 1, 1, 1]
+        );
+    }
+
+    #[test]
     fn rename_restore_removes_new_index_file_when_target_append_is_only_content() {
         let dir = tempdir().unwrap();
         let _guard = use_test_deepseek_dir(dir.path().join("deepseek"));
