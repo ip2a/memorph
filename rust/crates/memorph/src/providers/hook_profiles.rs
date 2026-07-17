@@ -146,18 +146,6 @@ const CODEBUDDY_EVENTS: &[HookProviderEventProfile] = &[
     event("Notification", false),
     event("PreCompact", true),
 ];
-const CODYBUDDYCN_EVENTS: &[HookProviderEventProfile] = &[
-    event("UserPromptSubmit", true),
-    event("PreToolUse", false),
-    event("PostToolUse", true),
-    event("SessionStart", false),
-    event("SessionEnd", true),
-    event("Stop", true),
-    event("SubagentStart", true),
-    event("SubagentStop", true),
-    event("Notification", false),
-    event("PreCompact", true),
-];
 const STEPFUN_EVENTS: &[HookProviderEventProfile] = &[
     event("UserPromptSubmit", true),
     event("PreToolUse", false),
@@ -222,43 +210,7 @@ const TRAE_EVENTS: &[HookProviderEventProfile] = &[
     event("post_compact", false),
 ];
 
-const TRAE_GUI_EVENTS: &[HookProviderEventProfile] = &[
-    event("beforeSubmitPrompt", false),
-    event("beforeShellExecution", false),
-    event("afterShellExecution", false),
-    event("beforeReadFile", false),
-    event("afterFileEdit", false),
-    event("beforeMCPExecution", false),
-    event("afterMCPExecution", false),
-    event("afterAgentThought", false),
-    event("afterAgentResponse", false),
-    event("stop", false),
-];
-
-const TRAECN_EVENTS: &[HookProviderEventProfile] = &[
-    event("beforeSubmitPrompt", false),
-    event("beforeShellExecution", false),
-    event("afterShellExecution", false),
-    event("beforeReadFile", false),
-    event("afterFileEdit", false),
-    event("beforeMCPExecution", false),
-    event("afterMCPExecution", false),
-    event("afterAgentThought", false),
-    event("afterAgentResponse", false),
-    event("stop", false),
-];
-
 const PI_EVENTS: &[HookProviderEventProfile] = &[
-    event("SessionStart", false),
-    event("SessionEnd", true),
-    event("UserPromptSubmit", true),
-    event("PreToolUse", false),
-    event("PostToolUse", true),
-    event("PermissionRequest", false),
-    event("Stop", true),
-];
-
-const OMP_EVENTS: &[HookProviderEventProfile] = &[
     event("SessionStart", false),
     event("SessionEnd", true),
     event("UserPromptSubmit", true),
@@ -361,22 +313,6 @@ const PROFILES: &[HookProviderProfile] = &[
         QWEN_EVENTS,
     ),
     profile(
-        "trae_gui",
-        "Trae",
-        HookFormat::TraeFlatJson,
-        HookConfigStrategyKind::FlatJson,
-        "~/.trae/hooks.json",
-        TRAE_GUI_EVENTS,
-    ),
-    profile(
-        "traecn",
-        "Trae CN",
-        HookFormat::TraeCnFlatJson,
-        HookConfigStrategyKind::FlatJson,
-        "~/.trae-cn/hooks.json",
-        TRAECN_EVENTS,
-    ),
-    profile(
         "qoder",
         "Qoder",
         HookFormat::QoderClaudeJson,
@@ -399,14 +335,6 @@ const PROFILES: &[HookProviderProfile] = &[
         HookConfigStrategyKind::ClaudeLikeJson,
         "~/.codebuddy/settings.json",
         CODEBUDDY_EVENTS,
-    ),
-    profile(
-        "codybuddycn",
-        "CodyBuddyCN",
-        HookFormat::CodyBuddyCnClaudeJson,
-        HookConfigStrategyKind::ClaudeLikeJson,
-        "~/.codybuddycn/settings.json",
-        CODYBUDDYCN_EVENTS,
     ),
     profile(
         "stepfun",
@@ -447,14 +375,6 @@ const PROFILES: &[HookProviderProfile] = &[
         HookConfigStrategyKind::PiExtension,
         "~/.pi/agent/extensions/memorph.ts",
         PI_EVENTS,
-    ),
-    profile(
-        "omp",
-        "Oh My Pi",
-        HookFormat::OmpExtension,
-        HookConfigStrategyKind::OmpExtension,
-        "~/.omp/agent/extensions/memorph.ts",
-        OMP_EVENTS,
     ),
     profile(
         "trae",
@@ -534,18 +454,14 @@ mod tests {
             "opencode",
             "qwen",
             "trae",
-            "trae_gui",
-            "traecn",
             "qoder",
             "droid",
             "codebuddy",
-            "codybuddycn",
             "stepfun",
             "antigravity",
             "workbuddy",
             "hermes",
             "pi",
-            "omp",
         ] {
             assert!(supports_provider(provider), "missing profile: {provider}");
         }
@@ -568,7 +484,6 @@ mod tests {
         assert_eq!(find("claude-code").unwrap().provider, "claude");
         assert_eq!(find("traecli").unwrap().provider, "trae");
         assert_eq!(find("factory").unwrap().provider, "droid");
-        assert_eq!(find("oh-my-pi").unwrap().provider, "omp");
     }
 
     #[test]
@@ -579,12 +494,10 @@ mod tests {
             "gemini",
             "cursor",
             "trae",
-            "traecn",
             "traecli",
             "qoder",
             "droid",
             "codebuddy",
-            "codybuddycn",
             "stepfun",
             "antigravity",
             "workbuddy",
@@ -595,7 +508,6 @@ mod tests {
             "kiro",
             "cline",
             "pi",
-            "omp",
         ];
 
         for source in codeisland_sources {
@@ -603,7 +515,6 @@ mod tests {
                 continue;
             }
             let provider = match source {
-                "trae" => "trae_gui",
                 "traecli" => "trae",
                 other => other,
             };

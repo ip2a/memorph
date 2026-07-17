@@ -10,23 +10,18 @@ pub(crate) fn executable_candidates(provider_id: &str) -> &'static [&'static str
         "copilot" => &["gh"],
         "cursor" => &["cursor-agent", "cursor"],
         "deepseek" => &["deepseek"],
-        "cidebuddy" => &["cidebuddy"],
-        "codebuddy" => &["codebuddy", "cidebuddy"],
-        "codybuddycn" => &["codybuddycn", "codybuddy", "codebuddy-cn"],
+        "codebuddy" => &["codebuddy"],
         "droid" => &["factory", "droid"],
         "gemini" => &["gemini"],
         "hermes" => &["hermes"],
         "kiro" => &["kiro"],
         "kimi" => &["kimi"],
-        "omp" => &["omp", "oh-my-pi"],
         "opencode" => &["opencode"],
         "pi" => &["pi"],
         "qoder" => &["qoder"],
         "qwen" => &["qwen"],
         "stepfun" => &["stepfun"],
         "trae" => &["trae"],
-        "trae_gui" => &["trae"],
-        "traecn" => &["trae-cn", "traecn"],
         "workbuddy" => &["workbuddy"],
         "windsurf" => &["windsurf"],
         _ => &[],
@@ -45,21 +40,18 @@ pub(crate) fn config_path(provider_id: &str) -> PathBuf {
             .join("globalStorage"),
         "cursor" => cursor_config_dir(),
         "deepseek" => home_join(".deepseek"),
-        "cidebuddy" | "codebuddy" => home_join(".codebuddy"),
-        "codybuddycn" => home_join(".codybuddycn"),
+        "codebuddy" => home_join(".codebuddy"),
         "droid" => home_join(".factory"),
         "gemini" => home_join(".gemini"),
         "hermes" => home_join(".hermes"),
         "kiro" => kiro_config_dir(),
         "kimi" => home_join(".kimi"),
-        "omp" => home_join(".omp/agent"),
         "opencode" => home_join(".config/opencode"),
         "pi" => home_join(".pi/agent"),
         "qoder" => home_join(".qoder"),
         "qwen" => home_join(".qwen"),
         "stepfun" => home_join(".stepfun"),
-        "trae" | "trae_gui" => home_join(".trae"),
-        "traecn" => home_join(".trae-cn"),
+        "trae" => home_join(".trae"),
         "workbuddy" => home_join(".workbuddy"),
         "windsurf" => app_config_dir("Windsurf", ".config/Windsurf"),
         other => PathBuf::from(other),
@@ -159,15 +151,11 @@ mod tests {
         assert_eq!(config_path("droid"), home_join(".factory"));
         assert_eq!(config_path("factory"), home_join(".factory"));
         assert_eq!(config_path("codebuddy"), home_join(".codebuddy"));
-        assert_eq!(config_path("codybuddycn"), home_join(".codybuddycn"));
         assert_eq!(config_path("stepfun"), home_join(".stepfun"));
         assert_eq!(config_path("antigravity"), home_join(".antigravity"));
         assert_eq!(config_path("workbuddy"), home_join(".workbuddy"));
         assert_eq!(config_path("hermes"), home_join(".hermes"));
-        assert_eq!(config_path("trae_gui"), home_join(".trae"));
-        assert_eq!(config_path("traecn"), home_join(".trae-cn"));
         assert_eq!(config_path("pi"), home_join(".pi/agent"));
-        assert_eq!(config_path("omp"), home_join(".omp/agent"));
     }
 
     #[test]
@@ -176,15 +164,11 @@ mod tests {
             "qoder",
             "droid",
             "codebuddy",
-            "codybuddycn",
             "stepfun",
             "antigravity",
             "workbuddy",
             "hermes",
-            "trae_gui",
-            "traecn",
             "pi",
-            "omp",
         ] {
             assert!(
                 !executable_candidates(provider).is_empty(),

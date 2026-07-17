@@ -17,8 +17,6 @@ static CODEBUDDY_ADAPTER: super::codebuddy::adapter::CodeBuddyHookAdapter =
     super::codebuddy::adapter::CodeBuddyHookAdapter;
 static CODEX_ADAPTER: super::codex::adapter::CodexHookAdapter =
     super::codex::adapter::CodexHookAdapter;
-static CODYBUDDYCN_ADAPTER: super::codybuddycn::adapter::CodyBuddyCnHookAdapter =
-    super::codybuddycn::adapter::CodyBuddyCnHookAdapter;
 static COPILOT_ADAPTER: super::copilot::adapter::CopilotHookAdapter =
     super::copilot::adapter::CopilotHookAdapter;
 static CURSOR_ADAPTER: super::cursor::adapter::CursorHookAdapter =
@@ -31,7 +29,6 @@ static HERMES_ADAPTER: super::hermes::adapter::HermesHookAdapter =
     super::hermes::adapter::HermesHookAdapter;
 static KIMI_ADAPTER: super::kimi::adapter::KimiHookAdapter = super::kimi::adapter::KimiHookAdapter;
 static KIRO_ADAPTER: super::kiro::adapter::KiroHookAdapter = super::kiro::adapter::KiroHookAdapter;
-static OMP_ADAPTER: super::omp::adapter::OmpHookAdapter = super::omp::adapter::OmpHookAdapter;
 static OPENCODE_ADAPTER: super::opencode::adapter::OpenCodeHookAdapter =
     super::opencode::adapter::OpenCodeHookAdapter;
 static PI_ADAPTER: super::pi::adapter::PiHookAdapter = super::pi::adapter::PiHookAdapter;
@@ -41,10 +38,6 @@ static QWEN_ADAPTER: super::qwen::adapter::QwenHookAdapter = super::qwen::adapte
 static STEPFUN_ADAPTER: super::stepfun::adapter::StepFunHookAdapter =
     super::stepfun::adapter::StepFunHookAdapter;
 static TRAE_ADAPTER: super::trae::adapter::TraeHookAdapter = super::trae::adapter::TraeHookAdapter;
-static TRAE_GUI_ADAPTER: super::trae_gui::adapter::TraeGuiHookAdapter =
-    super::trae_gui::adapter::TraeGuiHookAdapter;
-static TRAECN_ADAPTER: super::traecn::adapter::TraeCnHookAdapter =
-    super::traecn::adapter::TraeCnHookAdapter;
 static WORKBUDDY_ADAPTER: super::workbuddy::adapter::WorkBuddyHookAdapter =
     super::workbuddy::adapter::WorkBuddyHookAdapter;
 
@@ -58,7 +51,6 @@ pub fn find_provider_hook(provider: &str) -> Option<&'static dyn ProviderHook> {
         "cursor" => Some(&super::cursor::hook::CURSOR_HOOK),
         "droid" => Some(&super::droid::hook::DROID_HOOK),
         "codebuddy" => Some(&super::codebuddy::hook::CODEBUDDY_HOOK),
-        "codybuddycn" => Some(&super::codybuddycn::hook::CODYBUDDYCN_HOOK),
         "stepfun" => Some(&super::stepfun::hook::STEPFUN_HOOK),
         "antigravity" => Some(&super::antigravity::hook::ANTIGRAVITY_HOOK),
         "workbuddy" => Some(&super::workbuddy::hook::WORKBUDDY_HOOK),
@@ -68,11 +60,8 @@ pub fn find_provider_hook(provider: &str) -> Option<&'static dyn ProviderHook> {
         "kimi" => Some(&super::kimi::hook::KIMI_HOOK),
         "opencode" => Some(&super::opencode::hook::OPENCODE_HOOK),
         "pi" => Some(&super::pi::hook::PI_HOOK),
-        "omp" => Some(&super::omp::hook::OMP_HOOK),
         "qoder" => Some(&super::qoder::hook::QODER_HOOK),
         "trae" => Some(&super::trae::hook::TRAE_HOOK),
-        "trae_gui" => Some(&super::trae_gui::hook::TRAE_GUI_HOOK),
-        "traecn" => Some(&super::traecn::hook::TRAECN_HOOK),
         "qwen" => Some(&super::qwen::hook::QWEN_HOOK),
         _ => None,
     }
@@ -88,7 +77,6 @@ pub fn find_hook_adapter(provider: &str) -> Option<&'static dyn HookAdapter> {
         "cursor" => Some(&CURSOR_ADAPTER),
         "droid" => Some(&DROID_ADAPTER),
         "codebuddy" => Some(&CODEBUDDY_ADAPTER),
-        "codybuddycn" => Some(&CODYBUDDYCN_ADAPTER),
         "stepfun" => Some(&STEPFUN_ADAPTER),
         "antigravity" => Some(&ANTIGRAVITY_ADAPTER),
         "workbuddy" => Some(&WORKBUDDY_ADAPTER),
@@ -98,11 +86,8 @@ pub fn find_hook_adapter(provider: &str) -> Option<&'static dyn HookAdapter> {
         "kimi" => Some(&KIMI_ADAPTER),
         "opencode" => Some(&OPENCODE_ADAPTER),
         "pi" => Some(&PI_ADAPTER),
-        "omp" => Some(&OMP_ADAPTER),
         "qoder" => Some(&QODER_ADAPTER),
         "trae" => Some(&TRAE_ADAPTER),
-        "trae_gui" => Some(&TRAE_GUI_ADAPTER),
-        "traecn" => Some(&TRAECN_ADAPTER),
         "qwen" => Some(&QWEN_ADAPTER),
         _ => None,
     }
@@ -163,12 +148,6 @@ mod tests {
                 .provider_id(),
             "droid"
         );
-        assert_eq!(
-            find_provider_hook("oh-my-pi")
-                .expect("omp hook")
-                .provider_id(),
-            "omp"
-        );
     }
 
     #[test]
@@ -184,12 +163,6 @@ mod tests {
                 .expect("factory adapter")
                 .provider_id(),
             "droid"
-        );
-        assert_eq!(
-            find_hook_adapter("oh-my-pi")
-                .expect("omp adapter")
-                .provider_id(),
-            "omp"
         );
     }
 
@@ -219,7 +192,6 @@ mod tests {
             "qoder",
             "droid",
             "codebuddy",
-            "codybuddycn",
             "stepfun",
             "antigravity",
             "workbuddy",

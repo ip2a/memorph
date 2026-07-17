@@ -22,7 +22,6 @@ pub enum HookConfigStrategyKind {
     KiroAgentJson,
     OpenCodePlugin,
     PiExtension,
-    OmpExtension,
     TraeYaml,
 }
 

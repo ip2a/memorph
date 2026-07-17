@@ -93,20 +93,15 @@ fn curated_display_name(canonical_id: &str) -> Option<&'static str> {
         "antigravity" => "Antigravity",
         "copilot" => "Copilot",
         "windsurf" => "Windsurf",
-        "cidebuddy" => "CideBuddy",
         "codebuddy" => "CodeBuddy",
         "qoder" => "Qoder",
         "qwen" => "Qwen",
         "trae" => "Trae",
-        "trae_gui" => "Trae GUI",
-        "traecn" => "Trae CN",
         "droid" => "Droid",
-        "codybuddycn" => "CodyBuddy CN",
         "stepfun" => "StepFun",
         "workbuddy" => "WorkBuddy",
         "hermes" => "Hermes",
         "pi" => "Pi",
-        "omp" => "OMP",
         _ => return None,
     })
 }
@@ -275,9 +270,6 @@ mod tests {
         assert_eq!(display_name("opencode"), "OpenCode");
         assert_eq!(display_name("deepseek"), "DeepSeek");
         assert_eq!(display_name("gemini"), "Gemini");
-        // Aliases are canonicalized before looking up the display name.
-        assert_eq!(display_name("trae-cn"), "Trae CN");
-        assert_eq!(display_name("oh-my-pi"), "OMP");
     }
 
     #[test]

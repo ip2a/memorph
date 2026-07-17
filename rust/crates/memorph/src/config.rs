@@ -844,10 +844,10 @@ mod tests {
             normalize_provider_ids(vec![
                 "factory".to_string(),
                 "droid".to_string(),
-                "oh-my-pi".to_string(),
-                "omp".to_string(),
+                "step-fun".to_string(),
+                "stepfun".to_string(),
             ]),
-            vec!["droid".to_string(), "omp".to_string()]
+            vec!["droid".to_string(), "stepfun".to_string()]
         );
     }
 }

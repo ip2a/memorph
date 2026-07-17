@@ -80,24 +80,10 @@ json_read_provider!(
     None::<&'static str>
 );
 json_read_provider!(
-    CideBuddyProvider,
-    "cidebuddy",
-    "CodeBuddy",
-    cidebuddy_roots,
-    None::<&'static str>
-);
-json_read_provider!(
     CodeBuddyProvider,
     "codebuddy",
     "CodeBuddy",
     codebuddy_roots,
-    None::<&'static str>
-);
-json_read_provider!(
-    CodyBuddyCnProvider,
-    "codybuddycn",
-    "CodyBuddyCN",
-    codybuddycn_roots,
     None::<&'static str>
 );
 json_read_provider!(
@@ -137,31 +123,10 @@ json_read_provider!(
 );
 json_read_provider!(PiProvider, "pi", "pi", pi_roots, None::<&'static str>);
 json_read_provider!(
-    OmpProvider,
-    "omp",
-    "Oh My Pi",
-    omp_roots,
-    None::<&'static str>
-);
-json_read_provider!(
     TraeProvider,
     "trae",
     "TraeCli",
     trae_roots,
-    None::<&'static str>
-);
-json_read_provider!(
-    TraeGuiProvider,
-    "trae_gui",
-    "Trae",
-    trae_roots,
-    None::<&'static str>
-);
-json_read_provider!(
-    TraeCnProvider,
-    "traecn",
-    "Trae CN",
-    traecn_roots,
     None::<&'static str>
 );
 
@@ -256,29 +221,9 @@ fn windsurf_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn cidebuddy_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("CodeBuddy");
-    roots.extend(vscode_global_storage("CideBuddy"));
-    if let Some(root) = home_join(".codebuddy") {
-        roots.push(root);
-    }
-    if let Some(root) = home_join(".cidebuddy") {
-        roots.push(root);
-    }
-    roots
-}
-
 fn codebuddy_roots() -> Vec<PathBuf> {
     let mut roots = vscode_global_storage("CodeBuddy");
     if let Some(root) = home_join(".codebuddy") {
-        roots.push(root);
-    }
-    roots
-}
-
-fn codybuddycn_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("CodyBuddyCN");
-    if let Some(root) = home_join(".codybuddycn") {
         roots.push(root);
     }
     roots
@@ -332,25 +277,9 @@ fn pi_roots() -> Vec<PathBuf> {
     roots
 }
 
-fn omp_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(root) = home_join(".omp/agent") {
-        roots.push(root);
-    }
-    roots
-}
-
 fn trae_roots() -> Vec<PathBuf> {
     let mut roots = vscode_global_storage("Trae");
     if let Some(root) = home_join(".trae") {
-        roots.push(root);
-    }
-    roots
-}
-
-fn traecn_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("Trae CN");
-    if let Some(root) = home_join(".trae-cn") {
         roots.push(root);
     }
     roots

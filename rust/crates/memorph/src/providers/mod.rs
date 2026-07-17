@@ -5,7 +5,6 @@ pub mod claude;
 pub mod cline;
 pub mod codebuddy;
 pub mod codex;
-pub mod codybuddycn;
 pub mod copilot;
 pub mod cursor;
 pub mod deepseek;
@@ -17,15 +16,12 @@ mod generic_json;
 pub mod hermes;
 pub mod kimi;
 pub mod kiro;
-pub mod omp;
 pub mod opencode;
 pub mod pi;
 pub mod qoder;
 pub mod qwen;
 pub mod stepfun;
 pub mod trae;
-pub mod trae_gui;
-pub mod traecn;
 pub mod workbuddy;
 
 pub(crate) mod hook_profiles;
@@ -46,20 +42,15 @@ const PROVIDER_IDS: &[&str] = &[
     "antigravity",
     "copilot",
     "windsurf",
-    "cidebuddy",
     "codebuddy",
     "qoder",
     "qwen",
     "trae",
-    "trae_gui",
-    "traecn",
     "droid",
-    "codybuddycn",
     "stepfun",
     "workbuddy",
     "hermes",
     "pi",
-    "omp",
 ];
 
 pub struct ProviderRegistry;
@@ -80,20 +71,15 @@ impl ProviderRegistry {
             "antigravity" => Some(Box::new(emerging::AntigravityProvider)),
             "copilot" => Some(Box::new(emerging::CopilotProvider)),
             "windsurf" => Some(Box::new(emerging::WindsurfProvider)),
-            "cidebuddy" => Some(Box::new(emerging::CideBuddyProvider)),
             "codebuddy" => Some(Box::new(emerging::CodeBuddyProvider)),
             "qoder" => Some(Box::new(emerging::QoderProvider)),
             "qwen" => Some(Box::new(qwen::QwenProvider)),
             "trae" => Some(Box::new(emerging::TraeProvider)),
-            "trae_gui" => Some(Box::new(emerging::TraeGuiProvider)),
-            "traecn" => Some(Box::new(emerging::TraeCnProvider)),
             "droid" => Some(Box::new(emerging::DroidProvider)),
-            "codybuddycn" => Some(Box::new(emerging::CodyBuddyCnProvider)),
             "stepfun" => Some(Box::new(emerging::StepFunProvider)),
             "workbuddy" => Some(Box::new(emerging::WorkBuddyProvider)),
             "hermes" => Some(Box::new(emerging::HermesProvider)),
             "pi" => Some(Box::new(emerging::PiProvider)),
-            "omp" => Some(Box::new(emerging::OmpProvider)),
             "gemini" => Some(Box::new(gemini::GeminiProvider)),
             "kiro" => Some(Box::new(kiro::KiroProvider)),
             "kimi" => Some(Box::new(kimi::KimiProvider)),
@@ -155,20 +141,15 @@ mod tests {
             "cline",
             "copilot",
             "windsurf",
-            "cidebuddy",
             "codebuddy",
             "qoder",
             "qwen",
             "trae",
-            "trae_gui",
-            "traecn",
             "droid",
-            "codybuddycn",
             "stepfun",
             "workbuddy",
             "hermes",
             "pi",
-            "omp",
         ] {
             assert!(
                 all_provider_ids().iter().any(|known| *known == id),
@@ -200,14 +181,6 @@ mod tests {
         assert!(capabilities.write_risk.multiple_files);
         assert!(capabilities.write_risk.sidecar_files);
         assert!(!capabilities.write_risk.sqlite);
-    }
-
-    #[test]
-    fn traecli_and_trae_gui_have_distinct_display_names() {
-        let traecli = find_provider("trae").expect("trae provider");
-        let trae_gui = find_provider("trae_gui").expect("trae gui provider");
-        assert_eq!(traecli.name(), "TraeCli");
-        assert_eq!(trae_gui.name(), "Trae");
     }
 
     #[test]

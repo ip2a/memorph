@@ -106,7 +106,7 @@ mod tests {
         assert_eq!(descriptor.provider(), PI_HOOK.provider_id());
     }
     #[test]
-    fn renders_pi_and_omp_extensions_with_memorph_bridge() {
+    fn renders_pi_extension_with_memorph_bridge() {
         let pi = extension_source().unwrap();
         assert!(pi.contains("memorph pi extension"));
         assert!(pi.contains("__hook-bridge"));
@@ -114,13 +114,6 @@ mod tests {
         assert!(pi.contains("const PROVIDER = \"pi\""));
         assert!(!pi.contains("codeisland-bridge"));
         assert!(!pi.contains("codeisland-"));
-
-        let omp = crate::providers::omp::hook::extension_source().unwrap();
-        assert!(omp.contains("memorph omp extension"));
-        assert!(omp.contains("__hook-bridge"));
-        assert!(omp.contains("const PROVIDER = \"omp\""));
-        assert!(!omp.contains("codeisland-bridge"));
-        assert!(!omp.contains("codeisland-"));
     }
 
     #[test]
@@ -134,14 +127,6 @@ mod tests {
             Some(crate::hooks::shared::HOOK_MANAGED_VERSION)
         );
         assert!(installed_version("// unrelated extension").is_none());
-        assert_eq!(
-            crate::providers::omp::hook::installed_version(
-                &current.replace("memorph pi extension", "memorph omp extension")
-            )
-            .flatten()
-            .as_deref(),
-            Some(crate::hooks::shared::HOOK_MANAGED_VERSION)
-        );
     }
     #[test]
     fn installs_and_uninstalls_pi_extension() {
