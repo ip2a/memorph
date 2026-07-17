@@ -83,7 +83,7 @@ impl ProviderRegistry {
             "cidebuddy" => Some(Box::new(emerging::CideBuddyProvider)),
             "codebuddy" => Some(Box::new(emerging::CodeBuddyProvider)),
             "qoder" => Some(Box::new(emerging::QoderProvider)),
-            "qwen" => Some(Box::new(emerging::QwenProvider)),
+            "qwen" => Some(Box::new(qwen::QwenProvider)),
             "trae" => Some(Box::new(emerging::TraeProvider)),
             "trae_gui" => Some(Box::new(emerging::TraeGuiProvider)),
             "traecn" => Some(Box::new(emerging::TraeCnProvider)),
@@ -176,6 +176,21 @@ mod tests {
             );
             assert!(find_provider(id).is_some(), "provider not found: {id}");
         }
+    }
+
+    #[test]
+    fn registry_uses_native_qwen_jsonl_provider() {
+        let provider = find_provider("qwen").expect("qwen provider");
+        let capabilities = provider.capabilities();
+        assert_eq!(provider.name(), "Qwen Code");
+        assert_eq!(
+            capabilities.storage_shape,
+            crate::provider::StorageShape::Jsonl
+        );
+        assert!(capabilities.resume);
+        assert!(!capabilities.delete);
+        assert!(!capabilities.rename);
+        assert!(!capabilities.export);
     }
 
     #[test]
