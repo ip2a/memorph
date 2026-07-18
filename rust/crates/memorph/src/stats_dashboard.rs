@@ -160,7 +160,15 @@ fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<Stats
         crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
     let rows: Vec<_> = rows
         .into_iter()
-        .filter(|row| query.all || query.workspace.as_deref() == row.workspace_dir.as_deref())
+        .filter(|row| {
+            query.all
+                || crate::core::session_management::normalized_workspace_key(
+                    &row.provider_id,
+                    query.workspace.as_deref(),
+                )
+                .as_deref()
+                    == row.workspace_dir.as_deref()
+        })
         .collect();
     let created_at = load_created_at(&conn, &rows)?;
     let range_start = query.range.days().map(|days| now - Duration::days(days));
