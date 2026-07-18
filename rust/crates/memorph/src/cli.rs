@@ -336,6 +336,18 @@ pub enum CompressionCommands {
         #[arg(short, long, value_name = "FORMAT", default_value = "json")]
         format: String,
     },
+    /// Restore compressed segment(s) into the original provider session
+    RestoreNative {
+        /// Provider ID owning the native session
+        #[arg(value_name = "PROVIDER")]
+        provider_id: String,
+        /// Provider session ID to restore in place
+        #[arg(value_name = "SESSION_ID")]
+        session_id: String,
+        /// Restore only this archive ref; omit to restore all compressed segments
+        #[arg(long, value_name = "ARCHIVE_REF")]
+        archive_ref: Option<String>,
+    },
     /// Retrieve archived original events and print them as JSON
     Retrieve {
         /// Archive ref, for example memorph-archive://...

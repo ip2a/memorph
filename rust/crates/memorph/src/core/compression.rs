@@ -576,6 +576,67 @@ fn expand_compressed_segments_with_archive(
     ))
 }
 
+pub fn compressed_archive_refs(session: &CanonicalSession) -> Vec<String> {
+    session
+        .events
+        .iter()
+        .filter_map(|event| {
+            compressed_block_summary_and_archive(event)
+                .and_then(|(_, archive_ref)| archive_ref.map(str::to_string))
+        })
+        .collect()
+}
+
+pub fn restore_compressed_segments_in_place(
+    session: &CanonicalSession,
+    archive_ref: Option<&str>,
+) -> Result<(CanonicalSession, CompressionReport)> {
+    restore_compressed_segments_in_place_from_dir(session, archive_ref, &archive_base_dir()?)
+}
+
+pub(crate) fn restore_compressed_segments_in_place_from_dir(
+    session: &CanonicalSession,
+    requested_archive_ref: Option<&str>,
+    archive_dir: &Path,
+) -> Result<(CanonicalSession, CompressionReport)> {
+    let mut next = session.clone();
+    let mut events = Vec::with_capacity(session.events.len());
+    let mut restored_events = 0;
+    let mut archive_refs = Vec::new();
+
+    for event in &session.events {
+        let Some((_, Some(archive_ref))) = compressed_block_summary_and_archive(event) else {
+            events.push(event.clone());
+            continue;
+        };
+        if requested_archive_ref.is_some_and(|requested| requested != archive_ref) {
+            events.push(event.clone());
+            continue;
+        }
+        let archive = load_archive_from_dir(archive_dir, archive_ref)?;
+        restored_events += archive.events.len();
+        events.extend(archive.events);
+        archive_refs.push(archive_ref.to_string());
+    }
+    if let Some(requested) = requested_archive_ref {
+        if archive_refs.is_empty() {
+            anyhow::bail!("Compression archive is not present in this session: {requested}");
+        }
+    }
+    next.events = events;
+    Ok((
+        next,
+        CompressionReport {
+            expanded_segments: archive_refs.len(),
+            preserved_events: session.events.len() - archive_refs.len(),
+            restored_events,
+            target_provider_id: session.provenance.primary_source.provider_id.clone(),
+            archive_refs,
+            ..CompressionReport::default()
+        },
+    ))
+}
+
 fn compressed_block_summary_and_archive(event: &SessionEvent) -> Option<(&str, Option<&str>)> {
     event.blocks.iter().find_map(|block| {
         if let EventBlock::Compressed {
@@ -1446,6 +1507,47 @@ mod tests {
                 .iter()
                 .any(|block| matches!(block, EventBlock::Compressed { .. }))
         }));
+    }
+
+    #[test]
+    fn native_restore_can_restore_one_segment_or_all_segments() {
+        let temp = tempfile::tempdir().unwrap();
+        let policy = CompressionPolicy::preserve("opencode", "opencode");
+        let first = sample_opencode_compacted_session();
+        let (first_compressed, first_report) =
+            prepare_for_export_with_archive_dir(&first, &policy, temp.path()).unwrap();
+        let mut second = sample_opencode_compacted_session();
+        second.identity.canonical_id = "s2".to_string();
+        second.events[0].id = "old-user-2".to_string();
+        second.events[1].id = "compact-marker-2".to_string();
+        second.events[2].id = "summary-2".to_string();
+        let (second_compressed, second_report) =
+            prepare_for_export_with_archive_dir(&second, &policy, temp.path()).unwrap();
+        let mut combined = first_compressed.clone();
+        combined
+            .events
+            .insert(1, second_compressed.events[0].clone());
+
+        let (single, single_report) = restore_compressed_segments_in_place_from_dir(
+            &combined,
+            Some(&first_report.archive_refs[0]),
+            temp.path(),
+        )
+        .unwrap();
+        assert_eq!(single_report.expanded_segments, 1);
+        assert!(single.events.iter().any(|event| event.id == "old-user"));
+        assert!(!single
+            .events
+            .iter()
+            .any(|event| event.id == "memorph-compressed-summary"));
+        assert_eq!(compressed_archive_refs(&single), second_report.archive_refs);
+
+        let (all, all_report) =
+            restore_compressed_segments_in_place_from_dir(&combined, None, temp.path()).unwrap();
+        assert_eq!(all_report.expanded_segments, 2);
+        assert!(all.events.iter().any(|event| event.id == "old-user"));
+        assert!(all.events.iter().any(|event| event.id == "old-user-2"));
+        assert!(compressed_archive_refs(&all).is_empty());
     }
 
     #[test]

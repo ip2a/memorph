@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, ProviderSessionRef, SessionContext, SessionIdentity,
-    SessionProvenance,
+    CanonicalSchema, CanonicalSession, ImportedSession, ProviderSessionRef, SessionContext,
+    SessionIdentity, SessionProvenance,
 };
 use crate::core::compression;
 use crate::format;
@@ -268,6 +268,89 @@ fn rename_session_with_provider(
         display_title: new_title.to_string(),
         native_updated,
         warning,
+    })
+}
+
+#[derive(Debug)]
+pub struct NativeSessionReplaceResult {
+    pub imported: ImportedSession,
+    pub source_bytes_before: u64,
+    pub source_bytes_after: u64,
+}
+
+pub fn replace_native_session(
+    provider_id: &str,
+    session_id: &str,
+    session: &CanonicalSession,
+    expected_archive_refs: &[String],
+    operation_id: &str,
+    backup_root: &Path,
+    artifact_conn: &mut Connection,
+) -> Result<NativeSessionReplaceResult> {
+    let prov = providers::find_provider(provider_id)
+        .with_context(|| format!("Unknown provider: {provider_id}"))?;
+    if !prov.supports_native_session_replace() {
+        anyhow::bail!("Provider does not support native session replacement: {provider_id}");
+    }
+    let provider_id = providers::canonical_provider_id(provider_id);
+    let busy = crate::hooks::server::runtime_sessions_snapshot()
+        .into_iter()
+        .any(|runtime| {
+            providers::canonical_provider_id(&runtime.provider) == provider_id
+                && runtime.provider_session_id.as_deref() == Some(session_id)
+                && !matches!(
+                    runtime.status,
+                    crate::hooks::model::RuntimeSessionStatus::Completed
+                        | crate::hooks::model::RuntimeSessionStatus::Failed
+                        | crate::hooks::model::RuntimeSessionStatus::Orphaned
+                )
+        });
+    if busy {
+        anyhow::bail!("Cannot replace active provider session: {provider_id}/{session_id}");
+    }
+    let support = prov.capabilities().backup_support;
+    if !support.before_write || !support.restore || support.sync_only {
+        anyhow::bail!("Provider cannot safely back up native session replacement: {provider_id}");
+    }
+    let source = prov
+        .get_session_meta(session_id)?
+        .and_then(|meta| meta.source_path)
+        .with_context(|| {
+            format!("Provider session source not found: {provider_id}/{session_id}")
+        })?;
+    let source_bytes_before = prov.session_size(session_id)?;
+    let backup = register_provider_session_backup(
+        prov.as_ref(),
+        &provider_id,
+        ProviderSourceMutation::Replace,
+        operation_id,
+        session_id,
+        backup_root,
+        artifact_conn,
+    )?
+    .context("Native session replacement requires a registered backup")?;
+
+    let result = (|| -> Result<NativeSessionReplaceResult> {
+        prov.replace_session(session_id, session)?;
+        let imported = prov.import_session(&source)?;
+        if imported.session.identity.canonical_id != session.identity.canonical_id {
+            anyhow::bail!("Native replacement changed canonical session identity");
+        }
+        let mut actual_refs = compression::compressed_archive_refs(&imported.session);
+        let mut expected_refs = expected_archive_refs.to_vec();
+        actual_refs.sort();
+        expected_refs.sort();
+        if actual_refs != expected_refs {
+            anyhow::bail!("Native replacement validation found different compression archive refs");
+        }
+        Ok(NativeSessionReplaceResult {
+            source_bytes_before,
+            source_bytes_after: prov.session_size(session_id)?,
+            imported,
+        })
+    })();
+    result.map_err(|error| {
+        restore_provider_session_after_failure(prov.as_ref(), Some(&backup), error)
     })
 }
 

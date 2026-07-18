@@ -915,6 +915,35 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
                 println!("Restored compression archive: {}", file);
             }
         }
+        CompressionCommands::RestoreNative {
+            provider_id,
+            session_id,
+            archive_ref,
+        } => {
+            let result = core::restore_native_compression(
+                &core::RestoreNativeCompressionParams {
+                    provider_id: provider_id.clone(),
+                    session_id: session_id.clone(),
+                    archive_ref,
+                },
+                ActivityActor::Cli,
+            )?;
+            println!(
+                "Restored {} compressed segment(s) in {}/{} ({} events, {}B -> {}B)",
+                result.restored_segments,
+                provider_id,
+                session_id,
+                result.restored_events,
+                result.source_bytes_before,
+                result.source_bytes_after
+            );
+            if !result.remaining_archive_refs.is_empty() {
+                println!("Remaining archives:");
+                for archive_ref in result.remaining_archive_refs {
+                    println!("- {archive_ref}");
+                }
+            }
+        }
         CompressionCommands::Retrieve {
             archive_ref,
             query,
@@ -999,9 +1028,9 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             }
             let result = core::active_compression_apply(
                 &core::ActiveCompressionApplyCommandParams {
-                    source_provider_id,
+                    source_provider_id: source_provider_id.clone(),
                     target_provider_id,
-                    session_id,
+                    session_id: session_id.clone(),
                     file,
                     policy,
                     candidate_ids,
@@ -1010,9 +1039,13 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
                 },
                 ActivityActor::Cli,
             )?;
-            for file in &result.files {
-                println!("Wrote active compression session: {}", file);
-            }
+            println!(
+                "Replaced native session {}/{} ({}B -> {}B)",
+                source_provider_id,
+                session_id.as_deref().unwrap_or("(unknown)"),
+                result.source_bytes_before,
+                result.source_bytes_after
+            );
             for archive_ref in &result.archive_refs {
                 println!("Archive: {}", archive_ref);
             }

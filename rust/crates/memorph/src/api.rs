@@ -166,6 +166,10 @@ pub fn router() -> Router {
             post(restore_compression_archive),
         )
         .route(
+            "/api/v1/compression/restore-native",
+            post(restore_native_compression),
+        )
+        .route(
             "/api/v1/compression/retrieve",
             post(retrieve_compression_archive),
         )
@@ -1834,6 +1838,13 @@ async fn get_compression_retrieval_instructions(
 }
 
 #[derive(Deserialize)]
+struct RestoreNativeCompressionBody {
+    provider_id: String,
+    session_id: String,
+    archive_ref: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct RestoreCompressionArchiveBody {
     archive_ref: String,
     output_prefix: Option<String>,
@@ -1879,6 +1890,23 @@ struct ActiveCompressionApplyBody {
     output_prefix: Option<String>,
     #[serde(default = "default_format")]
     format: String,
+}
+
+async fn restore_native_compression(
+    Json(body): Json<RestoreNativeCompressionBody>,
+) -> impl IntoResponse {
+    let params = core::RestoreNativeCompressionParams {
+        provider_id: body.provider_id,
+        session_id: body.session_id,
+        archive_ref: body.archive_ref,
+    };
+    match core::restore_native_compression(&params, ActivityActor::Api) {
+        Ok(result) => {
+            invalidate_compression_archives_cache();
+            ApiResponse::success(result).into_response()
+        }
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
 }
 
 async fn restore_compression_archive(
@@ -3562,7 +3590,7 @@ mod tests {
         assert!(value["error"]
             .as_str()
             .unwrap()
-            .contains("Use either session_id or file"));
+            .contains("Native compression requires session_id and does not accept file"));
     }
 
     #[tokio::test]

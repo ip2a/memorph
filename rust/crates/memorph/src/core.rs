@@ -2270,6 +2270,103 @@ pub fn expand_compression_session(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreNativeCompressionParams {
+    pub provider_id: String,
+    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RestoreNativeCompressionResult {
+    pub restored_segments: usize,
+    pub restored_events: usize,
+    pub remaining_archive_refs: Vec<String>,
+    pub source_bytes_before: u64,
+    pub source_bytes_after: u64,
+}
+
+pub fn restore_native_compression(
+    params: &RestoreNativeCompressionParams,
+    actor: ActivityActor,
+) -> Result<RestoreNativeCompressionResult> {
+    let mut conn = local_store::open_database()?;
+    let details = serde_json::to_value(params)?;
+    let activity_id = ActivityStore::new(&conn).start(NewActivity {
+        provider_id: Some(params.provider_id.clone()),
+        provider_session_id: Some(params.session_id.clone()),
+        workspace_dir: None,
+        operation_kind: ActivityOperationKind::Compress,
+        actor,
+        summary: "Restoring compressed segments in native session".to_string(),
+        details: details.clone(),
+    })?;
+    let result = (|| {
+        let session = get_canonical_session(&params.provider_id, &params.session_id)?.session;
+        let (restored, report) = compression::restore_compressed_segments_in_place(
+            &session,
+            params.archive_ref.as_deref(),
+        )?;
+        if report.expanded_segments == 0 {
+            anyhow::bail!("Session has no restorable compressed segments");
+        }
+        let remaining_archive_refs = compression::compressed_archive_refs(&restored);
+        let backup_root = crate::config::memorph_dir()?
+            .join("artifacts")
+            .join("backups");
+        let replaced = session_management::replace_native_session(
+            &params.provider_id,
+            &params.session_id,
+            &restored,
+            &remaining_archive_refs,
+            &activity_id,
+            &backup_root,
+            &mut conn,
+        )?;
+        session_state::update_session_state(
+            &params.provider_id,
+            &params.session_id,
+            &session_state::SessionLocalStateUpdate {
+                compressed_archive_refs: Some(remaining_archive_refs.clone()),
+                ..Default::default()
+            },
+        )?;
+        refresh_target_provider_sessions(&params.provider_id)?;
+        Ok(RestoreNativeCompressionResult {
+            restored_segments: report.expanded_segments,
+            restored_events: report.restored_events,
+            remaining_archive_refs,
+            source_bytes_before: replaced.source_bytes_before,
+            source_bytes_after: replaced.source_bytes_after,
+        })
+    })();
+    match result {
+        Ok(restored) => {
+            ActivityStore::new(&conn).finish(
+                &activity_id,
+                ActivityCompletion::success(
+                    "Restored compressed segments in native session",
+                    serde_json::to_value(&restored)?,
+                ),
+            )?;
+            Ok(restored)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to restore compressed segments in native session",
+                    details,
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RestoreCompressionArchiveParams {
     pub archive_ref: String,
     pub output_prefix: Option<String>,
@@ -2803,6 +2900,8 @@ pub struct ActiveCompressionApplyCommandResult {
     pub files: Vec<String>,
     pub archive_refs: Vec<String>,
     pub report: ActiveCompressionReport,
+    pub source_bytes_before: u64,
+    pub source_bytes_after: u64,
 }
 
 pub fn active_compression_apply(
@@ -2828,6 +2927,12 @@ pub fn active_compression_apply(
         details: input_details.clone(),
     })?;
     let result = (|| {
+        if params.session_id.is_none() || params.file.is_some() {
+            anyhow::bail!("Native compression requires session_id and does not accept file");
+        }
+        if params.source_provider_id != params.target_provider_id {
+            anyhow::bail!("Native compression target must match the source provider");
+        }
         let session = load_active_compression_source_session(
             &params.source_provider_id,
             params.session_id.as_deref(),
@@ -2843,25 +2948,16 @@ pub fn active_compression_apply(
             archive_dir.as_path(),
             &applied.report.archive_refs,
         )?;
-        let result = write_active_compression_application(params, &session, applied)?;
-        let export_artifacts = register_session_export_artifacts(
-            &mut activity_conn,
+        let result = write_active_compression_application(
+            params,
+            applied,
             &activity_id,
-            &params.source_provider_id,
-            params
-                .session_id
-                .as_deref()
-                .unwrap_or(&session.identity.canonical_id),
-            &params.format,
-            &ExportResult {
-                files: result.files.clone(),
-            },
+            &mut activity_conn,
         )?;
         Ok((
             result,
             artifacts
                 .into_iter()
-                .chain(export_artifacts)
                 .map(|artifact| artifact.id)
                 .collect::<Vec<_>>(),
         ))
@@ -2880,6 +2976,8 @@ pub fn active_compression_apply(
                         "archive_refs": applied.archive_refs,
                         "artifact_ids": artifact_ids,
                         "candidate_count": applied.report.candidates.len(),
+                        "source_bytes_before": applied.source_bytes_before,
+                        "source_bytes_after": applied.source_bytes_after,
                     }),
                 ),
             )?;
@@ -2920,36 +3018,42 @@ fn apply_active_compression_to_session(
 
 fn write_active_compression_application(
     params: &ActiveCompressionApplyCommandParams,
-    session: &CanonicalSession,
     applied: active_compression::ActiveCompressionApplyResult,
+    operation_id: &str,
+    artifact_conn: &mut rusqlite::Connection,
 ) -> Result<ActiveCompressionApplyCommandResult> {
-    if params.source_provider_id == params.target_provider_id {
-        if let Some(session_id) = params.session_id.as_deref() {
-            let refs = applied.report.archive_refs.clone();
-            let _ = session_state::update_session_state(
-                &params.source_provider_id,
-                session_id,
-                &session_state::SessionLocalStateUpdate {
-                    compressed_archive_refs: Some(refs),
-                    ..Default::default()
-                },
-            );
-        }
-    }
-
-    let default_prefix = format!("{}_active_compressed", session.identity.canonical_id);
-    let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
-    let export = session_management::write_session_export_files(
+    let session_id = params
+        .session_id
+        .as_deref()
+        .context("Native compression requires session_id")?;
+    let backup_root = crate::config::memorph_dir()?
+        .join("artifacts")
+        .join("backups");
+    let replaced = session_management::replace_native_session(
+        &params.source_provider_id,
+        session_id,
         &applied.session,
-        prefix,
-        &params.format,
-        None,
+        &applied.report.archive_refs,
+        operation_id,
+        &backup_root,
+        artifact_conn,
     )?;
+    session_state::update_session_state(
+        &params.source_provider_id,
+        session_id,
+        &session_state::SessionLocalStateUpdate {
+            compressed_archive_refs: Some(applied.report.archive_refs.clone()),
+            ..Default::default()
+        },
+    )?;
+    refresh_target_provider_sessions(&params.source_provider_id)?;
 
     Ok(ActiveCompressionApplyCommandResult {
-        files: export.files,
+        files: Vec::new(),
         archive_refs: applied.report.archive_refs.clone(),
         report: applied.report,
+        source_bytes_before: replaced.source_bytes_before,
+        source_bytes_after: replaced.source_bytes_after,
     })
 }
 
@@ -2990,20 +3094,6 @@ fn register_active_compression_archive_artifacts(
         })
         .collect::<Result<Vec<_>>>()?;
     ArtifactStore::new(conn).register_paths(manifests)
-}
-
-#[cfg(test)]
-fn active_compression_apply_with_archive_dir(
-    params: &ActiveCompressionApplyCommandParams,
-    archive_dir: &std::path::Path,
-) -> Result<ActiveCompressionApplyCommandResult> {
-    let session = load_active_compression_source_session(
-        &params.source_provider_id,
-        params.session_id.as_deref(),
-        params.file.as_deref(),
-    )?;
-    let applied = apply_active_compression_to_session(params, &session, archive_dir)?;
-    write_active_compression_application(params, &session, applied)
 }
 
 fn load_active_compression_source_session(
@@ -3552,13 +3642,15 @@ pub struct SwitchResult {
 /// "Session is not indexed" for up to a minute. Best-effort: a failure only
 /// logs, because the export already succeeded and the background sync will
 /// still catch up.
+fn refresh_target_provider_sessions(provider_id: &str) -> Result<()> {
+    let provider_id = providers::canonical_provider_id(provider_id);
+    let mut conn = local_store::open_database()?;
+    bootstrap_session_projections_in_connection(&mut conn, Some(provider_id.as_str())).map(|_| ())
+}
+
 fn index_target_provider_sessions(provider_id: &str) {
     let provider_id = providers::canonical_provider_id(provider_id);
-    if let Err(error) = (|| -> anyhow::Result<()> {
-        let mut conn = local_store::open_database()?;
-        bootstrap_session_projections_in_connection(&mut conn, Some(provider_id.as_str()))?;
-        Ok(())
-    })() {
+    if let Err(error) = refresh_target_provider_sessions(&provider_id) {
         crate::logging::error(
             "target_provider_index_refresh",
             &format!(
@@ -3783,7 +3875,7 @@ mod tests {
     }
 
     #[test]
-    fn compression_exports_register_complete_artifact_matrix() {
+    fn compression_archive_exports_register_complete_artifact_matrix() {
         let root = tempfile::tempdir().unwrap();
         let _home = TestConfigHomeGuard::new(root.path());
         let source = active_compression_source_session();
@@ -3798,7 +3890,7 @@ mod tests {
             ActivityActor::System,
         )
         .unwrap();
-        let applied = active_compression_apply(
+        let applied = apply_active_compression_to_session(
             &ActiveCompressionApplyCommandParams {
                 source_provider_id: "claude".to_string(),
                 target_provider_id: "codex".to_string(),
@@ -3811,15 +3903,16 @@ mod tests {
                     mode: active_compression::ActiveCompressionMode::Auto,
                 },
                 candidate_ids: vec!["candidate-0001".to_string()],
-                output_prefix: Some(root.path().join("compressed").display().to_string()),
+                output_prefix: None,
                 format: "json".to_string(),
             },
-            ActivityActor::System,
+            &source,
+            compression::archive_base_dir().unwrap().as_path(),
         )
         .unwrap();
         let restored = restore_compression_archive(
             &RestoreCompressionArchiveParams {
-                archive_ref: applied.archive_refs[0].clone(),
+                archive_ref: applied.report.archive_refs[0].clone(),
                 output_prefix: Some(root.path().join("restored").display().to_string()),
                 format: "json".to_string(),
             },
@@ -3828,7 +3921,6 @@ mod tests {
         .unwrap();
 
         assert!(expanded.files.iter().all(|file| Path::new(file).exists()));
-        assert!(applied.files.iter().all(|file| Path::new(file).exists()));
         assert!(restored.files.iter().all(|file| Path::new(file).exists()));
 
         let mut conn = local_store::open_database().unwrap();
@@ -3843,7 +3935,6 @@ mod tests {
             .unwrap();
         let cases = [
             ("Expanded compressed session", 1, 0),
-            ("Applied active session compression", 1, 1),
             ("Restored compression archive", 1, 0),
         ];
         for (summary, expected_exports, expected_archives) in cases {
@@ -4223,43 +4314,29 @@ mod tests {
     }
 
     #[test]
-    fn active_compression_apply_from_file_writes_archive_and_expandable_output() {
+    fn active_compression_archive_is_expandable_and_retrievable() {
         let archive_dir = tempfile::tempdir().unwrap();
-        let output_dir = tempfile::tempdir().unwrap();
         let source = active_compression_source_session();
-        let source_file = write_active_compression_source_file(&source);
-        let output_prefix = output_dir
-            .path()
-            .join("compressed")
-            .to_string_lossy()
-            .to_string();
-
-        let result = active_compression_apply_with_archive_dir(
-            &ActiveCompressionApplyCommandParams {
-                source_provider_id: "claude".to_string(),
-                target_provider_id: "codex".to_string(),
-                session_id: None,
-                file: Some(source_file.path().to_string_lossy().to_string()),
-                policy: active_compression::ActiveCompressionPolicy {
-                    protect_recent_message_events: 1,
-                    min_candidate_bytes: 16,
-                    min_savings_ratio_percent: 20,
-                    mode: active_compression::ActiveCompressionMode::Auto,
-                },
-                candidate_ids: vec!["candidate-0001".to_string()],
-                output_prefix: Some(output_prefix),
-                format: "json".to_string(),
+        let params = ActiveCompressionApplyCommandParams {
+            source_provider_id: "claude".to_string(),
+            target_provider_id: "codex".to_string(),
+            session_id: Some("provider-session-1".to_string()),
+            file: None,
+            policy: active_compression::ActiveCompressionPolicy {
+                protect_recent_message_events: 1,
+                min_candidate_bytes: 16,
+                min_savings_ratio_percent: 20,
+                mode: active_compression::ActiveCompressionMode::Auto,
             },
-            archive_dir.path(),
-        )
-        .unwrap();
-
-        assert_eq!(result.files.len(), 1);
-        assert_eq!(result.archive_refs.len(), 1);
-        assert_eq!(result.report.candidates.len(), 1);
-        assert!(result.report.compressed_estimated_bytes < result.report.original_estimated_bytes);
-
-        let compressed = session_management::read_session_export_file(&result.files[0]).unwrap();
+            candidate_ids: vec!["candidate-0001".to_string()],
+            output_prefix: None,
+            format: "json".to_string(),
+        };
+        let applied =
+            apply_active_compression_to_session(&params, &source, archive_dir.path()).unwrap();
+        let compressed = applied.session;
+        let archive_refs = applied.report.archive_refs;
+        assert_eq!(archive_refs.len(), 1);
         assert!(compressed.events.iter().any(|event| {
             event.blocks.iter().any(|block| {
                 matches!(
@@ -4267,7 +4344,7 @@ mod tests {
                     EventBlock::Compressed {
                         archive_ref: Some(archive_ref),
                         ..
-                    } if archive_ref == &result.archive_refs[0]
+                    } if archive_ref == &archive_refs[0]
                 )
             })
         }));
@@ -4294,7 +4371,7 @@ mod tests {
 
         let retrieved = retrieve_compression_archive_in_dir(
             &RetrieveCompressionArchiveParams {
-                archive_ref: result.archive_refs[0].clone(),
+                archive_ref: archive_refs[0].clone(),
                 query: None,
                 max_results: None,
             },
@@ -4319,7 +4396,7 @@ mod tests {
 
         let searched = retrieve_compression_archive_in_dir(
             &RetrieveCompressionArchiveParams {
-                archive_ref: result.archive_refs[0].clone(),
+                archive_ref: archive_refs[0].clone(),
                 query: Some("historical context".to_string()),
                 max_results: Some(5),
             },
@@ -4348,7 +4425,7 @@ mod tests {
 
         let no_match = retrieve_compression_archive_in_dir(
             &RetrieveCompressionArchiveParams {
-                archive_ref: result.archive_refs[0].clone(),
+                archive_ref: archive_refs[0].clone(),
                 query: Some("not present".to_string()),
                 max_results: Some(5),
             },
