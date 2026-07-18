@@ -225,6 +225,7 @@ pub fn router() -> Router {
             post(manager_backup_workspace),
         )
         .merge(hooks::server::router())
+        .merge(crate::skills::server::router())
 }
 
 pub fn register_folder_picker<F>(picker: F) -> bool

@@ -17,6 +17,7 @@ pub mod provider_settings;
 pub mod providers;
 pub mod server;
 pub mod session_projection;
+pub mod skills;
 pub mod stats_dashboard;
 pub mod storage;
 pub mod sync;
