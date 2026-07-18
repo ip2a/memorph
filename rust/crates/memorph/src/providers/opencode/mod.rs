@@ -216,6 +216,14 @@ impl Provider for OpenCodeProvider {
         import_opencode_session_page(source_path, event_offset, event_limit)
     }
 
+    fn supports_native_session_replace(&self) -> bool {
+        true
+    }
+
+    fn replace_session(&self, session_id: &str, session: &CanonicalSession) -> Result<()> {
+        replace_opencode_session(session_id, session)
+    }
+
     fn export_session(
         &self,
         session: &CanonicalSession,
@@ -1969,6 +1977,69 @@ fn delete_opencode_session(session_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn replace_opencode_session(session_id: &str, session: &CanonicalSession) -> Result<()> {
+    let db_path = get_db_path();
+    if !db_path.exists() {
+        anyhow::bail!("OpenCode database does not exist: {}", db_path.display());
+    }
+    let mut conn = Connection::open(&db_path)?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    let (project_id, slug, directory, created_at): (String, String, String, i64) = conn
+        .query_row(
+            "SELECT project_id, slug, directory, time_created FROM session WHERE id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .with_context(|| format!("OpenCode session not found: {session_id}"))?;
+    let old_message_ids = opencode_message_ids(&conn, session_id)?;
+    let old_paths = discover_opencode_mutation_paths(session_id, &old_message_ids)?;
+    let now = Utc::now().timestamp_millis();
+    let title = canonical_session_title(session);
+    let projection = build_opencode_projection(
+        session,
+        session_id,
+        &project_id,
+        &slug,
+        &directory,
+        &title,
+        created_at,
+        now,
+    );
+
+    let tx = conn.transaction()?;
+    tx.execute("DELETE FROM part WHERE session_id = ?1", [session_id])?;
+    tx.execute("DELETE FROM message WHERE session_id = ?1", [session_id])?;
+    tx.execute(
+        "UPDATE session SET title = ?1, time_updated = ?2 WHERE id = ?3",
+        rusqlite::params![title, now, session_id],
+    )?;
+    insert_opencode_projection_rows(&tx, session_id, &projection.messages, &projection.parts)?;
+    tx.commit()?;
+
+    fail_opencode_mutation_after_database_write(ProviderSourceMutation::Replace)?;
+    for path in old_paths.session_files {
+        remove_opencode_filesystem_entry(&path)?;
+    }
+    remove_opencode_filesystem_entry(&old_paths.message_dir)?;
+    for path in old_paths.part_dirs {
+        remove_opencode_filesystem_entry(&path)?;
+    }
+    write_to_filesystem(
+        session_id,
+        &project_id,
+        &projection.session_json,
+        &projection.messages,
+        &projection.parts,
+    )?;
+
+    let source = opencode_db_session_source_locator(session_id);
+    let imported = import_canonical_session_from_source(session_id, &source)?;
+    if imported.session.identity.canonical_id != session_id {
+        anyhow::bail!("OpenCode replacement validation changed session identity");
+    }
+    Ok(())
+}
+
 fn rename_opencode_session(session_id: &str, new_title: &str) -> Result<()> {
     let db_path = get_db_path();
     let session_files = find_opencode_session_files(session_id)?;
@@ -2035,6 +2106,12 @@ fn generate_slug() -> String {
     format!("{}-{}", adjectives[idx1], nouns[idx2])
 }
 
+struct OpenCodeProjection {
+    session_json: Value,
+    messages: Vec<(String, i64, Value)>,
+    parts: Vec<(String, String, i64, Value)>,
+}
+
 fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
     let now = Utc::now().timestamp_millis();
     let session_id = generate_opencode_id("ses");
@@ -2042,17 +2119,60 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     let slug = generate_slug();
     let target_dir_str = target_dir.to_string_lossy().to_string();
     let title = canonical_session_title(session);
+    let projection = build_opencode_projection(
+        session,
+        &session_id,
+        &project_id,
+        &slug,
+        &target_dir_str,
+        &title,
+        now,
+        now,
+    );
 
+    write_to_db(
+        &session_id,
+        &project_id,
+        &slug,
+        &target_dir_str,
+        &title,
+        now,
+        &projection.messages,
+        &projection.parts,
+    )
+    .context("Failed to write to OpenCode SQLite database")?;
+    load_session_from_db(&session_id).context("Failed to verify OpenCode SQLite write result")?;
+    write_to_filesystem(
+        &session_id,
+        &project_id,
+        &projection.session_json,
+        &projection.messages,
+        &projection.parts,
+    )?;
+
+    Ok(session_id)
+}
+
+fn build_opencode_projection(
+    session: &CanonicalSession,
+    session_id: &str,
+    project_id: &str,
+    slug: &str,
+    target_dir_str: &str,
+    title: &str,
+    created_at: i64,
+    updated_at: i64,
+) -> OpenCodeProjection {
     let session_json = serde_json::json!({
-        "id": &session_id,
-        "slug": &slug,
+        "id": session_id,
+        "slug": slug,
         "version": OPENCODE_VERSION,
-        "projectID": &project_id,
-        "directory": &target_dir_str,
-        "title": &title,
+        "projectID": project_id,
+        "directory": target_dir_str,
+        "title": title,
         "time": {
-            "created": now,
-            "updated": now
+            "created": created_at,
+            "updated": updated_at
         }
     });
 
@@ -2063,10 +2183,10 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     for event in &session.events {
         if let Some(segment) = compression::compressed_segment(event) {
             append_compressed_opencode_segment(
-                &session_id,
+                session_id,
                 event,
                 segment,
-                &target_dir_str,
+                target_dir_str,
                 &mut last_user_msg_id,
                 &mut oc_messages,
                 &mut oc_parts,
@@ -2095,12 +2215,12 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
         };
 
         let msg_json = build_opencode_message_data_from_event(
-            &session_id,
+            session_id,
             event,
             &msg_id,
             role,
             parent_id.as_deref(),
-            &target_dir_str,
+            target_dir_str,
         );
         oc_messages.push((msg_id.clone(), msg_created, msg_json));
 
@@ -2108,7 +2228,7 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
             let part_id = generate_opencode_id("prt");
             let part_created = msg_created + 1;
             let Some(part_json) = canonical_block_to_opencode_part(
-                &session_id,
+                session_id,
                 &msg_id,
                 &part_id,
                 block,
@@ -2120,27 +2240,11 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
         }
     }
 
-    write_to_db(
-        &session_id,
-        &project_id,
-        &slug,
-        &target_dir_str,
-        &title,
-        now,
-        &oc_messages,
-        &oc_parts,
-    )
-    .context("Failed to write to OpenCode SQLite database")?;
-    load_session_from_db(&session_id).context("Failed to verify OpenCode SQLite write result")?;
-    write_to_filesystem(
-        &session_id,
-        &project_id,
-        &session_json,
-        &oc_messages,
-        &oc_parts,
-    )?;
-
-    Ok(session_id)
+    OpenCodeProjection {
+        session_json,
+        messages: oc_messages,
+        parts: oc_parts,
+    }
 }
 
 fn append_compressed_opencode_segment(
@@ -3233,9 +3337,18 @@ fn write_to_db(
         [session_id, project_id, slug, directory, title, OPENCODE_VERSION, &now.to_string(), &now.to_string()],
     )?;
 
-    // Insert messages
+    insert_opencode_projection_rows(&tx, session_id, messages, parts)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn insert_opencode_projection_rows(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    messages: &[(String, i64, Value)],
+    parts: &[(String, String, i64, Value)],
+) -> Result<()> {
     for (msg_id, created, data) in messages {
-        // Strip id/sessionID from JSON for DB storage (they're in columns)
         let mut db_data = data.clone();
         if let Value::Object(ref mut map) = db_data {
             map.remove("id");
@@ -3244,11 +3357,9 @@ fn write_to_db(
         let data_str = serde_json::to_string(&db_data)?;
         tx.execute(
             "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?4, ?5)",
-            [msg_id, session_id, &created.to_string(), &created.to_string(), &data_str],
+            rusqlite::params![msg_id, session_id, created, created, data_str],
         )?;
     }
-
-    // Insert parts
     for (part_id, msg_id, created, data) in parts {
         let mut db_data = data.clone();
         if let Value::Object(ref mut map) = db_data {
@@ -3259,12 +3370,27 @@ fn write_to_db(
         let data_str = serde_json::to_string(&db_data)?;
         tx.execute(
             "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            [part_id, msg_id, session_id, &created.to_string(), &created.to_string(), &data_str],
+            rusqlite::params![part_id, msg_id, session_id, created, created, data_str],
         )?;
     }
-
-    tx.commit()?;
     Ok(())
+}
+
+fn write_opencode_json_atomic(path: &Path, value: &Value) -> Result<()> {
+    let temp_path = path.with_extension(format!("json.memorph-{}.tmp", Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        let mut file = File::create(&temp_path)?;
+        serde_json::to_writer_pretty(&mut file, value)?;
+        use std::io::Write as _;
+        file.flush()?;
+        file.sync_all()?;
+        std::fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp_path);
+    }
+    result
 }
 
 fn write_to_filesystem(
@@ -3280,14 +3406,14 @@ fn write_to_filesystem(
     let session_dir = storage_dir.join("session").join(project_id);
     std::fs::create_dir_all(&session_dir)?;
     let session_file = session_dir.join(format!("{}.json", session_id));
-    std::fs::write(&session_file, serde_json::to_string_pretty(session_json)?)?;
+    write_opencode_json_atomic(&session_file, session_json)?;
 
     // Write messages
     let msg_dir = storage_dir.join("message").join(session_id);
     std::fs::create_dir_all(&msg_dir)?;
     for (msg_id, _created, data) in messages {
         let msg_file = msg_dir.join(format!("{}.json", msg_id));
-        std::fs::write(&msg_file, serde_json::to_string_pretty(data)?)?;
+        write_opencode_json_atomic(&msg_file, data)?;
     }
 
     // Write parts
@@ -3296,7 +3422,7 @@ fn write_to_filesystem(
         let part_dir = parts_base.join(msg_id);
         std::fs::create_dir_all(&part_dir)?;
         let part_file = part_dir.join(format!("{}.json", part_id));
-        std::fs::write(&part_file, serde_json::to_string_pretty(data)?)?;
+        write_opencode_json_atomic(&part_file, data)?;
     }
 
     Ok(())
@@ -4104,6 +4230,78 @@ mod tests {
         assert_eq!(row_counts["todo"], 2);
         assert_eq!(row_counts["session_share"], 1);
         assert_eq!(row_counts["session_message"], 1);
+    }
+
+    #[test]
+    fn native_replace_preserves_opencode_identity_and_session_rows() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        let session_id = "ses-native-replace";
+        let fixture = write_native_opencode_fixture(opencode_dir.path(), session_id);
+        let source = opencode_db_session_source_locator(session_id);
+        let mut session = import_canonical_session_from_source(session_id, &source)
+            .unwrap()
+            .session;
+        session.events.clear();
+
+        OpenCodeProvider
+            .replace_session(session_id, &session)
+            .unwrap();
+
+        assert_eq!(
+            import_canonical_session_from_source(session_id, &source)
+                .unwrap()
+                .session
+                .identity
+                .canonical_id,
+            session_id
+        );
+        assert_eq!(
+            session_owned_row_counts(opencode_dir.path(), session_id),
+            vec![1, 0, 0, 2, 1, 1]
+        );
+        assert!(fixture.session_path.exists());
+        assert!(!fixture.message_path.exists());
+        assert!(!fixture.part_path.exists());
+        assert!(!fixture.orphan_part_path.exists());
+    }
+
+    #[test]
+    fn replace_failure_can_restore_exact_opencode_source() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        let session_id = "ses-replace-rollback";
+        let fixture = write_native_opencode_fixture(opencode_dir.path(), session_id);
+        let source = opencode_db_session_source_locator(session_id);
+        let mut session = import_canonical_session_from_source(session_id, &source)
+            .unwrap()
+            .session;
+        session.events.clear();
+        let backup = create_opencode_session_backup(
+            ProviderSourceMutation::Replace,
+            "operation-replace-rollback",
+            session_id,
+            &opencode_dir.path().join("backups"),
+        )
+        .unwrap();
+
+        set_test_opencode_mutation_failure(Some(ProviderSourceMutation::Replace));
+        assert!(OpenCodeProvider
+            .replace_session(session_id, &session)
+            .is_err());
+        restore_opencode_session_backup(&backup).unwrap();
+
+        assert_eq!(
+            session_owned_row_counts(opencode_dir.path(), session_id),
+            vec![1, 1, 1, 2, 1, 1]
+        );
+        assert_eq!(
+            std::fs::read(&fixture.session_path).unwrap(),
+            fixture.original_session_bytes
+        );
+        assert!(fixture.message_path.exists());
+        assert!(fixture.part_path.exists());
+        assert!(fixture.orphan_part_path.exists());
     }
 
     #[test]
