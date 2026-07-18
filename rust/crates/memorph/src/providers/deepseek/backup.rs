@@ -373,7 +373,7 @@ fn capture_sqlite_backup(
     let capture_result = (|| -> Result<Vec<DeepseekSqliteTableManifest>> {
         let tx = conn.transaction()?;
         match mutation {
-            ProviderSourceMutation::Delete => {
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
                 tx.execute(
                     "CREATE TABLE memorph_backup.threads AS
                      SELECT * FROM main.threads WHERE id = ?1",
@@ -400,7 +400,7 @@ fn capture_sqlite_backup(
             }
         }
         let tables: &[&str] = match mutation {
-            ProviderSourceMutation::Delete => &DEEPSEEK_TABLES,
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => &DEEPSEEK_TABLES,
             ProviderSourceMutation::Rename => &["threads"],
         };
         let manifests = tables
@@ -460,7 +460,9 @@ fn restore_sqlite_backup(
         validate_backup_selection(&conn, mutation, session_id, manifests)?;
         let tx = conn.transaction()?;
         match mutation {
-            ProviderSourceMutation::Delete => restore_deleted_rows(&tx, session_id, manifests)?,
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
+                restore_deleted_rows(&tx, session_id, manifests)?
+            }
             ProviderSourceMutation::Rename => restore_renamed_fields(&tx, session_id)?,
         }
         tx.commit()?;
@@ -757,7 +759,9 @@ fn validate_manifest_schemas(
     manifests: &[DeepseekSqliteTableManifest],
 ) -> Result<()> {
     let expected: HashSet<&str> = match mutation {
-        ProviderSourceMutation::Delete => DEEPSEEK_TABLES.into_iter().collect(),
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
+            DEEPSEEK_TABLES.into_iter().collect()
+        }
         ProviderSourceMutation::Rename => HashSet::from(["threads"]),
     };
     let actual = manifests
@@ -799,7 +803,10 @@ fn validate_backup_selection(
     if thread_ids != vec![session_id.to_string()] {
         anyhow::bail!("DeepSeek backup contains a thread outside the target session");
     }
-    if mutation == ProviderSourceMutation::Delete {
+    if matches!(
+        mutation,
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+    ) {
         for table in ["messages", "checkpoints", "thread_dynamic_tools"] {
             if selected_values(conn, table, "thread_id")?
                 .iter()

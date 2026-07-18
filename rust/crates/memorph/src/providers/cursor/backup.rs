@@ -204,7 +204,7 @@ fn capture_sqlite_backup(
         )?;
         let composer_key = composer_key(session_id);
         match mutation {
-            ProviderSourceMutation::Delete => {
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
                 let (bubble_lower, bubble_upper) = key_prefix_bounds(&bubble_prefix(session_id));
                 tx.execute(
                     "CREATE TABLE memorph_backup.cursorDiskKV AS
@@ -280,7 +280,9 @@ fn restore_sqlite_backup(
         validate_manifest_schemas(&conn, manifests)?;
         let tx = conn.transaction()?;
         match mutation {
-            ProviderSourceMutation::Delete => restore_deleted_rows(&tx, session_id, manifests)?,
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
+                restore_deleted_rows(&tx, session_id, manifests)?
+            }
             ProviderSourceMutation::Rename => restore_renamed_fields(&tx, session_id)?,
         }
         tx.commit()?;

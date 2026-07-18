@@ -682,7 +682,9 @@ fn create_codex_session_backup(
     }
 
     match mutation {
-        ProviderSourceMutation::Delete if rollout_path.is_none() => {
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+            if rollout_path.is_none() =>
+        {
             anyhow::bail!("Codex session not found: {session_id}");
         }
         ProviderSourceMutation::Rename => {
@@ -693,7 +695,7 @@ fn create_codex_session_backup(
                 anyhow::bail!("Codex session not found in index: {session_id}");
             }
         }
-        ProviderSourceMutation::Delete => {}
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {}
     }
 
     let provider_backup_root = backup_root.join(PROVIDER_ID);
@@ -958,8 +960,12 @@ fn validate_codex_file_manifest(metadata: &CodexSessionBackupMetadata) -> Result
     } else if metadata.rollout.present {
         anyhow::bail!("Codex backup marks a pathless rollout as present");
     }
-    if metadata.mutation == ProviderSourceMutation::Delete && !metadata.rollout.present {
-        anyhow::bail!("Codex delete backup does not contain a rollout");
+    if matches!(
+        metadata.mutation,
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+    ) && !metadata.rollout.present
+    {
+        anyhow::bail!("Codex full-source backup does not contain a rollout");
     }
     Ok(())
 }
@@ -988,7 +994,7 @@ fn capture_codex_sqlite_backup(
         let tx = conn.transaction()?;
         let mut manifests = Vec::new();
         match mutation {
-            ProviderSourceMutation::Delete => {
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
                 capture_codex_full_table(
                     &tx,
                     "threads",
@@ -1195,7 +1201,7 @@ fn restore_codex_sqlite_backup(
         validate_codex_sqlite_backup(&conn, mutation, manifests)?;
         let tx = conn.transaction()?;
         match mutation {
-            ProviderSourceMutation::Delete => {
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
                 delete_codex_sqlite_rows(&tx, session_id)?;
                 if let Some(manifest) = manifests
                     .iter()
@@ -1310,7 +1316,12 @@ fn validate_codex_sqlite_manifest_contract(
             anyhow::bail!("Codex SQLite backup contains duplicate table manifests");
         }
         let expected = match manifest.table.as_str() {
-            "threads" if mutation == ProviderSourceMutation::Delete => {
+            "threads"
+                if matches!(
+                    mutation,
+                    ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+                ) =>
+            {
                 (CodexSqliteRestoreMode::FullRows, None)
             }
             "threads" if mutation == ProviderSourceMutation::Rename => (
@@ -1318,14 +1329,24 @@ fn validate_codex_sqlite_manifest_contract(
                 Some(&["id", "title"][..]),
             ),
             "thread_dynamic_tools" | "thread_goals" | "thread_spawn_edges" | "stage1_outputs"
-                if mutation == ProviderSourceMutation::Delete =>
+                if matches!(
+                    mutation,
+                    ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+                ) =>
             {
                 (CodexSqliteRestoreMode::FullRows, None)
             }
-            "agent_job_items" if mutation == ProviderSourceMutation::Delete => (
-                CodexSqliteRestoreMode::AssignedThread,
-                Some(&["job_id", "item_id", "assigned_thread_id"][..]),
-            ),
+            "agent_job_items"
+                if matches!(
+                    mutation,
+                    ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+                ) =>
+            {
+                (
+                    CodexSqliteRestoreMode::AssignedThread,
+                    Some(&["job_id", "item_id", "assigned_thread_id"][..]),
+                )
+            }
             _ => anyhow::bail!(
                 "Codex SQLite backup contains an unexpected table: {}",
                 manifest.table
@@ -5206,6 +5227,37 @@ mod tests {
                 .unwrap()
                 .columns,
             vec!["job_id", "item_id", "assigned_thread_id"]
+        );
+    }
+
+    #[test]
+    fn replace_backup_restores_exact_codex_source() {
+        let codex_dir = tempdir().unwrap();
+        let _guard = use_test_codex_dir(codex_dir.path().to_path_buf());
+        let session_id = "session-replace-backup";
+        let fixture = write_native_codex_fixture(codex_dir.path(), session_id);
+        let backup = create_codex_session_backup(
+            ProviderSourceMutation::Replace,
+            "operation-replace-1",
+            session_id,
+            &codex_dir.path().join("backups"),
+        )
+        .unwrap();
+
+        delete_codex_session(session_id).unwrap();
+        restore_codex_session_backup(&backup).unwrap();
+
+        assert_eq!(
+            std::fs::read(&fixture.index_path).unwrap(),
+            fixture.original_index_bytes
+        );
+        assert_eq!(
+            std::fs::read(&fixture.rollout_path).unwrap(),
+            fixture.original_rollout_bytes
+        );
+        assert_eq!(
+            codex_session_row_counts(codex_dir.path(), session_id),
+            vec![1, 1, 1, 1, 1, 1]
         );
     }
 

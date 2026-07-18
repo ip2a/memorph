@@ -519,7 +519,7 @@ fn selected_artifacts(
                 .context("Qwen Code rename only supports an active session source")?;
             artifacts.push(runtime_artifact(&sources.roots.runtime, &active.path)?);
         }
-        ProviderSourceMutation::Delete => {
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
             let session_id = sources
                 .active
                 .as_ref()
@@ -648,7 +648,7 @@ fn validate_restore_artifact_boundary(
             root: ArtifactRoot::Runtime,
             relative_path: active_source.clone(),
         }],
-        ProviderSourceMutation::Delete => vec![
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => vec![
             SelectedArtifact {
                 root: ArtifactRoot::Runtime,
                 relative_path: active_source.clone(),
@@ -686,9 +686,12 @@ fn validate_restore_artifact_boundary(
     {
         bail!("Qwen Code rename backup is outside its official source boundary");
     }
-    if metadata.mutation == ProviderSourceMutation::Delete {
+    if matches!(
+        metadata.mutation,
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+    ) {
         if source_relative != active_source && source_relative != archived_source {
-            bail!("Qwen Code delete backup source is outside its official source boundary");
+            bail!("Qwen Code full-source backup is outside its official source boundary");
         }
         let has_source = metadata.selected_artifacts.iter().any(|artifact| {
             artifact.root == ArtifactRoot::Runtime

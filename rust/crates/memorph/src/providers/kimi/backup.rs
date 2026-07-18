@@ -71,7 +71,7 @@ pub(super) fn create_session_backup(
 
     let create_result = (|| -> Result<ProviderSessionBackup> {
         let entries = match mutation {
-            ProviderSourceMutation::Delete => {
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
                 let destination = backup_path.join(KIMI_SESSION_BACKUP_PATH);
                 copy_validated_session_tree(&session_path, &destination)?
             }
@@ -120,7 +120,10 @@ pub(super) fn create_session_backup(
                 "role": "kimi_prewrite_session_backup",
                 "mutation": mutation,
                 "entry_count": metadata.entries.len(),
-                "complete_session_directory": mutation == ProviderSourceMutation::Delete,
+                "complete_session_directory": matches!(
+                    mutation,
+                    ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+                ),
             }),
             restore_metadata: serde_json::json!({
                 "restore_mode": "kimi_session_restore",
@@ -157,7 +160,7 @@ pub(super) fn restore_session_backup(backup: &ProviderSessionBackup) -> Result<(
     validate_restore_context(backup, &metadata)?;
 
     match metadata.mutation {
-        ProviderSourceMutation::Delete => {
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
             let source = backup.backup_path.join(KIMI_SESSION_BACKUP_PATH);
             validate_session_tree(&source, &metadata.entries)?;
             if metadata.session_path.exists() {

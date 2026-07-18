@@ -1043,7 +1043,10 @@ fn create_opencode_session_backup(
         .map(|conn| opencode_session_exists(conn, session_id))
         .transpose()?
         .unwrap_or(false);
-    let message_ids = if mutation == ProviderSourceMutation::Delete {
+    let message_ids = if matches!(
+        mutation,
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+    ) {
         database
             .as_ref()
             .map(|conn| opencode_message_ids(conn, session_id))
@@ -1055,8 +1058,11 @@ fn create_opencode_session_backup(
     let mutation_paths = discover_opencode_mutation_paths(session_id, &message_ids)?;
     let source_exists = database_session_present
         || !mutation_paths.session_files.is_empty()
-        || (mutation == ProviderSourceMutation::Delete
-            && (path_lexists(&mutation_paths.message_dir) || !mutation_paths.part_dirs.is_empty()));
+        || (matches!(
+            mutation,
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+        ) && (path_lexists(&mutation_paths.message_dir)
+            || !mutation_paths.part_dirs.is_empty()));
     if !source_exists {
         anyhow::bail!("OpenCode session not found: {session_id}");
     }
@@ -1102,7 +1108,10 @@ fn create_opencode_session_backup(
             &backup_path,
         )?);
     }
-    if mutation == ProviderSourceMutation::Delete {
+    if matches!(
+        mutation,
+        ProviderSourceMutation::Delete | ProviderSourceMutation::Replace
+    ) {
         filesystem_entries.push(capture_opencode_filesystem_entry(
             &mutation_paths.message_dir,
             PathBuf::from("filesystem").join("message"),
@@ -1547,7 +1556,7 @@ fn restore_opencode_sqlite_backup(
         validate_opencode_sqlite_backup(&conn, mutation, manifests)?;
         let tx = conn.transaction()?;
         match mutation {
-            ProviderSourceMutation::Delete => {
+            ProviderSourceMutation::Delete | ProviderSourceMutation::Replace => {
                 tx.execute("DELETE FROM main.session WHERE id = ?1", [session_id])?;
                 for manifest in manifests {
                     insert_opencode_backup_table(&tx, manifest, false)?;
@@ -4095,6 +4104,36 @@ mod tests {
         assert_eq!(row_counts["todo"], 2);
         assert_eq!(row_counts["session_share"], 1);
         assert_eq!(row_counts["session_message"], 1);
+    }
+
+    #[test]
+    fn replace_backup_restores_exact_opencode_source() {
+        let opencode_dir = tempdir().unwrap();
+        let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+        let session_id = "ses-replace-backup";
+        let fixture = write_native_opencode_fixture(opencode_dir.path(), session_id);
+        let backup = create_opencode_session_backup(
+            ProviderSourceMutation::Replace,
+            "operation-replace-1",
+            session_id,
+            &opencode_dir.path().join("backups"),
+        )
+        .unwrap();
+
+        delete_opencode_session(session_id).unwrap();
+        restore_opencode_session_backup(&backup).unwrap();
+
+        assert_eq!(
+            session_owned_row_counts(opencode_dir.path(), session_id),
+            vec![1, 1, 1, 2, 1, 1]
+        );
+        assert_eq!(
+            std::fs::read(&fixture.session_path).unwrap(),
+            fixture.original_session_bytes
+        );
+        assert!(fixture.message_path.exists());
+        assert!(fixture.part_path.exists());
+        assert!(fixture.orphan_part_path.exists());
     }
 
     #[test]

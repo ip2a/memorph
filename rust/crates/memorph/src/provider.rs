@@ -41,6 +41,7 @@ pub struct ProviderSessionImportPage {
 pub enum ProviderSourceMutation {
     Delete,
     Rename,
+    Replace,
 }
 
 #[derive(Debug, Clone)]
