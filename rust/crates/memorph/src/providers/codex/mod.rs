@@ -564,6 +564,14 @@ impl Provider for CodexProvider {
         Ok(page)
     }
 
+    fn supports_native_session_replace(&self) -> bool {
+        true
+    }
+
+    fn replace_session(&self, session_id: &str, session: &CanonicalSession) -> Result<()> {
+        replace_codex_session(session_id, session)
+    }
+
     fn export_session(
         &self,
         session: &CanonicalSession,
@@ -4175,10 +4183,30 @@ fn export_canonical_session_in_codex_dir(
         .join(now.format("%m").to_string())
         .join(now.format("%d").to_string());
     std::fs::create_dir_all(&sessions_dir)?;
+    let file_path = sessions_dir.join(filename);
+    write_canonical_codex_rollout(
+        session,
+        target_dir,
+        codex_dir,
+        &session_id,
+        &file_path,
+        now,
+        true,
+    )?;
+    Ok(session_id)
+}
 
-    let file_path = sessions_dir.join(&filename);
+fn write_canonical_codex_rollout(
+    session: &CanonicalSession,
+    target_dir: &Path,
+    codex_dir: &Path,
+    session_id: &str,
+    file_path: &Path,
+    now: chrono::DateTime<Utc>,
+    update_registry: bool,
+) -> Result<()> {
     let rollout_path = file_path.to_string_lossy().to_string();
-    let mut file = File::create(&file_path)?;
+    let mut file = File::create(file_path)?;
     let git_info = get_git_info(target_dir);
     let codex_version = get_codex_version_in_codex_dir(codex_dir);
     let codex_model_provider = read_codex_model_provider(codex_dir);
@@ -4345,32 +4373,72 @@ fn export_canonical_session_in_codex_dir(
         }))?
     )?;
 
-    let index_path = codex_dir.join("session_index.jsonl");
-    let mut index_file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&index_path)?;
-    writeln!(
-        index_file,
-        "{}",
-        serde_json::to_string(&serde_json::json!({
-            "id": session_id,
-            "thread_name": title,
-            "updated_at": now.to_rfc3339(),
-        }))?
-    )?;
-    update_codex_sqlite(
-        codex_dir,
-        &session_id,
-        &rollout_path,
-        target_dir,
-        &title,
-        first_user_message.as_deref(),
-        has_user_event,
-        &now,
-    )?;
-    update_codex_global_state_file_if_exists(codex_dir, target_dir)?;
-    Ok(session_id)
+    file.flush()?;
+    file.sync_all()?;
+    if update_registry {
+        let index_path = codex_dir.join("session_index.jsonl");
+        let mut index_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&index_path)?;
+        writeln!(
+            index_file,
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "id": session_id,
+                "thread_name": title,
+                "updated_at": now.to_rfc3339(),
+            }))?
+        )?;
+        update_codex_sqlite(
+            codex_dir,
+            session_id,
+            &rollout_path,
+            target_dir,
+            &title,
+            first_user_message.as_deref(),
+            has_user_event,
+            &now,
+        )?;
+        update_codex_global_state_file_if_exists(codex_dir, target_dir)?;
+    }
+    Ok(())
+}
+
+fn replace_codex_session(session_id: &str, session: &CanonicalSession) -> Result<()> {
+    let codex_dir = get_codex_dir();
+    let rollout_path = find_session_file(session_id)
+        .with_context(|| format!("Codex session not found: {session_id}"))?;
+    let target_dir = extract_cwd_from_session_path(&rollout_path)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let temp_path = rollout_path.with_extension(format!("jsonl.memorph-{}.tmp", Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        write_canonical_codex_rollout(
+            session,
+            &target_dir,
+            &codex_dir,
+            session_id,
+            &temp_path,
+            Utc::now(),
+            false,
+        )?;
+        let imported = import_canonical_session(&temp_path)?;
+        if imported.session.identity.canonical_id != session_id {
+            anyhow::bail!("Codex replacement validation changed session identity");
+        }
+        std::fs::rename(&temp_path, &rollout_path).with_context(|| {
+            format!(
+                "Failed to atomically replace Codex rollout: {}",
+                rollout_path.display()
+            )
+        })?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+    result
 }
 
 fn write_codex_compacted_rollout_item(
@@ -5227,6 +5295,36 @@ mod tests {
                 .unwrap()
                 .columns,
             vec!["job_id", "item_id", "assigned_thread_id"]
+        );
+    }
+
+    #[test]
+    fn native_replace_preserves_codex_session_identity_and_path() {
+        let codex_dir = tempdir().unwrap();
+        let _guard = use_test_codex_dir(codex_dir.path().to_path_buf());
+        let session_id = "session-native-replace";
+        let fixture = write_native_codex_fixture(codex_dir.path(), session_id);
+        let original_index = std::fs::read(&fixture.index_path).unwrap();
+        let mut session = import_canonical_session(&fixture.rollout_path)
+            .unwrap()
+            .session;
+        session.events.clear();
+
+        CodexProvider.replace_session(session_id, &session).unwrap();
+
+        assert!(fixture.rollout_path.exists());
+        assert_eq!(std::fs::read(&fixture.index_path).unwrap(), original_index);
+        assert_eq!(
+            import_canonical_session(&fixture.rollout_path)
+                .unwrap()
+                .session
+                .identity
+                .canonical_id,
+            session_id
+        );
+        assert_eq!(
+            codex_session_row_counts(codex_dir.path(), session_id),
+            vec![1, 1, 1, 1, 1, 1]
         );
     }
 
