@@ -312,6 +312,8 @@ export type CompressionProviderSupport = {
   provider_id: string;
   detects_native_source: boolean;
   native_target_projection: boolean;
+  native_session_replace: boolean;
+  native_session_restore: boolean;
   default_projection: CompressionProjection;
 };
 
@@ -375,6 +377,8 @@ export type ApplyCompressionResult = {
   files: string[];
   archive_refs: string[];
   report: ActiveCompressionReport;
+  source_bytes_before: number;
+  source_bytes_after: number;
 };
 
 export type RestoreCompressionPayload = {
@@ -784,6 +788,16 @@ export type SessionDetailView = {
   event_count: number;
   message_count: number;
   artifact_count: number;
+  length_metrics: {
+    provider_source_bytes_measured: number;
+    model_visible_bytes_measured: number;
+    estimated_tokens: number;
+    event_count: number;
+    message_count: number;
+    turn_count: number;
+    compressed_segment_count: number;
+    archive_count: number;
+  };
   stale: boolean;
   hook_runtime_summary?: HookRuntimeSummary | null;
   hook_diagnosis?: SessionHookDiagnosis | null;

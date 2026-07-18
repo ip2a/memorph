@@ -17,7 +17,7 @@ import type { SessionActionTarget } from "@/features/sessions/session-action-tar
 import { useApplyCompression } from "@/features/compression/queries";
 import { formatBytes } from "@/lib/format";
 import { queryKeys } from "@/lib/query-keys";
-import type { ApplyCompressionResult } from "@/lib/types";
+import type { ActiveCompressionPolicy, ApplyCompressionResult } from "@/lib/types";
 
 function compressionSummary(result: ApplyCompressionResult) {
   const candidates = result.report?.candidates?.length ?? 0;
@@ -45,6 +45,12 @@ export function CompressSessionDialog({
   const queryClient = useQueryClient();
   const targetKey = target ? `${target.providerId}:${target.sessionId}` : "";
   const [resultState, setResultState] = useState<{ key: string; result: ApplyCompressionResult } | null>(null);
+  const [policy, setPolicy] = useState<ActiveCompressionPolicy>({
+    protect_recent_message_events: 6,
+    min_candidate_bytes: 4096,
+    min_savings_ratio_percent: 20,
+    mode: "auto",
+  });
   const compressMutation = useApplyCompression();
   const result = resultState?.key === targetKey ? resultState.result : null;
   const primaryArchiveRef = result?.archive_refs?.[0] ?? "";
@@ -61,12 +67,7 @@ export function CompressSessionDialog({
         source_provider_id: target.providerId,
         target_provider_id: target.providerId,
         session_id: target.sessionId,
-        policy: {
-          protect_recent_message_events: 6,
-          min_candidate_bytes: 4096,
-          min_savings_ratio_percent: 20,
-          mode: "auto",
-        },
+        policy,
       },
       {
         onSuccess: async (nextResult) => {
@@ -103,6 +104,10 @@ export function CompressSessionDialog({
                 {target?.providerId || "-"} / {target?.sessionId || "-"}
               </div>
             </div>
+            <div className="grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-md border p-2"><span className="text-muted-foreground">Provider source before (measured)</span><div>{formatBytes(result.source_bytes_before)}</div></div>
+              <div className="rounded-md border p-2"><span className="text-muted-foreground">Provider source after (measured)</span><div>{formatBytes(result.source_bytes_after)}</div></div>
+            </div>
             <div className="flex max-h-48 flex-col gap-2 overflow-auto rounded-md border p-3" data-compression-result-lines>
               {lines.length ? (
                 lines.map((line) => isArchiveRef(line) ? (
@@ -121,7 +126,21 @@ export function CompressSessionDialog({
           <div className="flex flex-col gap-3">
             <input type="hidden" name="provider" value={target?.providerId || ""} />
             <input type="hidden" name="session_id" value={target?.sessionId || ""} />
-            <p className="text-sm text-muted-foreground">This will create durable compression archives and update the session with compressed summaries.</p>
+            <p className="text-sm text-muted-foreground">This will back up and replace the provider-owned session. The policy controls what may be compressed; measured sizes and estimated tokens remain read-only.</p>
+            <div className="grid grid-cols-3 gap-3">
+              <label className="grid gap-1 text-xs text-muted-foreground">
+                Recent messages kept
+                <input className="h-9 rounded-md border bg-background px-2 text-foreground" type="number" min={0} value={policy.protect_recent_message_events} onChange={(event) => setPolicy({ ...policy, protect_recent_message_events: Math.max(0, Number(event.target.value) || 0) })} />
+              </label>
+              <label className="grid gap-1 text-xs text-muted-foreground">
+                Minimum bytes
+                <input className="h-9 rounded-md border bg-background px-2 text-foreground" type="number" min={1} value={policy.min_candidate_bytes} onChange={(event) => setPolicy({ ...policy, min_candidate_bytes: Math.max(1, Number(event.target.value) || 1) })} />
+              </label>
+              <label className="grid gap-1 text-xs text-muted-foreground">
+                Minimum savings %
+                <input className="h-9 rounded-md border bg-background px-2 text-foreground" type="number" min={0} max={100} value={policy.min_savings_ratio_percent} onChange={(event) => setPolicy({ ...policy, min_savings_ratio_percent: Math.min(100, Math.max(0, Number(event.target.value) || 0)) })} />
+              </label>
+            </div>
             <div className="break-all rounded-md border p-3 font-mono text-xs" data-compression-path-line>
               {target?.providerId || "-"} / {target?.sessionId || "-"}
             </div>

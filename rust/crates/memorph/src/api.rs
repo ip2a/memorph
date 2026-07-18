@@ -3436,6 +3436,16 @@ mod tests {
                 event_count: 0,
                 message_count: 0,
                 artifact_count: 0,
+                length_metrics: core::SessionLengthMetrics {
+                    provider_source_bytes_measured: 0,
+                    model_visible_bytes_measured: 0,
+                    estimated_tokens: 0,
+                    event_count: 0,
+                    message_count: 0,
+                    turn_count: 0,
+                    compressed_segment_count: 0,
+                    archive_count: 0,
+                },
                 stale: true,
                 hook_runtime_summary: Some(hooks::augmentation::HookRuntimeSummary {
                     linked_sessions: 1,

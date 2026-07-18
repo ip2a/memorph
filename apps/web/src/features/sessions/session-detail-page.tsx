@@ -12,7 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { formatDateTime, formatDetailTitle, formatNumericDateTime } from "@/lib/format";
+import { formatBytes, formatDateTime, formatDetailTitle, formatNumericDateTime } from "@/lib/format";
 import type { SessionArtifact, SessionDetailView, SessionEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useSession, useSessionActivity } from "@/features/sessions/queries";
@@ -221,8 +221,11 @@ function SessionDetailMeta({
     <div className="flex w-full flex-col gap-2.5" data-session-detail-meta>
       <div className="grid grid-cols-[minmax(0,0.34fr)_auto_minmax(0,1fr)] items-center gap-x-0 border-y py-2.5">
         <div className="flex min-w-0 flex-col justify-center gap-2.5 px-4 py-1 pr-3">
-          <StatItem label="Messages" value={view.message_count} />
-          <StatItem label="Events" value={view.event_count} />
+          <StatItem label="Provider source" value={formatBytes(view.length_metrics.provider_source_bytes_measured)} title="Measured from the provider-owned native source" />
+          <StatItem label="Model-visible" value={formatBytes(view.length_metrics.model_visible_bytes_measured)} title="Measured canonical event payload bytes" />
+          <StatItem label="Estimated tokens" value={view.length_metrics.estimated_tokens.toLocaleString()} title="Estimate derived from model-visible bytes; not the provider model context window" />
+          <StatItem label="Messages / events / turns" value={`${view.length_metrics.message_count} / ${view.length_metrics.event_count} / ${view.length_metrics.turn_count}`} />
+          <StatItem label="Compressed / archives" value={`${view.length_metrics.compressed_segment_count} / ${view.length_metrics.archive_count}`} />
           <StatItem label="Loaded" value={returnedEventCount} title={hasMoreEvents ? "More events available beyond this page" : undefined} />
         </div>
 

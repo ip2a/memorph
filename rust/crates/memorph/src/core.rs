@@ -133,6 +133,18 @@ pub struct SessionItem {
     pub hook_diagnosis: Option<crate::hooks::augmentation::SessionHookDiagnosis>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionLengthMetrics {
+    pub provider_source_bytes_measured: u64,
+    pub model_visible_bytes_measured: u64,
+    pub estimated_tokens: u64,
+    pub event_count: usize,
+    pub message_count: usize,
+    pub turn_count: usize,
+    pub compressed_segment_count: usize,
+    pub archive_count: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionDetailView {
     pub provider_id: String,
@@ -159,6 +171,7 @@ pub struct SessionDetailView {
     pub event_count: usize,
     pub message_count: usize,
     pub artifact_count: usize,
+    pub length_metrics: SessionLengthMetrics,
     pub stale: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook_runtime_summary: Option<crate::hooks::augmentation::HookRuntimeSummary>,
@@ -1357,6 +1370,14 @@ pub fn get_session_detail_view_page(
             .and_then(chrono::DateTime::from_timestamp_millis)
     });
     let created_at = page.imported.session.context.created_at;
+    let compressed_archive_refs = compression::compressed_archive_refs(&page.imported.session);
+    let length_metrics = session_length_metrics(
+        provider.session_size(&provider_session_id)?,
+        &page.imported.session,
+        page.event_count,
+        page.message_count,
+        page.turn_count.unwrap_or(page.turns.len()),
+    )?;
 
     Ok(SessionDetailView {
         provider_id: provider_id.to_string(),
@@ -1386,6 +1407,7 @@ pub fn get_session_detail_view_page(
         event_count: page.event_count,
         message_count: page.message_count,
         artifact_count: page.imported.session.artifacts.len(),
+        length_metrics,
         stale,
         hook_runtime_summary: None,
         hook_diagnosis: None,
@@ -1399,7 +1421,28 @@ pub fn get_session_detail_view_page(
         turns: page.turns,
         events: page.imported.session.events,
         artifacts: page.imported.session.artifacts,
-        compressed_archive_refs: local_state.compressed_archive_refs.clone(),
+        compressed_archive_refs,
+    })
+}
+
+fn session_length_metrics(
+    provider_source_bytes: u64,
+    session: &CanonicalSession,
+    event_count: usize,
+    message_count: usize,
+    turn_count: usize,
+) -> Result<SessionLengthMetrics> {
+    let model_visible_bytes = serde_json::to_vec(&session.events)?.len() as u64;
+    let archive_count = compression::compressed_archive_refs(session).len();
+    Ok(SessionLengthMetrics {
+        provider_source_bytes_measured: provider_source_bytes,
+        model_visible_bytes_measured: model_visible_bytes,
+        estimated_tokens: model_visible_bytes.div_ceil(4),
+        event_count,
+        message_count,
+        turn_count,
+        compressed_segment_count: archive_count,
+        archive_count,
     })
 }
 
@@ -3993,6 +4036,22 @@ mod tests {
                     .any(|value| value.as_str() == Some(artifact.id.as_str()))
             }));
         }
+    }
+
+    #[test]
+    fn session_length_metrics_distinguish_measured_bytes_and_estimated_tokens() {
+        let session = active_compression_source_session();
+        let metrics = session_length_metrics(12_345, &session, 4, 3, 2).unwrap();
+        assert_eq!(metrics.provider_source_bytes_measured, 12_345);
+        assert_eq!(metrics.event_count, 4);
+        assert_eq!(metrics.message_count, 3);
+        assert_eq!(metrics.turn_count, 2);
+        assert_eq!(
+            metrics.estimated_tokens,
+            metrics.model_visible_bytes_measured.div_ceil(4)
+        );
+        assert_eq!(metrics.compressed_segment_count, 0);
+        assert_eq!(metrics.archive_count, 0);
     }
 
     #[test]
