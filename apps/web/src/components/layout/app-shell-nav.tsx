@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
-import { ArrowLeftIcon, DatabaseIcon, SettingsIcon } from "lucide-react"
+import { ArrowLeftIcon, DatabaseIcon, PackageIcon, SettingsIcon } from "lucide-react"
 
 import { CollapsibleToolbar, type CollapsibleToolbarEntry } from "@/components/shared/collapsible-toolbar"
 import { Button } from "@/components/ui/button"
@@ -28,6 +28,7 @@ export function AppShellNav({
   const isHome = pathname === "/"
   const isManager = isRoute(pathname, "/manager")
   const isHooks = isRoute(pathname, "/hooks")
+  const isSkills = isRoute(pathname, "/skills")
   const isAgents = isRoute(pathname, "/agents")
   const isStats = isRoute(pathname, "/stats")
   const isStorage = isRoute(pathname, "/storage")
@@ -119,6 +120,29 @@ export function AppShellNav({
         renderMenuItem: () => (
           <DropdownMenuItem asChild>
             <Link to="/hooks">{t("hooks")}</Link>
+          </DropdownMenuItem>
+        ),
+      })
+    }
+
+    if (!isSkills) {
+      next.push({
+        id: "skills",
+        collapsePriority: 12,
+        renderButton: () => (
+          <Button asChild variant="outline" size="sm">
+            <Link to="/skills">
+              <PackageIcon data-icon="inline-start" />
+              {t("skills")}
+            </Link>
+          </Button>
+        ),
+        renderMenuItem: () => (
+          <DropdownMenuItem asChild>
+            <Link to="/skills">
+              <PackageIcon />
+              {t("skills")}
+            </Link>
           </DropdownMenuItem>
         ),
       })
@@ -223,6 +247,7 @@ export function AppShellNav({
     isAgents,
     isHome,
     isHooks,
+    isSkills,
     isManager,
     isStats,
     isStorage,

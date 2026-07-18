@@ -53,6 +53,8 @@ import type {
   SessionGroup,
   SessionListParams,
   SessionReprojectionReport,
+  SkillMutation,
+  SkillsOverview,
   SessionStalenessRefreshReport,
   SwitchSessionPayload,
   SwitchSessionResult,
@@ -478,4 +480,22 @@ export function listSyncGroups() {
 
 export function getSyncGroup(groupId: string) {
   return api<SyncGroup>(`/api/v1/sync/status${buildQuery({ group_id: groupId })}`);
+}
+
+export function getSkills() {
+  return api<SkillsOverview>("/api/v1/skills");
+}
+
+export function installSkill(payload: SkillMutation) {
+  return api<SkillsOverview>("/api/v1/skills/install", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function uninstallSkill(payload: SkillMutation) {
+  return api<SkillsOverview>("/api/v1/skills/install", {
+    method: "DELETE",
+    body: JSON.stringify(payload),
+  });
 }

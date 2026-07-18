@@ -38,5 +38,6 @@ export const queryKeys = {
   agentsSummary: ["agents", "summary"] as const,
   agent: (provider: string) => ["agents", provider] as const,
   hooks: ["hooks"] as const,
+  skills: ["skills"] as const,
   hookProvider: (provider: string) => ["hooks", provider] as const,
 };

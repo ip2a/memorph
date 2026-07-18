@@ -1218,3 +1218,33 @@ export type StatsDashboard = {
     message_count: Array<{ key: string; label: string; count: number; size_bytes: number }>;
   };
 };
+
+export type SkillAgent = {
+  provider_id: string;
+  name: string;
+  skills_dir: string;
+};
+
+export type SkillInstallation = {
+  provider_id: string;
+  path: string;
+  managed: boolean;
+};
+
+export type SkillEntry = {
+  id: string;
+  name: string;
+  description?: string | null;
+  directory: string;
+  installations: SkillInstallation[];
+};
+
+export type SkillsOverview = {
+  agents: SkillAgent[];
+  skills: SkillEntry[];
+};
+
+export type SkillMutation = {
+  skill_id: string;
+  provider: string;
+};
