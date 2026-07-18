@@ -60,6 +60,8 @@ import type {
   SyncHolding,
   SyncReport,
   SyncRunPayload,
+  StatsDashboard,
+  StatsDashboardRange,
   UpdateCheckPayload,
   UpdateSettingsPayload,
   WorkspaceEntry,
@@ -413,6 +415,10 @@ export function restoreCompressionArchive(payload: RestoreCompressionPayload) {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function getStatsDashboard(params: { all: boolean; workspace?: string | null; range: StatsDashboardRange }) {
+  return api<StatsDashboard>(`/api/v1/stats/dashboard${buildQuery(params)}`);
 }
 
 export function listSessions(params: SessionListParams = {}) {

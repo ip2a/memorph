@@ -1133,3 +1133,74 @@ export type SessionSummary = {
 };
 
 export type WorkflowStatus = "planned" | "in-progress" | "implemented" | "verified";
+
+export type StatsDashboardRange = "7d" | "30d" | "90d" | "all";
+
+export type StatsBucket = { count: number; size_bytes: number };
+
+export type StatsBreakdownItem = {
+  id: string;
+  session_count: number;
+  active_session_count: number;
+  message_count: number;
+  size_bytes: number;
+  last_active_at: string | null;
+};
+
+export type StatsSessionItem = {
+  provider_id: string;
+  session_id: string;
+  title: string;
+  workspace: string | null;
+  message_count: number;
+  size_bytes: number;
+  created_at: string | null;
+  last_active_at: string | null;
+};
+
+export type StatsDashboard = {
+  generated_at: string;
+  range_start: string | null;
+  overview: {
+    total_sessions: number;
+    active_sessions: number;
+    new_sessions: number;
+    total_messages: number;
+    active_session_messages: number;
+    total_size_bytes: number;
+    stale_size_bytes: number;
+    total_workspaces: number;
+    active_workspaces: number;
+    total_providers: number;
+    active_providers: number;
+  };
+  attention: {
+    active_7d: StatsBucket;
+    inactive_7_to_30d: StatsBucket;
+    inactive_30_to_90d: StatsBucket;
+    inactive_over_90d: StatsBucket;
+    unknown: StatsBucket;
+    large_sessions: StatsBucket;
+    short_sessions: StatsBucket;
+    large_threshold_bytes: number;
+    short_max_messages: number;
+  };
+  timeline: Array<{
+    start: string;
+    active_sessions: number;
+    new_sessions: number;
+    active_session_messages: number;
+    new_size_bytes: number;
+  }>;
+  providers: StatsBreakdownItem[];
+  workspaces: StatsBreakdownItem[];
+  top_sessions: {
+    by_messages: StatsSessionItem[];
+    by_size: StatsSessionItem[];
+    recently_active: StatsSessionItem[];
+  };
+  distributions: {
+    session_size: Array<{ key: string; label: string; count: number; size_bytes: number }>;
+    message_count: Array<{ key: string; label: string; count: number; size_bytes: number }>;
+  };
+};

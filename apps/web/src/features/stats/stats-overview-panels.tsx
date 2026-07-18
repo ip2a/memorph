@@ -1,303 +1,52 @@
-import { useMemo } from "react";
-import { BarChart3Icon } from "lucide-react";
-import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
-import {
-  ChartContainer,
-  ChartTooltip,
-  ChartTooltipContent,
-  type ChartConfig,
-} from "@/components/ui/chart";
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { Bar, BarChart, CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableFooter,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import type { StatsRange } from "@/features/stats/queries";
-import {
-  buildActivityLineData,
-  buildActivityCoverageBlocks,
-  type ActivityCoverageBlock,
-  type UsageTableItem,
-} from "@/features/stats/stats-activity-model";
-import type { SessionActivityTimeline } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { formatBytes, formatDateTime } from "@/lib/format";
+import type { StatsBreakdownItem, StatsDashboard, StatsSessionItem } from "@/lib/types";
 
-const activityLineConfig = {
-  activity: {
-    label: "Activity",
-    color: "var(--chart-1)",
-  },
+const chartConfig = {
+  active_sessions: { label: "活跃会话", color: "var(--chart-1)" },
+  new_sessions: { label: "新增会话", color: "var(--chart-2)" },
+  active_session_messages: { label: "活跃会话消息", color: "var(--chart-3)" },
+  new_size_bytes: { label: "新增数据", color: "var(--chart-4)" },
 } satisfies ChartConfig;
 
-function rangeLabel(range: StatsRange) {
-  if (range === "all") return "all";
-  return range;
+type TrendKey = keyof typeof chartConfig;
+type RankKey = "by_messages" | "by_size" | "recently_active";
+
+export function ActivityTrend({ data }: { data: StatsDashboard["timeline"] }) {
+  const [metric, setMetric] = useState<TrendKey>("active_sessions");
+  const points = data.map((point) => ({ ...point, label: new Date(point.start).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }), new_size_bytes: Math.round(point.new_size_bytes / 1024 / 1024) }));
+  return <Card className="lg:col-span-2"><CardHeader className="flex-row items-center justify-between"><CardTitle>使用趋势</CardTitle><Tabs value={metric} onValueChange={(value) => setMetric(value as TrendKey)}><TabsList className="flex-wrap"><TabsTrigger value="active_sessions">活跃会话</TabsTrigger><TabsTrigger value="new_sessions">新增会话</TabsTrigger><TabsTrigger value="active_session_messages">会话消息</TabsTrigger><TabsTrigger value="new_size_bytes">新增数据</TabsTrigger></TabsList></Tabs></CardHeader><CardContent>{points.length ? <ChartContainer config={chartConfig} className="h-72 w-full"><LineChart accessibilityLayer data={points}><CartesianGrid vertical={false} strokeDasharray="4 4"/><XAxis dataKey="label" tickLine={false} axisLine={false}/><YAxis tickLine={false} axisLine={false} width={44}/><ChartTooltip content={<ChartTooltipContent/>}/><Line type="monotone" dataKey={metric} stroke={`var(--color-${metric})`} strokeWidth={2} dot={false}/></LineChart></ChartContainer> : <Empty/>}</CardContent></Card>;
 }
 
-function formatAxisValue(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+export function AttentionPanel({ data }: { data: StatsDashboard["attention"] }) {
+  const items = [
+    ["90 天以上未活跃", data.inactive_over_90d], ["大型会话", data.large_sessions],
+    ["内容较少", data.short_sessions], ["时间未知", data.unknown],
+  ] as const;
+  return <Card><CardHeader><CardTitle>需要关注</CardTitle></CardHeader><CardContent className="grid gap-3 sm:grid-cols-2">{items.map(([label, value]) => <div key={label} className="rounded-lg border p-4"><p className="text-sm text-muted-foreground">{label}</p><p className="mt-1 text-2xl font-semibold tabular-nums">{value.count}</p><p className="text-xs text-muted-foreground">占用 {formatBytes(value.size_bytes)}</p></div>)}</CardContent></Card>;
 }
 
-export function StatsUsageTable({
-  className,
-  emptyLabel = "暂无数据",
-  isLoading,
-  items,
-  labelColumn = "Provider",
-  valueColumn = "Sessions",
-}: {
-  className?: string;
-  emptyLabel?: string;
-  isLoading?: boolean;
-  items: UsageTableItem[];
-  labelColumn?: string;
-  valueColumn?: string;
-}) {
-  const total = useMemo(() => items.reduce((sum, item) => sum + item.value, 0), [items]);
-
-  if (isLoading) {
-    return (
-      <div className={cn("flex flex-col gap-2", className)}>
-        {Array.from({ length: 6 }).map((_, index) => (
-          <Skeleton key={index} className="h-8 w-full" />
-        ))}
-      </div>
-    );
-  }
-
-  if (!items.length) {
-    return (
-      <div className={cn("flex min-h-48 items-center justify-center text-sm text-muted-foreground", className)}>
-        {emptyLabel}
-      </div>
-    );
-  }
-
-  return (
-    <Table className={cn("table-fixed", className)}>
-      <TableHeader>
-        <TableRow className="hover:bg-transparent">
-          <TableHead className="h-8 px-3 text-xs font-medium text-muted-foreground">{labelColumn}</TableHead>
-          <TableHead className="h-8 w-24 px-3 text-right text-xs font-medium text-muted-foreground">
-            {valueColumn}
-          </TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {items.map((item) => (
-          <TableRow key={item.id} className="hover:bg-transparent">
-            <TableCell className="max-w-0 truncate px-3 py-2 font-mono text-xs" title={item.label}>
-              {item.label}
-            </TableCell>
-            <TableCell className="px-3 py-2 text-right font-mono text-xs tabular-nums">{item.value}</TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-      <TableFooter>
-        <TableRow className="hover:bg-transparent">
-          <TableCell className="px-3 py-2 text-xs font-medium">Total</TableCell>
-          <TableCell className="px-3 py-2 text-right font-mono text-xs font-medium tabular-nums">{total}</TableCell>
-        </TableRow>
-      </TableFooter>
-    </Table>
-  );
+export function InactivityPanel({ data }: { data: StatsDashboard["attention"] }) {
+  const items = [{ label: "7 天内", value: data.active_7d.count }, { label: "7–30 天", value: data.inactive_7_to_30d.count }, { label: "30–90 天", value: data.inactive_30_to_90d.count }, { label: "90 天以上", value: data.inactive_over_90d.count }, { label: "未知", value: data.unknown.count }];
+  return <Card><CardHeader><CardTitle>会话活跃状态</CardTitle></CardHeader><CardContent>{items.some((item) => item.value) ? <ChartContainer config={{ count: { label: "会话", color: "var(--chart-1)" } }} className="h-56 w-full"><BarChart accessibilityLayer data={items} layout="vertical"><CartesianGrid horizontal={false}/><XAxis type="number" hide/><YAxis dataKey="label" type="category" tickLine={false} axisLine={false} width={78}/><ChartTooltip content={<ChartTooltipContent/>}/><Bar dataKey="value" fill="var(--color-count)" radius={4}/></BarChart></ChartContainer> : <Empty/>}</CardContent></Card>;
 }
 
-export function StatsActivityCoverage({
-  blocks,
-  className,
-  isLoading,
-  range,
-}: {
-  blocks: ActivityCoverageBlock[];
-  className?: string;
-  isLoading?: boolean;
-  range: StatsRange;
-}) {
-  const coveragePercent = useMemo(() => {
-    if (!blocks.length) return 0;
-    const activeCount = blocks.filter((block) => block.active).length;
-    return (activeCount / blocks.length) * 100;
-  }, [blocks]);
-
-  if (isLoading) {
-    return (
-      <div className={cn("flex flex-col gap-3", className)}>
-        <Skeleton className="h-4 w-40" />
-        <Skeleton className="h-10 w-full" />
-      </div>
-    );
-  }
-
-  if (!blocks.length) {
-    return (
-      <div className={cn("flex min-h-24 items-center justify-center text-sm text-muted-foreground", className)}>
-        暂无活动数据
-      </div>
-    );
-  }
-
-  return (
-    <div className={cn("flex flex-col gap-3", className)} data-stats-activity-coverage>
-      <p className="font-mono text-xs text-foreground">
-        Active intervals ({rangeLabel(range)}) {coveragePercent.toFixed(1)}%
-      </p>
-      <div className="flex items-end gap-1">
-        {blocks.map((block) => (
-          <div
-            key={block.id}
-            className={cn(
-              "h-8 min-w-0 flex-1 rounded-sm",
-              block.active ? "bg-chart-1" : "bg-muted",
-            )}
-            title={block.active ? "active" : "idle"}
-          />
-        ))}
-      </div>
-    </div>
-  );
+export function BreakdownTable({ title, items }: { title: string; items: StatsBreakdownItem[] }) {
+  return <Card><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent className="p-0">{items.length ? <Table><TableHeader><TableRow><TableHead>名称</TableHead><TableHead className="text-right">会话</TableHead><TableHead className="text-right">消息</TableHead><TableHead className="text-right">空间</TableHead></TableRow></TableHeader><TableBody>{items.slice(0, 8).map((item) => <TableRow key={item.id}><TableCell className="max-w-48 truncate" title={item.id}>{item.id.split(/[\\/]/).filter(Boolean).at(-1) ?? item.id}</TableCell><TableCell className="text-right tabular-nums">{item.session_count}</TableCell><TableCell className="text-right tabular-nums">{item.message_count}</TableCell><TableCell className="text-right tabular-nums">{formatBytes(item.size_bytes)}</TableCell></TableRow>)}</TableBody></Table> : <Empty/>}</CardContent></Card>;
 }
 
-export function StatsActivityLineChart({
-  className,
-  isLoading,
-  range,
-  timeline,
-}: {
-  className?: string;
-  isLoading?: boolean;
-  range: StatsRange;
-  timeline: SessionActivityTimeline | null | undefined;
-}) {
-  const chartData = useMemo(() => buildActivityLineData(timeline), [timeline]);
-  const peak = useMemo(() => Math.max(...chartData.map((point) => point.activity), 0), [chartData]);
-  const median = useMemo(() => {
-    if (!chartData.length) return 0;
-    const sorted = [...chartData.map((point) => point.activity)].sort((left, right) => left - right);
-    const middle = Math.floor(sorted.length / 2);
-    return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
-  }, [chartData]);
-
-  if (isLoading) {
-    return (
-      <div className={cn("flex flex-col gap-3", className)}>
-        <Skeleton className="h-4 w-44" />
-        <Skeleton className="h-40 w-full" />
-      </div>
-    );
-  }
-
-  if (!chartData.length) {
-    return (
-      <div className={cn("flex min-h-40 items-center justify-center text-sm text-muted-foreground", className)}>
-        暂无活动趋势
-      </div>
-    );
-  }
-
-  return (
-    <div className={cn("flex flex-col gap-3", className)} data-stats-activity-line>
-      <p className="font-mono text-xs text-foreground">
-        Activity ({rangeLabel(range)}) {formatAxisValue(median)} p50
-      </p>
-      <ChartContainer
-        config={activityLineConfig}
-        className="aspect-auto h-40 w-full"
-        initialDimension={{ width: 480, height: 160 }}
-      >
-        <LineChart accessibilityLayer data={chartData} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
-          <CartesianGrid vertical={false} strokeDasharray="4 4" />
-          <XAxis
-            dataKey="label"
-            tickLine={false}
-            axisLine={false}
-            tickMargin={8}
-            minTickGap={24}
-            tick={{ fontSize: 11 }}
-          />
-          <YAxis
-            tickLine={false}
-            axisLine={false}
-            tickMargin={8}
-            width={40}
-            tick={{ fontSize: 11 }}
-            tickFormatter={(value) => formatAxisValue(Number(value))}
-            domain={[0, Math.max(peak, 1)]}
-          />
-          <ChartTooltip
-            cursor={false}
-            content={<ChartTooltipContent hideLabel indicator="line" nameKey="label" />}
-          />
-          <Line
-            type="monotone"
-            dataKey="activity"
-            stroke="var(--color-activity)"
-            strokeWidth={2}
-            dot={false}
-            activeDot={{ r: 3 }}
-          />
-        </LineChart>
-      </ChartContainer>
-    </div>
-  );
+export function SessionRanking({ data }: { data: StatsDashboard["top_sessions"] }) {
+  const [rank, setRank] = useState<RankKey>("by_messages"); const items = data[rank];
+  return <Card className="lg:col-span-2"><CardHeader className="flex-row items-center justify-between"><CardTitle>会话排行</CardTitle><Tabs value={rank} onValueChange={(value) => setRank(value as RankKey)}><TabsList><TabsTrigger value="by_messages">消息最多</TabsTrigger><TabsTrigger value="by_size">占用最大</TabsTrigger><TabsTrigger value="recently_active">最近活跃</TabsTrigger></TabsList></Tabs></CardHeader><CardContent className="p-0">{items.length ? <SessionTable items={items}/> : <Empty/>}</CardContent></Card>;
 }
 
-export function StatsOverviewPanels({
-  isLoading,
-  range,
-  tableItems,
-  tableLabelColumn,
-  tableValueColumn,
-  timeline,
-}: {
-  isLoading?: boolean;
-  range: StatsRange;
-  tableItems: UsageTableItem[];
-  tableLabelColumn?: string;
-  tableValueColumn?: string;
-  timeline: SessionActivityTimeline | null | undefined;
-}) {
-  const activityBlocks = useMemo(() => buildActivityCoverageBlocks(timeline), [timeline]);
+function SessionTable({ items }: { items: StatsSessionItem[] }) { return <Table><TableHeader><TableRow><TableHead>会话</TableHead><TableHead>Agent</TableHead><TableHead className="text-right">消息</TableHead><TableHead className="text-right">大小</TableHead><TableHead className="text-right">最后活动</TableHead></TableRow></TableHeader><TableBody>{items.map((item) => <TableRow key={`${item.provider_id}:${item.session_id}`}><TableCell className="max-w-64 truncate"><Link className="font-medium hover:underline" to={`/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`}>{item.title}</Link></TableCell><TableCell>{item.provider_id}</TableCell><TableCell className="text-right tabular-nums">{item.message_count}</TableCell><TableCell className="text-right tabular-nums">{formatBytes(item.size_bytes)}</TableCell><TableCell className="text-right text-muted-foreground">{formatDateTime(item.last_active_at)}</TableCell></TableRow>)}</TableBody></Table>; }
 
-  return (
-    <section className="grid gap-4 lg:grid-cols-3" data-stats-overview-panels>
-      <Card size="sm" className="lg:col-span-1">
-        <CardHeader className="border-b pb-3">
-          <CardTitle className="flex items-center gap-2 font-heading text-base">
-            <BarChart3Icon data-icon="inline-start" />
-            Usage ranking
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <StatsUsageTable
-            isLoading={isLoading}
-            items={tableItems}
-            labelColumn={tableLabelColumn}
-            valueColumn={tableValueColumn}
-            className="border-0"
-          />
-        </CardContent>
-      </Card>
-
-      <div className="flex flex-col gap-4 lg:col-span-2">
-        <Card size="sm">
-          <CardContent>
-            <StatsActivityCoverage blocks={activityBlocks} isLoading={isLoading} range={range} />
-          </CardContent>
-        </Card>
-
-        <Card size="sm">
-          <CardContent>
-            <StatsActivityLineChart isLoading={isLoading} range={range} timeline={timeline} />
-          </CardContent>
-        </Card>
-      </div>
-    </section>
-  );
-}
+export function DistributionPanel({ title, items }: { title: string; items: StatsDashboard["distributions"]["session_size"] }) { return <Card><CardHeader><CardTitle>{title}</CardTitle></CardHeader><CardContent className="space-y-3">{items.map((item) => <div key={item.key} className="flex items-center justify-between border-b pb-2 last:border-0"><span className="text-sm text-muted-foreground">{item.label}</span><span className="font-mono text-sm tabular-nums">{item.count} · {formatBytes(item.size_bytes)}</span></div>)}</CardContent></Card>; }
+function Empty() { return <div className="flex min-h-32 items-center justify-center text-sm text-muted-foreground">暂无数据</div>; }

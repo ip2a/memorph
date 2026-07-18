@@ -26,6 +26,7 @@ export const queryKeys = {
   managerQuick: (providers: string[]) => ["manager", "quick", providers] as const,
   managerQuickWorkspaces: (providers: string[]) => ["manager", "quick-workspaces", providers] as const,
   managerStats: (filter: ManagerFilter = {}) => ["manager", "stats", filter] as const,
+  statsDashboard: (all: boolean, workspace: string | null, range: string) => ["stats-dashboard", all, workspace, range] as const,
   artifacts: ["artifacts"] as const,
   artifactInspection: ["artifacts", "inspection"] as const,
   backups: (params: BackupQueryParams = {}) => ["backups", params] as const,
