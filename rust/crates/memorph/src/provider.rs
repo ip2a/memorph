@@ -196,6 +196,8 @@ pub struct ProviderCompressionSupport {
     pub provider_id: String,
     pub detects_native_source: bool,
     pub native_target_projection: bool,
+    pub native_session_replace: bool,
+    pub native_session_restore: bool,
     pub default_projection: CompressionProjection,
 }
 
@@ -356,6 +358,21 @@ pub trait Provider: Send + Sync {
     /// How this provider exporter maps canonical compressed segments by default.
     fn compression_projection(&self) -> CompressionProjection {
         CompressionProjection::Portable
+    }
+
+    /// Whether this provider can replace an existing native session without changing its identity.
+    fn supports_native_session_replace(&self) -> bool {
+        false
+    }
+
+    /// Replace an existing provider-native session with the supplied canonical session.
+    fn replace_session(&self, session_id: &str, session: &CanonicalSession) -> Result<()> {
+        let _ = session_id;
+        let _ = session;
+        anyhow::bail!(
+            "Native session replacement is not supported for provider: {}",
+            self.id()
+        )
     }
 
     /// Normalize a workspace identifier into the provider's canonical scope key.

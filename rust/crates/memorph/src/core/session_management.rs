@@ -617,6 +617,8 @@ pub fn list_compression_provider_support() -> Vec<crate::provider::ProviderCompr
                 detects_native_source: provider.detects_native_compression_source(),
                 native_target_projection: default_projection
                     == crate::provider::CompressionProjection::Native,
+                native_session_replace: provider.supports_native_session_replace(),
+                native_session_restore: provider.supports_native_session_replace(),
                 default_projection,
             })
         })
