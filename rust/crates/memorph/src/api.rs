@@ -115,6 +115,7 @@ pub fn router() -> Router {
         .route("/api/v1/artifacts/inspection", get(inspect_artifacts))
         .route("/api/v1/artifacts/cleanup", post(cleanup_artifacts))
         .route("/api/v1/sessions", get(list_sessions))
+        .route("/api/v1/stats/dashboard", get(get_stats_dashboard))
         .route(
             "/api/v1/sessions/bootstrap",
             post(bootstrap_session_projections),
@@ -1235,6 +1236,15 @@ struct ProviderActivityQuery {
 struct SessionDetailQuery {
     event_limit: Option<usize>,
     event_offset: Option<usize>,
+}
+
+async fn get_stats_dashboard(
+    Query(query): Query<crate::stats_dashboard::StatsDashboardQuery>,
+) -> impl IntoResponse {
+    match run_manager_blocking(move || crate::stats_dashboard::dashboard(&query)).await {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
 }
 
 async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
