@@ -1,21 +1,60 @@
 use anyhow::{anyhow, Context, Result};
 use axum::{
-    extract::State,
+    extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
 use walkdir::WalkDir;
 
 const MANAGED_MARKER: &str = ".memorph-managed-skill";
+const MAX_ASSETS: usize = 200;
+const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SkillAsset {
+    pub path: String,
+    pub category: String,
+    pub extension: Option<String>,
+    pub bytes: u64,
+    pub previewable: bool,
+    pub entry: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SkillStatistics {
+    pub files: usize,
+    pub bytes: u64,
+    pub scripts: usize,
+    pub references: usize,
+    pub assets: usize,
+    pub previewable: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SkillRelation {
+    pub relation: String,
+    pub source: String,
+    pub target: String,
+    pub evidence: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SkillIssue {
+    pub path: Option<String>,
+    pub message: String,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SkillAgent {
@@ -29,6 +68,8 @@ pub struct SkillInstallation {
     pub provider_id: String,
     pub path: PathBuf,
     pub managed: bool,
+    pub fingerprint: String,
+    pub drifted: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -37,7 +78,28 @@ pub struct SkillEntry {
     pub name: String,
     pub description: Option<String>,
     pub directory: String,
+    pub fingerprint: String,
+    pub conflict: bool,
+    pub statistics: SkillStatistics,
+    pub issues: Vec<SkillIssue>,
     pub installations: Vec<SkillInstallation>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SkillDetail {
+    #[serde(flatten)]
+    pub skill: SkillEntry,
+    pub frontmatter: BTreeMap<String, String>,
+    pub provider_metadata: Vec<SkillAsset>,
+    pub relations: Vec<SkillRelation>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SkillTree {
+    pub skill_id: String,
+    pub fingerprint: String,
+    pub assets: Vec<SkillAsset>,
+    pub issues: Vec<SkillIssue>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -83,6 +145,9 @@ pub fn router() -> Router {
 fn router_for(agents: Vec<SkillAgent>) -> Router {
     Router::new()
         .route("/api/v1/skills", get(list_skills))
+        .route("/api/v1/skills/{skill_id}", get(get_skill))
+        .route("/api/v1/skills/{skill_id}/tree", get(get_skill_tree))
+        .route("/api/v1/skills/{skill_id}/file", get(get_skill_file))
         .route(
             "/api/v1/skills/install",
             post(install_skill).delete(uninstall_skill),
@@ -148,8 +213,11 @@ fn discover(agents: &[SkillAgent]) -> SkillsOverview {
                     normalized
                 }
             };
+            let bundle = inspect_bundle(&path);
             let installation = SkillInstallation {
                 provider_id: agent.provider_id.clone(),
+                fingerprint: bundle.fingerprint.clone(),
+                drifted: false,
                 managed: path.join(MANAGED_MARKER).is_file(),
                 path,
             };
@@ -158,19 +226,257 @@ fn discover(agents: &[SkillAgent]) -> SkillsOverview {
                 name,
                 description: description.clone(),
                 directory,
+                fingerprint: bundle.fingerprint.clone(),
+                conflict: false,
+                statistics: bundle.statistics.clone(),
+                issues: bundle.issues.clone(),
                 installations: Vec::new(),
             });
             if skill.description.is_none() {
                 skill.description = description;
             }
+            if skill.fingerprint != bundle.fingerprint {
+                skill.conflict = true;
+            }
             skill.installations.push(installation);
         }
     }
 
+    let skills = skills
+        .into_values()
+        .map(|mut skill| {
+            for installation in &mut skill.installations {
+                installation.drifted = installation.fingerprint != skill.fingerprint;
+            }
+            skill
+        })
+        .collect();
     SkillsOverview {
         agents: agents.to_vec(),
-        skills: skills.into_values().collect(),
+        skills,
     }
+}
+
+struct BundleInspection {
+    fingerprint: String,
+    statistics: SkillStatistics,
+    assets: Vec<SkillAsset>,
+    issues: Vec<SkillIssue>,
+}
+
+fn classify_asset(path: &str) -> (&'static str, bool) {
+    let lower = path.to_ascii_lowercase();
+    let category = if lower == "skill.md" {
+        "entry"
+    } else if lower.starts_with("scripts/") || lower.starts_with("script/") {
+        "script"
+    } else if lower.starts_with("references/") || lower.starts_with("reference/") {
+        "reference"
+    } else if lower.starts_with("assets/") || lower.starts_with("asset/") {
+        "asset"
+    } else if lower.starts_with("agents/") {
+        "metadata"
+    } else {
+        "other"
+    };
+    let previewable = matches!(
+        Path::new(path).extension().and_then(|ext| ext.to_str()),
+        Some(
+            "md" | "markdown"
+                | "txt"
+                | "json"
+                | "jsonc"
+                | "yaml"
+                | "yml"
+                | "toml"
+                | "js"
+                | "ts"
+                | "tsx"
+                | "py"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "sql"
+                | "css"
+                | "html"
+                | "csv"
+                | "ini"
+        )
+    );
+    (category, previewable)
+}
+
+fn inspect_bundle(root: &Path) -> BundleInspection {
+    let mut hasher = Sha256::new();
+    let mut assets = Vec::new();
+    let mut issues = Vec::new();
+    let mut total_bytes = 0;
+    let mut statistics = SkillStatistics {
+        files: 0,
+        bytes: 0,
+        scripts: 0,
+        references: 0,
+        assets: 0,
+        previewable: 0,
+    };
+
+    for entry in WalkDir::new(root).min_depth(1).follow_links(false) {
+        let Ok(entry) = entry else {
+            issues.push(SkillIssue {
+                path: None,
+                message: "Failed to read a bundle entry".into(),
+            });
+            continue;
+        };
+        let relative = match entry.path().strip_prefix(root) {
+            Ok(value) => value.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        if relative == MANAGED_MARKER || relative.starts_with(&format!("{MANAGED_MARKER}/")) {
+            continue;
+        }
+        if entry.path_is_symlink() {
+            issues.push(SkillIssue {
+                path: Some(relative),
+                message: "Symbolic links are not indexed".into(),
+            });
+            continue;
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(metadata) = fs::metadata(entry.path()) else {
+            issues.push(SkillIssue {
+                path: Some(relative),
+                message: "File metadata is unreadable".into(),
+            });
+            continue;
+        };
+        let bytes = metadata.len();
+        if assets.len() >= MAX_ASSETS || total_bytes + bytes > MAX_TOTAL_BYTES {
+            issues.push(SkillIssue {
+                path: Some(relative),
+                message: "Asset index budget exceeded".into(),
+            });
+            continue;
+        }
+        let Ok(content) = fs::read(entry.path()) else {
+            issues.push(SkillIssue {
+                path: Some(relative),
+                message: "File is unreadable".into(),
+            });
+            continue;
+        };
+        hasher.update(relative.as_bytes());
+        hasher.update((bytes as u128).to_le_bytes());
+        hasher.update(&content);
+        let (category, previewable) = classify_asset(&relative);
+        let extension = Path::new(&relative)
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(str::to_ascii_lowercase);
+        assets.push(SkillAsset {
+            entry: relative == "SKILL.md",
+            path: relative,
+            category: category.to_string(),
+            extension,
+            bytes,
+            previewable: previewable && bytes <= MAX_PREVIEW_BYTES,
+        });
+        total_bytes += bytes;
+        statistics.files += 1;
+        statistics.bytes += bytes;
+        statistics.previewable += usize::from(previewable && bytes <= MAX_PREVIEW_BYTES);
+        match category {
+            "script" => statistics.scripts += 1,
+            "reference" => statistics.references += 1,
+            "asset" => statistics.assets += 1,
+            _ => {}
+        }
+    }
+    assets.sort_by(|left, right| left.path.cmp(&right.path));
+    BundleInspection {
+        fingerprint: format!("sha256:{:x}", hasher.finalize()),
+        statistics,
+        assets,
+        issues,
+    }
+}
+
+fn read_frontmatter(path: &Path) -> BTreeMap<String, String> {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    let mut result = BTreeMap::new();
+    let mut lines = contents.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return result;
+    }
+    for line in lines {
+        let line = line.trim();
+        if line == "---" {
+            break;
+        }
+        if let Some((key, value)) = line.split_once(':') {
+            let value = value.trim().trim_matches(['\'', '"']);
+            if !key.trim().is_empty() && !value.is_empty() {
+                result.insert(key.trim().to_string(), value.to_string());
+            }
+        }
+    }
+    result
+}
+
+fn bundle_detail(overview: &SkillsOverview, id: &str) -> Result<SkillDetail> {
+    let skill = overview
+        .skills
+        .iter()
+        .find(|skill| skill.id == id)
+        .cloned()
+        .ok_or_else(|| anyhow!("Unknown skill: {id}"))?;
+    let source = skill
+        .installations
+        .first()
+        .ok_or_else(|| anyhow!("Skill has no installation"))?;
+    let inspection = inspect_bundle(&source.path);
+    let mut relations = Vec::new();
+    for asset in &inspection.assets {
+        if asset.category == "script" {
+            relations.push(SkillRelation {
+                relation: "executes".into(),
+                source: "SKILL.md".into(),
+                target: asset.path.clone(),
+                evidence: "script directory classification".into(),
+            });
+        }
+        if asset.category == "reference" {
+            relations.push(SkillRelation {
+                relation: "references".into(),
+                source: "SKILL.md".into(),
+                target: asset.path.clone(),
+                evidence: "references directory classification".into(),
+            });
+        }
+        if asset.category == "metadata" {
+            relations.push(SkillRelation {
+                relation: "metadata-for".into(),
+                source: asset.path.clone(),
+                target: "SKILL.md".into(),
+                evidence: "agents metadata classification".into(),
+            });
+        }
+    }
+    Ok(SkillDetail {
+        frontmatter: read_frontmatter(&source.path.join("SKILL.md")),
+        provider_metadata: inspection
+            .assets
+            .iter()
+            .filter(|asset| asset.category == "metadata")
+            .cloned()
+            .collect(),
+        relations,
+        skill,
+    })
 }
 
 fn read_metadata(path: &Path, directory: &str) -> (String, Option<String>) {
@@ -329,6 +635,123 @@ fn uninstall(agents: &[SkillAgent], request: &SkillMutation) -> Result<SkillsOve
     Ok(discover(agents))
 }
 
+#[derive(Debug, Deserialize)]
+struct SkillFileQuery {
+    path: String,
+    provider: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SkillFilePreview {
+    path: String,
+    category: String,
+    extension: Option<String>,
+    bytes: u64,
+    content: String,
+}
+
+fn preview_file(
+    overview: &SkillsOverview,
+    skill_id: &str,
+    query: &SkillFileQuery,
+) -> Result<SkillFilePreview> {
+    let skill = overview
+        .skills
+        .iter()
+        .find(|skill| skill.id == skill_id)
+        .ok_or_else(|| anyhow!("Unknown skill: {skill_id}"))?;
+    let installation = match query.provider.as_deref() {
+        Some(provider) => skill
+            .installations
+            .iter()
+            .find(|item| item.provider_id == provider)
+            .ok_or_else(|| anyhow!("Skill is not installed for {provider}"))?,
+        None => skill
+            .installations
+            .first()
+            .ok_or_else(|| anyhow!("Skill has no installation"))?,
+    };
+    let relative = Path::new(&query.path);
+    if relative.is_absolute()
+        || relative.components().count() == 0
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(anyhow!("Unsafe skill file path"));
+    }
+    let inspection = inspect_bundle(&installation.path);
+    let asset = inspection
+        .assets
+        .iter()
+        .find(|asset| asset.path == query.path)
+        .ok_or_else(|| anyhow!("Unknown skill asset: {}", query.path))?;
+    if !asset.previewable {
+        return Err(anyhow!("Skill asset is not previewable"));
+    }
+    let root = installation.path.canonicalize()?;
+    let target = root.join(relative).canonicalize()?;
+    if !target.starts_with(&root) {
+        return Err(anyhow!("Skill file escapes its bundle"));
+    }
+    let file = fs::File::open(&target)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+        return Err(anyhow!("Skill asset exceeds preview limit"));
+    }
+    let content = String::from_utf8(bytes).map_err(|_| anyhow!("Skill asset is not UTF-8 text"))?;
+    Ok(SkillFilePreview {
+        path: asset.path.clone(),
+        category: asset.category.clone(),
+        extension: asset.extension.clone(),
+        bytes: asset.bytes,
+        content,
+    })
+}
+
+async fn get_skill(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> impl IntoResponse {
+    match bundle_detail(&discover(&state.agents), &skill_id) {
+        Ok(detail) => ApiResponse::success(detail).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_skill_tree(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let overview = discover(&state.agents);
+    let Some(skill) = overview.skills.iter().find(|skill| skill.id == skill_id) else {
+        return error_response(anyhow!("Unknown skill: {skill_id}"));
+    };
+    let Some(source) = skill.installations.first() else {
+        return error_response(anyhow!("Skill has no installation"));
+    };
+    let inspection = inspect_bundle(&source.path);
+    ApiResponse::success(SkillTree {
+        skill_id,
+        fingerprint: inspection.fingerprint,
+        assets: inspection.assets,
+        issues: inspection.issues,
+    })
+    .into_response()
+}
+
+async fn get_skill_file(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<SkillFileQuery>,
+) -> impl IntoResponse {
+    match preview_file(&discover(&state.agents), &skill_id, &query) {
+        Ok(preview) => ApiResponse::success(preview).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
 async fn list_skills(State(state): State<SkillsState>) -> impl IntoResponse {
     ApiResponse::success(discover(&state.agents)).into_response()
 }
@@ -473,6 +896,111 @@ mod tests {
         };
         assert!(uninstall(&agents, &user_owned).is_err());
         assert!(root.path().join("claude/skills/writer").exists());
+    }
+
+    #[test]
+    fn bundle_index_classifies_assets_and_detects_content_conflicts() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = create_skill(
+            root.path(),
+            "claude",
+            "writer",
+            "---\nname: Writer\ndescription: Writes docs\n---\n# Writer",
+        );
+        fs::create_dir_all(claude.join("scripts")).unwrap();
+        fs::create_dir_all(claude.join("references")).unwrap();
+        fs::create_dir_all(claude.join("agents")).unwrap();
+        fs::write(claude.join("scripts/render.py"), "print('ok')").unwrap();
+        fs::write(claude.join("references/style.md"), "# Style").unwrap();
+        fs::write(
+            claude.join("agents/openai.yaml"),
+            "interface:\n  display_name: Writer",
+        )
+        .unwrap();
+        create_skill(
+            root.path(),
+            "codex",
+            "writer",
+            "---\nname: Writer\n---\n# Different",
+        );
+
+        let overview = discover(&agents(root.path()));
+        let skill = &overview.skills[0];
+        assert!(skill.conflict);
+        assert_eq!(skill.statistics.scripts, 1);
+        assert_eq!(skill.statistics.references, 1);
+        assert!(skill.installations.iter().any(|item| item.drifted));
+
+        let detail = bundle_detail(&overview, "writer").unwrap();
+        assert_eq!(
+            detail.frontmatter.get("description").map(String::as_str),
+            Some("Writes docs")
+        );
+        assert_eq!(detail.provider_metadata.len(), 1);
+        assert!(detail
+            .relations
+            .iter()
+            .any(|item| item.relation == "executes"));
+        assert!(detail
+            .relations
+            .iter()
+            .any(|item| item.relation == "references"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bundle_index_records_symbolic_links_without_following_them() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let skill = create_skill(root.path(), "claude", "writer", "# Writer");
+        symlink(root.path(), skill.join("outside")).unwrap();
+
+        let inspection = inspect_bundle(&skill);
+        assert!(inspection
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("Symbolic")));
+        assert!(!inspection
+            .assets
+            .iter()
+            .any(|asset| asset.path.starts_with("outside/")));
+    }
+
+    #[test]
+    fn preview_rejects_traversal_and_binary_assets() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = create_skill(root.path(), "claude", "writer", "# Writer");
+        fs::write(skill.join("image.bin"), [0_u8, 159, 146, 150]).unwrap();
+        let overview = discover(&agents(root.path()));
+
+        assert!(preview_file(
+            &overview,
+            "writer",
+            &SkillFileQuery {
+                path: "../secret".into(),
+                provider: None
+            }
+        )
+        .is_err());
+        assert!(preview_file(
+            &overview,
+            "writer",
+            &SkillFileQuery {
+                path: "image.bin".into(),
+                provider: None
+            }
+        )
+        .is_err());
+        let preview = preview_file(
+            &overview,
+            "writer",
+            &SkillFileQuery {
+                path: "SKILL.md".into(),
+                provider: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(preview.content, "# Writer");
     }
 
     #[tokio::test]
