@@ -117,6 +117,8 @@ struct SkillsState {
 struct SkillMutation {
     skill_id: String,
     provider: String,
+    #[serde(default)]
+    source_provider: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -543,10 +545,22 @@ fn install(agents: &[SkillAgent], request: &SkillMutation) -> Result<SkillsOverv
         .find(|skill| skill.id == request.skill_id)
         .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
     validate_directory(&skill.directory)?;
-    let source = skill
-        .installations
-        .first()
-        .ok_or_else(|| anyhow!("Skill has no source installation"))?;
+    let source = match request.source_provider.as_deref() {
+        Some(provider) => skill
+            .installations
+            .iter()
+            .find(|installation| installation.provider_id == provider)
+            .ok_or_else(|| anyhow!("Skill is not installed for source provider: {provider}"))?,
+        None if skill.conflict => {
+            return Err(anyhow!(
+                "Skill installations contain different content; source_provider is required"
+            ));
+        }
+        None => skill
+            .installations
+            .first()
+            .ok_or_else(|| anyhow!("Skill has no source installation"))?,
+    };
     let agent = agents
         .iter()
         .find(|agent| agent.provider_id == request.provider)
@@ -864,6 +878,7 @@ mod tests {
         let request = SkillMutation {
             skill_id: "writer".into(),
             provider: "codex".into(),
+            source_provider: None,
         };
 
         let overview = install(&agents, &request).unwrap();
@@ -885,6 +900,7 @@ mod tests {
         let managed = SkillMutation {
             skill_id: "writer".into(),
             provider: "codex".into(),
+            source_provider: None,
         };
         install(&agents, &managed).unwrap();
         uninstall(&agents, &managed).unwrap();
@@ -893,6 +909,7 @@ mod tests {
         let user_owned = SkillMutation {
             skill_id: "writer".into(),
             provider: "claude".into(),
+            source_provider: None,
         };
         assert!(uninstall(&agents, &user_owned).is_err());
         assert!(root.path().join("claude/skills/writer").exists());
@@ -945,6 +962,17 @@ mod tests {
             .relations
             .iter()
             .any(|item| item.relation == "references"));
+        let missing_source = SkillMutation {
+            skill_id: "writer".into(),
+            provider: "gemini".into(),
+            source_provider: None,
+        };
+        assert!(install(&agents(root.path()), &missing_source).is_err());
+        let selected_source = SkillMutation {
+            source_provider: Some("claude".into()),
+            ..missing_source
+        };
+        assert!(install(&agents(root.path()), &selected_source).is_ok());
     }
 
     #[cfg(unix)]
@@ -1006,7 +1034,12 @@ mod tests {
     #[tokio::test]
     async fn api_lists_installs_and_removes_skills() {
         let root = tempfile::tempdir().unwrap();
-        create_skill(root.path(), "claude", "writer", "# Writer");
+        create_skill(
+            root.path(),
+            "claude",
+            "writer",
+            "---\nname: Writer\n---\n# Writer",
+        );
         let app = router_for(agents(root.path()));
 
         let (status, listed) = json(
@@ -1023,6 +1056,7 @@ mod tests {
         let request = serde_json::to_vec(&SkillMutation {
             skill_id: "writer".into(),
             provider: "codex".into(),
+            source_provider: None,
         })
         .unwrap();
         let (status, installed) = json(
@@ -1062,5 +1096,56 @@ mod tests {
                 .len(),
             1
         );
+
+        let (status, detail) = json(
+            router_for(agents(root.path())),
+            Request::builder()
+                .uri("/api/v1/skills/writer")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(detail["data"]["frontmatter"]["name"], "Writer");
+
+        let (status, tree) = json(
+            router_for(agents(root.path())),
+            Request::builder()
+                .uri("/api/v1/skills/writer/tree")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(tree["data"]["assets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|asset| asset["path"] == "SKILL.md"));
+
+        let (status, preview) = json(
+            router_for(agents(root.path())),
+            Request::builder()
+                .uri("/api/v1/skills/writer/file?path=SKILL.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(preview["data"]["content"]
+            .as_str()
+            .unwrap()
+            .contains("# Writer"));
+
+        let (status, rejected) = json(
+            router_for(agents(root.path())),
+            Request::builder()
+                .uri("/api/v1/skills/writer/file?path=../secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(rejected["ok"], false);
     }
 }
