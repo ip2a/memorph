@@ -531,6 +531,17 @@ export type SelectPathResult = {
   path: string | null;
 };
 
+export type DirectoryEntry = {
+  name: string;
+  path: string;
+};
+
+export type DirectoryListing = {
+  path: string;
+  parent: string | null;
+  directories: DirectoryEntry[];
+};
+
 export type OpenExternalPayload = {
   url: string;
 };
@@ -568,6 +579,9 @@ export type MetaPayload = {
   version: string;
   selected_workspace: string | null;
   workspaces: WorkspaceEntry[];
+  capabilities: {
+    system_folder_picker: boolean;
+  };
   settings: SettingsPayload;
   settings_paths: SettingsPathsPayload;
   config_file: ConfigFilePayload;
@@ -1229,6 +1243,38 @@ export type SkillInstallation = {
   provider_id: string;
   path: string;
   managed: boolean;
+  fingerprint: string;
+  drifted: boolean;
+};
+
+export type SkillStatistics = {
+  files: number;
+  bytes: number;
+  scripts: number;
+  references: number;
+  assets: number;
+  previewable: number;
+};
+
+export type SkillIssue = {
+  path?: string | null;
+  message: string;
+};
+
+export type SkillAsset = {
+  path: string;
+  category: "entry" | "script" | "reference" | "asset" | "metadata" | "other";
+  extension?: string | null;
+  bytes: number;
+  previewable: boolean;
+  entry: boolean;
+};
+
+export type SkillRelation = {
+  relation: string;
+  source: string;
+  target: string;
+  evidence: string;
 };
 
 export type SkillEntry = {
@@ -1236,7 +1282,32 @@ export type SkillEntry = {
   name: string;
   description?: string | null;
   directory: string;
+  fingerprint: string;
+  conflict: boolean;
+  statistics: SkillStatistics;
+  issues: SkillIssue[];
   installations: SkillInstallation[];
+};
+
+export type SkillDetail = SkillEntry & {
+  frontmatter: Record<string, string>;
+  provider_metadata: SkillAsset[];
+  relations: SkillRelation[];
+};
+
+export type SkillTree = {
+  skill_id: string;
+  fingerprint: string;
+  assets: SkillAsset[];
+  issues: SkillIssue[];
+};
+
+export type SkillFilePreview = {
+  path: string;
+  category: string;
+  extension?: string | null;
+  bytes: number;
+  content: string;
 };
 
 export type SkillsOverview = {
@@ -1247,4 +1318,5 @@ export type SkillsOverview = {
 export type SkillMutation = {
   skill_id: string;
   provider: string;
+  source_provider?: string;
 };

@@ -32,6 +32,9 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
   useInstallSkill,
+  useSkillDetail,
+  useSkillFilePreview,
+  useSkillTree,
   useSkills,
   useUninstallSkill,
 } from "@/features/skills/queries";
@@ -45,6 +48,8 @@ export function SkillsPage() {
   const uninstallMutation = useUninstallSkill();
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  const [sourceProvider, setSourceProvider] = useState<string | undefined>();
   const [removal, setRemoval] = useState<{
     skill: SkillEntry;
     agent: SkillAgent;
@@ -59,6 +64,21 @@ export function SkillsPage() {
         .includes(query),
     );
   }, [search, skillsQuery.data?.skills]);
+
+  const selected =
+    skills.find((skill) => skill.id === selectedId) || skills[0] || null;
+  const selectedSource = selected?.installations.some(
+    (item) => item.provider_id === sourceProvider,
+  )
+    ? sourceProvider
+    : selected?.installations[0]?.provider_id;
+  const detailQuery = useSkillDetail(selected?.id || null);
+  const treeQuery = useSkillTree(selected?.id || null);
+  const previewQuery = useSkillFilePreview(
+    selected?.id || null,
+    previewPath,
+    selectedSource,
+  );
 
   if (skillsQuery.isLoading) return <PageSkeleton />;
   if (skillsQuery.isError) {
@@ -75,8 +95,6 @@ export function SkillsPage() {
     );
   }
 
-  const selected =
-    skills.find((skill) => skill.id === selectedId) || skills[0] || null;
   const pending = installMutation.isPending || uninstallMutation.isPending;
   const mutationError = installMutation.error || uninstallMutation.error;
 
@@ -181,6 +199,29 @@ export function SkillsPage() {
                 </p>
               </div>
 
+              <div className="grid gap-2 text-xs sm:grid-cols-3">
+                <div className="rounded-md border p-2"><span className="text-muted-foreground">文件</span><strong className="ml-2">{detailQuery.data?.statistics.files ?? selected.statistics.files}</strong></div>
+                <div className="rounded-md border p-2"><span className="text-muted-foreground">大小</span><strong className="ml-2">{detailQuery.data?.statistics.bytes ?? selected.statistics.bytes} B</strong></div>
+                <div className="rounded-md border p-2"><span className="text-muted-foreground">指纹</span><code className="ml-2 break-all">{detailQuery.data?.fingerprint ?? selected.fingerprint}</code></div>
+              </div>
+              {selected.conflict ? (
+                <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+                  多来源内容存在冲突。安装时必须明确选择来源。
+                  <select className="mt-2 block rounded border bg-background p-1" value={selectedSource || ""} onChange={(event) => setSourceProvider(event.target.value)}>
+                    {selected.installations.map((item) => <option key={item.provider_id} value={item.provider_id}>{item.provider_id} · {item.fingerprint}</option>)}
+                  </select>
+                </div>
+              ) : null}
+              <section className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">Bundle 文件</h3>
+                {treeQuery.data?.assets.map((asset) => (
+                  <button key={asset.path} type="button" disabled={!asset.previewable} onClick={() => setPreviewPath(asset.path)} className="flex items-center justify-between rounded border p-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
+                    <span className="font-mono">{asset.path}</span><Badge variant="outline">{asset.category} · {asset.bytes} B</Badge>
+                  </button>
+                ))}
+                {previewQuery.data ? <pre className="max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs">{previewQuery.data.content}</pre> : null}
+              </section>
+
               <section className="flex flex-col gap-3">
                 <h3 className="text-sm font-semibold">
                   {t("skillsInstallations")}
@@ -249,6 +290,7 @@ export function SkillsPage() {
                             installMutation.mutate({
                               skill_id: selected.id,
                               provider: agent.provider_id,
+                              source_provider: selectedSource,
                             })
                           }
                         >

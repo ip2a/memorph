@@ -15,6 +15,7 @@ import type {
   CompressionArchiveSummary,
   CompressionProviderSupport,
   CreateSyncPayload,
+  DirectoryListing,
   ExportSessionPayload,
   ExportSessionResult,
   HookOperationReport,
@@ -55,6 +56,9 @@ import type {
   SessionReprojectionReport,
   SkillMutation,
   SkillsOverview,
+  SkillDetail,
+  SkillTree,
+  SkillFilePreview,
   SessionStalenessRefreshReport,
   SwitchSessionPayload,
   SwitchSessionResult,
@@ -151,6 +155,10 @@ export function selectFolder(payload: SelectPathPayload) {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export function listDirectories(path?: string | null) {
+  return api<DirectoryListing>(`/api/v1/filesystem/directories${buildQuery({ path })}`);
 }
 
 export function selectFile(payload: SelectPathPayload) {
@@ -486,6 +494,19 @@ export function getSkills() {
   return api<SkillsOverview>("/api/v1/skills");
 }
 
+export function getSkillDetail(skillId: string) {
+  return api<SkillDetail>(`/api/v1/skills/${encodeURIComponent(skillId)}`);
+}
+
+export function getSkillTree(skillId: string) {
+  return api<SkillTree>(`/api/v1/skills/${encodeURIComponent(skillId)}/tree`);
+}
+
+export function getSkillFilePreview(skillId: string, path: string, provider?: string) {
+  return api<SkillFilePreview>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}/file${buildQuery({ path, provider })}`,
+  );
+}
 export function installSkill(payload: SkillMutation) {
   return api<SkillsOverview>("/api/v1/skills/install", {
     method: "POST",
