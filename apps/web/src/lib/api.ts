@@ -59,6 +59,9 @@ import type {
   SkillDetail,
   SkillTree,
   SkillFilePreview,
+  SkillRelationsConfig,
+  SkillRelationCandidates,
+  SkillRelationRule,
   SessionStalenessRefreshReport,
   SwitchSessionPayload,
   SwitchSessionResult,
@@ -506,6 +509,39 @@ export function getSkillFilePreview(skillId: string, path: string, provider?: st
   return api<SkillFilePreview>(
     `/api/v1/skills/${encodeURIComponent(skillId)}/file${buildQuery({ path, provider })}`,
   );
+}
+export function getSkillRelations() {
+  return api<SkillRelationsConfig>("/api/v1/skills/relations");
+}
+
+export function getSkillRelationCandidates() {
+  return api<SkillRelationCandidates>("/api/v1/skills/relation-candidates");
+}
+
+export function saveSkillGroup(group: SkillRelationsConfig["groups"][number]) {
+  return api<SkillRelationsConfig>("/api/v1/skills/groups", {
+    method: "POST",
+    body: JSON.stringify(group),
+  });
+}
+export function saveSkillRelation(relation: SkillRelationRule) {
+  return api<SkillRelationsConfig>("/api/v1/skills/relations", {
+    method: "POST",
+    body: JSON.stringify(relation),
+  });
+}
+
+export function deleteSkillRelation(relationId: string) {
+  return api<SkillRelationsConfig>(`/api/v1/skills/relations/${encodeURIComponent(relationId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function ignoreSkillRelationCandidate(candidateKey: string) {
+  return api<SkillRelationsConfig>("/api/v1/skills/relation-candidates/ignore", {
+    method: "POST",
+    body: JSON.stringify({ candidate_key: candidateKey }),
+  });
 }
 export function installSkill(payload: SkillMutation) {
   return api<SkillsOverview>("/api/v1/skills/install", {

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getSkillDetail, getSkillFilePreview, getSkillTree, getSkills, installSkill, uninstallSkill } from "@/lib/api";
+import { deleteSkillRelation, getSkillDetail, getSkillFilePreview, getSkillRelationCandidates, getSkillRelations, getSkillTree, getSkills, ignoreSkillRelationCandidate, installSkill, saveSkillGroup, saveSkillRelation, uninstallSkill } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useSkills() {
@@ -30,6 +30,53 @@ export function useSkillFilePreview(skillId: string | null, path: string | null,
     queryKey: skillId && path ? queryKeys.skillFile(skillId, path, provider) : ["skills", "file", "none"],
     queryFn: () => getSkillFilePreview(skillId as string, path as string, provider),
     enabled: Boolean(skillId && path),
+  });
+}
+export function useSkillRelations() {
+  return useQuery({ queryKey: queryKeys.skillRelations, queryFn: getSkillRelations });
+}
+
+export function useSkillRelationCandidates() {
+  return useQuery({ queryKey: queryKeys.skillRelationCandidates, queryFn: getSkillRelationCandidates });
+}
+
+export function useSaveSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: saveSkillGroup,
+    onSuccess: (config) => {
+      queryClient.setQueryData(queryKeys.skillRelations, config);
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillRelationCandidates });
+    },
+  });
+}
+export function useSaveSkillRelation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: saveSkillRelation,
+    onSuccess: (config) => {
+      queryClient.setQueryData(queryKeys.skillRelations, config);
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillRelationCandidates });
+    },
+  });
+}
+
+export function useDeleteSkillRelation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSkillRelation,
+    onSuccess: (config) => queryClient.setQueryData(queryKeys.skillRelations, config),
+  });
+}
+
+export function useIgnoreSkillRelationCandidate() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ignoreSkillRelationCandidate,
+    onSuccess: (config) => {
+      queryClient.setQueryData(queryKeys.skillRelations, config);
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillRelationCandidates });
+    },
   });
 }
 export function useInstallSkill() {

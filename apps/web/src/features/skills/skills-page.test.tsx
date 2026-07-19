@@ -13,6 +13,11 @@ const mocks = vi.hoisted(() => ({
   useSkillDetail: vi.fn(),
   useSkillTree: vi.fn(),
   useSkillFilePreview: vi.fn(),
+  useSkillRelations: vi.fn(),
+  useSkillRelationCandidates: vi.fn(),
+  saveRelation: vi.fn(),
+  deleteRelation: vi.fn(),
+  ignoreCandidate: vi.fn(),
   install: vi.fn(),
   uninstall: vi.fn(),
 }));
@@ -22,6 +27,12 @@ vi.mock("@/features/skills/queries", () => ({
   useSkillDetail: mocks.useSkillDetail,
   useSkillTree: mocks.useSkillTree,
   useSkillFilePreview: mocks.useSkillFilePreview,
+  useSkillRelations: mocks.useSkillRelations,
+  useSkillRelationCandidates: mocks.useSkillRelationCandidates,
+  useSaveSkillGroup: () => ({ mutate: vi.fn(), isPending: false }),
+  useSaveSkillRelation: () => ({ mutate: mocks.saveRelation, isPending: false }),
+  useDeleteSkillRelation: () => ({ mutate: mocks.deleteRelation }),
+  useIgnoreSkillRelationCandidate: () => ({ mutate: mocks.ignoreCandidate }),
   useInstallSkill: () => ({
     mutate: mocks.install,
     isPending: false,
@@ -135,6 +146,8 @@ beforeEach(() => {
   mocks.useSkillDetail.mockReturnValue({ data: undefined });
   mocks.useSkillTree.mockReturnValue({ data: { assets: [] } });
   mocks.useSkillFilePreview.mockReturnValue({ data: undefined });
+  mocks.useSkillRelations.mockReturnValue({ data: { relations: [] } });
+  mocks.useSkillRelationCandidates.mockReturnValue({ data: { relations: [], groups: [] } });
 });
 
 afterEach(() => cleanup());
@@ -185,6 +198,24 @@ describe("SkillsPage", () => {
     expect(mocks.uninstall).toHaveBeenCalledWith({
       skill_id: "document-writer",
       provider: "gemini",
+    });
+  });
+
+  it("creates a manual relation as the fallback workflow", async () => {
+    const user = userEvent.setup();
+    renderRoute();
+
+    await user.selectOptions(screen.getByLabelText("关系类型"), "orchestrates");
+    await user.selectOptions(screen.getByLabelText("目标 Skill"), "reviewer");
+    await user.click(screen.getByRole("button", { name: "添加关系" }));
+
+    expect(mocks.saveRelation).toHaveBeenCalledWith({
+      id: "document-writer:orchestrates:reviewer",
+      from: { skill_id: "document-writer" },
+      to: { skill_id: "reviewer" },
+      kind: "orchestrates",
+      source: "manual",
+      enabled: true,
     });
   });
 });

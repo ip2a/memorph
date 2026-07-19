@@ -17,6 +17,12 @@ use std::{
 };
 use walkdir::WalkDir;
 
+use super::{
+    detection::{self, SkillDetectionResult},
+    model::{IgnoredSkillCandidate, SkillGroup, SkillRelationRule, SkillRelationsConfig},
+    store,
+};
+
 const MANAGED_MARKER: &str = ".memorph-managed-skill";
 const MAX_ASSETS: usize = 200;
 const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024;
@@ -147,6 +153,23 @@ pub fn router() -> Router {
 fn router_for(agents: Vec<SkillAgent>) -> Router {
     Router::new()
         .route("/api/v1/skills", get(list_skills))
+        .route("/api/v1/skills/groups", post(upsert_skill_group))
+        .route(
+            "/api/v1/skills/relations",
+            get(get_skill_relations).post(upsert_skill_relation),
+        )
+        .route(
+            "/api/v1/skills/relations/{relation_id}",
+            axum::routing::delete(delete_skill_relation),
+        )
+        .route(
+            "/api/v1/skills/relation-candidates",
+            get(get_skill_relation_candidates),
+        )
+        .route(
+            "/api/v1/skills/relation-candidates/ignore",
+            post(ignore_skill_relation_candidate),
+        )
         .route("/api/v1/skills/{skill_id}", get(get_skill))
         .route("/api/v1/skills/{skill_id}/tree", get(get_skill_tree))
         .route("/api/v1/skills/{skill_id}/file", get(get_skill_file))
@@ -764,6 +787,63 @@ async fn get_skill_file(
         Ok(preview) => ApiResponse::success(preview).into_response(),
         Err(error) => error_response(error),
     }
+}
+
+async fn upsert_skill_group(Json(group): Json<SkillGroup>) -> impl IntoResponse {
+    match store::upsert_group(group) {
+        Ok(config) => ApiResponse::success(config).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_skill_relations() -> impl IntoResponse {
+    match store::load() {
+        Ok(config) => ApiResponse::success(config).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn upsert_skill_relation(Json(relation): Json<SkillRelationRule>) -> impl IntoResponse {
+    match store::upsert_relation(relation) {
+        Ok(config) => ApiResponse::success(config).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn delete_skill_relation(AxumPath(relation_id): AxumPath<String>) -> impl IntoResponse {
+    match store::remove_relation(&relation_id) {
+        Ok(config) => ApiResponse::success(config).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn ignore_skill_relation_candidate(
+    Json(candidate): Json<IgnoredSkillCandidate>,
+) -> impl IntoResponse {
+    match store::ignore_candidate(candidate) {
+        Ok(config) => ApiResponse::success(config).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_skill_relation_candidates(State(state): State<SkillsState>) -> impl IntoResponse {
+    let mut result: SkillDetectionResult = detection::detect(&discover(&state.agents));
+    let config: SkillRelationsConfig = match store::load() {
+        Ok(config) => config,
+        Err(error) => return error_response(error),
+    };
+    let ignored = config
+        .ignored_candidates
+        .iter()
+        .map(|item| item.candidate_key.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    result
+        .relations
+        .retain(|item| !ignored.contains(item.key.as_str()));
+    result
+        .groups
+        .retain(|item| !ignored.contains(item.key.as_str()));
+    ApiResponse::success(result).into_response()
 }
 
 async fn list_skills(State(state): State<SkillsState>) -> impl IntoResponse {

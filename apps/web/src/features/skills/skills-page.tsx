@@ -31,7 +31,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  useDeleteSkillRelation,
+  useIgnoreSkillRelationCandidate,
   useInstallSkill,
+  useSaveSkillGroup,
+  useSaveSkillRelation,
+  useSkillRelationCandidates,
+  useSkillRelations,
   useSkillDetail,
   useSkillFilePreview,
   useSkillTree,
@@ -39,13 +45,21 @@ import {
   useUninstallSkill,
 } from "@/features/skills/queries";
 import { useI18n } from "@/lib/i18n-context";
-import type { SkillAgent, SkillEntry } from "@/lib/types";
+import type { SkillAgent, SkillEntry, SkillRelationKind, SkillRelationRule } from "@/lib/types";
 
 export function SkillsPage() {
   const { t } = useI18n();
   const skillsQuery = useSkills();
   const installMutation = useInstallSkill();
   const uninstallMutation = useUninstallSkill();
+  const relationsQuery = useSkillRelations();
+  const candidatesQuery = useSkillRelationCandidates();
+  const saveGroup = useSaveSkillGroup();
+  const saveRelation = useSaveSkillRelation();
+  const deleteRelation = useDeleteSkillRelation();
+  const ignoreCandidate = useIgnoreSkillRelationCandidate();
+  const [relationTarget, setRelationTarget] = useState("");
+  const [relationKind, setRelationKind] = useState<SkillRelationKind>("related-to");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
@@ -79,6 +93,19 @@ export function SkillsPage() {
     previewPath,
     selectedSource,
   );
+
+  const selectedRelations = relationsQuery.data?.relations.filter(
+    (relation) => relation.from.skill_id === selected?.id || relation.to.skill_id === selected?.id,
+  ) || [];
+  const selectedCandidates = candidatesQuery.data?.relations.filter(
+    (candidate) => candidate.from.skill_id === selected?.id,
+  ) || [];
+
+  const selectedGroupCandidates = candidatesQuery.data?.groups.filter(
+    (group) => group.members.includes(selected?.id || ""),
+  ) || [];
+
+  const persistRelation = (relation: SkillRelationRule) => saveRelation.mutate(relation);
 
   if (skillsQuery.isLoading) return <PageSkeleton />;
   if (skillsQuery.isError) {
@@ -223,9 +250,80 @@ export function SkillsPage() {
               </section>
 
               <section className="flex flex-col gap-3">
-                <h3 className="text-sm font-semibold">
-                  {t("skillsInstallations")}
-                </h3>
+                <div className="flex items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold">Skill 关系</h3>
+                  <Badge variant="outline">{selectedRelations.length} 已确认 · {selectedCandidates.length} 候选</Badge>
+                </div>
+                {selectedRelations.map((relation) => (
+                  <div key={relation.id} className="flex items-start justify-between gap-3 rounded-md border p-3 text-xs">
+                    <div>
+                      <strong>{relation.from.skill_id}</strong> <Badge variant="secondary">{relation.kind}</Badge> <strong>{relation.to.skill_id}</strong>
+                      <p className="text-muted-foreground mt-1">{relation.note || relation.evidence?.excerpt || relation.source}</p>
+                    </div>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => deleteRelation.mutate(relation.id)}>删除</Button>
+                  </div>
+                ))}
+                {selectedCandidates.map((candidate) => (
+                  <div key={candidate.key} className="rounded-md border border-blue-500/40 bg-blue-500/5 p-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span><strong>{candidate.from.skill_id}</strong> → <strong>{candidate.to.skill_id}</strong></span>
+                      <Badge variant="outline">{candidate.kind} · {candidate.confidence}%</Badge>
+                    </div>
+                    <p className="text-muted-foreground my-2">{candidate.evidence.path}:{candidate.evidence.line} · {candidate.evidence.excerpt}</p>
+                    <div className="flex gap-2">
+                      <Button type="button" size="sm" onClick={() => persistRelation({
+                        id: `${candidate.from.skill_id}:${candidate.kind}:${candidate.to.skill_id}`,
+                        from: candidate.from,
+                        to: candidate.to,
+                        kind: candidate.kind,
+                        source: "confirmed-detection",
+                        enabled: true,
+                        evidence: candidate.evidence,
+                      })}>确认</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => ignoreCandidate.mutate(candidate.key)}>忽略</Button>
+                    </div>
+                  </div>
+                ))}
+                {selectedGroupCandidates.map((group) => (
+                  <div key={group.key} className="rounded-md border border-dashed p-3 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span>建议分组：<strong>{group.name}</strong>（{group.members.join("、")}）</span>
+                      <Badge variant="outline">结构证据 · {group.confidence}%</Badge>
+                    </div>
+                    <p className="text-muted-foreground my-2">{group.evidence}</p>
+                    <div className="flex gap-2">
+                      <Button type="button" size="sm" onClick={() => saveGroup.mutate({
+                        id: group.suggested_id,
+                        name: group.name,
+                        entry_skill: { skill_id: selected.id },
+                        members: group.members.map((skill_id) => ({ skill_id })),
+                        source: "confirmed-detection",
+                      })}>以当前 Skill 为入口确认分组</Button>
+                      <Button type="button" size="sm" variant="outline" onClick={() => ignoreCandidate.mutate(group.key)}>忽略</Button>
+                    </div>
+                  </div>
+                ))}
+                <div className="grid gap-2 rounded-md border border-dashed p-3 sm:grid-cols-[1fr_1fr_auto]">
+                  <select aria-label="关系类型" className="rounded border bg-background p-2 text-sm" value={relationKind} onChange={(event) => setRelationKind(event.target.value as SkillRelationKind)}>
+                    {["requires", "uses", "orchestrates", "routes-to", "fallback-to", "extends", "member-of", "related-to", "conflicts-with"].map((kind) => <option key={kind} value={kind}>{kind}</option>)}
+                  </select>
+                  <select aria-label="目标 Skill" className="rounded border bg-background p-2 text-sm" value={relationTarget} onChange={(event) => setRelationTarget(event.target.value)}>
+                    <option value="">选择目标 Skill</option>
+                    {(skillsQuery.data?.skills || []).filter((skill) => skill.id !== selected.id).map((skill) => <option key={skill.id} value={skill.id}>{skill.name} ({skill.id})</option>)}
+                  </select>
+                  <Button type="button" disabled={!relationTarget || saveRelation.isPending} onClick={() => persistRelation({
+                    id: `${selected.id}:${relationKind}:${relationTarget}`,
+                    from: { skill_id: selected.id },
+                    to: { skill_id: relationTarget },
+                    kind: relationKind,
+                    source: "manual",
+                    enabled: true,
+                  })}>添加关系</Button>
+                </div>
+              </section>
+
+              <section className="flex flex-col gap-3">
+                <h3 className="text-sm font-semibold">{t("skillsInstallations")}</h3>
                 {skillsQuery.data?.agents.map((agent) => {
                   const installation = selected.installations.find(
                     (item) => item.provider_id === agent.provider_id,
