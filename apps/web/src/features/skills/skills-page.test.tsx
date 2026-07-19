@@ -10,12 +10,18 @@ import { SkillsPage } from "./skills-page";
 
 const mocks = vi.hoisted(() => ({
   useSkills: vi.fn(),
+  useSkillDetail: vi.fn(),
+  useSkillTree: vi.fn(),
+  useSkillFilePreview: vi.fn(),
   install: vi.fn(),
   uninstall: vi.fn(),
 }));
 
 vi.mock("@/features/skills/queries", () => ({
   useSkills: mocks.useSkills,
+  useSkillDetail: mocks.useSkillDetail,
+  useSkillTree: mocks.useSkillTree,
+  useSkillFilePreview: mocks.useSkillFilePreview,
   useInstallSkill: () => ({
     mutate: mocks.install,
     isPending: false,
@@ -54,16 +60,24 @@ const overview = {
       name: "Document Writer",
       description: "Writes concise documentation",
       directory: "document-writer",
+      fingerprint: "sha256:document-writer",
+      conflict: false,
+      statistics: { files: 3, bytes: 128, scripts: 1, references: 1, assets: 0, previewable: 3 },
+      issues: [],
       installations: [
         {
           provider_id: "claude",
           path: "/home/test/.claude/skills/document-writer",
           managed: false,
+          fingerprint: "sha256:document-writer",
+          drifted: false,
         },
         {
           provider_id: "gemini",
           path: "/home/test/.gemini/skills/document-writer",
           managed: true,
+          fingerprint: "sha256:document-writer",
+          drifted: false,
         },
       ],
     },
@@ -72,11 +86,17 @@ const overview = {
       name: "Reviewer",
       description: "Reviews code",
       directory: "reviewer",
+      fingerprint: "sha256:reviewer",
+      conflict: false,
+      statistics: { files: 1, bytes: 64, scripts: 0, references: 0, assets: 0, previewable: 1 },
+      issues: [],
       installations: [
         {
           provider_id: "codex",
           path: "/home/test/.codex/skills/reviewer",
           managed: true,
+          fingerprint: "sha256:reviewer",
+          drifted: false,
         },
       ],
     },
@@ -112,6 +132,9 @@ beforeEach(() => {
     isLoading: false,
     refetch: vi.fn(),
   });
+  mocks.useSkillDetail.mockReturnValue({ data: undefined });
+  mocks.useSkillTree.mockReturnValue({ data: { assets: [] } });
+  mocks.useSkillFilePreview.mockReturnValue({ data: undefined });
 });
 
 afterEach(() => cleanup());
@@ -145,6 +168,7 @@ describe("SkillsPage", () => {
     expect(mocks.install).toHaveBeenCalledWith({
       skill_id: "document-writer",
       provider: "codex",
+      source_provider: "claude",
     });
 
     const gemini = screen.getByText("Gemini CLI").closest("div.rounded-lg");
