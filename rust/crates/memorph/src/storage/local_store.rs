@@ -2,10 +2,13 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, TransactionBehavior};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SCHEMA_VERSION: i64 = 9;
+
+static JOURNAL_MODE_LOCK: Mutex<()> = Mutex::new(());
 
 pub(crate) fn current_schema_version() -> i64 {
     SCHEMA_VERSION
@@ -59,13 +62,16 @@ pub fn open_database() -> Result<Connection> {
 pub(crate) fn configure_connection(conn: &Connection) -> Result<()> {
     conn.busy_timeout(BUSY_TIMEOUT)
         .context("Failed to set SQLite busy timeout")?;
-    conn.execute_batch(
-        "
-        PRAGMA foreign_keys = ON;
-        PRAGMA journal_mode = WAL;
-        ",
-    )
-    .context("Failed to apply SQLite pragmas")?;
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .context("Failed to apply SQLite pragmas")?;
+    // SQLite changes journal mode by taking a database-wide lock. Serialize that
+    // transition for concurrent stores in this process; the busy timeout covers
+    // other processes opening the same database.
+    let _journal_mode_guard = JOURNAL_MODE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("SQLite journal mode lock was poisoned"))?;
+    conn.execute_batch("PRAGMA journal_mode = WAL;")
+        .context("Failed to apply SQLite journal mode")?;
     Ok(())
 }
 
