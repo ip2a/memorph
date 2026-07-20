@@ -5026,6 +5026,44 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_projects_cline_task_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let task = dir.path().join("task-cline-1");
+        std::fs::create_dir_all(&task).unwrap();
+        let history = task.join("api_conversation_history.json");
+        std::fs::write(
+            &history,
+            r#"[{"role":"user","content":"hello"},{"role":"assistant","content":[{"type":"thinking","thinking":"reason"},{"type":"text","text":"done"}]}]"#,
+        )
+        .unwrap();
+
+        let session = ProviderSessionSummary {
+            session_id: "task-cline-1".into(),
+            title: Some("hello".into()),
+            project_dir: None,
+            last_active_at: None,
+            source_path: Some(history.to_string_lossy().into_owned()),
+        };
+        let mut projection = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut report = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "cline", &session, &mut report);
+
+        assert_eq!(report.projected_sessions, 1);
+        assert_eq!(report.failed_sessions, 0);
+        assert_eq!(report.missing_sources, 0);
+        let title: String = projection
+            .query_row(
+                "SELECT title FROM session_snapshots WHERE provider_id = 'cline' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "hello");
+    }
+
+    #[test]
     fn bootstrap_discovers_projects_skips_unchanged_and_refreshes_changed_indexes() {
         let opencode_dir = tempfile::tempdir().unwrap();
         let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
