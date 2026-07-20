@@ -72,7 +72,6 @@ json_read_provider!(
     stepfun_roots,
     None::<&'static str>
 );
-json_read_provider!(PiProvider, "pi", "pi", pi_roots, None::<&'static str>);
 json_read_provider!(
     TraeProvider,
     "trae",
@@ -160,14 +159,6 @@ fn qwen_roots() -> Vec<PathBuf> {
 fn stepfun_roots() -> Vec<PathBuf> {
     let mut roots = vscode_global_storage("StepFun");
     if let Some(root) = home_join(".stepfun") {
-        roots.push(root);
-    }
-    roots
-}
-
-fn pi_roots() -> Vec<PathBuf> {
-    let mut roots = Vec::new();
-    if let Some(root) = home_join(".pi/agent") {
         roots.push(root);
     }
     roots
