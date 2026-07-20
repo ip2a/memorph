@@ -5304,6 +5304,35 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_projects_qoder_session_source() {
+        let dir = tempfile::tempdir().unwrap(); let source_dir = dir.path().join("encoded-cwd");
+        std::fs::create_dir_all(&source_dir).unwrap(); let source = source_dir.join("qoder-session-1.jsonl");
+        std::fs::write(&source, r#"{"role":"user","content":"before","cwd":"/tmp/qoder"}
+"#).unwrap();
+        let session = ProviderSessionSummary { session_id: "qoder-session-1".into(), title: Some("before".into()), project_dir: Some("/tmp/qoder".into()), last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let mut projection = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
+        let mut report = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "qoder", &session, &mut report);
+        assert_eq!(report.projected_sessions, 1); assert_eq!(report.failed_sessions, 0); assert_eq!(report.missing_sources, 0);
+    }
+
+    #[test]
+    fn qoder_projection_refreshes_after_session_source_change() {
+        let dir = tempfile::tempdir().unwrap(); let source_dir = dir.path().join("encoded-cwd");
+        std::fs::create_dir_all(&source_dir).unwrap(); let source = source_dir.join("qoder-session-1.jsonl");
+        std::fs::write(&source, r#"{"role":"user","content":"before"}
+"#).unwrap();
+        let mut session = ProviderSessionSummary { session_id: "qoder-session-1".into(), title: Some("before".into()), project_dir: None, last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let mut projection = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "qoder", &session, &mut first); assert_eq!(first.projected_sessions, 1);
+        std::fs::write(&source, r#"{"role":"user","content":"after"}
+"#).unwrap(); session.title = Some("after".into());
+        let mut second = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "qoder", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1); assert_eq!(second.unchanged_sessions, 0);
+    }
+
+    #[test]
     fn bootstrap_discovers_projects_skips_unchanged_and_refreshes_changed_indexes() {
         let opencode_dir = tempfile::tempdir().unwrap();
         let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
