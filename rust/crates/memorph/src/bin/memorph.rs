@@ -1770,6 +1770,27 @@ mod tests {
     }
 
     #[test]
+    fn provider_capability_detail_covers_every_registry_provider() {
+        for provider_id in providers::ProviderRegistry::ids() {
+            let provider = providers::find_provider(provider_id).unwrap();
+            let output =
+                provider_capability_detail(provider.id(), provider.name(), provider.capabilities());
+            assert!(
+                output.starts_with(&format!(
+                    "Provider: {} ({})",
+                    provider.name(),
+                    provider.id()
+                )),
+                "missing CLI capability detail for {provider_id}"
+            );
+            assert!(output.contains("Operations: "));
+            assert!(output.contains("Discovery: scan="));
+            assert!(output.contains("Import fidelity:"));
+            assert!(output.contains("Export fidelity:"));
+        }
+    }
+
+    #[test]
     fn provider_capability_detail_exposes_quality_and_risk() {
         let capabilities = providers::find_provider("codex").unwrap().capabilities();
 
