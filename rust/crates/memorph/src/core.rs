@@ -53,6 +53,7 @@ const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
     "codebuddy",
     "qoder",
     "workbuddy",
+    "pi",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
