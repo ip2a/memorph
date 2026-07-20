@@ -4934,9 +4934,9 @@ mod tests {
         let conn = rusqlite::Connection::open(&db).unwrap();
         conn.execute_batch(
             "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, cwd TEXT, model TEXT, started_at REAL NOT NULL, ended_at REAL, message_count INTEGER, tool_call_count INTEGER, archived INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT, active INTEGER NOT NULL DEFAULT 1);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, effect_disposition TEXT, timestamp REAL NOT NULL, reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT, compacted INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, api_content TEXT);
              INSERT INTO sessions VALUES ('hermes-1','Hermes fixture','/tmp/hermes-project','model-x',1000,NULL,1,0,0);
-             INSERT INTO messages VALUES (1,'hermes-1','user','hello',NULL,NULL,NULL,1000,NULL,NULL,NULL,1);"
+             INSERT INTO messages (id,session_id,role,content,tool_call_id,tool_calls,tool_name,effect_disposition,timestamp,reasoning,reasoning_content,reasoning_details,compacted,active,api_content) VALUES (1,'hermes-1','user','hello',NULL,NULL,NULL,NULL,1000,NULL,NULL,NULL,0,1,NULL);"
         ).unwrap();
         drop(conn);
 
@@ -4977,9 +4977,9 @@ mod tests {
         let conn = rusqlite::Connection::open(&db).unwrap();
         conn.execute_batch(
             "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, cwd TEXT, model TEXT, started_at REAL NOT NULL, ended_at REAL, message_count INTEGER, tool_call_count INTEGER, archived INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT, active INTEGER NOT NULL DEFAULT 1);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, effect_disposition TEXT, timestamp REAL NOT NULL, reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT, compacted INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, api_content TEXT);
              INSERT INTO sessions VALUES ('hermes-1','Before','/tmp/hermes-project','model-x',1000,NULL,1,0,0);
-             INSERT INTO messages VALUES (1,'hermes-1','user','before',NULL,NULL,NULL,1000,NULL,NULL,NULL,1);"
+             INSERT INTO messages (id,session_id,role,content,tool_call_id,tool_calls,tool_name,effect_disposition,timestamp,reasoning,reasoning_content,reasoning_details,compacted,active,api_content) VALUES (1,'hermes-1','user','before',NULL,NULL,NULL,NULL,1000,NULL,NULL,NULL,0,1,NULL);"
         ).unwrap();
         drop(conn);
 

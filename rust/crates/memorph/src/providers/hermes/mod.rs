@@ -93,12 +93,13 @@ impl Provider for HermesProvider {
             )
             .with_context(|| format!("Hermes session not found: {id}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, tool_call_id, tool_calls, tool_name, timestamp, reasoning, reasoning_content, reasoning_details, active FROM messages WHERE session_id = ?1 ORDER BY id",
+            "SELECT id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, timestamp, reasoning, reasoning_content, reasoning_details, compacted, active, api_content FROM messages WHERE session_id = ?1 ORDER BY id",
         )?;
         let mut events = Vec::new();
         let mut rows = stmt.query([&id])?;
         while let Some(row) = rows.next()? {
-            if row.get::<_, i64>(10)? == 0 {
+            let active: i64 = row.get(12)?;
+            if active == 0 {
                 continue;
             }
             let message_id: i64 = row.get(0)?;
@@ -107,10 +108,29 @@ impl Provider for HermesProvider {
             let tool_call_id: Option<String> = row.get(3)?;
             let tool_calls: Option<String> = row.get(4)?;
             let tool_name: Option<String> = row.get(5)?;
-            let timestamp: f64 = row.get(6)?;
-            let reasoning: Option<String> = row.get(7)?;
-            let reasoning_content: Option<String> = row.get(8)?;
-            let reasoning_details: Option<String> = row.get(9)?;
+            let effect_disposition: Option<String> = row.get(6)?;
+            let timestamp: f64 = row.get(7)?;
+            let reasoning: Option<String> = row.get(8)?;
+            let reasoning_content: Option<String> = row.get(9)?;
+            let reasoning_details: Option<String> = row.get(10)?;
+            let compacted: i64 = row.get(11)?;
+            let api_content: Option<String> = row.get(13)?;
+            let raw_message = serde_json::json!({
+                "id": message_id,
+                "role": role,
+                "content": content,
+                "tool_call_id": tool_call_id,
+                "tool_calls": tool_calls.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()),
+                "tool_name": tool_name,
+                "effect_disposition": effect_disposition,
+                "timestamp": timestamp,
+                "reasoning": reasoning,
+                "reasoning_content": reasoning_content,
+                "reasoning_details": reasoning_details,
+                "compacted": compacted != 0,
+                "active": active != 0,
+                "api_content": api_content,
+            });
             let event_role = match role.as_str() {
                 "user" => EventRole::User,
                 "assistant" => EventRole::Assistant,
@@ -125,8 +145,9 @@ impl Provider for HermesProvider {
                 }
             }
             if let Some(text) = reasoning
-                .or(reasoning_content)
-                .or(reasoning_details)
+                .clone()
+                .or(reasoning_content.clone())
+                .or(reasoning_details.clone())
                 .filter(|v| !v.trim().is_empty())
             {
                 blocks.push(EventBlock::Thinking {
@@ -199,13 +220,17 @@ impl Provider for HermesProvider {
                     source: EventSource {
                         provider_id: PROVIDER_ID.to_string(),
                         original_id: Some(message_id.to_string()),
-                        original_role: Some(role),
+                        original_role: Some(role.clone()),
                         phase: None,
                     },
                     model: meta.3.clone(),
                     usage: None,
                     fidelity: MappingDisposition::Preserved,
-                    provider_ext: BTreeMap::new(),
+                    provider_ext: {
+                        let mut ext = BTreeMap::new();
+                        ext.insert("hermes_message".into(), raw_message);
+                        ext
+                    },
                 },
             });
         }
@@ -355,10 +380,10 @@ fn source_fingerprint(source: &str) -> Result<Option<ProviderSourceFingerprint>>
         digest.update([0]);
     }
     let mut stmt = conn.prepare(
-        "SELECT CAST(id AS TEXT), role, content, tool_call_id, tool_calls, tool_name, CAST(timestamp AS TEXT), reasoning, reasoning_content, reasoning_details, CAST(active AS TEXT) FROM messages WHERE session_id = ?1 ORDER BY id",
+        "SELECT CAST(id AS TEXT), role, content, tool_call_id, tool_calls, tool_name, effect_disposition, CAST(timestamp AS TEXT), reasoning, reasoning_content, reasoning_details, CAST(compacted AS TEXT), CAST(active AS TEXT), api_content FROM messages WHERE session_id = ?1 ORDER BY id",
     )?;
     let rows = stmt.query_map([&id], |row| {
-        (0..11)
+        (0..14)
             .map(|index| row.get::<_, Option<String>>(index))
             .collect::<rusqlite::Result<Vec<_>>>()
     })?;
@@ -391,13 +416,13 @@ mod tests {
         let conn = Connection::open(dir.path().join("state.db")).unwrap();
         conn.execute_batch(
             "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, cwd TEXT, model TEXT, started_at REAL NOT NULL, ended_at REAL, message_count INTEGER, tool_call_count INTEGER, archived INTEGER NOT NULL DEFAULT 0);
-             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT, active INTEGER NOT NULL DEFAULT 1);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, effect_disposition TEXT, timestamp REAL NOT NULL, reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT, compacted INTEGER NOT NULL DEFAULT 0, active INTEGER NOT NULL DEFAULT 1, api_content TEXT);
              INSERT INTO sessions VALUES ('active','Fixture','/tmp/project','model-x',1000,NULL,3,1,0);
              INSERT INTO sessions VALUES ('archived','Hidden',NULL,NULL,900,NULL,0,0,1);
-             INSERT INTO messages VALUES (1,'active','user','hello',NULL,NULL,NULL,1000,NULL,NULL,NULL,1);
-             INSERT INTO messages VALUES (2,'active','assistant',NULL,NULL,'[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"terminal\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}}]',NULL,1001,'thinking',NULL,NULL,1);
-             INSERT INTO messages VALUES (3,'active','tool','done','call-1',NULL,'terminal',1002,NULL,NULL,NULL,1);
-             INSERT INTO messages VALUES (4,'active','assistant','inactive',NULL,NULL,NULL,1003,NULL,NULL,NULL,0);"
+             INSERT INTO messages (id,session_id,role,content,tool_call_id,tool_calls,tool_name,effect_disposition,timestamp,reasoning,reasoning_content,reasoning_details,compacted,active,api_content) VALUES (1,'active','user','hello',NULL,NULL,NULL,NULL,1000,NULL,NULL,NULL,0,1,NULL);
+             INSERT INTO messages (id,session_id,role,content,tool_call_id,tool_calls,tool_name,effect_disposition,timestamp,reasoning,reasoning_content,reasoning_details,compacted,active,api_content) VALUES (2,'active','assistant',NULL,NULL,'[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"terminal\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}}]',NULL,NULL,1001,'thinking',NULL,NULL,0,1,'wire-content');
+             INSERT INTO messages (id,session_id,role,content,tool_call_id,tool_calls,tool_name,effect_disposition,timestamp,reasoning,reasoning_content,reasoning_details,compacted,active,api_content) VALUES (3,'active','tool','done','call-1',NULL,'terminal',NULL,1002,NULL,NULL,NULL,0,1,NULL);
+             INSERT INTO messages (id,session_id,role,content,tool_call_id,tool_calls,tool_name,effect_disposition,timestamp,reasoning,reasoning_content,reasoning_details,compacted,active,api_content) VALUES (4,'active','assistant','inactive',NULL,NULL,NULL,NULL,1003,NULL,NULL,NULL,0,0,NULL);"
         ).unwrap();
         dir
     }
@@ -423,6 +448,21 @@ mod tests {
         );
         assert!(
             matches!(imported.session.events[2].blocks[0], EventBlock::ToolResult { ref content, .. } if content == "done")
+        );
+        assert_eq!(
+            imported.session.events[1].metadata.provider_ext["hermes_message"]["tool_calls"],
+            serde_json::json!([{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "arguments": "{\"cmd\":\"pwd\"}"
+                }
+            }])
+        );
+        assert_eq!(
+            imported.session.events[1].metadata.provider_ext["hermes_message"]["api_content"],
+            "wire-content"
         );
         assert!(source_fingerprint(&source).unwrap().is_some());
         assert!(source_fingerprint(&source_locator_for(&db, "missing"))
