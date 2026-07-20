@@ -4332,6 +4332,17 @@ mod tests {
             .expect("missing opencode catalog entry");
         assert_eq!(opencode["capability_set"]["page_strategy"], "native_page");
 
+        let openclaw = providers
+            .iter()
+            .find(|provider| provider["provider_id"] == "openclaw")
+            .expect("missing openclaw catalog entry");
+        assert_eq!(openclaw["display_name"], "OpenClaw");
+        assert_eq!(openclaw["capability_set"]["scan"], true);
+        assert_eq!(openclaw["capability_set"]["import"], true);
+        assert_eq!(openclaw["capability_set"]["storage_shape"], "sqlite");
+        assert_eq!(openclaw["capability_set"]["resume"], false);
+        assert_eq!(openclaw["capability_set"]["delete"], false);
+
         let gemini = providers
             .iter()
             .find(|provider| provider["provider_id"] == "gemini")
