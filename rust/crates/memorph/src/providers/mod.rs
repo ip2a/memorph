@@ -184,6 +184,24 @@ mod tests {
     }
 
     #[test]
+    fn registry_uses_native_hermes_sqlite_provider() {
+        let provider = find_provider("hermes").expect("hermes provider");
+        let capabilities = provider.capabilities();
+        assert_eq!(
+            capabilities.storage_shape,
+            crate::provider::StorageShape::Sqlite
+        );
+        assert_eq!(
+            capabilities.page_strategy,
+            crate::provider::PageStrategy::FullImport
+        );
+        assert!(capabilities.resume);
+        assert!(!capabilities.delete);
+        assert!(!capabilities.rename);
+        assert!(!capabilities.export);
+    }
+
+    #[test]
     fn factory_alias_resolves_to_droid_provider() {
         let provider = find_provider("factory").expect("factory alias");
         assert_eq!(provider.id(), "droid");

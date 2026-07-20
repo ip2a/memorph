@@ -35,6 +35,7 @@ impl Provider for HermesProvider {
         ProviderCapabilities {
             scan: true,
             import: true,
+            resume: true,
             storage_shape: StorageShape::Sqlite,
             scan_strategy: ScanStrategy::Indexed,
             page_strategy: PageStrategy::FullImport,
@@ -70,33 +71,7 @@ impl Provider for HermesProvider {
     }
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
-        let db = state_db_path();
-        if !db.exists() {
-            return Ok(Vec::new());
-        }
-        let conn = open_read_only(&db)?;
-        let mut stmt = conn.prepare(
-            "SELECT id, title, cwd, started_at FROM sessions WHERE archived = 0 ORDER BY started_at DESC",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, f64>(3)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (id, title, cwd, started) = row?;
-            Ok(ProviderSessionSummary {
-                session_id: id.clone(),
-                title,
-                project_dir: cwd,
-                last_active_at: timestamp_ms(started),
-                source_path: Some(source_locator(&id)),
-            })
-        })
-        .collect()
+        scan_sessions_from_db(&state_db_path())
     }
 
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
@@ -291,12 +266,45 @@ impl Provider for HermesProvider {
 }
 
 fn state_db_path() -> PathBuf {
-    dirs::home_dir()
-        .map(|home| home.join(".hermes/state.db"))
-        .unwrap_or_else(|| PathBuf::from(".hermes/state.db"))
+    std::env::var_os("HERMES_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".hermes")))
+        .unwrap_or_else(|| PathBuf::from(".hermes"))
+        .join("state.db")
+}
+fn source_locator_for(db: &Path, id: &str) -> String {
+    format!("{}#session={id}", db.display())
 }
 fn source_locator(id: &str) -> String {
-    format!("{}#session={id}", state_db_path().display())
+    source_locator_for(&state_db_path(), id)
+}
+fn scan_sessions_from_db(db: &Path) -> Result<Vec<ProviderSessionSummary>> {
+    if !db.exists() {
+        return Ok(Vec::new());
+    }
+    let conn = open_read_only(db)?;
+    let mut stmt = conn.prepare(
+        "SELECT id, title, cwd, started_at FROM sessions WHERE archived = 0 ORDER BY started_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, f64>(3)?,
+        ))
+    })?;
+    rows.map(|row| {
+        let (id, title, cwd, started) = row?;
+        Ok(ProviderSessionSummary {
+            session_id: id.clone(),
+            title,
+            project_dir: cwd,
+            last_active_at: timestamp_ms(started),
+            source_path: Some(source_locator_for(db, &id)),
+        })
+    })
+    .collect()
 }
 fn parse_source_locator(source: &str) -> Result<(PathBuf, String)> {
     let (path, fragment) = source
@@ -376,6 +384,51 @@ fn source_fingerprint(source: &str) -> Result<Option<ProviderSourceFingerprint>>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fixture_db() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("state.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, cwd TEXT, model TEXT, started_at REAL NOT NULL, ended_at REAL, message_count INTEGER, tool_call_count INTEGER, archived INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT, active INTEGER NOT NULL DEFAULT 1);
+             INSERT INTO sessions VALUES ('active','Fixture','/tmp/project','model-x',1000,NULL,3,1,0);
+             INSERT INTO sessions VALUES ('archived','Hidden',NULL,NULL,900,NULL,0,0,1);
+             INSERT INTO messages VALUES (1,'active','user','hello',NULL,NULL,NULL,1000,NULL,NULL,NULL,1);
+             INSERT INTO messages VALUES (2,'active','assistant',NULL,NULL,'[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"terminal\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}}]',NULL,1001,'thinking',NULL,NULL,1);
+             INSERT INTO messages VALUES (3,'active','tool','done','call-1',NULL,'terminal',1002,NULL,NULL,NULL,1);
+             INSERT INTO messages VALUES (4,'active','assistant','inactive',NULL,NULL,NULL,1003,NULL,NULL,NULL,0);"
+        ).unwrap();
+        dir
+    }
+
+    #[test]
+    fn native_sqlite_scan_import_and_fingerprint() {
+        let dir = fixture_db();
+        let db = dir.path().join("state.db");
+        let sessions = scan_sessions_from_db(&db).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "active");
+        assert_eq!(sessions[0].last_active_at, Some(1_000_000));
+
+        let source = source_locator_for(&db, "active");
+        let imported = HermesProvider.import_session(&source).unwrap();
+        assert_eq!(imported.session.events.len(), 3);
+        assert!(matches!(
+            imported.session.events[1].blocks[0],
+            EventBlock::Thinking { .. }
+        ));
+        assert!(
+            matches!(imported.session.events[1].blocks[1], EventBlock::ToolCall { ref name, .. } if name == "terminal")
+        );
+        assert!(
+            matches!(imported.session.events[2].blocks[0], EventBlock::ToolResult { ref content, .. } if content == "done")
+        );
+        assert!(source_fingerprint(&source).unwrap().is_some());
+        assert!(source_fingerprint(&source_locator_for(&db, "missing"))
+            .unwrap()
+            .is_none());
+    }
+
     #[test]
     fn source_locator_round_trips() {
         let source = source_locator("abc");
