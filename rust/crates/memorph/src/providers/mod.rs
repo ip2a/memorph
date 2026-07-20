@@ -77,7 +77,7 @@ impl ProviderRegistry {
             "trae" => Some(Box::new(emerging::TraeProvider)),
             "droid" => Some(Box::new(droid::DroidProvider)),
             "stepfun" => Some(Box::new(emerging::StepFunProvider)),
-            "workbuddy" => Some(Box::new(emerging::WorkBuddyProvider)),
+            "workbuddy" => Some(Box::new(workbuddy::WorkBuddyProvider)),
             "hermes" => Some(Box::new(hermes::HermesProvider)),
             "pi" => Some(Box::new(emerging::PiProvider)),
             "gemini" => Some(Box::new(gemini::GeminiProvider)),

@@ -72,13 +72,6 @@ json_read_provider!(
     stepfun_roots,
     None::<&'static str>
 );
-json_read_provider!(
-    WorkBuddyProvider,
-    "workbuddy",
-    "WorkBuddy",
-    workbuddy_roots,
-    None::<&'static str>
-);
 json_read_provider!(PiProvider, "pi", "pi", pi_roots, None::<&'static str>);
 json_read_provider!(
     TraeProvider,
@@ -169,17 +162,6 @@ fn stepfun_roots() -> Vec<PathBuf> {
     if let Some(root) = home_join(".stepfun") {
         roots.push(root);
     }
-    roots
-}
-
-fn workbuddy_roots() -> Vec<PathBuf> {
-    // WorkBuddy emits OpenTelemetry-style trace files.
-    // local-llm-proxy reference: ~/.workbuddy/traces/trace_*.json
-    let mut roots = Vec::new();
-    if let Some(root) = home_join(".workbuddy/traces") {
-        roots.push(root);
-    }
-    roots.extend(vscode_global_storage("WorkBuddy"));
     roots
 }
 
