@@ -46,20 +46,6 @@ const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
     "kiro",
     "opencode",
     "qwen",
-    // Tier 2: emerging providers onboarded via generic_json (minimal visibility).
-    // Their sessions are discoverable in the UI, but capability mapping is unverified.
-    "antigravity",
-    "cline",
-    "copilot",
-    "windsurf",
-    "codebuddy",
-    "qoder",
-    "trae",
-    "droid",
-    "stepfun",
-    "workbuddy",
-    "hermes",
-    "pi",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -5608,32 +5594,6 @@ mod tests {
     fn kiro_is_enabled_for_default_projection_bootstrap() {
         assert!(PROJECTED_SESSION_PROVIDER_IDS.contains(&"kiro"));
         assert!(provider_supports_session_projection("kiro"));
-    }
-
-    #[test]
-    fn emerging_providers_are_onboarded_into_projection_whitelist() {
-        // Route A: all 12 generic providers must be on the projection whitelist so their
-        // sessions are visible in the UI even before per-provider capability verification.
-        for id in [
-            "antigravity",
-            "cline",
-            "copilot",
-            "windsurf",
-            "codebuddy",
-            "qoder",
-            "trae",
-            "droid",
-            "stepfun",
-            "workbuddy",
-            "hermes",
-            "pi",
-        ] {
-            assert!(
-                PROJECTED_SESSION_PROVIDER_IDS.contains(&id),
-                "emerging provider {id} must be whitelisted for projection",
-            );
-            assert!(provider_supports_session_projection(id));
-        }
     }
 
     #[test]
