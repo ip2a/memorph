@@ -102,11 +102,28 @@ impl Provider for WindsurfProvider {
                 });
             }
         }
+        for path in legacy_paths() {
+            if !path.exists() {
+                continue;
+            }
+            for (id, title, last_active_at) in legacy_sessions(&path)? {
+                out.push(ProviderSessionSummary {
+                    session_id: id.clone(),
+                    title,
+                    project_dir: None,
+                    last_active_at,
+                    source_path: Some(legacy_locator(&path, &id)),
+                });
+            }
+        }
         out.sort_by_key(|s| std::cmp::Reverse(s.last_active_at.unwrap_or(0)));
         out.dedup_by(|a, b| a.session_id == b.session_id);
         Ok(out)
     }
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        if source_path.contains("#conversation=") {
+            return import_legacy_session(source_path);
+        }
         let (db, workspace) = parse_locator(source_path)?;
         let encoded = read_active_value(&db, workspace)?;
         let blob = decode(&encoded)?;
@@ -160,6 +177,9 @@ impl Provider for WindsurfProvider {
         &self,
         source_path: &str,
     ) -> Result<Option<ProviderSourceFingerprint>> {
+        if source_path.contains("#conversation=") {
+            return legacy_fingerprint(source_path);
+        }
         let (db, workspace) = parse_locator(source_path)?;
         if !db.exists() {
             return Ok(None);
@@ -173,8 +193,182 @@ impl Provider for WindsurfProvider {
         }))
     }
     fn data_source_paths(&self) -> Vec<PathBuf> {
-        state_paths()
+        state_paths().into_iter().chain(legacy_paths()).collect()
     }
+}
+
+fn legacy_paths() -> Vec<PathBuf> {
+    dirs::home_dir()
+        .into_iter()
+        .map(|home| home.join(".codeium/chat_state"))
+        .collect()
+}
+fn legacy_locator(path: &Path, id: &str) -> String {
+    format!("{}#conversation={id}", path.display())
+}
+fn parse_legacy_locator(source: &str) -> Result<(PathBuf, &str)> {
+    let (path, id) = source
+        .rsplit_once("#conversation=")
+        .context("Windsurf legacy source locator must be chat_state file#conversation=<id>")?;
+    Ok((PathBuf::from(path), id))
+}
+fn legacy_blocks<'a>(raw: &'a str, field: &str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let needle = format!("{field}:{{");
+    let mut start = 0;
+    while let Some(offset) = raw[start..].find(&needle) {
+        let open = start + offset + needle.len() - 1;
+        let mut depth = 0;
+        let mut quoted = false;
+        let bytes = raw.as_bytes();
+        let mut end = None;
+        for i in open..raw.len() {
+            match bytes[i] as char {
+                '"' if i == 0 || bytes[i - 1] != b'\\' => quoted = !quoted,
+                '{' if !quoted => depth += 1,
+                '}' if !quoted => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { break };
+        out.push(&raw[open + 1..end]);
+        start = end + 1;
+    }
+    out
+}
+fn legacy_string(block: &str, field: &str) -> Option<String> {
+    let prefix = format!("{field}:");
+    let start = block.find(&prefix)? + prefix.len();
+    let rest = block[start..].trim_start();
+    if !rest.starts_with('"') {
+        return None;
+    }
+    let mut escaped = false;
+    for (i, c) in rest[1..].char_indices() {
+        if c == '"' && !escaped {
+            return Some(rest[1..i + 1].replace("\\n", "\n").replace("\\\"", "\""));
+        }
+        escaped = c == '\\' && !escaped;
+        if c != '\\' {
+            escaped = false;
+        }
+    }
+    None
+}
+fn legacy_sessions(path: &Path) -> Result<Vec<(String, Option<String>, Option<i64>)>> {
+    let raw = std::fs::read_to_string(path)?;
+    let mut out = BTreeMap::new();
+    for message in legacy_blocks(&raw, "message") {
+        if !message.contains("CHAT_MESSAGE_SOURCE_USER") {
+            continue;
+        }
+        let Some(id) = legacy_string(message, "conversation_id") else {
+            continue;
+        };
+        let title = legacy_blocks(message, "intent")
+            .into_iter()
+            .find_map(|b| legacy_string(b, "text"));
+        out.entry(id).or_insert((title, modified_ms(path)));
+    }
+    Ok(out
+        .into_iter()
+        .map(|(id, (title, modified))| (id, title, modified))
+        .collect())
+}
+fn import_legacy_session(source: &str) -> Result<ImportedSession> {
+    let (path, id) = parse_legacy_locator(source)?;
+    let raw = std::fs::read_to_string(&path)?;
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let mut events = Vec::new();
+    for (i, message) in legacy_blocks(&raw, "message").into_iter().enumerate() {
+        if !message.contains("CHAT_MESSAGE_SOURCE_USER")
+            || legacy_string(message, "conversation_id").as_deref() != Some(id)
+        {
+            continue;
+        }
+        let Some(text) = legacy_blocks(message, "intent")
+            .into_iter()
+            .find_map(|b| legacy_string(b, "text"))
+        else {
+            continue;
+        };
+        report.push_issue(crate::canonical::MappingIssue {
+            level: crate::canonical::MappingIssueLevel::Info,
+            disposition: MappingDisposition::Preserved,
+            code: "windsurf-legacy-pbtxt".into(),
+            message: "Mapped Windsurf legacy chat_state user message".into(),
+            path: Some(format!("message[{i}]")),
+            raw: None,
+        });
+        events.push(SessionEvent {
+            id: format!("windsurf:legacy:{i}"),
+            kind: SessionEventKind::Message,
+            role: EventRole::User,
+            timestamp: modified_datetime(&path).unwrap_or_else(Utc::now),
+            links: EventLinks::default(),
+            blocks: vec![EventBlock::Text { text }],
+            metadata: EventMetadata {
+                source: EventSource {
+                    provider_id: PROVIDER_ID.into(),
+                    original_id: Some(id.into()),
+                    original_role: Some("user".into()),
+                    phase: None,
+                },
+                model: None,
+                usage: None,
+                fidelity: MappingDisposition::Preserved,
+                provider_ext: BTreeMap::new(),
+            },
+        });
+    }
+    Ok(ImportedSession {
+        session: CanonicalSession {
+            schema: CanonicalSchema::default(),
+            identity: SessionIdentity {
+                canonical_id: id.into(),
+                source_title: None,
+            },
+            provenance: SessionProvenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderSessionRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: id.into(),
+                    source_path: Some(source.into()),
+                },
+                aliases: Vec::new(),
+            },
+            context: SessionContext {
+                workspace_dir: None,
+                created_at: modified_datetime(&path),
+                last_active_at: modified_datetime(&path),
+                tags: Vec::new(),
+            },
+            events,
+            artifacts: Vec::new(),
+            extensions: BTreeMap::new(),
+        },
+        report,
+    })
+}
+fn legacy_fingerprint(source: &str) -> Result<Option<ProviderSourceFingerprint>> {
+    let (path, id) = parse_legacy_locator(source)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = std::fs::read(&path)?;
+    let digest = Sha256::digest(&raw);
+    Ok(Some(ProviderSourceFingerprint {
+        modified_at_ms: modified_ms(&path).unwrap_or(0),
+        size_bytes: raw.len().min(i64::MAX as usize) as i64,
+        value: format!("windsurf-legacy-pbtxt-v1:{id}:{digest:x}"),
+    }))
 }
 
 #[derive(Default)]
@@ -498,6 +692,31 @@ mod tests {
         let (path, workspace) = parse_locator("/tmp/state.vscdb#workspace=abc").unwrap();
         assert_eq!(path, PathBuf::from("/tmp/state.vscdb"));
         assert_eq!(workspace, "abc");
+    }
+
+    #[test]
+    fn imports_legacy_chat_state_user_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("chat.pbtxt");
+        std::fs::write(
+            &path,
+            r#"message:{source: CHAT_MESSAGE_SOURCE_USER conversation_id: "legacy-1" timestamp:{seconds: 10} intent:{text: "hello"}}
+message:{source: CHAT_MESSAGE_SOURCE_USER conversation_id: "other" intent:{text: "skip"}}
+"#,
+        )
+        .unwrap();
+        let sessions = legacy_sessions(&path).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert!(sessions.iter().any(|session| session.0 == "legacy-1"));
+        let imported = import_legacy_session(&legacy_locator(&path, "legacy-1")).unwrap();
+        assert_eq!(imported.session.events.len(), 1);
+        assert!(matches!(
+            imported.session.events[0].blocks[0],
+            EventBlock::Text { ref text } if text == "hello"
+        ));
+        assert!(legacy_fingerprint(&legacy_locator(&path, "legacy-1"))
+            .unwrap()
+            .is_some());
     }
 
     #[test]
