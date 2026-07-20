@@ -158,47 +158,21 @@ struct EventFacts {
     timestamps: Vec<(i64, bool)>,
 }
 
-fn load_event_facts(
-    conn: &rusqlite::Connection,
-    rows: &[ProjectedSessionSnapshotRow],
-) -> Result<HashMap<String, EventFacts>> {
-    let ids: HashSet<_> = rows
-        .iter()
-        .map(|row| row.canonical_session_id.as_str())
-        .collect();
-    let mut facts: HashMap<String, EventFacts> = HashMap::new();
-    let mut stmt = conn.prepare(
-        "SELECT session_id, role, timestamp_ms FROM session_events WHERE session_id IS NOT NULL",
-    )?;
-    let events = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, Option<String>>(1)?,
-            row.get::<_, Option<i64>>(2)?,
-        ))
-    })?;
-    for event in events {
-        let (session_id, role, timestamp) = event?;
-        if !ids.contains(session_id.as_str()) {
-            continue;
-        }
-        let facts = facts.entry(session_id).or_default();
-        if matches!(role.as_deref(), Some("user" | "assistant")) {
-            facts.message_count += 1;
-        }
-        if let Some(timestamp) = timestamp {
-            facts.last_activity_at_ms = Some(
-                facts
-                    .last_activity_at_ms
-                    .map_or(timestamp, |last| last.max(timestamp)),
-            );
-            facts.timestamps.push((
-                timestamp,
-                matches!(role.as_deref(), Some("user" | "assistant")),
-            ));
-        }
-    }
-    Ok(facts)
+fn snapshot_facts(rows: &[ProjectedSessionSnapshotRow]) -> HashMap<String, EventFacts> {
+    rows.iter()
+        .filter_map(|row| {
+            row.message_count.map(|message_count| {
+                (
+                    row.canonical_session_id.clone(),
+                    EventFacts {
+                        message_count,
+                        last_activity_at_ms: row.last_active_at_ms,
+                        timestamps: Vec::new(),
+                    },
+                )
+            })
+        })
+        .collect()
 }
 
 pub fn dashboard(query: &StatsDashboardQuery) -> Result<StatsDashboard> {
@@ -225,7 +199,7 @@ fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<Stats
         })
         .collect();
     let created_at = load_created_at(&conn, &rows)?;
-    let event_facts = load_event_facts(&conn, &rows)?;
+    let event_facts = snapshot_facts(&rows);
     let range_start = query.range.days().map(|days| now - Duration::days(days));
     Ok(build_dashboard(
         &rows,
@@ -687,7 +661,10 @@ mod tests {
         assert_eq!(result.overview.active_sessions, 1);
         assert_eq!(result.overview.active_session_messages, 3);
         assert_eq!(result.top_sessions.by_messages[0].message_count, 3);
-        assert_eq!(result.top_sessions.recently_active[0].last_active_at, date((now - Duration::days(1)).timestamp_millis()));
+        assert_eq!(
+            result.top_sessions.recently_active[0].last_active_at,
+            date((now - Duration::days(1)).timestamp_millis())
+        );
     }
 
     #[test]
@@ -731,9 +708,27 @@ mod tests {
             ),
         ]);
         let event_facts = HashMap::from([
-            ("recent".into(), EventFacts { message_count: 50, ..Default::default() }),
-            ("month".into(), EventFacts { message_count: 20, ..Default::default() }),
-            ("old".into(), EventFacts { message_count: 1, ..Default::default() }),
+            (
+                "recent".into(),
+                EventFacts {
+                    message_count: 50,
+                    ..Default::default()
+                },
+            ),
+            (
+                "month".into(),
+                EventFacts {
+                    message_count: 20,
+                    ..Default::default()
+                },
+            ),
+            (
+                "old".into(),
+                EventFacts {
+                    message_count: 1,
+                    ..Default::default()
+                },
+            ),
         ]);
         let result = build_dashboard(
             &rows,
