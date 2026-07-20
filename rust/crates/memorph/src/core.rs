@@ -5681,6 +5681,50 @@ mod tests {
     }
 
     #[test]
+    fn windsurf_legacy_chat_projection_refreshes_after_source_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.pbtxt");
+        std::fs::write(
+            &path,
+            r#"message: {source: CHAT_MESSAGE_SOURCE_USER conversation_id: "legacy-1" intent: {text: "before"}}
+"#,
+        )
+        .unwrap();
+        let mut session = ProviderSessionSummary {
+            session_id: "legacy-1".into(),
+            title: Some("before".into()),
+            project_dir: None,
+            last_active_at: None,
+            source_path: Some(format!("{}#conversation=legacy-1", path.display())),
+        };
+        let mut projection = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "windsurf", &session, &mut first);
+        assert_eq!(first.projected_sessions, 1);
+        std::fs::write(
+            &path,
+            r#"message: {source: CHAT_MESSAGE_SOURCE_USER conversation_id: "legacy-1" intent: {text: "after"}}
+"#,
+        )
+        .unwrap();
+        session.title = Some("after".into());
+        let mut second = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "windsurf", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1);
+        assert_eq!(second.unchanged_sessions, 0);
+        let title: String = projection
+            .query_row(
+                "SELECT title FROM session_snapshots WHERE provider_id = 'windsurf' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "after");
+    }
+
+    #[test]
     fn bootstrap_discovers_projects_skips_unchanged_and_refreshes_changed_indexes() {
         let opencode_dir = tempfile::tempdir().unwrap();
         let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());

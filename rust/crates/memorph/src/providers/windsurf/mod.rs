@@ -699,6 +699,19 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_match_read_only_source_boundary() {
+        let capabilities = WindsurfProvider.capabilities();
+        assert!(capabilities.scan);
+        assert!(capabilities.import);
+        assert!(!capabilities.export);
+        assert!(!capabilities.delete);
+        assert!(!capabilities.rename);
+        assert!(!capabilities.resume);
+        assert!(!capabilities.backup_support.before_write);
+        assert!(!capabilities.backup_support.restore);
+    }
+
+    #[test]
     fn trajectory_identity_comes_from_protobuf_field_one() {
         let blob = field(1, b"trajectory-id");
         assert_eq!(trajectory_id(&blob).as_deref(), Some("trajectory-id"));
