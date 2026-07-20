@@ -102,18 +102,24 @@ impl Provider for WindsurfProvider {
                 });
             }
         }
-        for path in legacy_paths() {
-            if !path.exists() {
+        for root in legacy_paths() {
+            let Ok(files) = std::fs::read_dir(root) else {
                 continue;
-            }
-            for (id, title, last_active_at) in legacy_sessions(&path)? {
-                out.push(ProviderSessionSummary {
-                    session_id: id.clone(),
-                    title,
-                    project_dir: None,
-                    last_active_at,
-                    source_path: Some(legacy_locator(&path, &id)),
-                });
+            };
+            for path in files
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("pbtxt"))
+            {
+                for (id, title, last_active_at) in legacy_sessions(&path)? {
+                    out.push(ProviderSessionSummary {
+                        session_id: id.clone(),
+                        title,
+                        project_dir: None,
+                        last_active_at,
+                        source_path: Some(legacy_locator(&path, &id)),
+                    });
+                }
             }
         }
         out.sort_by_key(|s| std::cmp::Reverse(s.last_active_at.unwrap_or(0)));
