@@ -146,18 +146,6 @@ const CODEBUDDY_EVENTS: &[HookProviderEventProfile] = &[
     event("Notification", false),
     event("PreCompact", true),
 ];
-const STEPFUN_EVENTS: &[HookProviderEventProfile] = &[
-    event("UserPromptSubmit", true),
-    event("PreToolUse", false),
-    event("PostToolUse", true),
-    event("SessionStart", false),
-    event("SessionEnd", true),
-    event("Stop", true),
-    event("SubagentStart", true),
-    event("SubagentStop", true),
-    event("Notification", false),
-    event("PreCompact", true),
-];
 const ANTIGRAVITY_EVENTS: &[HookProviderEventProfile] = &[
     event("UserPromptSubmit", true),
     event("PreToolUse", false),
@@ -337,14 +325,6 @@ const PROFILES: &[HookProviderProfile] = &[
         CODEBUDDY_EVENTS,
     ),
     profile(
-        "stepfun",
-        "StepFun",
-        HookFormat::StepFunClaudeJson,
-        HookConfigStrategyKind::ClaudeLikeJson,
-        "~/.stepfun/settings.json",
-        STEPFUN_EVENTS,
-    ),
-    profile(
         "antigravity",
         "AntiGravity",
         HookFormat::AntiGravityClaudeJson,
@@ -457,7 +437,6 @@ mod tests {
             "qoder",
             "droid",
             "codebuddy",
-            "stepfun",
             "antigravity",
             "workbuddy",
             "hermes",
@@ -498,7 +477,6 @@ mod tests {
             "qoder",
             "droid",
             "codebuddy",
-            "stepfun",
             "antigravity",
             "workbuddy",
             "hermes",

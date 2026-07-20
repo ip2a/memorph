@@ -22,7 +22,6 @@ pub enum HookFormat {
     QoderClaudeJson,
     FactoryClaudeJson,
     CodeBuddyClaudeJson,
-    StepFunClaudeJson,
     AntiGravityClaudeJson,
     WorkBuddyClaudeJson,
     HermesClaudeJson,

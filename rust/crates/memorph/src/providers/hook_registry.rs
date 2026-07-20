@@ -35,8 +35,6 @@ static PI_ADAPTER: super::pi::adapter::PiHookAdapter = super::pi::adapter::PiHoo
 static QODER_ADAPTER: super::qoder::adapter::QoderHookAdapter =
     super::qoder::adapter::QoderHookAdapter;
 static QWEN_ADAPTER: super::qwen::adapter::QwenHookAdapter = super::qwen::adapter::QwenHookAdapter;
-static STEPFUN_ADAPTER: super::stepfun::adapter::StepFunHookAdapter =
-    super::stepfun::adapter::StepFunHookAdapter;
 static TRAE_ADAPTER: super::trae::adapter::TraeHookAdapter = super::trae::adapter::TraeHookAdapter;
 static WORKBUDDY_ADAPTER: super::workbuddy::adapter::WorkBuddyHookAdapter =
     super::workbuddy::adapter::WorkBuddyHookAdapter;
@@ -51,7 +49,6 @@ pub fn find_provider_hook(provider: &str) -> Option<&'static dyn ProviderHook> {
         "cursor" => Some(&super::cursor::hook::CURSOR_HOOK),
         "droid" => Some(&super::droid::hook::DROID_HOOK),
         "codebuddy" => Some(&super::codebuddy::hook::CODEBUDDY_HOOK),
-        "stepfun" => Some(&super::stepfun::hook::STEPFUN_HOOK),
         "antigravity" => Some(&super::antigravity::hook::ANTIGRAVITY_HOOK),
         "workbuddy" => Some(&super::workbuddy::hook::WORKBUDDY_HOOK),
         "hermes" => Some(&super::hermes::hook::HERMES_HOOK),
@@ -77,7 +74,6 @@ pub fn find_hook_adapter(provider: &str) -> Option<&'static dyn HookAdapter> {
         "cursor" => Some(&CURSOR_ADAPTER),
         "droid" => Some(&DROID_ADAPTER),
         "codebuddy" => Some(&CODEBUDDY_ADAPTER),
-        "stepfun" => Some(&STEPFUN_ADAPTER),
         "antigravity" => Some(&ANTIGRAVITY_ADAPTER),
         "workbuddy" => Some(&WORKBUDDY_ADAPTER),
         "hermes" => Some(&HERMES_ADAPTER),
@@ -192,7 +188,6 @@ mod tests {
             "qoder",
             "droid",
             "codebuddy",
-            "stepfun",
             "antigravity",
             "workbuddy",
             "hermes",

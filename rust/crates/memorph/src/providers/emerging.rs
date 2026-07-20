@@ -51,21 +51,6 @@ json_read_provider!(
     qwen_roots,
     None::<&'static str>
 );
-json_read_provider!(
-    StepFunProvider,
-    "stepfun",
-    "StepFun",
-    stepfun_roots,
-    None::<&'static str>
-);
-json_read_provider!(
-    TraeProvider,
-    "trae",
-    "TraeCli",
-    trae_roots,
-    None::<&'static str>
-);
-
 fn spec(provider_id: &'static str, roots: fn() -> Vec<PathBuf>) -> JsonProviderSpec {
     JsonProviderSpec {
         provider_id,
@@ -117,15 +102,6 @@ fn qwen_roots() -> Vec<PathBuf> {
     roots.extend(vscode_global_storage("Qwen"));
     roots
 }
-
-fn stepfun_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("StepFun");
-    if let Some(root) = home_join(".stepfun") {
-        roots.push(root);
-    }
-    roots
-}
-
 fn trae_roots() -> Vec<PathBuf> {
     let mut roots = vscode_global_storage("Trae");
     if let Some(root) = home_join(".trae") {

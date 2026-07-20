@@ -22,7 +22,6 @@ pub(super) fn find_provider_setting_module(
         "qoder" => Some(&super::qoder::QoderSettingModule),
         "droid" => Some(&super::droid::DroidSettingModule),
         "codebuddy" => Some(&super::codebuddy::CodeBuddySettingModule),
-        "stepfun" => Some(&super::stepfun::StepFunSettingModule),
         "antigravity" => Some(&super::antigravity::AntiGravitySettingModule),
         "workbuddy" => Some(&super::workbuddy::WorkBuddySettingModule),
         "hermes" => Some(&super::hermes::HermesSettingModule),

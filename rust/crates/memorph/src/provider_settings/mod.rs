@@ -16,7 +16,6 @@ mod pi;
 mod qoder;
 mod qwen;
 mod registry;
-mod stepfun;
 mod trae;
 mod workbuddy;
 

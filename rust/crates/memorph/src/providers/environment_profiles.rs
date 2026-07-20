@@ -20,7 +20,6 @@ pub(crate) fn executable_candidates(provider_id: &str) -> &'static [&'static str
         "pi" => &["pi"],
         "qoder" => &["qoder"],
         "qwen" => &["qwen"],
-        "stepfun" => &["stepfun"],
         "trae" => &["trae"],
         "workbuddy" => &["workbuddy"],
         "windsurf" => &["windsurf"],
@@ -50,7 +49,6 @@ pub(crate) fn config_path(provider_id: &str) -> PathBuf {
         "pi" => home_join(".pi/agent"),
         "qoder" => home_join(".qoder"),
         "qwen" => home_join(".qwen"),
-        "stepfun" => home_join(".stepfun"),
         "trae" => home_join(".trae"),
         "workbuddy" => home_join(".workbuddy"),
         "windsurf" => app_config_dir("Windsurf", ".config/Windsurf"),
@@ -151,7 +149,6 @@ mod tests {
         assert_eq!(config_path("droid"), home_join(".factory"));
         assert_eq!(config_path("factory"), home_join(".factory"));
         assert_eq!(config_path("codebuddy"), home_join(".codebuddy"));
-        assert_eq!(config_path("stepfun"), home_join(".stepfun"));
         assert_eq!(config_path("antigravity"), home_join(".antigravity"));
         assert_eq!(config_path("workbuddy"), home_join(".workbuddy"));
         assert_eq!(config_path("hermes"), home_join(".hermes"));
@@ -164,7 +161,6 @@ mod tests {
             "qoder",
             "droid",
             "codebuddy",
-            "stepfun",
             "antigravity",
             "workbuddy",
             "hermes",

@@ -18,7 +18,6 @@ pub mod opencode;
 pub mod pi;
 pub mod qoder;
 pub mod qwen;
-pub mod stepfun;
 pub mod trae;
 pub mod windsurf;
 pub mod workbuddy;
@@ -46,7 +45,6 @@ const PROVIDER_IDS: &[&str] = &[
     "qwen",
     "trae",
     "droid",
-    "stepfun",
     "workbuddy",
     "hermes",
     "pi",
@@ -75,7 +73,6 @@ impl ProviderRegistry {
             "qwen" => Some(Box::new(qwen::QwenProvider)),
             "trae" => Some(Box::new(trae::TraeProvider)),
             "droid" => Some(Box::new(droid::DroidProvider)),
-            "stepfun" => Some(Box::new(stepfun::StepFunProvider)),
             "workbuddy" => Some(Box::new(workbuddy::WorkBuddyProvider)),
             "hermes" => Some(Box::new(hermes::HermesProvider)),
             "pi" => Some(Box::new(pi::PiProvider)),
@@ -145,7 +142,6 @@ mod tests {
             "qwen",
             "trae",
             "droid",
-            "stepfun",
             "workbuddy",
             "hermes",
             "pi",
@@ -155,17 +151,6 @@ mod tests {
                 "missing provider id: {id}"
             );
             assert!(find_provider(id).is_some(), "provider not found: {id}");
-        }
-    }
-
-    #[test]
-    fn unverified_session_providers_do_not_claim_json_sources() {
-        for id in ["stepfun"] {
-            let provider = find_provider(id).expect("provider registry entry");
-            let capabilities = provider.capabilities();
-            assert!(!capabilities.scan, "{id} must not claim session discovery");
-            assert!(!capabilities.import, "{id} must not claim session import");
-            assert!(provider.scan_sessions().is_err());
         }
     }
 
