@@ -5064,6 +5064,44 @@ mod tests {
     }
 
     #[test]
+    fn cline_projection_refreshes_after_task_history_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let task = dir.path().join("task-cline-1");
+        std::fs::create_dir_all(&task).unwrap();
+        let history = task.join("api_conversation_history.json");
+        std::fs::write(&history, r#"[{"role":"user","content":"before"}]"#).unwrap();
+
+        let mut session = ProviderSessionSummary {
+            session_id: "task-cline-1".into(),
+            title: Some("before".into()),
+            project_dir: None,
+            last_active_at: None,
+            source_path: Some(history.to_string_lossy().into_owned()),
+        };
+        let mut projection = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "cline", &session, &mut first);
+        assert_eq!(first.projected_sessions, 1);
+
+        std::fs::write(&history, r#"[{"role":"user","content":"after"}]"#).unwrap();
+        session.title = Some("after".into());
+        let mut second = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "cline", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1);
+        assert_eq!(second.unchanged_sessions, 0);
+        let title: String = projection
+            .query_row(
+                "SELECT title FROM session_snapshots WHERE provider_id = 'cline' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "after");
+    }
+
+    #[test]
     fn bootstrap_discovers_projects_skips_unchanged_and_refreshes_changed_indexes() {
         let opencode_dir = tempfile::tempdir().unwrap();
         let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
