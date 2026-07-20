@@ -431,8 +431,20 @@ mod tests {
         assert!(
             matches!(imported.session.events[1].blocks[0], EventBlock::ToolCall { ref name, .. } if name == "exec")
         );
-        assert!(fingerprint(sessions[0].source_path.as_deref().unwrap())
-            .unwrap()
-            .is_some());
+        let source = sessions[0].source_path.as_deref().unwrap();
+        let before = fingerprint(source).unwrap().unwrap();
+        let conn = Connection::open(&db).unwrap();
+        conn.execute(
+            "UPDATE sessions SET updated_at = 4000, display_name = 'Changed' WHERE session_id = 's1'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transcript_events VALUES ('s1', 3, '{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":\"changed\"}}', 4000)",
+            [],
+        )
+        .unwrap();
+        let after = fingerprint(source).unwrap().unwrap();
+        assert_ne!(before.value, after.value);
     }
 }
