@@ -32,6 +32,7 @@ import type {
   ManagerQuickPreviewResult,
   ManagerStatsResult,
   ManagerWorkspacePayload,
+  NativeForkPayload,
   ManagerWorkspacesResult,
   ProviderSettingItem,
   ProviderSettingOutput,
@@ -204,10 +205,6 @@ export function updateWorkspaceProviders(workspace: string, providers: string[])
   });
 }
 
-export function listAgents() {
-  return api<AgentManagementPayload>("/api/v1/agents");
-}
-
 export function listAgentsSummary() {
   return api<AgentManagementPayload>("/api/v1/agents/summary");
 }
@@ -277,6 +274,13 @@ export function exportSession(payload: ExportSessionPayload) {
 
 export function switchSession(payload: SwitchSessionPayload) {
   return api<SwitchSessionResult>("/api/v1/switch", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function nativeForkSession(payload: NativeForkPayload) {
+  return api<SwitchSessionResult>("/api/v1/native-fork", {
     method: "POST",
     body: JSON.stringify(payload),
   });

@@ -1,13 +1,14 @@
-import { useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArchiveIcon, CopyIcon, PinIcon, TriangleAlertIcon } from "lucide-react";
+import { CopyIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DetailHeader } from "@/components/shared/detail-header";
 import { DetailTimeline, scrollToDetailMessage } from "@/components/shared/detail-timeline";
 import { MetaLine } from "@/components/shared/meta-line";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
+import { ProviderLogo } from "@/components/shared/provider-logo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,10 +19,16 @@ import { cn } from "@/lib/utils";
 import { useSession, useSessionActivity } from "@/features/sessions/queries";
 import { SessionActivityChart } from "@/features/sessions/session-activity-chart";
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
-import { SessionBlock } from "@/features/sessions/session-block";
+import { SessionDetailBlock, collectEventJsonPayloads, SessionEventJsonColumn } from "@/features/sessions/session-block-split";
+import { SessionEventMetaPanel } from "@/features/sessions/session-event-meta-panel";
+import { SessionEventSplitRow } from "@/features/sessions/session-event-split-row";
 import { getBlockLabel } from "@/features/sessions/session-block-utils";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
 import { SessionDetailHeaderActions } from "@/features/sessions/session-detail-header-actions";
+import { buildSessionEventQuery, sessionEventTotalPages } from "@/features/sessions/session-detail-pagination";
+import { readSessionDetailRouteState, writeSessionDetailRouteState } from "@/features/sessions/session-detail-route-state";
+import { SessionDetailResultPagination } from "@/features/sessions/session-detail-result-pagination";
+import type { SessionEventPageSize } from "@/features/sessions/session-detail-pagination";
 import { getMeta, listProviders } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -200,22 +207,19 @@ function SessionHeaderSubtitle({ sessionId, createdAt, lastActiveAt }: { session
 
 function SessionDetailMeta({
   view,
-  returnedEventCount,
-  hasMoreEvents,
-  localState,
+  page,
+  pageSize,
 }: {
   view: SessionDetailView;
-  returnedEventCount: number;
-  hasMoreEvents: boolean;
-  localState: NonNullable<SessionDetailView["local_state"]>;
+  page: number;
+  pageSize: number;
 }) {
-  const tags = localState.tags ?? [];
-  const preferredTargets = localState.preferred_targets ?? [];
   const activity = useSessionActivity(view.provider_id, view.session_id);
-  const confidenceCounts = view.turns.reduce<Record<string, number>>((counts, turn) => {
-    counts[turn.confidence] = (counts[turn.confidence] ?? 0) + 1;
-    return counts;
-  }, {});
+  const totalEvents = view.event_count;
+  const totalPages = sessionEventTotalPages(totalEvents, pageSize);
+  const currentPage = Math.min(page, totalPages);
+  const loadedFrom = totalEvents === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const loadedTo = Math.min(currentPage * pageSize, totalEvents);
 
   return (
     <div className="flex w-full flex-col gap-2.5" data-session-detail-meta>
@@ -226,7 +230,11 @@ function SessionDetailMeta({
           <StatItem label="Estimated tokens" value={view.length_metrics.estimated_tokens.toLocaleString()} title="Estimate derived from model-visible bytes; not the provider model context window" />
           <StatItem label="Messages / events / turns" value={`${view.length_metrics.message_count} / ${view.length_metrics.event_count} / ${view.length_metrics.turn_count}`} />
           <StatItem label="Compressed / archives" value={`${view.length_metrics.compressed_segment_count} / ${view.length_metrics.archive_count}`} />
-          <StatItem label="Loaded" value={returnedEventCount} title={hasMoreEvents ? "More events available beyond this page" : undefined} />
+          <StatItem
+            label="Loaded"
+            value={totalEvents === 0 ? "0" : `${loadedFrom}–${loadedTo}`}
+            title={totalPages > 1 ? `Page ${currentPage} of ${totalPages}` : undefined}
+          />
         </div>
 
         <div className="mx-5 w-px self-stretch bg-border" aria-hidden />
@@ -236,45 +244,6 @@ function SessionDetailMeta({
           isLoading={activity.isLoading}
           timeline={activity.data}
         />
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        {view.resume_command ? (
-          <Button type="button" variant="outline" size="sm" onClick={() => copyText(view.resume_command!, "resume command")}>
-            <CopyIcon data-icon="inline-start" />
-            Copy resume command
-          </Button>
-        ) : null}
-        {view.stale ? <Badge variant="destructive"><TriangleAlertIcon className="size-3" />Stale source</Badge> : null}
-        {view.projection_report ? (
-          <Badge variant={qualityBadgeVariant(view.projection_report.summary.mapping_overall)}>
-            Projection: {readable(view.projection_report.summary.mapping_overall)}
-          </Badge>
-        ) : null}
-        {Object.entries(confidenceCounts).map(([confidence, count]) => (
-          <Badge key={confidence} variant={qualityBadgeVariant(confidence)}>
-            {count} {readable(confidence)} turns
-          </Badge>
-        ))}
-        {localState.hidden ? <Badge variant="outline">Hidden</Badge> : null}
-        {localState.pinned ? (
-          <Badge variant="secondary">
-            <PinIcon className="size-3" />
-            Pinned
-          </Badge>
-        ) : null}
-        {localState.archived ? (
-          <Badge variant="secondary">
-            <ArchiveIcon className="size-3" />
-            Archived
-          </Badge>
-        ) : null}
-        {tags.map((tag) => (
-          <Badge key={tag} variant="outline">{tag}</Badge>
-        ))}
-        {preferredTargets.map((target) => (
-          <Badge key={target} variant="outline">{target}</Badge>
-        ))}
       </div>
     </div>
   );
@@ -338,26 +307,39 @@ function SessionArtifactsDialog({
   );
 }
 
-function DetailEventItem({ event, index, highlighted }: { event: SessionEvent; index: number; highlighted?: boolean }) {
+function DetailEventItem({
+  event,
+  index,
+  eventNumber,
+  highlighted,
+}: {
+  event: SessionEvent;
+  index: number;
+  eventNumber: number;
+  highlighted?: boolean;
+}) {
   const role = (event.role ?? "unknown").replaceAll("_", " ");
   const kind = (event.kind ?? "unknown").replaceAll("_", " ");
   const blockLabels = getBlockLabels(event.blocks);
   const blocks = event.blocks ?? [];
+  const jsonPayloads = collectEventJsonPayloads(blocks);
+  const hasJsonColumn = jsonPayloads.length > 0;
 
-  return (
+  const eventArticle = (
     <article
       className={cn(
-        "overflow-hidden border border-border",
+        "flex h-full min-h-0 flex-col overflow-hidden border border-border",
         "data-[role=assistant]:border-l-[3px] data-[role=assistant]:border-l-[#e4e4de] data-[role=assistant]:bg-[#f4f4f1]",
         "data-[role=user]:border-l-[3px] data-[role=user]:border-l-[#d4dde6] data-[role=user]:bg-[#f0f4f8]",
         "data-[role=system]:border-l-[3px] data-[role=system]:border-l-border data-[role=system]:bg-muted/50",
         highlighted && "outline-2 outline-foreground/35 -outline-offset-2",
       )}
-      data-message-index={index}
+      data-event-number={eventNumber}
       data-role={event.role ?? "unknown"}
     >
-      <header className="flex items-center justify-between gap-2 border-b px-2.5 py-2 font-mono text-xs">
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b px-2.5 py-2 font-mono text-xs">
         <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2 overflow-hidden">
+          <span className="shrink-0 tabular-nums text-muted-foreground">#{eventNumber}</span>
           <span className="font-bold uppercase">{role}</span>
           <span>{kind}</span>
           {blockLabels.map((label) => (
@@ -370,18 +352,39 @@ function DetailEventItem({ event, index, highlighted }: { event: SessionEvent; i
         </span>
         <span className="shrink-0 whitespace-nowrap text-muted-foreground">{formatDateTime(event.timestamp)}</span>
       </header>
-      <div className="max-h-[min(52vh,560px)] overflow-auto p-3">
+      <div className="min-h-0 flex-1 overflow-auto p-3">
         {blocks.length === 0 ? (
           <p className="text-sm text-muted-foreground">No details.</p>
         ) : (
-          <div className="flex flex-col gap-2.5">
+          <div className="flex flex-col gap-3">
             {blocks.map((block, blockIndex) => (
-              <SessionBlock key={`${event.id}-${blockIndex}`} block={block} />
+              <SessionDetailBlock key={`${event.id}-${blockIndex}`} block={block} />
             ))}
           </div>
         )}
       </div>
     </article>
+  );
+
+  if (!hasJsonColumn) {
+    return (
+      <div className="min-w-0" data-message-index={index} data-session-event-row="single">
+        {eventArticle}
+      </div>
+    );
+  }
+
+  return (
+    <SessionEventSplitRow
+      className={cn("min-w-0", highlighted && "rounded-xl outline-2 outline-foreground/35 -outline-offset-2")}
+      data-message-index={index}
+      data-session-event-row="split"
+      data-event-number={eventNumber}
+      data-role={event.role ?? "unknown"}
+      left={<SessionEventMetaPanel event={event} eventNumber={eventNumber} />}
+      right={<SessionEventJsonColumn className="h-full min-h-0" payloads={jsonPayloads} />}
+      syncKey={event.id}
+    />
   );
 }
 
@@ -398,7 +401,13 @@ export function SessionDetailPage() {
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
   const { provider = "", sessionId = "" } = useParams();
-  const session = useSession(provider, sessionId, { event_limit: 80 });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const route = useMemo(() => readSessionDetailRouteState(searchParams), [searchParams]);
+  const sessionQuery = useMemo(
+    () => buildSessionEventQuery(route.page, route.pageSize),
+    [route.page, route.pageSize],
+  );
+  const session = useSession(provider, sessionId, sessionQuery);
   const providers = useQuery({ queryKey: queryKeys.providers, queryFn: listProviders });
   const meta = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta });
 
@@ -406,11 +415,41 @@ export function SessionDetailPage() {
     if (highlightTimeoutRef.current) window.clearTimeout(highlightTimeoutRef.current);
   }, []);
 
+  useEffect(() => {
+    setHighlightedIndex(null);
+  }, [provider, sessionId, route.page, route.pageSize]);
+
+  useEffect(() => {
+    if (!session.data) return;
+    const totalPages = sessionEventTotalPages(session.data.view.event_count, route.pageSize);
+    if (route.page <= totalPages) return;
+    setSearchParams(writeSessionDetailRouteState(searchParams, { page: totalPages }), { replace: true });
+  }, [route.page, route.pageSize, searchParams, session.data, setSearchParams]);
+
+  function updateRoute(next: Partial<{ page: number; pageSize: SessionEventPageSize }>) {
+    setSearchParams(writeSessionDetailRouteState(searchParams, next));
+  }
+
   function handleTimelineSelect(index: number) {
     if (!scrollToDetailMessage(index)) return;
     setHighlightedIndex(index);
     if (highlightTimeoutRef.current) window.clearTimeout(highlightTimeoutRef.current);
     highlightTimeoutRef.current = window.setTimeout(() => setHighlightedIndex(null), 1200);
+  }
+
+  function scrollSessionDetailToTop() {
+    const viewport = document.querySelector("[data-session-detail-scroll] [data-slot=scroll-area-viewport]");
+    viewport?.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function changePage(page: number) {
+    updateRoute({ page });
+    scrollSessionDetailToTop();
+  }
+
+  function changePageSize(pageSize: SessionEventPageSize) {
+    updateRoute({ page: 1, pageSize });
+    scrollSessionDetailToTop();
   }
 
   if (session.isLoading) return <PageSkeleton />;
@@ -420,9 +459,15 @@ export function SessionDetailPage() {
   const { view, returned_event_count, has_more_events } = session.data;
   const localState = view.local_state ?? { archived: false, hidden: false, pinned: false, tags: [], preferred_targets: [], compressed_archive_refs: [] };
   const events = view.events ?? [];
+  const eventOffset = sessionQuery.event_offset ?? 0;
   const visibleEvents = events
-    .map((event, index) => ({ event, index }))
+    .map((event, index) => ({
+      event,
+      index,
+      eventNumber: eventOffset + index + 1,
+    }))
     .filter(({ event }) => matchesEventSearch(event, eventSearch));
+  const totalEventCount = view.event_count;
   const artifacts = view.artifacts ?? [];
   const archives = (view.compressed_archive_refs ?? []).length || (localState.compressed_archive_refs ?? []).length;
   const actionTarget = { providerId: view.provider_id, sessionId: view.session_id, title: detailTitle(view), workspace: view.workspace_dir };
@@ -430,13 +475,26 @@ export function SessionDetailPage() {
 
   return (
     <>
-      <ScrollArea className="h-full pr-3" data-session-detail-scroll>
-        <div className="flex flex-col gap-4 pb-4">
-          <DetailHeader
+      <div className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden" data-session-detail-shell>
+        <ScrollArea
+          className="min-h-0 min-w-0 flex-1 overflow-hidden pr-3 [&_[data-slot=scroll-area-viewport]>div]:block [&_[data-slot=scroll-area-viewport]>div]:max-w-full [&_[data-slot=scroll-area-viewport]>div]:min-w-0"
+          data-session-detail-scroll
+        >
+          <div className="flex min-w-0 max-w-full flex-col gap-4 pb-4">
+            <DetailHeader
             data-session-header
             separated
             actionsPlacement="below"
-            title={formatDetailTitle(title)}
+            title={(
+              <span className="inline-flex min-w-0 items-center gap-3">
+                <ProviderLogo
+                  providerId={view.provider_id}
+                  size="sm"
+                  alt={view.provider_name || view.provider_id}
+                />
+                <span className="min-w-0">{formatDetailTitle(title)}</span>
+              </span>
+            )}
             description={(
               <SessionHeaderSubtitle
                 sessionId={view.session_id}
@@ -447,9 +505,8 @@ export function SessionDetailPage() {
             meta={(
               <SessionDetailMeta
                 view={view}
-                returnedEventCount={returned_event_count}
-                hasMoreEvents={has_more_events}
-                localState={localState}
+                page={route.page}
+                pageSize={route.pageSize}
               />
             )}
             actions={(
@@ -469,27 +526,51 @@ export function SessionDetailPage() {
             actionsProps={{ className: "w-full" }}
           />
 
-          <div className="grid min-h-0 gap-4 lg:grid-cols-[1.25rem_minmax(0,1fr)]" data-detail-layout>
-            <DetailTimeline events={visibleEvents.map(({ event }) => event)} onScrollToMessage={(index) => handleTimelineSelect(visibleEvents[index]?.index ?? index)} />
-            <div className="grid min-h-0 gap-2" data-session-message-list>
+          <div className="grid min-w-0 max-w-full gap-4 lg:grid-cols-[auto_minmax(0,1fr)] lg:items-stretch" data-detail-layout>
+            <DetailTimeline
+              items={visibleEvents.map(({ event, index, eventNumber }) => ({ event, index, eventNumber }))}
+              highlightedIndex={highlightedIndex}
+              onScrollToMessage={(index) => handleTimelineSelect(index)}
+            />
+            <div className="grid min-h-0 min-w-0 gap-4" data-session-message-list>
               {events.length === 0 ? (
                 <PageEmpty title="No events" description="This session has no canonical events to render." />
               ) : visibleEvents.length === 0 ? (
-                <PageEmpty title="No matching events" description="Try a different search term." />
+                <PageEmpty
+                  title="No matching events"
+                  description={eventSearch.trim() ? "Try a different search term on this page." : "Try a different search term."}
+                />
               ) : (
-                visibleEvents.map(({ event, index }) => (
+                visibleEvents.map(({ event, index, eventNumber }) => (
                   <DetailEventItem
                     key={event.id}
                     event={event}
                     index={index}
+                    eventNumber={eventNumber}
                     highlighted={highlightedIndex === index}
                   />
                 ))
               )}
             </div>
           </div>
-        </div>
-      </ScrollArea>
+          </div>
+        </ScrollArea>
+        {totalEventCount > 0 ? (
+          <div
+            className="shrink-0 border-t bg-background pr-3 pt-3 shadow-[0_-8px_16px_-12px_rgba(0,0,0,0.18)]"
+            data-session-detail-pagination-bar
+          >
+            <SessionDetailResultPagination
+              page={route.page}
+              pageSize={route.pageSize}
+              totalCount={totalEventCount}
+              disabled={session.isFetching}
+              onPageChange={changePage}
+              onPageSizeChange={changePageSize}
+            />
+          </div>
+        ) : null}
+      </div>
       <RenameSessionDialog
         open={renameOpen}
         target={actionTarget}

@@ -12,6 +12,7 @@ import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PanelCard } from "@/components/shared/panel-card";
 import { PathText } from "@/components/shared/path-text";
+import { ProviderLogo } from "@/components/shared/provider-logo";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { TwoPanePage } from "@/components/shared/two-pane-page";
@@ -134,6 +135,7 @@ function ProviderControls({
             <SelectableRowButton
               key={provider.id}
               selected={checked}
+              leading={<ProviderLogo providerId={provider.id} size="sm" alt={provider.name} />}
               title={provider.name}
               trailing={checked ? <CheckIcon className="text-muted-foreground size-4" aria-hidden /> : null}
               onClick={() => onToggle(provider.id)}

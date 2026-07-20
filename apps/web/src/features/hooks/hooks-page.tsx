@@ -10,6 +10,7 @@ import {
   providerListInstallStatus,
   ProviderListStatusTrailing,
 } from "@/components/shared/provider-list-status";
+import { ProviderLogo } from "@/components/shared/provider-logo";
 import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { TwoPanePage } from "@/components/shared/two-pane-page";
 import { WorkspaceIdentity } from "@/components/shared/workspace-identity";
@@ -195,6 +196,7 @@ function HooksProviderList({
             <SelectableRowButton
               key={provider.provider_id}
               selected={selected}
+              leading={<ProviderLogo providerId={provider.provider_id} size="sm" alt={providerName(provider)} />}
               title={providerName(provider)}
               trailing={<ProviderListStatusTrailing attention={attention} status={status} />}
               onClick={() => onSelect(provider.provider_id)}
@@ -339,11 +341,17 @@ function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPay
   return (
     <ScrollArea className="min-h-0 h-full pr-3">
       <div className="flex flex-col gap-6 pb-2">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex min-w-0 flex-col gap-2">
+        <header className="flex flex-wrap items-center justify-between gap-3">
+          <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-2">
+            <ProviderLogo
+              providerId={provider.provider_id}
+              size="sm"
+              alt={providerName(provider)}
+              className="row-span-3 self-center"
+            />
             <strong className="truncate text-lg font-semibold">{providerName(provider)}</strong>
-            <small className="text-muted-foreground">Hook provider detail, diagnostics, and operations.</small>
-            <div className="flex flex-wrap gap-2">
+            <small className="col-start-2 text-muted-foreground">Hook provider detail, diagnostics, and operations.</small>
+            <div className="col-start-2 flex flex-wrap gap-2">
               <Badge variant="outline">{provider.provider_id}</Badge>
               {detailStatusBadge(hookStatus(provider))}
               {provider.hook_profile ? <Badge variant="outline">supported</Badge> : <Badge variant="outline">unsupported</Badge>}

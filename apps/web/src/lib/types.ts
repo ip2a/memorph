@@ -7,6 +7,7 @@ export type ProviderInfo = {
   delete: boolean;
   rename: boolean;
   resume: boolean;
+  native_fork: boolean;
 };
 
 export type ImportSessionPayload = {
@@ -40,6 +41,11 @@ export type SwitchSessionPayload = {
   to_dir?: string | null;
   target_title?: string | null;
   move_original?: boolean;
+};
+
+export type NativeForkPayload = {
+  provider: string;
+  session_id: string;
 };
 
 export type SwitchSessionResult = {
@@ -103,6 +109,8 @@ export type ManagerFilter = {
   smaller_than_bytes?: number;
   workspace?: string;
   sort?: "recent" | "size" | "title" | "sessions";
+  search?: string;
+  offset?: number;
   limit?: number;
 };
 

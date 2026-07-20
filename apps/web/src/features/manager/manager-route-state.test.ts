@@ -12,6 +12,8 @@ describe("manager route state", () => {
       providers: [],
       search: "",
       sort: "recent",
+      page: 1,
+      pageSize: 20,
     });
     expect(resolveManagerRequest(route, null)).toMatchObject({
       enabled: false,
@@ -20,11 +22,19 @@ describe("manager route state", () => {
     expect(resolveManagerRequest(route, "/work/current")).toEqual({
       enabled: true,
       workspace: "/work/current",
-      filter: {
+      page: 1,
+      pageSize: 20,
+      listFilter: {
         providers: [],
         workspace: "/work/current",
         sort: "recent",
-        limit: 100,
+        limit: 20,
+        offset: 0,
+      },
+      statsFilter: {
+        providers: [],
+        workspace: "/work/current",
+        sort: "recent",
       },
     });
   });
@@ -35,11 +45,19 @@ describe("manager route state", () => {
     expect(resolveManagerRequest(route, "/work/current")).toEqual({
       enabled: true,
       workspace: null,
-      filter: {
+      page: 1,
+      pageSize: 20,
+      listFilter: {
         providers: [],
         workspace: undefined,
         sort: "recent",
-        limit: 100,
+        limit: 20,
+        offset: 0,
+      },
+      statsFilter: {
+        providers: [],
+        workspace: undefined,
+        sort: "recent",
       },
     });
   });
@@ -52,14 +70,14 @@ describe("manager route state", () => {
     expect(resolveManagerRequest(route, "/work/current")).toMatchObject({
       enabled: true,
       workspace: "/work/deep-link",
-      filter: { workspace: "/work/deep-link" },
+      listFilter: { workspace: "/work/deep-link" },
     });
   });
 
   it("reads plural providers and all public URL state without a singular fallback", () => {
     const route = readManagerRouteState(
       new URLSearchParams(
-        "view=workspaces&provider=ignored&providers=codex%2Cclaude%2Ccodex&q=memory&sort=title",
+        "view=workspaces&provider=ignored&providers=codex%2Cclaude%2Ccodex&q=memory&sort=title&page=2&pageSize=50",
       ),
     );
 
@@ -70,6 +88,14 @@ describe("manager route state", () => {
       providers: ["codex", "claude"],
       search: "memory",
       sort: "title",
+      page: 2,
+      pageSize: 50,
+    });
+
+    expect(resolveManagerRequest(route, "/work/current").listFilter).toMatchObject({
+      search: "memory",
+      limit: 50,
+      offset: 50,
     });
   });
 

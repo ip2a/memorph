@@ -40,7 +40,7 @@ export function SessionDetailHeaderActions({
         id: "details",
         collapsePriority: 10,
         renderButton: () => (
-          <Button type="button" variant="outline" size="sm" onClick={onOpenDetails}>
+          <Button type="button" variant="outline" onClick={onOpenDetails}>
             <InfoIcon data-icon="inline-start" />
             Details
           </Button>
@@ -56,7 +56,7 @@ export function SessionDetailHeaderActions({
         id: "artifacts",
         collapsePriority: 11,
         renderButton: () => (
-          <Button type="button" variant="outline" size="sm" onClick={onOpenArtifacts}>
+          <Button type="button" variant="outline" onClick={onOpenArtifacts}>
             Artifacts
           </Button>
         ),
@@ -66,7 +66,7 @@ export function SessionDetailHeaderActions({
         id: "compression",
         collapsePriority: 12,
         renderButton: () => (
-          <Button type="button" variant="outline" size="sm" onClick={onOpenCompression}>
+          <Button type="button" variant="outline" onClick={onOpenCompression}>
             Compression
           </Button>
         ),
@@ -76,7 +76,7 @@ export function SessionDetailHeaderActions({
         id: "sync",
         collapsePriority: 13,
         renderButton: () => (
-          <Button type="button" variant="outline" size="sm" onClick={onOpenSync}>
+          <Button type="button" variant="outline" onClick={onOpenSync}>
             Sync
           </Button>
         ),
@@ -86,7 +86,7 @@ export function SessionDetailHeaderActions({
         id: "switch",
         collapsePriority: 14,
         renderButton: () => (
-          <Button type="button" variant="outline" size="sm" onClick={onOpenSwitch}>
+          <Button type="button" variant="outline" onClick={onOpenSwitch}>
             Switch
           </Button>
         ),
@@ -96,7 +96,7 @@ export function SessionDetailHeaderActions({
         id: "export",
         collapsePriority: 15,
         renderButton: () => (
-          <Button type="button" variant="outline" size="sm" onClick={onOpenExport}>
+          <Button type="button" variant="outline" onClick={onOpenExport}>
             Export
           </Button>
         ),
@@ -106,7 +106,7 @@ export function SessionDetailHeaderActions({
         id: "rename",
         collapsePriority: 16,
         renderButton: () => (
-          <Button type="button" variant="outline" size="sm" onClick={onOpenRename}>
+          <Button type="button" variant="outline" onClick={onOpenRename}>
             Rename
           </Button>
         ),
@@ -116,7 +116,7 @@ export function SessionDetailHeaderActions({
         id: "remove",
         collapsePriority: 55,
         renderButton: () => (
-          <Button type="button" variant="destructive" size="sm" onClick={onOpenDelete}>
+          <Button type="button" variant="destructive" onClick={onOpenDelete}>
             Remove
           </Button>
         ),

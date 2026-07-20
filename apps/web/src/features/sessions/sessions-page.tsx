@@ -4,6 +4,7 @@ import { ArrowRightIcon, EyeIcon, PinIcon, RefreshCwIcon, RotateCwIcon, SearchIc
 import { toast } from "sonner";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
+import { ProviderLogo } from "@/components/shared/provider-logo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -171,7 +172,10 @@ export function SessionsPage() {
         groups.map((group) => (
           <Card key={group.provider_id}>
             <CardHeader>
-              <CardTitle>{group.provider_name}</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <ProviderLogo providerId={group.provider_id} size="sm" alt={group.provider_name || group.provider_id} />
+                <span className="truncate">{group.provider_name || group.provider_id}</span>
+              </CardTitle>
               <CardDescription>{group.sessions.length} sessions</CardDescription>
             </CardHeader>
             <CardContent>

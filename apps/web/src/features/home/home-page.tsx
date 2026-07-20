@@ -1,12 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDownIcon } from "lucide-react";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
+import { ProviderLogo } from "@/components/shared/provider-logo";
+import { TrailingMoreButtonGroup } from "@/components/shared/trailing-more-button-group";
 import { workspaceName } from "@/components/shared/workspace-name";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import {
   Empty,
   EmptyDescription,
@@ -157,6 +164,128 @@ function HomeHero({ workspace }: { workspace: string | null | undefined }) {
   );
 }
 
+function SessionRowActions({
+  session,
+  detailHref,
+  syncRef,
+  homeButtons,
+  onRename,
+  onDelete,
+  onCompress,
+  onSwitch,
+  onExport,
+  onSync,
+}: {
+  session: SessionItem;
+  detailHref: string;
+  syncRef?: string;
+  homeButtons?: HomeButtons;
+  onRename: (session: SessionItem) => void;
+  onDelete: (session: SessionItem) => void;
+  onCompress: (session: SessionItem) => void;
+  onSwitch: (session: SessionItem) => void;
+  onExport: (session: SessionItem) => void;
+  onSync: (session: SessionItem) => void;
+}) {
+  const showView = homeButtonEnabled(homeButtons, "view");
+  const showCompress = homeButtonEnabled(homeButtons, "compress");
+  const showSwitch = homeButtonEnabled(homeButtons, "switch");
+  const showExport = homeButtonEnabled(homeButtons, "export");
+  const showSync = homeButtonEnabled(homeButtons, "sync");
+  const showDelete = homeButtonEnabled(homeButtons, "delete");
+
+  const primaryActions: ReactNode[] = [];
+  if (showView) {
+    primaryActions.push(
+      <Button key="view" asChild variant="outline">
+        <Link to={detailHref}>View</Link>
+      </Button>,
+    );
+  }
+  if (showCompress) {
+    primaryActions.push(
+      <Button key="compress" type="button" variant="outline" onClick={() => onCompress(session)}>
+        Compression
+      </Button>,
+    );
+  }
+  if (showSwitch) {
+    primaryActions.push(
+      <Button key="switch" type="button" variant="outline" onClick={() => onSwitch(session)}>
+        Switch
+      </Button>,
+    );
+  }
+  if (showExport) {
+    primaryActions.push(
+      <Button key="export" type="button" variant="outline" onClick={() => onExport(session)}>
+        Export
+      </Button>,
+    );
+  }
+  if (showSync && syncRef) {
+    primaryActions.push(
+      <Button key="sync-open" asChild variant="outline">
+        <Link to={`/sync/${syncRef}`}>Open Sync</Link>
+      </Button>,
+    );
+  } else if (showSync) {
+    primaryActions.push(
+      <Button key="sync" type="button" variant="outline" onClick={() => onSync(session)}>
+        Sync
+      </Button>,
+    );
+  }
+  primaryActions.push(
+    <Button key="rename" type="button" variant="outline" onClick={() => onRename(session)}>
+      Rename
+    </Button>,
+  );
+  if (showDelete) {
+    primaryActions.push(
+      <Button key="remove" type="button" variant="destructive" onClick={() => onDelete(session)}>
+        Remove
+      </Button>,
+    );
+  }
+
+  const leadingActions = primaryActions.slice(0, -1);
+  const trailingAction = primaryActions.at(-1);
+
+  if (!trailingAction) {
+    return null;
+  }
+
+  return (
+    <div className="flex shrink-0 flex-wrap items-center justify-end gap-2" data-session-row-actions>
+      {leadingActions}
+      <TrailingMoreButtonGroup
+        trailingAction={trailingAction}
+        moreLabel={`More actions for ${sessionTitle(session)}`}
+      >
+        <DropdownMenuGroup>
+          <DropdownMenuItem onSelect={() => onRename(session)}>Rename</DropdownMenuItem>
+          {showSync && syncRef ? (
+            <DropdownMenuItem asChild>
+              <Link to={`/sync/${syncRef}`}>Open Sync</Link>
+            </DropdownMenuItem>
+          ) : showSync ? (
+            <DropdownMenuItem onSelect={() => onSync(session)}>Sync</DropdownMenuItem>
+          ) : null}
+        </DropdownMenuGroup>
+        {showDelete ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem variant="destructive" onSelect={() => onDelete(session)}>
+              Remove
+            </DropdownMenuItem>
+          </>
+        ) : null}
+      </TrailingMoreButtonGroup>
+    </div>
+  );
+}
+
 function SessionRow({
   session,
   syncGroups,
@@ -180,7 +309,6 @@ function SessionRow({
 }) {
   const syncRef = findSyncRef(syncGroups, session.provider_id, session.session_id);
   const detailHref = `/sessions/${encodeURIComponent(session.provider_id)}/${encodeURIComponent(session.session_id)}`;
-  const showSync = homeButtonEnabled(homeButtons, "sync");
 
   return (
     <article className="grid min-h-14 border-b py-2.5 hover:bg-muted/60">
@@ -205,27 +333,18 @@ function SessionRow({
             <span className="shrink-0">{formatBytes(session.size_bytes)}</span>
           </div>
         </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-2">
-          {homeButtonEnabled(homeButtons, "view") ? (
-            <Button asChild variant="outline" size="sm">
-              <Link to={detailHref}>View</Link>
-            </Button>
-          ) : null}
-          {homeButtonEnabled(homeButtons, "compress") ? <Button type="button" variant="outline" size="sm" onClick={() => onCompress(session)}>Compression</Button> : null}
-          {homeButtonEnabled(homeButtons, "switch") ? <Button type="button" variant="outline" size="sm" onClick={() => onSwitch(session)}>Switch</Button> : null}
-          {homeButtonEnabled(homeButtons, "export") ? <Button type="button" variant="outline" size="sm" onClick={() => onExport(session)}>Export</Button> : null}
-          {showSync && syncRef ? (
-            <Button asChild variant="outline" size="sm">
-              <Link to={`/sync/${syncRef}`}>Open Sync</Link>
-            </Button>
-          ) : showSync ? (
-            <Button type="button" variant="outline" size="sm" onClick={() => onSync(session)}>Sync</Button>
-          ) : null}
-          <Button type="button" variant="outline" size="sm" onClick={() => onRename(session)}>Rename</Button>
-          {homeButtonEnabled(homeButtons, "delete") ? (
-            <Button type="button" variant="destructive" size="sm" onClick={() => onDelete(session)}>Remove</Button>
-          ) : null}
-        </div>
+        <SessionRowActions
+          session={session}
+          detailHref={detailHref}
+          syncRef={syncRef ?? undefined}
+          homeButtons={homeButtons}
+          onRename={onRename}
+          onDelete={onDelete}
+          onCompress={onCompress}
+          onSwitch={onSwitch}
+          onExport={onExport}
+          onSync={onSync}
+        />
       </div>
     </article>
   );
@@ -270,6 +389,7 @@ function SessionGroups({
       {groups.map((group) => (
         <details key={group.provider_id} open data-home-session-group={group.provider_id}>
           <summary className="flex min-h-11 cursor-pointer items-center gap-3 px-1 font-mono font-bold">
+            <ProviderLogo providerId={group.provider_id} size="sm" alt={group.provider_name || group.provider_id} />
             <span className="min-w-0 flex-1 truncate">{group.provider_name || group.provider_id}</span>
             <ProviderActivitySparkline providerId={group.provider_id} workspace={workspace} />
           </summary>

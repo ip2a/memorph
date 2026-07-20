@@ -1,41 +1,8 @@
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
-import { renderHighlightedJson } from "@/lib/format-content";
+import { SessionCodeBlock, SessionContent } from "@/features/sessions/session-content";
 import { cn } from "@/lib/utils";
 import type { EventBlock } from "@/lib/types";
-
-function formatJson(value: unknown) {
-  if (value === undefined || value === null) return "";
-  if (typeof value === "string") return value;
-  return JSON.stringify(value, null, 2);
-}
-
-function CodeBlock({ value, variant = "default" }: { value: unknown; variant?: "default" | "tool" }) {
-  const text = formatJson(value);
-  if (!text) return <span className="text-muted-foreground">-</span>;
-
-  const highlighted = renderHighlightedJson(value);
-
-  return (
-    <ScrollArea
-      className={cn(
-        "max-h-80 rounded-md border border-border bg-muted/40",
-        variant === "tool" && "bg-sky-50 dark:bg-sky-950/30",
-      )}
-    >
-      {highlighted ? (
-        <pre
-          className="json-block whitespace-pre-wrap break-words p-3 font-mono text-xs"
-          dangerouslySetInnerHTML={{ __html: `<code>${highlighted}</code>` }}
-        />
-      ) : (
-        <pre className="whitespace-pre-wrap break-words p-3 font-mono text-xs">{text}</pre>
-      )}
-    </ScrollArea>
-  );
-}
 
 function FileList({ files }: { files: string[] | undefined }) {
   if (!files || files.length === 0) return null;
@@ -60,19 +27,24 @@ function compressionArchiveHref(archiveRef: string) {
   return `/compression?archive_ref=${encodeURIComponent(archiveRef)}`;
 }
 
-export function SessionBlock({ block }: { block: EventBlock }) {
+export function SessionBlock({ block, embedded = false }: { block: EventBlock; embedded?: boolean }) {
   switch (block.type) {
     case "text":
-      return <CodeBlock value={block.text} />;
+      return <SessionContent embedded={embedded} value={block.text} />;
     case "thinking":
-      return <CodeBlock value={block.text} />;
+      return <SessionContent embedded={embedded} value={block.text} />;
     case "tool_call":
-      return <CodeBlock variant="tool" value={{ tool_call_id: block.tool_call_id, name: block.name, input: block.input }} />;
+      return (
+        <SessionCodeBlock
+          embedded={embedded}
+          value={{ tool_call_id: block.tool_call_id, name: block.name, input: block.input }}
+        />
+      );
     case "tool_result":
       return (
         <div className="flex flex-col gap-2">
           {block.is_error ? <Badge variant="destructive">Error</Badge> : null}
-          <CodeBlock variant="tool" value={block.content} />
+          <SessionContent embedded={embedded} variant="tool" value={block.content} />
         </div>
       );
     case "patch":
@@ -80,34 +52,36 @@ export function SessionBlock({ block }: { block: EventBlock }) {
         <div className="flex flex-col gap-3">
           {block.summary ? <p className="text-sm">{block.summary}</p> : null}
           <FileList files={block.files} />
-          {block.diff_text ? <CodeBlock value={block.diff_text} /> : null}
+          {block.diff_text ? <SessionContent embedded={embedded} value={block.diff_text} /> : null}
         </div>
       );
     case "command":
       return (
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2">
           {block.cwd ? <p className="font-mono text-xs text-muted-foreground">{block.cwd}</p> : null}
-          <CodeBlock value={{ command: block.command, argv: block.argv, cwd: block.cwd }} />
+          <div className={cn("font-mono text-xs", !embedded && "rounded-md border border-border bg-muted/30 p-3")}>
+            <span className="text-muted-foreground">$ </span>
+            <span className="break-words [overflow-wrap:anywhere]">{block.command}</span>
+          </div>
         </div>
       );
     case "command_result":
       return (
-        <div className="flex flex-col gap-3">
-          {block.command ? <CodeBlock value={block.command} /> : null}
-          {block.stdout ? <CodeBlock value={block.stdout} /> : null}
+        <div className="flex flex-col gap-2">
+          {block.stdout ? <SessionContent embedded={embedded} value={block.stdout} /> : null}
           {block.stderr ? (
-            <>
-              <Separator />
-              <CodeBlock value={block.stderr} />
-            </>
+            <div className="font-mono text-xs leading-relaxed whitespace-pre-wrap break-words text-destructive [overflow-wrap:anywhere]">
+              {block.stderr}
+            </div>
           ) : null}
+          {!block.stdout && !block.stderr ? <span className="text-sm text-muted-foreground">(No output)</span> : null}
         </div>
       );
     case "file":
       return (
         <div className="flex flex-col gap-2">
           <code className="break-all font-mono text-xs">{block.path}</code>
-          <CodeBlock value={block.content} />
+          <SessionContent embedded={embedded} value={block.content} />
         </div>
       );
     case "image": {
@@ -120,11 +94,11 @@ export function SessionBlock({ block }: { block: EventBlock }) {
           <img alt={block.path ?? "Session image"} className="max-h-96 rounded-md object-contain" src={src} />
         </div>
       ) : (
-        <CodeBlock value={block} />
+        <SessionCodeBlock embedded={embedded} value={block} />
       );
     }
     case "provider_payload":
-      return <CodeBlock value={block.payload} />;
+      return <SessionCodeBlock embedded={embedded} value={block.payload} />;
     case "compressed": {
       const archiveRef = block.archive_ref || "";
       return (
@@ -149,10 +123,10 @@ export function SessionBlock({ block }: { block: EventBlock }) {
       );
     }
     case "unknown":
-      return <CodeBlock value={block.raw} />;
+      return <SessionContent embedded={embedded} value={block.raw} />;
     default: {
       const unknownBlock = block as { type?: string } & Record<string, unknown>;
-      return <CodeBlock value={unknownBlock} />;
+      return <SessionCodeBlock embedded={embedded} value={unknownBlock} />;
     }
   }
 }

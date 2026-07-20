@@ -65,6 +65,32 @@ describe("ManagerPage API workflow", () => {
             settings: { default_backup_dir: "/backups" },
           });
         }
+        if (path.startsWith("/api/v1/providers/catalog")) {
+          return jsonResponse({
+            providers: [
+              {
+                provider_id: "codex",
+                display_name: "Codex",
+                capability_set: {
+                  scan: true,
+                  import: true,
+                  export: true,
+                  delete: true,
+                  rename: true,
+                  resume: true,
+                  activity_support: {
+                    hook_events: true,
+                    runtime_endpoint: true,
+                    session_activity: true,
+                  },
+                },
+                install_state: { is_installed: true },
+                filter_tags: ["is_installed"],
+                hidden_state: { global: false, workspace: false },
+              },
+            ],
+          });
+        }
         if (path === "/api/v1/providers") {
           return jsonResponse([
             {
@@ -124,12 +150,13 @@ describe("ManagerPage API workflow", () => {
       expect(JSON.parse(String(previewCall?.[1]?.body))).toEqual({
         providers: ["codex"],
         sort: "title",
-        limit: 100,
+        limit: 20,
+        offset: 0,
       });
     });
 
     await user.click(
-      screen.getByRole("checkbox", { name: "Select Alpha session" }),
+      screen.getByText("Alpha session").closest("[data-manager-row]") as HTMLElement,
     );
     await user.click(screen.getByRole("button", { name: "Back up" }));
     await user.click(screen.getByRole("button", { name: "Start backup" }));

@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
+import { ProviderLogo } from "@/components/shared/provider-logo";
 import { orderProviderPills } from "@/features/home/model/providers";
 import type { ProviderCatalogEntry } from "@/lib/types";
 
@@ -22,9 +23,14 @@ export function ProviderPicker({ candidates, selected, onToggle }: ProviderPicke
             type="button"
             variant={checked ? "default" : "outline"}
             size="sm"
-            className="rounded-full font-mono"
+            className="rounded-full"
             onClick={() => onToggle(provider.provider_id)}
           >
+            <ProviderLogo
+              providerId={provider.provider_id}
+              size="xs"
+              alt={provider.display_name || provider.provider_id}
+            />
             {provider.display_name || provider.provider_id}
           </Button>
         );

@@ -32,7 +32,7 @@ export const createSyncSchema = z.object({
 export type CreateSyncForm = z.infer<typeof createSyncSchema>;
 
 export function defaultSwitchTarget(providers: ProviderInfo[], sourceProviderId: string) {
-  const candidates = providers.filter((provider) => provider.id !== sourceProviderId && provider.export);
+  const candidates = providers.filter((provider) => provider.export);
   if (!candidates.length) return "";
   if (sourceProviderId === "codex") {
     return candidates.find((provider) => provider.id === "claude")?.id ?? candidates[0].id;

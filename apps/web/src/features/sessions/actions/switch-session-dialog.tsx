@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import type { SessionActionTarget } from "@/features/sessions/session-action-target";
 import { defaultSwitchTarget, switchSchema, workspaceOptions } from "@/features/sessions/model/schemas";
 import type { SwitchForm } from "@/features/sessions/model/schemas";
-import { switchSession } from "@/lib/api";
+import { nativeForkSession, switchSession } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import type { MetaPayload, ProviderInfo } from "@/lib/types";
 
@@ -66,10 +66,26 @@ export function SwitchSessionDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.home }),
       ]);
       onOpenChange(false);
-      toast.success(result.removed_original ? "Moved" : "Copied", {
+      toast.success(result.removed_original ? "Moved" : "Switch copied", {
         description: `${result.from_name} -> ${result.to_name}: ${result.target_session_id}`,
       });
       navigate(`/sessions/${encodeURIComponent(variables.values.to)}/${encodeURIComponent(result.target_session_id)}`);
+    },
+  });
+
+  const nativeForkMutation = useMutation({
+    mutationFn: () => {
+      if (!target) throw new Error("Missing session target");
+      return nativeForkSession({ provider: target.providerId, session_id: target.sessionId });
+    },
+    onSuccess: async (result) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.sessionsRoot }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.home }),
+      ]);
+      onOpenChange(false);
+      toast.success("Native fork created", { description: `${result.to_name}: ${result.target_session_id}` });
+      navigate(`/sessions/${encodeURIComponent(result.to_name)}/${encodeURIComponent(result.target_session_id)}`);
     },
   });
 
@@ -77,7 +93,7 @@ export function SwitchSessionDialog({
     switchMutation.mutate({ values, moveOriginal });
   }
 
-  const exportProviders = providers.filter((provider) => provider.id !== target?.providerId && provider.export);
+  const exportProviders = providers.filter((provider) => provider.export);
   const selectedTarget = useWatch({ control: form.control, name: "to" });
 
   return (
@@ -85,7 +101,7 @@ export function SwitchSessionDialog({
       <DialogContent className="sm:max-w-2xl" data-switch-session-dialog>
         <DialogHeader>
           <DialogTitle>Copy</DialogTitle>
-          <DialogDescription>Copy this session to another provider while keeping the legacy switch workflow placement.</DialogDescription>
+          <DialogDescription>Switch Copy uses Memorph conversion. Native Fork uses the provider's own fork capability without conversion.</DialogDescription>
         </DialogHeader>
         <DialogForm onSubmit={form.handleSubmit((values) => submitSwitch(values, false))}>
           <input type="hidden" name="from" value={target?.providerId || ""} />
@@ -140,13 +156,28 @@ export function SwitchSessionDialog({
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}
             submitDisabled={!target || !exportProviders.length}
-            submitLabel="Copy"
+            submitLabel="Switch Copy"
             submitting={switchMutation.isPending}
           >
             <Button
               type="button"
+              variant="outline"
+              disabled={
+                !target ||
+                selectedTarget !== target.providerId ||
+                !providers.find((provider) => provider.id === target.providerId)?.native_fork ||
+                switchMutation.isPending ||
+                nativeForkMutation.isPending
+              }
+              title={providers.find((provider) => provider.id === target?.providerId)?.native_fork ? undefined : "This provider does not expose a verified native fork API"}
+              onClick={() => nativeForkMutation.mutate()}
+            >
+              Native Fork
+            </Button>
+            <Button
+              type="button"
               variant="destructive"
-              disabled={!target || !exportProviders.length || switchMutation.isPending}
+              disabled={!target || !exportProviders.length || switchMutation.isPending || nativeForkMutation.isPending}
               onClick={form.handleSubmit((values) => submitSwitch(values, true))}
             >
               Move

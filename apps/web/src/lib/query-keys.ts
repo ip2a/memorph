@@ -34,7 +34,6 @@ export const queryKeys = {
   compression: (params: CompressionArchivesParams = {}) => ["compression", params] as const,
   compressionArchive: (archiveRef: string) => ["compression-archive", archiveRef] as const,
   compressionProviders: ["compression-providers"] as const,
-  agents: ["agents"] as const,
   agentsSummary: ["agents", "summary"] as const,
   agent: (provider: string) => ["agents", provider] as const,
   hooks: ["hooks"] as const,

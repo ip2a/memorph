@@ -20,6 +20,79 @@ export function looksLikeJson(text: string) {
   return false;
 }
 
+export function looksLikeMarkdown(text: string) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed || looksLikeJson(trimmed) || looksLikeLogOutput(trimmed)) return false;
+
+  return (
+    /^#{1,6}\s/m.test(trimmed)
+    || /^>\s/m.test(trimmed)
+    || /^\s*[-*+]\s/m.test(trimmed)
+    || /^\s*\d+\.\s/m.test(trimmed)
+    || /```/.test(trimmed)
+    || /\*\*[^*\n]+\*\*/.test(trimmed)
+    || /\[.+?\]\(.+?\)/.test(trimmed)
+    || /^---+$/m.test(trimmed)
+  );
+}
+
+export function looksLikeLogOutput(text: string) {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return false;
+  return /^Line \d+:/m.test(trimmed) || /^\d+\|/m.test(trimmed);
+}
+
+export type LogOutputRow =
+  | { kind: "match"; text: string }
+  | { kind: "path"; text: string }
+  | { kind: "text"; text: string };
+
+const linePrefixPattern = /^Line \d+:\s*/;
+const pipeLinePattern = /^\d+\|/;
+
+export function parseLogOutput(text: string): LogOutputRow[] {
+  const rows: LogOutputRow[] = [];
+
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) continue;
+
+    if (linePrefixPattern.test(line)) {
+      rows.push({ kind: "match", text: line.replace(linePrefixPattern, "") });
+      continue;
+    }
+
+    if (pipeLinePattern.test(line)) {
+      rows.push({ kind: "match", text: line.replace(/^\d+\|/, "") });
+      continue;
+    }
+
+    if (looksLikePathLine(line)) {
+      rows.push({ kind: "path", text: line });
+      continue;
+    }
+
+    rows.push({ kind: "text", text: line });
+  }
+
+  return rows;
+}
+
+function looksLikePathLine(line: string) {
+  return /^([A-Za-z]:\\|\/|\.\/|\.\.\/)[^\s]*$/.test(line.trim());
+}
+
+export type SessionContentKind = "json" | "markdown" | "text" | "log";
+
+export function detectSessionContentKind(text: string): SessionContentKind {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return "text";
+  if (looksLikeJson(trimmed)) return "json";
+  if (looksLikeLogOutput(trimmed)) return "log";
+  if (looksLikeMarkdown(trimmed)) return "markdown";
+  return "text";
+}
+
 function highlightJson(jsonText: string) {
   const pretty = JSON.stringify(JSON.parse(jsonText), null, 2);
   let out = "";

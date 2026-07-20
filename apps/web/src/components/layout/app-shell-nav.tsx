@@ -41,7 +41,7 @@ export function AppShellNav({
         id: "back",
         collapsePriority: 0,
         renderButton: () => (
-          <Button type="button" variant="outline" size="sm" onClick={() => navigate(-1)}>
+          <Button type="button" variant="outline" onClick={() => navigate(-1)}>
             <ArrowLeftIcon data-icon="inline-start" />
             {t("back")}
           </Button>
@@ -59,7 +59,7 @@ export function AppShellNav({
       id: "switch-workspace",
       collapsePriority: 8,
       renderButton: () => (
-        <Button type="button" variant="outline" size="sm" onClick={() => setWorkspaceSwitchOpen(true)}>
+        <Button type="button" variant="outline" onClick={() => setWorkspaceSwitchOpen(true)}>
           {t("switchWorkspace")}
         </Button>
       ),
@@ -73,7 +73,7 @@ export function AppShellNav({
         id: "stats",
         collapsePriority: 10,
         renderButton: () => (
-          <Button asChild variant="outline" size="sm">
+          <Button asChild variant="outline">
             <Link to="/stats">{t("stats")}</Link>
           </Button>
         ),
@@ -90,7 +90,7 @@ export function AppShellNav({
         id: "storage",
         collapsePriority: 10,
         renderButton: () => (
-          <Button asChild variant="outline" size="sm">
+          <Button asChild variant="outline">
             <Link to="/storage">
               <DatabaseIcon data-icon="inline-start" />
               {t("storage")}
@@ -113,7 +113,7 @@ export function AppShellNav({
         id: "hooks",
         collapsePriority: 11,
         renderButton: () => (
-          <Button asChild variant="outline" size="sm">
+          <Button asChild variant="outline">
             <Link to="/hooks">{t("hooks")}</Link>
           </Button>
         ),
@@ -153,7 +153,7 @@ export function AppShellNav({
         id: "agents",
         collapsePriority: 12,
         renderButton: () => (
-          <Button asChild variant="outline" size="sm">
+          <Button asChild variant="outline">
             <Link to="/agents">{t("agentManagement")}</Link>
           </Button>
         ),
@@ -171,7 +171,7 @@ export function AppShellNav({
           id: "compression",
           collapsePriority: 20,
           renderButton: () => (
-            <Button asChild variant="outline" size="sm">
+            <Button asChild variant="outline">
               <Link to="/compression">{t("compressSessions")}</Link>
             </Button>
           ),
@@ -185,7 +185,7 @@ export function AppShellNav({
           id: "sync",
           collapsePriority: 21,
           renderButton: () => (
-            <Button asChild variant="outline" size="sm">
+            <Button asChild variant="outline">
               <Link to="/sync">{t("syncGroups")}</Link>
             </Button>
           ),
@@ -199,7 +199,7 @@ export function AppShellNav({
           id: "import-session",
           collapsePriority: 22,
           renderButton: () => (
-            <Button type="button" variant="outline" size="sm" onClick={onOpenImportSession}>
+            <Button type="button" variant="outline" onClick={onOpenImportSession}>
               {t("importSession")}
             </Button>
           ),
@@ -213,7 +213,7 @@ export function AppShellNav({
         id: "manage",
         collapsePriority: 15,
         renderButton: () => (
-          <Button asChild variant="outline" size="sm">
+          <Button asChild variant="outline">
             <Link to="/manager">{t("manage")}</Link>
           </Button>
         ),
@@ -229,7 +229,7 @@ export function AppShellNav({
       id: "settings",
       collapsePriority: 60,
       renderButton: () => (
-        <Button variant="outline" size="sm" onClick={onOpenSettings}>
+        <Button variant="outline" onClick={onOpenSettings}>
           <SettingsIcon data-icon="inline-start" />
           {t("settings")}
         </Button>

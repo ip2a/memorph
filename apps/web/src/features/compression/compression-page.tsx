@@ -10,6 +10,7 @@ import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-sta
 import { PanelCard } from "@/components/shared/panel-card";
 import { PathText } from "@/components/shared/path-text";
 import { SectionHeading } from "@/components/shared/section-heading";
+import { ProviderLogo } from "@/components/shared/provider-logo";
 import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { TwoPanePage } from "@/components/shared/two-pane-page";
 import { WorkspaceIdentity } from "@/components/shared/workspace-identity";
@@ -74,6 +75,7 @@ function ProviderSupportList({ providers }: { providers: CompressionProviderSupp
           <SelectableRowButton
             key={provider.provider_id}
             title={provider.provider_id}
+            leading={<ProviderLogo providerId={provider.provider_id} size="sm" alt={provider.provider_id} />}
           />
         ))}
       </div>
@@ -123,8 +125,11 @@ function CandidateRow({ item, onCompress }: { item: ManagerItem; onCompress: (it
           <Link to={href} className="truncate text-sm font-medium hover:underline">
             {item.title || item.session_id}
           </Link>
-          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-            <Badge variant="outline">{item.provider_name || item.provider_id}</Badge>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span className="inline-flex items-center gap-1.5">
+              <ProviderLogo providerId={item.provider_id} size="xs" alt={item.provider_name || item.provider_id} />
+              <span>{item.provider_name || item.provider_id}</span>
+            </span>
             <span>{formatBytes(item.size_bytes)}</span>
             <span>Updated {formatDateTime(item.last_active_at)}</span>
           </div>
@@ -156,8 +161,18 @@ function ArchiveSummaryRow({ archive, onRestore }: { archive: CompressionArchive
         <Link to={href} className="truncate text-sm font-medium hover:underline">
           {title}
         </Link>
-        <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-          <Badge variant="outline">{archive.source_provider_id || "-"} -&gt; {archive.target_provider_id || "-"}</Badge>
+        <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+          <span className="inline-flex items-center gap-1.5">
+            {archive.source_provider_id ? (
+              <ProviderLogo providerId={archive.source_provider_id} size="xs" alt={archive.source_provider_id} />
+            ) : null}
+            <span>{archive.source_provider_id || "-"}</span>
+            <span aria-hidden="true">-&gt;</span>
+            {archive.target_provider_id ? (
+              <ProviderLogo providerId={archive.target_provider_id} size="xs" alt={archive.target_provider_id} />
+            ) : null}
+            <span>{archive.target_provider_id || "-"}</span>
+          </span>
           <span>{archive.source_event_count} events</span>
           <span>{formatBytes(archive.stored_size_bytes)}</span>
           <span>Created {formatDateTime(archive.created_at)}</span>

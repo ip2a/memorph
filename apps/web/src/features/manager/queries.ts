@@ -6,6 +6,7 @@ import {
   getManagerQuickWorkspaces,
   getManagerStats,
   getManagerWorkspaces,
+  getProviderCatalog,
   listProviders,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -15,6 +16,13 @@ export function useManagerProviders() {
   return useQuery({
     queryKey: queryKeys.providers,
     queryFn: listProviders,
+  });
+}
+
+export function useManagerProviderCatalog(workspace?: string | null) {
+  return useQuery({
+    queryKey: queryKeys.providerCatalog(workspace),
+    queryFn: () => getProviderCatalog(workspace),
   });
 }
 
@@ -52,6 +60,7 @@ export function useManagerPreview(filter: ManagerFilter, options?: { enabled?: b
     queryKey: queryKeys.manager("sessions", filter),
     queryFn: () => getManagerPreview(filter),
     enabled: options?.enabled ?? true,
+    placeholderData: (previous) => previous,
   });
 }
 
@@ -60,5 +69,6 @@ export function useManagerWorkspaces(filter: ManagerFilter, options?: { enabled?
     queryKey: queryKeys.manager("workspaces", filter),
     queryFn: () => getManagerWorkspaces(filter),
     enabled: options?.enabled ?? true,
+    placeholderData: (previous) => previous,
   });
 }

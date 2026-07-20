@@ -248,11 +248,13 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
       await listSessions({ all: true, details: true, limit: 1, workspace });
       return workspace;
     },
-    onSuccess: async (workspace) => {
+    onSuccess: (workspace) => {
       setSelectedWorkspace(workspace);
-      await queryClient.invalidateQueries();
       onOpenChange(false);
       toast.success("Workspace switched", { description: workspaceName(workspace, "memorph") });
+      // Don't await — React Query keeps isPending true until async onSuccess settles,
+      // so waiting on a full-cache refetch left the Go spinner spinning after the switch.
+      void queryClient.invalidateQueries();
     },
   });
 

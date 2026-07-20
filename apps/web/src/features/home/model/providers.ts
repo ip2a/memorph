@@ -1,6 +1,6 @@
 import type { ProviderCatalogEntry } from "@/lib/types";
 
-function providerInstalled(entry: ProviderCatalogEntry) {
+export function providerInstalled(entry: ProviderCatalogEntry) {
   return Boolean(entry.install_state?.is_installed || entry.filter_tags?.includes("is_installed"));
 }
 

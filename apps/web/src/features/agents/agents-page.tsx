@@ -5,11 +5,11 @@ import { EntityRow } from "@/components/shared/entity-row";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PanelCard } from "@/components/shared/panel-card";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
+import { ProviderLogo } from "@/components/shared/provider-logo";
 import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { SectionHeading } from "@/components/shared/section-heading";
 import {
   providerListInstallStatus,
-  ProviderListInstallStatusBadge,
   ProviderListStatusTrailing,
 } from "@/components/shared/provider-list-status";
 import { TwoPanePage } from "@/components/shared/two-pane-page";
@@ -161,6 +161,7 @@ function ProviderList({
             <SelectableRowButton
               key={provider.provider_id}
               selected={selected}
+              leading={<ProviderLogo providerId={provider.provider_id} size="sm" alt={provider.name || provider.provider_id} />}
               title={provider.name || provider.provider_id}
               trailing={<ProviderListStatusTrailing status={status} />}
               onClick={() => onSelect(provider.provider_id)}
@@ -548,14 +549,14 @@ function ProviderDetail({
     <>
       <ScrollArea className="min-h-0 h-full pr-3">
       <div className="flex flex-col gap-6 pb-2">
-        <header className="flex flex-wrap items-start justify-between gap-3">
-            <div className="flex min-w-0 flex-col gap-2">
+        <header className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <ProviderLogo
+                providerId={provider.provider_id}
+                size="sm"
+                alt={provider.name || provider.provider_id}
+              />
               <strong className="truncate text-lg font-semibold">{provider.name}</strong>
-              <div className="flex flex-wrap gap-2">
-                <Badge variant="outline">{provider.provider_id}</Badge>
-                <ProviderListInstallStatusBadge status={providerListInstallStatus(provider, "agent")} />
-                <Badge variant="outline">{environment.install_method || "unknown"}</Badge>
-              </div>
             </div>
             <Button type="button" variant="outline" disabled={detectAgent.isPending} onClick={() => detectAgent.mutate(provider.provider_id)}>
               {detectAgent.isPending ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}

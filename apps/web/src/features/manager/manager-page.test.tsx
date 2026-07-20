@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => ({
   cleanManagerWorkspace: vi.fn(),
   useManagerMeta: vi.fn(),
   useManagerPreview: vi.fn(),
-  useManagerProviders: vi.fn(),
+  useManagerProviderCatalog: vi.fn(),
   useManagerStats: vi.fn(),
   useManagerWorkspaces: vi.fn(),
 }));
@@ -36,33 +36,55 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/features/manager/queries", () => ({
   useManagerMeta: mocks.useManagerMeta,
   useManagerPreview: mocks.useManagerPreview,
-  useManagerProviders: mocks.useManagerProviders,
+  useManagerProviderCatalog: mocks.useManagerProviderCatalog,
   useManagerStats: mocks.useManagerStats,
   useManagerWorkspaces: mocks.useManagerWorkspaces,
 }));
 
-const providers = [
-  {
-    id: "codex",
-    name: "Codex",
-    scan: true,
-    import: true,
-    export: true,
-    delete: true,
-    rename: true,
-    resume: true,
-  },
-  {
-    id: "claude",
-    name: "Claude",
-    scan: true,
-    import: true,
-    export: true,
-    delete: true,
-    rename: true,
-    resume: true,
-  },
-];
+const providerCatalog = {
+  providers: [
+    {
+      provider_id: "codex",
+      display_name: "Codex",
+      capability_set: {
+        scan: true,
+        import: true,
+        export: true,
+        delete: true,
+        rename: true,
+        resume: true,
+        activity_support: {
+          hook_events: true,
+          runtime_endpoint: true,
+          session_activity: true,
+        },
+      },
+      install_state: { is_installed: true },
+      filter_tags: ["is_installed"],
+      hidden_state: { global: false, workspace: false },
+    },
+    {
+      provider_id: "claude",
+      display_name: "Claude",
+      capability_set: {
+        scan: true,
+        import: true,
+        export: true,
+        delete: true,
+        rename: true,
+        resume: true,
+        activity_support: {
+          hook_events: true,
+          runtime_endpoint: true,
+          session_activity: true,
+        },
+      },
+      install_state: { is_installed: true },
+      filter_tags: ["is_installed"],
+      hidden_state: { global: false, workspace: false },
+    },
+  ],
+};
 
 const sessions = [
   {
@@ -160,6 +182,12 @@ function rowForText(text: string) {
   return row as HTMLElement;
 }
 
+function expectSelectionCount(count: number) {
+  expect(
+    screen.getByRole("group", { name: `${count} selected` }),
+  ).toBeTruthy();
+}
+
 afterEach(() => cleanup());
 
 beforeEach(() => {
@@ -171,7 +199,7 @@ beforeEach(() => {
       settings: { default_backup_dir: "/backups" },
     }),
   );
-  mocks.useManagerProviders.mockReturnValue(queryResult(providers));
+  mocks.useManagerProviderCatalog.mockReturnValue(queryResult(providerCatalog));
   mocks.useManagerStats.mockReturnValue(
     queryResult({
       selected_agent_count: 2,
@@ -245,13 +273,40 @@ describe("ManagerPage interaction model", () => {
     expect(screen.getByRole("button", { name: /All providers/i })).toBeTruthy();
   });
 
+  it("uses scope tabs instead of stat tiles to switch workspace scope", async () => {
+    const user = userEvent.setup();
+    renderManager();
+
+    expect(
+      screen.queryByRole("button", { name: /Current Workspace/i }),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /All Workspaces/i })).toBeNull();
+    expect(screen.getByText("Current Workspace")).toBeTruthy();
+    expect(screen.getByText("All Workspaces")).toBeTruthy();
+
+    await user.click(screen.getByRole("tab", { name: "All workspaces" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("scope=all");
+      expect(screen.getByTestId("location").textContent).toContain(
+        "view=workspaces",
+      );
+    });
+
+    await user.click(screen.getByRole("tab", { name: "Current workspace" }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("/manager");
+    });
+  });
+
   it("keeps row selection separate from opening the session link", async () => {
     const user = userEvent.setup();
     renderManager();
 
     await user.click(rowForText("Alpha session"));
 
-    expect(screen.getByText("1 selected")).toBeTruthy();
+    expectSelectionCount(1);
     expect(screen.getByTestId("location").textContent).toBe("/manager");
 
     await user.click(screen.getByRole("link", { name: /Alpha session/i }));
@@ -263,15 +318,33 @@ describe("ManagerPage interaction model", () => {
 
   it("selects only the currently visible search results", async () => {
     const user = userEvent.setup();
+    mocks.useManagerPreview.mockImplementation((filter?: { search?: string }) => {
+      const items = filter?.search
+        ? sessions.filter((item) =>
+            item.title?.toLowerCase().includes(filter.search!.toLowerCase()),
+          )
+        : sessions;
+      return queryResult({
+        items,
+        total_count: items.length,
+        total_size_bytes: items.reduce((sum, item) => sum + item.size_bytes, 0),
+      });
+    });
     renderManager();
 
     await user.type(
       screen.getByPlaceholderText("Search sessions, providers, or paths"),
       "beta",
     );
+    await waitFor(
+      () => {
+        expect(screen.queryByText("Alpha session")).toBeNull();
+      },
+      { timeout: 1500 },
+    );
     await user.click(screen.getByRole("button", { name: "Select visible" }));
 
-    expect(screen.getByText("1 selected")).toBeTruthy();
+    expectSelectionCount(1);
     expect(rowForText("Beta session").getAttribute("data-selected")).toBe(
       "true",
     );
@@ -379,7 +452,7 @@ describe("ManagerPage interaction model", () => {
     expect(screen.getByText(/Claude backup failed/)).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.getByText("2 selected")).toBeTruthy();
+    expectSelectionCount(2);
   });
 
   it("shows full request failure and keeps the failed selection", async () => {
@@ -400,18 +473,18 @@ describe("ManagerPage interaction model", () => {
     expect(screen.getByText("Backup service unavailable")).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Close" }));
-    expect(screen.getByText("1 selected")).toBeTruthy();
+    expectSelectionCount(1);
   });
 
   it("distinguishes initial page loading, result loading, background refresh, and empty scope", () => {
-    mocks.useManagerProviders.mockReturnValue(
+    mocks.useManagerProviderCatalog.mockReturnValue(
       queryResult(undefined, { isLoading: true, isFetching: true }),
     );
     const initialLoading = renderManager();
     expect(screen.getByLabelText("Loading session manager")).toBeTruthy();
     initialLoading.unmount();
 
-    mocks.useManagerProviders.mockReturnValue(queryResult(providers));
+    mocks.useManagerProviderCatalog.mockReturnValue(queryResult(providerCatalog));
     mocks.useManagerPreview.mockReturnValue(
       queryResult(undefined, { isLoading: true, isFetching: true }),
     );
@@ -426,7 +499,7 @@ describe("ManagerPage interaction model", () => {
       ),
     );
     const refreshing = renderManager();
-    expect(screen.getByText("Refreshing results")).toBeTruthy();
+    expect(screen.getByText("Loading page")).toBeTruthy();
     expect(screen.getByRole("link", { name: /Alpha session/i })).toBeTruthy();
     refreshing.unmount();
 
@@ -457,12 +530,25 @@ describe("ManagerPage interaction model", () => {
 
   it("distinguishes filter-empty results and retries a failed query", async () => {
     const user = userEvent.setup();
+    mocks.useManagerPreview.mockImplementation((filter?: { search?: string }) =>
+      queryResult(
+        filter?.search
+          ? { items: [], total_count: 0, total_size_bytes: 0 }
+          : { items: sessions, total_count: 2, total_size_bytes: 3072 },
+      ),
+    );
     const filtered = renderManager();
     await user.type(
       screen.getByPlaceholderText("Search sessions, providers, or paths"),
       "missing-session",
     );
-    expect(screen.getByText("No sessions matched your filters")).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "No sessions matched your filters",
+        {},
+        { timeout: 1500 },
+      ),
+    ).toBeTruthy();
     filtered.unmount();
 
     const refetch = vi.fn();
