@@ -394,9 +394,9 @@ fn build_dashboard(
         if row.size_bytes.unwrap_or(0) >= LARGE_SESSION_BYTES {
             add(&mut attention.large_sessions, row);
         }
-        if row
-            .message_count
-            .is_some_and(|count| count <= SHORT_SESSION_MESSAGES)
+        if event_facts
+            .get(&row.canonical_session_id)
+            .is_some_and(|facts| facts.message_count <= SHORT_SESSION_MESSAGES)
         {
             add(&mut attention.short_sessions, row);
         }
@@ -485,7 +485,7 @@ where
             .get(&row.canonical_session_id)
             .map_or(0, |facts| facts.message_count);
         item.size_bytes += row.size_bytes.unwrap_or(0);
-        let last = row.last_active_at_ms.and_then(date);
+        let last = activity_at(row, event_facts).and_then(date);
         if last > item.last_active_at {
             item.last_active_at = last;
         }
@@ -587,6 +587,9 @@ fn distributions(
         ("gt_100", "100 条以上", 0, 0),
     ];
     for row in rows {
+        let Some(facts) = event_facts.get(&row.canonical_session_id) else {
+            continue;
+        };
         let size = row.size_bytes.unwrap_or(0);
         let si = if size < 100 * 1024 {
             0
@@ -599,9 +602,7 @@ fn distributions(
         };
         sizes[si].2 += 1;
         sizes[si].3 += size;
-        let count = event_facts
-            .get(&row.canonical_session_id)
-            .map_or(0, |facts| facts.message_count);
+        let count = facts.message_count;
         let mi = if count <= 2 {
             0
         } else if count <= 20 {
@@ -729,10 +730,15 @@ mod tests {
                 (now - Duration::days(60)).timestamp_millis(),
             ),
         ]);
+        let event_facts = HashMap::from([
+            ("recent".into(), EventFacts { message_count: 50, ..Default::default() }),
+            ("month".into(), EventFacts { message_count: 20, ..Default::default() }),
+            ("old".into(), EventFacts { message_count: 1, ..Default::default() }),
+        ]);
         let result = build_dashboard(
             &rows,
             &created,
-            &HashMap::new(),
+            &event_facts,
             Some(now - Duration::days(30)),
             now,
         );
@@ -747,7 +753,7 @@ mod tests {
         assert_eq!(result.attention.inactive_over_90d.count, 1);
         assert_eq!(result.attention.unknown.count, 1);
         assert_eq!(result.attention.large_sessions.count, 1);
-        assert_eq!(result.attention.short_sessions.count, 2);
+        assert_eq!(result.attention.short_sessions.count, 1);
         assert_eq!(
             result
                 .distributions
@@ -755,7 +761,7 @@ mod tests {
                 .iter()
                 .map(|bucket| bucket.count)
                 .sum::<usize>(),
-            4
+            3
         );
         assert_eq!(result.top_sessions.by_messages[0].session_id, "recent");
     }

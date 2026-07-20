@@ -12,7 +12,6 @@ const chartConfig = {
   active_sessions: { label: "活跃会话", color: "var(--chart-1)" },
   new_sessions: { label: "新增会话", color: "var(--chart-2)" },
   active_session_messages: { label: "活跃会话消息", color: "var(--chart-3)" },
-  new_size_bytes: { label: "新增数据", color: "var(--chart-4)" },
 } satisfies ChartConfig;
 
 type TrendKey = keyof typeof chartConfig;
@@ -20,7 +19,7 @@ type RankKey = "by_messages" | "by_size" | "recently_active";
 
 export function ActivityTrend({ data }: { data: StatsDashboard["timeline"] }) {
   const [metric, setMetric] = useState<TrendKey>("active_sessions");
-  const points = data.map((point) => ({ ...point, label: new Date(point.start).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }), new_size_bytes: Math.round(point.new_size_bytes / 1024 / 1024) }));
+  const points = data.map((point) => ({ ...point, label: new Date(point.start).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" }) }));
   return <Card className="lg:col-span-2"><CardHeader className="flex-row items-center justify-between"><CardTitle>使用趋势</CardTitle><Tabs value={metric} onValueChange={(value) => setMetric(value as TrendKey)}><TabsList className="flex-wrap"><TabsTrigger value="active_sessions">活跃会话</TabsTrigger><TabsTrigger value="new_sessions">新增会话</TabsTrigger><TabsTrigger value="active_session_messages">会话消息</TabsTrigger><TabsTrigger value="new_size_bytes">新增数据</TabsTrigger></TabsList></Tabs></CardHeader><CardContent>{points.length ? <ChartContainer config={chartConfig} className="h-72 w-full"><LineChart accessibilityLayer data={points}><CartesianGrid vertical={false} strokeDasharray="4 4"/><XAxis dataKey="label" tickLine={false} axisLine={false}/><YAxis tickLine={false} axisLine={false} width={44}/><ChartTooltip content={<ChartTooltipContent/>}/><Line type="monotone" dataKey={metric} stroke={`var(--color-${metric})`} strokeWidth={2} dot={false}/></LineChart></ChartContainer> : <Empty/>}</CardContent></Card>;
 }
 
