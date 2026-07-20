@@ -72,7 +72,7 @@ impl ProviderRegistry {
             "copilot" => Some(Box::new(copilot::CopilotProvider)),
             "windsurf" => Some(Box::new(emerging::WindsurfProvider)),
             "codebuddy" => Some(Box::new(codebuddy::CodeBuddyProvider)),
-            "qoder" => Some(Box::new(emerging::QoderProvider)),
+            "qoder" => Some(Box::new(qoder::QoderProvider)),
             "qwen" => Some(Box::new(qwen::QwenProvider)),
             "trae" => Some(Box::new(emerging::TraeProvider)),
             "droid" => Some(Box::new(droid::DroidProvider)),

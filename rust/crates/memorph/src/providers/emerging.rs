@@ -59,13 +59,6 @@ json_read_provider!(
     None::<&'static str>
 );
 json_read_provider!(
-    QoderProvider,
-    "qoder",
-    "Qoder",
-    qoder_roots,
-    None::<&'static str>
-);
-json_read_provider!(
     QwenProvider,
     "qwen",
     "Qwen Code",
@@ -157,17 +150,6 @@ fn windsurf_roots() -> Vec<PathBuf> {
     if let Some(root) = home_join(".codeium/windsurf") {
         roots.push(root);
     }
-    roots
-}
-
-fn qoder_roots() -> Vec<PathBuf> {
-    // Qoder stores Claude-style transcripts per project.
-    // CodeIsland reference: ~/.qoder/projects/<encoded-cwd>/{<id>.jsonl, transcript/<id>.jsonl}
-    let mut roots = Vec::new();
-    if let Some(root) = home_join(".qoder/projects") {
-        roots.push(root);
-    }
-    roots.extend(vscode_global_storage("Qoder"));
     roots
 }
 
