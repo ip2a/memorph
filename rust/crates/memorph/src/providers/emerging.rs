@@ -59,13 +59,6 @@ json_read_provider!(
     None::<&'static str>
 );
 json_read_provider!(
-    CodeBuddyProvider,
-    "codebuddy",
-    "CodeBuddy",
-    codebuddy_roots,
-    None::<&'static str>
-);
-json_read_provider!(
     QoderProvider,
     "qoder",
     "Qoder",
@@ -164,17 +157,6 @@ fn windsurf_roots() -> Vec<PathBuf> {
     if let Some(root) = home_join(".codeium/windsurf") {
         roots.push(root);
     }
-    roots
-}
-
-fn codebuddy_roots() -> Vec<PathBuf> {
-    // CodeBuddy stores Claude-style transcripts per project.
-    // CodeIsland reference: ~/.codebuddy/projects/<encoded-cwd>/<sessionId>.jsonl
-    let mut roots = Vec::new();
-    if let Some(root) = home_join(".codebuddy/projects") {
-        roots.push(root);
-    }
-    roots.extend(vscode_global_storage("CodeBuddy"));
     roots
 }
 

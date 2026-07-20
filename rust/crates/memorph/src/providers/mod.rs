@@ -71,7 +71,7 @@ impl ProviderRegistry {
             "antigravity" => Some(Box::new(emerging::AntigravityProvider)),
             "copilot" => Some(Box::new(copilot::CopilotProvider)),
             "windsurf" => Some(Box::new(emerging::WindsurfProvider)),
-            "codebuddy" => Some(Box::new(emerging::CodeBuddyProvider)),
+            "codebuddy" => Some(Box::new(codebuddy::CodeBuddyProvider)),
             "qoder" => Some(Box::new(emerging::QoderProvider)),
             "qwen" => Some(Box::new(qwen::QwenProvider)),
             "trae" => Some(Box::new(emerging::TraeProvider)),
