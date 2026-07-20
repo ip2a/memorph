@@ -59,13 +59,6 @@ json_read_provider!(
     None::<&'static str>
 );
 json_read_provider!(
-    ClineProvider,
-    "cline",
-    "Cline",
-    cline_roots,
-    None::<&'static str>
-);
-json_read_provider!(
     CopilotProvider,
     "copilot",
     "GitHub Copilot",
@@ -189,21 +182,6 @@ fn droid_roots() -> Vec<PathBuf> {
     }
     roots.extend(vscode_global_storage("Factory"));
     roots.extend(vscode_global_storage("Droid"));
-    roots
-}
-
-fn cline_roots() -> Vec<PathBuf> {
-    // Cline (VS Code ext "saoudrizwan.claude-dev") writes per-task history.
-    // CodeIsland reference: globalStorage/saoudrizwan.claude-dev/tasks/<id>/api_conversation_history.json
-    let mut roots = Vec::new();
-    for app in ["Code", "Code - Insiders", "VSCodium"] {
-        for storage in vscode_global_storage(app) {
-            roots.push(storage.join("saoudrizwan.claude-dev").join("tasks"));
-        }
-    }
-    if let Some(root) = home_join("Documents/Cline") {
-        roots.push(root);
-    }
     roots
 }
 

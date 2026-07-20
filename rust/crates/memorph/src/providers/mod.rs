@@ -65,7 +65,7 @@ impl ProviderRegistry {
         match id.as_str() {
             "claude" => Some(Box::new(claude::ClaudeProvider)),
             "codex" => Some(Box::new(codex::CodexProvider)),
-            "cline" => Some(Box::new(emerging::ClineProvider)),
+            "cline" => Some(Box::new(cline::ClineProvider)),
             "cursor" => Some(Box::new(cursor::CursorProvider)),
             "deepseek" => Some(Box::new(deepseek::DeepseekProvider)),
             "antigravity" => Some(Box::new(emerging::AntigravityProvider)),
