@@ -46,6 +46,7 @@ const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
     "kiro",
     "opencode",
     "qwen",
+    "cline",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
