@@ -59,13 +59,6 @@ json_read_provider!(
     None::<&'static str>
 );
 json_read_provider!(
-    CopilotProvider,
-    "copilot",
-    "GitHub Copilot",
-    copilot_roots,
-    None::<&'static str>
-);
-json_read_provider!(
     WindsurfProvider,
     "windsurf",
     "Windsurf",
@@ -182,25 +175,6 @@ fn droid_roots() -> Vec<PathBuf> {
     }
     roots.extend(vscode_global_storage("Factory"));
     roots.extend(vscode_global_storage("Droid"));
-    roots
-}
-
-fn copilot_roots() -> Vec<PathBuf> {
-    // GitHub Copilot CLI session state.
-    // local-llm-proxy reference: ~/.copilot/session-state/<sessionId>/events.jsonl
-    let mut roots = Vec::new();
-    if let Some(root) = home_join(".copilot/session-state") {
-        roots.push(root);
-    }
-    if let Some(root) = home_join(".copilot") {
-        roots.push(root);
-    }
-    for app in ["Code", "Code - Insiders", "VSCodium"] {
-        for root in vscode_global_storage(app) {
-            roots.push(root.join("github.copilot-chat"));
-            roots.push(root.join("github.copilot"));
-        }
-    }
     roots
 }
 
