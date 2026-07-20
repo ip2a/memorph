@@ -355,6 +355,22 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<SessionEvent>
 mod tests {
     use super::*;
     #[test]
+    fn capabilities_match_native_read_only_contract() {
+        let capabilities = DroidProvider.capabilities();
+        assert!(capabilities.scan);
+        assert!(capabilities.import);
+        assert!(!capabilities.export);
+        assert!(!capabilities.delete);
+        assert!(!capabilities.rename);
+        assert!(!capabilities.resume);
+        assert_eq!(capabilities.storage_shape, StorageShape::Directory);
+        assert_eq!(capabilities.scan_strategy, ScanStrategy::FullScan);
+        assert_eq!(capabilities.page_strategy, PageStrategy::FullImport);
+        assert_eq!(capabilities.resume_quality, ResumeQuality::None);
+        assert!(!capabilities.backup_support.before_write);
+        assert!(!capabilities.backup_support.restore);
+    }
+    #[test]
     fn identity_comes_from_transcript_filename() {
         assert_eq!(
             session_id(Path::new("/tmp/.factory/sessions/project/abc.jsonl")).as_deref(),

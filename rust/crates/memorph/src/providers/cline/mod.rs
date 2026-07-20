@@ -387,6 +387,22 @@ fn value_text(value: &Value) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn capabilities_match_native_read_only_contract() {
+        let capabilities = ClineProvider.capabilities();
+        assert!(capabilities.scan);
+        assert!(capabilities.import);
+        assert!(!capabilities.export);
+        assert!(!capabilities.delete);
+        assert!(!capabilities.rename);
+        assert!(!capabilities.resume);
+        assert_eq!(capabilities.storage_shape, StorageShape::Directory);
+        assert_eq!(capabilities.scan_strategy, ScanStrategy::FullScan);
+        assert_eq!(capabilities.page_strategy, PageStrategy::FullImport);
+        assert_eq!(capabilities.resume_quality, ResumeQuality::None);
+        assert!(!capabilities.backup_support.before_write);
+        assert!(!capabilities.backup_support.restore);
+    }
+    #[test]
     fn task_identity_comes_from_parent_directory() {
         let path = Path::new("/tmp/tasks/task-123/api_conversation_history.json");
         assert_eq!(task_id_from_history_path(path).as_deref(), Some("task-123"));
