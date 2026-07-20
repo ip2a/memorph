@@ -22,6 +22,7 @@ pub mod qoder;
 pub mod qwen;
 pub mod stepfun;
 pub mod trae;
+pub mod windsurf;
 pub mod workbuddy;
 
 pub(crate) mod hook_profiles;
@@ -70,7 +71,7 @@ impl ProviderRegistry {
             "deepseek" => Some(Box::new(deepseek::DeepseekProvider)),
             "antigravity" => Some(Box::new(antigravity::AntigravityProvider)),
             "copilot" => Some(Box::new(copilot::CopilotProvider)),
-            "windsurf" => Some(Box::new(emerging::WindsurfProvider)),
+            "windsurf" => Some(Box::new(windsurf::WindsurfProvider)),
             "codebuddy" => Some(Box::new(codebuddy::CodeBuddyProvider)),
             "qoder" => Some(Box::new(qoder::QoderProvider)),
             "qwen" => Some(Box::new(qwen::QwenProvider)),

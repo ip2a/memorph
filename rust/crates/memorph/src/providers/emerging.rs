@@ -45,13 +45,6 @@ macro_rules! json_read_provider {
 }
 
 json_read_provider!(
-    WindsurfProvider,
-    "windsurf",
-    "Windsurf",
-    windsurf_roots,
-    None::<&'static str>
-);
-json_read_provider!(
     QwenProvider,
     "qwen",
     "Qwen Code",
@@ -111,14 +104,6 @@ fn vscode_global_storage(app: &str) -> Vec<PathBuf> {
         roots.push(root.join("User").join("workspaceStorage"));
     }
 
-    roots
-}
-
-fn windsurf_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("Windsurf");
-    if let Some(root) = home_join(".codeium/windsurf") {
-        roots.push(root);
-    }
     roots
 }
 
