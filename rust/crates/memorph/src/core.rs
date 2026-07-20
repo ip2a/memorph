@@ -45,6 +45,7 @@ const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
     "kimi",
     "kiro",
     "opencode",
+    "openclaw",
     "cline",
     "copilot",
     "droid",

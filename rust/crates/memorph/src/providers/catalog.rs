@@ -86,6 +86,7 @@ fn curated_display_name(canonical_id: &str) -> Option<&'static str> {
         "cline" => "Cline",
         "cursor" => "Cursor",
         "opencode" => "OpenCode",
+        "openclaw" => "OpenClaw",
         "kiro" => "Kiro",
         "kimi" => "Kimi",
         "gemini" => "Gemini",

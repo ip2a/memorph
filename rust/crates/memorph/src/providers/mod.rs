@@ -14,6 +14,7 @@ pub mod gemini;
 pub mod hermes;
 pub mod kimi;
 pub mod kiro;
+pub mod openclaw;
 pub mod opencode;
 pub mod pi;
 pub mod qoder;
@@ -32,6 +33,7 @@ const PROVIDER_IDS: &[&str] = &[
     "cline",
     "cursor",
     "opencode",
+    "openclaw",
     "kiro",
     "deepseek",
     "kimi",
@@ -77,6 +79,7 @@ impl ProviderRegistry {
             "kiro" => Some(Box::new(kiro::KiroProvider)),
             "kimi" => Some(Box::new(kimi::KimiProvider)),
             "opencode" => Some(Box::new(opencode::OpenCodeProvider)),
+            "openclaw" => Some(Box::new(openclaw::OpenClawProvider)),
             _ => None,
         }
     }
@@ -141,6 +144,7 @@ mod tests {
             "workbuddy",
             "hermes",
             "pi",
+            "openclaw",
         ] {
             assert!(
                 all_provider_ids().iter().any(|known| *known == id),
