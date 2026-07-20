@@ -619,6 +619,58 @@ pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
     ))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceWithSessionsItem {
+    pub path: String,
+    pub session_count: usize,
+    pub last_active_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct WorkspaceWithSessionsOptions {
+    pub search: Option<String>,
+    pub page: usize,
+    pub page_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceWithSessionsResult {
+    pub items: Vec<WorkspaceWithSessionsItem>,
+    pub total_count: usize,
+    pub page: usize,
+    pub page_size: usize,
+    pub total_pages: usize,
+}
+
+/// List unique workspace paths that have sessions, aggregated across providers.
+pub fn workspaces_with_sessions(
+    options: &WorkspaceWithSessionsOptions,
+) -> Result<WorkspaceWithSessionsResult> {
+    let page_size = options.page_size.clamp(1, 50);
+    let conn = local_store::open_database()?;
+    let result = crate::storage::snapshot_store::SnapshotStore::new(&conn)
+        .list_workspaces_with_sessions(options.search.as_deref(), options.page, page_size)?;
+    let total_count = result.total_count;
+    let total_pages = total_count.div_ceil(page_size).max(1);
+    let page = options.page.max(1).min(total_pages);
+
+    Ok(WorkspaceWithSessionsResult {
+        items: result
+            .items
+            .into_iter()
+            .map(|item| WorkspaceWithSessionsItem {
+                path: item.path,
+                session_count: item.session_count,
+                last_active_at: item.last_active_at_ms,
+            })
+            .collect(),
+        total_count: result.total_count,
+        page,
+        page_size,
+        total_pages,
+    })
+}
+
 /// Resolve the concrete ManagerItem rows for a given provider workspace.
 fn list_workspace_sessions(provider_id: &str, workspace: &str) -> Result<Vec<ManagerItem>> {
     projected_manager_items(&ManagerFilter {

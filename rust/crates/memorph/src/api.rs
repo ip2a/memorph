@@ -101,6 +101,7 @@ pub fn router() -> Router {
         )
         .route("/api/v1/settings", get(get_settings).put(update_settings))
         .route("/api/v1/system/select-folder", post(select_folder))
+        .route("/api/v1/filesystem/directories", get(list_directories))
         .route("/api/v1/system/select-file", post(select_file))
         .route("/api/v1/system/open-external", post(open_external))
         .route("/api/v1/management/activity", get(list_management_activity))
@@ -183,6 +184,10 @@ pub fn router() -> Router {
         .route("/api/v1/switch", post(switch_session))
         .route("/api/v1/find", get(find_sessions))
         .route("/api/v1/workspaces", get(list_workspaces))
+        .route(
+            "/api/v1/workspaces/with-sessions",
+            get(list_workspaces_with_sessions),
+        )
         .route(
             "/api/v1/workspaces/history",
             delete(remove_workspace_history),
@@ -307,9 +312,15 @@ struct MetaPayload {
     version: &'static str,
     selected_workspace: Option<String>,
     workspaces: Vec<config::WorkspaceEntry>,
+    capabilities: CapabilitiesPayload,
     settings: SettingsPayload,
     settings_paths: SettingsPathsPayload,
     config_file: ConfigFilePayload,
+}
+
+#[derive(Debug, Serialize)]
+struct CapabilitiesPayload {
+    system_folder_picker: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -458,6 +469,24 @@ struct SelectFolderBody {
 #[derive(Serialize)]
 struct SelectFolderPayload {
     path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DirectoryQuery {
+    path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DirectoryEntryPayload {
+    name: String,
+    path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DirectoryListingPayload {
+    path: String,
+    parent: Option<String>,
+    directories: Vec<DirectoryEntryPayload>,
 }
 
 #[derive(Deserialize)]
@@ -993,6 +1022,9 @@ async fn get_meta() -> impl IntoResponse {
             version: env!("CARGO_PKG_VERSION"),
             selected_workspace,
             workspaces,
+            capabilities: CapabilitiesPayload {
+                system_folder_picker: FOLDER_PICKER.get().is_some(),
+            },
             settings,
             settings_paths,
             config_file,
@@ -1127,6 +1159,66 @@ async fn get_provider_setting(
     match provider_settings::get_provider_setting(&provider, &setting_id) {
         Ok(setting) => ApiResponse::success(setting).into_response(),
         Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
+    }
+}
+
+fn directory_listing(requested_path: Option<&str>) -> anyhow::Result<DirectoryListingPayload> {
+    let requested = requested_path
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+    let candidate = match requested {
+        Some(path) => {
+            let path = std::path::PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err(anyhow!("Directory path must be absolute."));
+            }
+            path
+        }
+        None => config::selected_workspace()?
+            .map(std::path::PathBuf::from)
+            .filter(|path| path.is_dir())
+            .or_else(dirs::home_dir)
+            .unwrap_or(std::env::current_dir()?),
+    };
+
+    let path = candidate
+        .canonicalize()
+        .with_context(|| format!("Cannot access directory: {}", candidate.display()))?;
+    if !path.is_dir() {
+        return Err(anyhow!("Path is not a directory: {}", path.display()));
+    }
+
+    let mut directories = std::fs::read_dir(&path)
+        .with_context(|| format!("Cannot read directory: {}", path.display()))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let entry_path = entry.path();
+            entry_path.is_dir().then(|| DirectoryEntryPayload {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                path: entry_path.to_string_lossy().into_owned(),
+            })
+        })
+        .collect::<Vec<_>>();
+    directories.sort_by(|left, right| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    Ok(DirectoryListingPayload {
+        path: path.to_string_lossy().into_owned(),
+        parent: path
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned()),
+        directories,
+    })
+}
+
+async fn list_directories(Query(query): Query<DirectoryQuery>) -> impl IntoResponse {
+    match directory_listing(query.path.as_deref()) {
+        Ok(listing) => ApiResponse::success(listing).into_response(),
+        Err(error) => api_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
 }
 
@@ -1513,6 +1605,33 @@ async fn reproject_stale_sessions(
 async fn list_workspaces() -> impl IntoResponse {
     match config::known_workspaces() {
         Ok(workspaces) => ApiResponse::success(workspaces).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct WorkspacesWithSessionsQuery {
+    q: Option<String>,
+    page: Option<usize>,
+    page_size: Option<usize>,
+}
+
+async fn list_workspaces_with_sessions(
+    Query(query): Query<WorkspacesWithSessionsQuery>,
+) -> impl IntoResponse {
+    let options = crate::core::manager::WorkspaceWithSessionsOptions {
+        search: query
+            .q
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        page: query.page.unwrap_or(1),
+        page_size: query.page_size.unwrap_or(5),
+    };
+
+    match run_manager_blocking(move || crate::core::manager::workspaces_with_sessions(&options))
+        .await
+    {
+        Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
@@ -2631,6 +2750,40 @@ mod tests {
         let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         (status, value)
+    }
+
+    #[test]
+    fn directory_listing_returns_only_sorted_directories() {
+        let root = Builder::new()
+            .prefix("memorph-directory-listing")
+            .tempdir()
+            .unwrap();
+        std::fs::create_dir(root.path().join("zeta")).unwrap();
+        std::fs::create_dir(root.path().join("Alpha")).unwrap();
+        std::fs::write(root.path().join("session.json"), "{}").unwrap();
+
+        let listing = directory_listing(root.path().to_str()).unwrap();
+        let names = listing
+            .directories
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["Alpha", "zeta"]);
+        assert_eq!(
+            listing.path,
+            root.path().canonicalize().unwrap().to_string_lossy()
+        );
+        assert!(listing
+            .directories
+            .iter()
+            .all(|entry| entry.path.starts_with(&listing.path)));
+    }
+
+    #[test]
+    fn directory_listing_rejects_relative_paths() {
+        let error = directory_listing(Some("relative/path")).unwrap_err();
+        assert!(error.to_string().contains("must be absolute"));
     }
 
     fn runtime_session_for_payload(runtime_id: &str) -> RuntimeSession {

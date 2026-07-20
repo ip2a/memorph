@@ -1290,6 +1290,7 @@ export function ManagerPage() {
           >
             <WorkspaceIdentity
               workspace={request.workspace}
+              fallbackTitle={route.scope === "all" ? "All workspaces" : "No workspace"}
               titleClassName="mt-1 block text-lg leading-tight"
               pathClassName="mt-1"
             />

@@ -40,6 +40,19 @@ pub struct ProjectedSessionSnapshotRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSessionSummaryRow {
+    pub path: String,
+    pub session_count: usize,
+    pub last_active_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceSessionPageRow {
+    pub items: Vec<WorkspaceSessionSummaryRow>,
+    pub total_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedSessionIdentityRow {
     pub canonical_session_id: String,
     pub source_id: Option<String>,
@@ -112,6 +125,76 @@ impl<'a> SnapshotStore<'a> {
 
     pub fn list_session_snapshots(&self) -> Result<Vec<ProjectedSessionSnapshotRow>> {
         self.list_session_snapshots_filtered(None, None, true)
+    }
+
+    pub fn list_workspaces_with_sessions(
+        &self,
+        search: Option<&str>,
+        page: usize,
+        page_size: usize,
+    ) -> Result<WorkspaceSessionPageRow> {
+        let search = search.map(str::to_lowercase);
+        let search_filter = "(?1 IS NULL OR instr(lower(rtrim(ss.workspace_dir, '/\\')), ?1) > 0)";
+        let base_filter = format!(
+            "s.deleted_at_ms IS NULL
+             AND ss.workspace_dir IS NOT NULL
+             AND trim(rtrim(ss.workspace_dir, '/\\')) NOT IN ('', '—', '-')
+             AND {search_filter}"
+        );
+
+        let total_sql = format!(
+            "SELECT COUNT(*) FROM (
+                SELECT rtrim(ss.workspace_dir, '/\\')
+                FROM session_snapshots ss
+                JOIN sessions s ON s.id = ss.session_id
+                WHERE {base_filter}
+                GROUP BY rtrim(ss.workspace_dir, '/\\')
+            )"
+        );
+        let total_count: usize = self
+            .conn
+            .query_row(&total_sql, [search.as_deref()], |row| {
+                row.get::<_, i64>(0).map(|value| value.max(0) as usize)
+            })
+            .context("Failed to count workspaces with sessions")?;
+
+        let total_pages = total_count.div_ceil(page_size).max(1);
+        let page = page.max(1).min(total_pages);
+        let offset = (page - 1) * page_size;
+
+        let page_sql = format!(
+            "SELECT
+                rtrim(ss.workspace_dir, '/\\') AS path,
+                COUNT(DISTINCT ss.session_id) AS session_count,
+                MAX(ss.last_active_at_ms) AS last_active_at_ms
+             FROM session_snapshots ss
+             JOIN sessions s ON s.id = ss.session_id
+             WHERE {base_filter}
+             GROUP BY rtrim(ss.workspace_dir, '/\\')
+             ORDER BY last_active_at_ms DESC, lower(path) ASC
+             LIMIT ?2 OFFSET ?3"
+        );
+        let mut stmt = self
+            .conn
+            .prepare(&page_sql)
+            .context("Failed to prepare workspace session page query")?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![search.as_deref(), page_size as i64, offset as i64],
+                |row| {
+                    Ok(WorkspaceSessionSummaryRow {
+                        path: row.get(0)?,
+                        session_count: row.get::<_, i64>(1)?.max(0) as usize,
+                        last_active_at_ms: row.get(2)?,
+                    })
+                },
+            )
+            .context("Failed to query workspace session page")?;
+        let items = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("Failed to decode workspace session page")?;
+
+        Ok(WorkspaceSessionPageRow { items, total_count })
     }
 
     pub fn list_session_snapshots_filtered(
@@ -630,6 +713,60 @@ mod tests {
             .find_session_identity("codex", "native-1")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn lists_paginated_workspaces_without_loading_session_details() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        insert_projected_snapshot_with_source_path(
+            &conn,
+            "one",
+            "claude",
+            "one",
+            "/tmp/alpha/",
+            "/tmp/one.jsonl",
+            10,
+        );
+        insert_projected_snapshot_with_source_path(
+            &conn,
+            "two",
+            "codex",
+            "two",
+            "/tmp/alpha",
+            "/tmp/two.jsonl",
+            20,
+        );
+        insert_projected_snapshot_with_source_path(
+            &conn,
+            "three",
+            "claude",
+            "three",
+            "/tmp/beta",
+            "/tmp/three.jsonl",
+            30,
+        );
+        conn.execute(
+            "UPDATE session_snapshots SET last_active_at_ms = 30 WHERE session_id = 'three'",
+            [],
+        )
+        .unwrap();
+
+        let store = SnapshotStore::new(&conn);
+        let first = store.list_workspaces_with_sessions(None, 1, 1).unwrap();
+        assert_eq!(first.total_count, 2);
+        assert_eq!(first.items.len(), 1);
+        assert_eq!(first.items[0].path, "/tmp/beta");
+
+        let second = store.list_workspaces_with_sessions(None, 2, 1).unwrap();
+        assert_eq!(second.items[0].path, "/tmp/alpha");
+        assert_eq!(second.items[0].session_count, 2);
+
+        let searched = store
+            .list_workspaces_with_sessions(Some("ALPHA"), 1, 5)
+            .unwrap();
+        assert_eq!(searched.total_count, 1);
+        assert_eq!(searched.items[0].path, "/tmp/alpha");
     }
 
     #[test]

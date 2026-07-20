@@ -34,6 +34,8 @@ import type {
   ManagerWorkspacePayload,
   NativeForkPayload,
   ManagerWorkspacesResult,
+  WorkspacesWithSessionsParams,
+  WorkspacesWithSessionsResult,
   ProviderSettingItem,
   ProviderSettingOutput,
   OpenExternalPayload,
@@ -185,6 +187,10 @@ export function checkForUpdate() {
 
 export function listWorkspaces() {
   return api<WorkspaceEntry[]>("/api/v1/workspaces");
+}
+
+export function listWorkspacesWithSessions(params: WorkspacesWithSessionsParams = {}) {
+  return api<WorkspacesWithSessionsResult>(`/api/v1/workspaces/with-sessions${buildQuery(params)}`);
 }
 
 export function deleteWorkspaceHistory(workspace: string) {

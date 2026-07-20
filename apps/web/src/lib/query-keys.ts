@@ -1,9 +1,11 @@
-import type { BackupQueryParams, CompressionArchivesParams, ManagerFilter, SessionDetailParams, SessionListParams } from "@/lib/types";
+import type { BackupQueryParams, CompressionArchivesParams, ManagerFilter, SessionDetailParams, SessionListParams, WorkspacesWithSessionsParams } from "@/lib/types";
 
 export const queryKeys = {
   home: ["home"] as const,
   meta: ["meta"] as const,
   workspaces: ["workspaces"] as const,
+  workspacesWithSessions: (params: WorkspacesWithSessionsParams = {}) =>
+    ["workspaces", "with-sessions", params] as const,
   workspaceProviders: (workspace: string) => ["workspaces", "providers", workspace] as const,
   providers: ["providers"] as const,
   providerCatalog: (workspace?: string | null) => ["providers", "catalog", workspace ?? "global"] as const,

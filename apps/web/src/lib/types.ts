@@ -151,6 +151,26 @@ export type ManagerWorkspacesResult = {
   total_size_bytes: number;
 };
 
+export type WorkspaceWithSessionsItem = {
+  path: string;
+  session_count: number;
+  last_active_at: number | null;
+};
+
+export type WorkspacesWithSessionsParams = {
+  q?: string;
+  page?: number;
+  page_size?: number;
+};
+
+export type WorkspacesWithSessionsResult = {
+  items: WorkspaceWithSessionsItem[];
+  total_count: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+};
+
 export type ManagerStatsResult = {
   selected_agent_count: number;
   current_workspace_session_count: number;
