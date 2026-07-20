@@ -5577,6 +5577,17 @@ mod tests {
     }
 
     #[test]
+    fn projected_provider_whitelist_matches_native_registry_contract() {
+        for provider_id in PROJECTED_SESSION_PROVIDER_IDS {
+            let provider = crate::providers::find_provider(provider_id)
+                .unwrap_or_else(|| panic!("missing provider registry entry: {provider_id}"));
+            let capabilities = provider.capabilities();
+            assert!(capabilities.scan, "{provider_id} must scan before projection");
+            assert!(capabilities.import, "{provider_id} must import before projection");
+        }
+    }
+
+    #[test]
     fn projected_provider_whitelist_has_no_duplicates() {
         let unique: std::collections::HashSet<_> =
             PROJECTED_SESSION_PROVIDER_IDS.iter().copied().collect();
