@@ -44,13 +44,6 @@ macro_rules! json_read_provider {
     };
 }
 
-json_read_provider!(
-    QwenProvider,
-    "qwen",
-    "Qwen Code",
-    qwen_roots,
-    None::<&'static str>
-);
 fn spec(provider_id: &'static str, roots: fn() -> Vec<PathBuf>) -> JsonProviderSpec {
     JsonProviderSpec {
         provider_id,
@@ -92,16 +85,6 @@ fn vscode_global_storage(app: &str) -> Vec<PathBuf> {
     roots
 }
 
-fn qwen_roots() -> Vec<PathBuf> {
-    // Qwen Code CLI stores Claude-style transcripts per project.
-    // local-llm-proxy reference: ~/.qwen/projects/<encoded-cwd>/chats/*.jsonl
-    let mut roots = Vec::new();
-    if let Some(root) = home_join(".qwen/projects") {
-        roots.push(root);
-    }
-    roots.extend(vscode_global_storage("Qwen"));
-    roots
-}
 fn trae_roots() -> Vec<PathBuf> {
     let mut roots = vscode_global_storage("Trae");
     if let Some(root) = home_join(".trae") {

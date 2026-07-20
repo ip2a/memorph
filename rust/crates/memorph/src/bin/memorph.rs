@@ -1845,25 +1845,6 @@ mod tests {
     }
 
     #[test]
-    fn qwen_cli_capability_detail_matches_current_jsonl_management_contract() {
-        let capabilities = providers::find_provider("qwen").unwrap().capabilities();
-
-        let output = provider_capability_detail("qwen", "Qwen", capabilities);
-
-        assert!(output.contains("Provider: Qwen (qwen)"));
-        assert!(output.contains("Discovery: scan=full_scan page=full_import storage=jsonl"));
-        assert!(output.contains("Turn quality: inferred"));
-        assert!(output.contains("Resume quality: native"));
-        assert!(output.contains("Operations: scan,import,delete,rename,resume"));
-        assert!(output.contains("Write risk: level=high multiple_files=true sqlite=false sidecar_files=true index_repair=false"));
-        assert!(output.contains("Backup: before_write=true restore=true sync_only=false"));
-        assert!(output
-            .contains("Activity: hook_events=false runtime_endpoint=false session_activity=false"));
-        assert!(output.contains("  tool_call: preserved"));
-        assert!(output.contains("  provider_payload: preserved"));
-    }
-
-    #[test]
     fn kiro_cli_capability_detail_matches_current_format_contract() {
         let capabilities = providers::find_provider("kiro").unwrap().capabilities();
 

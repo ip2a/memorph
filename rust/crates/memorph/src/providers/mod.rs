@@ -17,7 +17,6 @@ pub mod kiro;
 pub mod opencode;
 pub mod pi;
 pub mod qoder;
-pub mod qwen;
 pub mod trae;
 pub mod windsurf;
 pub mod workbuddy;
@@ -42,7 +41,6 @@ const PROVIDER_IDS: &[&str] = &[
     "windsurf",
     "codebuddy",
     "qoder",
-    "qwen",
     "trae",
     "droid",
     "workbuddy",
@@ -70,7 +68,6 @@ impl ProviderRegistry {
             "windsurf" => Some(Box::new(windsurf::WindsurfProvider)),
             "codebuddy" => Some(Box::new(codebuddy::CodeBuddyProvider)),
             "qoder" => Some(Box::new(qoder::QoderProvider)),
-            "qwen" => Some(Box::new(qwen::QwenProvider)),
             "trae" => Some(Box::new(trae::TraeProvider)),
             "droid" => Some(Box::new(droid::DroidProvider)),
             "workbuddy" => Some(Box::new(workbuddy::WorkBuddyProvider)),
@@ -139,7 +136,6 @@ mod tests {
             "windsurf",
             "codebuddy",
             "qoder",
-            "qwen",
             "trae",
             "droid",
             "workbuddy",
@@ -152,30 +148,6 @@ mod tests {
             );
             assert!(find_provider(id).is_some(), "provider not found: {id}");
         }
-    }
-
-    #[test]
-    fn registry_uses_native_qwen_jsonl_provider() {
-        let provider = find_provider("qwen").expect("qwen provider");
-        let capabilities = provider.capabilities();
-        assert_eq!(provider.name(), "Qwen Code");
-        assert_eq!(
-            capabilities.storage_shape,
-            crate::provider::StorageShape::Jsonl
-        );
-        assert!(capabilities.resume);
-        assert!(capabilities.delete);
-        assert!(capabilities.rename);
-        assert!(!capabilities.export);
-        assert!(capabilities.backup_support.before_write);
-        assert!(capabilities.backup_support.restore);
-        assert_eq!(
-            capabilities.write_risk.level,
-            crate::provider::WriteRiskLevel::High
-        );
-        assert!(capabilities.write_risk.multiple_files);
-        assert!(capabilities.write_risk.sidecar_files);
-        assert!(!capabilities.write_risk.sqlite);
     }
 
     #[test]

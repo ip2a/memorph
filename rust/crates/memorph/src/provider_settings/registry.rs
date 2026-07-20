@@ -18,7 +18,6 @@ pub(super) fn find_provider_setting_module(
         "kiro" => Some(&super::kiro::KiroSettingModule),
         "opencode" => Some(&super::opencode::OpenCodeSettingModule),
         "pi" => Some(&super::pi::PiSettingModule),
-        "qwen" => Some(&super::qwen::QwenSettingModule),
         "qoder" => Some(&super::qoder::QoderSettingModule),
         "droid" => Some(&super::droid::DroidSettingModule),
         "codebuddy" => Some(&super::codebuddy::CodeBuddySettingModule),

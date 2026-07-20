@@ -34,7 +34,6 @@ static OPENCODE_ADAPTER: super::opencode::adapter::OpenCodeHookAdapter =
 static PI_ADAPTER: super::pi::adapter::PiHookAdapter = super::pi::adapter::PiHookAdapter;
 static QODER_ADAPTER: super::qoder::adapter::QoderHookAdapter =
     super::qoder::adapter::QoderHookAdapter;
-static QWEN_ADAPTER: super::qwen::adapter::QwenHookAdapter = super::qwen::adapter::QwenHookAdapter;
 static TRAE_ADAPTER: super::trae::adapter::TraeHookAdapter = super::trae::adapter::TraeHookAdapter;
 static WORKBUDDY_ADAPTER: super::workbuddy::adapter::WorkBuddyHookAdapter =
     super::workbuddy::adapter::WorkBuddyHookAdapter;
@@ -59,7 +58,6 @@ pub fn find_provider_hook(provider: &str) -> Option<&'static dyn ProviderHook> {
         "pi" => Some(&super::pi::hook::PI_HOOK),
         "qoder" => Some(&super::qoder::hook::QODER_HOOK),
         "trae" => Some(&super::trae::hook::TRAE_HOOK),
-        "qwen" => Some(&super::qwen::hook::QWEN_HOOK),
         _ => None,
     }
 }
@@ -84,7 +82,6 @@ pub fn find_hook_adapter(provider: &str) -> Option<&'static dyn HookAdapter> {
         "pi" => Some(&PI_ADAPTER),
         "qoder" => Some(&QODER_ADAPTER),
         "trae" => Some(&TRAE_ADAPTER),
-        "qwen" => Some(&QWEN_ADAPTER),
         _ => None,
     }
 }

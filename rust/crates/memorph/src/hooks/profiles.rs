@@ -17,7 +17,6 @@ pub enum HookFormat {
     KimiToml,
     KiroAgentJson,
     OpenCodePlugin,
-    QwenNestedJson,
     TraeYaml,
     QoderClaudeJson,
     FactoryClaudeJson,

@@ -95,21 +95,6 @@ const COPILOT_EVENTS: &[HookProviderEventProfile] = &[
     event("errorOccurred", true),
 ];
 
-const QWEN_EVENTS: &[HookProviderEventProfile] = &[
-    event("UserPromptSubmit", true),
-    event("PreToolUse", false),
-    event("PostToolUse", true),
-    event("PostToolUseFailure", true),
-    event("PermissionRequest", false),
-    event("Stop", true),
-    event("SubagentStart", true),
-    event("SubagentStop", true),
-    event("SessionStart", false),
-    event("SessionEnd", true),
-    event("Notification", false),
-    event("PreCompact", true),
-];
-
 const QODER_EVENTS: &[HookProviderEventProfile] = &[
     event("UserPromptSubmit", true),
     event("PreToolUse", false),
@@ -293,14 +278,6 @@ const PROFILES: &[HookProviderProfile] = &[
         OPENCODE_EVENTS,
     ),
     profile(
-        "qwen",
-        "Qwen Code",
-        HookFormat::QwenNestedJson,
-        HookConfigStrategyKind::ClaudeLikeJson,
-        "~/.qwen/settings.json",
-        QWEN_EVENTS,
-    ),
-    profile(
         "qoder",
         "Qoder",
         HookFormat::QoderClaudeJson,
@@ -406,7 +383,6 @@ fn normalize_provider_id(provider: &str) -> String {
     match provider.as_str() {
         "traecli" | "trae-cli" | "trae_cli" => "trae".to_string(),
         "claude-code" | "claude_code" => "claude".to_string(),
-        "qwen-code" | "qwen_code" => "qwen".to_string(),
         "gemini-cli" | "gemini_cli" => "gemini".to_string(),
         "cline-agent" | "cline_agent" => "cline".to_string(),
         other => crate::providers::canonical_provider_id(other),
@@ -432,7 +408,6 @@ mod tests {
             "cline",
             "codex",
             "opencode",
-            "qwen",
             "trae",
             "qoder",
             "droid",
@@ -480,7 +455,6 @@ mod tests {
             "antigravity",
             "workbuddy",
             "hermes",
-            "qwen",
             "copilot",
             "kimi",
             "kiro",

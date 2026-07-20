@@ -28,7 +28,6 @@ describe("resolveProviderLogoAssetId", () => {
     expect(resolveProviderLogoAssetId("kiro")).toBe("kiro");
     expect(resolveProviderLogoAssetId("gemini")).toBe("gemini");
     expect(resolveProviderLogoAssetId("antigravity")).toBe("antigravity");
-    expect(resolveProviderLogoAssetId("qwen")).toBe("qwen");
     expect(resolveProviderLogoAssetId("factory")).toBe("droid");
     expect(resolveProviderLogoAssetId("cline")).toBe("cline");
   });

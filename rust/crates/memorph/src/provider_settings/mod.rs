@@ -14,7 +14,6 @@ mod kiro;
 mod opencode;
 mod pi;
 mod qoder;
-mod qwen;
 mod registry;
 mod trae;
 mod workbuddy;

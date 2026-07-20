@@ -95,7 +95,6 @@ fn curated_display_name(canonical_id: &str) -> Option<&'static str> {
         "windsurf" => "Windsurf",
         "codebuddy" => "CodeBuddy",
         "qoder" => "Qoder",
-        "qwen" => "Qwen",
         "trae" => "Trae",
         "droid" => "Droid",
         "workbuddy" => "WorkBuddy",
