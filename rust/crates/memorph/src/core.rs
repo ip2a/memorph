@@ -5391,6 +5391,30 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_projects_antigravity_session_source() {
+        let dir = tempfile::tempdir().unwrap(); let source = dir.path().join("session.json");
+        std::fs::write(&source, r#"{"sessionId":"ag-1","directories":["/tmp/ag"],"messages":[{"type":"user","content":[{"text":"before"}]}]}"#).unwrap();
+        let session = ProviderSessionSummary { session_id: "ag-1".into(), title: Some("before".into()), project_dir: Some("/tmp/ag".into()), last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let mut projection = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
+        let mut report = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "antigravity", &session, &mut report);
+        assert_eq!(report.projected_sessions, 1); assert_eq!(report.failed_sessions, 0); assert_eq!(report.missing_sources, 0);
+    }
+
+    #[test]
+    fn antigravity_projection_refreshes_after_session_source_change() {
+        let dir = tempfile::tempdir().unwrap(); let source = dir.path().join("session.json");
+        std::fs::write(&source, r#"{"sessionId":"ag-1","messages":[{"type":"user","content":[{"text":"before"}]}]}"#).unwrap();
+        let mut session = ProviderSessionSummary { session_id: "ag-1".into(), title: Some("before".into()), project_dir: None, last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let mut projection = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "antigravity", &session, &mut first); assert_eq!(first.projected_sessions, 1);
+        std::fs::write(&source, r#"{"sessionId":"ag-1","messages":[{"type":"user","content":[{"text":"after"}]}]}"#).unwrap(); session.title = Some("after".into());
+        let mut second = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "antigravity", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1); assert_eq!(second.unchanged_sessions, 0);
+    }
+
+    #[test]
     fn bootstrap_discovers_projects_skips_unchanged_and_refreshes_changed_indexes() {
         let opencode_dir = tempfile::tempdir().unwrap();
         let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
