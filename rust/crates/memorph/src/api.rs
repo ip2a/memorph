@@ -4163,6 +4163,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn catalog_route_preserves_native_provider_capabilities() {
+        let request = Request::builder()
+            .uri("/api/v1/providers/catalog")
+            .body(Body::empty())
+            .unwrap();
+        let (status, value) = read_json(router(), request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        let providers = value["data"]["providers"].as_array().unwrap();
+        for provider_id in crate::providers::ProviderRegistry::ids() {
+            let provider = crate::providers::find_provider(provider_id).unwrap();
+            let entry = providers
+                .iter()
+                .find(|entry| entry["provider_id"] == *provider_id)
+                .unwrap_or_else(|| panic!("missing catalog entry for {provider_id}"));
+            let expected = serde_json::to_value(provider.capabilities()).unwrap();
+            assert_eq!(
+                entry["capability_set"], expected,
+                "capability drift: {provider_id}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn catalog_route_returns_classified_providers() {
         let request = Request::builder()
             .uri("/api/v1/providers/catalog")
