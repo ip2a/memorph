@@ -110,21 +110,28 @@ impl Provider for KimiProvider {
         let work_dirs = load_work_dir_map()?;
         let mut seen_session_ids = BTreeMap::new();
         let mut sessions = Vec::new();
+        let mut work_dir_paths = std::fs::read_dir(&root)
+            .with_context(|| format!("Failed to read Kimi sessions: {}", root.display()))?
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect::<Vec<_>>();
+        work_dir_paths.sort();
 
-        for (work_dir_key, work_dir) in &work_dirs {
-            let sessions_dir = root.join(work_dir_key);
-            let entries = match std::fs::read_dir(&sessions_dir) {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!(
-                            "Failed to read Kimi work-dir sessions: {}",
-                            sessions_dir.display()
-                        )
-                    })
-                }
-            };
+        for sessions_dir in work_dir_paths {
+            let work_dir_key = sessions_dir
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            let project_dir = work_dirs
+                .get(work_dir_key)
+                .map(|work_dir| work_dir.project_dir.clone());
+            let entries = std::fs::read_dir(&sessions_dir).with_context(|| {
+                format!(
+                    "Failed to read Kimi work-dir sessions: {}",
+                    sessions_dir.display()
+                )
+            })?;
             let mut session_dirs = entries
                 .filter_map(|entry| entry.ok())
                 .map(|entry| entry.path())
@@ -150,11 +157,9 @@ impl Provider for KimiProvider {
                         session_dir.display()
                     );
                 }
-                if let Some(summary) = kimi_session_summary(
-                    &session_dir,
-                    session_id,
-                    Some(work_dir.project_dir.clone()),
-                )? {
+                if let Some(summary) =
+                    kimi_session_summary(&session_dir, session_id, project_dir.clone())?
+                {
                     sessions.push(summary);
                 }
             }
@@ -2066,7 +2071,7 @@ mod tests {
     }
 
     #[test]
-    fn scan_supports_local_and_remote_kaos_keys_and_ignores_orphans() {
+    fn scan_supports_local_remote_and_unmapped_work_dirs() {
         let dir = tempdir().unwrap();
         let sessions_root = dir.path().join("sessions");
         let _guard = use_test_kimi_sessions_dir(sessions_root.clone());
@@ -2086,22 +2091,28 @@ mod tests {
         write_context_only_session(dir.path(), "orphan-key", "orphan-session");
 
         let sessions = KimiProvider.scan_sessions().unwrap();
+        assert_eq!(sessions.len(), 3);
         assert_eq!(
             sessions
                 .iter()
-                .map(|session| (
-                    session.session_id.as_str(),
-                    session.project_dir.as_deref().unwrap()
-                ))
+                .filter_map(|session| session
+                    .project_dir
+                    .as_deref()
+                    .map(|project_dir| (session.session_id.as_str(), project_dir)))
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 ("local-session", local_path),
                 ("remote-session", remote_path),
             ])
         );
-        assert!(sessions
-            .iter()
-            .all(|session| session.session_id != "orphan-session"));
+        assert_eq!(
+            sessions
+                .iter()
+                .find(|session| session.session_id == "orphan-session")
+                .unwrap()
+                .project_dir,
+            None
+        );
     }
 
     #[test]

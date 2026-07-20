@@ -290,7 +290,6 @@ struct CodexWorkspaceSyncCandidate {
 
 #[derive(Debug, Clone)]
 struct CodexSessionFileMeta {
-    path: PathBuf,
     size_bytes: u64,
 }
 
@@ -383,87 +382,35 @@ impl Provider for CodexProvider {
 
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
         let codex_dir = get_codex_dir();
-        let index_path = codex_dir.join("session_index.jsonl");
-        if !index_path.exists() {
-            return Ok(Vec::new());
-        }
-
-        // Build a lookup from SQLite for fast access
+        let index_titles = load_session_index_entries(&codex_dir.join("session_index.jsonl"))?;
         let sqlite_lookup = build_sqlite_thread_metadata_lookup(&codex_dir).unwrap_or_default();
+        let mut sessions = Vec::new();
 
-        let file = File::open(&index_path).with_context(|| {
-            format!(
-                "Failed to open Codex session index: {}",
-                index_path.display()
-            )
-        })?;
-        let reader = BufReader::new(file);
-        let mut index_entries = Vec::new();
-
-        for line in reader.lines() {
-            let line = line?;
-            if line.trim().is_empty() {
-                continue;
-            }
-            let value: Value = match serde_json::from_str(&line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-
-            let id = value
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let thread_name = value
-                .get("thread_name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let updated_at = value
-                .get("updated_at")
-                .and_then(|v| v.as_str())
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.timestamp_millis());
-
-            if let Some(id) = id {
-                index_entries.push((id, thread_name, updated_at));
-            }
-        }
-
-        let missing_file_ids: Vec<String> = index_entries
-            .iter()
-            .filter(|(id, _, _)| {
-                sqlite_lookup
-                    .get(id)
-                    .and_then(|meta| meta.rollout_path.as_deref())
-                    .is_none()
-            })
-            .map(|(id, _, _)| id.clone())
-            .collect();
-        let file_lookup = build_session_file_lookup(&codex_dir, &missing_file_ids);
-        let mut sessions = Vec::with_capacity(index_entries.len());
-
-        for (id, thread_name, updated_at) in index_entries {
-            let file_meta = file_lookup.get(&id);
-            let sqlite_meta = sqlite_lookup.get(&id);
+        for (path, rollout) in discover_codex_rollouts(&codex_dir)? {
+            let session_id = rollout.session_id.clone();
+            let sqlite_meta = sqlite_lookup.get(&session_id);
             let project_dir = sqlite_meta
                 .and_then(|meta| clean_non_empty(meta.cwd.as_deref()))
                 .map(str::to_string)
-                .or_else(|| file_meta.and_then(|meta| extract_cwd_from_session_path(&meta.path)));
+                .or(rollout.workspace_dir.clone());
             let title = select_codex_display_title(
-                thread_name.as_deref(),
+                index_titles.get(&session_id).map(String::as_str),
                 sqlite_meta.and_then(|meta| meta.title.as_deref()),
-                None,
-                &id,
+                rollout.title.as_deref(),
+                &session_id,
             );
+            let last_active_at = rollout
+                .updated_at
+                .as_deref()
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.timestamp_millis());
 
             sessions.push(ProviderSessionSummary {
-                session_id: id,
+                session_id,
                 title,
                 project_dir,
-                last_active_at: updated_at,
-                source_path: sqlite_meta
-                    .and_then(|meta| meta.rollout_path.clone())
-                    .or_else(|| file_meta.map(|meta| meta.path.to_string_lossy().to_string())),
+                last_active_at,
+                source_path: Some(path.to_string_lossy().to_string()),
             });
         }
 
@@ -3870,6 +3817,32 @@ struct CodexRolloutSummary {
     has_user_event: bool,
 }
 
+fn discover_codex_rollouts(codex_dir: &Path) -> Result<Vec<(PathBuf, CodexRolloutSummary)>> {
+    let mut rollouts = Vec::new();
+    for root in [
+        codex_dir.join("sessions"),
+        codex_dir.join("archived_sessions"),
+    ] {
+        if !root.exists() {
+            continue;
+        }
+        for entry in WalkDir::new(root)
+            .max_depth(5)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Some(summary) = read_codex_rollout_summary(path)? {
+                rollouts.push((path.to_path_buf(), summary));
+            }
+        }
+    }
+    Ok(rollouts)
+}
+
 fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRolloutSummary>> {
     let file = File::open(path)
         .with_context(|| format!("Failed to open Codex rollout file: {}", path.display()))?;
@@ -4612,13 +4585,7 @@ fn build_session_file_lookup(
                 continue;
             };
             let size_bytes = entry.metadata().map(|metadata| metadata.len()).unwrap_or(0);
-            lookup.insert(
-                session_id.clone(),
-                CodexSessionFileMeta {
-                    path: path.to_path_buf(),
-                    size_bytes,
-                },
-            );
+            lookup.insert(session_id.clone(), CodexSessionFileMeta { size_bytes });
             remaining.remove(&session_id);
         }
     }
@@ -4988,6 +4955,54 @@ mod tests {
         rollout_path: PathBuf,
         original_index_bytes: Vec<u8>,
         original_rollout_bytes: Vec<u8>,
+    }
+
+    #[test]
+    fn scan_sessions_includes_sqlite_threads_missing_from_session_index() {
+        let temp = tempdir().unwrap();
+        let codex_dir = temp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let _guard = use_test_codex_dir(codex_dir.clone());
+        let rollout_path = codex_dir.join("sessions/rollout-unindexed.jsonl");
+        std::fs::create_dir_all(rollout_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &rollout_path,
+            serde_json::to_string(&json!({
+                "type": "session_meta",
+                "payload": {
+                    "id": "unindexed-session",
+                    "cwd": "/tmp/rollout-project",
+                    "title": "Rollout title"
+                }
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+
+        let conn = Connection::open(codex_dir.join(CODEX_SQLITE_FILE_BASENAME)).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT, title TEXT, rollout_path TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (id, cwd, title, rollout_path) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                "unindexed-session",
+                "/tmp/project",
+                "Current Codex session",
+                rollout_path.to_string_lossy().as_ref()
+            ],
+        )
+        .unwrap();
+
+        let sessions = CodexProvider.scan_sessions().unwrap();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].session_id, "unindexed-session");
+        assert_eq!(sessions[0].project_dir.as_deref(), Some("/tmp/project"));
+        assert_eq!(sessions[0].title.as_deref(), Some("Current Codex session"));
+        assert_eq!(sessions[0].source_path.as_deref(), rollout_path.to_str());
     }
 
     fn write_native_codex_fixture(codex_dir: &Path, session_id: &str) -> NativeCodexFixture {
