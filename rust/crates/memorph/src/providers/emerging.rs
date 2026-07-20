@@ -52,13 +52,6 @@ json_read_provider!(
     None::<&'static str>
 );
 json_read_provider!(
-    DroidProvider,
-    "droid",
-    "Factory",
-    droid_roots,
-    None::<&'static str>
-);
-json_read_provider!(
     WindsurfProvider,
     "windsurf",
     "Windsurf",
@@ -163,18 +156,6 @@ fn antigravity_roots() -> Vec<PathBuf> {
     if let Some(root) = home_join(".antigravity") {
         roots.push(root);
     }
-    roots
-}
-
-fn droid_roots() -> Vec<PathBuf> {
-    // Factory/Droid stores Claude-style transcripts per project.
-    // CodeIsland reference: ~/.factory/sessions/<encoded-cwd>/<sessionId>.jsonl
-    let mut roots = Vec::new();
-    if let Some(root) = home_join(".factory/sessions") {
-        roots.push(root);
-    }
-    roots.extend(vscode_global_storage("Factory"));
-    roots.extend(vscode_global_storage("Droid"));
     roots
 }
 
