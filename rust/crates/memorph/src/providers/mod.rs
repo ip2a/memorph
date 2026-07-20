@@ -9,10 +9,8 @@ pub mod copilot;
 pub mod cursor;
 pub mod deepseek;
 pub mod droid;
-pub mod emerging;
 pub(crate) mod environment_profiles;
 pub mod gemini;
-mod generic_json;
 pub mod hermes;
 pub mod kimi;
 pub mod kiro;
@@ -75,9 +73,9 @@ impl ProviderRegistry {
             "codebuddy" => Some(Box::new(codebuddy::CodeBuddyProvider)),
             "qoder" => Some(Box::new(qoder::QoderProvider)),
             "qwen" => Some(Box::new(qwen::QwenProvider)),
-            "trae" => Some(Box::new(emerging::TraeProvider)),
+            "trae" => Some(Box::new(trae::TraeProvider)),
             "droid" => Some(Box::new(droid::DroidProvider)),
-            "stepfun" => Some(Box::new(emerging::StepFunProvider)),
+            "stepfun" => Some(Box::new(stepfun::StepFunProvider)),
             "workbuddy" => Some(Box::new(workbuddy::WorkBuddyProvider)),
             "hermes" => Some(Box::new(hermes::HermesProvider)),
             "pi" => Some(Box::new(pi::PiProvider)),
@@ -157,6 +155,17 @@ mod tests {
                 "missing provider id: {id}"
             );
             assert!(find_provider(id).is_some(), "provider not found: {id}");
+        }
+    }
+
+    #[test]
+    fn unverified_session_providers_do_not_claim_json_sources() {
+        for id in ["stepfun", "trae"] {
+            let provider = find_provider(id).expect("provider registry entry");
+            let capabilities = provider.capabilities();
+            assert!(!capabilities.scan, "{id} must not claim session discovery");
+            assert!(!capabilities.import, "{id} must not claim session import");
+            assert!(provider.scan_sessions().is_err());
         }
     }
 
