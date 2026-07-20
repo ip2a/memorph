@@ -275,6 +275,7 @@ fn state_db_path() -> PathBuf {
 fn source_locator_for(db: &Path, id: &str) -> String {
     format!("{}#session={id}", db.display())
 }
+#[cfg(test)]
 fn source_locator(id: &str) -> String {
     source_locator_for(&state_db_path(), id)
 }
