@@ -4997,8 +4997,11 @@ mod tests {
         assert_eq!(first.projected_sessions, 1);
 
         let conn = rusqlite::Connection::open(&db).unwrap();
-        conn.execute("UPDATE sessions SET title = 'After' WHERE id = 'hermes-1'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE sessions SET title = 'After' WHERE id = 'hermes-1'",
+            [],
+        )
+        .unwrap();
         conn.execute("UPDATE messages SET content = 'after' WHERE id = 1", [])
             .unwrap();
         drop(conn);
@@ -5227,8 +5230,12 @@ mod tests {
         let sessions = dir.path().join("encoded-cwd");
         std::fs::create_dir_all(&sessions).unwrap();
         let source = sessions.join("droid-session-1.jsonl");
-        std::fs::write(&source, r#"{"role":"user","content":"before"}
-"#).unwrap();
+        std::fs::write(
+            &source,
+            r#"{"role":"user","content":"before"}
+"#,
+        )
+        .unwrap();
         let mut session = ProviderSessionSummary {
             session_id: "droid-session-1".into(),
             title: Some("before".into()),
@@ -5242,8 +5249,12 @@ mod tests {
         let mut first = SessionProjectionBootstrapReport::default();
         bootstrap_provider_session(&mut projection, "droid", &session, &mut first);
         assert_eq!(first.projected_sessions, 1);
-        std::fs::write(&source, r#"{"role":"user","content":"after"}
-"#).unwrap();
+        std::fs::write(
+            &source,
+            r#"{"role":"user","content":"after"}
+"#,
+        )
+        .unwrap();
         session.title = Some("after".into());
         let mut second = SessionProjectionBootstrapReport::default();
         bootstrap_provider_session(&mut projection, "droid", &session, &mut second);
@@ -5265,177 +5276,408 @@ mod tests {
         let source_dir = dir.path().join("project");
         std::fs::create_dir_all(&source_dir).unwrap();
         let source = source_dir.join("codebuddy-session-1.jsonl");
-        std::fs::write(&source, r#"{"role":"user","content":"before","cwd":"/tmp/codebuddy"}
-"#).unwrap();
+        std::fs::write(
+            &source,
+            r#"{"role":"user","content":"before","cwd":"/tmp/codebuddy"}
+"#,
+        )
+        .unwrap();
         let session = ProviderSessionSummary {
-            session_id: "codebuddy-session-1".into(), title: Some("before".into()),
-            project_dir: Some("/tmp/codebuddy".into()), last_active_at: None,
+            session_id: "codebuddy-session-1".into(),
+            title: Some("before".into()),
+            project_dir: Some("/tmp/codebuddy".into()),
+            last_active_at: None,
             source_path: Some(source.to_string_lossy().into_owned()),
         };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
         let mut report = SessionProjectionBootstrapReport::default();
         bootstrap_provider_session(&mut projection, "codebuddy", &session, &mut report);
-        assert_eq!(report.projected_sessions, 1); assert_eq!(report.failed_sessions, 0); assert_eq!(report.missing_sources, 0);
+        assert_eq!(report.projected_sessions, 1);
+        assert_eq!(report.failed_sessions, 0);
+        assert_eq!(report.missing_sources, 0);
     }
 
     #[test]
     fn codebuddy_projection_refreshes_after_session_source_change() {
-        let dir = tempfile::tempdir().unwrap(); let source_dir = dir.path().join("project");
-        std::fs::create_dir_all(&source_dir).unwrap(); let source = source_dir.join("codebuddy-session-1.jsonl");
-        std::fs::write(&source, r#"{"role":"user","content":"before"}
-"#).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("project");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("codebuddy-session-1.jsonl");
+        std::fs::write(
+            &source,
+            r#"{"role":"user","content":"before"}
+"#,
+        )
+        .unwrap();
         let mut session = ProviderSessionSummary {
-            session_id: "codebuddy-session-1".into(), title: Some("before".into()), project_dir: None, last_active_at: None,
+            session_id: "codebuddy-session-1".into(),
+            title: Some("before".into()),
+            project_dir: None,
+            last_active_at: None,
             source_path: Some(source.to_string_lossy().into_owned()),
         };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut first = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "codebuddy", &session, &mut first);
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "codebuddy", &session, &mut first);
         assert_eq!(first.projected_sessions, 1);
-        std::fs::write(&source, r#"{"role":"user","content":"after"}
-"#).unwrap(); session.title = Some("after".into());
-        let mut second = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "codebuddy", &session, &mut second);
-        assert_eq!(second.projected_sessions, 1); assert_eq!(second.unchanged_sessions, 0);
+        std::fs::write(
+            &source,
+            r#"{"role":"user","content":"after"}
+"#,
+        )
+        .unwrap();
+        session.title = Some("after".into());
+        let mut second = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "codebuddy", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1);
+        assert_eq!(second.unchanged_sessions, 0);
     }
 
     #[test]
     fn bootstrap_projects_qoder_session_source() {
-        let dir = tempfile::tempdir().unwrap(); let source_dir = dir.path().join("encoded-cwd");
-        std::fs::create_dir_all(&source_dir).unwrap(); let source = source_dir.join("qoder-session-1.jsonl");
-        std::fs::write(&source, r#"{"role":"user","content":"before","cwd":"/tmp/qoder"}
-"#).unwrap();
-        let session = ProviderSessionSummary { session_id: "qoder-session-1".into(), title: Some("before".into()), project_dir: Some("/tmp/qoder".into()), last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("encoded-cwd");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("qoder-session-1.jsonl");
+        std::fs::write(
+            &source,
+            r#"{"role":"user","content":"before","cwd":"/tmp/qoder"}
+"#,
+        )
+        .unwrap();
+        let session = ProviderSessionSummary {
+            session_id: "qoder-session-1".into(),
+            title: Some("before".into()),
+            project_dir: Some("/tmp/qoder".into()),
+            last_active_at: None,
+            source_path: Some(source.to_string_lossy().into_owned()),
+        };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut report = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "qoder", &session, &mut report);
-        assert_eq!(report.projected_sessions, 1); assert_eq!(report.failed_sessions, 0); assert_eq!(report.missing_sources, 0);
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut report = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "qoder", &session, &mut report);
+        assert_eq!(report.projected_sessions, 1);
+        assert_eq!(report.failed_sessions, 0);
+        assert_eq!(report.missing_sources, 0);
     }
 
     #[test]
     fn qoder_projection_refreshes_after_session_source_change() {
-        let dir = tempfile::tempdir().unwrap(); let source_dir = dir.path().join("encoded-cwd");
-        std::fs::create_dir_all(&source_dir).unwrap(); let source = source_dir.join("qoder-session-1.jsonl");
-        std::fs::write(&source, r#"{"role":"user","content":"before"}
-"#).unwrap();
-        let mut session = ProviderSessionSummary { session_id: "qoder-session-1".into(), title: Some("before".into()), project_dir: None, last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("encoded-cwd");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("qoder-session-1.jsonl");
+        std::fs::write(
+            &source,
+            r#"{"role":"user","content":"before"}
+"#,
+        )
+        .unwrap();
+        let mut session = ProviderSessionSummary {
+            session_id: "qoder-session-1".into(),
+            title: Some("before".into()),
+            project_dir: None,
+            last_active_at: None,
+            source_path: Some(source.to_string_lossy().into_owned()),
+        };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut first = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "qoder", &session, &mut first); assert_eq!(first.projected_sessions, 1);
-        std::fs::write(&source, r#"{"role":"user","content":"after"}
-"#).unwrap(); session.title = Some("after".into());
-        let mut second = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "qoder", &session, &mut second);
-        assert_eq!(second.projected_sessions, 1); assert_eq!(second.unchanged_sessions, 0);
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "qoder", &session, &mut first);
+        assert_eq!(first.projected_sessions, 1);
+        std::fs::write(
+            &source,
+            r#"{"role":"user","content":"after"}
+"#,
+        )
+        .unwrap();
+        session.title = Some("after".into());
+        let mut second = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "qoder", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1);
+        assert_eq!(second.unchanged_sessions, 0);
     }
 
     #[test]
     fn bootstrap_projects_workbuddy_trace_source() {
-        let dir = tempfile::tempdir().unwrap(); let source_dir = dir.path().join("traces");
-        std::fs::create_dir_all(&source_dir).unwrap(); let source = source_dir.join("trace-workbuddy-1.json");
-        std::fs::write(&source, r#"{"trace":{"traceId":"workbuddy-1","title":"before"},"spans":[]}"#).unwrap();
-        let session = ProviderSessionSummary { session_id: "workbuddy-1".into(), title: Some("before".into()), project_dir: None, last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("traces");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("trace-workbuddy-1.json");
+        std::fs::write(
+            &source,
+            r#"{"trace":{"traceId":"workbuddy-1","title":"before"},"spans":[]}"#,
+        )
+        .unwrap();
+        let session = ProviderSessionSummary {
+            session_id: "workbuddy-1".into(),
+            title: Some("before".into()),
+            project_dir: None,
+            last_active_at: None,
+            source_path: Some(source.to_string_lossy().into_owned()),
+        };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut report = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "workbuddy", &session, &mut report);
-        assert_eq!(report.projected_sessions, 1); assert_eq!(report.failed_sessions, 0); assert_eq!(report.missing_sources, 0);
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut report = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "workbuddy", &session, &mut report);
+        assert_eq!(report.projected_sessions, 1);
+        assert_eq!(report.failed_sessions, 0);
+        assert_eq!(report.missing_sources, 0);
     }
 
     #[test]
     fn workbuddy_projection_refreshes_after_trace_source_change() {
-        let dir = tempfile::tempdir().unwrap(); let source_dir = dir.path().join("traces");
-        std::fs::create_dir_all(&source_dir).unwrap(); let source = source_dir.join("trace-workbuddy-1.json");
-        std::fs::write(&source, r#"{"trace":{"traceId":"workbuddy-1","title":"before"},"spans":[]}"#).unwrap();
-        let mut session = ProviderSessionSummary { session_id: "workbuddy-1".into(), title: Some("before".into()), project_dir: None, last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("traces");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("trace-workbuddy-1.json");
+        std::fs::write(
+            &source,
+            r#"{"trace":{"traceId":"workbuddy-1","title":"before"},"spans":[]}"#,
+        )
+        .unwrap();
+        let mut session = ProviderSessionSummary {
+            session_id: "workbuddy-1".into(),
+            title: Some("before".into()),
+            project_dir: None,
+            last_active_at: None,
+            source_path: Some(source.to_string_lossy().into_owned()),
+        };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut first = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "workbuddy", &session, &mut first); assert_eq!(first.projected_sessions, 1);
-        std::fs::write(&source, r#"{"trace":{"traceId":"workbuddy-1","title":"after"},"spans":[]}"#).unwrap(); session.title = Some("after".into());
-        let mut second = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "workbuddy", &session, &mut second);
-        assert_eq!(second.projected_sessions, 1); assert_eq!(second.unchanged_sessions, 0);
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "workbuddy", &session, &mut first);
+        assert_eq!(first.projected_sessions, 1);
+        std::fs::write(
+            &source,
+            r#"{"trace":{"traceId":"workbuddy-1","title":"after"},"spans":[]}"#,
+        )
+        .unwrap();
+        session.title = Some("after".into());
+        let mut second = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "workbuddy", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1);
+        assert_eq!(second.unchanged_sessions, 0);
     }
 
     #[test]
     fn bootstrap_projects_pi_session_source() {
-        let dir = tempfile::tempdir().unwrap(); let source_dir = dir.path().join("--tmp-pi--");
-        std::fs::create_dir_all(&source_dir).unwrap(); let source = source_dir.join("20260720_pi-1.jsonl");
-        std::fs::write(&source, r#"{"type":"session","id":"pi-1","cwd":"/tmp/pi"}
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("--tmp-pi--");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("20260720_pi-1.jsonl");
+        std::fs::write(
+            &source,
+            r#"{"type":"session","id":"pi-1","cwd":"/tmp/pi"}
 {"type":"message","message":{"role":"user","content":[{"type":"text","text":"before"}]}}
-"#).unwrap();
-        let session = ProviderSessionSummary { session_id: "pi-1".into(), title: Some("before".into()), project_dir: Some("/tmp/pi".into()), last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+"#,
+        )
+        .unwrap();
+        let session = ProviderSessionSummary {
+            session_id: "pi-1".into(),
+            title: Some("before".into()),
+            project_dir: Some("/tmp/pi".into()),
+            last_active_at: None,
+            source_path: Some(source.to_string_lossy().into_owned()),
+        };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut report = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "pi", &session, &mut report);
-        assert_eq!(report.projected_sessions, 1); assert_eq!(report.failed_sessions, 0); assert_eq!(report.missing_sources, 0);
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut report = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "pi", &session, &mut report);
+        assert_eq!(report.projected_sessions, 1);
+        assert_eq!(report.failed_sessions, 0);
+        assert_eq!(report.missing_sources, 0);
     }
 
     #[test]
     fn pi_projection_refreshes_after_session_source_change() {
-        let dir = tempfile::tempdir().unwrap(); let source_dir = dir.path().join("--tmp-pi--");
-        std::fs::create_dir_all(&source_dir).unwrap(); let source = source_dir.join("20260720_pi-1.jsonl");
-        std::fs::write(&source, r#"{"type":"session","id":"pi-1","cwd":"/tmp/pi"}
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("--tmp-pi--");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let source = source_dir.join("20260720_pi-1.jsonl");
+        std::fs::write(
+            &source,
+            r#"{"type":"session","id":"pi-1","cwd":"/tmp/pi"}
 {"type":"message","message":{"role":"user","content":[{"type":"text","text":"before"}]}}
-"#).unwrap();
-        let mut session = ProviderSessionSummary { session_id: "pi-1".into(), title: Some("before".into()), project_dir: Some("/tmp/pi".into()), last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+"#,
+        )
+        .unwrap();
+        let mut session = ProviderSessionSummary {
+            session_id: "pi-1".into(),
+            title: Some("before".into()),
+            project_dir: Some("/tmp/pi".into()),
+            last_active_at: None,
+            source_path: Some(source.to_string_lossy().into_owned()),
+        };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut first = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "pi", &session, &mut first); assert_eq!(first.projected_sessions, 1);
-        std::fs::write(&source, r#"{"type":"session","id":"pi-1","cwd":"/tmp/pi"}
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "pi", &session, &mut first);
+        assert_eq!(first.projected_sessions, 1);
+        std::fs::write(
+            &source,
+            r#"{"type":"session","id":"pi-1","cwd":"/tmp/pi"}
 {"type":"message","message":{"role":"user","content":[{"type":"text","text":"after"}]}}
-"#).unwrap(); session.title = Some("after".into());
-        let mut second = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "pi", &session, &mut second);
-        assert_eq!(second.projected_sessions, 1); assert_eq!(second.unchanged_sessions, 0);
+"#,
+        )
+        .unwrap();
+        session.title = Some("after".into());
+        let mut second = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "pi", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1);
+        assert_eq!(second.unchanged_sessions, 0);
     }
 
     #[test]
     fn bootstrap_projects_antigravity_session_source() {
-        let dir = tempfile::tempdir().unwrap(); let source = dir.path().join("session.json");
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("session.json");
         std::fs::write(&source, r#"{"sessionId":"ag-1","directories":["/tmp/ag"],"messages":[{"type":"user","content":[{"text":"before"}]}]}"#).unwrap();
-        let session = ProviderSessionSummary { session_id: "ag-1".into(), title: Some("before".into()), project_dir: Some("/tmp/ag".into()), last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let session = ProviderSessionSummary {
+            session_id: "ag-1".into(),
+            title: Some("before".into()),
+            project_dir: Some("/tmp/ag".into()),
+            last_active_at: None,
+            source_path: Some(source.to_string_lossy().into_owned()),
+        };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut report = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "antigravity", &session, &mut report);
-        assert_eq!(report.projected_sessions, 1); assert_eq!(report.failed_sessions, 0); assert_eq!(report.missing_sources, 0);
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut report = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "antigravity", &session, &mut report);
+        assert_eq!(report.projected_sessions, 1);
+        assert_eq!(report.failed_sessions, 0);
+        assert_eq!(report.missing_sources, 0);
     }
 
     #[test]
     fn antigravity_projection_refreshes_after_session_source_change() {
-        let dir = tempfile::tempdir().unwrap(); let source = dir.path().join("session.json");
-        std::fs::write(&source, r#"{"sessionId":"ag-1","messages":[{"type":"user","content":[{"text":"before"}]}]}"#).unwrap();
-        let mut session = ProviderSessionSummary { session_id: "ag-1".into(), title: Some("before".into()), project_dir: None, last_active_at: None, source_path: Some(source.to_string_lossy().into_owned()) };
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("session.json");
+        std::fs::write(
+            &source,
+            r#"{"sessionId":"ag-1","messages":[{"type":"user","content":[{"text":"before"}]}]}"#,
+        )
+        .unwrap();
+        let mut session = ProviderSessionSummary {
+            session_id: "ag-1".into(),
+            title: Some("before".into()),
+            project_dir: None,
+            last_active_at: None,
+            source_path: Some(source.to_string_lossy().into_owned()),
+        };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut first = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "antigravity", &session, &mut first); assert_eq!(first.projected_sessions, 1);
-        std::fs::write(&source, r#"{"sessionId":"ag-1","messages":[{"type":"user","content":[{"text":"after"}]}]}"#).unwrap(); session.title = Some("after".into());
-        let mut second = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "antigravity", &session, &mut second);
-        assert_eq!(second.projected_sessions, 1); assert_eq!(second.unchanged_sessions, 0);
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "antigravity", &session, &mut first);
+        assert_eq!(first.projected_sessions, 1);
+        std::fs::write(
+            &source,
+            r#"{"sessionId":"ag-1","messages":[{"type":"user","content":[{"text":"after"}]}]}"#,
+        )
+        .unwrap();
+        session.title = Some("after".into());
+        let mut second = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "antigravity", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1);
+        assert_eq!(second.unchanged_sessions, 0);
     }
 
     #[test]
     fn bootstrap_projects_windsurf_active_trajectory_source() {
-        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("state.vscdb");
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.vscdb");
         let conn = rusqlite::Connection::open(&db).unwrap();
-        conn.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []).unwrap();
-        conn.execute("INSERT INTO ItemTable(key,value) VALUES (?1,?2)", rusqlite::params!["windsurf.state.cachedActiveTrajectory:workspace-1", "CgZ3aW5kLTE="]).unwrap(); drop(conn);
+        conn.execute(
+            "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable(key,value) VALUES (?1,?2)",
+            rusqlite::params![
+                "windsurf.state.cachedActiveTrajectory:workspace-1",
+                "CgZ3aW5kLTE="
+            ],
+        )
+        .unwrap();
+        drop(conn);
         let source = format!("{}#workspace=workspace-1", db.display());
-        let session = ProviderSessionSummary { session_id: "wind-1".into(), title: None, project_dir: None, last_active_at: None, source_path: Some(source) };
+        let session = ProviderSessionSummary {
+            session_id: "wind-1".into(),
+            title: None,
+            project_dir: None,
+            last_active_at: None,
+            source_path: Some(source),
+        };
         let mut projection = rusqlite::Connection::open_in_memory().unwrap();
-        local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut report = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "windsurf", &session, &mut report);
-        assert_eq!(report.projected_sessions, 1); assert_eq!(report.failed_sessions, 0); assert_eq!(report.missing_sources, 0);
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut report = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "windsurf", &session, &mut report);
+        assert_eq!(report.projected_sessions, 1);
+        assert_eq!(report.failed_sessions, 0);
+        assert_eq!(report.missing_sources, 0);
     }
 
     #[test]
     fn windsurf_projection_refreshes_after_active_trajectory_change() {
-        let dir = tempfile::tempdir().unwrap(); let db = dir.path().join("state.vscdb");
-        let conn = rusqlite::Connection::open(&db).unwrap(); conn.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT NOT NULL)", []).unwrap();
-        conn.execute("INSERT INTO ItemTable(key,value) VALUES (?1,?2)", rusqlite::params!["windsurf.state.cachedActiveTrajectory:workspace-1", "CgZ3aW5kLTE="]).unwrap(); drop(conn);
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.vscdb");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ItemTable(key,value) VALUES (?1,?2)",
+            rusqlite::params![
+                "windsurf.state.cachedActiveTrajectory:workspace-1",
+                "CgZ3aW5kLTE="
+            ],
+        )
+        .unwrap();
+        drop(conn);
         let source = format!("{}#workspace=workspace-1", db.display());
-        let session = ProviderSessionSummary { session_id: "wind-1".into(), title: None, project_dir: None, last_active_at: None, source_path: Some(source) };
-        let mut projection = rusqlite::Connection::open_in_memory().unwrap(); local_store::configure_connection(&projection).unwrap(); local_store::apply_schema(&mut projection).unwrap();
-        let mut first = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "windsurf", &session, &mut first); assert_eq!(first.projected_sessions, 1);
-        let conn = rusqlite::Connection::open(&db).unwrap(); conn.execute("UPDATE ItemTable SET value = ?1 WHERE key = ?2", rusqlite::params!["CgZ3aW5kLTEQYQ==", "windsurf.state.cachedActiveTrajectory:workspace-1"]).unwrap(); drop(conn);
-        let mut second = SessionProjectionBootstrapReport::default(); bootstrap_provider_session(&mut projection, "windsurf", &session, &mut second);
-        assert_eq!(second.projected_sessions, 1); assert_eq!(second.unchanged_sessions, 0);
+        let session = ProviderSessionSummary {
+            session_id: "wind-1".into(),
+            title: None,
+            project_dir: None,
+            last_active_at: None,
+            source_path: Some(source),
+        };
+        let mut projection = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut first = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "windsurf", &session, &mut first);
+        assert_eq!(first.projected_sessions, 1);
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "UPDATE ItemTable SET value = ?1 WHERE key = ?2",
+            rusqlite::params![
+                "CgZ3aW5kLTEQYQ==",
+                "windsurf.state.cachedActiveTrajectory:workspace-1"
+            ],
+        )
+        .unwrap();
+        drop(conn);
+        let mut second = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "windsurf", &session, &mut second);
+        assert_eq!(second.projected_sessions, 1);
+        assert_eq!(second.unchanged_sessions, 0);
     }
 
     #[test]
@@ -5582,8 +5824,14 @@ mod tests {
             let provider = crate::providers::find_provider(provider_id)
                 .unwrap_or_else(|| panic!("missing provider registry entry: {provider_id}"));
             let capabilities = provider.capabilities();
-            assert!(capabilities.scan, "{provider_id} must scan before projection");
-            assert!(capabilities.import, "{provider_id} must import before projection");
+            assert!(
+                capabilities.scan,
+                "{provider_id} must scan before projection"
+            );
+            assert!(
+                capabilities.import,
+                "{provider_id} must import before projection"
+            );
         }
     }
 
