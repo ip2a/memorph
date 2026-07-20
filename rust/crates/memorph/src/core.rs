@@ -5577,6 +5577,13 @@ mod tests {
     }
 
     #[test]
+    fn projected_provider_whitelist_has_no_duplicates() {
+        let unique: std::collections::HashSet<_> =
+            PROJECTED_SESSION_PROVIDER_IDS.iter().copied().collect();
+        assert_eq!(unique.len(), PROJECTED_SESSION_PROVIDER_IDS.len());
+    }
+
+    #[test]
     fn gemini_is_enabled_for_default_projection_bootstrap() {
         assert!(PROJECTED_SESSION_PROVIDER_IDS.contains(&"gemini"));
         assert!(provider_supports_session_projection("gemini"));
