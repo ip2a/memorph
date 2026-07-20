@@ -151,6 +151,50 @@ pub struct StatsDistributions {
     pub message_count: Vec<StatsDistributionBucket>,
 }
 
+#[derive(Default)]
+struct EventFacts {
+    message_count: usize,
+    timestamps: Vec<(i64, bool)>,
+}
+
+fn load_event_facts(
+    conn: &rusqlite::Connection,
+    rows: &[ProjectedSessionSnapshotRow],
+) -> Result<HashMap<String, EventFacts>> {
+    let ids: HashSet<_> = rows
+        .iter()
+        .map(|row| row.canonical_session_id.as_str())
+        .collect();
+    let mut facts: HashMap<String, EventFacts> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT session_id, role, timestamp_ms FROM session_events WHERE session_id IS NOT NULL",
+    )?;
+    let events = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+        ))
+    })?;
+    for event in events {
+        let (session_id, role, timestamp) = event?;
+        if !ids.contains(session_id.as_str()) {
+            continue;
+        }
+        let facts = facts.entry(session_id).or_default();
+        if matches!(role.as_deref(), Some("user" | "assistant")) {
+            facts.message_count += 1;
+        }
+        if let Some(timestamp) = timestamp {
+            facts.timestamps.push((
+                timestamp,
+                matches!(role.as_deref(), Some("user" | "assistant")),
+            ));
+        }
+    }
+    Ok(facts)
+}
+
 pub fn dashboard(query: &StatsDashboardQuery) -> Result<StatsDashboard> {
     if !query.all && query.workspace.as_deref().is_none_or(str::is_empty) {
         anyhow::bail!("workspace is required when all=false");
@@ -175,8 +219,15 @@ fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<Stats
         })
         .collect();
     let created_at = load_created_at(&conn, &rows)?;
+    let event_facts = load_event_facts(&conn, &rows)?;
     let range_start = query.range.days().map(|days| now - Duration::days(days));
-    Ok(build_dashboard(&rows, &created_at, range_start, now))
+    Ok(build_dashboard(
+        &rows,
+        &created_at,
+        &event_facts,
+        range_start,
+        now,
+    ))
 }
 
 fn load_created_at(
@@ -222,6 +273,7 @@ fn add(bucket: &mut StatsBucket, row: &ProjectedSessionSnapshotRow) {
 fn build_dashboard(
     rows: &[ProjectedSessionSnapshotRow],
     created: &HashMap<String, i64>,
+    event_facts: &HashMap<String, EventFacts>,
     range_start: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> StatsDashboard {
@@ -240,12 +292,26 @@ fn build_dashboard(
                 })
             })
             .count(),
-        total_messages: rows.iter().filter_map(|row| row.message_count).sum(),
-        active_session_messages: active.iter().filter_map(|row| row.message_count).sum(),
+        total_messages: rows
+            .iter()
+            .map(|row| {
+                event_facts
+                    .get(&row.canonical_session_id)
+                    .map_or(0, |facts| facts.message_count)
+            })
+            .sum(),
+        active_session_messages: active
+            .iter()
+            .map(|row| {
+                event_facts
+                    .get(&row.canonical_session_id)
+                    .map_or(0, |facts| facts.message_count)
+            })
+            .sum(),
         total_size_bytes: rows.iter().filter_map(|row| row.size_bytes).sum(),
         unknown_message_counts: rows
             .iter()
-            .filter(|row| row.message_count.is_none())
+            .filter(|row| !event_facts.contains_key(&row.canonical_session_id))
             .count(),
         unknown_size_bytes: rows.iter().filter(|row| row.size_bytes.is_none()).count(),
         unknown_activity_times: rows
@@ -320,8 +386,10 @@ fn build_dashboard(
         }
     }
 
-    let providers = breakdown(rows, &active, |row| Some(row.provider_id.clone()));
-    let workspaces = breakdown(rows, &active, |row| row.workspace_dir.clone());
+    let providers = breakdown(rows, &active, event_facts, |row| {
+        Some(row.provider_id.clone())
+    });
+    let workspaces = breakdown(rows, &active, event_facts, |row| row.workspace_dir.clone());
     let mut sessions: Vec<_> = rows
         .iter()
         .map(|row| StatsSessionItem {
@@ -336,7 +404,9 @@ fn build_dashboard(
                 .or_else(|| row.title.clone())
                 .unwrap_or_else(|| "Untitled session".into()),
             workspace: row.workspace_dir.clone(),
-            message_count: row.message_count.unwrap_or_default(),
+            message_count: event_facts
+                .get(&row.canonical_session_id)
+                .map_or(0, |facts| facts.message_count),
             size_bytes: row.size_bytes.unwrap_or_default(),
             created_at: created
                 .get(&row.canonical_session_id)
@@ -358,7 +428,7 @@ fn build_dashboard(
         range_start,
         overview,
         attention,
-        timeline: timeline(rows, created, range_start, now),
+        timeline: timeline(rows, created, event_facts, range_start, now),
         providers,
         workspaces,
         top_sessions: StatsTopSessions {
@@ -366,13 +436,14 @@ fn build_dashboard(
             by_size,
             recently_active: sessions,
         },
-        distributions: distributions(rows),
+        distributions: distributions(rows, event_facts),
     }
 }
 
 fn breakdown<F>(
     rows: &[ProjectedSessionSnapshotRow],
     active: &[&ProjectedSessionSnapshotRow],
+    event_facts: &HashMap<String, EventFacts>,
     key: F,
 ) -> Vec<StatsBreakdownItem>
 where
@@ -394,7 +465,9 @@ where
         item.session_count += 1;
         item.active_session_count +=
             usize::from(active_ids.contains(row.canonical_session_id.as_str()));
-        item.message_count += row.message_count.unwrap_or(0);
+        item.message_count += event_facts
+            .get(&row.canonical_session_id)
+            .map_or(0, |facts| facts.message_count);
         item.size_bytes += row.size_bytes.unwrap_or(0);
         let last = row.last_active_at_ms.and_then(date);
         if last > item.last_active_at {
@@ -409,6 +482,7 @@ where
 fn timeline(
     rows: &[ProjectedSessionSnapshotRow],
     created: &HashMap<String, i64>,
+    event_facts: &HashMap<String, EventFacts>,
     range_start: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> Vec<StatsTimelinePoint> {
@@ -435,16 +509,21 @@ fn timeline(
         }
     };
     for row in rows {
-        if let Some(dt) = row
-            .last_active_at_ms
-            .and_then(date)
-            .filter(|dt| *dt >= start)
-        {
-            let point = points
-                .entry(key(dt))
-                .or_insert_with(|| point_at(dt, monthly));
-            point.active_sessions += 1;
-            point.active_session_messages += row.message_count.unwrap_or(0);
+        if let Some(facts) = event_facts.get(&row.canonical_session_id) {
+            let mut active_days: HashMap<_, (DateTime<Utc>, usize)> = HashMap::new();
+            for (timestamp, is_message) in &facts.timestamps {
+                if let Some(dt) = date(*timestamp).filter(|dt| *dt >= start) {
+                    let entry = active_days.entry(key(dt)).or_insert((dt, 0));
+                    entry.1 += usize::from(*is_message);
+                }
+            }
+            for (bucket_key, (dt, message_count)) in active_days {
+                let point = points
+                    .entry(bucket_key)
+                    .or_insert_with(|| point_at(dt, monthly));
+                point.active_sessions += 1;
+                point.active_session_messages += message_count;
+            }
         }
         if let Some(dt) = created
             .get(&row.canonical_session_id)
@@ -475,7 +554,10 @@ fn point_at(dt: DateTime<Utc>, monthly: bool) -> StatsTimelinePoint {
     }
 }
 
-fn distributions(rows: &[ProjectedSessionSnapshotRow]) -> StatsDistributions {
+fn distributions(
+    rows: &[ProjectedSessionSnapshotRow],
+    event_facts: &HashMap<String, EventFacts>,
+) -> StatsDistributions {
     let mut sizes = [
         ("lt_100kb", "小于 100 KB", 0, 0),
         ("100kb_1mb", "100 KB–1 MB", 0, 0),
@@ -501,7 +583,9 @@ fn distributions(rows: &[ProjectedSessionSnapshotRow]) -> StatsDistributions {
         };
         sizes[si].2 += 1;
         sizes[si].3 += size;
-        let count = row.message_count.unwrap_or(0);
+        let count = event_facts
+            .get(&row.canonical_session_id)
+            .map_or(0, |facts| facts.message_count);
         let mi = if count <= 2 {
             0
         } else if count <= 20 {
@@ -598,7 +682,13 @@ mod tests {
                 (now - Duration::days(60)).timestamp_millis(),
             ),
         ]);
-        let result = build_dashboard(&rows, &created, Some(now - Duration::days(30)), now);
+        let result = build_dashboard(
+            &rows,
+            &created,
+            &HashMap::new(),
+            Some(now - Duration::days(30)),
+            now,
+        );
 
         assert_eq!(result.overview.total_sessions, 4);
         assert_eq!(result.overview.active_sessions, 1);
