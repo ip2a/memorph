@@ -133,6 +133,7 @@ impl<'a> SnapshotStore<'a> {
         page: usize,
         page_size: usize,
     ) -> Result<WorkspaceSessionPageRow> {
+        let page_size = page_size.max(1);
         let search = search.map(str::to_lowercase);
         let search_filter = "(?1 IS NULL OR instr(lower(rtrim(ss.workspace_dir, '/\\')), ?1) > 0)";
         let base_filter = format!(
@@ -165,7 +166,7 @@ impl<'a> SnapshotStore<'a> {
         let page_sql = format!(
             "SELECT
                 rtrim(ss.workspace_dir, '/\\') AS path,
-                COUNT(DISTINCT ss.session_id) AS session_count,
+                COUNT(*) AS session_count,
                 MAX(ss.last_active_at_ms) AS last_active_at_ms
              FROM session_snapshots ss
              JOIN sessions s ON s.id = ss.session_id
