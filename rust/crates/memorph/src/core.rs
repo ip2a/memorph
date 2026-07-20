@@ -36,7 +36,7 @@ pub mod session_management;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
 const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
-    // Tier 1: full L4 providers with independent modules and verified projections.
+    // Providers that passed the source-backed projection gate.
     "claude",
     "codex",
     "cursor",
@@ -49,6 +49,7 @@ const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
     "cline",
     "copilot",
     "droid",
+    "hermes",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
