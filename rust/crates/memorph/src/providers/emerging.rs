@@ -114,13 +114,6 @@ json_read_provider!(
     workbuddy_roots,
     None::<&'static str>
 );
-json_read_provider!(
-    HermesProvider,
-    "hermes",
-    "Hermes",
-    hermes_roots,
-    None::<&'static str>
-);
 json_read_provider!(PiProvider, "pi", "pi", pi_roots, None::<&'static str>);
 json_read_provider!(
     TraeProvider,
@@ -290,14 +283,6 @@ fn workbuddy_roots() -> Vec<PathBuf> {
         roots.push(root);
     }
     roots.extend(vscode_global_storage("WorkBuddy"));
-    roots
-}
-
-fn hermes_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("Hermes");
-    if let Some(root) = home_join(".hermes") {
-        roots.push(root);
-    }
     roots
 }
 
