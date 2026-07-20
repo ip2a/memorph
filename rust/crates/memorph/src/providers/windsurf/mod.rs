@@ -220,10 +220,21 @@ fn parse_legacy_locator(source: &str) -> Result<(PathBuf, &str)> {
 }
 fn legacy_blocks<'a>(raw: &'a str, field: &str) -> Vec<&'a str> {
     let mut out = Vec::new();
-    let needle = format!("{field}:{{");
     let mut start = 0;
-    while let Some(offset) = raw[start..].find(&needle) {
-        let open = start + offset + needle.len() - 1;
+    while let Some(offset) = raw[start..].find(field) {
+        let field_end = start + offset + field.len();
+        let rest = &raw[field_end..];
+        let Some(after_colon) = rest.trim_start().strip_prefix(':') else {
+            start = field_end;
+            continue;
+        };
+        let whitespace = after_colon.len() - after_colon.trim_start().len();
+        if !after_colon[whitespace..].starts_with('{') {
+            start = field_end;
+            continue;
+        }
+        let colon_offset = rest.len() - rest.trim_start().len();
+        let open = field_end + colon_offset + 1 + whitespace;
         let mut depth = 0;
         let mut quoted = false;
         let bytes = raw.as_bytes();
@@ -706,7 +717,7 @@ mod tests {
         let path = dir.path().join("chat.pbtxt");
         std::fs::write(
             &path,
-            r#"message:{source: CHAT_MESSAGE_SOURCE_USER conversation_id: "legacy-1" timestamp:{seconds: 10} intent:{text: "hello"}}
+            r#"message: {source: CHAT_MESSAGE_SOURCE_USER conversation_id: "legacy-1" timestamp: {seconds: 10} intent: {text: "hello"}}
 message:{source: CHAT_MESSAGE_SOURCE_USER conversation_id: "other" intent:{text: "skip"}}
 "#,
         )
