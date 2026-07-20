@@ -56,6 +56,7 @@ const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
     "pi",
     "antigravity",
     "windsurf",
+    "trae",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

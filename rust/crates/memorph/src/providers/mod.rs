@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn unverified_session_providers_do_not_claim_json_sources() {
-        for id in ["stepfun", "trae"] {
+        for id in ["stepfun"] {
             let provider = find_provider(id).expect("provider registry entry");
             let capabilities = provider.capabilities();
             assert!(!capabilities.scan, "{id} must not claim session discovery");
