@@ -74,6 +74,10 @@ pub struct StatsOverview {
     pub active_workspaces: usize,
     pub total_providers: usize,
     pub active_providers: usize,
+    pub unknown_message_counts: usize,
+    pub unknown_size_bytes: usize,
+    pub unknown_activity_times: usize,
+    pub unknown_created_times: usize,
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -203,10 +207,12 @@ fn date(ms: i64) -> Option<DateTime<Utc>> {
     Utc.timestamp_millis_opt(ms).single()
 }
 fn is_active(row: &ProjectedSessionSnapshotRow, start: Option<DateTime<Utc>>) -> bool {
-    start.is_none_or(|start| {
-        row.last_active_at_ms
-            .is_some_and(|ms| ms >= start.timestamp_millis())
-    })
+    match start {
+        Some(start) => row
+            .last_active_at_ms
+            .is_some_and(|ms| ms >= start.timestamp_millis()),
+        None => row.last_active_at_ms.is_some(),
+    }
 }
 fn add(bucket: &mut StatsBucket, row: &ProjectedSessionSnapshotRow) {
     bucket.count += 1;
@@ -234,12 +240,22 @@ fn build_dashboard(
                 })
             })
             .count(),
-        total_messages: rows.iter().map(|row| row.message_count.unwrap_or(0)).sum(),
-        active_session_messages: active
+        total_messages: rows.iter().filter_map(|row| row.message_count).sum(),
+        active_session_messages: active.iter().filter_map(|row| row.message_count).sum(),
+        total_size_bytes: rows.iter().filter_map(|row| row.size_bytes).sum(),
+        unknown_message_counts: rows
             .iter()
-            .map(|row| row.message_count.unwrap_or(0))
-            .sum(),
-        total_size_bytes: rows.iter().map(|row| row.size_bytes.unwrap_or(0)).sum(),
+            .filter(|row| row.message_count.is_none())
+            .count(),
+        unknown_size_bytes: rows.iter().filter(|row| row.size_bytes.is_none()).count(),
+        unknown_activity_times: rows
+            .iter()
+            .filter(|row| row.last_active_at_ms.is_none())
+            .count(),
+        unknown_created_times: rows
+            .iter()
+            .filter(|row| !created.contains_key(&row.canonical_session_id))
+            .count(),
         ..Default::default()
     };
     overview.stale_size_bytes = rows
@@ -248,7 +264,7 @@ fn build_dashboard(
             row.last_active_at_ms
                 .is_some_and(|ms| ms < now.timestamp_millis() - 90 * DAY_MS)
         })
-        .map(|row| row.size_bytes.unwrap_or(0))
+        .filter_map(|row| row.size_bytes)
         .sum();
     overview.total_workspaces = rows
         .iter()
@@ -296,7 +312,10 @@ fn build_dashboard(
         if row.size_bytes.unwrap_or(0) >= LARGE_SESSION_BYTES {
             add(&mut attention.large_sessions, row);
         }
-        if row.message_count.unwrap_or(0) <= SHORT_SESSION_MESSAGES {
+        if row
+            .message_count
+            .is_some_and(|count| count <= SHORT_SESSION_MESSAGES)
+        {
             add(&mut attention.short_sessions, row);
         }
     }
@@ -317,8 +336,8 @@ fn build_dashboard(
                 .or_else(|| row.title.clone())
                 .unwrap_or_else(|| "Untitled session".into()),
             workspace: row.workspace_dir.clone(),
-            message_count: row.message_count.unwrap_or(0),
-            size_bytes: row.size_bytes.unwrap_or(0),
+            message_count: row.message_count.unwrap_or_default(),
+            size_bytes: row.size_bytes.unwrap_or_default(),
             created_at: created
                 .get(&row.canonical_session_id)
                 .and_then(|ms| date(*ms)),

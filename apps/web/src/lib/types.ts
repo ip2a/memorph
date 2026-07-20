@@ -1229,6 +1229,10 @@ export type StatsDashboard = {
     active_workspaces: number;
     total_providers: number;
     active_providers: number;
+    unknown_message_counts: number;
+    unknown_size_bytes: number;
+    unknown_activity_times: number;
+    unknown_created_times: number;
   };
   attention: {
     active_7d: StatsBucket;
