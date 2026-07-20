@@ -154,6 +154,7 @@ pub struct StatsDistributions {
 #[derive(Default)]
 struct EventFacts {
     message_count: usize,
+    last_activity_at_ms: Option<i64>,
     timestamps: Vec<(i64, bool)>,
 }
 
@@ -186,6 +187,11 @@ fn load_event_facts(
             facts.message_count += 1;
         }
         if let Some(timestamp) = timestamp {
+            facts.last_activity_at_ms = Some(
+                facts
+                    .last_activity_at_ms
+                    .map_or(timestamp, |last| last.max(timestamp)),
+            );
             facts.timestamps.push((
                 timestamp,
                 matches!(role.as_deref(), Some("user" | "assistant")),
@@ -257,12 +263,24 @@ fn load_created_at(
 fn date(ms: i64) -> Option<DateTime<Utc>> {
     Utc.timestamp_millis_opt(ms).single()
 }
-fn is_active(row: &ProjectedSessionSnapshotRow, start: Option<DateTime<Utc>>) -> bool {
-    match start {
-        Some(start) => row
-            .last_active_at_ms
-            .is_some_and(|ms| ms >= start.timestamp_millis()),
-        None => row.last_active_at_ms.is_some(),
+fn activity_at(
+    row: &ProjectedSessionSnapshotRow,
+    event_facts: &HashMap<String, EventFacts>,
+) -> Option<i64> {
+    event_facts
+        .get(&row.canonical_session_id)
+        .and_then(|facts| facts.last_activity_at_ms)
+        .or(row.last_active_at_ms)
+}
+
+fn is_active(
+    row: &ProjectedSessionSnapshotRow,
+    event_facts: &HashMap<String, EventFacts>,
+    start: Option<DateTime<Utc>>,
+) -> bool {
+    match activity_at(row, event_facts) {
+        Some(ms) => start.is_none_or(|start| ms >= start.timestamp_millis()),
+        None => false,
     }
 }
 fn add(bucket: &mut StatsBucket, row: &ProjectedSessionSnapshotRow) {
@@ -279,7 +297,7 @@ fn build_dashboard(
 ) -> StatsDashboard {
     let active: Vec<_> = rows
         .iter()
-        .filter(|row| is_active(row, range_start))
+        .filter(|row| is_active(row, event_facts, range_start))
         .collect();
     let mut overview = StatsOverview {
         total_sessions: rows.len(),
@@ -316,7 +334,7 @@ fn build_dashboard(
         unknown_size_bytes: rows.iter().filter(|row| row.size_bytes.is_none()).count(),
         unknown_activity_times: rows
             .iter()
-            .filter(|row| row.last_active_at_ms.is_none())
+            .filter(|row| activity_at(row, event_facts).is_none())
             .count(),
         unknown_created_times: rows
             .iter()
@@ -365,9 +383,7 @@ fn build_dashboard(
         short_max_messages: SHORT_SESSION_MESSAGES,
     };
     for row in rows {
-        match row
-            .last_active_at_ms
-            .map(|ms| (now.timestamp_millis() - ms).max(0) / DAY_MS)
+        match activity_at(row, event_facts).map(|ms| (now.timestamp_millis() - ms).max(0) / DAY_MS)
         {
             None => add(&mut attention.unknown, row),
             Some(days) if days < 7 => add(&mut attention.active_7d, row),
@@ -411,7 +427,7 @@ fn build_dashboard(
             created_at: created
                 .get(&row.canonical_session_id)
                 .and_then(|ms| date(*ms)),
-            last_active_at: row.last_active_at_ms.and_then(date),
+            last_active_at: activity_at(row, event_facts).and_then(date),
         })
         .collect();
     let mut by_messages = sessions.clone();
@@ -640,6 +656,37 @@ mod tests {
             preferred_targets: Vec::new(),
             stale: false,
         }
+    }
+
+    #[test]
+    fn uses_event_timestamps_for_activity_and_message_counts() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 18, 12, 0, 0).unwrap();
+        let rows = vec![row("session", "codex", Some("/a"), None, 99, 100)];
+        let events = HashMap::from([(
+            "session".into(),
+            EventFacts {
+                message_count: 3,
+                last_activity_at_ms: Some((now - Duration::days(1)).timestamp_millis()),
+                timestamps: vec![
+                    ((now - Duration::days(2)).timestamp_millis(), true),
+                    ((now - Duration::days(2)).timestamp_millis(), true),
+                    ((now - Duration::days(1)).timestamp_millis(), true),
+                ],
+            },
+        )]);
+        let result = build_dashboard(
+            &rows,
+            &HashMap::new(),
+            &events,
+            Some(now - Duration::days(7)),
+            now,
+        );
+
+        assert_eq!(result.overview.total_messages, 3);
+        assert_eq!(result.overview.active_sessions, 1);
+        assert_eq!(result.overview.active_session_messages, 3);
+        assert_eq!(result.top_sessions.by_messages[0].message_count, 3);
+        assert_eq!(result.top_sessions.recently_active[0].last_active_at, date((now - Duration::days(1)).timestamp_millis()));
     }
 
     #[test]
