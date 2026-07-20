@@ -1,2 +1,383 @@
 pub mod adapter;
 pub mod hook;
+
+use crate::canonical::{
+    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
+    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingReport,
+    ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
+    SessionProvenance,
+};
+use crate::provider::{
+    PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
+    ProviderContentFidelity, ProviderSessionSummary, ProviderSourceFingerprint, ProviderWriteRisk,
+    ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
+};
+use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+use walkdir::WalkDir;
+
+pub struct AntigravityProvider;
+const PROVIDER_ID: &str = "antigravity";
+
+impl Provider for AntigravityProvider {
+    fn id(&self) -> &'static str {
+        PROVIDER_ID
+    }
+    fn name(&self) -> &'static str {
+        "Antigravity"
+    }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            scan: true,
+            import: true,
+            storage_shape: StorageShape::Directory,
+            scan_strategy: ScanStrategy::FullScan,
+            page_strategy: PageStrategy::FullImport,
+            turn_quality: TurnQuality::Inferred,
+            import_fidelity: ProviderContentFidelity {
+                text: Some(MappingDisposition::Preserved),
+                thinking: Some(MappingDisposition::Preserved),
+                tool_call: Some(MappingDisposition::Preserved),
+                tool_result: Some(MappingDisposition::Preserved),
+                provider_payload: Some(MappingDisposition::Preserved),
+                ..ProviderContentFidelity::unknown()
+            },
+            resume_quality: ResumeQuality::None,
+            write_risk: ProviderWriteRisk {
+                level: WriteRiskLevel::High,
+                multiple_files: true,
+                sqlite: false,
+                sidecar_files: true,
+                index_repair: false,
+            },
+            backup_support: ProviderBackupSupport {
+                before_write: false,
+                restore: false,
+                sync_only: false,
+            },
+            activity_support: ProviderActivitySupport {
+                hook_events: false,
+                runtime_endpoint: false,
+                session_activity: false,
+            },
+            ..ProviderCapabilities::default()
+        }
+    }
+    fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
+        let mut sessions = Vec::new();
+        for root in roots() {
+            if !root.exists() {
+                continue;
+            }
+            for entry in WalkDir::new(root)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(Result::ok)
+            {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let Ok(doc) = read_document(path) else {
+                    continue;
+                };
+                if doc.get("kind").and_then(Value::as_str) == Some("main") {
+                    continue;
+                }
+                let Some(id) = document_id(&doc) else {
+                    continue;
+                };
+                let messages = messages(&doc);
+                sessions.push(ProviderSessionSummary {
+                    session_id: id,
+                    title: messages.iter().find_map(|m| text_for(m)),
+                    project_dir: doc
+                        .get("directories")
+                        .and_then(Value::as_array)
+                        .and_then(|a| a.first())
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    last_active_at: timestamp_ms(&doc, path),
+                    source_path: Some(path.to_string_lossy().into_owned()),
+                });
+            }
+        }
+        sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active_at.unwrap_or(0)));
+        sessions.dedup_by(|a, b| a.session_id == b.session_id);
+        Ok(sessions)
+    }
+    fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        let path = std::fs::canonicalize(source_path)
+            .with_context(|| format!("Antigravity source does not exist: {source_path}"))?;
+        let doc = read_document(&path)?;
+        if doc.get("kind").and_then(Value::as_str) == Some("main") {
+            anyhow::bail!("Antigravity main Gemini CLI session is not an Antigravity session");
+        }
+        let id = document_id(&doc).context("Antigravity document must contain sessionId")?;
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+        let events = messages(&doc)
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| map_message(m, i, &mut report))
+            .collect();
+        let mut extensions = BTreeMap::new();
+        extensions.insert("antigravity_session_json".into(), doc.clone());
+        let created = timestamp(&doc, "startTime")
+            .or_else(|| modified_datetime(&path))
+            .unwrap_or_else(Utc::now);
+        Ok(ImportedSession {
+            session: CanonicalSession {
+                schema: CanonicalSchema::default(),
+                identity: SessionIdentity {
+                    canonical_id: id.clone(),
+                    source_title: messages(&doc).iter().find_map(|m| text_for(m)),
+                },
+                provenance: SessionProvenance {
+                    imported_at: Utc::now(),
+                    imported_by: Some("memorph-cli".into()),
+                    primary_source: ProviderSessionRef {
+                        provider_id: PROVIDER_ID.into(),
+                        session_id: id,
+                        source_path: Some(path.to_string_lossy().into_owned()),
+                    },
+                    aliases: Vec::new(),
+                },
+                context: SessionContext {
+                    workspace_dir: doc
+                        .get("directories")
+                        .and_then(Value::as_array)
+                        .and_then(|a| a.first())
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    created_at: Some(created),
+                    last_active_at: timestamp(&doc, "lastUpdated")
+                        .or_else(|| modified_datetime(&path)),
+                    tags: Vec::new(),
+                },
+                events,
+                artifacts: Vec::new(),
+                extensions,
+            },
+            report,
+        })
+    }
+    fn session_source_fingerprint(
+        &self,
+        source_path: &str,
+    ) -> Result<Option<ProviderSourceFingerprint>> {
+        let path = Path::new(source_path);
+        if !path.exists() {
+            return Ok(None);
+        }
+        let digest = Sha256::digest(std::fs::read(path)?);
+        let size = std::fs::metadata(path)?.len();
+        Ok(Some(ProviderSourceFingerprint {
+            modified_at_ms: modified_ms(path).unwrap_or(0),
+            size_bytes: size.min(i64::MAX as u64) as i64,
+            value: format!(
+                "antigravity-json-v1:{}:{digest:x}",
+                document_id(&read_document(path)?).unwrap_or_default()
+            ),
+        }))
+    }
+    fn data_source_paths(&self) -> Vec<PathBuf> {
+        roots()
+    }
+}
+fn roots() -> Vec<PathBuf> {
+    dirs::home_dir()
+        .into_iter()
+        .map(|h| h.join(".gemini/tmp"))
+        .collect()
+}
+fn read_document(path: &Path) -> Result<Value> {
+    serde_json::from_str(&std::fs::read_to_string(path)?)
+        .with_context(|| format!("invalid Antigravity JSON in {}", path.display()))
+}
+fn document_id(doc: &Value) -> Option<String> {
+    doc.get("sessionId")
+        .or_else(|| doc.get("session_id"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+fn messages(doc: &Value) -> Vec<&Value> {
+    doc.get("messages")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter(|m| {
+                    matches!(
+                        m.get("type").and_then(Value::as_str),
+                        Some("user") | Some("gemini")
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+fn timestamp(doc: &Value, key: &str) -> Option<DateTime<Utc>> {
+    doc.get(key)
+        .and_then(Value::as_str)
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
+}
+fn timestamp_ms(doc: &Value, path: &Path) -> Option<i64> {
+    timestamp(doc, "lastUpdated")
+        .or_else(|| modified_datetime(path))
+        .map(|d| d.timestamp_millis())
+}
+fn modified_ms(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_millis().min(i64::MAX as u128) as i64)
+}
+fn modified_datetime(path: &Path) -> Option<DateTime<Utc>> {
+    modified_ms(path).and_then(DateTime::<Utc>::from_timestamp_millis)
+}
+fn text_for(v: &Value) -> Option<String> {
+    v.get("content")
+        .and_then(|c| c.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|p| p.get("text").and_then(Value::as_str))
+        .map(str::to_string)
+        .next()
+}
+fn blocks(v: &Value) -> Vec<EventBlock> {
+    let mut out = Vec::new();
+    if let Some(parts) = v.get("content").and_then(Value::as_array) {
+        for p in parts {
+            if let Some(t) = p.get("text").and_then(Value::as_str) {
+                out.push(EventBlock::Text { text: t.into() });
+            }
+        }
+    }
+    if let Some(thoughts) = v.get("thoughts").and_then(Value::as_array) {
+        for p in thoughts {
+            if let Some(t) = p
+                .get("text")
+                .or_else(|| p.get("summary"))
+                .and_then(Value::as_str)
+            {
+                out.push(EventBlock::Thinking {
+                    text: t.into(),
+                    signature: None,
+                });
+            }
+        }
+    }
+    if let Some(calls) = v.get("toolCalls").and_then(Value::as_array) {
+        for c in calls {
+            out.push(EventBlock::ToolCall {
+                tool_call_id: c
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .into(),
+                name: c
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("tool")
+                    .into(),
+                input: c
+                    .get("args")
+                    .cloned()
+                    .or_else(|| c.get("arguments").cloned()),
+            });
+            if let Some(result) = c.get("result") {
+                out.push(EventBlock::ToolResult {
+                    tool_call_id: c
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .into(),
+                    content: result.to_string(),
+                    is_error: false,
+                });
+            }
+        }
+    }
+    out
+}
+fn map_message(v: &Value, i: usize, r: &mut MappingReport) -> Option<SessionEvent> {
+    let role_raw = v.get("type").and_then(Value::as_str)?;
+    let role = match role_raw {
+        "user" => EventRole::User,
+        "gemini" => EventRole::Assistant,
+        _ => return None,
+    };
+    let bs = blocks(v);
+    if bs.is_empty() {
+        return None;
+    };
+    let kind = if bs.iter().any(|b| matches!(b, EventBlock::ToolCall { .. })) {
+        SessionEventKind::ToolCall
+    } else if bs
+        .iter()
+        .any(|b| matches!(b, EventBlock::ToolResult { .. }))
+    {
+        SessionEventKind::ToolResult
+    } else {
+        SessionEventKind::Message
+    };
+    r.push_issue(crate::canonical::MappingIssue {
+        level: crate::canonical::MappingIssueLevel::Info,
+        disposition: MappingDisposition::Preserved,
+        code: "antigravity-native-message".into(),
+        message: "Mapped Antigravity JSON message".into(),
+        path: Some(format!("messages[{i}]")),
+        raw: None,
+    });
+    Some(SessionEvent {
+        id: format!("antigravity:event:{i}"),
+        kind,
+        role,
+        timestamp: timestamp(v, "timestamp").unwrap_or_else(Utc::now),
+        links: EventLinks::default(),
+        blocks: bs,
+        metadata: EventMetadata {
+            source: EventSource {
+                provider_id: PROVIDER_ID.into(),
+                original_id: v.get("id").and_then(Value::as_str).map(str::to_string),
+                original_role: Some(role_raw.into()),
+                phase: None,
+            },
+            model: v.get("model").and_then(Value::as_str).map(str::to_string),
+            usage: None,
+            fidelity: MappingDisposition::Preserved,
+            provider_ext: BTreeMap::new(),
+        },
+    })
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn identity_comes_from_document_metadata() {
+        let d = serde_json::json!({"sessionId":"ag-1","projectHash":"p","messages":[]});
+        assert_eq!(document_id(&d).as_deref(), Some("ag-1"));
+    }
+    #[test]
+    fn maps_antigravity_messages_and_blocks() {
+        let d = serde_json::json!({"type":"gemini","content":[{"text":"answer"}],"thoughts":[{"summary":"think"}],"toolCalls":[{"id":"c1","name":"read","args":{"path":"x"},"result":"ok"}]});
+        let mut r = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+        let e = map_message(&d, 0, &mut r).unwrap();
+        assert_eq!(e.blocks.len(), 4);
+        assert!(matches!(e.role, EventRole::Assistant));
+    }
+    #[test]
+    fn main_gemini_sessions_are_not_antigravity() {
+        let d = serde_json::json!({"kind":"main"});
+        assert!(d.get("kind").and_then(Value::as_str) == Some("main"));
+    }
+}

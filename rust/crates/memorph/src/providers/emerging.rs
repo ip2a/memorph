@@ -45,13 +45,6 @@ macro_rules! json_read_provider {
 }
 
 json_read_provider!(
-    AntigravityProvider,
-    "antigravity",
-    "Antigravity",
-    antigravity_roots,
-    None::<&'static str>
-);
-json_read_provider!(
     WindsurfProvider,
     "windsurf",
     "Windsurf",
@@ -118,22 +111,6 @@ fn vscode_global_storage(app: &str) -> Vec<PathBuf> {
         roots.push(root.join("User").join("workspaceStorage"));
     }
 
-    roots
-}
-
-fn antigravity_roots() -> Vec<PathBuf> {
-    // Antigravity (Google) reuses the Gemini CLI backend for conversations.
-    // CodeIsland reference: ~/.gemini/tmp/<project_hash>/chats/*.json
-    let mut roots = Vec::new();
-    if let Some(root) = home_join(".gemini/tmp") {
-        roots.push(root);
-    }
-    let mut vscode = vscode_global_storage("Antigravity");
-    vscode.extend(vscode_global_storage("Google/Antigravity"));
-    roots.extend(vscode);
-    if let Some(root) = home_join(".antigravity") {
-        roots.push(root);
-    }
     roots
 }
 

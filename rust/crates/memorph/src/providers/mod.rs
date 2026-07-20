@@ -68,7 +68,7 @@ impl ProviderRegistry {
             "cline" => Some(Box::new(cline::ClineProvider)),
             "cursor" => Some(Box::new(cursor::CursorProvider)),
             "deepseek" => Some(Box::new(deepseek::DeepseekProvider)),
-            "antigravity" => Some(Box::new(emerging::AntigravityProvider)),
+            "antigravity" => Some(Box::new(antigravity::AntigravityProvider)),
             "copilot" => Some(Box::new(copilot::CopilotProvider)),
             "windsurf" => Some(Box::new(emerging::WindsurfProvider)),
             "codebuddy" => Some(Box::new(codebuddy::CodeBuddyProvider)),
