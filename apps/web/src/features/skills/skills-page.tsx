@@ -240,6 +240,27 @@ export function SkillsPage() {
                 </div>
               ) : null}
               <section className="flex flex-col gap-2">
+                <h3 className="text-sm font-semibold">{t("skillsAnalysis")}</h3>
+                <div className="grid gap-2 text-xs sm:grid-cols-2">
+                  <div className="rounded-md border p-2">
+                    <span className="text-muted-foreground">{t("skillsVersion")}</span>
+                    <strong className="ml-2">{detailQuery.data?.frontmatter.version || t("skillsUndeclared")}</strong>
+                  </div>
+                  <div className="rounded-md border p-2">
+                    <span className="text-muted-foreground">{t("skillsSource")}</span>
+                    <strong className="ml-2 break-all font-normal">{detailQuery.data?.frontmatter.repository || detailQuery.data?.frontmatter.source || detailQuery.data?.frontmatter.homepage || t("skillsUndeclared")}</strong>
+                  </div>
+                </div>
+                {selected.issues.length ? (
+                  <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-xs">
+                    <strong>{t("skillsFindings", { count: selected.issues.length })}</strong>
+                    <ul className="mt-2 list-disc space-y-1 pl-5">
+                      {selected.issues.map((issue, index) => <li key={`${issue.path || "bundle"}-${index}`}>{issue.path ? `${issue.path}: ` : ""}{issue.message}</li>)}
+                    </ul>
+                  </div>
+                ) : <p className="text-muted-foreground text-xs">{t("skillsNoFindings")}</p>}
+              </section>
+              <section className="flex flex-col gap-2">
                 <h3 className="text-sm font-semibold">Bundle 文件</h3>
                 {treeQuery.data?.assets.map((asset) => (
                   <button key={asset.path} type="button" disabled={!asset.previewable} onClick={() => setPreviewPath(asset.path)} className="flex items-center justify-between rounded border p-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">

@@ -158,6 +158,7 @@ describe("SkillsPage", () => {
     renderRoute();
 
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
+    expect(screen.getByText("Inspection")).toBeTruthy();
     expect(screen.getAllByText("Document Writer").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
 
