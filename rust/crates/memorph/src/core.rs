@@ -4931,6 +4931,49 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_projects_hermes_native_sqlite_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, cwd TEXT, model TEXT, started_at REAL NOT NULL, ended_at REAL, message_count INTEGER, tool_call_count INTEGER, archived INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT, tool_call_id TEXT, tool_calls TEXT, tool_name TEXT, timestamp REAL NOT NULL, reasoning TEXT, reasoning_content TEXT, reasoning_details TEXT, active INTEGER NOT NULL DEFAULT 1);
+             INSERT INTO sessions VALUES ('hermes-1','Hermes fixture','/tmp/hermes-project','model-x',1000,NULL,1,0,0);
+             INSERT INTO messages VALUES (1,'hermes-1','user','hello',NULL,NULL,NULL,1000,NULL,NULL,NULL,1);"
+        ).unwrap();
+        drop(conn);
+
+        let provider = providers::find_provider("hermes").unwrap();
+        assert!(provider.capabilities().scan);
+        assert!(provider.capabilities().import);
+
+        let session = ProviderSessionSummary {
+            session_id: "hermes-1".into(),
+            title: Some("Hermes fixture".into()),
+            project_dir: Some("/tmp/hermes-project".into()),
+            last_active_at: Some(1_000_000),
+            source_path: Some(format!("{}#session=hermes-1", db.display())),
+        };
+        let mut projection = rusqlite::Connection::open_in_memory().unwrap();
+        local_store::configure_connection(&projection).unwrap();
+        local_store::apply_schema(&mut projection).unwrap();
+        let mut report = SessionProjectionBootstrapReport::default();
+        bootstrap_provider_session(&mut projection, "hermes", &session, &mut report);
+
+        assert_eq!(report.projected_sessions, 1);
+        assert_eq!(report.failed_sessions, 0);
+        assert_eq!(report.missing_sources, 0);
+        let title: String = projection
+            .query_row(
+                "SELECT title FROM session_snapshots WHERE provider_id = 'hermes' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Hermes fixture");
+    }
+
+    #[test]
     fn bootstrap_discovers_projects_skips_unchanged_and_refreshes_changed_indexes() {
         let opencode_dir = tempfile::tempdir().unwrap();
         let _guard = TestOpenCodeDirGuard::new(opencode_dir.path().to_path_buf());
