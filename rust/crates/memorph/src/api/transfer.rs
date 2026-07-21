@@ -69,3 +69,33 @@ pub(super) async fn switch_session(Json(body): Json<SwitchBody>) -> impl IntoRes
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
+
+#[derive(Deserialize)]
+pub(super) struct FindQuery {
+    dir: Option<String>,
+    session: Option<String>,
+    provider: Option<String>,
+}
+
+pub(super) async fn find_sessions(Query(q): Query<FindQuery>) -> impl IntoResponse {
+    if q.dir.is_none() && q.session.is_none() && q.provider.is_none() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "At least one filter required: dir, session, or provider",
+        )
+        .into_response();
+    }
+    let providers = q
+        .provider
+        .map(|p| p.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
+    let params = core::FindParams {
+        dir: q.dir,
+        session: q.session,
+        providers,
+    };
+    match core::find_sessions(&params) {
+        Ok(groups) => ApiResponse::success(groups).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}

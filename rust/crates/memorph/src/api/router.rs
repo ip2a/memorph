@@ -153,7 +153,7 @@ pub fn router() -> Router {
         )
         .route("/api/v1/import", post(transfer::import_session))
         .route("/api/v1/switch", post(transfer::switch_session))
-        .route("/api/v1/find", get(find_sessions))
+        .route("/api/v1/find", get(transfer::find_sessions))
         .route("/api/v1/workspaces", get(workspaces::list_workspaces))
         .route(
             "/api/v1/workspaces/with-sessions",
