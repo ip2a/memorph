@@ -40,11 +40,17 @@ pub fn router() -> Router {
                 .put(providers::update_provider_setting)
                 .post(providers::run_provider_setting),
         )
-        .route("/api/v1/settings", get(get_settings).put(update_settings))
-        .route("/api/v1/system/select-folder", post(select_folder))
-        .route("/api/v1/filesystem/directories", get(list_directories))
-        .route("/api/v1/system/select-file", post(select_file))
-        .route("/api/v1/system/open-external", post(open_external))
+        .route(
+            "/api/v1/settings",
+            get(system::get_settings).put(system::update_settings),
+        )
+        .route("/api/v1/system/select-folder", post(system::select_folder))
+        .route(
+            "/api/v1/filesystem/directories",
+            get(system::list_directories),
+        )
+        .route("/api/v1/system/select-file", post(system::select_file))
+        .route("/api/v1/system/open-external", post(system::open_external))
         .route(
             "/api/v1/management/activity",
             get(management::list_management_activity),

@@ -64,7 +64,7 @@ fn directory_listing_returns_only_sorted_directories() {
     std::fs::create_dir(root.path().join("Alpha")).unwrap();
     std::fs::write(root.path().join("session.json"), "{}").unwrap();
 
-    let listing = directory_listing(root.path().to_str()).unwrap();
+    let listing = system::directory_listing(root.path().to_str()).unwrap();
     let names = listing
         .directories
         .iter()
@@ -84,7 +84,7 @@ fn directory_listing_returns_only_sorted_directories() {
 
 #[test]
 fn directory_listing_rejects_relative_paths() {
-    let error = directory_listing(Some("relative/path")).unwrap_err();
+    let error = system::directory_listing(Some("relative/path")).unwrap_err();
     assert!(error.to_string().contains("must be absolute"));
 }
 
