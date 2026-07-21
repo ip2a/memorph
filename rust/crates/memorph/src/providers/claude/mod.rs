@@ -1253,9 +1253,11 @@ fn canonical_event_from_claude_line(
             EventRole::System,
             timestamp,
             line_type,
-            value.clone(),
-            value.clone(),
-            parent_id,
+            ClaudeProviderPayloadData {
+                payload: value.clone(),
+                raw_line: value.clone(),
+                parent_id,
+            },
         ));
     };
 
@@ -1268,9 +1270,11 @@ fn canonical_event_from_claude_line(
             role,
             timestamp,
             line_type,
-            value.clone(),
-            value.clone(),
-            parent_id,
+            ClaudeProviderPayloadData {
+                payload: value.clone(),
+                raw_line: value.clone(),
+                parent_id,
+            },
         ));
     }
 
@@ -1549,16 +1553,25 @@ fn claude_event_kind(blocks: &[EventBlock]) -> SessionEventKind {
     }
 }
 
+struct ClaudeProviderPayloadData {
+    payload: Value,
+    raw_line: Value,
+    parent_id: Option<String>,
+}
+
 fn provider_payload_event(
     id: String,
     kind: SessionEventKind,
     role: EventRole,
     timestamp: chrono::DateTime<Utc>,
     payload_kind: &str,
-    payload: Value,
-    raw_line: Value,
-    parent_id: Option<String>,
+    data: ClaudeProviderPayloadData,
 ) -> SessionEvent {
+    let ClaudeProviderPayloadData {
+        payload,
+        raw_line,
+        parent_id,
+    } = data;
     SessionEvent {
         id,
         kind,
