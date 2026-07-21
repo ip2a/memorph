@@ -900,6 +900,17 @@ pub fn compression_retrieval_hint(archive_ref: &str) -> String {
     )
 }
 
+pub fn canonical_event_role_label(role: EventRole) -> &'static str {
+    match role {
+        EventRole::User => "user",
+        EventRole::Assistant => "assistant",
+        EventRole::Tool => "tool",
+        EventRole::System => "system",
+        EventRole::Developer => "developer",
+        EventRole::Unknown => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1251,16 +1262,5 @@ mod tests {
                 provider_ext: std::collections::BTreeMap::new(),
             },
         }
-    }
-}
-
-pub fn canonical_event_role_label(role: EventRole) -> &'static str {
-    match role {
-        EventRole::User => "user",
-        EventRole::Assistant => "assistant",
-        EventRole::Tool => "tool",
-        EventRole::System => "system",
-        EventRole::Developer => "developer",
-        EventRole::Unknown => "unknown",
     }
 }
