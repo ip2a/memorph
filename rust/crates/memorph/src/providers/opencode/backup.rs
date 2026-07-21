@@ -1,5 +1,7 @@
 use super::*;
 
+type ForeignKeyGroup = (i64, String, String, Option<String>, String);
+
 pub(super) fn create_opencode_session_backup(
     mutation: ProviderSourceMutation,
     operation_id: &str,
@@ -353,8 +355,7 @@ pub(super) fn load_opencode_foreign_keys(conn: &Connection) -> Result<Vec<OpenCo
                 row.get::<_, String>(6)?,
             ))
         })?;
-        let mut groups: BTreeMap<i64, Vec<(i64, String, String, Option<String>, String)>> =
-            BTreeMap::new();
+        let mut groups: BTreeMap<i64, Vec<ForeignKeyGroup>> = BTreeMap::new();
         for row in rows {
             let (id, sequence, parent_table, child_column, parent_column, on_delete) = row?;
             groups.entry(id).or_default().push((

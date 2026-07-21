@@ -1598,7 +1598,7 @@ fn provider_payload_event(
 fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().filter_map(Result::ok).collect();
+    let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
     let head = lines.iter().take(20).collect::<Vec<_>>();
     let tail = lines.iter().rev().take(30).collect::<Vec<_>>();

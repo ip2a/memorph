@@ -70,9 +70,10 @@ fn from_profile(profile: &'static HookProviderProfile) -> Option<HookProviderDes
     })
 }
 
+type EventNameRegistry = Vec<(&'static str, Box<[&'static str]>)>;
+
 fn required_events_for_profile(profile: &'static HookProviderProfile) -> &'static [&'static str] {
-    static EVENT_NAMES: std::sync::OnceLock<Vec<(&'static str, Box<[&'static str]>)>> =
-        std::sync::OnceLock::new();
+    static EVENT_NAMES: std::sync::OnceLock<EventNameRegistry> = std::sync::OnceLock::new();
     EVENT_NAMES
         .get_or_init(|| {
             crate::hooks::profiles::all()

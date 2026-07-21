@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn projected_event_key_orders_by_timestamp_source_order_and_cursor() {
-        let mut keys = vec![
+        let mut keys = [
             ProjectedEventKey::new(Some(20), 0, "a"),
             ProjectedEventKey::new(Some(10), 2, "b"),
             ProjectedEventKey::new(None, 0, "missing-time"),

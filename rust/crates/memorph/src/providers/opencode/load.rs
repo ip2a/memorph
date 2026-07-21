@@ -1,5 +1,18 @@
 use super::*;
 
+type OpenCodeSessionData = (
+    Value,
+    Vec<(Option<i64>, Value)>,
+    HashMap<String, Vec<Value>>,
+);
+type OpenCodePagedSessionData = (
+    Value,
+    Vec<(Option<i64>, Value)>,
+    HashMap<String, Vec<Value>>,
+    usize,
+    usize,
+);
+
 pub(super) fn opencode_session_id_from_source_locator(source_locator: &str) -> Result<String> {
     if let Some((_, session_id)) = opencode_database_source(source_locator) {
         return Ok(session_id.to_string());
@@ -135,11 +148,7 @@ pub(super) fn opencode_database_source(source_locator: &str) -> Option<(&str, &s
 
 pub(super) fn imported_session_from_data(
     session_id: &str,
-    (session_json, messages, parts): (
-        Value,
-        Vec<(Option<i64>, Value)>,
-        HashMap<String, Vec<Value>>,
-    ),
+    (session_json, messages, parts): OpenCodeSessionData,
 ) -> Result<ImportedSession> {
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
     let mut events = Vec::new();
@@ -785,13 +794,7 @@ pub(super) fn scan_sessions_from_filesystem() -> Result<Vec<ProviderSessionSumma
     Ok(sessions)
 }
 
-pub(super) fn load_session_from_db(
-    session_id: &str,
-) -> Result<(
-    Value,
-    Vec<(Option<i64>, Value)>,
-    HashMap<String, Vec<Value>>,
-)> {
+pub(super) fn load_session_from_db(session_id: &str) -> Result<OpenCodeSessionData> {
     let db_path = get_db_path();
     load_session_from_db_path(&db_path, session_id)
 }
@@ -799,11 +802,7 @@ pub(super) fn load_session_from_db(
 pub(super) fn load_session_from_db_path(
     db_path: &Path,
     session_id: &str,
-) -> Result<(
-    Value,
-    Vec<(Option<i64>, Value)>,
-    HashMap<String, Vec<Value>>,
-)> {
+) -> Result<OpenCodeSessionData> {
     let conn = Connection::open(db_path)?;
 
     // Load session
@@ -921,11 +920,7 @@ pub(super) fn load_session_from_db_path(
 pub(super) fn load_session_from_filesystem_path(
     session_id: &str,
     session_path: &Path,
-) -> Result<(
-    Value,
-    Vec<(Option<i64>, Value)>,
-    HashMap<String, Vec<Value>>,
-)> {
+) -> Result<OpenCodeSessionData> {
     let storage_dir = get_opencode_dir().join("storage");
     let session_json: Value = serde_json::from_reader(File::open(session_path)?)?;
 
@@ -992,13 +987,7 @@ pub(super) fn load_session_page_from_db_path(
     session_id: &str,
     event_offset: usize,
     event_limit: Option<usize>,
-) -> Result<(
-    Value,
-    Vec<(Option<i64>, Value)>,
-    HashMap<String, Vec<Value>>,
-    usize,
-    usize,
-)> {
+) -> Result<OpenCodePagedSessionData> {
     let mut conn = Connection::open(db_path)?;
     let tx = conn.transaction()?;
 
@@ -1177,13 +1166,7 @@ pub(super) fn load_session_page_from_filesystem_path(
     session_path: &Path,
     event_offset: usize,
     event_limit: Option<usize>,
-) -> Result<(
-    Value,
-    Vec<(Option<i64>, Value)>,
-    HashMap<String, Vec<Value>>,
-    usize,
-    usize,
-)> {
+) -> Result<OpenCodePagedSessionData> {
     let storage_dir = get_opencode_dir().join("storage");
     let session_json: Value = serde_json::from_reader(File::open(session_path)?)?;
 

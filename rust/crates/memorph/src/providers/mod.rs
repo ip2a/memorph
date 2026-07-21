@@ -147,7 +147,7 @@ mod tests {
             "openclaw",
         ] {
             assert!(
-                all_provider_ids().iter().any(|known| *known == id),
+                all_provider_ids().contains(&id),
                 "missing provider id: {id}"
             );
             assert!(find_provider(id).is_some(), "provider not found: {id}");

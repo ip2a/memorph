@@ -1575,7 +1575,7 @@ fn role_name(role: EventRole) -> &'static str {
 }
 
 fn content_preview(event: &SessionEvent) -> String {
-    if let Some(block) = event.blocks.iter().next() {
+    if let Some(block) = event.blocks.first() {
         match block {
             EventBlock::Text { text } => return theme::truncate(text, 96),
             EventBlock::Thinking { text, .. } => {

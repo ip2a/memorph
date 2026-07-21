@@ -876,7 +876,7 @@ mod session_list_hook_tests {
             provider_id: "claude".to_string(),
             message_count: None,
             size_bytes: None,
-            hook_runtime_summary: has_runtime.then(|| {
+            hook_runtime_summary: has_runtime.then_some({
                 crate::hooks::augmentation::HookRuntimeSummary {
                     linked_sessions: 1,
                     waiting_sessions: 0,

@@ -278,7 +278,9 @@ fn legacy_string(block: &str, field: &str) -> Option<String> {
     }
     None
 }
-fn legacy_sessions(path: &Path) -> Result<Vec<(String, Option<String>, Option<i64>)>> {
+type LegacySession = (String, Option<String>, Option<i64>);
+
+fn legacy_sessions(path: &Path) -> Result<Vec<LegacySession>> {
     let raw = std::fs::read_to_string(path)?;
     let mut out = BTreeMap::new();
     for message in legacy_blocks(&raw, "message") {
