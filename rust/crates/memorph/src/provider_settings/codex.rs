@@ -30,7 +30,7 @@ impl ProviderSettingModule for CodexSettingModule {
     ) -> anyhow::Result<ProviderSettingOutput> {
         match setting_id {
             "repair_workspace_sessions" => Ok(ProviderSettingOutput::CodexWorkspaceRepair(
-                crate::providers::codex::repair_workspace_sessions(
+                crate::providers::codex::management::repair_workspace_sessions(
                     context.workspace.as_deref(),
                     context.actor,
                 )?,
