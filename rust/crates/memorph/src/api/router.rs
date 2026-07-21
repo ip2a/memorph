@@ -2,8 +2,8 @@ use super::*;
 
 pub fn router() -> Router {
     Router::new()
-        .route("/api/v1/meta", get(get_meta))
-        .route("/api/v1/update-check", get(check_for_update))
+        .route("/api/v1/meta", get(meta::get_meta))
+        .route("/api/v1/update-check", get(meta::check_for_update))
         .route("/api/v1/agents", get(providers::list_agent_management))
         .route(
             "/api/v1/agents/summary",
