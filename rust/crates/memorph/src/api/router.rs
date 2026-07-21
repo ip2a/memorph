@@ -45,17 +45,32 @@ pub fn router() -> Router {
         .route("/api/v1/filesystem/directories", get(list_directories))
         .route("/api/v1/system/select-file", post(select_file))
         .route("/api/v1/system/open-external", post(open_external))
-        .route("/api/v1/management/activity", get(list_management_activity))
-        .route("/api/v1/backups", get(list_backups))
-        .route("/api/v1/backups/{backup_id}", get(get_backup))
-        .route("/api/v1/backups/{backup_id}/restore", post(restore_backup))
-        .route("/api/v1/database/backups", post(create_database_backup))
+        .route(
+            "/api/v1/management/activity",
+            get(management::list_management_activity),
+        )
+        .route("/api/v1/backups", get(management::list_backups))
+        .route("/api/v1/backups/{backup_id}", get(management::get_backup))
+        .route(
+            "/api/v1/backups/{backup_id}/restore",
+            post(management::restore_backup),
+        )
+        .route(
+            "/api/v1/database/backups",
+            post(management::create_database_backup),
+        )
         .route(
             "/api/v1/database/backups/verify",
-            post(verify_database_backup),
+            post(management::verify_database_backup),
         )
-        .route("/api/v1/artifacts/inspection", get(inspect_artifacts))
-        .route("/api/v1/artifacts/cleanup", post(cleanup_artifacts))
+        .route(
+            "/api/v1/artifacts/inspection",
+            get(management::inspect_artifacts),
+        )
+        .route(
+            "/api/v1/artifacts/cleanup",
+            post(management::cleanup_artifacts),
+        )
         .route("/api/v1/sessions", get(sessions::list_sessions))
         .route(
             "/api/v1/stats/dashboard",
