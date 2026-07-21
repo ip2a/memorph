@@ -458,7 +458,7 @@ pub(super) fn find_or_create_project(target_dir: &Path) -> Result<String> {
             &project_id,
             &target_dir_str,
             &get_git_remote(target_dir).unwrap_or_default(),
-            &target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string(),
+            target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("project"),
             &now.to_string(),
             &now.to_string(),
             "{}",

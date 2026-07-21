@@ -524,7 +524,7 @@ fn import_session_activity(
         .events
         .iter()
         .map(|event| SourceActivityEvent {
-            kind: event.kind.clone(),
+            kind: event.kind,
             timestamp: event.timestamp,
             visible_message: provider::canonical_event_is_visible_message(event),
         })

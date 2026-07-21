@@ -711,19 +711,15 @@ pub(super) fn opencode_session_db_size_with_conn(
     // Messages size
     let mut stmt = conn.prepare("SELECT length(id) + length(session_id) + length(role) + COALESCE(length(content), 0) + COALESCE(length(name), 0) FROM message WHERE session_id = ?1")?;
     let rows = stmt.query_map([session_id], |row| row.get::<_, i64>(0))?;
-    for row in rows {
-        if let Ok(size) = row {
-            total += size as u64;
-        }
+    for size in rows.flatten() {
+        total += size as u64;
     }
 
     // Parts size
     let mut stmt = conn.prepare("SELECT length(id) + length(message_id) + length(session_id) + length(data) FROM part WHERE session_id = ?1")?;
     let rows = stmt.query_map([session_id], |row| row.get::<_, i64>(0))?;
-    for row in rows {
-        if let Ok(size) = row {
-            total += size as u64;
-        }
+    for size in rows.flatten() {
+        total += size as u64;
     }
 
     Ok(total)
@@ -887,10 +883,8 @@ pub(super) fn load_session_from_db_path(
     })?;
 
     let mut messages = Vec::new();
-    for row in rows {
-        if let Ok(r) = row {
-            messages.push(r);
-        }
+    for r in rows.flatten() {
+        messages.push(r);
     }
 
     // Load parts
@@ -917,10 +911,8 @@ pub(super) fn load_session_from_db_path(
         Ok((message_id, data))
     })?;
 
-    for row in rows {
-        if let Ok((msg_id, part)) = row {
-            parts_map.entry(msg_id).or_default().push(part);
-        }
+    for (msg_id, part) in rows.flatten() {
+        parts_map.entry(msg_id).or_default().push(part);
     }
 
     Ok((session_json, messages, parts_map))
@@ -935,7 +927,7 @@ pub(super) fn load_session_from_filesystem_path(
     HashMap<String, Vec<Value>>,
 )> {
     let storage_dir = get_opencode_dir().join("storage");
-    let session_json: Value = serde_json::from_reader(File::open(&session_path)?)?;
+    let session_json: Value = serde_json::from_reader(File::open(session_path)?)?;
 
     // Load messages from filesystem
     let mut messages = Vec::new();
@@ -1095,18 +1087,16 @@ pub(super) fn load_session_page_from_db_path(
             }
             Ok((Some(created), data))
         })?;
-        for row in rows {
-            if let Ok(r) = row {
-                full_messages.push(r);
-            }
+        for r in rows.flatten() {
+            full_messages.push(r);
         }
     }
 
     // Page slice.
     let page_messages: Vec<(Option<i64>, Value)> = full_messages
         .iter()
-        .cloned()
         .skip(event_offset)
+        .cloned()
         .take(event_limit.unwrap_or(usize::MAX))
         .collect();
     let page_msg_ids: HashSet<String> = page_messages
@@ -1138,11 +1128,9 @@ pub(super) fn load_session_page_from_db_path(
             }
             Ok((message_id, data))
         })?;
-        for row in rows {
-            if let Ok((msg_id, part)) = row {
-                if page_msg_ids.contains(&msg_id) {
-                    page_parts.entry(msg_id).or_default().push(part);
-                }
+        for (msg_id, part) in rows.flatten() {
+            if page_msg_ids.contains(&msg_id) {
+                page_parts.entry(msg_id).or_default().push(part);
             }
         }
     }
@@ -1161,10 +1149,8 @@ pub(super) fn load_session_page_from_db_path(
             let data: Value = serde_json::from_str(&data_str).unwrap_or_default();
             Ok((message_id, data))
         })?;
-        for row in rows {
-            if let Ok((msg_id, part)) = row {
-                full_parts.entry(msg_id).or_default().push(part);
-            }
+        for (msg_id, part) in rows.flatten() {
+            full_parts.entry(msg_id).or_default().push(part);
         }
     }
 
@@ -1199,7 +1185,7 @@ pub(super) fn load_session_page_from_filesystem_path(
     usize,
 )> {
     let storage_dir = get_opencode_dir().join("storage");
-    let session_json: Value = serde_json::from_reader(File::open(&session_path)?)?;
+    let session_json: Value = serde_json::from_reader(File::open(session_path)?)?;
 
     // Enumerate all message files in stable order, then parse only the page.
     let msg_dir = storage_dir.join("message").join(session_id);
@@ -1348,7 +1334,7 @@ pub(super) fn count_visible_opencode_messages(
         }
         let visible_text: String = blocks
             .iter()
-            .filter_map(|block| crate::provider::canonical_visible_block_text(block))
+            .filter_map(crate::provider::canonical_visible_block_text)
             .collect::<Vec<_>>()
             .join("\n");
         if !visible_text.trim().is_empty() {

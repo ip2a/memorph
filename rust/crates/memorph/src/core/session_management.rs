@@ -666,7 +666,7 @@ pub fn expand_compression_session(
         source_provider_id
     };
     let policy = compression::CompressionPolicy::expand(source_provider_id, source_provider_id);
-    let (expanded, _) = compression::prepare_for_export_with_archive(&session, &policy)?;
+    let (expanded, _) = compression::prepare_for_export_with_archive(session, &policy)?;
     let default_prefix = Path::new(&params.file)
         .file_stem()
         .and_then(|value| value.to_str())
@@ -682,7 +682,7 @@ pub fn restore_compression_archive(
 ) -> Result<ExportResult> {
     let default_prefix = format!("{}_compression_archive", session.identity.canonical_id);
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
-    write_session_export_files(&session, prefix, &params.format, None)
+    write_session_export_files(session, prefix, &params.format, None)
 }
 
 pub fn list_compression_archives(
@@ -756,9 +756,7 @@ pub fn write_session_export_files(
         }
     }
 
-    let base = output_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(PathBuf::new);
+    let base = output_dir.map(Path::to_path_buf).unwrap_or_default();
 
     if write_morph {
         let path = base.join(format!("{}.morph", prefix));

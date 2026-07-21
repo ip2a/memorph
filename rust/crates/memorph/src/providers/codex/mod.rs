@@ -730,9 +730,7 @@ fn update_codex_sqlite(
     let codex_version = get_codex_version_in_codex_dir(codex_dir);
     let codex_model_provider = read_codex_model_provider(codex_dir);
     let (codex_model, codex_reasoning) = get_codex_model_config_in_codex_dir(codex_dir);
-    let sandbox_json = format!(
-        "{{\"type\":\"workspace-write\",\"writable_roots\":[],\"network_access\":false,\"exclude_tmpdir_env_var\":false,\"exclude_slash_tmp\":false}}"
-    );
+    let sandbox_json = "{\"type\":\"workspace-write\",\"writable_roots\":[],\"network_access\":false,\"exclude_tmpdir_env_var\":false,\"exclude_slash_tmp\":false}".to_string();
 
     conn.execute(
         "INSERT INTO threads (

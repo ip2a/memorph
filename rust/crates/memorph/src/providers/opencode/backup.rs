@@ -559,9 +559,7 @@ pub(super) fn restore_opencode_sqlite_backup(
         Ok(())
     })();
     let detach_result = conn.execute_batch("DETACH DATABASE memorph_backup;");
-    if let Err(error) = restore_result {
-        return Err(error);
-    }
+    restore_result?;
     detach_result?;
     Ok(())
 }

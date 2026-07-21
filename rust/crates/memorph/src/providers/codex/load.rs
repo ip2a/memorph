@@ -1424,10 +1424,8 @@ pub(super) fn build_sqlite_thread_metadata_lookup(
             },
         ))
     })?;
-    for row in rows {
-        if let Ok((id, metadata)) = row {
-            map.insert(id, metadata);
-        }
+    for (id, metadata) in rows.flatten() {
+        map.insert(id, metadata);
     }
     Ok(map)
 }
@@ -1621,24 +1619,23 @@ pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRoll
 }
 
 pub(super) fn rollout_value_has_user_event(value: &Value) -> bool {
-    if value.get("type").and_then(|value| value.as_str()) == Some("event_msg") {
-        if value
+    if value.get("type").and_then(|value| value.as_str()) == Some("event_msg")
+        && value
             .get("payload")
             .and_then(|payload| payload.get("type"))
             .and_then(|value| value.as_str())
             == Some("user_message")
-        {
-            return true;
-        }
+    {
+        return true;
     }
 
     let Some(payload) = value.get("payload") else {
         return false;
     };
-    if payload.get("type").and_then(|value| value.as_str()) == Some("message") {
-        if payload.get("role").and_then(|value| value.as_str()) == Some("user") {
-            return true;
-        }
+    if payload.get("type").and_then(|value| value.as_str()) == Some("message")
+        && payload.get("role").and_then(|value| value.as_str()) == Some("user")
+    {
+        return true;
     }
 
     false
@@ -1804,7 +1801,7 @@ pub(super) fn extract_cwd_from_session_file(id: &str) -> Option<String> {
 }
 
 pub(super) fn extract_cwd_from_session_path(path: &Path) -> Option<String> {
-    let file = File::open(&path).ok()?;
+    let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
     for line in reader.lines().take(5) {
         let line = line.ok()?;

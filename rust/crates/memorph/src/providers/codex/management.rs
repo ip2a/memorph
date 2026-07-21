@@ -770,7 +770,7 @@ pub(super) fn prune_codex_sync_backups(
         return Ok(0);
     }
 
-    let mut managed_dirs = std::fs::read_dir(&backup_root)?
+    let mut managed_dirs = std::fs::read_dir(backup_root)?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
         .filter_map(|path| {

@@ -68,16 +68,12 @@ impl Default for ActiveCompressionPolicy {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ActiveCompressionMode {
+    #[default]
     PlanOnly,
     Auto,
     Manual,
-}
-
-impl Default for ActiveCompressionMode {
-    fn default() -> Self {
-        Self::PlanOnly
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

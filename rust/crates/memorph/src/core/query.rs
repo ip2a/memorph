@@ -23,13 +23,13 @@ pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
         .into_iter()
         .filter_map(|mut group| {
             group.sessions.retain(|session| {
-                let dir_match = params.dir.as_ref().map_or(true, |directory| {
+                let dir_match = params.dir.as_ref().is_none_or(|directory| {
                     session
                         .project_dir
                         .as_ref()
                         .is_some_and(|project_dir| project_dir.contains(directory))
                 });
-                let session_match = params.session.as_ref().map_or(true, |pattern| {
+                let session_match = params.session.as_ref().is_none_or(|pattern| {
                     session.session_id.contains(pattern)
                         || session
                             .title

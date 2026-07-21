@@ -230,7 +230,7 @@ pub(super) fn index_target_provider_sessions(provider_id: &str) {
     if let Err(error) = refresh_target_provider_sessions(&provider_id) {
         crate::logging::error(
             "target_provider_index_refresh",
-            &format!(
+            format!(
                 "Failed to project {provider_id} sessions into the index after writing a session: {error:#}"
             ),
         );

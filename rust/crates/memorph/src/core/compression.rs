@@ -912,7 +912,7 @@ fn invalidate_summary_cache_for_dir(archive_dir: &Path) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => logging::error(
             "compression_summary_index",
-            &format!(
+            format!(
                 "Failed to remove stale summary index {}: {err}",
                 index_path.display()
             ),
@@ -1124,7 +1124,7 @@ fn list_archives_in_dir(
     if let Err(err) = write_summary_index(archive_dir, &summaries) {
         logging::error(
             "compression_summary_index",
-            &format!("Failed to write summary index: {err}"),
+            format!("Failed to write summary index: {err}"),
         );
     }
     set_cached_summaries_for_dir(archive_dir, summaries.clone());
