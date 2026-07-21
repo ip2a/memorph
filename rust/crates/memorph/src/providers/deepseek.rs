@@ -99,7 +99,6 @@ impl Provider for DeepseekProvider {
                 runtime_endpoint: false,
                 session_activity: false,
             },
-            ..ProviderCapabilities::default()
         }
     }
 

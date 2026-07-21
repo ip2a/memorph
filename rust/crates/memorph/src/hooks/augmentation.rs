@@ -270,9 +270,7 @@ fn match_evidence(
         }
     }
 
-    let Some(workspace_dir) = workspace_dir.filter(|value| !value.trim().is_empty()) else {
-        return None;
-    };
+    let workspace_dir = workspace_dir.filter(|value| !value.trim().is_empty())?;
     let session_workspace = session
         .correlation
         .as_ref()

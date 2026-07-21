@@ -112,9 +112,7 @@ fn detect_executable_version(executable_path: &Path) -> Option<String> {
     }
 
     let mut output = Vec::new();
-    let Some(mut stdout) = child.stdout.take() else {
-        return None;
-    };
+    let mut stdout = child.stdout.take()?;
     std::io::Read::read_to_end(&mut stdout, &mut output).ok()?;
     let stdout = String::from_utf8_lossy(&output).trim().to_string();
     if stdout.is_empty() {

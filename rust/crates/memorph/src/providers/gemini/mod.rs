@@ -119,7 +119,6 @@ impl Provider for GeminiProvider {
                 runtime_endpoint: false,
                 session_activity: false,
             },
-            ..ProviderCapabilities::default()
         }
     }
 
