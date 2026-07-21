@@ -11,7 +11,8 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use crate::config::UiLanguage;
-use crate::core::{self, ExportParams, SessionDetailView, SessionGroup, SessionItem, SwitchParams};
+use crate::core::transfer::{ExportParams, SwitchParams};
+use crate::core::{self, SessionDetailView, SessionGroup, SessionItem};
 use crate::i18n;
 use crate::storage::activity_store::ActivityActor;
 use crate::{config, provider_settings, providers};
@@ -1706,7 +1707,7 @@ impl App {
             move_original: false,
         };
 
-        match core::switch_session(&params) {
+        match core::transfer::switch_session(&params) {
             Ok(result) => {
                 let resume = result
                     .resume_command
@@ -1827,7 +1828,7 @@ impl App {
             output_dir: None,
         };
 
-        match core::export_session(&params, ActivityActor::Tui) {
+        match core::transfer::export_session(&params, ActivityActor::Tui) {
             Ok(result) => self.set_action_success(self.t("exportComplete"), result.files),
             Err(e) => self.set_action_error(self.t("exportFailed"), vec![e.to_string()]),
         }

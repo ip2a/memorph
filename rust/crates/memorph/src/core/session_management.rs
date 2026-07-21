@@ -1,3 +1,4 @@
+use super::transfer::ExportResult;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
@@ -22,9 +23,7 @@ use crate::storage::{
     local_store, session_state,
 };
 
-use super::{
-    ExpandCompressionSessionParams, ExportResult, RenameResult, RestoreCompressionArchiveParams,
-};
+use super::{ExpandCompressionSessionParams, RenameResult, RestoreCompressionArchiveParams};
 
 pub fn normalized_workspace_key(provider_id: &str, workspace: Option<&str>) -> Option<String> {
     providers::find_provider(provider_id)

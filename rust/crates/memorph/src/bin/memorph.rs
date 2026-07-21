@@ -59,8 +59,8 @@ fn run_command(command: Commands) -> Result<()> {
             format,
             output,
         } => {
-            let result = core::export_session(
-                &core::ExportParams {
+            let result = core::transfer::export_session(
+                &core::transfer::ExportParams {
                     provider,
                     session_id,
                     output_prefix: output,
@@ -80,8 +80,8 @@ fn run_command(command: Commands) -> Result<()> {
             file_or_id,
             to_dir,
         } => {
-            let result = core::import_session(
-                &core::ImportParams {
+            let result = core::transfer::import_session(
+                &core::transfer::ImportParams {
                     provider,
                     file_or_id,
                     to_dir,
@@ -131,7 +131,7 @@ fn run_command(command: Commands) -> Result<()> {
             session_id,
             to_dir,
         } => {
-            let result = core::switch_session(&core::SwitchParams {
+            let result = core::transfer::switch_session(&core::transfer::SwitchParams {
                 from,
                 to,
                 session_id,

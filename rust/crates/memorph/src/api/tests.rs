@@ -561,8 +561,8 @@ fn management_operations_record_terminal_activity() {
     let missing_session = "missing-session";
 
     core::refresh_projected_session_staleness(ActivityActor::Api).unwrap();
-    assert!(core::export_session(
-        &core::ExportParams {
+    assert!(core::transfer::export_session(
+        &core::transfer::ExportParams {
             provider: missing_provider.to_string(),
             session_id: missing_session.to_string(),
             output_prefix: None,
@@ -572,8 +572,8 @@ fn management_operations_record_terminal_activity() {
         ActivityActor::Api,
     )
     .is_err());
-    assert!(core::import_session(
-        &core::ImportParams {
+    assert!(core::transfer::import_session(
+        &core::transfer::ImportParams {
             provider: missing_provider.to_string(),
             file_or_id: "missing.json".to_string(),
             to_dir: None,
