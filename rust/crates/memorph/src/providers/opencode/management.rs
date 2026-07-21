@@ -65,16 +65,16 @@ pub(super) fn replace_opencode_session(session_id: &str, session: &CanonicalSess
     let old_paths = discover_opencode_mutation_paths(session_id, &old_message_ids)?;
     let now = Utc::now().timestamp_millis();
     let title = canonical_session_title(session);
-    let projection = build_opencode_projection(
+    let projection = build_opencode_projection(OpenCodeProjectionInput {
         session,
         session_id,
-        &project_id,
-        &slug,
-        &directory,
-        &title,
+        project_id: &project_id,
+        slug: &slug,
+        target_dir: &directory,
+        title: &title,
         created_at,
-        now,
-    );
+        updated_at: now,
+    });
 
     let tx = conn.transaction()?;
     tx.execute("DELETE FROM part WHERE session_id = ?1", [session_id])?;

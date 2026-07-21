@@ -34,27 +34,27 @@ pub(super) fn export_canonical_session(
     let slug = generate_slug();
     let target_dir_str = target_dir.to_string_lossy().to_string();
     let title = canonical_session_title(session);
-    let projection = build_opencode_projection(
+    let projection = build_opencode_projection(OpenCodeProjectionInput {
         session,
-        &session_id,
-        &project_id,
-        &slug,
-        &target_dir_str,
-        &title,
-        now,
-        now,
-    );
+        session_id: &session_id,
+        project_id: &project_id,
+        slug: &slug,
+        target_dir: &target_dir_str,
+        title: &title,
+        created_at: now,
+        updated_at: now,
+    });
 
-    write_to_db(
-        &session_id,
-        &project_id,
-        &slug,
-        &target_dir_str,
-        &title,
+    write_to_db(OpenCodeDatabaseWrite {
+        session_id: &session_id,
+        project_id: &project_id,
+        slug: &slug,
+        directory: &target_dir_str,
+        title: &title,
         now,
-        &projection.messages,
-        &projection.parts,
-    )
+        messages: &projection.messages,
+        parts: &projection.parts,
+    })
     .context("Failed to write to OpenCode SQLite database")?;
     load_session_from_db(&session_id).context("Failed to verify OpenCode SQLite write result")?;
     write_to_filesystem(
@@ -68,22 +68,34 @@ pub(super) fn export_canonical_session(
     Ok(session_id)
 }
 
-pub(super) fn build_opencode_projection(
-    session: &CanonicalSession,
-    session_id: &str,
-    project_id: &str,
-    slug: &str,
-    target_dir_str: &str,
-    title: &str,
-    created_at: i64,
-    updated_at: i64,
-) -> OpenCodeProjection {
+pub(super) struct OpenCodeProjectionInput<'a> {
+    pub(super) session: &'a CanonicalSession,
+    pub(super) session_id: &'a str,
+    pub(super) project_id: &'a str,
+    pub(super) slug: &'a str,
+    pub(super) target_dir: &'a str,
+    pub(super) title: &'a str,
+    pub(super) created_at: i64,
+    pub(super) updated_at: i64,
+}
+
+pub(super) fn build_opencode_projection(input: OpenCodeProjectionInput<'_>) -> OpenCodeProjection {
+    let OpenCodeProjectionInput {
+        session,
+        session_id,
+        project_id,
+        slug,
+        target_dir,
+        title,
+        created_at,
+        updated_at,
+    } = input;
     let session_json = serde_json::json!({
         "id": session_id,
         "slug": slug,
         "version": OPENCODE_VERSION,
         "projectID": project_id,
-        "directory": target_dir_str,
+        "directory": target_dir,
         "title": title,
         "time": {
             "created": created_at,
@@ -101,7 +113,7 @@ pub(super) fn build_opencode_projection(
                 session_id,
                 event,
                 segment,
-                target_dir_str,
+                target_dir,
                 &mut last_user_msg_id,
                 &mut oc_messages,
                 &mut oc_parts,
@@ -135,7 +147,7 @@ pub(super) fn build_opencode_projection(
             &msg_id,
             role,
             parent_id.as_deref(),
-            target_dir_str,
+            target_dir,
         );
         oc_messages.push((msg_id.clone(), msg_created, msg_json));
 
@@ -491,16 +503,28 @@ pub(super) fn get_git_remote(dir: &Path) -> Option<String> {
     }
 }
 
-pub(super) fn write_to_db(
-    session_id: &str,
-    project_id: &str,
-    slug: &str,
-    directory: &str,
-    title: &str,
-    now: i64,
-    messages: &[(String, i64, Value)],
-    parts: &[(String, String, i64, Value)],
-) -> Result<()> {
+pub(super) struct OpenCodeDatabaseWrite<'a> {
+    pub(super) session_id: &'a str,
+    pub(super) project_id: &'a str,
+    pub(super) slug: &'a str,
+    pub(super) directory: &'a str,
+    pub(super) title: &'a str,
+    pub(super) now: i64,
+    pub(super) messages: &'a [(String, i64, Value)],
+    pub(super) parts: &'a [(String, String, i64, Value)],
+}
+
+pub(super) fn write_to_db(input: OpenCodeDatabaseWrite<'_>) -> Result<()> {
+    let OpenCodeDatabaseWrite {
+        session_id,
+        project_id,
+        slug,
+        directory,
+        title,
+        now,
+        messages,
+        parts,
+    } = input;
     let db_path = get_db_path();
     if !db_path.exists() {
         anyhow::bail!(
