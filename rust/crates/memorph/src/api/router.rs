@@ -4,24 +4,27 @@ pub fn router() -> Router {
     Router::new()
         .route("/api/v1/meta", get(get_meta))
         .route("/api/v1/update-check", get(check_for_update))
-        .route("/api/v1/agents", get(list_agent_management))
-        .route("/api/v1/agents/summary", get(list_agent_management_summary))
+        .route("/api/v1/agents", get(providers::list_agent_management))
+        .route(
+            "/api/v1/agents/summary",
+            get(providers::list_agent_management_summary),
+        )
         .route(
             "/api/v1/agents/{provider}",
-            get(get_agent_management_provider),
+            get(providers::get_agent_management_provider),
         )
         .route(
             "/api/v1/agents/{provider}/detect",
-            post(detect_agent_management_provider),
+            post(providers::detect_agent_management_provider),
         )
-        .route("/api/v1/providers", get(list_providers))
+        .route("/api/v1/providers", get(providers::list_providers))
         .route(
             "/api/v1/providers/catalog",
-            get(get_provider_catalog).put(update_provider_catalog),
+            get(providers::get_provider_catalog).put(providers::update_provider_catalog),
         )
         .route(
             "/api/v1/providers/catalog/active",
-            get(get_provider_catalog_active),
+            get(providers::get_provider_catalog_active),
         )
         .route(
             "/api/v1/providers/{provider}/activity",
@@ -29,13 +32,13 @@ pub fn router() -> Router {
         )
         .route(
             "/api/v1/providers/{provider}/settings",
-            get(list_provider_settings),
+            get(providers::list_provider_settings),
         )
         .route(
             "/api/v1/providers/{provider}/settings/{setting_id}",
-            get(get_provider_setting)
-                .put(update_provider_setting)
-                .post(run_provider_setting),
+            get(providers::get_provider_setting)
+                .put(providers::update_provider_setting)
+                .post(providers::run_provider_setting),
         )
         .route("/api/v1/settings", get(get_settings).put(update_settings))
         .route("/api/v1/system/select-folder", post(select_folder))
