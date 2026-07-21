@@ -705,16 +705,28 @@ fn has_user_event(session: &CanonicalSession) -> bool {
         .any(|event| canonical_event_visible_message_role(event) == Some(EventRole::User))
 }
 
-fn update_codex_sqlite(
-    codex_dir: &Path,
-    session_id: &str,
-    rollout_path: &str,
-    cwd: &Path,
-    title: &str,
-    first_user_message: Option<&str>,
+struct CodexSqliteUpdate<'a> {
+    codex_dir: &'a Path,
+    session_id: &'a str,
+    rollout_path: &'a str,
+    cwd: &'a Path,
+    title: &'a str,
+    first_user_message: Option<&'a str>,
     has_user_event: bool,
-    now: &chrono::DateTime<Utc>,
-) -> Result<()> {
+    now: &'a chrono::DateTime<Utc>,
+}
+
+fn update_codex_sqlite(update: CodexSqliteUpdate<'_>) -> Result<()> {
+    let CodexSqliteUpdate {
+        codex_dir,
+        session_id,
+        rollout_path,
+        cwd,
+        title,
+        first_user_message,
+        has_user_event,
+        now,
+    } = update;
     let sqlite_path = codex_dir.join("state_5.sqlite");
     if !sqlite_path.exists() {
         // SQLite not present, skip

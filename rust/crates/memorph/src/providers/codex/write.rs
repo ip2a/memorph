@@ -229,16 +229,16 @@ pub(super) fn write_canonical_codex_rollout(
                 "updated_at": now.to_rfc3339(),
             }))?
         )?;
-        update_codex_sqlite(
+        update_codex_sqlite(CodexSqliteUpdate {
             codex_dir,
             session_id,
-            &rollout_path,
-            target_dir,
-            &title,
-            first_user_message.as_deref(),
+            rollout_path: &rollout_path,
+            cwd: target_dir,
+            title: &title,
+            first_user_message: first_user_message.as_deref(),
             has_user_event,
-            &now,
-        )?;
+            now: &now,
+        })?;
         update_codex_global_state_file_if_exists(codex_dir, target_dir)?;
     }
     Ok(())
