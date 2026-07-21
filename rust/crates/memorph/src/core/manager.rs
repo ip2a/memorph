@@ -773,16 +773,28 @@ mod tests {
         }
     }
 
-    fn insert_projected_manager_snapshot(
-        conn: &rusqlite::Connection,
-        session_id: &str,
-        provider_session_id: &str,
-        workspace: &str,
-        source_path: &str,
-        title: &str,
+    struct ProjectedManagerSnapshot<'a> {
+        conn: &'a rusqlite::Connection,
+        session_id: &'a str,
+        provider_session_id: &'a str,
+        workspace: &'a str,
+        source_path: &'a str,
+        title: &'a str,
         last_active_at: i64,
         size_bytes: i64,
-    ) {
+    }
+
+    fn insert_projected_manager_snapshot(input: ProjectedManagerSnapshot<'_>) {
+        let ProjectedManagerSnapshot {
+            conn,
+            session_id,
+            provider_session_id,
+            workspace,
+            source_path,
+            title,
+            last_active_at,
+            size_bytes,
+        } = input;
         conn.execute(
             "INSERT INTO session_sources
              (id, provider_id, provider_session_id, source_path, workspace_dir, file_size_bytes,
@@ -839,16 +851,16 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let _home_guard = TestConfigHomeGuard::new(home.path());
         let conn = local_store::open_database().unwrap();
-        insert_projected_manager_snapshot(
-            &conn,
-            "canonical-workspace",
-            "native-workspace",
-            "/work/project-one",
-            "/missing/provider/source.jsonl",
-            "Projected workspace session",
-            200,
-            4096,
-        );
+        insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+            conn: &conn,
+            session_id: "canonical-workspace",
+            provider_session_id: "native-workspace",
+            workspace: "/work/project-one",
+            source_path: "/missing/provider/source.jsonl",
+            title: "Projected workspace session",
+            last_active_at: 200,
+            size_bytes: 4096,
+        });
         drop(conn);
 
         let items = list_workspace_sessions("claude", "/work/project-one").unwrap();
@@ -872,26 +884,26 @@ mod tests {
         }
 
         let conn = local_store::open_database().unwrap();
-        insert_projected_manager_snapshot(
-            &conn,
-            "canonical-1",
-            "native-1",
-            "/work/project-one",
-            "/missing/provider/source.jsonl",
-            "Projected session",
-            200,
-            4096,
-        );
-        insert_projected_manager_snapshot(
-            &conn,
-            "canonical-2",
-            "native-2",
-            "/work/project-two",
-            "/missing/provider/second-source.jsonl",
-            "Second projected session",
-            100,
-            512,
-        );
+        insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+            conn: &conn,
+            session_id: "canonical-1",
+            provider_session_id: "native-1",
+            workspace: "/work/project-one",
+            source_path: "/missing/provider/source.jsonl",
+            title: "Projected session",
+            last_active_at: 200,
+            size_bytes: 4096,
+        });
+        insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+            conn: &conn,
+            session_id: "canonical-2",
+            provider_session_id: "native-2",
+            workspace: "/work/project-two",
+            source_path: "/missing/provider/second-source.jsonl",
+            title: "Second projected session",
+            last_active_at: 100,
+            size_bytes: 512,
+        });
         drop(conn);
 
         let mut providers = (0..128)
