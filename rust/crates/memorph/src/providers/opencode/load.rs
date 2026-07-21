@@ -1096,8 +1096,8 @@ pub(super) fn load_session_page_from_db_path(
     let page_messages: Vec<(Option<i64>, Value)> = full_messages
         .iter()
         .skip(event_offset)
-        .cloned()
         .take(event_limit.unwrap_or(usize::MAX))
+        .cloned()
         .collect();
     let page_msg_ids: HashSet<String> = page_messages
         .iter()
