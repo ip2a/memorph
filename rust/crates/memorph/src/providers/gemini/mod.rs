@@ -1012,8 +1012,12 @@ mod tests {
         assert_eq!(body_table_count, 0);
         drop(conn);
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(detail.events.is_empty());
         assert!(detail.turns.is_empty());
         assert_eq!(detail.event_count, 2);
@@ -1076,8 +1080,12 @@ mod tests {
         assert_eq!(stale_scan.stale_snapshots, 1);
         assert_eq!(stale_scan.missing_sources, 0);
 
-        let stale_detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let stale_detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(stale_detail.stale);
         assert_eq!(stale_detail.event_count, 3);
         assert_eq!(stale_detail.message_count, 3);
@@ -1090,8 +1098,12 @@ mod tests {
         assert_eq!(refreshed.unchanged_sessions, 0);
         assert!(refreshed.failures.is_empty());
 
-        let fresh_detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let fresh_detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(!fresh_detail.stale);
         assert_eq!(fresh_detail.event_count, 3);
         assert_eq!(fresh_detail.message_count, 3);
@@ -1128,8 +1140,13 @@ mod tests {
         assert!(GeminiProvider
             .session_source_fingerprint(&expected_locator)?
             .is_none());
-        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))
-            .unwrap_err();
+        let error = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("Session source is missing"));
         assert!(error.to_string().contains(&expected_locator));
 

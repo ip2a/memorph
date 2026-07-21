@@ -1843,8 +1843,12 @@ mod tests {
         assert_eq!(body_table_count, 0);
         drop(conn);
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(detail.events.is_empty());
         assert!(detail.turns.is_empty());
         assert_eq!(detail.event_count, full.event_count);
@@ -1876,8 +1880,12 @@ mod tests {
             .append(true)
             .open(session_dir.join("messages.jsonl"))?
             .write_all(b"\n")?;
-        let stale_detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let stale_detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(stale_detail.stale);
 
         fs::remove_dir_all(&session_dir)?;
@@ -1898,8 +1906,13 @@ mod tests {
             groups[0].sessions[0].message_count,
             Some(full.message_count)
         );
-        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
-            .unwrap_err();
+        let error = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(1),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("Session source is missing"));
         Ok(())
     }
@@ -1923,8 +1936,12 @@ mod tests {
         assert_eq!(first.unchanged_sessions, 0);
         assert!(first.failures.is_empty());
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(detail.events.is_empty());
         assert!(detail.turns.is_empty());
         assert!(!detail.stale);
@@ -2026,8 +2043,12 @@ mod tests {
         assert_eq!(after_messages.2, 0);
         drop(conn);
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(!detail.stale);
         let session_path = session_dir.join("session.json");
         fs::copy(
@@ -2111,8 +2132,13 @@ mod tests {
             .unwrap();
         assert!(session.stale);
 
-        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
-            .unwrap_err();
+        let error = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(1),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("Session source is missing"));
 
         let conn = local_store::open_database()?;
@@ -2156,7 +2182,8 @@ mod tests {
         let bootstrap =
             crate::core::bootstrap_session_projections(Some(PROVIDER_ID), ActivityActor::System)?;
         assert_eq!(bootstrap.projected_sessions, 2);
-        let timeline = crate::core::compute_session_activity_timeline(PROVIDER_ID, session_id)?;
+        let timeline =
+            crate::core::sessions::compute_session_activity_timeline(PROVIDER_ID, session_id)?;
         assert_eq!(timeline.provider_id, PROVIDER_ID);
         assert!(timeline.total_events > 0);
         assert!(timeline.total_messages > 0);

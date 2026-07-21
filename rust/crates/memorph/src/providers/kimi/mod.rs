@@ -3195,8 +3195,13 @@ mod tests {
         assert_eq!(body_table_count, 0);
         drop(conn);
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0)).unwrap();
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )
+        .unwrap();
         assert!(detail.events.is_empty());
         assert!(detail.turns.is_empty());
         assert_eq!(detail.event_count, full.event_count);
@@ -3244,8 +3249,13 @@ mod tests {
             groups[0].sessions[0].message_count,
             Some(full.message_count)
         );
-        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
-            .unwrap_err();
+        let error = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(1),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("Session source is missing"));
     }
 
@@ -3273,8 +3283,13 @@ mod tests {
         assert_eq!(first.unchanged_sessions, 0);
         assert!(first.failures.is_empty());
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0)).unwrap();
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )
+        .unwrap();
         assert!(detail.events.is_empty());
         assert!(detail.turns.is_empty());
 
@@ -3403,7 +3418,8 @@ mod tests {
         assert_eq!(after_context.2, 0);
         drop(conn);
 
-        crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0)).unwrap();
+        crate::core::sessions::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))
+            .unwrap();
         let conn = local_store::open_database().unwrap();
         let counts_complete: i64 = conn
             .query_row(
@@ -3549,8 +3565,13 @@ mod tests {
         assert_eq!(groups[0].sessions[0].session_id, session_id);
         assert!(groups[0].sessions[0].stale);
 
-        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
-            .unwrap_err();
+        let error = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(1),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("Session source is missing"));
 
         let conn = local_store::open_database().unwrap();
@@ -3981,7 +4002,8 @@ mod tests {
                 .unwrap();
         assert_eq!(bootstrap.projected_sessions, 1);
         let timeline =
-            crate::core::compute_session_activity_timeline(PROVIDER_ID, session_id).unwrap();
+            crate::core::sessions::compute_session_activity_timeline(PROVIDER_ID, session_id)
+                .unwrap();
         assert_eq!(timeline.provider_id, PROVIDER_ID);
         assert_eq!(timeline.session_id, session_id);
         assert!(timeline.total_events > 0);
@@ -3997,7 +4019,8 @@ mod tests {
 
         std::fs::remove_dir_all(&session_dir).unwrap();
         let error =
-            crate::core::compute_session_activity_timeline(PROVIDER_ID, session_id).unwrap_err();
+            crate::core::sessions::compute_session_activity_timeline(PROVIDER_ID, session_id)
+                .unwrap_err();
         let message = format!("{error:#}");
         assert!(
             message.contains("Session source is missing")

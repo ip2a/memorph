@@ -33,7 +33,7 @@ pub fn export_session(params: &ExportParams, actor: ActivityActor) -> Result<Exp
         details: input_details.clone(),
     })?;
     let result = (|| {
-        let imported = get_canonical_session(&params.provider, &params.session_id)?;
+        let imported = sessions::get_canonical_session(&params.provider, &params.session_id)?;
         let prefix = params
             .output_prefix
             .as_deref()
@@ -120,7 +120,7 @@ pub fn import_session(params: &ImportParams, actor: ActivityActor) -> Result<Imp
         {
             session_management::read_session_export_file(&params.file_or_id)?
         } else {
-            get_canonical_session(&params.provider, &params.file_or_id)?.session
+            sessions::get_canonical_session(&params.provider, &params.file_or_id)?.session
         };
 
         let target_prov = providers::find_provider(&params.provider)
@@ -272,8 +272,11 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
     };
 
     let source_session_id = session_meta.session_id.clone();
-    let imported =
-        load_canonical_session_from_meta(source_prov.as_ref(), &params.from, session_meta)?;
+    let imported = sessions::load_canonical_session_from_meta(
+        source_prov.as_ref(),
+        &params.from,
+        session_meta,
+    )?;
 
     let target_prov = providers::find_provider(&params.to)
         .with_context(|| format!("Unknown target provider: {}", params.to))?;

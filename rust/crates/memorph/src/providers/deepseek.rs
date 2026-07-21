@@ -1376,8 +1376,12 @@ mod tests {
         assert_eq!(body_table_count, 0);
         drop(conn);
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(detail.events.is_empty());
         assert!(detail.turns.is_empty());
         assert_eq!(detail.event_count, 1);
@@ -1417,8 +1421,12 @@ mod tests {
         )?;
         drop(conn);
 
-        let stale_detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let stale_detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(stale_detail.stale);
 
         let refreshed = crate::core::bootstrap_session_projections(
@@ -1429,8 +1437,12 @@ mod tests {
         assert_eq!(refreshed.unchanged_sessions, 1);
         assert!(refreshed.failures.is_empty());
 
-        let fresh_detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let fresh_detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(!fresh_detail.stale);
         assert_eq!(fresh_detail.message_count, 1);
         Ok(())

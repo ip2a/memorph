@@ -454,7 +454,8 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
             provider,
             session_id,
         } => {
-            let view = core::get_session_detail_view_page(&provider, &session_id, 0, Some(0))?;
+            let view =
+                core::sessions::get_session_detail_view_page(&provider, &session_id, 0, Some(0))?;
             println!("{}", session_projection_report_text(&view));
         }
         SessionCommands::RefreshStale => {

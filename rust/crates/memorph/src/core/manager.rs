@@ -450,7 +450,8 @@ pub fn backup(
                 )
             })?;
             let session =
-                crate::core::get_canonical_session(&item.provider_id, &item.session_id)?.session;
+                crate::core::sessions::get_canonical_session(&item.provider_id, &item.session_id)?
+                    .session;
             let safe_title = item
                 .title
                 .as_deref()

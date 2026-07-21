@@ -91,7 +91,12 @@ pub(super) async fn get_session(
 ) -> impl IntoResponse {
     let events_offset = q.event_offset.unwrap_or(0);
     let events_limit = q.event_limit;
-    match core::get_session_detail_view_page(&provider, &session_id, events_offset, events_limit) {
+    match core::sessions::get_session_detail_view_page(
+        &provider,
+        &session_id,
+        events_offset,
+        events_limit,
+    ) {
         Ok(view) => {
             if let Some(project_dir) = view.workspace_dir.as_deref() {
                 let _ = config::remember_workspace(std::path::Path::new(project_dir));
@@ -116,9 +121,10 @@ pub(super) async fn get_session(
 pub(super) async fn get_session_stats(
     Path((provider, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let result =
-        tokio::task::spawn_blocking(move || core::compute_session_stats(&provider, &session_id))
-            .await;
+    let result = tokio::task::spawn_blocking(move || {
+        core::sessions::compute_session_stats(&provider, &session_id)
+    })
+    .await;
 
     match result {
         Ok(Ok(stats)) => ApiResponse::success(stats).into_response(),
@@ -135,12 +141,14 @@ pub(super) async fn get_provider_activity(
     Path(provider): Path<String>,
     Query(q): Query<ProviderActivityQuery>,
 ) -> impl IntoResponse {
-    let hours = q.hours.unwrap_or(core::PROVIDER_ACTIVITY_DEFAULT_HOURS);
+    let hours = q
+        .hours
+        .unwrap_or(core::sessions::PROVIDER_ACTIVITY_DEFAULT_HOURS);
     let workspace = q.workspace;
     let all_workspaces = q.all.unwrap_or(false);
     let all_time = q.all_time.unwrap_or(false);
     let result = tokio::task::spawn_blocking(move || {
-        core::compute_provider_activity_timeline(
+        core::sessions::compute_provider_activity_timeline(
             &provider,
             workspace.as_deref(),
             hours,
@@ -165,7 +173,7 @@ pub(super) async fn get_session_activity(
     Path((provider, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let result = tokio::task::spawn_blocking(move || {
-        core::compute_session_activity_timeline(&provider, &session_id)
+        core::sessions::compute_session_activity_timeline(&provider, &session_id)
     })
     .await;
 

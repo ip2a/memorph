@@ -1350,8 +1350,12 @@ mod tests {
         assert_eq!(body_table_count, 0);
         drop(conn);
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(detail.events.is_empty());
         assert!(detail.turns.is_empty());
         assert_eq!(detail.event_count, full.event_count);
@@ -1391,13 +1395,22 @@ mod tests {
             ],
         )?;
         drop(conn);
-        let stale_detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let stale_detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(stale_detail.stale);
 
         std::fs::remove_file(&db_path)?;
-        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
-            .unwrap_err();
+        let error = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(1),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("Session source is missing"));
         Ok(())
     }
@@ -1484,8 +1497,12 @@ mod tests {
         assert_eq!(first.unchanged_sessions, 0);
         assert!(first.failures.is_empty());
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(detail.events.is_empty());
         assert!(detail.turns.is_empty());
         assert!(!detail.stale);
@@ -1598,8 +1615,12 @@ mod tests {
         assert_eq!(after_bubble.2, 0);
         drop(conn);
 
-        let detail =
-            crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        let detail = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(0),
+        )?;
         assert!(!detail.stale);
 
         let conn = Connection::open(&db_path)?;
@@ -1645,7 +1666,7 @@ mod tests {
         assert_eq!(after_header.3, 0);
         drop(conn);
 
-        crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
+        crate::core::sessions::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(0))?;
         let conn = Connection::open(&db_path)?;
         conn.execute(
             "UPDATE cursorDiskKV SET value = ?1 WHERE key = ?2",
@@ -1723,8 +1744,13 @@ mod tests {
             .unwrap();
         assert!(session.stale);
 
-        let error = crate::core::get_session_detail_view_page(PROVIDER_ID, session_id, 0, Some(1))
-            .unwrap_err();
+        let error = crate::core::sessions::get_session_detail_view_page(
+            PROVIDER_ID,
+            session_id,
+            0,
+            Some(1),
+        )
+        .unwrap_err();
         assert!(format!("{error:#}").contains("Session source is missing"));
 
         let conn = local_store::open_database()?;

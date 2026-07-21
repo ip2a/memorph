@@ -503,7 +503,7 @@ impl App {
     #[allow(dead_code)]
     pub fn load_selected_session(&mut self) -> Result<()> {
         if let Some(selected) = &self.selected_session {
-            self.loaded_session = Some(core::get_session_detail_view(
+            self.loaded_session = Some(core::sessions::get_session_detail_view(
                 &selected.provider_id,
                 &selected.session_id,
             )?);
@@ -1209,7 +1209,7 @@ impl App {
         let Some(selected) = self.selected_session.clone() else {
             return;
         };
-        match core::get_session_detail_view(&selected.provider_id, &selected.session_id) {
+        match core::sessions::get_session_detail_view(&selected.provider_id, &selected.session_id) {
             Ok(session) => {
                 self.loaded_session = Some(session);
                 self.detail_modal_open = true;

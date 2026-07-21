@@ -108,7 +108,7 @@ pub fn create_group(params: &SyncCreateParams) -> Result<SyncGroup> {
     }
 
     let source_session =
-        crate::core::get_canonical_session(&params.provider, &params.session_id)
+        crate::core::sessions::get_canonical_session(&params.provider, &params.session_id)
             .with_context(|| format!("Failed to load source session {}", params.session_id))?;
     let now = Utc::now().timestamp_millis();
     let group_id = uuid::Uuid::new_v4().to_string();
@@ -352,8 +352,11 @@ pub fn push_sync(
             source.target_dir.clone(),
         ));
 
-        let session = crate::core::get_canonical_session(&source.provider, &source.session_id)
-            .with_context(|| format!("Failed to load source session from {}", source.provider))?;
+        let session =
+            crate::core::sessions::get_canonical_session(&source.provider, &source.session_id)
+                .with_context(|| {
+                    format!("Failed to load source session from {}", source.provider)
+                })?;
         if let Some((_, _, workspace_dir)) = source_identity.as_mut() {
             if workspace_dir.is_none() {
                 *workspace_dir = session.session.context.workspace_dir.clone();
@@ -572,7 +575,7 @@ fn build_canonical_session(group: &SyncGroup) -> Result<(CanonicalSession, Strin
     // In practice, add_holding is usually called with a specific session_id
     // or when creating a new projection from the group.
     if let Some(first) = group.holdings.first() {
-        crate::core::get_canonical_session(&first.provider, &first.session_id)
+        crate::core::sessions::get_canonical_session(&first.provider, &first.session_id)
             .map(|imported| (imported.session, first.provider.clone()))
     } else {
         anyhow::bail!("Group has no holdings to build canonical session from")
