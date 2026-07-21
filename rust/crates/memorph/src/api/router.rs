@@ -25,7 +25,7 @@ pub fn router() -> Router {
         )
         .route(
             "/api/v1/providers/{provider}/activity",
-            get(get_provider_activity),
+            get(sessions::get_provider_activity),
         )
         .route(
             "/api/v1/providers/{provider}/settings",
@@ -53,34 +53,40 @@ pub fn router() -> Router {
         )
         .route("/api/v1/artifacts/inspection", get(inspect_artifacts))
         .route("/api/v1/artifacts/cleanup", post(cleanup_artifacts))
-        .route("/api/v1/sessions", get(list_sessions))
-        .route("/api/v1/stats/dashboard", get(get_stats_dashboard))
+        .route("/api/v1/sessions", get(sessions::list_sessions))
+        .route(
+            "/api/v1/stats/dashboard",
+            get(sessions::get_stats_dashboard),
+        )
         .route(
             "/api/v1/sessions/bootstrap",
-            post(bootstrap_session_projections),
+            post(sessions::bootstrap_session_projections),
         )
         .route(
             "/api/v1/sessions/refresh-stale",
-            post(refresh_session_staleness),
+            post(sessions::refresh_session_staleness),
         )
         .route(
             "/api/v1/sessions/reproject-stale",
-            post(reproject_stale_sessions),
-        )
-        .route("/api/v1/sessions/{provider}/{session_id}", get(get_session))
-        .route(
-            "/api/v1/sessions/{provider}/{session_id}/stats",
-            get(get_session_stats),
-        )
-        .route(
-            "/api/v1/sessions/{provider}/{session_id}/activity",
-            get(get_session_activity),
+            post(sessions::reproject_stale_sessions),
         )
         .route(
             "/api/v1/sessions/{provider}/{session_id}",
-            delete(delete_session)
-                .patch(rename_session)
-                .put(update_session_local_state),
+            get(sessions::get_session),
+        )
+        .route(
+            "/api/v1/sessions/{provider}/{session_id}/stats",
+            get(sessions::get_session_stats),
+        )
+        .route(
+            "/api/v1/sessions/{provider}/{session_id}/activity",
+            get(sessions::get_session_activity),
+        )
+        .route(
+            "/api/v1/sessions/{provider}/{session_id}",
+            delete(sessions::delete_session)
+                .patch(sessions::rename_session)
+                .put(sessions::update_session_local_state),
         )
         .route("/api/v1/export", post(export_session))
         .route(

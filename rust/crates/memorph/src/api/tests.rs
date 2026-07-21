@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::canonical::{
     CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
