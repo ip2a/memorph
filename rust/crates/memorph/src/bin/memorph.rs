@@ -42,8 +42,15 @@ fn run() -> Result<()> {
 
 fn run_command(command: Commands) -> Result<()> {
     match command {
-        Commands::List { all, provider } => {
-            print_session_list(all, provider)?;
+        Commands::List {
+            all,
+            provider,
+            sort,
+            limit,
+            offset,
+            json,
+        } => {
+            print_session_list(all, provider, sort, limit, offset, json)?;
         }
 
         Commands::Export {
@@ -145,17 +152,23 @@ fn run_command(command: Commands) -> Result<()> {
             dir,
             session,
             provider,
+            json,
         } => {
             if dir.is_none() && session.is_none() && provider.is_empty() {
                 anyhow::bail!("At least one filter is required: --dir, --session, or --provider");
             }
 
-            let groups = core::find_sessions(&core::FindParams {
+            let groups = core::query::find_sessions(&core::query::FindParams {
                 dir,
                 session,
                 providers: provider,
             })?;
             let total_found: usize = groups.iter().map(|group| group.sessions.len()).sum();
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&groups)?);
+                return Ok(());
+            }
 
             for group in &groups {
                 println!(
@@ -1482,7 +1495,14 @@ fn print_web_banner() {
     println!();
 }
 
-fn print_session_list(all: bool, providers: Vec<String>) -> Result<()> {
+fn print_session_list(
+    all: bool,
+    providers: Vec<String>,
+    sort: memorph::cli::ListSort,
+    limit: Option<usize>,
+    offset: usize,
+    json: bool,
+) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let cwd_str = cwd.to_string_lossy().to_string();
     let groups = core::list_sessions(&core::SessionListParams {
@@ -1490,12 +1510,20 @@ fn print_session_list(all: bool, providers: Vec<String>) -> Result<()> {
         providers,
         cwd: Some(cwd_str.clone()),
         include_message_counts: true,
-        limit: None,
-        offset: None,
-        sort: core::SessionListSort::Recent,
+        limit,
+        offset: Some(offset),
+        sort: match sort {
+            memorph::cli::ListSort::Recent => core::SessionListSort::Recent,
+            memorph::cli::ListSort::Title => core::SessionListSort::Title,
+        },
         hook_filter: core::SessionHookFilter::All,
     })?;
     let total_shown: usize = groups.iter().map(|group| group.sessions.len()).sum();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&groups)?);
+        return Ok(());
+    }
 
     for group in &groups {
         println!(

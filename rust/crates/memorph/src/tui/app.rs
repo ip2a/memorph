@@ -350,9 +350,37 @@ impl App {
     }
 
     fn apply_session_load_payload(&mut self, payload: SessionLoadPayload) {
+        let selected_identity = self
+            .selected_session
+            .as_ref()
+            .map(|session| (session.provider_id.clone(), session.session_id.clone()));
         self.provider_filters_cache = payload.provider_filters_cache;
         self.selected_provider_tab = payload.selected_provider_tab;
         self.session_groups = payload.session_groups;
+
+        if let Some((provider_id, session_id)) = selected_identity {
+            let mut flat_index = 0;
+            let mut restored = None;
+            for group in &self.session_groups {
+                for session in &group.sessions {
+                    if session.provider_id == provider_id && session.session_id == session_id {
+                        restored = Some((flat_index, session.clone()));
+                        break;
+                    }
+                    flat_index += 1;
+                }
+                if restored.is_some() {
+                    break;
+                }
+            }
+            if let Some((index, session)) = restored {
+                self.table_state.select(Some(index));
+                self.selected_session = Some(session);
+            } else {
+                self.selected_session = None;
+                self.loaded_session = None;
+            }
+        }
         self.ensure_selected_row();
     }
 
@@ -1765,6 +1793,7 @@ impl App {
                     lines.push(format!("Archive: {}", archive_ref));
                 }
                 self.set_action_success(self.t("compressionTitle"), lines);
+                self.reload_after_action();
             }
             Err(error) => {
                 self.set_action_error(self.t("compressionTitle"), vec![error.to_string()])

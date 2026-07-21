@@ -89,12 +89,12 @@ pub(super) async fn find_sessions(Query(q): Query<FindQuery>) -> impl IntoRespon
         .provider
         .map(|p| p.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
-    let params = core::FindParams {
+    let params = core::query::FindParams {
         dir: q.dir,
         session: q.session,
         providers,
     };
-    match core::find_sessions(&params) {
+    match core::query::find_sessions(&params) {
         Ok(groups) => ApiResponse::success(groups).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
