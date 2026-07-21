@@ -5,8 +5,7 @@
 pub fn encode_project_dir(path: &str) -> String {
     path.trim()
         .replace(['/', '\\'], "-")
-        .replace(' ', "-")
-        .replace('_', "-")
+        .replace([' ', '_'], "-")
 }
 
 /// Extract text from various content formats
@@ -23,10 +22,10 @@ pub fn extract_text(content: &serde_json::Value) -> String {
                         "[Thinking: {}]",
                         thinking.chars().take(100).collect::<String>()
                     ))
-                } else if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
-                    Some(format!("[Tool: {}]", name))
                 } else {
-                    None
+                    item.get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|name| format!("[Tool: {}]", name))
                 }
             })
             .filter(|text| !text.trim().is_empty())

@@ -368,7 +368,7 @@ fn source_fingerprint(source: &str) -> Result<Option<ProviderSourceFingerprint>>
         .query_row(
             "SELECT CAST(started_at AS TEXT), CAST(ended_at AS TEXT), CAST(message_count AS TEXT), CAST(tool_call_count AS TEXT), CAST(archived AS TEXT), title, cwd, model FROM sessions WHERE id = ?1",
             [&id],
-            |row| Ok((0..8).map(|index| row.get::<_, Option<String>>(index)).collect::<rusqlite::Result<Vec<_>>>()?),
+            |row| (0..8).map(|index| row.get::<_, Option<String>>(index)).collect::<rusqlite::Result<Vec<_>>>(),
         )
         .optional()?;
     let Some(session) = session else {

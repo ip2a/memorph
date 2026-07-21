@@ -37,7 +37,7 @@ fn random_base64_key() -> String {
     use rand::Rng;
     let mut rng = rand::thread_rng();
     let bytes: [u8; 32] = rng.r#gen();
-    STANDARD.encode(&bytes)
+    STANDARD.encode(bytes)
 }
 
 /// Minimal bubble context matching Cursor's expected shape.

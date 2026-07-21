@@ -29,7 +29,7 @@ impl HookProviderDescriptor {
 pub fn all() -> Vec<HookProviderDescriptor> {
     crate::hooks::profiles::all()
         .iter()
-        .filter_map(|profile| from_profile(profile))
+        .filter_map(from_profile)
         .collect()
 }
 

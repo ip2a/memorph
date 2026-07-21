@@ -693,10 +693,8 @@ pub fn composer_size(composer_id: &str) -> Result<u64> {
     let mut stmt =
         conn.prepare("SELECT length(value) FROM cursorDiskKV WHERE key >= ?1 AND key < ?2")?;
     let rows = stmt.query_map(params![lower, upper], |row| row.get::<_, i64>(0))?;
-    for row in rows {
-        if let Ok(size) = row {
-            total += size as u64;
-        }
+    for size in rows.flatten() {
+        total += size as u64;
     }
 
     Ok(total)

@@ -50,7 +50,7 @@ fn spawn_background_sync_loop() {
             ) {
                 crate::logging::error(
                     "background_sync",
-                    &format!("Background sync pass failed: {error:#}"),
+                    format!("Background sync pass failed: {error:#}"),
                 );
             }
             std::thread::sleep(std::time::Duration::from_secs(
@@ -68,7 +68,7 @@ pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
     let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
     let url = format!("http://127.0.0.1:{}", actual_port);
     if let Err(err) = crate::hooks::server::publish_runtime_endpoint(&url) {
-        crate::logging::error("publish_runtime_endpoint", &format!("{err}"));
+        crate::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
     println!("memorph server started: {}", url);
 
@@ -90,7 +90,7 @@ pub async fn run_api(port: u16, allow_fallback: bool) -> Result<()> {
     let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
     let url = format!("http://127.0.0.1:{}", actual_port);
     if let Err(err) = crate::hooks::server::publish_runtime_endpoint(&url) {
-        crate::logging::error("publish_runtime_endpoint", &format!("{err}"));
+        crate::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
 
     println!("memorph API server started: {}", url);
@@ -123,7 +123,7 @@ async fn bind_with_fallback(
         anyhow::bail!("Could not bind to {}; address already in use", addr);
     }
 
-    let max_port = port.saturating_add(FALLBACK_RANGE).min(u16::MAX);
+    let max_port = port.saturating_add(FALLBACK_RANGE);
     let start_port = port.saturating_add(1);
     for try_port in start_port..=max_port {
         if !is_port_available(host, try_port) {

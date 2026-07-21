@@ -530,7 +530,7 @@ fn provider_active_catalog_from_snapshots(
                 .iter()
                 .copied()
                 .filter(|session| {
-                    workspace.map_or(true, |workspace| {
+                    workspace.is_none_or(|workspace| {
                         provider.as_ref().is_some_and(|provider| {
                             provider.workspace_matches(
                                 session.workspace_dir.as_deref(),

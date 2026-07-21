@@ -12,15 +12,11 @@ pub const DEFAULT_SESSIONS_PER_PROVIDER: usize = 12;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum UiLanguage {
     Zh,
+    #[default]
     En,
-}
-
-impl Default for UiLanguage {
-    fn default() -> Self {
-        Self::En
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

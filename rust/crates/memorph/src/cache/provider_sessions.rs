@@ -142,7 +142,7 @@ pub fn init_watcher() {
             Err(err) => {
                 crate::logging::error(
                     "cache_watcher_init",
-                    &format!("Failed to initialize cache watcher: {err}"),
+                    format!("Failed to initialize cache watcher: {err}"),
                 );
             }
         }

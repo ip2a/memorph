@@ -12,20 +12,16 @@ const SHORT_SESSION_MESSAGES: usize = 2;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum DashboardRange {
     #[serde(rename = "7d")]
     SevenDays,
     #[serde(rename = "30d")]
+    #[default]
     ThirtyDays,
     #[serde(rename = "90d")]
     NinetyDays,
     All,
-}
-
-impl Default for DashboardRange {
-    fn default() -> Self {
-        Self::ThirtyDays
-    }
 }
 
 impl DashboardRange {

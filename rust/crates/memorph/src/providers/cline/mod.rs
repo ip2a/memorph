@@ -234,7 +234,7 @@ fn file_modified_ms(path: &Path) -> Option<i64> {
         .map(|value| value.as_millis().min(i64::MAX as u128) as i64)
 }
 fn file_modified_datetime(path: &Path) -> Option<DateTime<Utc>> {
-    file_modified_ms(path).and_then(|value| DateTime::<Utc>::from_timestamp_millis(value))
+    file_modified_ms(path).and_then(DateTime::<Utc>::from_timestamp_millis)
 }
 fn first_text(value: &Value) -> Option<String> {
     value.as_array()?.iter().find_map(|item| {

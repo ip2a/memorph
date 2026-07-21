@@ -30,11 +30,7 @@ pub enum HookEventType {
 
 impl HookEventType {
     pub fn from_provider_name(value: &str) -> Self {
-        let normalized = value
-            .trim()
-            .replace('-', "_")
-            .replace(' ', "_")
-            .to_ascii_lowercase();
+        let normalized = value.trim().replace(['-', ' '], "_").to_ascii_lowercase();
         match normalized.as_str() {
             "session_started" | "session_start" | "start" | "started" => Self::SessionStarted,
             "message_created" | "message" | "assistant_message" | "user_message" => {
