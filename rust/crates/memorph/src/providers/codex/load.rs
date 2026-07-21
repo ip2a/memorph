@@ -112,9 +112,11 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                             EventRole::System,
                             timestamp,
                             "session_meta",
-                            payload.clone(),
-                            value.clone(),
-                            None,
+                            ProviderPayloadData {
+                                payload: payload.clone(),
+                                raw_line: value.clone(),
+                                phase: None,
+                            },
                         ));
                     }
 
@@ -140,9 +142,11 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                         EventRole::System,
                         timestamp,
                         "turn_context",
-                        payload.clone(),
-                        value.clone(),
-                        None,
+                        ProviderPayloadData {
+                            payload: payload.clone(),
+                            raw_line: value.clone(),
+                            phase: None,
+                        },
                     ));
                 }
             }
@@ -196,9 +200,11 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                     EventRole::Unknown,
                     timestamp,
                     other,
-                    value.get("payload").cloned().unwrap_or(Value::Null),
-                    value,
-                    None,
+                    ProviderPayloadData {
+                        payload: value.get("payload").cloned().unwrap_or(Value::Null),
+                        raw_line: value,
+                        phase: None,
+                    },
                 ));
             }
         }
@@ -665,9 +671,11 @@ pub(super) fn codex_event_from_line(
                     EventRole::System,
                     timestamp,
                     "session_meta",
-                    payload.clone(),
-                    raw_line,
-                    None,
+                    ProviderPayloadData {
+                        payload: payload.clone(),
+                        raw_line,
+                        phase: None,
+                    },
                 )
             }
         }),
@@ -678,9 +686,11 @@ pub(super) fn codex_event_from_line(
                 EventRole::System,
                 timestamp,
                 "turn_context",
-                payload.clone(),
-                raw_line,
-                None,
+                ProviderPayloadData {
+                    payload: payload.clone(),
+                    raw_line,
+                    phase: None,
+                },
             )
         }),
         "event_msg" => {
@@ -714,9 +724,11 @@ pub(super) fn codex_event_from_line(
                 EventRole::Unknown,
                 timestamp,
                 other,
-                raw_line.get("payload").cloned().unwrap_or(Value::Null),
-                raw_line,
-                None,
+                ProviderPayloadData {
+                    payload: raw_line.get("payload").cloned().unwrap_or(Value::Null),
+                    raw_line,
+                    phase: None,
+                },
             ))
         }
     }
@@ -922,9 +934,11 @@ pub(super) fn codex_response_item_event(
             EventRole::Unknown,
             timestamp,
             msg_type.unwrap_or("response_item"),
-            payload.clone(),
-            raw_line,
-            phase,
+            ProviderPayloadData {
+                payload: payload.clone(),
+                raw_line,
+                phase,
+            },
         );
     }
 
@@ -1144,9 +1158,11 @@ pub(super) fn codex_hidden_response_item_event(
         EventRole::System,
         timestamp,
         internal_kind.payload_kind(),
-        payload,
-        raw_line,
-        phase,
+        ProviderPayloadData {
+            payload,
+            raw_line,
+            phase,
+        },
     );
     event.metadata.fidelity = MappingDisposition::Normalized;
     event.metadata.source.original_role = original_role.map(str::to_string);
@@ -1293,12 +1309,14 @@ pub(super) fn codex_event_msg_event(
         role,
         timestamp,
         event_type,
-        payload.clone(),
-        raw_line,
-        payload
-            .get("phase")
-            .and_then(|v| v.as_str())
-            .map(str::to_string),
+        ProviderPayloadData {
+            payload: payload.clone(),
+            raw_line,
+            phase: payload
+                .get("phase")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        },
     );
     event.blocks = blocks;
     event
@@ -1336,16 +1354,25 @@ pub(super) fn parse_data_uri(uri: &str) -> Option<(&str, &str)> {
     Some((mime, data))
 }
 
+pub(super) struct ProviderPayloadData {
+    payload: Value,
+    raw_line: Value,
+    phase: Option<String>,
+}
+
 pub(super) fn provider_payload_event(
     id: String,
     kind: SessionEventKind,
     role: EventRole,
     timestamp: chrono::DateTime<Utc>,
     payload_kind: &str,
-    payload: Value,
-    raw_line: Value,
-    phase: Option<String>,
+    data: ProviderPayloadData,
 ) -> SessionEvent {
+    let ProviderPayloadData {
+        payload,
+        raw_line,
+        phase,
+    } = data;
     SessionEvent {
         id,
         kind,
