@@ -221,7 +221,8 @@ pub struct SwitchResult {
 pub(super) fn refresh_target_provider_sessions(provider_id: &str) -> Result<()> {
     let provider_id = providers::canonical_provider_id(provider_id);
     let mut conn = local_store::open_database()?;
-    bootstrap_session_projections_in_connection(&mut conn, Some(provider_id.as_str())).map(|_| ())
+    projection::bootstrap_session_projections_in_connection(&mut conn, Some(provider_id.as_str()))
+        .map(|_| ())
 }
 
 pub(super) fn index_target_provider_sessions(provider_id: &str) {

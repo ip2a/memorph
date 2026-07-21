@@ -184,7 +184,7 @@ async fn list_session_diagnosis(Query(query): Query<SessionDiagnosisQuery>) -> i
         hook_filter,
     };
 
-    match crate::core::list_sessions(&params) {
+    match crate::core::projection::list_sessions(&params) {
         Ok(groups) => HookApiResponse::success(groups).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }

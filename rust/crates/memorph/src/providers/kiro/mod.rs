@@ -1889,7 +1889,7 @@ mod tests {
         assert!(stale_detail.stale);
 
         fs::remove_dir_all(&session_dir)?;
-        let groups = crate::core::list_sessions(&crate::core::SessionListParams {
+        let groups = crate::core::projection::list_sessions(&crate::core::SessionListParams {
             all: true,
             providers: vec![PROVIDER_ID.to_string()],
             cwd: None,
@@ -1926,7 +1926,7 @@ mod tests {
         let session_id = "sess_11111111-1111-4111-8111-111111111111";
         let session_dir = temp.path().join("8f3d1d8bb1bd8116").join(session_id);
 
-        let first = crate::core::bootstrap_session_projections(
+        let first = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::Cli,
         )?;
@@ -1984,7 +1984,7 @@ mod tests {
         assert_eq!(initial.5, 0);
         drop(conn);
 
-        let unchanged = crate::core::bootstrap_session_projections(
+        let unchanged = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -2011,7 +2011,7 @@ mod tests {
             .append(true)
             .open(session_dir.join("messages.jsonl"))?
             .write_all(b"\n")?;
-        let stale = crate::core::refresh_projected_session_staleness(
+        let stale = crate::core::projection::refresh_projected_session_staleness(
             crate::storage::activity_store::ActivityActor::System,
         )?;
         assert_eq!(stale.checked_sources, 2);
@@ -2019,7 +2019,7 @@ mod tests {
         assert_eq!(stale.stale_snapshots, 1);
         assert_eq!(stale.missing_sources, 0);
 
-        let refreshed = crate::core::reproject_stale_sessions(
+        let refreshed = crate::core::projection::reproject_stale_sessions(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -2055,7 +2055,7 @@ mod tests {
             kiro_audit_fixture_root().join("variants/session.updated.json"),
             &session_path,
         )?;
-        let metadata_sync = crate::core::bootstrap_session_projections(
+        let metadata_sync = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -2080,7 +2080,7 @@ mod tests {
             .append(true)
             .open(session_dir.join("sub-executions/subexec-1.jsonl"))?
             .write_all(b"\n")?;
-        let sub_execution_sync = crate::core::bootstrap_session_projections(
+        let sub_execution_sync = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -2099,7 +2099,7 @@ mod tests {
         drop(conn);
 
         fs::remove_dir_all(&session_dir)?;
-        let missing = crate::core::refresh_projected_session_staleness(
+        let missing = crate::core::projection::refresh_projected_session_staleness(
             crate::storage::activity_store::ActivityActor::System,
         )?;
         assert_eq!(missing.checked_sources, 1);
@@ -2107,7 +2107,7 @@ mod tests {
         assert_eq!(missing.missing_sources, 1);
         assert_eq!(missing.stale_snapshots, 1);
 
-        let missing_reprojection = crate::core::reproject_stale_sessions(
+        let missing_reprojection = crate::core::projection::reproject_stale_sessions(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -2115,7 +2115,7 @@ mod tests {
         assert_eq!(missing_reprojection.reprojected_snapshots, 0);
         assert_eq!(missing_reprojection.missing_sources, 1);
 
-        let groups = crate::core::list_sessions(&crate::core::SessionListParams {
+        let groups = crate::core::projection::list_sessions(&crate::core::SessionListParams {
             all: true,
             providers: vec![PROVIDER_ID.to_string()],
             cwd: None,
@@ -2179,8 +2179,10 @@ mod tests {
         let original_tool_output = fs::read(session_dir.join("tool-outputs/tool-1-a1b2c3d4.txt"))?;
         let original_snapshot = fs::read(session_dir.join("snapshots/snap0001/src/example.rs"))?;
 
-        let bootstrap =
-            crate::core::bootstrap_session_projections(Some(PROVIDER_ID), ActivityActor::System)?;
+        let bootstrap = crate::core::projection::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            ActivityActor::System,
+        )?;
         assert_eq!(bootstrap.projected_sessions, 2);
         let timeline =
             crate::core::sessions::compute_session_activity_timeline(PROVIDER_ID, session_id)?;

@@ -560,7 +560,7 @@ fn management_operations_record_terminal_activity() {
     let missing_provider = "missing-provider";
     let missing_session = "missing-session";
 
-    core::refresh_projected_session_staleness(ActivityActor::Api).unwrap();
+    core::projection::refresh_projected_session_staleness(ActivityActor::Api).unwrap();
     assert!(core::transfer::export_session(
         &core::transfer::ExportParams {
             provider: missing_provider.to_string(),

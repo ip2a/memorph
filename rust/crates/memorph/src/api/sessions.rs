@@ -39,14 +39,14 @@ pub(super) async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoRespon
         sort: q.sort.unwrap_or_default(),
         hook_filter: q.hook_filter.unwrap_or_default(),
     };
-    match core::list_sessions(&params) {
+    match core::projection::list_sessions(&params) {
         Ok(groups) => ApiResponse::success(groups).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
 pub(super) async fn refresh_session_staleness() -> impl IntoResponse {
-    match core::refresh_projected_session_staleness(ActivityActor::Api) {
+    match core::projection::refresh_projected_session_staleness(ActivityActor::Api) {
         Ok(report) => ApiResponse::success(SessionStalenessRefreshPayload {
             checked_sources: report.checked_sources,
             fresh_snapshots: report.fresh_snapshots,
@@ -62,7 +62,10 @@ pub(super) async fn refresh_session_staleness() -> impl IntoResponse {
 pub(super) async fn bootstrap_session_projections(
     Json(request): Json<SessionProjectionBootstrapRequest>,
 ) -> impl IntoResponse {
-    match core::bootstrap_session_projections(request.provider.as_deref(), ActivityActor::Api) {
+    match core::projection::bootstrap_session_projections(
+        request.provider.as_deref(),
+        ActivityActor::Api,
+    ) {
         Ok(report) => ApiResponse::success(report).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -71,7 +74,10 @@ pub(super) async fn bootstrap_session_projections(
 pub(super) async fn reproject_stale_sessions(
     Json(request): Json<SessionReprojectStaleRequest>,
 ) -> impl IntoResponse {
-    match core::reproject_stale_sessions(request.provider.as_deref(), ActivityActor::Api) {
+    match core::projection::reproject_stale_sessions(
+        request.provider.as_deref(),
+        ActivityActor::Api,
+    ) {
         Ok(report) => ApiResponse::success(SessionReprojectionPayload {
             candidate_snapshots: report.candidate_snapshots,
             reprojected_snapshots: report.reprojected_snapshots,

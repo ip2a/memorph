@@ -966,7 +966,7 @@ mod tests {
         );
         let expected_locator = path.canonicalize()?.to_string_lossy().to_string();
 
-        let first = crate::core::bootstrap_session_projections(
+        let first = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::Cli,
         )?;
@@ -1042,7 +1042,7 @@ mod tests {
         assert_eq!(cached_counts, (2, 2, 1, 1));
         drop(conn);
 
-        let second = crate::core::bootstrap_session_projections(
+        let second = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::Cli,
         )?;
@@ -1073,7 +1073,7 @@ mod tests {
             .expect("changed fixture fingerprint");
         assert_ne!(changed_fingerprint.value, initial_fingerprint.value);
 
-        let stale_scan = crate::core::refresh_projected_session_staleness(
+        let stale_scan = crate::core::projection::refresh_projected_session_staleness(
             crate::storage::activity_store::ActivityActor::Cli,
         )?;
         assert_eq!(stale_scan.checked_sources, 1);
@@ -1090,7 +1090,7 @@ mod tests {
         assert_eq!(stale_detail.event_count, 3);
         assert_eq!(stale_detail.message_count, 3);
 
-        let refreshed = crate::core::bootstrap_session_projections(
+        let refreshed = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::Cli,
         )?;
@@ -1131,7 +1131,7 @@ mod tests {
             path.with_extension("json"),
             "{\"sessionId\":\"gemini-projection\"}\n",
         )?;
-        let missing_scan = crate::core::refresh_projected_session_staleness(
+        let missing_scan = crate::core::projection::refresh_projected_session_staleness(
             crate::storage::activity_store::ActivityActor::Cli,
         )?;
         assert_eq!(missing_scan.checked_sources, 0);

@@ -3231,7 +3231,7 @@ mod tests {
         drop(conn);
 
         std::fs::remove_dir_all(&session_dir).unwrap();
-        let groups = crate::core::list_sessions(&crate::core::SessionListParams {
+        let groups = crate::core::projection::list_sessions(&crate::core::SessionListParams {
             all: true,
             providers: vec![PROVIDER_ID.to_string()],
             cwd: None,
@@ -3272,7 +3272,7 @@ mod tests {
         let project_dir = format!("/workspace/{project}");
         let session_dir = write_native_kimi_fixture(&sessions_root, project, session_id);
 
-        let first = crate::core::bootstrap_session_projections(
+        let first = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::Cli,
         )
@@ -3333,7 +3333,7 @@ mod tests {
         assert_eq!(initial.5, 0);
         drop(conn);
 
-        let unchanged = crate::core::bootstrap_session_projections(
+        let unchanged = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )
@@ -3371,7 +3371,7 @@ mod tests {
         .unwrap();
         drop(context);
 
-        let stale = crate::core::refresh_projected_session_staleness(
+        let stale = crate::core::projection::refresh_projected_session_staleness(
             crate::storage::activity_store::ActivityActor::System,
         )
         .unwrap();
@@ -3391,7 +3391,7 @@ mod tests {
         assert_eq!(stale_flag, 1);
         drop(conn);
 
-        let reprojected = crate::core::reproject_stale_sessions(
+        let reprojected = crate::core::projection::reproject_stale_sessions(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )
@@ -3442,7 +3442,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let state_sync = crate::core::bootstrap_session_projections(
+        let state_sync = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )
@@ -3481,7 +3481,7 @@ mod tests {
         )
         .unwrap();
         drop(wire);
-        let wire_sync = crate::core::bootstrap_session_projections(
+        let wire_sync = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )
@@ -3508,7 +3508,7 @@ mod tests {
             serde_json::to_vec_pretty(&metadata).unwrap(),
         )
         .unwrap();
-        let mapping_sync = crate::core::bootstrap_session_projections(
+        let mapping_sync = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )
@@ -3532,7 +3532,7 @@ mod tests {
         drop(conn);
 
         std::fs::remove_dir_all(&session_dir).unwrap();
-        let missing = crate::core::refresh_projected_session_staleness(
+        let missing = crate::core::projection::refresh_projected_session_staleness(
             crate::storage::activity_store::ActivityActor::System,
         )
         .unwrap();
@@ -3540,7 +3540,7 @@ mod tests {
         assert_eq!(missing.missing_sources, 1);
         assert_eq!(missing.stale_snapshots, 1);
 
-        let missing_reprojection = crate::core::reproject_stale_sessions(
+        let missing_reprojection = crate::core::projection::reproject_stale_sessions(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )
@@ -3549,7 +3549,7 @@ mod tests {
         assert_eq!(missing_reprojection.reprojected_snapshots, 0);
         assert_eq!(missing_reprojection.missing_sources, 1);
 
-        let groups = crate::core::list_sessions(&crate::core::SessionListParams {
+        let groups = crate::core::projection::list_sessions(&crate::core::SessionListParams {
             all: true,
             providers: vec![PROVIDER_ID.to_string()],
             cwd: None,
@@ -3997,9 +3997,11 @@ mod tests {
         let session_id = "kimi-source-activity";
         let session_dir = write_native_kimi_fixture(&sessions_root, "source-activity", session_id);
 
-        let bootstrap =
-            crate::core::bootstrap_session_projections(Some(PROVIDER_ID), ActivityActor::System)
-                .unwrap();
+        let bootstrap = crate::core::projection::bootstrap_session_projections(
+            Some(PROVIDER_ID),
+            ActivityActor::System,
+        )
+        .unwrap();
         assert_eq!(bootstrap.projected_sessions, 1);
         let timeline =
             crate::core::sessions::compute_session_activity_timeline(PROVIDER_ID, session_id)

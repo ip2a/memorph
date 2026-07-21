@@ -206,7 +206,7 @@ struct SessionReprojectionPayload {
     missing_sources: usize,
     unsupported_providers: usize,
     failed_snapshots: usize,
-    failures: Vec<core::SessionReprojectionFailure>,
+    failures: Vec<core::projection::SessionReprojectionFailure>,
 }
 
 fn fallback_backup_dir_base() -> std::path::PathBuf {

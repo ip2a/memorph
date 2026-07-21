@@ -8,7 +8,7 @@ pub struct FindParams {
 }
 
 pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
-    let groups = list_sessions(&SessionListParams {
+    let groups = projection::list_sessions(&SessionListParams {
         all: true,
         providers: params.providers.clone(),
         cwd: None,

@@ -1328,7 +1328,7 @@ mod tests {
         let session_id = "thread-projection";
         write_native_deepseek_fixture(&get_deepseek_dir(), session_id);
 
-        let first = crate::core::bootstrap_session_projections(
+        let first = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::Cli,
         )?;
@@ -1406,7 +1406,7 @@ mod tests {
         assert_eq!(cached_counts, (1, 1, 1, 1));
         drop(conn);
 
-        let second = crate::core::bootstrap_session_projections(
+        let second = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::Cli,
         )?;
@@ -1429,7 +1429,7 @@ mod tests {
         )?;
         assert!(stale_detail.stale);
 
-        let refreshed = crate::core::bootstrap_session_projections(
+        let refreshed = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::Cli,
         )?;

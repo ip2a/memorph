@@ -1487,7 +1487,7 @@ mod tests {
         }
         drop(conn);
 
-        let first = crate::core::bootstrap_session_projections(
+        let first = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::Cli,
         )?;
@@ -1544,7 +1544,7 @@ mod tests {
         assert_eq!(initial.5, 0);
         drop(conn);
 
-        let unchanged = crate::core::bootstrap_session_projections(
+        let unchanged = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -1583,7 +1583,7 @@ mod tests {
         )?;
         drop(conn);
 
-        let stale = crate::core::refresh_projected_session_staleness(
+        let stale = crate::core::projection::refresh_projected_session_staleness(
             crate::storage::activity_store::ActivityActor::System,
         )?;
         assert_eq!(stale.checked_sources, 1);
@@ -1591,7 +1591,7 @@ mod tests {
         assert_eq!(stale.stale_snapshots, 1);
         assert_eq!(stale.missing_sources, 0);
 
-        let refreshed = crate::core::reproject_stale_sessions(
+        let refreshed = crate::core::projection::reproject_stale_sessions(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -1642,7 +1642,7 @@ mod tests {
         )?;
         drop(conn);
 
-        let header_sync = crate::core::bootstrap_session_projections(
+        let header_sync = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -1688,7 +1688,7 @@ mod tests {
         )?;
         drop(conn);
 
-        let composer_sync = crate::core::bootstrap_session_projections(
+        let composer_sync = crate::core::projection::bootstrap_session_projections(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -1711,7 +1711,7 @@ mod tests {
         drop(conn);
 
         std::fs::remove_file(&db_path)?;
-        let missing = crate::core::refresh_projected_session_staleness(
+        let missing = crate::core::projection::refresh_projected_session_staleness(
             crate::storage::activity_store::ActivityActor::System,
         )?;
         assert_eq!(missing.checked_sources, 0);
@@ -1719,7 +1719,7 @@ mod tests {
         assert_eq!(missing.missing_sources, 1);
         assert_eq!(missing.stale_snapshots, 1);
 
-        let missing_reprojection = crate::core::reproject_stale_sessions(
+        let missing_reprojection = crate::core::projection::reproject_stale_sessions(
             Some(PROVIDER_ID),
             crate::storage::activity_store::ActivityActor::System,
         )?;
@@ -1727,7 +1727,7 @@ mod tests {
         assert_eq!(missing_reprojection.reprojected_snapshots, 0);
         assert_eq!(missing_reprojection.missing_sources, 1);
 
-        let groups = crate::core::list_sessions(&crate::core::SessionListParams {
+        let groups = crate::core::projection::list_sessions(&crate::core::SessionListParams {
             all: true,
             providers: vec![PROVIDER_ID.to_string()],
             cwd: None,

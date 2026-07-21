@@ -431,8 +431,10 @@ fn provider_fidelity_lines(fidelity: ProviderContentFidelity) -> Vec<String> {
 fn run_session_command(command: SessionCommands) -> Result<()> {
     match command {
         SessionCommands::Bootstrap { provider } => {
-            let report =
-                core::bootstrap_session_projections(provider.as_deref(), ActivityActor::Cli)?;
+            let report = core::projection::bootstrap_session_projections(
+                provider.as_deref(),
+                ActivityActor::Cli,
+            )?;
             println!("Scanned providers: {}", report.scanned_providers);
             println!("Failed providers: {}", report.failed_providers);
             println!("Discovered sessions: {}", report.discovered_sessions);
@@ -459,7 +461,7 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
             println!("{}", session_projection_report_text(&view));
         }
         SessionCommands::RefreshStale => {
-            let report = core::refresh_projected_session_staleness(ActivityActor::Cli)?;
+            let report = core::projection::refresh_projected_session_staleness(ActivityActor::Cli)?;
             println!("Checked sources: {}", report.checked_sources);
             println!("Fresh snapshots: {}", report.fresh_snapshots);
             println!("Stale snapshots: {}", report.stale_snapshots);
@@ -467,7 +469,10 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
             println!("Unknown sources: {}", report.unknown_sources);
         }
         SessionCommands::ReprojectStale { provider } => {
-            let report = core::reproject_stale_sessions(provider.as_deref(), ActivityActor::Cli)?;
+            let report = core::projection::reproject_stale_sessions(
+                provider.as_deref(),
+                ActivityActor::Cli,
+            )?;
             println!("Candidate snapshots: {}", report.candidate_snapshots);
             println!("Reprojected snapshots: {}", report.reprojected_snapshots);
             println!("Missing sources: {}", report.missing_sources);
@@ -1507,7 +1512,7 @@ fn print_session_list(
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let cwd_str = cwd.to_string_lossy().to_string();
-    let groups = core::list_sessions(&core::SessionListParams {
+    let groups = core::projection::list_sessions(&core::SessionListParams {
         all,
         providers,
         cwd: Some(cwd_str.clone()),

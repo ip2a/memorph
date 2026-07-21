@@ -2106,7 +2106,7 @@ fn build_session_load_payload(
                 sort: core::SessionListSort::Recent,
                 hook_filter: core::SessionHookFilter::All,
             };
-            let mut session_groups = core::list_sessions(&params)?;
+            let mut session_groups = core::projection::list_sessions(&params)?;
             apply_session_group_preferences(&mut session_groups, &prefs);
             let counts = session_groups
                 .iter()
@@ -2147,7 +2147,7 @@ fn build_session_load_payload(
                 sort: core::SessionListSort::Recent,
                 hook_filter: core::SessionHookFilter::All,
             };
-            let mut session_groups = core::list_sessions(&params)?;
+            let mut session_groups = core::projection::list_sessions(&params)?;
             apply_session_group_preferences(&mut session_groups, &prefs);
             let session_groups = select_session_groups(session_groups, &selected_providers);
             (

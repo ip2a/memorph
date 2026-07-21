@@ -44,7 +44,7 @@ fn spawn_background_sync_loop() {
     std::thread::Builder::new()
         .name("memorph-background-sync".to_string())
         .spawn(|| loop {
-            if let Err(error) = crate::core::bootstrap_session_projections(
+            if let Err(error) = crate::core::projection::bootstrap_session_projections(
                 None,
                 crate::storage::activity_store::ActivityActor::System,
             ) {
