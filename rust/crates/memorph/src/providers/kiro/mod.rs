@@ -2192,7 +2192,7 @@ mod tests {
         assert!(crate::providers::hook_registry::find_provider_hook(PROVIDER_ID).is_some());
         assert!(crate::providers::hook_registry::find_hook_adapter(PROVIDER_ID).is_some());
 
-        let renamed = crate::core::rename_session(
+        let renamed = crate::core::session_mutation::rename_session(
             PROVIDER_ID,
             session_id,
             "Current Kiro title",
@@ -2261,7 +2261,7 @@ mod tests {
         assert_eq!(repeat_restore.status, BackupRestoreStatus::Success);
 
         set_test_kiro_mutation_failure(Some(ProviderSourceMutation::Rename));
-        let rename_error = crate::core::rename_session(
+        let rename_error = crate::core::session_mutation::rename_session(
             PROVIDER_ID,
             session_id,
             "Must roll back",
@@ -2275,8 +2275,12 @@ mod tests {
         );
 
         set_test_kiro_mutation_failure(Some(ProviderSourceMutation::Delete));
-        let delete_error =
-            crate::core::delete_session(PROVIDER_ID, session_id, ActivityActor::Cli).unwrap_err();
+        let delete_error = crate::core::session_mutation::delete_session(
+            PROVIDER_ID,
+            session_id,
+            ActivityActor::Cli,
+        )
+        .unwrap_err();
         assert!(format!("{delete_error:#}").contains("restored from registered backup"));
         assert!(session_dir.is_dir());
         assert_eq!(
@@ -2305,7 +2309,7 @@ mod tests {
             .into_iter()
             .map(|view| view.entry.backup.id)
             .collect::<BTreeSet<_>>();
-        crate::core::delete_session(PROVIDER_ID, session_id, ActivityActor::Cli)?;
+        crate::core::session_mutation::delete_session(PROVIDER_ID, session_id, ActivityActor::Cli)?;
         assert!(!session_dir.exists());
         let after_delete = crate::core::session_management::list_registered_backups(BackupQuery {
             provider_id: Some(PROVIDER_ID.to_string()),

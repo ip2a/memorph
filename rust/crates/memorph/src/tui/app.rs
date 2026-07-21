@@ -1851,7 +1851,7 @@ impl App {
             return;
         }
 
-        match core::rename_session(
+        match core::session_mutation::rename_session(
             &selected.provider_id,
             &selected.session_id,
             &new_title,
@@ -1881,7 +1881,7 @@ impl App {
             return;
         };
 
-        match core::delete_session(
+        match core::session_mutation::delete_session(
             &selected.provider_id,
             &selected.session_id,
             ActivityActor::Tui,

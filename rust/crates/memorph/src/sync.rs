@@ -206,9 +206,11 @@ fn cleanup_created_targets(created_targets: &[(String, String)]) {
         if !provider.capabilities().delete {
             continue;
         }
-        if let Err(error) =
-            crate::core::delete_session(provider_id, session_id, ActivityActor::Sync)
-        {
+        if let Err(error) = crate::core::session_mutation::delete_session(
+            provider_id,
+            session_id,
+            ActivityActor::Sync,
+        ) {
             eprintln!(
                 "Warning: failed to clean up created sync target {}:{}: {}",
                 provider_id, session_id, error
@@ -293,7 +295,7 @@ pub fn delete_group(group_id: &str, delete_provider_sessions: bool) -> Result<()
     if delete_provider_sessions {
         if let Ok(group) = load_group(group_id) {
             for holding in &group.holdings {
-                let _ = crate::core::delete_session(
+                let _ = crate::core::session_mutation::delete_session(
                     &holding.provider,
                     &holding.session_id,
                     ActivityActor::Sync,
@@ -413,7 +415,7 @@ pub fn push_sync(
                     });
 
                     if capabilities.delete && old_session_id != holding.session_id {
-                        if let Err(error) = crate::core::delete_session(
+                        if let Err(error) = crate::core::session_mutation::delete_session(
                             &holding.provider,
                             &old_session_id,
                             ActivityActor::Sync,

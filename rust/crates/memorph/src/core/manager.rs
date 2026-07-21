@@ -351,7 +351,8 @@ pub fn clean(items: &[ManagerItem], actor: ActivityActor) -> ManagerCleanResult 
             .iter()
             .map(|idx| items[*idx].session_id.as_str())
             .collect();
-        let mut results = core::delete_sessions(provider_id, &session_ids, actor).into_iter();
+        let mut results =
+            core::session_mutation::delete_sessions(provider_id, &session_ids, actor).into_iter();
         let mut provider_deleted = false;
         for idx in indices {
             let item = &items[idx];

@@ -197,7 +197,7 @@ pub(super) async fn get_session_activity(
 pub(super) async fn delete_session(
     Path((provider, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match core::delete_session(&provider, &session_id, ActivityActor::Api) {
+    match core::session_mutation::delete_session(&provider, &session_id, ActivityActor::Api) {
         Ok(()) => ApiResponse::success("deleted").into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -207,7 +207,12 @@ pub(super) async fn rename_session(
     Path((provider, session_id)): Path<(String, String)>,
     Json(body): Json<RenameBody>,
 ) -> impl IntoResponse {
-    match core::rename_session(&provider, &session_id, &body.title, ActivityActor::Api) {
+    match core::session_mutation::rename_session(
+        &provider,
+        &session_id,
+        &body.title,
+        ActivityActor::Api,
+    ) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -217,7 +222,12 @@ pub(super) async fn update_session_local_state(
     Path((provider, session_id)): Path<(String, String)>,
     Json(body): Json<crate::storage::session_state::SessionLocalStateUpdate>,
 ) -> impl IntoResponse {
-    match core::update_session_local_state(&provider, &session_id, &body, ActivityActor::Api) {
+    match core::session_mutation::update_session_local_state(
+        &provider,
+        &session_id,
+        &body,
+        ActivityActor::Api,
+    ) {
         Ok(state) => ApiResponse::success(state).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

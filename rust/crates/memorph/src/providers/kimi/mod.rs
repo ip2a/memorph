@@ -3900,7 +3900,7 @@ mod tests {
         let session_id = "kimi-core-management";
         let session_dir = write_native_kimi_fixture(&sessions_root, "core-management", session_id);
 
-        let renamed = crate::core::rename_session(
+        let renamed = crate::core::session_mutation::rename_session(
             PROVIDER_ID,
             session_id,
             "Renamed through core",
@@ -3926,8 +3926,12 @@ mod tests {
 
         let before_failed_delete = session_tree_bytes(&session_dir);
         set_test_kimi_mutation_failure(Some(ProviderSourceMutation::Delete));
-        let error =
-            crate::core::delete_session(PROVIDER_ID, session_id, ActivityActor::Cli).unwrap_err();
+        let error = crate::core::session_mutation::delete_session(
+            PROVIDER_ID,
+            session_id,
+            ActivityActor::Cli,
+        )
+        .unwrap_err();
         assert!(
             format!("{error:#}").contains("Provider source was restored from registered backup")
         );

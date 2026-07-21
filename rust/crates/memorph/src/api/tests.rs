@@ -581,15 +581,20 @@ fn management_operations_record_terminal_activity() {
         ActivityActor::Api,
     )
     .is_err());
-    assert!(core::delete_session(missing_provider, missing_session, ActivityActor::Api).is_err());
-    assert!(core::rename_session(
+    assert!(core::session_mutation::delete_session(
+        missing_provider,
+        missing_session,
+        ActivityActor::Api
+    )
+    .is_err());
+    assert!(core::session_mutation::rename_session(
         missing_provider,
         missing_session,
         "Renamed",
         ActivityActor::Api,
     )
     .is_err());
-    assert!(core::update_session_local_state(
+    assert!(core::session_mutation::update_session_local_state(
         missing_provider,
         missing_session,
         &crate::storage::session_state::SessionLocalStateUpdate {
@@ -599,7 +604,7 @@ fn management_operations_record_terminal_activity() {
         ActivityActor::Api,
     )
     .is_err());
-    assert!(core::update_session_local_state(
+    assert!(core::session_mutation::update_session_local_state(
         missing_provider,
         missing_session,
         &crate::storage::session_state::SessionLocalStateUpdate {
@@ -609,7 +614,7 @@ fn management_operations_record_terminal_activity() {
         ActivityActor::Api,
     )
     .is_err());
-    assert!(core::update_session_local_state(
+    assert!(core::session_mutation::update_session_local_state(
         missing_provider,
         missing_session,
         &crate::storage::session_state::SessionLocalStateUpdate {

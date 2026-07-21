@@ -2102,7 +2102,7 @@ mod tests {
         let session_id = "cursor-core-management";
         write_current_cursor_management_fixture(&db_path, session_id);
 
-        let renamed = crate::core::rename_session(
+        let renamed = crate::core::session_mutation::rename_session(
             PROVIDER_ID,
             session_id,
             "Renamed through core",
@@ -2132,8 +2132,12 @@ mod tests {
         assert!(rename_activity[0].finished_at_ms.is_some());
 
         write::set_test_cursor_mutation_failure(Some(ProviderSourceMutation::Delete));
-        let error =
-            crate::core::delete_session(PROVIDER_ID, session_id, ActivityActor::Cli).unwrap_err();
+        let error = crate::core::session_mutation::delete_session(
+            PROVIDER_ID,
+            session_id,
+            ActivityActor::Cli,
+        )
+        .unwrap_err();
         assert!(
             format!("{error:#}").contains("Provider source was restored from registered backup")
         );

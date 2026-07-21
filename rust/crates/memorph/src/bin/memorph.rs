@@ -102,7 +102,7 @@ fn run_command(command: Commands) -> Result<()> {
             session_id,
         } => {
             let provider_name = provider_name(&provider)?;
-            core::delete_session(&provider, &session_id, ActivityActor::Cli)?;
+            core::session_mutation::delete_session(&provider, &session_id, ActivityActor::Cli)?;
             println!("Removed session from {}: {}", provider_name, session_id);
         }
 
@@ -111,8 +111,12 @@ fn run_command(command: Commands) -> Result<()> {
             session_id,
             new_title,
         } => {
-            let result =
-                core::rename_session(&provider, &session_id, &new_title, ActivityActor::Cli)?;
+            let result = core::session_mutation::rename_session(
+                &provider,
+                &session_id,
+                &new_title,
+                ActivityActor::Cli,
+            )?;
             println!(
                 "Renamed session in {}: {} -> {}",
                 result.provider_name, result.session_id, result.display_title
