@@ -90,14 +90,16 @@ pub(super) fn plan_compression_candidates_with_estimator(
             }
             push_candidate(
                 &mut candidates,
-                kind,
-                reason,
-                risk,
-                range.event_ids,
-                range.start_event_index,
-                range.end_event_index,
-                range.estimated_bytes,
-                range.estimated_tokens,
+                CandidateInput {
+                    kind,
+                    reason,
+                    risk,
+                    event_ids: range.event_ids,
+                    start_event_index: range.start_event_index,
+                    end_event_index: range.end_event_index,
+                    estimated_bytes: range.estimated_bytes,
+                    estimated_tokens: range.estimated_tokens,
+                },
                 token_estimator,
             );
             event_index = range.end_event_index + 1;
@@ -135,14 +137,16 @@ pub(super) fn plan_compression_candidates_with_estimator(
 
         push_candidate(
             &mut candidates,
-            kind,
-            reason,
-            risk,
-            vec![event.id.clone()],
-            event_index,
-            event_index,
-            estimated_bytes,
-            estimated_tokens,
+            CandidateInput {
+                kind,
+                reason,
+                risk,
+                event_ids: vec![event.id.clone()],
+                start_event_index: event_index,
+                end_event_index: event_index,
+                estimated_bytes,
+                estimated_tokens,
+            },
             token_estimator,
         );
         event_index += 1;
@@ -247,8 +251,7 @@ fn push_range_skips(
     }
 }
 
-fn push_candidate(
-    candidates: &mut Vec<CompressionCandidateReport>,
+struct CandidateInput {
     kind: CompressionCandidateKind,
     reason: CompressionSelectionReason,
     risk: CompressionRisk,
@@ -257,8 +260,23 @@ fn push_candidate(
     end_event_index: usize,
     estimated_bytes: usize,
     estimated_tokens: usize,
+}
+
+fn push_candidate(
+    candidates: &mut Vec<CompressionCandidateReport>,
+    input: CandidateInput,
     token_estimator: &CompressionTokenEstimatorReport,
 ) {
+    let CandidateInput {
+        kind,
+        reason,
+        risk,
+        event_ids,
+        start_event_index,
+        end_event_index,
+        estimated_bytes,
+        estimated_tokens,
+    } = input;
     let compressed_estimated_bytes = estimate_candidate_compressed_bytes(estimated_bytes, kind);
     let compressed_estimated_tokens =
         estimate_tokens_from_bytes_with_estimator(compressed_estimated_bytes, token_estimator);
