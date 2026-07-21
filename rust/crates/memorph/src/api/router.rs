@@ -106,7 +106,7 @@ pub fn router() -> Router {
                 .patch(sessions::rename_session)
                 .put(sessions::update_session_local_state),
         )
-        .route("/api/v1/export", post(export_session))
+        .route("/api/v1/export", post(transfer::export_session))
         .route(
             "/api/v1/compression/archives",
             get(compression::list_compression_archives),
@@ -151,8 +151,8 @@ pub fn router() -> Router {
             "/api/v1/compression/apply",
             post(compression::apply_active_compression),
         )
-        .route("/api/v1/import", post(import_session))
-        .route("/api/v1/switch", post(switch_session))
+        .route("/api/v1/import", post(transfer::import_session))
+        .route("/api/v1/switch", post(transfer::switch_session))
         .route("/api/v1/find", get(find_sessions))
         .route("/api/v1/workspaces", get(list_workspaces))
         .route(
