@@ -180,7 +180,7 @@ fn find_jsonc_value_end(contents: &str, start: usize) -> Option<usize> {
 
 fn find_json_string_end(contents: &str, start: usize) -> Option<usize> {
     let mut escaped = false;
-    let mut iter = contents[start + 1..].char_indices();
+    let iter = contents[start + 1..].char_indices();
     for (offset, ch) in iter {
         if escaped {
             escaped = false;
