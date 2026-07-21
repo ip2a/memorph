@@ -37,10 +37,18 @@ def main():
             check(cells[4] not in ('','—','-'), f'能力缺少关键测试: {cells[0]}')
     router=(SRC/'api/router.rs').read_text()
     routes=load('api-routes.json').get('routes',[])
-    actual=set(re.findall(r'\.route\(\s*"([^"]+)"',router))
-    snap=set(x.get('path') for x in routes)
-    check(actual==snap, f'API route snapshot 不匹配: source={len(actual)} snapshot={len(snap)}')
-    check(all(x.get('methods') for x in routes), 'API route snapshot 存在无 HTTP method 的条目')
+    actual_routes={}
+    route_matches=list(re.finditer(r'\.route\(\s*"([^"]+)"\s*,', router))
+    for index, match in enumerate(route_matches):
+        end=route_matches[index + 1].start() if index + 1 < len(route_matches) else router.find("\n    );", match.end())
+        expression=router[match.end():end]
+        actual_routes.setdefault(match.group(1), set()).update(
+            re.findall(r'\b(get|post|put|patch|delete)\s*\(', expression)
+        )
+    snapshot_routes={item.get('path'): set(item.get('methods', [])) for item in routes}
+    check(set(actual_routes)==set(snapshot_routes), f'API route snapshot 不匹配: source={len(actual_routes)} snapshot={len(snapshot_routes)}')
+    check(actual_routes == snapshot_routes, 'API route HTTP method snapshot 不匹配')
+    check(all(item.get('methods') for item in routes), 'API route snapshot 存在无 HTTP method 的条目')
     cli=(SRC/'cli.rs').read_text()
     cli_snap=load('cli-surface.json').get('commands',[])
     actual_cli=set(re.findall(r'^    ([A-Z][A-Za-z0-9_]*)\s*\{', cli[cli.index('pub enum Commands'):cli.index('pub enum SessionCommands')], re.M))
