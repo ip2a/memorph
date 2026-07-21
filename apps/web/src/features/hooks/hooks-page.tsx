@@ -432,8 +432,8 @@ function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPay
                     type="button"
                     size="icon"
                     variant="ghost"
-                    title={item.managed_by_memorph ? "Remove hook" : "Third-party hooks cannot be removed"}
-                    disabled={removeInstalled.isPending || !item.managed_by_memorph}
+                    title="Remove hook"
+                    disabled={removeInstalled.isPending}
                     onClick={() => removeInstalled.mutate({ provider: provider.provider_id, event: item.event, index: item.index, fingerprint: item.fingerprint })}
                   >
                     <Trash2Icon />

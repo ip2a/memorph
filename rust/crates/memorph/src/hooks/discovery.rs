@@ -77,9 +77,6 @@ pub fn remove(
         .and_then(Value::as_array_mut)
         .context("Hook event is not present")?;
     let entry = entries.get(index).context("Hook index is out of range")?;
-    if !crate::hooks::config_formats::json_hooks::entry_contains_memorph_hook(entry) {
-        anyhow::bail!("Only memorph-managed hooks can be removed");
-    }
     if fingerprint(entry) != expected_fingerprint {
         anyhow::bail!("Hook changed; refresh the installed hooks list and try again");
     }
