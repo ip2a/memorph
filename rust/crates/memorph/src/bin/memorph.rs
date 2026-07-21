@@ -797,7 +797,7 @@ fn run_codex_sync_workspace_sessions(
     codex_home: Option<String>,
     keep: usize,
 ) -> Result<()> {
-    let report = providers::codex::sync_workspace_sessions(
+    let report = providers::codex::management::sync_workspace_sessions(
         workspace.as_deref(),
         codex_home.as_deref().map(Path::new),
         keep,
