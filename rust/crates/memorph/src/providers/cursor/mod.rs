@@ -2094,7 +2094,7 @@ mod tests {
         );
         drop(conn);
 
-        let rename_activity = crate::core::list_management_activity(&ActivityQuery {
+        let rename_activity = crate::core::management::list_management_activity(&ActivityQuery {
             session_id: Some(session_id.to_string()),
             provider_id: Some(PROVIDER_ID.to_string()),
             operation_kind: Some(ActivityOperationKind::Rename),
@@ -2119,7 +2119,7 @@ mod tests {
         );
         drop(conn);
 
-        let delete_activity = crate::core::list_management_activity(&ActivityQuery {
+        let delete_activity = crate::core::management::list_management_activity(&ActivityQuery {
             session_id: Some(session_id.to_string()),
             provider_id: Some(PROVIDER_ID.to_string()),
             operation_kind: Some(ActivityOperationKind::Delete),
@@ -2159,7 +2159,7 @@ mod tests {
         .unwrap();
         assert_eq!(repeated.status, BackupRestoreStatus::Success);
 
-        let activities = crate::core::list_management_activity(&ActivityQuery {
+        let activities = crate::core::management::list_management_activity(&ActivityQuery {
             session_id: Some(session_id.to_string()),
             provider_id: Some(PROVIDER_ID.to_string()),
             ..ActivityQuery::default()

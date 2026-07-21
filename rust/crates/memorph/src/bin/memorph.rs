@@ -645,7 +645,7 @@ fn run_database_command(command: DatabaseCommands) -> Result<()> {
 fn run_artifact_command(command: ArtifactCommands) -> Result<()> {
     match command {
         ArtifactCommands::Inspect { json } => {
-            let report = core::inspect_artifacts()?;
+            let report = core::management::inspect_artifacts()?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -676,7 +676,8 @@ fn run_artifact_command(command: ArtifactCommands) -> Result<()> {
             apply,
             json,
         } => {
-            let report = core::cleanup_artifacts(retention_hours, apply, ActivityActor::Cli)?;
+            let report =
+                core::management::cleanup_artifacts(retention_hours, apply, ActivityActor::Cli)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {

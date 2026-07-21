@@ -465,7 +465,7 @@ async fn applied_artifact_cleanup_records_terminal_activity() {
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["data"]["applied"], true);
-    let activities = core::list_management_activity(&ActivityQuery {
+    let activities = core::management::list_management_activity(&ActivityQuery {
         operation_kind: Some(ActivityOperationKind::ArtifactCleanup),
         status: Some(ActivityStatus::Success),
         actor: Some(ActivityActor::Api),
@@ -523,7 +523,7 @@ fn failed_sync_and_backup_operations_remain_queryable() {
     );
     assert_eq!(backup.failed, 1);
 
-    let sync_activities = core::list_management_activity(&ActivityQuery {
+    let sync_activities = core::management::list_management_activity(&ActivityQuery {
         operation_kind: Some(ActivityOperationKind::Sync),
         status: Some(ActivityStatus::Failed),
         actor: Some(ActivityActor::Api),
@@ -537,7 +537,7 @@ fn failed_sync_and_backup_operations_remain_queryable() {
         .unwrap()
         .contains("Sync group not found"));
 
-    let backup_activities = core::list_management_activity(&ActivityQuery {
+    let backup_activities = core::management::list_management_activity(&ActivityQuery {
         session_id: Some("missing-session".to_string()),
         operation_kind: Some(ActivityOperationKind::Backup),
         status: Some(ActivityStatus::Failed),
@@ -649,7 +649,7 @@ fn management_operations_record_terminal_activity() {
         (ActivityOperationKind::Compress, ActivityStatus::Failed),
     ];
     for (operation_kind, status) in expected {
-        let activities = core::list_management_activity(&ActivityQuery {
+        let activities = core::management::list_management_activity(&ActivityQuery {
             operation_kind: Some(operation_kind),
             status: Some(status),
             actor: Some(ActivityActor::Api),

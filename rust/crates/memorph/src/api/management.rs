@@ -59,7 +59,7 @@ pub(super) async fn list_management_activity(
         started_before_ms: query.started_before_ms,
         limit: query.limit,
     };
-    match core::list_management_activity(&query) {
+    match core::management::list_management_activity(&query) {
         Ok(activities) => ApiResponse::success(activities).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -155,7 +155,7 @@ pub(super) async fn verify_database_backup(
 }
 
 pub(super) async fn inspect_artifacts() -> impl IntoResponse {
-    match core::inspect_artifacts() {
+    match core::management::inspect_artifacts() {
         Ok(report) => ApiResponse::success(report).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -183,7 +183,11 @@ pub(super) async fn cleanup_artifacts(
         )
         .into_response();
     }
-    match core::cleanup_artifacts(request.retention_hours, request.apply, ActivityActor::Api) {
+    match core::management::cleanup_artifacts(
+        request.retention_hours,
+        request.apply,
+        ActivityActor::Api,
+    ) {
         Ok(report) => ApiResponse::success(report).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
