@@ -169,18 +169,18 @@ pub fn router() -> Router {
         )
         .route(
             "/api/v1/sync",
-            get(list_sync_groups).post(create_sync_group),
+            get(sync::list_sync_groups).post(sync::create_sync_group),
         )
-        .route("/api/v1/sync/status", get(sync_status))
-        .route("/api/v1/sync/sync", post(sync_session_groups))
-        .route("/api/v1/sync/bind", post(bind_sync_group))
+        .route("/api/v1/sync/status", get(sync::sync_status))
+        .route("/api/v1/sync/sync", post(sync::sync_session_groups))
+        .route("/api/v1/sync/bind", post(sync::bind_sync_group))
         .route(
             "/api/v1/sync/holdings/{group_id}/{holding_id}",
-            delete(unbind_sync_group),
+            delete(sync::unbind_sync_group),
         )
         .route(
             "/api/v1/sync/{group_id}",
-            delete(remove_sync_group).patch(rename_sync_group),
+            delete(sync::remove_sync_group).patch(sync::rename_sync_group),
         )
         .route("/api/v1/manager/preview", post(manager_preview))
         .route("/api/v1/manager/quick-preview", get(manager_quick_preview))

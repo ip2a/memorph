@@ -156,7 +156,7 @@ fn sync_safety_blocks_active_target_runtime() {
     };
     let snapshot = vec![runtime_session_for_payload("runtime-1")];
 
-    let blocked = blocked_sync_targets_from_snapshot(&group, "source", &snapshot);
+    let blocked = sync::blocked_sync_targets_from_snapshot(&group, "source", &snapshot);
 
     assert_eq!(blocked.len(), 1);
     assert!(blocked[0].contains("claude:session-1"));
@@ -177,7 +177,7 @@ fn sync_safety_allows_active_source_runtime() {
     };
     let snapshot = vec![runtime_session_for_payload("runtime-1")];
 
-    let blocked = blocked_sync_targets_from_snapshot(&group, "source", &snapshot);
+    let blocked = sync::blocked_sync_targets_from_snapshot(&group, "source", &snapshot);
 
     assert!(blocked.is_empty());
 }
@@ -1001,7 +1001,7 @@ fn sync_holding_payload_serializes_hook_runtime_sessions() {
         assert_eq!(value["ok"], true);
     });
 
-    let payload = sync_holding_payload(session_sync::Holding {
+    let payload = sync::sync_holding_payload(session_sync::Holding {
         id: "holding-1".to_string(),
         provider: "generic".to_string(),
         session_id: "session-1".to_string(),
