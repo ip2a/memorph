@@ -1093,6 +1093,23 @@ export type HookProviderOverviewPayload = {
   recent_errors: HookErrorRecord[];
 };
 
+export type InstalledHook = {
+  event: string;
+  index: number;
+  fingerprint: string;
+  matcher?: string;
+  hook_type?: string;
+  command?: string;
+  source: "memorph" | "third_party";
+  managed_by_memorph: boolean;
+};
+
+export type InstalledHooks = {
+  provider: string;
+  config_path?: string | null;
+  hooks: InstalledHook[];
+};
+
 export type HookOperationReport = {
   changed?: boolean;
   message?: string | null;

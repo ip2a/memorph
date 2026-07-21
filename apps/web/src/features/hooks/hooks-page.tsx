@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { WrenchIcon } from "lucide-react";
+import { Trash2Icon, WrenchIcon } from "lucide-react";
 import { EntityRow } from "@/components/shared/entity-row";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PanelCard } from "@/components/shared/panel-card";
@@ -29,8 +29,16 @@ import type {
   HookEventRecord,
   HookProviderOverviewPayload,
   HookRuntimeSession,
+  InstalledHook,
 } from "@/lib/types";
-import { useHookProviderOverview, useHooksMeta, useHooksOverview, useRunHookProviderOperation } from "@/features/hooks/queries";
+import {
+  useHookProviderOverview,
+  useHooksMeta,
+  useHooksOverview,
+  useInstalledHooks,
+  useRemoveInstalledHook,
+  useRunHookProviderOperation,
+} from "@/features/hooks/queries";
 
 function providerName(provider: AgentManagementEntry) {
   return provider.name || provider.provider_id;
@@ -333,6 +341,8 @@ function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPay
   }
 
   const provider = detail.provider;
+  const installedHooks = useInstalledHooks(provider.provider_id);
+  const removeInstalled = useRemoveInstalledHook();
   const hook = provider.hook || {};
   const profileEvents = provider.hook_profile?.events || [];
   const diagnosis = provider.hook_diagnosis || {};
@@ -398,6 +408,41 @@ function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPay
               }
             />
           </MetricGrid>
+        </DetailSection>
+
+
+        <DetailSection
+          title="Installed Hooks"
+          description={installedHooks.data?.config_path ? `All hooks found in ${installedHooks.data.config_path}` : "All hooks found in the provider configuration."}
+        >
+          {installedHooks.isLoading ? <Spinner /> : null}
+          {installedHooks.error ? <PageError title="Installed hooks failed to load" message={installedHooks.error.message} /> : null}
+          {installedHooks.data?.hooks.length ? (
+            <div className="flex flex-col gap-2">
+              {installedHooks.data.hooks.map((item: InstalledHook) => (
+                <div key={`${item.event}-${item.index}`} className="flex items-start justify-between gap-3 rounded-md border p-3 text-sm">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant="outline">{item.event}</Badge>
+                      <Badge variant={item.managed_by_memorph ? "secondary" : "outline"}>{item.source}</Badge>
+                    </div>
+                    <p className="mt-2 break-all text-muted-foreground">{item.command || item.hook_type || "configured hook"}</p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="icon"
+                    variant="ghost"
+                    title={item.managed_by_memorph ? "Remove hook" : "Third-party hooks cannot be removed"}
+                    disabled={removeInstalled.isPending || !item.managed_by_memorph}
+                    onClick={() => removeInstalled.mutate({ provider: provider.provider_id, event: item.event, index: item.index, fingerprint: item.fingerprint })}
+                  >
+                    <Trash2Icon />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : !installedHooks.isLoading ? <Empty><EmptyHeader><EmptyTitle>No installed hooks</EmptyTitle></EmptyHeader></Empty> : null}
+          {removeInstalled.error ? <PageError title="Remove hook failed" message={removeInstalled.error.message} /> : null}
         </DetailSection>
 
         <DetailSection title="Hook Event Profile" description="Provider events that memorph records or blocks for runtime correlation.">

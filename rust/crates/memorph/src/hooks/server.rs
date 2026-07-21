@@ -9,7 +9,7 @@ use axum::{
     extract::{Path, Query},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use chrono::Utc;
@@ -138,6 +138,14 @@ pub fn router() -> Router {
             get(list_session_diagnosis),
         )
         .route("/api/v1/hooks/status", get(get_status))
+        .route(
+            "/api/v1/hooks/providers/{provider}/installed",
+            get(list_installed_hooks),
+        )
+        .route(
+            "/api/v1/hooks/providers/{provider}/installed/{event}/{index}/{fingerprint}",
+            delete(remove_installed_hook),
+        )
         .route("/api/v1/hooks/ingest", post(ingest_event))
         .route("/api/v1/hooks/events", get(list_events))
         .route("/api/v1/hooks/runtime-sessions", get(list_runtime_sessions))
@@ -187,6 +195,22 @@ async fn list_session_diagnosis(Query(query): Query<SessionDiagnosisQuery>) -> i
     match crate::core::projection::list_sessions(&params) {
         Ok(groups) => HookApiResponse::success(groups).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
+}
+
+async fn list_installed_hooks(Path(provider): Path<String>) -> impl IntoResponse {
+    match crate::hooks::discovery::list(&provider) {
+        Ok(payload) => HookApiResponse::success(payload).into_response(),
+        Err(error) => hook_error(StatusCode::BAD_REQUEST, error).into_response(),
+    }
+}
+
+async fn remove_installed_hook(
+    Path((provider, event, index, fingerprint)): Path<(String, String, usize, String)>,
+) -> impl IntoResponse {
+    match crate::hooks::discovery::remove(&provider, &event, index, &fingerprint) {
+        Ok(payload) => HookApiResponse::success(payload).into_response(),
+        Err(error) => hook_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
 }
 

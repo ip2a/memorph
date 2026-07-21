@@ -13,6 +13,7 @@ pub mod config_formats;
 pub mod contract;
 pub mod correlation;
 pub mod diagnostics;
+pub mod discovery;
 pub mod doctor;
 pub mod extension_file_hook;
 pub mod health;

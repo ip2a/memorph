@@ -21,6 +21,7 @@ import type {
   HookOperationReport,
   HookOverviewPayload,
   HookProviderOverviewPayload,
+  InstalledHooks,
   ImportSessionPayload,
   ImportSessionResult,
   MetaPayload,
@@ -117,7 +118,10 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     throw new ApiError(message || `HTTP ${response.status}`, response.status);
   }
 
-  if (raw && typeof raw === "object" && "ok" in raw && raw.ok) {
+  if (raw && typeof raw === "object" && "ok" in raw) {
+    if (!raw.ok) {
+      throw new ApiError(raw.error || `HTTP ${response.status}`, response.status);
+    }
     return raw.data as T;
   }
 
@@ -251,6 +255,17 @@ export function getHooksOverview() {
 
 export function getHookProviderOverview(provider: string) {
   return api<HookProviderOverviewPayload>(`/api/v1/hooks/providers/${encodeURIComponent(provider)}/overview`);
+}
+
+export function listInstalledHooks(provider: string) {
+  return api<InstalledHooks>(`/api/v1/hooks/providers/${encodeURIComponent(provider)}/installed`);
+}
+
+export function removeInstalledHook(provider: string, event: string, index: number, fingerprint: string) {
+  return api<InstalledHooks>(
+    `/api/v1/hooks/providers/${encodeURIComponent(provider)}/installed/${encodeURIComponent(event)}/${index}/${encodeURIComponent(fingerprint)}`,
+    { method: "DELETE" },
+  );
 }
 
 export function runHookProviderOperation(provider: string, operation: string) {
