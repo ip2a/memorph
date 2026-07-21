@@ -1544,36 +1544,39 @@ mod tests {
         }
     }
 
-    fn insert_artifact_row(
-        conn: &Connection,
-        id: &str,
+    struct ArtifactRow<'a> {
+        conn: &'a Connection,
+        id: &'a str,
         artifact_kind: ArtifactManifestKind,
-        path: &Path,
-        content_hash: &str,
+        path: &'a Path,
+        content_hash: &'a str,
         byte_size: i64,
         created_at_ms: i64,
-        mime_type: Option<&str>,
-        format: Option<&str>,
-        metadata: &Value,
-    ) {
-        conn.execute(
-            "INSERT INTO artifact_manifests
+        mime_type: Option<&'a str>,
+        format: Option<&'a str>,
+        metadata: &'a Value,
+    }
+
+    fn insert_artifact_row(row: ArtifactRow<'_>) {
+        row.conn
+            .execute(
+                "INSERT INTO artifact_manifests
              (id, artifact_kind, storage_kind, path, content_hash, byte_size,
               mime_type, format, created_at_ms, metadata_json)
              VALUES (?1, ?2, 'file', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                id,
-                artifact_kind.as_str(),
-                path.to_string_lossy(),
-                content_hash,
-                byte_size,
-                mime_type,
-                format,
-                created_at_ms,
-                serde_json::to_string(metadata).unwrap(),
-            ],
-        )
-        .unwrap();
+                params![
+                    row.id,
+                    row.artifact_kind.as_str(),
+                    row.path.to_string_lossy(),
+                    row.content_hash,
+                    row.byte_size,
+                    row.mime_type,
+                    row.format,
+                    row.created_at_ms,
+                    serde_json::to_string(row.metadata).unwrap(),
+                ],
+            )
+            .unwrap();
     }
 
     /// Write a managed-layout blob directly to disk for orphan cleanup tests.
@@ -2201,18 +2204,18 @@ mod tests {
         {
             let tx = conn.transaction().unwrap();
             for index in 0..=MAX_QUERY_LIMIT {
-                insert_artifact_row(
-                    &tx,
-                    &format!("artifact-{index:04}"),
-                    ArtifactManifestKind::SessionExport,
-                    &dir.path().join(format!("missing-{index:04}.json")),
-                    &format!("sha256:{index:064x}"),
-                    1,
-                    index as i64,
-                    Some("application/json"),
-                    Some("json"),
-                    &json!({"source": "inspection-limit-test"}),
-                );
+                insert_artifact_row(ArtifactRow {
+                    conn: &tx,
+                    id: &format!("artifact-{index:04}"),
+                    artifact_kind: ArtifactManifestKind::SessionExport,
+                    path: &dir.path().join(format!("missing-{index:04}.json")),
+                    content_hash: &format!("sha256:{index:064x}"),
+                    byte_size: 1,
+                    created_at_ms: index as i64,
+                    mime_type: Some("application/json"),
+                    format: Some("json"),
+                    metadata: &json!({"source": "inspection-limit-test"}),
+                });
             }
             tx.commit().unwrap();
         }
@@ -2280,18 +2283,18 @@ mod tests {
         let shared_bytes = b"shared";
         let shared_path = write_managed_blob(&root, "shared", shared_bytes);
         let shared_hash = managed_blob_content_hash(shared_bytes);
-        insert_artifact_row(
-            &conn,
-            "retained",
-            ArtifactManifestKind::SessionExport,
-            &shared_path,
-            &shared_hash,
-            shared_bytes.len() as i64,
-            1,
-            Some("application/json"),
-            Some("json"),
-            &json!({"source": "shared-reference-test"}),
-        );
+        insert_artifact_row(ArtifactRow {
+            conn: &conn,
+            id: "retained",
+            artifact_kind: ArtifactManifestKind::SessionExport,
+            path: &shared_path,
+            content_hash: &shared_hash,
+            byte_size: shared_bytes.len() as i64,
+            created_at_ms: 1,
+            mime_type: Some("application/json"),
+            format: Some("json"),
+            metadata: &json!({"source": "shared-reference-test"}),
+        });
         // A true orphan in the same root.
         let orphan_path = write_managed_blob(&root, "orphan", b"orphan");
 
