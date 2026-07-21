@@ -8,7 +8,7 @@ pub(super) struct RenameBody {
 pub(super) async fn get_stats_dashboard(
     Query(query): Query<crate::stats_dashboard::StatsDashboardQuery>,
 ) -> impl IntoResponse {
-    match run_manager_blocking(move || crate::stats_dashboard::dashboard(&query)).await {
+    match manager::run_manager_blocking(move || crate::stats_dashboard::dashboard(&query)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }

@@ -26,8 +26,10 @@ pub(super) async fn list_workspaces_with_sessions(
         page_size: query.page_size.unwrap_or(5),
     };
 
-    match run_manager_blocking(move || crate::core::manager::workspaces_with_sessions(&options))
-        .await
+    match manager::run_manager_blocking(move || {
+        crate::core::manager::workspaces_with_sessions(&options)
+    })
+    .await
     {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),

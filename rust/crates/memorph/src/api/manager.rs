@@ -1,0 +1,265 @@
+use super::*;
+
+#[derive(Deserialize)]
+pub(super) struct ManagerPreviewBody {
+    #[serde(default)]
+    providers: Vec<String>,
+    older_than_days: Option<u32>,
+    older_than_ms: Option<i64>,
+    larger_than_mb: Option<u32>,
+    larger_than_bytes: Option<u64>,
+    smaller_than_bytes: Option<u64>,
+    workspace: Option<String>,
+    sort: Option<String>,
+    limit: Option<usize>,
+}
+
+fn manager_filter_from_body(
+    body: ManagerPreviewBody,
+    workspace: Option<String>,
+    limit: Option<usize>,
+) -> crate::core::manager::ManagerFilter {
+    crate::core::manager::ManagerFilter {
+        providers: body.providers,
+        older_than_days: body.older_than_days,
+        older_than_ms: body.older_than_ms,
+        larger_than_mb: body.larger_than_mb,
+        larger_than_bytes: body.larger_than_bytes,
+        smaller_than_bytes: body.smaller_than_bytes,
+        workspace,
+        sort: body.sort,
+        limit,
+    }
+}
+
+pub(super) async fn run_manager_blocking<T, F>(task: F) -> Result<T, anyhow::Error>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, anyhow::Error> + Send + 'static,
+{
+    tokio::task::spawn_blocking(task)
+        .await
+        .map_err(|e| anyhow!("manager task failed: {}", e))?
+}
+
+pub(super) async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
+    let workspace = body.workspace.clone();
+    let limit = body.limit;
+    let filter = manager_filter_from_body(body, workspace, limit);
+    match run_manager_blocking(move || crate::core::manager::preview(&filter)).await {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ManagerQuickPreviewResult {
+    items: Vec<crate::core::manager::ManagerItem>,
+    total_count: usize,
+    total_size_bytes: u64,
+    selected_agent_count: usize,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ManagerQuickQuery {
+    /// Comma-separated provider ids. Empty/missing → fall back to all installed providers.
+    #[serde(default)]
+    providers: String,
+}
+
+const MANAGER_QUICK_LIMIT: usize = 15;
+
+/// Resolve provider ids for a quick endpoint: explicit `?providers=` wins, otherwise
+/// fall back to every currently-installed provider.
+async fn resolve_quick_provider_ids(query: &str) -> Result<Vec<String>, anyhow::Error> {
+    let trimmed: Vec<String> = query
+        .split(',')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+    if !trimmed.is_empty() {
+        return Ok(trimmed);
+    }
+    let catalog = build_provider_catalog_light(None).await?;
+    Ok(catalog
+        .providers
+        .into_iter()
+        .filter(|p| p.install_state.is_installed)
+        .map(|p| p.provider_id)
+        .collect())
+}
+
+fn quick_filter(provider_ids: Vec<String>) -> crate::core::manager::ManagerFilter {
+    crate::core::manager::ManagerFilter {
+        providers: provider_ids,
+        older_than_days: None,
+        older_than_ms: None,
+        larger_than_mb: None,
+        larger_than_bytes: None,
+        smaller_than_bytes: None,
+        workspace: None,
+        sort: Some("recent".to_string()),
+        limit: Some(MANAGER_QUICK_LIMIT),
+    }
+}
+
+pub(super) async fn manager_quick_preview(
+    axum::extract::Query(query): axum::extract::Query<ManagerQuickQuery>,
+) -> impl IntoResponse {
+    let provider_ids = match resolve_quick_provider_ids(&query.providers).await {
+        Ok(ids) => ids,
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+
+    if provider_ids.is_empty() {
+        return ApiResponse::success(ManagerQuickPreviewResult {
+            items: Vec::new(),
+            total_count: 0,
+            total_size_bytes: 0,
+            selected_agent_count: 0,
+        })
+        .into_response();
+    }
+
+    let selected_agent_count = provider_ids.len();
+    let filter = quick_filter(provider_ids);
+
+    match run_manager_blocking(move || crate::core::manager::preview(&filter)).await {
+        Ok(preview) => ApiResponse::success(ManagerQuickPreviewResult {
+            selected_agent_count,
+            total_count: preview.total_count,
+            total_size_bytes: preview.total_size_bytes,
+            items: preview.items,
+        })
+        .into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+pub(super) async fn manager_quick_workspaces(
+    axum::extract::Query(query): axum::extract::Query<ManagerQuickQuery>,
+) -> impl IntoResponse {
+    let provider_ids = match resolve_quick_provider_ids(&query.providers).await {
+        Ok(ids) => ids,
+        Err(e) => return api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    };
+
+    if provider_ids.is_empty() {
+        return ApiResponse::success(crate::core::manager::ManagerWorkspacesResult {
+            items: Vec::new(),
+            total_count: 0,
+            total_size_bytes: 0,
+        })
+        .into_response();
+    }
+
+    let filter = quick_filter(provider_ids);
+    match run_manager_blocking(move || crate::core::manager::workspaces(&filter)).await {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+pub(super) async fn manager_stats(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
+    let workspace = body.workspace.clone();
+    let filter = manager_filter_from_body(body, workspace, None);
+    match run_manager_blocking(move || crate::core::manager::stats(&filter)).await {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ManagerItemsBody {
+    items: Vec<crate::core::manager::ManagerItem>,
+    output_dir: Option<String>,
+}
+
+pub(super) async fn manager_clean(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
+    let result = crate::core::manager::clean(&body.items, ActivityActor::Api);
+    logging::info(
+        "manager_clean",
+        format!(
+            "success={} failed={} freed_bytes={}",
+            result.success, result.failed, result.freed_bytes
+        ),
+    );
+    ApiResponse::success(result).into_response()
+}
+
+pub(super) async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
+    let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
+    let resolved_output_dir = resolve_backup_output_dir(&output_dir, None);
+    let result =
+        crate::core::manager::backup(&body.items, &resolved_output_dir, ActivityActor::Api);
+    logging::info(
+        "manager_backup",
+        format!(
+            "success={} failed={} output_dir={}",
+            result.success,
+            result.failed,
+            resolved_output_dir.display()
+        ),
+    );
+    ApiResponse::success(result).into_response()
+}
+
+pub(super) async fn manager_workspaces(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
+    let limit = body.limit;
+    let filter = manager_filter_from_body(body, None, limit);
+    match run_manager_blocking(move || crate::core::manager::workspaces(&filter)).await {
+        Ok(result) => ApiResponse::success(result).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ManagerWorkspaceBody {
+    provider_id: String,
+    workspace: String,
+    output_dir: Option<String>,
+}
+
+pub(super) async fn manager_clean_workspace(
+    Json(body): Json<ManagerWorkspaceBody>,
+) -> impl IntoResponse {
+    let result = crate::core::manager::clean_workspace(
+        &body.provider_id,
+        &body.workspace,
+        ActivityActor::Api,
+    );
+    logging::info(
+        "manager_clean_workspace",
+        format!(
+            "provider={} workspace={} success={} failed={} freed_bytes={}",
+            body.provider_id, body.workspace, result.success, result.failed, result.freed_bytes
+        ),
+    );
+    ApiResponse::success(result).into_response()
+}
+
+pub(super) async fn manager_backup_workspace(
+    Json(body): Json<ManagerWorkspaceBody>,
+) -> impl IntoResponse {
+    let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
+    let resolved_output_dir = resolve_backup_output_dir(&output_dir, Some(&body.workspace));
+    let result = crate::core::manager::backup_workspace(
+        &body.provider_id,
+        &body.workspace,
+        &resolved_output_dir,
+        ActivityActor::Api,
+    );
+    logging::info(
+        "manager_backup_workspace",
+        format!(
+            "provider={} workspace={} success={} failed={} output_dir={}",
+            body.provider_id,
+            body.workspace,
+            result.success,
+            result.failed,
+            resolved_output_dir.display()
+        ),
+    );
+    ApiResponse::success(result).into_response()
+}

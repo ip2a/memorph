@@ -182,23 +182,29 @@ pub fn router() -> Router {
             "/api/v1/sync/{group_id}",
             delete(sync::remove_sync_group).patch(sync::rename_sync_group),
         )
-        .route("/api/v1/manager/preview", post(manager_preview))
-        .route("/api/v1/manager/quick-preview", get(manager_quick_preview))
+        .route("/api/v1/manager/preview", post(manager::manager_preview))
+        .route(
+            "/api/v1/manager/quick-preview",
+            get(manager::manager_quick_preview),
+        )
         .route(
             "/api/v1/manager/quick-workspaces",
-            get(manager_quick_workspaces),
+            get(manager::manager_quick_workspaces),
         )
-        .route("/api/v1/manager/workspaces", post(manager_workspaces))
-        .route("/api/v1/manager/stats", post(manager_stats))
-        .route("/api/v1/manager/clean", post(manager_clean))
+        .route(
+            "/api/v1/manager/workspaces",
+            post(manager::manager_workspaces),
+        )
+        .route("/api/v1/manager/stats", post(manager::manager_stats))
+        .route("/api/v1/manager/clean", post(manager::manager_clean))
         .route(
             "/api/v1/manager/clean-workspace",
-            post(manager_clean_workspace),
+            post(manager::manager_clean_workspace),
         )
-        .route("/api/v1/manager/backup", post(manager_backup))
+        .route("/api/v1/manager/backup", post(manager::manager_backup))
         .route(
             "/api/v1/manager/backup-workspace",
-            post(manager_backup_workspace),
+            post(manager::manager_backup_workspace),
         )
         .merge(hooks::server::router())
         .merge(crate::skills::server::router())
