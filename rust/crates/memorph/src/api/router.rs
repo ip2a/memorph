@@ -109,39 +109,48 @@ pub fn router() -> Router {
         .route("/api/v1/export", post(export_session))
         .route(
             "/api/v1/compression/archives",
-            get(list_compression_archives),
+            get(compression::list_compression_archives),
         )
-        .route("/api/v1/compression/archive", get(get_compression_archive))
+        .route(
+            "/api/v1/compression/archive",
+            get(compression::get_compression_archive),
+        )
         .route(
             "/api/v1/compression/providers",
-            get(list_compression_providers),
+            get(compression::list_compression_providers),
         )
         .route(
             "/api/v1/compression/tool-spec",
-            get(get_compression_tool_spec),
+            get(compression::get_compression_tool_spec),
         )
         .route(
             "/api/v1/compression/instructions",
-            post(get_compression_retrieval_instructions),
+            post(compression::get_compression_retrieval_instructions),
         )
         .route(
             "/api/v1/compression/restore",
-            post(restore_compression_archive),
+            post(compression::restore_compression_archive),
         )
         .route(
             "/api/v1/compression/restore-native",
-            post(restore_native_compression),
+            post(compression::restore_native_compression),
         )
         .route(
             "/api/v1/compression/retrieve",
-            post(retrieve_compression_archive),
+            post(compression::retrieve_compression_archive),
         )
         .route(
             "/api/v1/compression/expand",
-            post(expand_compression_session),
+            post(compression::expand_compression_session),
         )
-        .route("/api/v1/compression/plan", post(plan_active_compression))
-        .route("/api/v1/compression/apply", post(apply_active_compression))
+        .route(
+            "/api/v1/compression/plan",
+            post(compression::plan_active_compression),
+        )
+        .route(
+            "/api/v1/compression/apply",
+            post(compression::apply_active_compression),
+        )
         .route("/api/v1/import", post(import_session))
         .route("/api/v1/switch", post(switch_session))
         .route("/api/v1/find", get(find_sessions))
