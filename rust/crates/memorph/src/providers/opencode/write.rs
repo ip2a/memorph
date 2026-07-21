@@ -427,3 +427,184 @@ pub(super) fn default_model_id(provider: &str) -> &'static str {
 // ---------------------------------------------------------------------------
 // DB operations
 // ---------------------------------------------------------------------------
+
+pub(super) fn find_or_create_project(target_dir: &Path) -> Result<String> {
+    let db_path = get_db_path();
+    if !db_path.exists() {
+        // Generate a deterministic project ID from path
+        return Ok(generate_project_id(target_dir));
+    }
+
+    let conn = Connection::open(&db_path)?;
+    let target_dir_str = target_dir.to_string_lossy().to_string();
+
+    // Try to find existing project
+    let existing: Result<String, _> = conn.query_row(
+        "SELECT id FROM project WHERE worktree = ?1 ORDER BY time_updated DESC LIMIT 1",
+        [&target_dir_str],
+        |row| row.get(0),
+    );
+
+    if let Ok(id) = existing {
+        return Ok(id);
+    }
+
+    // Create new project
+    let project_id = generate_project_id(target_dir);
+    let now = Utc::now().timestamp_millis();
+    conn.execute(
+        "INSERT INTO project (id, worktree, vcs, name, time_created, time_updated, sandboxes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        [
+            &project_id,
+            &target_dir_str,
+            &get_git_remote(target_dir).unwrap_or_default(),
+            &target_dir.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string(),
+            &now.to_string(),
+            &now.to_string(),
+            "{}",
+        ],
+    )?;
+
+    Ok(project_id)
+}
+
+pub(super) fn generate_project_id(target_dir: &Path) -> String {
+    // Use a SHA256 of the absolute path for determinism
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let path_str = target_dir.to_string_lossy().to_string();
+    let mut hasher = DefaultHasher::new();
+    path_str.hash(&mut hasher);
+    let hash = hasher.finish();
+    format!("{:016x}{:024x}", hash, hash)
+}
+
+pub(super) fn get_git_remote(dir: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["-C", &dir.to_string_lossy(), "remote", "get-url", "origin"])
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        None
+    }
+}
+
+pub(super) fn write_to_db(
+    session_id: &str,
+    project_id: &str,
+    slug: &str,
+    directory: &str,
+    title: &str,
+    now: i64,
+    messages: &[(String, i64, Value)],
+    parts: &[(String, String, i64, Value)],
+) -> Result<()> {
+    let db_path = get_db_path();
+    if !db_path.exists() {
+        anyhow::bail!(
+            "OpenCode database does not exist: {}. Please launch OpenCode once to initialize storage before importing.",
+            db_path.display()
+        );
+    }
+    let mut conn = Connection::open(&db_path)?;
+
+    let tx = conn.transaction()?;
+
+    // Insert session
+    tx.execute(
+        "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        [session_id, project_id, slug, directory, title, OPENCODE_VERSION, &now.to_string(), &now.to_string()],
+    )?;
+
+    insert_opencode_projection_rows(&tx, session_id, messages, parts)?;
+    tx.commit()?;
+    Ok(())
+}
+
+pub(super) fn insert_opencode_projection_rows(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    messages: &[(String, i64, Value)],
+    parts: &[(String, String, i64, Value)],
+) -> Result<()> {
+    for (msg_id, created, data) in messages {
+        let mut db_data = data.clone();
+        if let Value::Object(ref mut map) = db_data {
+            map.remove("id");
+            map.remove("sessionID");
+        }
+        let data_str = serde_json::to_string(&db_data)?;
+        tx.execute(
+            "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![msg_id, session_id, created, created, data_str],
+        )?;
+    }
+    for (part_id, msg_id, created, data) in parts {
+        let mut db_data = data.clone();
+        if let Value::Object(ref mut map) = db_data {
+            map.remove("id");
+            map.remove("messageID");
+            map.remove("sessionID");
+        }
+        let data_str = serde_json::to_string(&db_data)?;
+        tx.execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![part_id, msg_id, session_id, created, created, data_str],
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn write_opencode_json_atomic(path: &Path, value: &Value) -> Result<()> {
+    let temp_path = path.with_extension(format!("json.memorph-{}.tmp", Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        let mut file = File::create(&temp_path)?;
+        serde_json::to_writer_pretty(&mut file, value)?;
+        use std::io::Write as _;
+        file.flush()?;
+        file.sync_all()?;
+        std::fs::rename(&temp_path, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(temp_path);
+    }
+    result
+}
+
+pub(super) fn write_to_filesystem(
+    session_id: &str,
+    project_id: &str,
+    session_json: &Value,
+    messages: &[(String, i64, Value)],
+    parts: &[(String, String, i64, Value)],
+) -> Result<()> {
+    let storage_dir = get_opencode_dir().join("storage");
+
+    // Write session
+    let session_dir = storage_dir.join("session").join(project_id);
+    std::fs::create_dir_all(&session_dir)?;
+    let session_file = session_dir.join(format!("{}.json", session_id));
+    write_opencode_json_atomic(&session_file, session_json)?;
+
+    // Write messages
+    let msg_dir = storage_dir.join("message").join(session_id);
+    std::fs::create_dir_all(&msg_dir)?;
+    for (msg_id, _created, data) in messages {
+        let msg_file = msg_dir.join(format!("{}.json", msg_id));
+        write_opencode_json_atomic(&msg_file, data)?;
+    }
+
+    // Write parts
+    let parts_base = storage_dir.join("part");
+    for (part_id, msg_id, _created, data) in parts {
+        let part_dir = parts_base.join(msg_id);
+        std::fs::create_dir_all(&part_dir)?;
+        let part_file = part_dir.join(format!("{}.json", part_id));
+        write_opencode_json_atomic(&part_file, data)?;
+    }
+
+    Ok(())
+}
