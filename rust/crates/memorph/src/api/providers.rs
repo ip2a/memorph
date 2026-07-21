@@ -1,5 +1,15 @@
 use super::*;
 
+#[derive(Deserialize)]
+pub(super) struct ProviderSettingUpdateBody {
+    value: Option<Value>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ProviderSettingRunBody {
+    workspace: Option<String>,
+}
+
 pub(super) async fn list_agent_management() -> impl IntoResponse {
     match agent_management::list_agent_management_entries() {
         Ok(providers) => ApiResponse::success(AgentManagementPayload { providers }).into_response(),

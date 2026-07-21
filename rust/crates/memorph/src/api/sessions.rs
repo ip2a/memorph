@@ -1,5 +1,10 @@
 use super::*;
 
+#[derive(Deserialize)]
+pub(super) struct RenameBody {
+    title: String,
+}
+
 pub(super) async fn get_stats_dashboard(
     Query(query): Query<crate::stats_dashboard::StatsDashboardQuery>,
 ) -> impl IntoResponse {

@@ -154,18 +154,18 @@ pub fn router() -> Router {
         .route("/api/v1/import", post(transfer::import_session))
         .route("/api/v1/switch", post(transfer::switch_session))
         .route("/api/v1/find", get(find_sessions))
-        .route("/api/v1/workspaces", get(list_workspaces))
+        .route("/api/v1/workspaces", get(workspaces::list_workspaces))
         .route(
             "/api/v1/workspaces/with-sessions",
-            get(list_workspaces_with_sessions),
+            get(workspaces::list_workspaces_with_sessions),
         )
         .route(
             "/api/v1/workspaces/history",
-            delete(remove_workspace_history),
+            delete(workspaces::remove_workspace_history),
         )
         .route(
             "/api/v1/workspaces/providers",
-            get(get_workspace_providers).put(update_workspace_providers),
+            get(workspaces::get_workspace_providers).put(workspaces::update_workspace_providers),
         )
         .route(
             "/api/v1/sync",
