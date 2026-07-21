@@ -619,8 +619,8 @@ fn management_operations_record_terminal_activity() {
         ActivityActor::Api,
     )
     .is_err());
-    assert!(core::active_compression_apply(
-        &core::ActiveCompressionApplyCommandParams {
+    assert!(core::compression_application::active_compression_apply(
+        &core::compression_application::ActiveCompressionApplyCommandParams {
             source_provider_id: missing_provider.to_string(),
             target_provider_id: "codex".to_string(),
             session_id: Some(missing_session.to_string()),
@@ -1082,11 +1082,13 @@ async fn compression_retrieve_route_rejects_invalid_archive_ref() {
 async fn compression_retrieve_route_returns_query_matches_from_archive() {
     let fixture = write_api_retrieve_archive_fixture();
     eprintln!("fixture created: {}", fixture.archive_ref);
-    let direct = core::retrieve_compression_archive(&core::RetrieveCompressionArchiveParams {
-        archive_ref: fixture.archive_ref.clone(),
-        query: Some("needle".to_string()),
-        max_results: Some(5),
-    });
+    let direct = core::compression_application::retrieve_compression_archive(
+        &core::compression_application::RetrieveCompressionArchiveParams {
+            archive_ref: fixture.archive_ref.clone(),
+            query: Some("needle".to_string()),
+            max_results: Some(5),
+        },
+    );
     eprintln!("direct retrieve ok={}", direct.is_ok());
     let request = Request::builder()
         .method("POST")

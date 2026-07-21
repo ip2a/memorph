@@ -871,7 +871,7 @@ fn print_codex_repair_report(report: providers::codex::CodexWorkspaceRepairRepor
 fn run_compression_command(command: CompressionCommands) -> Result<()> {
     match command {
         CompressionCommands::List => {
-            let archives = core::list_compression_archives(None)?;
+            let archives = core::compression_application::list_compression_archives(None)?;
             if archives.is_empty() {
                 println!("No compression archives.");
             } else {
@@ -892,7 +892,7 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             }
         }
         CompressionCommands::Providers => {
-            for support in core::list_compression_provider_support() {
+            for support in core::compression_application::list_compression_provider_support() {
                 println!(
                     "{} | source={} | target={} | default={:?}",
                     support.provider_id,
@@ -911,11 +911,12 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             }
         }
         CompressionCommands::ToolSpec => {
-            let spec = core::compression_retrieval_tool_spec();
+            let spec = core::compression_application::compression_retrieval_tool_spec();
             println!("{}", serde_json::to_string_pretty(&spec)?);
         }
         CompressionCommands::Instructions { archive_ref } => {
-            let instructions = core::compression_retrieval_instructions(&archive_ref)?;
+            let instructions =
+                core::compression_application::compression_retrieval_instructions(&archive_ref)?;
             println!("{}", serde_json::to_string_pretty(&instructions)?);
         }
         CompressionCommands::Restore {
@@ -923,8 +924,8 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             output,
             format,
         } => {
-            let result = core::restore_compression_archive(
-                &core::RestoreCompressionArchiveParams {
+            let result = core::compression_application::restore_compression_archive(
+                &core::compression_application::RestoreCompressionArchiveParams {
                     archive_ref,
                     output_prefix: output,
                     format,
@@ -940,8 +941,8 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             session_id,
             archive_ref,
         } => {
-            let result = core::restore_native_compression(
-                &core::RestoreNativeCompressionParams {
+            let result = core::compression_application::restore_native_compression(
+                &core::compression_application::RestoreNativeCompressionParams {
                     provider_id: provider_id.clone(),
                     session_id: session_id.clone(),
                     archive_ref,
@@ -969,12 +970,13 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             query,
             max_results,
         } => {
-            let result =
-                core::retrieve_compression_archive(&core::RetrieveCompressionArchiveParams {
+            let result = core::compression_application::retrieve_compression_archive(
+                &core::compression_application::RetrieveCompressionArchiveParams {
                     archive_ref,
                     query,
                     max_results,
-                })?;
+                },
+            )?;
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         CompressionCommands::Expand {
@@ -982,8 +984,8 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             output,
             format,
         } => {
-            let result = core::expand_compression_session(
-                &core::ExpandCompressionSessionParams {
+            let result = core::compression_application::expand_compression_session(
+                &core::compression_application::ExpandCompressionSessionParams {
                     file,
                     output_prefix: output,
                     format,
@@ -1014,13 +1016,15 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             if let Some(value) = min_savings_ratio_percent {
                 policy.min_savings_ratio_percent = value;
             }
-            let report = core::active_compression_dry_run(&core::ActiveCompressionDryRunParams {
-                source_provider_id,
-                target_provider_id,
-                session_id,
-                file,
-                policy,
-            })?;
+            let report = core::compression_application::active_compression_dry_run(
+                &core::compression_application::ActiveCompressionDryRunParams {
+                    source_provider_id,
+                    target_provider_id,
+                    session_id,
+                    file,
+                    policy,
+                },
+            )?;
             print_active_compression_report(&report);
         }
         CompressionCommands::Apply {
@@ -1046,8 +1050,8 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
             if let Some(value) = min_savings_ratio_percent {
                 policy.min_savings_ratio_percent = value;
             }
-            let result = core::active_compression_apply(
-                &core::ActiveCompressionApplyCommandParams {
+            let result = core::compression_application::active_compression_apply(
+                &core::compression_application::ActiveCompressionApplyCommandParams {
                     source_provider_id: source_provider_id.clone(),
                     target_provider_id,
                     session_id: session_id.clone(),

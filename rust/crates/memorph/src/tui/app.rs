@@ -1509,7 +1509,7 @@ impl App {
 
         let mut policy = core::active_compression::ActiveCompressionPolicy::default();
         policy.mode = core::active_compression::ActiveCompressionMode::PlanOnly;
-        match core::active_compression_dry_run(&core::ActiveCompressionDryRunParams {
+        match core::compression_application::active_compression_dry_run(&core::compression_application::ActiveCompressionDryRunParams {
             source_provider_id: selected.provider_id,
             target_provider_id: target.to_string(),
             session_id: Some(selected.session_id),
@@ -1760,7 +1760,7 @@ impl App {
 
         let mut policy = core::active_compression::ActiveCompressionPolicy::default();
         policy.mode = core::active_compression::ActiveCompressionMode::Auto;
-        let params = core::ActiveCompressionApplyCommandParams {
+        let params = core::compression_application::ActiveCompressionApplyCommandParams {
             source_provider_id: selected.provider_id.clone(),
             target_provider_id: target.to_string(),
             session_id: Some(selected.session_id.clone()),
@@ -1774,7 +1774,7 @@ impl App {
             format: "json".to_string(),
         };
 
-        match core::active_compression_apply(&params, ActivityActor::Tui) {
+        match core::compression_application::active_compression_apply(&params, ActivityActor::Tui) {
             Ok(result) => {
                 let mut lines = vec![
                     format!("Applied candidates: {}", result.report.candidates.len()),

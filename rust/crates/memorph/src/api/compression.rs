@@ -11,7 +11,7 @@ pub(super) async fn list_compression_archives_cached(
 
     let workspace_for_spawn = workspace_key.clone();
     let items = tokio::task::spawn_blocking(move || {
-        core::list_compression_archives(workspace_for_spawn.as_deref())
+        core::compression_application::list_compression_archives(workspace_for_spawn.as_deref())
     })
     .await
     .map_err(|err| anyhow!("Failed to list compression archives: {err}"))??;
@@ -64,18 +64,18 @@ pub(super) struct CompressionArchiveQuery {
 pub(super) async fn get_compression_archive(
     Query(q): Query<CompressionArchiveQuery>,
 ) -> impl IntoResponse {
-    match core::get_compression_archive(&q.archive_ref) {
+    match core::compression_application::get_compression_archive(&q.archive_ref) {
         Ok(archive) => ApiResponse::success(archive).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
 pub(super) async fn list_compression_providers() -> impl IntoResponse {
-    ApiResponse::success(core::list_compression_provider_support())
+    ApiResponse::success(core::compression_application::list_compression_provider_support())
 }
 
 pub(super) async fn get_compression_tool_spec() -> impl IntoResponse {
-    ApiResponse::success(core::compression_retrieval_tool_spec())
+    ApiResponse::success(core::compression_application::compression_retrieval_tool_spec())
 }
 
 #[derive(Deserialize)]
@@ -86,7 +86,7 @@ pub(super) struct CompressionRetrievalInstructionsBody {
 pub(super) async fn get_compression_retrieval_instructions(
     Json(body): Json<CompressionRetrievalInstructionsBody>,
 ) -> impl IntoResponse {
-    match core::compression_retrieval_instructions(&body.archive_ref) {
+    match core::compression_application::compression_retrieval_instructions(&body.archive_ref) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -150,12 +150,12 @@ pub(super) struct ActiveCompressionApplyBody {
 pub(super) async fn restore_native_compression(
     Json(body): Json<RestoreNativeCompressionBody>,
 ) -> impl IntoResponse {
-    let params = core::RestoreNativeCompressionParams {
+    let params = core::compression_application::RestoreNativeCompressionParams {
         provider_id: body.provider_id,
         session_id: body.session_id,
         archive_ref: body.archive_ref,
     };
-    match core::restore_native_compression(&params, ActivityActor::Api) {
+    match core::compression_application::restore_native_compression(&params, ActivityActor::Api) {
         Ok(result) => {
             invalidate_compression_archives_cache();
             ApiResponse::success(result).into_response()
@@ -167,12 +167,12 @@ pub(super) async fn restore_native_compression(
 pub(super) async fn restore_compression_archive(
     Json(body): Json<RestoreCompressionArchiveBody>,
 ) -> impl IntoResponse {
-    let params = core::RestoreCompressionArchiveParams {
+    let params = core::compression_application::RestoreCompressionArchiveParams {
         archive_ref: body.archive_ref,
         output_prefix: body.output_prefix,
         format: body.format,
     };
-    match core::restore_compression_archive(&params, ActivityActor::Api) {
+    match core::compression_application::restore_compression_archive(&params, ActivityActor::Api) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -181,12 +181,12 @@ pub(super) async fn restore_compression_archive(
 pub(super) async fn retrieve_compression_archive(
     Json(body): Json<RetrieveCompressionArchiveBody>,
 ) -> impl IntoResponse {
-    let params = core::RetrieveCompressionArchiveParams {
+    let params = core::compression_application::RetrieveCompressionArchiveParams {
         archive_ref: body.archive_ref,
         query: body.query,
         max_results: body.max_results,
     };
-    match core::retrieve_compression_archive(&params) {
+    match core::compression_application::retrieve_compression_archive(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -195,12 +195,12 @@ pub(super) async fn retrieve_compression_archive(
 pub(super) async fn expand_compression_session(
     Json(body): Json<ExpandCompressionSessionBody>,
 ) -> impl IntoResponse {
-    let params = core::ExpandCompressionSessionParams {
+    let params = core::compression_application::ExpandCompressionSessionParams {
         file: body.file,
         output_prefix: body.output_prefix,
         format: body.format,
     };
-    match core::expand_compression_session(&params, ActivityActor::Api) {
+    match core::compression_application::expand_compression_session(&params, ActivityActor::Api) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -209,14 +209,14 @@ pub(super) async fn expand_compression_session(
 pub(super) async fn plan_active_compression(
     Json(body): Json<ActiveCompressionPlanBody>,
 ) -> impl IntoResponse {
-    let params = core::ActiveCompressionDryRunParams {
+    let params = core::compression_application::ActiveCompressionDryRunParams {
         source_provider_id: body.source_provider_id,
         target_provider_id: body.target_provider_id,
         session_id: body.session_id,
         file: body.file,
         policy: body.policy,
     };
-    match core::active_compression_dry_run(&params) {
+    match core::compression_application::active_compression_dry_run(&params) {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -225,7 +225,7 @@ pub(super) async fn plan_active_compression(
 pub(super) async fn apply_active_compression(
     Json(body): Json<ActiveCompressionApplyBody>,
 ) -> impl IntoResponse {
-    let params = core::ActiveCompressionApplyCommandParams {
+    let params = core::compression_application::ActiveCompressionApplyCommandParams {
         source_provider_id: body.source_provider_id,
         target_provider_id: body.target_provider_id,
         session_id: body.session_id,
@@ -235,7 +235,7 @@ pub(super) async fn apply_active_compression(
         output_prefix: body.output_prefix,
         format: body.format,
     };
-    match core::active_compression_apply(&params, ActivityActor::Api) {
+    match core::compression_application::active_compression_apply(&params, ActivityActor::Api) {
         Ok(result) => {
             invalidate_compression_archives_cache();
             ApiResponse::success(result).into_response()

@@ -23,7 +23,10 @@ use crate::storage::{
     local_store, session_state,
 };
 
-use super::{ExpandCompressionSessionParams, RenameResult, RestoreCompressionArchiveParams};
+use super::compression_application::{
+    ExpandCompressionSessionParams, RestoreCompressionArchiveParams,
+};
+use super::RenameResult;
 
 pub fn normalized_workspace_key(provider_id: &str, workspace: Option<&str>) -> Option<String> {
     providers::find_provider(provider_id)
