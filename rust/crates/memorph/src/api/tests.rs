@@ -1856,7 +1856,10 @@ async fn agents_route_exposes_all_hook_profile_providers() {
             entry["hook_required_events"].as_array().unwrap().len(),
             descriptor.required_events.len()
         );
-        assert!(entry["hook_profile"]["events"].as_array().unwrap().len() > 0);
+        assert!(!entry["hook_profile"]["events"]
+            .as_array()
+            .unwrap()
+            .is_empty());
         assert!(entry["settings"]
             .as_array()
             .unwrap()
