@@ -304,6 +304,7 @@ fn imported_session_title_prefers_display_title_before_native_and_meta() {
         session_id: "session-1".to_string(),
         title: Some("Meta".to_string()),
         project_dir: Some("/tmp/project".to_string()),
+        created_at: None,
         last_active_at: None,
         source_path: Some("/tmp/session.jsonl".to_string()),
     };
@@ -1110,6 +1111,7 @@ fn bootstrap_projects_hermes_native_sqlite_source() {
         session_id: "hermes-1".into(),
         title: Some("Hermes fixture".into()),
         project_dir: Some("/tmp/hermes-project".into()),
+        created_at: None,
         last_active_at: Some(1_000_000),
         source_path: Some(format!("{}#session=hermes-1", db.display())),
     };
@@ -1149,6 +1151,7 @@ fn hermes_projection_refreshes_after_source_change() {
         session_id: "hermes-1".into(),
         title: Some("Before".into()),
         project_dir: Some("/tmp/hermes-project".into()),
+        created_at: None,
         last_active_at: Some(1_000_000),
         source_path: Some(format!("{}#session=hermes-1", db.display())),
     };
@@ -1203,6 +1206,7 @@ fn bootstrap_projects_cline_task_source() {
         session_id: "task-cline-1".into(),
         title: Some("hello".into()),
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(history.to_string_lossy().into_owned()),
     };
@@ -1237,6 +1241,7 @@ fn cline_projection_refreshes_after_task_history_change() {
         session_id: "task-cline-1".into(),
         title: Some("before".into()),
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(history.to_string_lossy().into_owned()),
     };
@@ -1280,6 +1285,7 @@ fn bootstrap_projects_copilot_event_source() {
         session_id: "copilot-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/copilot".into()),
+        created_at: None,
         last_active_at: None,
         source_path: Some(events.to_string_lossy().into_owned()),
     };
@@ -1318,6 +1324,7 @@ fn copilot_projection_refreshes_after_event_source_change() {
         session_id: "copilot-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/copilot".into()),
+        created_at: None,
         last_active_at: None,
         source_path: Some(events.to_string_lossy().into_owned()),
     };
@@ -1366,6 +1373,7 @@ fn bootstrap_projects_droid_session_source() {
         session_id: "droid-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/droid".into()),
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1403,6 +1411,7 @@ fn droid_projection_refreshes_after_session_source_change() {
         session_id: "droid-session-1".into(),
         title: Some("before".into()),
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1449,6 +1458,7 @@ fn bootstrap_projects_codebuddy_session_source() {
         session_id: "codebuddy-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/codebuddy".into()),
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1478,6 +1488,7 @@ fn codebuddy_projection_refreshes_after_session_source_change() {
         session_id: "codebuddy-session-1".into(),
         title: Some("before".into()),
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1516,6 +1527,7 @@ fn bootstrap_projects_qoder_session_source() {
         session_id: "qoder-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/qoder".into()),
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1545,6 +1557,7 @@ fn qoder_projection_refreshes_after_session_source_change() {
         session_id: "qoder-session-1".into(),
         title: Some("before".into()),
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1582,6 +1595,7 @@ fn bootstrap_projects_workbuddy_trace_source() {
         session_id: "workbuddy-1".into(),
         title: Some("before".into()),
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1610,6 +1624,7 @@ fn workbuddy_projection_refreshes_after_trace_source_change() {
         session_id: "workbuddy-1".into(),
         title: Some("before".into()),
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1648,6 +1663,7 @@ fn bootstrap_projects_pi_session_source() {
         session_id: "pi-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/pi".into()),
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1678,6 +1694,7 @@ fn pi_projection_refreshes_after_session_source_change() {
         session_id: "pi-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/pi".into()),
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1710,6 +1727,7 @@ fn bootstrap_projects_antigravity_session_source() {
         session_id: "ag-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/ag".into()),
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1736,6 +1754,7 @@ fn antigravity_projection_refreshes_after_session_source_change() {
         session_id: "ag-1".into(),
         title: Some("before".into()),
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(source.to_string_lossy().into_owned()),
     };
@@ -1781,6 +1800,7 @@ fn bootstrap_projects_windsurf_active_trajectory_source() {
         session_id: "wind-1".into(),
         title: None,
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(source),
     };
@@ -1818,6 +1838,7 @@ fn windsurf_projection_refreshes_after_active_trajectory_change() {
         session_id: "wind-1".into(),
         title: None,
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(source),
     };
@@ -1857,6 +1878,7 @@ fn windsurf_legacy_chat_projection_refreshes_after_source_change() {
         session_id: "legacy-1".into(),
         title: Some("before".into()),
         project_dir: None,
+        created_at: None,
         last_active_at: None,
         source_path: Some(format!("{}#conversation=legacy-1", path.display())),
     };
@@ -1965,6 +1987,7 @@ fn bootstrap_continues_after_missing_sources_without_parsing_body_content() {
             session_id: "valid-session".to_string(),
             title: Some("Valid title".to_string()),
             project_dir: Some("/tmp/project".to_string()),
+            created_at: None,
             last_active_at: None,
             source_path: Some(valid.path().to_string_lossy().to_string()),
         },
@@ -1972,6 +1995,7 @@ fn bootstrap_continues_after_missing_sources_without_parsing_body_content() {
             session_id: "invalid-session".to_string(),
             title: None,
             project_dir: None,
+            created_at: None,
             last_active_at: None,
             source_path: Some(invalid.path().to_string_lossy().to_string()),
         },
@@ -1979,6 +2003,7 @@ fn bootstrap_continues_after_missing_sources_without_parsing_body_content() {
             session_id: "missing-session".to_string(),
             title: None,
             project_dir: None,
+            created_at: None,
             last_active_at: None,
             source_path: Some("/tmp/memorph-bootstrap-missing.jsonl".to_string()),
         },
@@ -2101,6 +2126,7 @@ fn non_default_session_list_reads_index_without_provider_source() {
                 session_id: "session-projection-1".to_string(),
                 title: Some("Projected title".to_string()),
                 project_dir: Some("/tmp/project".to_string()),
+                created_at: None,
                 last_active_at: None,
                 source_path: Some(source.path().to_string_lossy().to_string()),
             },
@@ -2181,6 +2207,7 @@ fn activity_timelines_read_provider_source_and_fail_when_it_is_missing() {
                 session_id: "session-projection-1".to_string(),
                 title: Some("Projected activity".to_string()),
                 project_dir: Some("/tmp/project".to_string()),
+                created_at: None,
                 last_active_at: Some(1_767_225_602_000),
                 source_path: Some(source.path().to_string_lossy().to_string()),
             },
@@ -2661,6 +2688,7 @@ fn project_claude_activity_sample(
                 session_id: session_id.to_string(),
                 title: Some(session_id.to_string()),
                 project_dir: Some(workspace.to_string()),
+                created_at: None,
                 last_active_at: Some(
                     (timestamp + chrono::TimeDelta::seconds(2)).timestamp_millis(),
                 ),

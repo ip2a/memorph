@@ -40,6 +40,23 @@ pub fn extract_text(content: &serde_json::Value) -> String {
     }
 }
 
+/// Earliest plausible session timestamp: 2000-01-01 UTC.
+pub const PLAUSIBLE_TIMESTAMP_MS: i64 = 946_684_800_000;
+
+pub fn is_plausible_timestamp_ms(ms: i64) -> bool {
+    ms >= PLAUSIBLE_TIMESTAMP_MS
+}
+
+pub fn datetime_from_timestamp_ms(ms: i64) -> Option<chrono::DateTime<chrono::Utc>> {
+    is_plausible_timestamp_ms(ms)
+        .then(|| chrono::DateTime::from_timestamp_millis(ms))
+        .flatten()
+}
+
+pub fn is_plausible_session_time(dt: &chrono::DateTime<chrono::Utc>) -> bool {
+    is_plausible_timestamp_ms(dt.timestamp_millis())
+}
+
 /// Parse RFC3339 or similar timestamp to milliseconds
 pub fn parse_timestamp_to_ms(value: &serde_json::Value) -> Option<i64> {
     if let Some(n) = value.as_i64() {
@@ -110,7 +127,19 @@ fn normalize_windows_user_visible_path(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_windows_user_visible_path;
+    use super::{
+        datetime_from_timestamp_ms, is_plausible_timestamp_ms, normalize_windows_user_visible_path,
+        PLAUSIBLE_TIMESTAMP_MS,
+    };
+
+    #[test]
+    fn plausible_timestamp_ms_rejects_epoch_and_line_order_placeholders() {
+        assert!(!is_plausible_timestamp_ms(0));
+        assert!(!is_plausible_timestamp_ms(1));
+        assert!(is_plausible_timestamp_ms(PLAUSIBLE_TIMESTAMP_MS));
+        assert!(datetime_from_timestamp_ms(1_700_000_000_000).is_some());
+        assert!(datetime_from_timestamp_ms(1).is_none());
+    }
 
     #[test]
     fn windows_display_path_strips_verbatim_drive_prefix() {

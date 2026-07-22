@@ -2326,19 +2326,8 @@ mod tests {
         );
         assert_eq!(first.session.events[0].timestamp.timestamp_millis(), 1);
         assert_eq!(first.session.events[1].timestamp.timestamp_millis(), 2);
-        assert_eq!(
-            first.session.context.created_at.unwrap().timestamp_millis(),
-            1
-        );
-        assert_eq!(
-            first
-                .session
-                .context
-                .last_active_at
-                .unwrap()
-                .timestamp_millis(),
-            2
-        );
+        assert_eq!(first.session.context.created_at, None);
+        assert_eq!(first.session.context.last_active_at, None);
     }
 
     #[test]
