@@ -1783,3 +1783,27 @@ export type SkillPruneResult = {
   status: string;
   message: string;
 };
+
+export type SkillGraphDay = {
+  date: string;
+  invocations: number;
+  sessions: number;
+  active_skills: number;
+  level: number;
+};
+export type SkillGraph = {
+  from: string;
+  to: string;
+  timezone: string;
+  max_count: number;
+  total_invocations: number;
+  days: SkillGraphDay[];
+};
+export type SkillGraphParams = {
+  from?: string;
+  to?: string;
+  skillId?: string;
+  provider?: string;
+  workspace?: string;
+  timezone?: string;
+};

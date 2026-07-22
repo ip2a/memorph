@@ -20,7 +20,7 @@ use walkdir::WalkDir;
 use super::{
     analysis, conflicts, context, coverage,
     detection::{self, SkillDetectionResult},
-    health,
+    graph, health,
     invocation::{self, StatsQuery},
     model::{IgnoredSkillCandidate, SkillGroup, SkillRelationRule, SkillRelationsConfig},
     prune,
@@ -187,6 +187,7 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
             get(get_health_summary).post(check_health_summary),
         )
         .route("/api/v1/skills/stats/daily", get(get_stats_daily))
+        .route("/api/v1/skills/graph", get(get_skill_graph))
         .route("/api/v1/skills/stats/ranking", get(get_stats_ranking))
         .route("/api/v1/skills/groups", post(upsert_skill_group))
         .route(
@@ -1140,6 +1141,34 @@ fn stats_store(state: &SkillsState) -> Result<crate::storage::local_store::Local
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillGraphQuery {
+    from: Option<String>,
+    to: Option<String>,
+    skill_id: Option<String>,
+    provider: Option<String>,
+    workspace: Option<String>,
+    timezone: Option<String>,
+}
+async fn get_skill_graph(
+    State(state): State<SkillsState>,
+    Query(query): Query<SkillGraphQuery>,
+) -> impl IntoResponse {
+    let query = graph::GraphQuery {
+        from: query.from,
+        to: query.to,
+        skill_id: query.skill_id,
+        provider: query.provider,
+        workspace: query.workspace,
+        timezone: query.timezone,
+    };
+    match stats_store(&state).and_then(|store| graph::graph(store.connection(), &query)) {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct PrunePreviewRequest {
     days: Option<u32>,
 }
@@ -1790,6 +1819,7 @@ mod tests {
             "/api/v1/skills/health/summary".to_string(),
             "/api/v1/skills/conflicts".to_string(),
             "/api/v1/skills/coverage/summary?range=90d".to_string(),
+            "/api/v1/skills/graph?from=2026-01-01&to=2026-12-31".to_string(),
             format!("/api/v1/skills/{catalog_id}/context?baselineTokens=128000"),
             format!("/api/v1/skills/{catalog_id}/health"),
             format!("/api/v1/skills/{catalog_id}/conflicts"),

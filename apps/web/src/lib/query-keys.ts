@@ -83,6 +83,8 @@ export const queryKeys = {
     ["skills", "coverage", "summary", range] as const,
   skillCoverage: (id: string, range: string) =>
     ["skills", id, "coverage", range] as const,
+  skillGraph: (params: import("@/lib/types").SkillGraphParams = {}) =>
+    ["skills", "graph", params] as const,
   skillStatsSummary: (params: SkillStatsParams = {}) =>
     ["skills", "stats", "summary", params] as const,
   skillStatsDaily: (params: SkillStatsParams = {}) =>

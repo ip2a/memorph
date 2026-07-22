@@ -3,6 +3,7 @@ pub mod conflicts;
 pub mod context;
 pub mod coverage;
 pub mod detection;
+pub mod graph;
 pub mod health;
 pub mod invocation;
 pub mod model;

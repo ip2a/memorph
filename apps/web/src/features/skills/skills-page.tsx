@@ -50,6 +50,7 @@ import {
 import { SkillBundlePanel } from "@/features/skills/skill-bundle-panel";
 import { SkillStatsPanel } from "@/features/skills/skill-stats-panel";
 import { SkillContextHealthPanel } from "@/features/skills/skill-context-health-panel";
+import { SkillGraphPanel } from "@/features/skills/skill-graph-panel";
 import { SkillPrunePanel } from "@/features/skills/skill-prune-panel";
 import { SkillCoverageConflictsPanel } from "@/features/skills/skill-coverage-conflicts-panel";
 import { formatBytes } from "@/lib/format";
@@ -156,6 +157,10 @@ export function SkillsPage() {
     <>
       <div className="flex h-full min-h-0 flex-col gap-3 overflow-auto p-1">
         <SkillStatsPanel
+          skillId={selected?.id ?? null}
+          provider={provider === "all" ? undefined : provider}
+        />
+        <SkillGraphPanel
           skillId={selected?.id ?? null}
           provider={provider === "all" ? undefined : provider}
         />

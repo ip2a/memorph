@@ -69,6 +69,8 @@ import type {
   SkillCoverageSummaryItem,
   SkillHealth,
   SkillHealthSummary,
+  SkillGraph,
+  SkillGraphParams,
   SkillInvocationPage,
   SkillRanking,
   SkillPrunePreview,
@@ -714,6 +716,10 @@ export function executeSkillPrune(
       confirmation: "REMOVE_MANAGED_INSTALLATIONS",
     }),
   });
+}
+
+export function getSkillGraph(params: SkillGraphParams = {}) {
+  return api<SkillGraph>(`/api/v1/skills/graph${buildQuery(params)}`);
 }
 
 export function getSkillStatsSummary(params: SkillStatsParams = {}) {

@@ -6,6 +6,7 @@ import {
   getSkillContextSummary,
   getSkillHealth,
   getSkillHealthSummary,
+  getSkillGraph,
   getSkillConflicts,
   getSkillCoverage,
   getSkillCoverageSummary,
@@ -28,7 +29,11 @@ import {
   uninstallSkill,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
-import type { SkillCatalogParams, SkillStatsParams } from "@/lib/types";
+import type {
+  SkillCatalogParams,
+  SkillGraphParams,
+  SkillStatsParams,
+} from "@/lib/types";
 
 export function useSkills(params: SkillCatalogParams = {}) {
   return useQuery({
@@ -121,6 +126,13 @@ export function useExecuteSkillPrune() {
     }) => executeSkillPrune(preview, installationIds),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useSkillGraph(params: SkillGraphParams) {
+  return useQuery({
+    queryKey: queryKeys.skillGraph(params),
+    queryFn: () => getSkillGraph(params),
   });
 }
 
