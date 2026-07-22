@@ -1384,13 +1384,6 @@ export type SkillAsset = {
   entry: boolean;
 };
 
-export type SkillRelation = {
-  relation: string;
-  source: string;
-  target: string;
-  evidence: string;
-};
-
 export type SkillEntry = {
   id: string;
   name: string;
@@ -1406,7 +1399,6 @@ export type SkillEntry = {
 export type SkillDetail = SkillEntry & {
   frontmatter: Record<string, string>;
   provider_metadata: SkillAsset[];
-  relations: SkillRelation[];
 };
 
 export type SkillTree = {

@@ -51,14 +51,6 @@ pub struct SkillStatistics {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct SkillRelation {
-    pub relation: String,
-    pub source: String,
-    pub target: String,
-    pub evidence: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
 pub struct SkillIssue {
     pub path: Option<String>,
     pub message: String,
@@ -103,7 +95,6 @@ pub struct SkillDetail {
     pub skill: SkillEntry,
     pub frontmatter: BTreeMap<String, String>,
     pub provider_metadata: Vec<SkillAsset>,
-    pub relations: Vec<SkillRelation>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -588,33 +579,6 @@ fn bundle_detail(overview: &SkillsOverview, id: &str) -> Result<SkillDetail> {
         .first()
         .ok_or_else(|| anyhow!("Skill has no installation"))?;
     let inspection = inspect_bundle(&source.path);
-    let mut relations = Vec::new();
-    for asset in &inspection.assets {
-        if asset.category == "script" {
-            relations.push(SkillRelation {
-                relation: "executes".into(),
-                source: "SKILL.md".into(),
-                target: asset.path.clone(),
-                evidence: "script directory classification".into(),
-            });
-        }
-        if asset.category == "reference" {
-            relations.push(SkillRelation {
-                relation: "references".into(),
-                source: "SKILL.md".into(),
-                target: asset.path.clone(),
-                evidence: "references directory classification".into(),
-            });
-        }
-        if asset.category == "metadata" {
-            relations.push(SkillRelation {
-                relation: "metadata-for".into(),
-                source: asset.path.clone(),
-                target: "SKILL.md".into(),
-                evidence: "agents metadata classification".into(),
-            });
-        }
-    }
     Ok(SkillDetail {
         frontmatter: read_frontmatter(&source.path.join("SKILL.md")),
         provider_metadata: inspection
@@ -623,7 +587,6 @@ fn bundle_detail(overview: &SkillsOverview, id: &str) -> Result<SkillDetail> {
             .filter(|asset| asset.category == "metadata")
             .cloned()
             .collect(),
-        relations,
         skill,
     })
 }
@@ -1649,14 +1612,6 @@ mod tests {
             Some("Writes docs")
         );
         assert_eq!(detail.provider_metadata.len(), 1);
-        assert!(detail
-            .relations
-            .iter()
-            .any(|item| item.relation == "executes"));
-        assert!(detail
-            .relations
-            .iter()
-            .any(|item| item.relation == "references"));
         let missing_source = SkillMutation {
             skill_id: "writer".into(),
             provider: "gemini".into(),
