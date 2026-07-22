@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   useSkillGraph: vi.fn(),
   useSkillPrune: vi.fn(),
   useExecuteSkillPrune: vi.fn(),
+  scan: vi.fn(),
   install: vi.fn(),
   uninstall: vi.fn(),
 }));
@@ -54,6 +55,11 @@ vi.mock("@/features/skills/queries", () => ({
   useSkillGraph: mocks.useSkillGraph,
   useSkillPrune: mocks.useSkillPrune,
   useExecuteSkillPrune: mocks.useExecuteSkillPrune,
+  useScanSkills: () => ({
+    mutate: mocks.scan,
+    isPending: false,
+    error: null,
+  }),
   useInstallSkill: () => ({
     mutate: mocks.install,
     isPending: false,
@@ -222,6 +228,19 @@ describe("SkillsPage", () => {
     );
     expect(screen.queryByText("Document Writer")).toBeNull();
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
+  });
+
+  it("scans global and current project roots", async () => {
+    useUiStore.setState({ selectedWorkspace: "/work/demo" });
+    const user = userEvent.setup();
+    renderRoute();
+
+    await user.click(screen.getByRole("button", { name: "增量扫描" }));
+
+    expect(mocks.scan).toHaveBeenCalledWith(
+      { mode: "incremental", workspace: "/work/demo" },
+      expect.any(Object),
+    );
   });
 
   it("stores custom stats dates and confidence in the URL-backed query", async () => {

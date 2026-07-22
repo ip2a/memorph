@@ -61,6 +61,7 @@ import type {
   SkillMutation,
   SkillCatalogPage,
   SkillCatalogParams,
+  SkillScanSummary,
   SkillDailyUsage,
   SkillContext,
   SkillContextSummary,
@@ -641,6 +642,13 @@ export function getSyncGroup(groupId: string) {
 
 export function getSkills(params: SkillCatalogParams = {}) {
   return api<SkillCatalogPage>(`/api/v1/skills${buildQuery(params)}`);
+}
+
+export function scanSkills(mode: "incremental" | "full", workspace?: string) {
+  return api<SkillScanSummary>("/api/v1/skills/scan", {
+    method: "POST",
+    body: JSON.stringify({ mode, workspace }),
+  });
 }
 
 export function getSkillContextSummary(

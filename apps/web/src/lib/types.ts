@@ -1504,6 +1504,13 @@ export type SkillMutation = {
   source_provider?: string;
 };
 
+export type SkillScanSummary = {
+  roots_scanned: number;
+  skills_seen: number;
+  installations_seen: number;
+  session_sources_seen: number;
+};
+
 export type SkillCatalogParams = {
   query?: string;
   provider?: string;

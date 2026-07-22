@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/table";
 import {
   useInstallSkill,
+  useScanSkills,
   useSkillDetail,
   useSkillFilePreview,
   useSkillTree,
@@ -56,6 +57,7 @@ import { SkillCoverageConflictsPanel } from "@/features/skills/skill-coverage-co
 import { formatBytes } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import type { SkillCatalogItem } from "@/lib/types";
+import { useUiStore } from "@/stores/ui-store";
 
 const AGENTS = ["claude", "codex", "gemini", "opencode", "hermes"] as const;
 
@@ -91,6 +93,8 @@ export function SkillsPage() {
     page,
     pageSize: 50,
   });
+  const currentWorkspace = useUiStore((state) => state.selectedWorkspace) ?? undefined;
+  const scanMutation = useScanSkills();
   const installMutation = useInstallSkill();
   const uninstallMutation = useUninstallSkill();
   const items = skillsQuery.data?.items ?? [];
@@ -150,7 +154,8 @@ export function SkillsPage() {
   }
 
   const pending = installMutation.isPending || uninstallMutation.isPending;
-  const mutationError = installMutation.error || uninstallMutation.error;
+  const mutationError =
+    scanMutation.error || installMutation.error || uninstallMutation.error;
   const pageCount = Math.max(1, Math.ceil((skillsQuery.data?.total ?? 0) / 50));
 
   return (
@@ -180,15 +185,46 @@ export function SkillsPage() {
                   title={t("skills")}
                   className="border-b-0 pb-0"
                 />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => skillsQuery.refetch()}
-                  disabled={skillsQuery.isFetching}
-                >
-                  {skillsQuery.isFetching ? <Spinner /> : <RefreshCwIcon />}
-                  {t("refresh")}
-                </Button>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      scanMutation.mutate(
+                        { mode: "incremental", workspace: currentWorkspace },
+                        {
+                          onSuccess: (result) =>
+                            toast.success(
+                              `扫描完成：${result.skills_seen} 个 Skill，${result.installations_seen} 个安装`,
+                            ),
+                        },
+                      )
+                    }
+                    disabled={scanMutation.isPending}
+                  >
+                    {scanMutation.isPending ? <Spinner /> : <RefreshCwIcon />}
+                    增量扫描
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          "完整重新扫描会重新读取所有本地 Skill 和会话，但不会删除调用历史。继续吗？",
+                        )
+                      ) {
+                        scanMutation.mutate({
+                          mode: "full",
+                          workspace: currentWorkspace,
+                        });
+                      }
+                    }}
+                    disabled={scanMutation.isPending}
+                  >
+                    完整扫描
+                  </Button>
+                </div>
               </div>
               {skillsQuery.data?.completeness.status !== "complete" ? (
                 <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs">

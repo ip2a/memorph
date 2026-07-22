@@ -27,6 +27,7 @@ import {
   executeSkillPrune,
   saveSkillGroup,
   saveSkillRelation,
+  scanSkills,
   uninstallSkill,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -35,6 +36,21 @@ import type {
   SkillGraphParams,
   SkillStatsParams,
 } from "@/lib/types";
+
+export function useScanSkills() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      mode,
+      workspace,
+    }: {
+      mode: "incremental" | "full";
+      workspace?: string;
+    }) => scanSkills(mode, workspace),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
 
 export function useSkills(params: SkillCatalogParams = {}) {
   return useQuery({
