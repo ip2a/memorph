@@ -212,45 +212,31 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
         })
 }
 
+const SKILL_PROVIDERS: [(&str, &str, &str, &str); 5] = [
+    ("claude", "Claude Code", ".claude/skills", ".claude/skills"),
+    ("codex", "Codex", ".codex/skills", ".codex/skills"),
+    ("gemini", "Gemini CLI", ".gemini/skills", ".gemini/skills"),
+    (
+        "opencode",
+        "OpenCode",
+        ".config/opencode/skills",
+        ".opencode/skills",
+    ),
+    ("hermes", "Hermes", ".hermes/skills", ".hermes/skills"),
+];
+
 fn default_agents() -> Vec<SkillAgent> {
     let home = dirs::home_dir().unwrap_or_default();
-    vec![
-        SkillAgent {
-            provider_id: "claude".into(),
-            name: "Claude Code".into(),
-            skills_dir: home.join(".claude/skills"),
+    SKILL_PROVIDERS
+        .iter()
+        .map(|(provider_id, name, global_root, _)| SkillAgent {
+            provider_id: (*provider_id).into(),
+            name: (*name).into(),
+            skills_dir: home.join(global_root),
             scope_kind: "global".into(),
             workspace_dir: None,
-        },
-        SkillAgent {
-            provider_id: "codex".into(),
-            name: "Codex".into(),
-            skills_dir: home.join(".codex/skills"),
-            scope_kind: "global".into(),
-            workspace_dir: None,
-        },
-        SkillAgent {
-            provider_id: "gemini".into(),
-            name: "Gemini CLI".into(),
-            skills_dir: home.join(".gemini/skills"),
-            scope_kind: "global".into(),
-            workspace_dir: None,
-        },
-        SkillAgent {
-            provider_id: "opencode".into(),
-            name: "OpenCode".into(),
-            skills_dir: home.join(".config/opencode/skills"),
-            scope_kind: "global".into(),
-            workspace_dir: None,
-        },
-        SkillAgent {
-            provider_id: "hermes".into(),
-            name: "Hermes".into(),
-            skills_dir: home.join(".hermes/skills"),
-            scope_kind: "global".into(),
-            workspace_dir: None,
-        },
-    ]
+        })
+        .collect()
 }
 
 fn discover(agents: &[SkillAgent]) -> SkillsOverview {
@@ -951,13 +937,7 @@ async fn scan_skills(
                 "Skill workspace must be an existing absolute directory"
             ));
         }
-        for (provider_id, name, relative) in [
-            ("claude", "Claude Code", ".claude/skills"),
-            ("codex", "Codex", ".codex/skills"),
-            ("gemini", "Gemini CLI", ".gemini/skills"),
-            ("opencode", "OpenCode", ".opencode/skills"),
-            ("hermes", "Hermes", ".hermes/skills"),
-        ] {
+        for (provider_id, name, _, relative) in SKILL_PROVIDERS {
             agents.push(SkillAgent {
                 provider_id: provider_id.into(),
                 name: name.into(),
