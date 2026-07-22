@@ -532,4 +532,36 @@ mod catalog_tests {
         assert_eq!(page.items[0].source_id, "skill-1");
         assert_eq!(page.providers, vec!["claude", "codex"]);
     }
+
+    #[test]
+    fn catalog_paginates_one_thousand_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = LocalSqliteStore::open(dir.path().join("memorph.db")).unwrap();
+        let tx = store.connection_mut().transaction().unwrap();
+        for index in 0..1_000 {
+            tx.execute(
+                "INSERT INTO skill_catalog (id, canonical_name, normalized_name, entry_content_hash,
+                 bundle_content_hash, file_count, total_bytes, first_seen_at_ms, last_scanned_at_ms,
+                 created_at_ms, updated_at_ms) VALUES (?1, ?2, ?1, 'entry', ?1, 1, 100, 1, 1, 1, 1)",
+                params![format!("skill-{index:04}"), format!("Skill {index:04}")],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+
+        let page = list_catalog(
+            store.connection(),
+            &CatalogQuery {
+                page: 20,
+                page_size: 50,
+                ..CatalogQuery::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(page.total, 1_000);
+        assert_eq!(page.items.len(), 50);
+        assert_eq!(page.items[0].name, "Skill 0950");
+        assert_eq!(page.items[49].name, "Skill 0999");
+    }
 }
