@@ -18,6 +18,7 @@ use std::{
 use walkdir::WalkDir;
 
 use super::{
+    analysis,
     detection::{self, SkillDetectionResult},
     model::{IgnoredSkillCandidate, SkillGroup, SkillRelationRule, SkillRelationsConfig},
     store,
@@ -155,6 +156,7 @@ pub fn router() -> Router {
 fn router_for(agents: Vec<SkillAgent>) -> Router {
     Router::new()
         .route("/api/v1/skills", get(list_skills))
+        .route("/api/v1/skills/analysis", get(get_skill_analysis))
         .route("/api/v1/skills/groups", post(upsert_skill_group))
         .route(
             "/api/v1/skills/relations",
@@ -981,6 +983,19 @@ async fn get_skill_relation_candidates(State(state): State<SkillsState>) -> impl
 
 async fn list_skills(State(state): State<SkillsState>) -> impl IntoResponse {
     ApiResponse::success(discover(&state.agents)).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillAnalysisQuery {
+    #[serde(default)]
+    refresh: bool,
+}
+
+async fn get_skill_analysis(
+    State(state): State<SkillsState>,
+    Query(query): Query<SkillAnalysisQuery>,
+) -> impl IntoResponse {
+    ApiResponse::success(analysis::scan(&discover(&state.agents), query.refresh)).into_response()
 }
 
 async fn install_skill(

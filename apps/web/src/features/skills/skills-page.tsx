@@ -42,6 +42,7 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
   useInstallSkill,
+  useSkillAnalysis,
   useSkillDetail,
   useSkillFilePreview,
   useSkillTree,
@@ -128,6 +129,7 @@ async function copyFingerprint(value: string) {
 export function SkillsPage() {
   const { t } = useI18n();
   const skillsQuery = useSkills();
+  const analysisQuery = useSkillAnalysis();
   const installMutation = useInstallSkill();
   const uninstallMutation = useUninstallSkill();
   const [search, setSearch] = useState("");
@@ -152,6 +154,9 @@ export function SkillsPage() {
 
   const selected =
     skills.find((skill) => skill.id === selectedId) || skills[0] || null;
+  const selectedUsage = analysisQuery.data?.skills.find(
+    (usage) => usage.skill_id === selected?.id,
+  );
   const selectedSource = selected?.installations.some(
     (item) => item.provider_id === sourceProvider,
   )
@@ -299,6 +304,57 @@ export function SkillsPage() {
                 <SkillDescription
                   text={selected.description || t("skillsNoDescription")}
                 />
+
+                <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-lg border p-3">
+                    <span className="text-muted-foreground text-xs">调用次数</span>
+                    <strong className="mt-1 block text-xl">
+                      {selectedUsage?.invocations ?? 0}
+                    </strong>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <span className="text-muted-foreground text-xs">涉及会话</span>
+                    <strong className="mt-1 block text-xl">
+                      {selectedUsage?.sessions ?? 0}
+                    </strong>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <span className="text-muted-foreground text-xs">Token（令牌）</span>
+                    <strong className="mt-1 block text-xl">
+                      {(selectedUsage?.total_tokens ?? 0).toLocaleString()}
+                    </strong>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <span className="text-muted-foreground text-xs">Hook（钩子）观测</span>
+                    <strong className="mt-1 block text-xl">
+                      {selectedUsage?.hook_observed ? "是" : "否"}
+                    </strong>
+                  </div>
+                </section>
+
+                {selectedUsage?.traces.length ? (
+                  <section className="flex flex-col gap-2">
+                    <h3 className="text-sm font-semibold">最近调用追踪</h3>
+                    <div className="divide-y rounded-lg border">
+                      {selectedUsage.traces.slice(0, 5).map((trace) => (
+                        <div
+                          key={`${trace.session_id}-${trace.event_id}`}
+                          className="p-3 text-xs"
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <strong className="truncate">
+                              {trace.session_title || trace.session_id}
+                            </strong>
+                            <Badge variant="outline">{trace.provider_id}</Badge>
+                          </div>
+                          <p className="text-muted-foreground mt-1">
+                            {new Date(trace.timestamp).toLocaleString()} · {trace.source}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
 
                 <div className="flex flex-nowrap items-center gap-2 overflow-x-auto text-xs">
                   <Badge variant="outline" className="shrink-0">

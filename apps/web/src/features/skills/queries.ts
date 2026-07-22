@@ -1,11 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { deleteSkillRelation, getSkillDetail, getSkillFilePreview, getSkillRelationCandidates, getSkillRelations, getSkillTree, getSkills, ignoreSkillRelationCandidate, installSkill, saveSkillGroup, saveSkillRelation, uninstallSkill } from "@/lib/api";
+import { deleteSkillRelation, getSkillAnalysis, getSkillDetail, getSkillFilePreview, getSkillRelationCandidates, getSkillRelations, getSkillTree, getSkills, ignoreSkillRelationCandidate, installSkill, saveSkillGroup, saveSkillRelation, uninstallSkill } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useSkills() {
   return useQuery({
     queryKey: queryKeys.skills,
     queryFn: getSkills,
+  });
+}
+
+export function useSkillAnalysis() {
+  return useQuery({
+    queryKey: queryKeys.skillAnalysis,
+    queryFn: () => getSkillAnalysis(),
   });
 }
 

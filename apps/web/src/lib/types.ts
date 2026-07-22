@@ -1368,6 +1368,53 @@ export type SkillsOverview = {
   skills: SkillEntry[];
 };
 
+export type SkillTrace = {
+  provider_id: string;
+  session_id: string;
+  session_title?: string | null;
+  timestamp: string;
+  event_id: string;
+  source: string;
+};
+
+export type SkillUsage = {
+  skill_id: string;
+  invocations: number;
+  sessions: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd?: number | null;
+  last_invoked_at?: string | null;
+  hook_observed: boolean;
+  context_tokens: number;
+  context_budget_percent: number;
+  health_score: number;
+  prune_candidate: boolean;
+  reclaimable_tokens: number;
+  coverage_percent: number;
+  observed_files: string[];
+  traces: SkillTrace[];
+};
+
+export type SkillTriggerConflict = {
+  trigger: string;
+  skills: string[];
+};
+
+export type SkillUsageOverview = {
+  scanned_sessions: number;
+  failed_sessions: number;
+  invocations: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  estimated_cost_usd?: number | null;
+  hook_sessions: number;
+  trigger_conflicts: SkillTriggerConflict[];
+  skills: SkillUsage[];
+};
+
 export type SkillRelationKind =
   | "requires"
   | "uses"

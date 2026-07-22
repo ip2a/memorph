@@ -59,6 +59,7 @@ import type {
   SessionListParams,
   SessionReprojectionReport,
   SkillMutation,
+  SkillUsageOverview,
   SkillsOverview,
   SkillDetail,
   SkillTree,
@@ -520,6 +521,12 @@ export function getSyncGroup(groupId: string) {
 
 export function getSkills() {
   return api<SkillsOverview>("/api/v1/skills");
+}
+
+export function getSkillAnalysis(refresh = false) {
+  return api<SkillUsageOverview>(
+    `/api/v1/skills/analysis${buildQuery({ refresh: refresh || undefined })}`,
+  );
 }
 
 export function getSkillDetail(skillId: string) {

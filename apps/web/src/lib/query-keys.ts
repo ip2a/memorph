@@ -40,6 +40,7 @@ export const queryKeys = {
   agent: (provider: string) => ["agents", provider] as const,
   hooks: ["hooks"] as const,
   skills: ["skills"] as const,
+  skillAnalysis: ["skills", "analysis"] as const,
   skillDetail: (id: string) => ["skills", id, "detail"] as const,
   skillRelations: ["skills", "relations"] as const,
   skillRelationCandidates: ["skills", "relation-candidates"] as const,
