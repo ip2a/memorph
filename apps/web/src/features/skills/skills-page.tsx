@@ -288,12 +288,6 @@ export function SkillsPage() {
                 </strong>
                 Token（令牌）
               </div>
-              <div className="rounded-md border p-2">
-                <strong className="block text-base">
-                  {analysisQuery.data?.hook_sessions ?? 0}
-                </strong>
-                Hook（钩子）会话
-              </div>
             </div>
             <div className="text-muted-foreground flex items-center justify-between text-xs">
               <span>{t("skillsFound", { count: skills.length })}</span>
@@ -381,12 +375,6 @@ export function SkillsPage() {
                     <span className="text-muted-foreground text-xs">Token（令牌）</span>
                     <strong className="mt-1 block text-xl">
                       {(selectedUsage?.total_tokens ?? 0).toLocaleString()}
-                    </strong>
-                  </div>
-                  <div className="rounded-lg border p-3">
-                    <span className="text-muted-foreground text-xs">Hook（钩子）观测</span>
-                    <strong className="mt-1 block text-xl">
-                      {selectedUsage?.hook_observed ? "是" : "否"}
                     </strong>
                   </div>
                   <div className="rounded-lg border p-3">

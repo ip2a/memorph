@@ -1449,7 +1449,6 @@ export type SkillUsage = {
   total_tokens: number;
   estimated_cost_usd?: number | null;
   last_invoked_at?: string | null;
-  hook_observed: boolean;
   context_tokens: number;
   context_budget_percent: number;
   health_score: number;
@@ -1473,7 +1472,6 @@ export type SkillUsageOverview = {
   output_tokens: number;
   total_tokens: number;
   estimated_cost_usd?: number | null;
-  hook_sessions: number;
   trigger_conflicts: SkillTriggerConflict[];
   skills: SkillUsage[];
 };

@@ -30,7 +30,6 @@ pub struct SkillUsage {
     pub total_tokens: u64,
     pub estimated_cost_usd: Option<f64>,
     pub last_invoked_at: Option<String>,
-    pub hook_observed: bool,
     pub context_tokens: u64,
     pub context_budget_percent: f64,
     pub health_score: u8,
@@ -66,7 +65,6 @@ pub struct SkillUsageOverview {
     pub output_tokens: u64,
     pub total_tokens: u64,
     pub estimated_cost_usd: Option<f64>,
-    pub hook_sessions: usize,
     pub trigger_conflicts: Vec<SkillTriggerConflict>,
     pub skills: Vec<SkillUsage>,
 }
@@ -212,11 +210,6 @@ fn analyze_session(
     auxiliary_files: &BTreeMap<String, BTreeSet<String>>,
     result: &mut SkillUsageOverview,
 ) {
-    let hook_observed =
-        view.hook_runtime_summary.is_some() || !view.hook_runtime_sessions.is_empty();
-    if hook_observed {
-        result.hook_sessions += 1;
-    }
     let mut session_skills = BTreeSet::new();
     let session_content = serde_json::to_string(&view.events).unwrap_or_default();
 
@@ -251,7 +244,6 @@ fn analyze_session(
             };
             usage.invocations += 1;
             session_skills.insert(skill_id.clone());
-            usage.hook_observed |= hook_observed;
             let timestamp = event.timestamp.to_rfc3339();
             if usage
                 .last_invoked_at
