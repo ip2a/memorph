@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   deleteSkillRelation,
-  getSkillAnalysis,
   getSkillContext,
   getSkillContextSummary,
   getSkillHealth,
@@ -40,13 +39,6 @@ export function useSkills(params: SkillCatalogParams = {}) {
     queryKey: queryKeys.skills(params),
     queryFn: () => getSkills(params),
     placeholderData: (previous) => previous,
-  });
-}
-
-export function useSkillAnalysis() {
-  return useQuery({
-    queryKey: queryKeys.skillAnalysis,
-    queryFn: () => getSkillAnalysis(),
   });
 }
 

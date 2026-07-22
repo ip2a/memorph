@@ -69,7 +69,6 @@ export const queryKeys = {
   skillsRoot: ["skills"] as const,
   skills: (params: SkillCatalogParams = {}) =>
     ["skills", "catalog", params] as const,
-  skillAnalysis: ["skills", "analysis"] as const,
   skillContextSummary: (provider?: string, baseline?: number) =>
     ["skills", "context", "summary", provider, baseline] as const,
   skillContext: (id: string, baseline?: number) =>

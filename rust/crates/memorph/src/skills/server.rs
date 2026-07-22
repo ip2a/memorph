@@ -18,7 +18,7 @@ use std::{
 use walkdir::WalkDir;
 
 use super::{
-    analysis, conflicts, context, coverage,
+    conflicts, context, coverage,
     detection::{self, SkillDetectionResult},
     graph, health,
     invocation::{self, StatsQuery},
@@ -172,7 +172,6 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
     Router::new()
         .route("/api/v1/skills", get(list_skills))
         .route("/api/v1/skills/scan", post(scan_skills))
-        .route("/api/v1/skills/analysis", get(get_skill_analysis))
         .route("/api/v1/skills/stats/summary", get(get_stats_summary))
         .route("/api/v1/skills/context/summary", get(get_context_summary))
         .route(
@@ -1100,12 +1099,6 @@ async fn list_skills(
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct SkillAnalysisQuery {
-    #[serde(default)]
-    refresh: bool,
-}
-
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SkillStatsQuery {
@@ -1436,13 +1429,6 @@ async fn get_skill_invocations(
         Ok(value) => ApiResponse::success(value).into_response(),
         Err(error) => error_response(error),
     }
-}
-
-async fn get_skill_analysis(
-    State(state): State<SkillsState>,
-    Query(query): Query<SkillAnalysisQuery>,
-) -> impl IntoResponse {
-    ApiResponse::success(analysis::scan(&discover(&state.agents), query.refresh)).into_response()
 }
 
 async fn install_skill(

@@ -1,4 +1,3 @@
-pub mod analysis;
 pub mod conflicts;
 pub mod context;
 pub mod coverage;
