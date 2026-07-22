@@ -12,6 +12,8 @@ pub struct CatalogRecord {
     pub entry_hash: String,
     pub bundle_hash: String,
     pub metadata_json: String,
+    pub trigger_terms_json: String,
+    pub section_index_json: String,
     pub file_manifest_json: String,
     pub file_count: u64,
     pub total_bytes: u64,
@@ -216,15 +218,16 @@ fn upsert_catalog(tx: &Transaction<'_>, skill: &CatalogRecord, now_ms: i64) -> R
     tx.execute(
         "INSERT INTO skill_catalog
          (id, canonical_name, normalized_name, description, version, author, entry_content_hash,
-          bundle_content_hash, metadata_json, file_manifest_json, file_count, total_bytes, first_seen_at_ms,
+          bundle_content_hash, metadata_json, trigger_terms_json, section_index_json, file_manifest_json, file_count, total_bytes, first_seen_at_ms,
           last_scanned_at_ms, created_at_ms, updated_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?13, ?13)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15, ?15, ?15)
          ON CONFLICT(id) DO UPDATE SET canonical_name = excluded.canonical_name,
           normalized_name = excluded.normalized_name, description = excluded.description,
           version = excluded.version, author = excluded.author,
           entry_content_hash = excluded.entry_content_hash,
           bundle_content_hash = excluded.bundle_content_hash,
-          metadata_json = excluded.metadata_json, file_manifest_json = excluded.file_manifest_json,
+          metadata_json = excluded.metadata_json, trigger_terms_json = excluded.trigger_terms_json,
+          section_index_json = excluded.section_index_json, file_manifest_json = excluded.file_manifest_json,
           file_count = excluded.file_count,
           total_bytes = excluded.total_bytes, last_scanned_at_ms = excluded.last_scanned_at_ms,
           missing_since_ms = NULL, scan_error = NULL, updated_at_ms = excluded.updated_at_ms",
@@ -238,6 +241,8 @@ fn upsert_catalog(tx: &Transaction<'_>, skill: &CatalogRecord, now_ms: i64) -> R
             skill.entry_hash,
             skill.bundle_hash,
             skill.metadata_json,
+            skill.trigger_terms_json,
+            skill.section_index_json,
             skill.file_manifest_json,
             skill.file_count as i64,
             skill.total_bytes as i64,

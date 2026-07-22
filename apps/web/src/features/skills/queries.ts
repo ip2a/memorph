@@ -6,6 +6,9 @@ import {
   getSkillContextSummary,
   getSkillHealth,
   getSkillHealthSummary,
+  getSkillConflicts,
+  getSkillCoverage,
+  getSkillCoverageSummary,
   getSkillDetail,
   getSkillFilePreview,
   getSkillInvocations,
@@ -70,6 +73,30 @@ export function useSkillHealth(skillId: string | null) {
       ? queryKeys.skillHealth(skillId)
       : ["skills", "health", "none"],
     queryFn: () => getSkillHealth(skillId as string),
+    enabled: Boolean(skillId),
+  });
+}
+
+export function useSkillConflicts(skillId?: string | null) {
+  return useQuery({
+    queryKey: queryKeys.skillConflicts(skillId ?? undefined),
+    queryFn: () => getSkillConflicts(skillId ?? undefined),
+  });
+}
+
+export function useSkillCoverageSummary(range: string) {
+  return useQuery({
+    queryKey: queryKeys.skillCoverageSummary(range),
+    queryFn: () => getSkillCoverageSummary(range),
+  });
+}
+
+export function useSkillCoverage(skillId: string | null, range: string) {
+  return useQuery({
+    queryKey: skillId
+      ? queryKeys.skillCoverage(skillId, range)
+      : ["skills", "coverage", "none"],
+    queryFn: () => getSkillCoverage(skillId as string, range),
     enabled: Boolean(skillId),
   });
 }

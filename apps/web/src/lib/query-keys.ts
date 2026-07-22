@@ -76,6 +76,12 @@ export const queryKeys = {
     ["skills", id, "context", baseline] as const,
   skillHealthSummary: ["skills", "health", "summary"] as const,
   skillHealth: (id: string) => ["skills", id, "health"] as const,
+  skillConflicts: (id?: string) =>
+    ["skills", id ?? "all", "conflicts"] as const,
+  skillCoverageSummary: (range: string) =>
+    ["skills", "coverage", "summary", range] as const,
+  skillCoverage: (id: string, range: string) =>
+    ["skills", id, "coverage", range] as const,
   skillStatsSummary: (params: SkillStatsParams = {}) =>
     ["skills", "stats", "summary", params] as const,
   skillStatsDaily: (params: SkillStatsParams = {}) =>

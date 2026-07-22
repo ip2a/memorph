@@ -18,7 +18,7 @@ use std::{
 use walkdir::WalkDir;
 
 use super::{
-    analysis, context,
+    analysis, conflicts, context, coverage,
     detection::{self, SkillDetectionResult},
     health,
     invocation::{self, StatsQuery},
@@ -175,6 +175,11 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
         .route("/api/v1/skills/stats/summary", get(get_stats_summary))
         .route("/api/v1/skills/context/summary", get(get_context_summary))
         .route(
+            "/api/v1/skills/conflicts",
+            get(get_conflicts).post(check_conflicts),
+        )
+        .route("/api/v1/skills/coverage/summary", get(get_coverage_summary))
+        .route(
             "/api/v1/skills/health/summary",
             get(get_health_summary).post(check_health_summary),
         )
@@ -205,6 +210,18 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
             get(get_skill_invocations),
         )
         .route("/api/v1/skills/{skill_id}/context", get(get_skill_context))
+        .route(
+            "/api/v1/skills/{skill_id}/conflicts",
+            get(get_skill_conflicts),
+        )
+        .route(
+            "/api/v1/skills/{skill_id}/coverage",
+            get(get_skill_coverage),
+        )
+        .route(
+            "/api/v1/skills/{skill_id}/coverage/{target_key}/evidence",
+            get(get_coverage_evidence),
+        )
         .route(
             "/api/v1/skills/{skill_id}/health",
             get(get_skill_health).post(check_skill_health),
@@ -1120,6 +1137,110 @@ fn stats_store(state: &SkillsState) -> Result<crate::storage::local_store::Local
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct ConflictQuery {
+    severity: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct CoverageQuery {
+    #[serde(default = "default_coverage_range")]
+    range: String,
+    #[serde(rename = "includeLowConfidence", default)]
+    include_low_confidence: bool,
+}
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CoverageEvidenceQuery {
+    page: Option<usize>,
+    page_size: Option<usize>,
+}
+fn default_coverage_range() -> String {
+    "90d".into()
+}
+
+async fn get_conflicts(
+    State(state): State<SkillsState>,
+    Query(query): Query<ConflictQuery>,
+) -> impl IntoResponse {
+    conflict_response(&state, None, query.severity.as_deref())
+}
+async fn check_conflicts(State(state): State<SkillsState>) -> impl IntoResponse {
+    conflict_response(&state, None, None)
+}
+async fn get_skill_conflicts(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> impl IntoResponse {
+    conflict_response(&state, Some(&skill_id), None)
+}
+fn conflict_response(
+    state: &SkillsState,
+    skill_id: Option<&str>,
+    severity: Option<&str>,
+) -> axum::response::Response {
+    let result = stats_store(state)
+        .and_then(|store| conflicts::list(store.connection(), skill_id))
+        .map(|items| {
+            items
+                .into_iter()
+                .filter(|item| severity.is_none_or(|value| item.severity == value))
+                .collect::<Vec<_>>()
+        });
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+async fn get_coverage_summary(
+    State(state): State<SkillsState>,
+    Query(query): Query<CoverageQuery>,
+) -> impl IntoResponse {
+    let result =
+        stats_store(&state).and_then(|store| coverage::summary(store.connection(), &query.range));
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+async fn get_skill_coverage(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<CoverageQuery>,
+) -> impl IntoResponse {
+    let result = stats_store(&state).and_then(|store| {
+        coverage::detail(
+            store.connection(),
+            &skill_id,
+            &query.range,
+            query.include_low_confidence,
+        )
+    });
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+async fn get_coverage_evidence(
+    State(state): State<SkillsState>,
+    AxumPath((skill_id, target_key)): AxumPath<(String, String)>,
+    Query(query): Query<CoverageEvidenceQuery>,
+) -> impl IntoResponse {
+    let result = stats_store(&state).and_then(|store| {
+        coverage::evidence(
+            store.connection(),
+            &skill_id,
+            &target_key,
+            query.page.unwrap_or(1),
+            query.page_size.unwrap_or(20),
+        )
+    });
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct ContextQuery {
     provider: Option<String>,
     #[serde(rename = "baselineTokens")]
@@ -1624,8 +1745,12 @@ mod tests {
         for uri in [
             "/api/v1/skills/context/summary?baselineTokens=128000".to_string(),
             "/api/v1/skills/health/summary".to_string(),
+            "/api/v1/skills/conflicts".to_string(),
+            "/api/v1/skills/coverage/summary?range=90d".to_string(),
             format!("/api/v1/skills/{catalog_id}/context?baselineTokens=128000"),
             format!("/api/v1/skills/{catalog_id}/health"),
+            format!("/api/v1/skills/{catalog_id}/conflicts"),
+            format!("/api/v1/skills/{catalog_id}/coverage?range=90d"),
         ] {
             let (status, body) = json(
                 app.clone(),

@@ -64,6 +64,9 @@ import type {
   SkillDailyUsage,
   SkillContext,
   SkillContextSummary,
+  SkillConflict,
+  SkillCoverage,
+  SkillCoverageSummaryItem,
   SkillHealth,
   SkillHealthSummary,
   SkillInvocationPage,
@@ -663,6 +666,26 @@ export function getSkillHealthSummary() {
 export function getSkillHealth(skillId: string) {
   return api<SkillHealth>(
     `/api/v1/skills/${encodeURIComponent(skillId)}/health`,
+  );
+}
+
+export function getSkillConflicts(skillId?: string) {
+  return api<SkillConflict[]>(
+    skillId
+      ? `/api/v1/skills/${encodeURIComponent(skillId)}/conflicts`
+      : "/api/v1/skills/conflicts",
+  );
+}
+
+export function getSkillCoverageSummary(range = "90d") {
+  return api<SkillCoverageSummaryItem[]>(
+    `/api/v1/skills/coverage/summary${buildQuery({ range })}`,
+  );
+}
+
+export function getSkillCoverage(skillId: string, range = "90d") {
+  return api<SkillCoverage>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}/coverage${buildQuery({ range })}`,
   );
 }
 

@@ -126,6 +126,12 @@ fn records(
                     bundle_hash: inspection.fingerprint.clone(),
                     metadata_json: serde_json::to_string(&frontmatter)
                         .expect("frontmatter map is serializable"),
+                    trigger_terms_json: serde_json::to_string(&trigger_terms(skill, &frontmatter))
+                        .expect("trigger terms are serializable"),
+                    section_index_json: serde_json::to_string(&sections(&String::from_utf8_lossy(
+                        &entry,
+                    )))
+                    .expect("section index is serializable"),
                     file_manifest_json: serde_json::to_string(&inspection.assets)
                         .expect("bundle assets are serializable"),
                     file_count: inspection.statistics.files as u64,
@@ -173,6 +179,59 @@ fn records(
         }
     }
     Ok((catalog.into_values().collect(), installations))
+}
+
+#[derive(Serialize)]
+struct SectionIndex {
+    id: String,
+    title: String,
+    level: usize,
+    path: Vec<String>,
+}
+
+fn sections(entry: &str) -> Vec<SectionIndex> {
+    let mut parents = Vec::<String>::new();
+    entry
+        .lines()
+        .filter_map(|line| {
+            let hashes = line.chars().take_while(|ch| *ch == '#').count();
+            if hashes == 0 || hashes > 6 || !line[hashes..].starts_with(' ') {
+                return None;
+            }
+            let title = line[hashes..].trim().to_string();
+            parents.truncate(hashes.saturating_sub(1));
+            parents.push(title.clone());
+            let normalized = parents
+                .iter()
+                .map(|value| value.to_lowercase())
+                .collect::<Vec<_>>()
+                .join("/");
+            Some(SectionIndex {
+                id: hash(format!("{normalized}:{hashes}:{}", title.to_lowercase()).as_bytes()),
+                title,
+                level: hashes,
+                path: parents.clone(),
+            })
+        })
+        .collect()
+}
+
+fn trigger_terms(skill: &SkillEntry, metadata: &BTreeMap<String, String>) -> Vec<String> {
+    let mut terms = vec![skill.id.clone(), skill.name.clone()];
+    for key in ["trigger", "triggers", "command"] {
+        if let Some(value) = metadata.get(key) {
+            terms.extend(
+                value
+                    .split([',', '|'])
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+            );
+        }
+    }
+    terms.sort();
+    terms.dedup();
+    terms
 }
 
 fn root_fingerprint(

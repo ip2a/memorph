@@ -1713,3 +1713,44 @@ export type SkillHealthSummary = {
   completeness_status: "unknown" | "partial" | "complete" | "error";
   skills: SkillHealth[];
 };
+export type SkillConflict = {
+  id: string;
+  left_skill_id: string;
+  left_name: string;
+  right_skill_id: string;
+  right_name: string;
+  conflict_kind: string;
+  severity: "error" | "warning" | "info";
+  similarity: number;
+  overlapping_tokens: string[];
+  evidence: string;
+  recommendation: string;
+};
+
+export type SkillCoverageTarget = {
+  target_kind: string;
+  target_key: string;
+  target_path?: string | null;
+  section_title?: string | null;
+  confidence?: "high" | "medium" | "low" | null;
+  observations: number;
+  first_observed_at_ms?: number | null;
+  last_observed_at_ms?: number | null;
+};
+
+export type SkillCoverage = {
+  skill_id: string;
+  covered: number;
+  total: number;
+  percent: number;
+  completeness_status: string;
+  targets: SkillCoverageTarget[];
+};
+
+export type SkillCoverageSummaryItem = {
+  skill_id: string;
+  name: string;
+  covered: number;
+  total: number;
+  percent: number;
+};

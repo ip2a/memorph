@@ -157,6 +157,7 @@ pub fn index(conn: &mut Connection) -> Result<IndexSummary> {
         }
     }
     rebuild_daily(conn, now_ms)?;
+    super::coverage::rebuild(conn)?;
     let (count, earliest, latest): (i64, Option<i64>, Option<i64>) = conn.query_row(
         "SELECT COUNT(*), MIN(invoked_at_ms), MAX(invoked_at_ms) FROM skill_invocations",
         [],
