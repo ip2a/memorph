@@ -1,13 +1,16 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  PackageIcon,
+  ChevronDownIcon,
+  CopyIcon,
   RefreshCwIcon,
   SearchIcon,
   Trash2Icon,
 } from "lucide-react";
+import { toast } from "sonner";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PanelCard } from "@/components/shared/panel-card";
 import { ScrollPane } from "@/components/shared/scroll-pane";
+import { SectionHeading } from "@/components/shared/section-heading";
 import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { TwoPanePage } from "@/components/shared/two-pane-page";
 import {
@@ -23,6 +26,13 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -31,39 +41,100 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  useDeleteSkillRelation,
-  useIgnoreSkillRelationCandidate,
   useInstallSkill,
-  useSaveSkillGroup,
-  useSaveSkillRelation,
-  useSkillRelationCandidates,
-  useSkillRelations,
   useSkillDetail,
   useSkillFilePreview,
   useSkillTree,
   useSkills,
   useUninstallSkill,
 } from "@/features/skills/queries";
+import { formatBytes } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
-import type { SkillAgent, SkillEntry, SkillRelationKind, SkillRelationRule } from "@/lib/types";
+import type { SkillAgent, SkillEntry } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { SkillBundlePanel } from "@/features/skills/skill-bundle-panel";
+
+function SkillDescription({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const measureRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setExpanded(false);
+  }, [text]);
+
+  useEffect(() => {
+    if (expanded) return;
+    const el = measureRef.current;
+    if (!el) return;
+    const check = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(check);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [text, expanded]);
+
+  return (
+    <div className="mt-2 grid">
+      {!expanded ? (
+        <div
+          ref={measureRef}
+          aria-hidden
+          className="text-muted-foreground invisible col-start-1 row-start-1 text-sm line-clamp-2"
+        >
+          {text}
+        </div>
+      ) : null}
+      <div
+        className={cn(
+          "text-muted-foreground col-start-1 row-start-1 text-sm",
+          !expanded && "line-clamp-2",
+        )}
+      >
+        {text}
+        {overflows ? (
+          <>
+            {" "}
+            <button
+              type="button"
+              className="text-foreground inline-flex items-center gap-0.5 align-baseline text-xs font-medium hover:underline"
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? "收起" : "展开"}
+              <ChevronDownIcon
+                className={cn(
+                  "size-3.5 transition-transform",
+                  expanded && "rotate-180",
+                )}
+              />
+            </button>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+async function copyFingerprint(value: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    toast.success("已复制指纹");
+  } catch {
+    toast.error("复制指纹失败");
+  }
+}
 
 export function SkillsPage() {
   const { t } = useI18n();
   const skillsQuery = useSkills();
   const installMutation = useInstallSkill();
   const uninstallMutation = useUninstallSkill();
-  const relationsQuery = useSkillRelations();
-  const candidatesQuery = useSkillRelationCandidates();
-  const saveGroup = useSaveSkillGroup();
-  const saveRelation = useSaveSkillRelation();
-  const deleteRelation = useDeleteSkillRelation();
-  const ignoreCandidate = useIgnoreSkillRelationCandidate();
-  const [relationTarget, setRelationTarget] = useState("");
-  const [relationKind, setRelationKind] = useState<SkillRelationKind>("related-to");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [sourceProvider, setSourceProvider] = useState<string | undefined>();
+  const [inspectionOpen, setInspectionOpen] = useState(false);
   const [removal, setRemoval] = useState<{
     skill: SkillEntry;
     agent: SkillAgent;
@@ -94,18 +165,18 @@ export function SkillsPage() {
     selectedSource,
   );
 
-  const selectedRelations = relationsQuery.data?.relations.filter(
-    (relation) => relation.from.skill_id === selected?.id || relation.to.skill_id === selected?.id,
-  ) || [];
-  const selectedCandidates = candidatesQuery.data?.relations.filter(
-    (candidate) => candidate.from.skill_id === selected?.id,
-  ) || [];
+  useEffect(() => {
+    setPreviewPath(null);
+    setInspectionOpen(false);
+  }, [selected?.id]);
 
-  const selectedGroupCandidates = candidatesQuery.data?.groups.filter(
-    (group) => group.members.includes(selected?.id || ""),
-  ) || [];
-
-  const persistRelation = (relation: SkillRelationRule) => saveRelation.mutate(relation);
+  useEffect(() => {
+    const assets = treeQuery.data?.assets ?? [];
+    if (previewPath && assets.some((asset) => asset.path === previewPath))
+      return;
+    const next = assets.find((asset) => asset.previewable) ?? assets[0];
+    setPreviewPath(next?.path ?? null);
+  }, [previewPath, selected?.id, treeQuery.data?.assets]);
 
   if (skillsQuery.isLoading) return <PageSkeleton />;
   if (skillsQuery.isError) {
@@ -125,74 +196,62 @@ export function SkillsPage() {
   const pending = installMutation.isPending || uninstallMutation.isPending;
   const mutationError = installMutation.error || uninstallMutation.error;
 
+  const refreshButton = (
+    <Button
+      type="button"
+      variant="outline"
+      onClick={() => skillsQuery.refetch()}
+      disabled={skillsQuery.isFetching}
+    >
+      {skillsQuery.isFetching ? (
+        <Spinner data-icon="inline-start" />
+      ) : (
+        <RefreshCwIcon data-icon="inline-start" />
+      )}
+      {t("refresh")}
+    </Button>
+  );
+
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {t("skills")}
-          </h1>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {t("skillsDescription")}
-          </p>
-        </div>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => skillsQuery.refetch()}
-          disabled={skillsQuery.isFetching}
-        >
-          {skillsQuery.isFetching ? (
-            <Spinner />
-          ) : (
-            <RefreshCwIcon data-icon="inline-start" />
-          )}
-          {t("refresh")}
-        </Button>
-      </header>
-
-      {mutationError ? (
-        <PageError
-          title={t("skillsActionFailed")}
-          message={
-            mutationError instanceof Error
-              ? mutationError.message
-              : t("skillsActionFailed")
-          }
-        />
-      ) : null}
-
-      <TwoPanePage className="flex-1">
+    <>
+      <TwoPanePage className="h-full min-h-0" data-skills-page-layout>
         <PanelCard className="flex min-h-0 flex-col gap-3 p-3">
-          <label className="relative block">
-            <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
-            <Input
-              aria-label={t("searchSkills")}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder={t("searchSkills")}
-              className="pl-9"
+          <section className="flex flex-col gap-3 border-b pb-3">
+            <SectionHeading
+              titleAs="h1"
+              variant="page"
+              title={t("skills")}
+              className="border-b-0 pb-0"
             />
-          </label>
-          <div className="text-muted-foreground flex items-center justify-between text-xs">
-            <span>{t("skillsFound", { count: skills.length })}</span>
-            <span>
-              {t("skillsAgents", {
-                count: skillsQuery.data?.agents.length || 0,
-              })}
-            </span>
-          </div>
+            <label className="relative block">
+              <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
+              <Input
+                aria-label={t("searchSkills")}
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder={t("searchSkills")}
+                className="pl-9"
+              />
+            </label>
+            <div className="text-muted-foreground flex items-center justify-between text-xs">
+              <span>{t("skillsFound", { count: skills.length })}</span>
+              <span>
+                {t("skillsAgents", {
+                  count: skillsQuery.data?.agents.length || 0,
+                })}
+              </span>
+            </div>
+          </section>
           <ScrollPane className="flex-1" innerClassName="flex flex-col gap-2">
             {skills.map((skill) => (
               <SelectableRowButton
                 key={skill.id}
                 selected={skill.id === selectedId}
                 onClick={() => setSelectedId(skill.id)}
-                leading={<PackageIcon className="size-4" />}
                 title={skill.name}
                 meta={skill.description || skill.directory}
                 trailing={
-                  <Badge variant="outline">{skill.installations.length}</Badge>
+                  <Badge variant="outline">{skill.statistics.files}</Badge>
                 }
               />
             ))}
@@ -213,227 +272,280 @@ export function SkillsPage() {
           </ScrollPane>
         </PanelCard>
 
-        <PanelCard className="min-h-0 p-4">
+        <PanelCard className="flex min-h-0 flex-col gap-4 p-4">
+          {mutationError ? (
+            <PageError
+              title={t("skillsActionFailed")}
+              message={
+                mutationError instanceof Error
+                  ? mutationError.message
+                  : t("skillsActionFailed")
+              }
+            />
+          ) : null}
           {selected ? (
-            <ScrollPane innerClassName="flex flex-col gap-5">
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
+            <>
+              <div className="flex shrink-0 items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <h2 className="text-xl font-semibold">{selected.name}</h2>
                   <Badge variant="secondary">{selected.directory}</Badge>
                 </div>
-                <p className="text-muted-foreground mt-2 text-sm">
-                  {selected.description || t("skillsNoDescription")}
-                </p>
+                {refreshButton}
               </div>
+              <ScrollPane
+                className="flex-1"
+                innerClassName="flex flex-col gap-5"
+              >
+                <SkillDescription
+                  text={selected.description || t("skillsNoDescription")}
+                />
 
-              <div className="grid gap-2 text-xs sm:grid-cols-3">
-                <div className="rounded-md border p-2"><span className="text-muted-foreground">文件</span><strong className="ml-2">{detailQuery.data?.statistics.files ?? selected.statistics.files}</strong></div>
-                <div className="rounded-md border p-2"><span className="text-muted-foreground">大小</span><strong className="ml-2">{detailQuery.data?.statistics.bytes ?? selected.statistics.bytes} B</strong></div>
-                <div className="rounded-md border p-2"><span className="text-muted-foreground">指纹</span><code className="ml-2 break-all">{detailQuery.data?.fingerprint ?? selected.fingerprint}</code></div>
-              </div>
-              {selected.conflict ? (
-                <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-                  多来源内容存在冲突。安装时必须明确选择来源。
-                  <select className="mt-2 block rounded border bg-background p-1" value={selectedSource || ""} onChange={(event) => setSourceProvider(event.target.value)}>
-                    {selected.installations.map((item) => <option key={item.provider_id} value={item.provider_id}>{item.provider_id} · {item.fingerprint}</option>)}
-                  </select>
-                </div>
-              ) : null}
-              <section className="flex flex-col gap-2">
-                <h3 className="text-sm font-semibold">{t("skillsAnalysis")}</h3>
-                <div className="grid gap-2 text-xs sm:grid-cols-2">
-                  <div className="rounded-md border p-2">
-                    <span className="text-muted-foreground">{t("skillsVersion")}</span>
-                    <strong className="ml-2">{detailQuery.data?.frontmatter.version || t("skillsUndeclared")}</strong>
-                  </div>
-                  <div className="rounded-md border p-2">
-                    <span className="text-muted-foreground">{t("skillsSource")}</span>
-                    <strong className="ml-2 break-all font-normal">{detailQuery.data?.frontmatter.repository || detailQuery.data?.frontmatter.source || detailQuery.data?.frontmatter.homepage || t("skillsUndeclared")}</strong>
-                  </div>
-                </div>
-                {selected.issues.length ? (
-                  <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-xs">
-                    <strong>{t("skillsFindings", { count: selected.issues.length })}</strong>
-                    <ul className="mt-2 list-disc space-y-1 pl-5">
-                      {selected.issues.map((issue, index) => <li key={`${issue.path || "bundle"}-${index}`}>{issue.path ? `${issue.path}: ` : ""}{issue.message}</li>)}
-                    </ul>
-                  </div>
-                ) : <p className="text-muted-foreground text-xs">{t("skillsNoFindings")}</p>}
-              </section>
-              <section className="flex flex-col gap-2">
-                <h3 className="text-sm font-semibold">Bundle 文件</h3>
-                {treeQuery.data?.assets.map((asset) => (
-                  <button key={asset.path} type="button" disabled={!asset.previewable} onClick={() => setPreviewPath(asset.path)} className="flex items-center justify-between rounded border p-2 text-left text-xs hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
-                    <span className="font-mono">{asset.path}</span><Badge variant="outline">{asset.category} · {asset.bytes} B</Badge>
-                  </button>
-                ))}
-                {previewQuery.data ? <pre className="max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs">{previewQuery.data.content}</pre> : null}
-              </section>
-
-              <section className="flex flex-col gap-3">
-                <div className="flex items-center justify-between gap-2">
-                  <h3 className="text-sm font-semibold">Skill 关系</h3>
-                  <Badge variant="outline">{selectedRelations.length} 已确认 · {selectedCandidates.length} 候选</Badge>
-                </div>
-                {selectedRelations.map((relation) => (
-                  <div key={relation.id} className="flex items-start justify-between gap-3 rounded-md border p-3 text-xs">
-                    <div>
-                      <strong>{relation.from.skill_id}</strong> <Badge variant="secondary">{relation.kind}</Badge> <strong>{relation.to.skill_id}</strong>
-                      <p className="text-muted-foreground mt-1">{relation.note || relation.evidence?.excerpt || relation.source}</p>
-                    </div>
-                    <Button type="button" size="sm" variant="ghost" onClick={() => deleteRelation.mutate(relation.id)}>删除</Button>
-                  </div>
-                ))}
-                {selectedCandidates.map((candidate) => (
-                  <div key={candidate.key} className="rounded-md border border-blue-500/40 bg-blue-500/5 p-3 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <span><strong>{candidate.from.skill_id}</strong> → <strong>{candidate.to.skill_id}</strong></span>
-                      <Badge variant="outline">{candidate.kind} · {candidate.confidence}%</Badge>
-                    </div>
-                    <p className="text-muted-foreground my-2">{candidate.evidence.path}:{candidate.evidence.line} · {candidate.evidence.excerpt}</p>
-                    <div className="flex gap-2">
-                      <Button type="button" size="sm" onClick={() => persistRelation({
-                        id: `${candidate.from.skill_id}:${candidate.kind}:${candidate.to.skill_id}`,
-                        from: candidate.from,
-                        to: candidate.to,
-                        kind: candidate.kind,
-                        source: "confirmed-detection",
-                        enabled: true,
-                        evidence: candidate.evidence,
-                      })}>确认</Button>
-                      <Button type="button" size="sm" variant="outline" onClick={() => ignoreCandidate.mutate(candidate.key)}>忽略</Button>
-                    </div>
-                  </div>
-                ))}
-                {selectedGroupCandidates.map((group) => (
-                  <div key={group.key} className="rounded-md border border-dashed p-3 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <span>建议分组：<strong>{group.name}</strong>（{group.members.join("、")}）</span>
-                      <Badge variant="outline">结构证据 · {group.confidence}%</Badge>
-                    </div>
-                    <p className="text-muted-foreground my-2">{group.evidence}</p>
-                    <div className="flex gap-2">
-                      <Button type="button" size="sm" onClick={() => saveGroup.mutate({
-                        id: group.suggested_id,
-                        name: group.name,
-                        entry_skill: { skill_id: selected.id },
-                        members: group.members.map((skill_id) => ({ skill_id })),
-                        source: "confirmed-detection",
-                      })}>以当前 Skill 为入口确认分组</Button>
-                      <Button type="button" size="sm" variant="outline" onClick={() => ignoreCandidate.mutate(group.key)}>忽略</Button>
-                    </div>
-                  </div>
-                ))}
-                <div className="grid gap-2 rounded-md border border-dashed p-3 sm:grid-cols-[1fr_1fr_auto]">
-                  <select aria-label="关系类型" className="rounded border bg-background p-2 text-sm" value={relationKind} onChange={(event) => setRelationKind(event.target.value as SkillRelationKind)}>
-                    {["requires", "uses", "orchestrates", "routes-to", "fallback-to", "extends", "member-of", "related-to", "conflicts-with"].map((kind) => <option key={kind} value={kind}>{kind}</option>)}
-                  </select>
-                  <select aria-label="目标 Skill" className="rounded border bg-background p-2 text-sm" value={relationTarget} onChange={(event) => setRelationTarget(event.target.value)}>
-                    <option value="">选择目标 Skill</option>
-                    {(skillsQuery.data?.skills || []).filter((skill) => skill.id !== selected.id).map((skill) => <option key={skill.id} value={skill.id}>{skill.name} ({skill.id})</option>)}
-                  </select>
-                  <Button type="button" disabled={!relationTarget || saveRelation.isPending} onClick={() => persistRelation({
-                    id: `${selected.id}:${relationKind}:${relationTarget}`,
-                    from: { skill_id: selected.id },
-                    to: { skill_id: relationTarget },
-                    kind: relationKind,
-                    source: "manual",
-                    enabled: true,
-                  })}>添加关系</Button>
-                </div>
-              </section>
-
-              <section className="flex flex-col gap-3">
-                <h3 className="text-sm font-semibold">{t("skillsInstallations")}</h3>
-                {skillsQuery.data?.agents.map((agent) => {
-                  const installation = selected.installations.find(
-                    (item) => item.provider_id === agent.provider_id,
-                  );
-                  const acting =
-                    pending &&
-                    ((installMutation.variables?.skill_id === selected.id &&
-                      installMutation.variables.provider ===
-                        agent.provider_id) ||
-                      (uninstallMutation.variables?.skill_id === selected.id &&
-                        uninstallMutation.variables.provider ===
-                          agent.provider_id));
-                  return (
-                    <div
-                      key={agent.provider_id}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"
+                <div className="flex flex-nowrap items-center gap-2 overflow-x-auto text-xs">
+                  <Badge variant="outline" className="shrink-0">
+                    <span className="text-muted-foreground">文件</span>
+                    {detailQuery.data?.statistics.files ??
+                      selected.statistics.files}
+                  </Badge>
+                  <Badge variant="outline" className="shrink-0">
+                    <span className="text-muted-foreground">大小</span>
+                    {formatBytes(
+                      detailQuery.data?.statistics.bytes ??
+                        selected.statistics.bytes,
+                    )}
+                  </Badge>
+                  <Badge
+                    asChild
+                    variant="outline"
+                    className="shrink-0 cursor-pointer hover:bg-muted"
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        copyFingerprint(
+                          detailQuery.data?.fingerprint ?? selected.fingerprint,
+                        )
+                      }
                     >
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <strong className="text-sm">{agent.name}</strong>
-                          <Badge
-                            variant={installation ? "secondary" : "outline"}
-                          >
-                            {installation ? t("installed") : t("notInstalled")}
-                          </Badge>
-                          {installation?.managed ? (
-                            <Badge variant="outline">
-                              {t("skillsManaged")}
+                      <CopyIcon data-icon="inline-start" />
+                      指纹
+                    </button>
+                  </Badge>
+                  <Badge
+                    asChild
+                    variant="outline"
+                    className="shrink-0 cursor-pointer hover:bg-muted"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setInspectionOpen(true)}
+                    >
+                      <span className="text-muted-foreground">
+                        {t("skillsAnalysis")}
+                      </span>
+                      {detailQuery.data?.frontmatter.version ||
+                        t("skillsUndeclared")}
+                      {selected.issues.length ? (
+                        <span className="text-amber-600 dark:text-amber-400">
+                          · {selected.issues.length}
+                        </span>
+                      ) : null}
+                    </button>
+                  </Badge>
+                </div>
+                {selected.conflict ? (
+                  <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+                    多来源内容存在冲突。安装时必须明确选择来源。
+                    <select
+                      className="mt-2 block rounded border bg-background p-1"
+                      value={selectedSource || ""}
+                      onChange={(event) =>
+                        setSourceProvider(event.target.value)
+                      }
+                    >
+                      {selected.installations.map((item) => (
+                        <option key={item.provider_id} value={item.provider_id}>
+                          {item.provider_id} · {item.fingerprint}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
+                <section className="flex flex-col gap-2">
+                  <h3 className="text-sm font-semibold">Bundle 文件</h3>
+                  <SkillBundlePanel
+                    assets={treeQuery.data?.assets ?? []}
+                    previewPath={previewPath}
+                    onPreviewPathChange={setPreviewPath}
+                    preview={previewQuery.data}
+                    previewLoading={
+                      previewQuery.isFetching && Boolean(previewPath)
+                    }
+                  />
+                </section>
+
+                <section className="flex flex-col gap-3">
+                  <h3 className="text-sm font-semibold">
+                    {t("skillsInstallations")}
+                  </h3>
+                  {skillsQuery.data?.agents.map((agent) => {
+                    const installation = selected.installations.find(
+                      (item) => item.provider_id === agent.provider_id,
+                    );
+                    const acting =
+                      pending &&
+                      ((installMutation.variables?.skill_id === selected.id &&
+                        installMutation.variables.provider ===
+                          agent.provider_id) ||
+                        (uninstallMutation.variables?.skill_id ===
+                          selected.id &&
+                          uninstallMutation.variables.provider ===
+                            agent.provider_id));
+                    return (
+                      <div
+                        key={agent.provider_id}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <strong className="text-sm">{agent.name}</strong>
+                            <Badge
+                              variant={installation ? "secondary" : "outline"}
+                            >
+                              {installation
+                                ? t("installed")
+                                : t("notInstalled")}
                             </Badge>
-                          ) : null}
+                            {installation ? (
+                              <Badge variant="outline">
+                                {installation.deployment_mode === "symlink"
+                                  ? "符号链接"
+                                  : installation.deployment_mode === "copy"
+                                    ? "受管复制"
+                                    : "外部目录"}
+                              </Badge>
+                            ) : null}
+                            {installation && !installation.link_valid ? (
+                              <Badge variant="destructive">链接失效</Badge>
+                            ) : null}
+                          </div>
+                          <p className="text-muted-foreground mt-1 truncate font-mono text-xs">
+                            {installation?.path || agent.skills_dir}
+                          </p>
                         </div>
-                        <p className="text-muted-foreground mt-1 truncate font-mono text-xs">
-                          {installation?.path || agent.skills_dir}
-                        </p>
+                        {installation ? (
+                          <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            disabled={pending || !installation.managed}
+                            title={
+                              !installation.managed
+                                ? t("skillsUserOwnedHint")
+                                : undefined
+                            }
+                            onClick={() =>
+                              setRemoval({ skill: selected, agent })
+                            }
+                          >
+                            {acting ? (
+                              <Spinner />
+                            ) : (
+                              <Trash2Icon data-icon="inline-start" />
+                            )}
+                            {t("remove")}
+                          </Button>
+                        ) : (
+                          <Button
+                            type="button"
+                            size="sm"
+                            disabled={pending}
+                            onClick={() =>
+                              installMutation.mutate({
+                                skill_id: selected.id,
+                                provider: agent.provider_id,
+                                source_provider: selectedSource,
+                              })
+                            }
+                          >
+                            {acting ? <Spinner /> : null}
+                            {t("install")}
+                          </Button>
+                        )}
                       </div>
-                      {installation ? (
-                        <Button
-                          type="button"
-                          variant="destructive"
-                          size="sm"
-                          disabled={pending || !installation.managed}
-                          title={
-                            !installation.managed
-                              ? t("skillsUserOwnedHint")
-                              : undefined
-                          }
-                          onClick={() => setRemoval({ skill: selected, agent })}
-                        >
-                          {acting ? (
-                            <Spinner />
-                          ) : (
-                            <Trash2Icon data-icon="inline-start" />
-                          )}
-                          {t("remove")}
-                        </Button>
-                      ) : (
-                        <Button
-                          type="button"
-                          size="sm"
-                          disabled={pending}
-                          onClick={() =>
-                            installMutation.mutate({
-                              skill_id: selected.id,
-                              provider: agent.provider_id,
-                              source_provider: selectedSource,
-                            })
-                          }
-                        >
-                          {acting ? <Spinner /> : null}
-                          {t("install")}
-                        </Button>
-                      )}
-                    </div>
-                  );
-                })}
-              </section>
-            </ScrollPane>
+                    );
+                  })}
+                </section>
+              </ScrollPane>
+            </>
           ) : (
-            <Empty>
-              <EmptyHeader>
-                <EmptyTitle>{t("skillsSelect")}</EmptyTitle>
-                <EmptyDescription>
-                  {t("skillsSelectDescription")}
-                </EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <div className="flex min-h-0 flex-1 flex-col gap-4">
+              <div className="flex shrink-0 justify-end">{refreshButton}</div>
+              <Empty className="flex-1">
+                <EmptyHeader>
+                  <EmptyTitle>{t("skillsSelect")}</EmptyTitle>
+                  <EmptyDescription>
+                    {t("skillsSelectDescription")}
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            </div>
           )}
         </PanelCard>
       </TwoPanePage>
+
+      <Dialog open={inspectionOpen} onOpenChange={setInspectionOpen}>
+        <DialogContent className="sm:max-w-lg" data-skill-inspection-dialog>
+          <DialogHeader>
+            <DialogTitle>{t("skillsAnalysis")}</DialogTitle>
+            <DialogDescription>
+              {selected?.name || t("skills")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 text-sm">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-md border p-3">
+                <span className="text-muted-foreground block text-xs">
+                  {t("skillsVersion")}
+                </span>
+                <strong className="mt-1 block">
+                  {detailQuery.data?.frontmatter.version ||
+                    t("skillsUndeclared")}
+                </strong>
+              </div>
+              <div className="rounded-md border p-3 sm:col-span-2">
+                <span className="text-muted-foreground block text-xs">
+                  {t("skillsSource")}
+                </span>
+                <p className="mt-1 break-all">
+                  {detailQuery.data?.frontmatter.repository ||
+                    detailQuery.data?.frontmatter.source ||
+                    detailQuery.data?.frontmatter.homepage ||
+                    t("skillsUndeclared")}
+                </p>
+              </div>
+            </div>
+            {selected?.issues.length ? (
+              <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-xs">
+                <strong>
+                  {t("skillsFindings", { count: selected.issues.length })}
+                </strong>
+                <ul className="mt-2 list-disc space-y-1 pl-5">
+                  {selected.issues.map((issue, index) => (
+                    <li key={`${issue.path || "bundle"}-${index}`}>
+                      {issue.path ? `${issue.path}: ` : ""}
+                      {issue.message}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="text-muted-foreground text-xs">
+                {t("skillsNoFindings")}
+              </p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog
         open={!!removal}
@@ -467,6 +579,6 @@ export function SkillsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </>
   );
 }

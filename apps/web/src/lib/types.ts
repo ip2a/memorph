@@ -1292,6 +1292,8 @@ export type SkillInstallation = {
   provider_id: string;
   path: string;
   managed: boolean;
+  deployment_mode: "symlink" | "copy" | "external";
+  link_valid: boolean;
   fingerprint: string;
   drifted: boolean;
 };
@@ -1356,6 +1358,8 @@ export type SkillFilePreview = {
   category: string;
   extension?: string | null;
   bytes: number;
+  encoding: "text" | "base64";
+  mime_type?: string | null;
   content: string;
 };
 

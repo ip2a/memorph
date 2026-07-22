@@ -13,11 +13,6 @@ const mocks = vi.hoisted(() => ({
   useSkillDetail: vi.fn(),
   useSkillTree: vi.fn(),
   useSkillFilePreview: vi.fn(),
-  useSkillRelations: vi.fn(),
-  useSkillRelationCandidates: vi.fn(),
-  saveRelation: vi.fn(),
-  deleteRelation: vi.fn(),
-  ignoreCandidate: vi.fn(),
   install: vi.fn(),
   uninstall: vi.fn(),
 }));
@@ -27,12 +22,6 @@ vi.mock("@/features/skills/queries", () => ({
   useSkillDetail: mocks.useSkillDetail,
   useSkillTree: mocks.useSkillTree,
   useSkillFilePreview: mocks.useSkillFilePreview,
-  useSkillRelations: mocks.useSkillRelations,
-  useSkillRelationCandidates: mocks.useSkillRelationCandidates,
-  useSaveSkillGroup: () => ({ mutate: vi.fn(), isPending: false }),
-  useSaveSkillRelation: () => ({ mutate: mocks.saveRelation, isPending: false }),
-  useDeleteSkillRelation: () => ({ mutate: mocks.deleteRelation }),
-  useIgnoreSkillRelationCandidate: () => ({ mutate: mocks.ignoreCandidate }),
   useInstallSkill: () => ({
     mutate: mocks.install,
     isPending: false,
@@ -80,6 +69,8 @@ const overview = {
           provider_id: "claude",
           path: "/home/test/.claude/skills/document-writer",
           managed: false,
+          deployment_mode: "external",
+          link_valid: true,
           fingerprint: "sha256:document-writer",
           drifted: false,
         },
@@ -87,6 +78,8 @@ const overview = {
           provider_id: "gemini",
           path: "/home/test/.gemini/skills/document-writer",
           managed: true,
+          deployment_mode: "symlink",
+          link_valid: true,
           fingerprint: "sha256:document-writer",
           drifted: false,
         },
@@ -106,6 +99,8 @@ const overview = {
           provider_id: "codex",
           path: "/home/test/.codex/skills/reviewer",
           managed: true,
+          deployment_mode: "copy",
+          link_valid: true,
           fingerprint: "sha256:reviewer",
           drifted: false,
         },
@@ -146,8 +141,6 @@ beforeEach(() => {
   mocks.useSkillDetail.mockReturnValue({ data: undefined });
   mocks.useSkillTree.mockReturnValue({ data: { assets: [] } });
   mocks.useSkillFilePreview.mockReturnValue({ data: undefined });
-  mocks.useSkillRelations.mockReturnValue({ data: { relations: [] } });
-  mocks.useSkillRelationCandidates.mockReturnValue({ data: { relations: [], groups: [] } });
 });
 
 afterEach(() => cleanup());
@@ -158,7 +151,7 @@ describe("SkillsPage", () => {
     renderRoute();
 
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
-    expect(screen.getByText("Inspection")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Inspection/i })).toBeTruthy();
     expect(screen.getAllByText("Document Writer").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
 
@@ -199,24 +192,6 @@ describe("SkillsPage", () => {
     expect(mocks.uninstall).toHaveBeenCalledWith({
       skill_id: "document-writer",
       provider: "gemini",
-    });
-  });
-
-  it("creates a manual relation as the fallback workflow", async () => {
-    const user = userEvent.setup();
-    renderRoute();
-
-    await user.selectOptions(screen.getByLabelText("关系类型"), "orchestrates");
-    await user.selectOptions(screen.getByLabelText("目标 Skill"), "reviewer");
-    await user.click(screen.getByRole("button", { name: "添加关系" }));
-
-    expect(mocks.saveRelation).toHaveBeenCalledWith({
-      id: "document-writer:orchestrates:reviewer",
-      from: { skill_id: "document-writer" },
-      to: { skill_id: "reviewer" },
-      kind: "orchestrates",
-      source: "manual",
-      enabled: true,
     });
   });
 });

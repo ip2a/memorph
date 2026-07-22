@@ -74,6 +74,8 @@ pub struct SkillInstallation {
     pub provider_id: String,
     pub path: PathBuf,
     pub managed: bool,
+    pub deployment_mode: String,
+    pub link_valid: bool,
     pub fingerprint: String,
     pub drifted: bool,
 }
@@ -239,11 +241,23 @@ fn discover(agents: &[SkillAgent]) -> SkillsOverview {
                 }
             };
             let bundle = inspect_bundle(&path);
+            let is_link = path
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_symlink());
             let installation = SkillInstallation {
                 provider_id: agent.provider_id.clone(),
                 fingerprint: bundle.fingerprint.clone(),
                 drifted: false,
-                managed: path.join(MANAGED_MARKER).is_file(),
+                managed: is_link || path.join(MANAGED_MARKER).is_file(),
+                deployment_mode: if is_link {
+                    "symlink"
+                } else if path.join(MANAGED_MARKER).is_file() {
+                    "copy"
+                } else {
+                    "external"
+                }
+                .into(),
+                link_valid: !is_link || path.canonicalize().is_ok(),
                 path,
             };
             let skill = skills.entry(id.clone()).or_insert_with(|| SkillEntry {
@@ -289,6 +303,51 @@ struct BundleInspection {
     issues: Vec<SkillIssue>,
 }
 
+fn is_image_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "bmp"
+    )
+}
+
+fn is_text_preview_extension(ext: &str) -> bool {
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "md" | "markdown"
+            | "txt"
+            | "json"
+            | "jsonc"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "js"
+            | "ts"
+            | "tsx"
+            | "py"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "sql"
+            | "css"
+            | "html"
+            | "csv"
+            | "ini"
+    )
+}
+
+fn image_mime_type(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "ico" => "image/x-icon",
+        "bmp" => "image/bmp",
+        _ => "application/octet-stream",
+    }
+}
+
 fn classify_asset(path: &str) -> (&'static str, bool) {
     let lower = path.to_ascii_lowercase();
     let category = if lower == "skill.md" {
@@ -304,30 +363,10 @@ fn classify_asset(path: &str) -> (&'static str, bool) {
     } else {
         "other"
     };
-    let previewable = matches!(
-        Path::new(path).extension().and_then(|ext| ext.to_str()),
-        Some(
-            "md" | "markdown"
-                | "txt"
-                | "json"
-                | "jsonc"
-                | "yaml"
-                | "yml"
-                | "toml"
-                | "js"
-                | "ts"
-                | "tsx"
-                | "py"
-                | "sh"
-                | "bash"
-                | "zsh"
-                | "sql"
-                | "css"
-                | "html"
-                | "csv"
-                | "ini"
-        )
-    );
+    let previewable = Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| is_text_preview_extension(ext) || is_image_extension(ext));
     (category, previewable)
 }
 
@@ -635,12 +674,39 @@ fn install(agents: &[SkillAgent], request: &SkillMutation) -> Result<SkillsOverv
         ));
     }
 
-    copy_skill(&source.path, &destination)?;
+    deploy_skill(&source.path, &destination)?;
+    Ok(discover(agents))
+}
+
+fn deploy_skill(source: &Path, destination: &Path) -> Result<()> {
+    let source = source
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve {}", source.display()))?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| anyhow!("Skill destination has no parent"))?;
+    fs::create_dir_all(parent).with_context(|| format!("Failed to create {}", parent.display()))?;
+
+    if create_directory_symlink(&source, destination).is_ok() {
+        return Ok(());
+    }
+
+    copy_skill(&source, destination)?;
     if let Err(error) = fs::write(destination.join(MANAGED_MARKER), b"managed by memorph\n") {
-        let _ = fs::remove_dir_all(&destination);
+        let _ = fs::remove_dir_all(destination);
         return Err(error).with_context(|| format!("Failed to mark {}", destination.display()));
     }
-    Ok(discover(agents))
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_directory_symlink(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(source, destination)
+}
+
+#[cfg(windows)]
+fn create_directory_symlink(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(source, destination)
 }
 
 fn copy_skill(source: &Path, destination: &Path) -> Result<()> {
@@ -702,11 +768,21 @@ fn uninstall(agents: &[SkillAgent], request: &SkillMutation) -> Result<SkillsOve
         .ok_or_else(|| anyhow!("Skill installation has no directory name"))?;
     validate_directory(directory)?;
     let expected = agent.skills_dir.join(directory);
-    if installation.path != expected || !expected.join(MANAGED_MARKER).is_file() {
+    if installation.path != expected || !installation.managed {
         return Err(anyhow!("Refusing to remove a user-owned skill"));
     }
-    fs::remove_dir_all(&expected)
-        .with_context(|| format!("Failed to remove {}", expected.display()))?;
+    if expected
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+    {
+        fs::remove_file(&expected)
+            .with_context(|| format!("Failed to remove symbolic link {}", expected.display()))?;
+    } else if expected.join(MANAGED_MARKER).is_file() {
+        fs::remove_dir_all(&expected)
+            .with_context(|| format!("Failed to remove {}", expected.display()))?;
+    } else {
+        return Err(anyhow!("Refusing to remove a user-owned skill"));
+    }
     Ok(discover(agents))
 }
 
@@ -722,6 +798,9 @@ struct SkillFilePreview {
     category: String,
     extension: Option<String>,
     bytes: u64,
+    /// `text` for UTF-8 sources; `base64` for binary image previews.
+    encoding: String,
+    mime_type: Option<String>,
     content: String,
 }
 
@@ -775,12 +854,28 @@ fn preview_file(
     if bytes.len() as u64 > MAX_PREVIEW_BYTES {
         return Err(anyhow!("Skill asset exceeds preview limit"));
     }
-    let content = String::from_utf8(bytes).map_err(|_| anyhow!("Skill asset is not UTF-8 text"))?;
+
+    let extension = asset.extension.as_deref().unwrap_or("");
+    let (encoding, mime_type, content) = if is_image_extension(extension) {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        (
+            "base64".to_string(),
+            Some(image_mime_type(extension).to_string()),
+            STANDARD.encode(&bytes),
+        )
+    } else {
+        let text =
+            String::from_utf8(bytes).map_err(|_| anyhow!("Skill asset is not UTF-8 text"))?;
+        ("text".to_string(), None, text)
+    };
+
     Ok(SkillFilePreview {
         path: asset.path.clone(),
         category: asset.category.clone(),
         extension: asset.extension.clone(),
         bytes: asset.bytes,
+        encoding,
+        mime_type,
         content,
     })
 }
@@ -1038,7 +1133,7 @@ mod tests {
     }
 
     #[test]
-    fn install_copies_skill_marks_it_and_rejects_duplicates() {
+    fn install_deploys_skill_and_rejects_duplicates() {
         let root = tempfile::tempdir().unwrap();
         let source = create_skill(root.path(), "claude", "writer", "---\nname: Writer\n---\n");
         fs::write(source.join("example.txt"), "example").unwrap();
@@ -1055,7 +1150,17 @@ mod tests {
             fs::read_to_string(installed.join("example.txt")).unwrap(),
             "example"
         );
-        assert!(installed.join(MANAGED_MARKER).is_file());
+        let installation = overview.skills[0]
+            .installations
+            .iter()
+            .find(|item| item.provider_id == "codex")
+            .unwrap();
+        assert!(installation.managed);
+        assert!(matches!(
+            installation.deployment_mode.as_str(),
+            "symlink" | "copy"
+        ));
+        assert!(installation.link_valid);
         assert_eq!(overview.skills[0].installations.len(), 2);
         assert!(install(&agents, &request).is_err());
     }
@@ -1163,10 +1268,21 @@ mod tests {
     }
 
     #[test]
-    fn preview_rejects_traversal_and_binary_assets() {
+    fn preview_rejects_traversal_and_unknown_binary_assets() {
         let root = tempfile::tempdir().unwrap();
         let skill = create_skill(root.path(), "claude", "writer", "# Writer");
         fs::write(skill.join("image.bin"), [0_u8, 159, 146, 150]).unwrap();
+        fs::create_dir_all(skill.join("assets")).unwrap();
+        // Minimal 1x1 PNG
+        let png = [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00,
+            0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00, 0x0C, 0x49, 0x44, 0x41, 0x54, 0x08,
+            0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xFE,
+            0x02, 0xFE, 0xDC, 0xCC, 0x59, 0xE7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+            0xAE, 0x42, 0x60, 0x82,
+        ];
+        fs::write(skill.join("assets/icon.png"), png).unwrap();
         let overview = discover(&agents(root.path()));
 
         assert!(preview_file(
@@ -1196,7 +1312,21 @@ mod tests {
             },
         )
         .unwrap();
+        assert_eq!(preview.encoding, "text");
         assert_eq!(preview.content, "# Writer");
+
+        let image = preview_file(
+            &overview,
+            "writer",
+            &SkillFileQuery {
+                path: "assets/icon.png".into(),
+                provider: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(image.encoding, "base64");
+        assert_eq!(image.mime_type.as_deref(), Some("image/png"));
+        assert!(!image.content.is_empty());
     }
 
     #[tokio::test]
