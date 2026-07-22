@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 
 static JOURNAL_MODE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -206,7 +206,28 @@ fn apply_bodyless_session_schema(conn: &mut Connection) -> Result<()> {
         .execute_batch("PRAGMA foreign_keys = ON;")
         .context("Failed to restore foreign keys after memorph DB schema v9");
     migration_result?;
-    restore_result
+    restore_result?;
+    apply_skill_schema(conn)
+}
+
+fn apply_skill_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("Failed to start memorph DB schema v10 migration")?;
+    let applied = applied_migrations(&tx)?;
+    if !applied.contains(&10) {
+        tx.execute_batch(V10_SCHEMA)
+            .context("Failed to apply memorph DB schema v10")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![10, "skill_catalog_and_usage_index_v10"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    tx.commit()
+        .context("Failed to commit memorph DB schema v10 migration")?;
+    Ok(())
 }
 
 fn create_schema_migrations_table(conn: &Connection) -> Result<()> {
@@ -921,6 +942,167 @@ CREATE INDEX idx_artifact_manifests_projection_report
     ON artifact_manifests(projection_report_id);
 "#;
 
+const V10_SCHEMA: &str = r#"
+CREATE TABLE skill_catalog (
+    id TEXT PRIMARY KEY,
+    canonical_name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    description TEXT,
+    version TEXT,
+    author TEXT,
+    entry_file_name TEXT NOT NULL DEFAULT 'SKILL.md',
+    entry_content_hash TEXT NOT NULL,
+    bundle_content_hash TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    trigger_terms_json TEXT NOT NULL DEFAULT '[]',
+    section_index_json TEXT NOT NULL DEFAULT '[]',
+    file_manifest_json TEXT NOT NULL DEFAULT '[]',
+    file_count INTEGER NOT NULL DEFAULT 0 CHECK(file_count >= 0),
+    total_bytes INTEGER NOT NULL DEFAULT 0 CHECK(total_bytes >= 0),
+    metadata_bytes INTEGER NOT NULL DEFAULT 0 CHECK(metadata_bytes >= 0),
+    body_bytes INTEGER NOT NULL DEFAULT 0 CHECK(body_bytes >= 0),
+    auxiliary_bytes INTEGER NOT NULL DEFAULT 0 CHECK(auxiliary_bytes >= 0),
+    first_seen_at_ms INTEGER NOT NULL,
+    last_scanned_at_ms INTEGER NOT NULL,
+    missing_since_ms INTEGER,
+    scan_error TEXT,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX idx_skill_catalog_normalized_name ON skill_catalog(normalized_name);
+CREATE INDEX idx_skill_catalog_last_scanned ON skill_catalog(last_scanned_at_ms DESC);
+CREATE INDEX idx_skill_catalog_missing ON skill_catalog(missing_since_ms);
+
+CREATE TABLE skill_installations (
+    id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    scope_kind TEXT NOT NULL CHECK(scope_kind IN ('global', 'project')),
+    workspace_dir TEXT,
+    install_path TEXT NOT NULL,
+    canonical_install_path TEXT NOT NULL,
+    install_kind TEXT NOT NULL CHECK(install_kind IN ('directory', 'symlink', 'managed-copy')),
+    symlink_target TEXT,
+    source_path TEXT,
+    managed_marker_present INTEGER NOT NULL DEFAULT 0 CHECK(managed_marker_present IN (0, 1)),
+    link_status TEXT NOT NULL DEFAULT 'not-applicable'
+        CHECK(link_status IN ('not-applicable', 'valid', 'broken', 'outside-allowed-root', 'loop')),
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active', 'missing', 'removed', 'error')),
+    bundle_content_hash TEXT NOT NULL,
+    discovered_at_ms INTEGER NOT NULL,
+    last_verified_at_ms INTEGER NOT NULL,
+    removed_at_ms INTEGER,
+    error_text TEXT,
+    FOREIGN KEY(skill_id) REFERENCES skill_catalog(id) ON DELETE RESTRICT,
+    UNIQUE(provider_id, canonical_install_path)
+);
+CREATE INDEX idx_skill_installations_skill ON skill_installations(skill_id, status);
+CREATE INDEX idx_skill_installations_provider_scope
+    ON skill_installations(provider_id, scope_kind, workspace_dir, status);
+CREATE INDEX idx_skill_installations_link_status ON skill_installations(link_status, status);
+
+CREATE TABLE skill_scan_state (
+    state_key TEXT PRIMARY KEY,
+    state_kind TEXT NOT NULL CHECK(state_kind IN ('skill-root', 'session-source', 'aggregate')),
+    provider_id TEXT,
+    source_path TEXT,
+    source_fingerprint TEXT,
+    source_cursor TEXT,
+    last_started_at_ms INTEGER,
+    last_completed_at_ms INTEGER,
+    last_full_scan_at_ms INTEGER,
+    scan_generation INTEGER NOT NULL DEFAULT 0,
+    completeness_status TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(completeness_status IN ('unknown', 'partial', 'complete', 'error')),
+    earliest_indexed_at_ms INTEGER,
+    latest_indexed_at_ms INTEGER,
+    items_seen INTEGER NOT NULL DEFAULT 0,
+    error_text TEXT,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    updated_at_ms INTEGER NOT NULL
+);
+CREATE INDEX idx_skill_scan_state_kind_provider ON skill_scan_state(state_kind, provider_id);
+CREATE INDEX idx_skill_scan_state_completeness
+    ON skill_scan_state(completeness_status, updated_at_ms DESC);
+
+CREATE TABLE skill_invocations (
+    id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    installation_id TEXT,
+    session_id TEXT NOT NULL,
+    source_id TEXT,
+    event_id TEXT,
+    provider_id TEXT NOT NULL,
+    workspace_dir TEXT,
+    invoked_at_ms INTEGER NOT NULL,
+    detection_kind TEXT NOT NULL
+        CHECK(detection_kind IN ('explicit-tool', 'explicit-name', 'entry-path', 'bundle-path', 'content-evidence')),
+    confidence TEXT NOT NULL CHECK(confidence IN ('high', 'medium', 'low')),
+    evidence_text TEXT,
+    evidence_path TEXT,
+    token_count INTEGER,
+    source_fingerprint TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    FOREIGN KEY(skill_id) REFERENCES skill_catalog(id) ON DELETE RESTRICT,
+    FOREIGN KEY(installation_id) REFERENCES skill_installations(id) ON DELETE SET NULL,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+    FOREIGN KEY(source_id) REFERENCES session_sources(id) ON DELETE CASCADE,
+    UNIQUE(session_id, event_id, skill_id, detection_kind, source_fingerprint)
+);
+CREATE INDEX idx_skill_invocations_skill_time ON skill_invocations(skill_id, invoked_at_ms DESC);
+CREATE INDEX idx_skill_invocations_session ON skill_invocations(session_id, invoked_at_ms);
+CREATE INDEX idx_skill_invocations_provider_time
+    ON skill_invocations(provider_id, invoked_at_ms DESC);
+CREATE INDEX idx_skill_invocations_workspace_time
+    ON skill_invocations(workspace_dir, invoked_at_ms DESC);
+CREATE INDEX idx_skill_invocations_source ON skill_invocations(source_id);
+
+CREATE TABLE skill_usage_daily (
+    usage_date TEXT NOT NULL,
+    skill_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    workspace_key TEXT NOT NULL DEFAULT '',
+    invocation_count INTEGER NOT NULL DEFAULT 0 CHECK(invocation_count >= 0),
+    session_count INTEGER NOT NULL DEFAULT 0 CHECK(session_count >= 0),
+    token_count INTEGER,
+    high_confidence_count INTEGER NOT NULL DEFAULT 0,
+    medium_confidence_count INTEGER NOT NULL DEFAULT 0,
+    low_confidence_count INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(usage_date, skill_id, provider_id, workspace_key),
+    FOREIGN KEY(skill_id) REFERENCES skill_catalog(id) ON DELETE RESTRICT
+);
+CREATE INDEX idx_skill_usage_daily_date ON skill_usage_daily(usage_date DESC);
+CREATE INDEX idx_skill_usage_daily_skill_date ON skill_usage_daily(skill_id, usage_date DESC);
+CREATE INDEX idx_skill_usage_daily_provider_date
+    ON skill_usage_daily(provider_id, usage_date DESC);
+
+CREATE TABLE skill_coverage_observations (
+    id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    invocation_id TEXT NOT NULL,
+    target_kind TEXT NOT NULL
+        CHECK(target_kind IN ('section', 'script', 'reference', 'asset', 'other-file')),
+    target_key TEXT NOT NULL,
+    target_path TEXT,
+    section_title TEXT,
+    match_kind TEXT NOT NULL
+        CHECK(match_kind IN ('exact-path', 'normalized-path', 'section-anchor', 'unique-basename', 'content-reference')),
+    confidence TEXT NOT NULL CHECK(confidence IN ('high', 'medium', 'low')),
+    observed_at_ms INTEGER NOT NULL,
+    evidence_text TEXT,
+    created_at_ms INTEGER NOT NULL,
+    FOREIGN KEY(skill_id) REFERENCES skill_catalog(id) ON DELETE RESTRICT,
+    FOREIGN KEY(invocation_id) REFERENCES skill_invocations(id) ON DELETE CASCADE,
+    UNIQUE(invocation_id, target_kind, target_key, match_kind)
+);
+CREATE INDEX idx_skill_coverage_skill_target
+    ON skill_coverage_observations(skill_id, target_kind, target_key, observed_at_ms DESC);
+CREATE INDEX idx_skill_coverage_invocation ON skill_coverage_observations(invocation_id);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -952,6 +1134,12 @@ mod tests {
         assert!(table_exists(conn, "artifact_manifests"));
         assert!(table_exists(conn, "backups"));
         assert!(table_exists(conn, "backup_restores"));
+        assert!(table_exists(conn, "skill_catalog"));
+        assert!(table_exists(conn, "skill_installations"));
+        assert!(table_exists(conn, "skill_scan_state"));
+        assert!(table_exists(conn, "skill_invocations"));
+        assert!(table_exists(conn, "skill_usage_daily"));
+        assert!(table_exists(conn, "skill_coverage_observations"));
 
         let foreign_keys: i64 = conn
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
@@ -966,6 +1154,43 @@ mod tests {
         assert_eq!(foreign_keys, 1);
         assert!(busy_timeout_ms >= 5000);
         assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+    }
+
+    #[test]
+    fn skill_schema_enforces_installation_and_usage_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalSqliteStore::open(dir.path().join("memorph.db")).unwrap();
+        let conn = store.connection();
+        conn.execute(
+            "INSERT INTO skill_catalog (
+                id, canonical_name, normalized_name, entry_content_hash,
+                bundle_content_hash, first_seen_at_ms, last_scanned_at_ms,
+                created_at_ms, updated_at_ms
+             ) VALUES ('skill:test', 'Test', 'test', 'entry', 'bundle', 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO skill_installations (
+                id, skill_id, provider_id, scope_kind, install_path,
+                canonical_install_path, install_kind, bundle_content_hash,
+                discovered_at_ms, last_verified_at_ms
+             ) VALUES ('install:test', 'skill:test', 'codex', 'global', '/tmp/test',
+                       '/tmp/test', 'directory', 'bundle', 1, 1)",
+            [],
+        )
+        .unwrap();
+
+        let duplicate = conn.execute(
+            "INSERT INTO skill_installations (
+                id, skill_id, provider_id, scope_kind, install_path,
+                canonical_install_path, install_kind, bundle_content_hash,
+                discovered_at_ms, last_verified_at_ms
+             ) VALUES ('install:duplicate', 'skill:test', 'codex', 'global', '/tmp/test',
+                       '/tmp/test', 'directory', 'bundle', 1, 1)",
+            [],
+        );
+        assert!(duplicate.is_err());
     }
 
     #[test]

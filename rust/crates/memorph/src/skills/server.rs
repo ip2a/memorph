@@ -21,6 +21,7 @@ use super::{
     analysis,
     detection::{self, SkillDetectionResult},
     model::{IgnoredSkillCandidate, SkillGroup, SkillRelationRule, SkillRelationsConfig},
+    scanner::{self, ScanMode},
     store,
 };
 
@@ -156,6 +157,7 @@ pub fn router() -> Router {
 fn router_for(agents: Vec<SkillAgent>) -> Router {
     Router::new()
         .route("/api/v1/skills", get(list_skills))
+        .route("/api/v1/skills/scan", post(scan_skills))
         .route("/api/v1/skills/analysis", get(get_skill_analysis))
         .route("/api/v1/skills/groups", post(upsert_skill_group))
         .route(
@@ -979,6 +981,23 @@ async fn get_skill_relation_candidates(State(state): State<SkillsState>) -> impl
         .groups
         .retain(|item| !ignored.contains(item.key.as_str()));
     ApiResponse::success(result).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct SkillScanRequest {
+    #[serde(default)]
+    mode: Option<ScanMode>,
+}
+
+async fn scan_skills(
+    State(state): State<SkillsState>,
+    Json(request): Json<SkillScanRequest>,
+) -> impl IntoResponse {
+    let overview = discover(&state.agents);
+    match scanner::persist_default(&overview, request.mode.unwrap_or(ScanMode::Incremental)) {
+        Ok(summary) => ApiResponse::success(summary).into_response(),
+        Err(error) => error_response(error),
+    }
 }
 
 async fn list_skills(State(state): State<SkillsState>) -> impl IntoResponse {
