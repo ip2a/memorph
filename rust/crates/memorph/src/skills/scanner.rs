@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_scan_persists_catalog_and_installation() {
+    fn incremental_and_full_scans_persist_and_rebuild_catalog_state() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("skills");
         let path = root.join("demo");
@@ -290,7 +290,7 @@ mod tests {
         )
         .unwrap();
         fs::write(path.join("notes.txt"), "actual bundle file").unwrap();
-        let overview = SkillsOverview {
+        let mut overview = SkillsOverview {
             agents: vec![SkillAgent {
                 provider_id: "codex".into(),
                 name: "Codex".into(),
@@ -343,5 +343,37 @@ mod tests {
         assert_eq!(metadata.1.as_deref(), Some("Ada"));
         assert_eq!(metadata.2, 2);
         assert!(metadata.3.contains("notes.txt"));
+
+        persist(store.connection_mut(), &overview, ScanMode::Incremental).unwrap();
+        let incremental_state: (i64, Option<i64>) = store
+            .connection()
+            .query_row(
+                "SELECT scan_generation, last_full_scan_at_ms FROM skill_scan_state
+                 WHERE state_kind = 'skill-root'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(incremental_state, (2, None));
+
+        overview.skills.clear();
+        persist(store.connection_mut(), &overview, ScanMode::Full).unwrap();
+        let rebuilt_state: (i64, Option<i64>, String) = store
+            .connection()
+            .query_row(
+                "SELECT scan_generation, last_full_scan_at_ms, completeness_status
+                 FROM skill_scan_state WHERE state_kind = 'skill-root'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let installation_status: String = store
+            .connection()
+            .query_row("SELECT status FROM skill_installations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rebuilt_state.0, 3);
+        assert!(rebuilt_state.1.is_some());
+        assert_eq!(rebuilt_state.2, "complete");
+        assert_eq!(installation_status, "missing");
     }
 }
