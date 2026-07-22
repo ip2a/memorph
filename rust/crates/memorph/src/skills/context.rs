@@ -148,7 +148,7 @@ fn build(
     }
 }
 
-fn estimate(text: &str, baseline: Option<u64>) -> ContextLayer {
+pub(crate) fn estimate(text: &str, baseline: Option<u64>) -> ContextLayer {
     let mut cjk = 0_f64;
     let mut code = 0_f64;
     let mut latin = 0_f64;

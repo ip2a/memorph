@@ -49,7 +49,7 @@ export function SkillContextHealthPanel({
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-muted-foreground text-xs">
-            本地估算，不代表计费。算法：
+            本地估算。算法：
             {contextSummary.data?.algorithm_version ?? "unicode-mixed-v1"}
           </p>
           {selected ? (

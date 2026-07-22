@@ -123,7 +123,7 @@ pub fn preview(conn: &Connection, days: u32) -> Result<PrunePreview> {
             _ if low > 0 => Some("存在低置信调用证据，需人工确认".into()),
             _ => None,
         });
-        let metadata_tokens = ((metadata.chars().count() as u64) + 3) / 4;
+        let metadata_tokens = super::context::estimate(&metadata, None).estimated_tokens;
         items.push(PruneItem {
             installation_id: id,
             skill_id,
