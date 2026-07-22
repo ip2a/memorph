@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use chrono::{Duration, Local, NaiveDate};
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -39,9 +39,10 @@ pub fn graph(conn: &Connection, query: &GraphQuery) -> Result<SkillGraph> {
         .as_deref()
         .and_then(parse)
         .unwrap_or(to - Duration::days(363));
+    let timezone_modifier = timezone_modifier(query.timezone.as_deref())?;
     let mut statement = conn.prepare(
-        "SELECT date(invoked_at_ms / 1000, 'unixepoch', 'localtime'), COUNT(*), COUNT(DISTINCT session_id), COUNT(DISTINCT skill_id)
-         FROM skill_invocations WHERE date(invoked_at_ms / 1000, 'unixepoch', 'localtime') BETWEEN ?1 AND ?2
+        "SELECT date(invoked_at_ms / 1000, 'unixepoch', ?6), COUNT(*), COUNT(DISTINCT session_id), COUNT(DISTINCT skill_id)
+         FROM skill_invocations WHERE date(invoked_at_ms / 1000, 'unixepoch', ?6) BETWEEN ?1 AND ?2
            AND (?3 IS NULL OR skill_id = ?3) AND (?4 IS NULL OR provider_id = ?4)
            AND (?5 IS NULL OR workspace_dir = ?5) GROUP BY 1 ORDER BY 1",
     )?;
@@ -51,7 +52,8 @@ pub fn graph(conn: &Connection, query: &GraphQuery) -> Result<SkillGraph> {
             to.to_string(),
             query.skill_id,
             query.provider,
-            query.workspace
+            query.workspace,
+            timezone_modifier,
         ],
         |row| {
             Ok((
@@ -105,6 +107,30 @@ fn parse(value: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(value, "%Y-%m-%d").ok()
 }
 
+fn timezone_modifier(timezone: Option<&str>) -> Result<&str> {
+    let Some(value) = timezone else {
+        return Ok("localtime");
+    };
+    if value == "local" || value.contains('/') {
+        return Ok("localtime");
+    }
+    let bytes = value.as_bytes();
+    if bytes.len() != 6
+        || !matches!(bytes[0], b'+' | b'-')
+        || bytes[3] != b':'
+        || !bytes[1..3].iter().all(u8::is_ascii_digit)
+        || !bytes[4..6].iter().all(u8::is_ascii_digit)
+    {
+        bail!("invalid timezone offset: {value}");
+    }
+    let hours = (bytes[1] - b'0') * 10 + bytes[2] - b'0';
+    let minutes = (bytes[4] - b'0') * 10 + bytes[5] - b'0';
+    if hours > 14 || minutes > 59 || (hours == 14 && minutes != 0) {
+        bail!("invalid timezone offset: {value}");
+    }
+    Ok(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,5 +149,30 @@ mod tests {
         .unwrap();
         assert_eq!(result.days.len(), 4);
         assert_eq!(result.days[2].date, "2024-02-29");
+    }
+
+    #[test]
+    fn applies_validated_timezone_offsets() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE skill_invocations (invoked_at_ms INTEGER, session_id TEXT, skill_id TEXT, provider_id TEXT, workspace_dir TEXT); INSERT INTO skill_invocations VALUES (1784656800000, 'session', 'skill', 'codex', '/work');").unwrap();
+        let result = graph(
+            &conn,
+            &GraphQuery {
+                from: Some("2026-07-22".into()),
+                to: Some("2026-07-22".into()),
+                timezone: Some("+08:00".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(result.total_invocations, 1);
+        assert!(graph(
+            &conn,
+            &GraphQuery {
+                timezone: Some("+15:00".into()),
+                ..Default::default()
+            }
+        )
+        .is_err());
     }
 }
