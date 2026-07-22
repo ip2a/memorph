@@ -18,6 +18,7 @@ import {
   getSkillTree,
   getSkills,
   getSkillStatsDaily,
+  getSkillStatsBreakdown,
   getSkillStatsRanking,
   getSkillStatsSummary,
   ignoreSkillRelationCandidate,
@@ -158,6 +159,10 @@ export function useSkillStats(params: SkillStatsParams) {
     ranking: useQuery({
       queryKey: queryKeys.skillStatsRanking(params),
       queryFn: () => getSkillStatsRanking(params),
+    }),
+    breakdown: useQuery({
+      queryKey: queryKeys.skillStatsBreakdown(params),
+      queryFn: () => getSkillStatsBreakdown(params),
     }),
   };
 }

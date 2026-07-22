@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -170,6 +176,7 @@ beforeEach(() => {
     summary: { data: undefined, isLoading: false },
     daily: { data: [] },
     ranking: { data: [] },
+    breakdown: { data: { providers: [], workspaces: [] } },
   });
   mocks.useSkillInvocations.mockReturnValue({ data: undefined });
   mocks.useSkillContextSummary.mockReturnValue({ data: undefined });
@@ -215,6 +222,32 @@ describe("SkillsPage", () => {
     );
     expect(screen.queryByText("Document Writer")).toBeNull();
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
+  });
+
+  it("stores custom stats dates and confidence in the URL-backed query", async () => {
+    const user = userEvent.setup();
+    renderRoute();
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "统计范围" }),
+      "custom",
+    );
+    fireEvent.change(screen.getByLabelText("开始日期"), {
+      target: { value: "2026-07-01" },
+    });
+    fireEvent.change(screen.getByLabelText("结束日期"), {
+      target: { value: "2026-07-22" },
+    });
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "置信度" }),
+      "low",
+    );
+    expect(mocks.useSkillStats).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        from: "2026-07-01",
+        to: "2026-07-22",
+        confidence: "low",
+      }),
+    );
   });
 
   it("filters the graph by the current project and drills into a day", async () => {

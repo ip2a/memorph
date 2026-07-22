@@ -92,6 +92,8 @@ export const queryKeys = {
     ["skills", "stats", "daily", params] as const,
   skillStatsRanking: (params: SkillStatsParams = {}) =>
     ["skills", "stats", "ranking", params] as const,
+  skillStatsBreakdown: (params: SkillStatsParams = {}) =>
+    ["skills", "stats", "breakdown", params] as const,
   skillInvocations: (id: string, params: SkillStatsParams = {}) =>
     ["skills", id, "invocations", params] as const,
   skillDetail: (id: string) => ["skills", id, "detail"] as const,

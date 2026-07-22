@@ -1587,6 +1587,18 @@ export type SkillRanking = {
   sessions: number;
   token_count?: number | null;
   last_invoked_at_ms?: number | null;
+  trend: number[];
+};
+
+export type SkillStatsBreakdownItem = {
+  key: string;
+  invocations: number;
+  sessions: number;
+};
+
+export type SkillStatsBreakdown = {
+  providers: SkillStatsBreakdownItem[];
+  workspaces: SkillStatsBreakdownItem[];
 };
 
 export type SkillInvocation = {

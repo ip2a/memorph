@@ -83,6 +83,20 @@ pub struct SkillRanking {
     pub sessions: u64,
     pub token_count: Option<u64>,
     pub last_invoked_at_ms: Option<i64>,
+    pub trend: Vec<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct StatsBreakdownItem {
+    pub key: String,
+    pub invocations: u64,
+    pub sessions: u64,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct StatsBreakdown {
+    pub providers: Vec<StatsBreakdownItem>,
+    pub workspaces: Vec<StatsBreakdownItem>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -567,7 +581,7 @@ pub fn ranking(conn: &Connection, query: &StatsQuery) -> Result<Vec<SkillRanking
            AND (?3 IS NULL OR i.provider_id = ?3) AND (?4 IS NULL OR i.workspace_dir = ?4)
            AND (?5 IS NULL OR i.confidence = ?5)
          GROUP BY i.skill_id, c.canonical_name
-         ORDER BY COUNT(*) DESC, c.canonical_name LIMIT ?5 OFFSET ?6",
+         ORDER BY COUNT(*) DESC, c.canonical_name LIMIT ?6 OFFSET ?7",
     )?;
     let rows = statement.query_map(
         params![
@@ -587,10 +601,60 @@ pub fn ranking(conn: &Connection, query: &StatsQuery) -> Result<Vec<SkillRanking
                 sessions: row.get::<_, i64>(3)? as u64,
                 token_count: row.get::<_, Option<i64>>(4)?.map(|value| value as u64),
                 last_invoked_at_ms: row.get(5)?,
+                trend: Vec::new(),
             })
         },
     )?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let mut ranking = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    for item in &mut ranking {
+        item.trend = daily(conn, query, Some(&item.skill_id))?
+            .into_iter()
+            .map(|day| day.invocations)
+            .collect();
+    }
+    Ok(ranking)
+}
+
+pub fn breakdown(conn: &Connection, query: &StatsQuery) -> Result<StatsBreakdown> {
+    fn rows(
+        conn: &Connection,
+        query: &StatsQuery,
+        column: &str,
+    ) -> Result<Vec<StatsBreakdownItem>> {
+        let sql = format!(
+            "SELECT COALESCE(NULLIF({column}, ''), '未指定'), COUNT(*), COUNT(DISTINCT session_id)
+             FROM skill_invocations
+             WHERE (?1 IS NULL OR date(invoked_at_ms / 1000, 'unixepoch', 'localtime') >= ?1)
+               AND (?2 IS NULL OR date(invoked_at_ms / 1000, 'unixepoch', 'localtime') <= ?2)
+               AND (?3 IS NULL OR provider_id = ?3) AND (?4 IS NULL OR workspace_dir = ?4)
+               AND (?5 IS NULL OR confidence = ?5)
+             GROUP BY 1 ORDER BY COUNT(*) DESC, 1"
+        );
+        let mut statement = conn.prepare(&sql)?;
+        let values = statement.query_map(
+            params![
+                query.from,
+                query.to,
+                query.provider,
+                query.workspace,
+                query.confidence
+            ],
+            |row| {
+                Ok(StatsBreakdownItem {
+                    key: row.get(0)?,
+                    invocations: row.get::<_, i64>(1)? as u64,
+                    sessions: row.get::<_, i64>(2)? as u64,
+                })
+            },
+        )?;
+        Ok(values.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    Ok(StatsBreakdown {
+        providers: rows(conn, query, "provider_id")?,
+        workspaces: rows(conn, query, "workspace_dir")?,
+    })
 }
 
 pub fn invocations(
@@ -713,6 +777,44 @@ mod tests {
                 provider_ext: BTreeMap::new(),
             },
         }
+    }
+
+    #[test]
+    fn breakdown_applies_filters_and_counts_distinct_sessions() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE skill_invocations (
+                invoked_at_ms INTEGER NOT NULL,
+                session_id TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                workspace_dir TEXT,
+                confidence TEXT NOT NULL
+             );
+             INSERT INTO skill_invocations VALUES
+                (1784656800000, 's1', 'codex', '/work/a', 'high'),
+                (1784656801000, 's1', 'codex', '/work/a', 'high'),
+                (1784656802000, 's2', 'claude', '/work/b', 'low');",
+        )
+        .unwrap();
+        let result = breakdown(
+            &conn,
+            &StatsQuery {
+                provider: Some("codex".into()),
+                confidence: Some("high".into()),
+                ..StatsQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            result.providers,
+            vec![StatsBreakdownItem {
+                key: "codex".into(),
+                invocations: 2,
+                sessions: 1,
+            }]
+        );
+        assert_eq!(result.workspaces[0].key, "/work/a");
+        assert_eq!(result.workspaces[0].invocations, 2);
     }
 
     #[test]

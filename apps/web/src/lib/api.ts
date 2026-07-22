@@ -78,6 +78,7 @@ import type {
   SkillPruneResult,
   SkillStatsParams,
   SkillStatsSummary,
+  SkillStatsBreakdown,
   SkillsOverview,
   SkillDetail,
   SkillTree,
@@ -735,6 +736,12 @@ export function getSkillStatsSummary(params: SkillStatsParams = {}) {
 export function getSkillStatsDaily(params: SkillStatsParams = {}) {
   return api<SkillDailyUsage[]>(
     `/api/v1/skills/stats/daily${buildQuery(params)}`,
+  );
+}
+
+export function getSkillStatsBreakdown(params: SkillStatsParams = {}) {
+  return api<SkillStatsBreakdown>(
+    `/api/v1/skills/stats/breakdown${buildQuery(params)}`,
   );
 }
 

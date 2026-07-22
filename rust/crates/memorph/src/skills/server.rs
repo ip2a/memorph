@@ -186,6 +186,7 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
             get(get_health_summary).post(check_health_summary),
         )
         .route("/api/v1/skills/stats/daily", get(get_stats_daily))
+        .route("/api/v1/skills/stats/breakdown", get(get_stats_breakdown))
         .route("/api/v1/skills/graph", get(get_skill_graph))
         .route("/api/v1/skills/stats/ranking", get(get_stats_ranking))
         .route("/api/v1/skills/groups", post(upsert_skill_group))
@@ -1400,6 +1401,18 @@ async fn get_stats_daily(
     let result = stats_store(&state).and_then(|store| {
         invocation::daily(store.connection(), &query.into(), skill_id.as_deref())
     });
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_stats_breakdown(
+    State(state): State<SkillsState>,
+    Query(query): Query<SkillStatsQuery>,
+) -> impl IntoResponse {
+    let result = stats_store(&state)
+        .and_then(|store| invocation::breakdown(store.connection(), &query.into()));
     match result {
         Ok(value) => ApiResponse::success(value).into_response(),
         Err(error) => error_response(error),
