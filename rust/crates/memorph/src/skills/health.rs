@@ -2,7 +2,11 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::Connection;
 use serde::Serialize;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Component, Path, PathBuf},
+};
 use walkdir::WalkDir;
 
 use super::context;
@@ -61,13 +65,13 @@ pub fn summary(conn: &Connection) -> Result<HealthSummary> {
 }
 
 pub fn detail(conn: &Connection, skill_id: &str) -> Result<SkillHealth> {
-    let (name, description, metadata_json, file_count, total_bytes, path, install_kind, link_status, marker): (String, Option<String>, String, i64, i64, String, String, String, bool) = conn.query_row(
-        "SELECT c.canonical_name, c.description, c.metadata_json, c.file_count, c.total_bytes,
+    let (name, description, metadata_json, manifest_json, file_count, total_bytes, path, install_kind, link_status, marker): (String, Option<String>, String, String, i64, i64, String, String, String, bool) = conn.query_row(
+        "SELECT c.canonical_name, c.description, c.metadata_json, c.file_manifest_json, c.file_count, c.total_bytes,
                 i.install_path, i.install_kind, i.link_status, i.managed_marker_present
          FROM skill_catalog c JOIN skill_installations i ON i.id = (
            SELECT id FROM skill_installations WHERE skill_id = c.id AND status = 'active' ORDER BY provider_id, id LIMIT 1)
          WHERE c.id = ?1", [skill_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?)),
     ).context("Skill not found")?;
     let now = Utc::now().timestamp_millis();
     let root = Path::new(&path);
@@ -118,6 +122,20 @@ pub fn detail(conn: &Connection, skill_id: &str) -> Result<SkillHealth> {
         "补充简洁、可区分的 description",
         now,
     ));
+    let metadata_bytes = metadata_json.len();
+    checks.push(check(
+        "metadata.length",
+        "metadata",
+        if metadata_bytes > 4_096 {
+            "warning"
+        } else {
+            "pass"
+        },
+        "元数据长度",
+        format!("metadata_bytes={metadata_bytes}; limit=4096"),
+        "精简 frontmatter，只保留识别 Skill 所需字段",
+        now,
+    ));
     checks.push(check(
         "bundle.nonempty",
         "bundle",
@@ -140,6 +158,68 @@ pub fn detail(conn: &Connection, skill_id: &str) -> Result<SkillHealth> {
         "将大型参考资料移出 Skill 或按需拆分",
         now,
     ));
+    let manifest =
+        serde_json::from_str::<Vec<serde_json::Value>>(&manifest_json).unwrap_or_default();
+    let paths = manifest
+        .iter()
+        .filter_map(|item| item.get("path").and_then(|value| value.as_str()))
+        .collect::<Vec<_>>();
+    let unique_paths = paths.iter().copied().collect::<BTreeSet<_>>();
+    let largest_file = manifest
+        .iter()
+        .filter_map(|item| item.get("bytes").and_then(|value| value.as_u64()))
+        .max()
+        .unwrap_or(0);
+    checks.push(check(
+        "bundle.manifest",
+        "bundle",
+        if paths.len() != unique_paths.len() || largest_file > 512 * 1024 {
+            "warning"
+        } else {
+            "pass"
+        },
+        "Bundle 文件清单",
+        format!(
+            "duplicate_paths={}, largest_file_bytes={largest_file}; limit=524288",
+            paths.len().saturating_sub(unique_paths.len())
+        ),
+        "移除重复路径，并将超大文件移出常用 Bundle",
+        now,
+    ));
+
+    let entry_text = fs::read_to_string(&entry).unwrap_or_default();
+    let body_name = entry_text
+        .lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .map(str::trim);
+    let names_match = body_name.is_none_or(|body| normalize(body) == normalize(&name));
+    checks.push(check(
+        "consistency.name",
+        "consistency",
+        if names_match { "pass" } else { "warning" },
+        "名称一致性",
+        format!("metadata={name:?}, first_heading={body_name:?}"),
+        "使 frontmatter 名称与正文一级标题保持一致",
+        now,
+    ));
+
+    let (broken_links, outside_links, link_cycle) = inspect_links(root);
+    checks.push(check(
+        "link.local-targets",
+        "link",
+        if outside_links > 0 {
+            "error"
+        } else if broken_links > 0 || link_cycle {
+            "warning"
+        } else {
+            "pass"
+        },
+        "本地链接",
+        format!("broken={broken_links}, outside={outside_links}, cycle={link_cycle}"),
+        "修复断链和循环引用，并确保相对链接不越出 Skill 根目录",
+        now,
+    ));
+
     checks.push(check(
         "deployment.link",
         "deployment",
@@ -317,6 +397,85 @@ pub fn detail(conn: &Connection, skill_id: &str) -> Result<SkillHealth> {
     })
 }
 
+fn normalize(value: &str) -> String {
+    value.trim().to_lowercase().replace(['_', ' '], "-")
+}
+
+fn inspect_links(root: &Path) -> (usize, usize, bool) {
+    let mut graph = BTreeMap::<PathBuf, Vec<PathBuf>>::new();
+    let mut broken = 0;
+    let mut outside = 0;
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "md"))
+    {
+        let source = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap_or(entry.path())
+            .to_path_buf();
+        let text = fs::read_to_string(entry.path()).unwrap_or_default();
+        let mut rest = text.as_str();
+        while let Some(start) = rest.find("](") {
+            rest = &rest[start + 2..];
+            let Some(end) = rest.find(')') else { break };
+            let target = rest[..end].trim().trim_matches(['<', '>']);
+            rest = &rest[end + 1..];
+            let target = target.split('#').next().unwrap_or("").trim();
+            if target.is_empty() || target.contains("://") || target.starts_with("mailto:") {
+                continue;
+            }
+            let path = Path::new(target);
+            let mut relative = PathBuf::new();
+            let mut escaped = path.is_absolute();
+            for component in source
+                .parent()
+                .unwrap_or(Path::new(""))
+                .join(path)
+                .components()
+            {
+                match component {
+                    Component::Normal(value) => relative.push(value),
+                    Component::ParentDir if !relative.pop() => escaped = true,
+                    Component::RootDir | Component::Prefix(_) => escaped = true,
+                    Component::CurDir | Component::ParentDir => {}
+                }
+            }
+            if escaped {
+                outside += 1;
+                continue;
+            }
+            let target_path = root.join(&relative);
+            if !target_path.exists() {
+                broken += 1;
+            } else if target_path.canonicalize().is_ok_and(|path| {
+                !path.starts_with(root.canonicalize().unwrap_or_else(|_| root.to_path_buf()))
+            }) {
+                outside += 1;
+            } else if relative.extension().is_some_and(|ext| ext == "md") {
+                graph.entry(source.clone()).or_default().push(relative);
+            }
+        }
+    }
+    let cycle = graph.keys().any(|start| {
+        let mut pending = graph.get(start).cloned().unwrap_or_default();
+        let mut seen = BTreeSet::new();
+        while let Some(path) = pending.pop() {
+            if &path == start {
+                return true;
+            }
+            if seen.insert(path.clone()) {
+                pending.extend(graph.get(&path).cloned().unwrap_or_default());
+            }
+        }
+        false
+    });
+    (broken, outside, cycle)
+}
+
 fn check(
     id: &str,
     category: &str,
@@ -354,7 +513,23 @@ fn score(checks: &[HealthCheck]) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{score, HealthCheck};
+    use super::{inspect_links, score, HealthCheck};
+    use std::fs;
+
+    #[test]
+    fn local_links_report_broken_outside_and_cycles() {
+        let root = std::env::temp_dir().join(format!("memorph-health-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(
+            root.join("SKILL.md"),
+            "[a](docs/a.md) [missing](missing.md) [outside](../x.md)",
+        )
+        .unwrap();
+        fs::write(root.join("docs/a.md"), "[back](../SKILL.md)").unwrap();
+        assert_eq!(inspect_links(&root), (1, 1, true));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn score_caps_each_category_at_forty() {
