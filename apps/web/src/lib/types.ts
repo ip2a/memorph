@@ -1659,3 +1659,57 @@ export type SkillInvocationPage = {
   page_size: number;
   total: number;
 };
+
+export type SkillContextLayer = {
+  bytes: number;
+  characters: number;
+  token_lower: number;
+  estimated_tokens: number;
+  token_upper: number;
+  estimated: true;
+  algorithm_version: string;
+  baseline_percent?: number | null;
+};
+
+export type SkillContext = {
+  skill_id: string;
+  name: string;
+  metadata: SkillContextLayer;
+  body: SkillContextLayer;
+  auxiliary: SkillContextLayer;
+  observed_token_min?: number | null;
+  observed_token_max?: number | null;
+};
+
+export type SkillContextSummary = {
+  baseline_tokens?: number | null;
+  algorithm_version: string;
+  skills: SkillContext[];
+};
+
+export type SkillHealthCheck = {
+  check_id: string;
+  category: string;
+  severity: "error" | "warning" | "info" | "pass";
+  title: string;
+  description: string;
+  evidence: string;
+  recommendation: string;
+  checked_at_ms: number;
+};
+
+export type SkillHealth = {
+  skill_id: string;
+  status: "error" | "warning" | "pass";
+  score: number;
+  checks: SkillHealthCheck[];
+};
+
+export type SkillHealthSummary = {
+  total: number;
+  errors: number;
+  warnings: number;
+  healthy: number;
+  completeness_status: "unknown" | "partial" | "complete" | "error";
+  skills: SkillHealth[];
+};

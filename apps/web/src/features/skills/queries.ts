@@ -2,6 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   deleteSkillRelation,
   getSkillAnalysis,
+  getSkillContext,
+  getSkillContextSummary,
+  getSkillHealth,
+  getSkillHealthSummary,
   getSkillDetail,
   getSkillFilePreview,
   getSkillInvocations,
@@ -33,6 +37,40 @@ export function useSkillAnalysis() {
   return useQuery({
     queryKey: queryKeys.skillAnalysis,
     queryFn: () => getSkillAnalysis(),
+  });
+}
+
+export function useSkillContextSummary(provider?: string, baseline?: number) {
+  return useQuery({
+    queryKey: queryKeys.skillContextSummary(provider, baseline),
+    queryFn: () => getSkillContextSummary(provider, baseline),
+  });
+}
+
+export function useSkillContext(skillId: string | null, baseline?: number) {
+  return useQuery({
+    queryKey: skillId
+      ? queryKeys.skillContext(skillId, baseline)
+      : ["skills", "context", "none"],
+    queryFn: () => getSkillContext(skillId as string, baseline),
+    enabled: Boolean(skillId),
+  });
+}
+
+export function useSkillHealthSummary() {
+  return useQuery({
+    queryKey: queryKeys.skillHealthSummary,
+    queryFn: getSkillHealthSummary,
+  });
+}
+
+export function useSkillHealth(skillId: string | null) {
+  return useQuery({
+    queryKey: skillId
+      ? queryKeys.skillHealth(skillId)
+      : ["skills", "health", "none"],
+    queryFn: () => getSkillHealth(skillId as string),
+    enabled: Boolean(skillId),
   });
 }
 

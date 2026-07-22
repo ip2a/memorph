@@ -18,8 +18,9 @@ use std::{
 use walkdir::WalkDir;
 
 use super::{
-    analysis,
+    analysis, context,
     detection::{self, SkillDetectionResult},
+    health,
     invocation::{self, StatsQuery},
     model::{IgnoredSkillCandidate, SkillGroup, SkillRelationRule, SkillRelationsConfig},
     repository::{self, CatalogQuery},
@@ -172,6 +173,11 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
         .route("/api/v1/skills/scan", post(scan_skills))
         .route("/api/v1/skills/analysis", get(get_skill_analysis))
         .route("/api/v1/skills/stats/summary", get(get_stats_summary))
+        .route("/api/v1/skills/context/summary", get(get_context_summary))
+        .route(
+            "/api/v1/skills/health/summary",
+            get(get_health_summary).post(check_health_summary),
+        )
         .route("/api/v1/skills/stats/daily", get(get_stats_daily))
         .route("/api/v1/skills/stats/ranking", get(get_stats_ranking))
         .route("/api/v1/skills/groups", post(upsert_skill_group))
@@ -197,6 +203,11 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
         .route(
             "/api/v1/skills/{skill_id}/invocations",
             get(get_skill_invocations),
+        )
+        .route("/api/v1/skills/{skill_id}/context", get(get_skill_context))
+        .route(
+            "/api/v1/skills/{skill_id}/health",
+            get(get_skill_health).post(check_skill_health),
         )
         .route(
             "/api/v1/skills/install",
@@ -1108,6 +1119,81 @@ fn stats_store(state: &SkillsState) -> Result<crate::storage::local_store::Local
     }
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct ContextQuery {
+    provider: Option<String>,
+    #[serde(rename = "baselineTokens")]
+    baseline_tokens: Option<u64>,
+}
+
+async fn get_context_summary(
+    State(state): State<SkillsState>,
+    Query(query): Query<ContextQuery>,
+) -> impl IntoResponse {
+    let result = stats_store(&state).and_then(|store| {
+        context::summary(
+            store.connection(),
+            query.provider.as_deref(),
+            query.baseline_tokens,
+        )
+    });
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_skill_context(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<ContextQuery>,
+) -> impl IntoResponse {
+    let result = stats_store(&state)
+        .and_then(|store| context::detail(store.connection(), &skill_id, query.baseline_tokens));
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_health_summary(State(state): State<SkillsState>) -> impl IntoResponse {
+    health_summary_response(&state)
+}
+
+async fn check_health_summary(State(state): State<SkillsState>) -> impl IntoResponse {
+    health_summary_response(&state)
+}
+
+fn health_summary_response(state: &SkillsState) -> axum::response::Response {
+    let result = stats_store(state).and_then(|store| health::summary(store.connection()));
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_skill_health(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> impl IntoResponse {
+    skill_health_response(&state, &skill_id)
+}
+
+async fn check_skill_health(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> impl IntoResponse {
+    skill_health_response(&state, &skill_id)
+}
+
+fn skill_health_response(state: &SkillsState, skill_id: &str) -> axum::response::Response {
+    let result = stats_store(state).and_then(|store| health::detail(store.connection(), skill_id));
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
 async fn get_stats_summary(
     State(state): State<SkillsState>,
     Query(query): Query<SkillStatsQuery>,
@@ -1533,6 +1619,22 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(listed["data"]["items"].as_array().unwrap().len(), 1);
+        let catalog_id = listed["data"]["items"][0]["id"].as_str().unwrap();
+
+        for uri in [
+            "/api/v1/skills/context/summary?baselineTokens=128000".to_string(),
+            "/api/v1/skills/health/summary".to_string(),
+            format!("/api/v1/skills/{catalog_id}/context?baselineTokens=128000"),
+            format!("/api/v1/skills/{catalog_id}/health"),
+        ] {
+            let (status, body) = json(
+                app.clone(),
+                Request::builder().uri(uri).body(Body::empty()).unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["ok"], true);
+        }
 
         let request = serde_json::to_vec(&SkillMutation {
             skill_id: "writer".into(),

@@ -1,5 +1,7 @@
 pub mod analysis;
+pub mod context;
 pub mod detection;
+pub mod health;
 pub mod invocation;
 pub mod model;
 pub mod repository;

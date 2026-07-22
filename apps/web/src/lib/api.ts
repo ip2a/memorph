@@ -62,6 +62,10 @@ import type {
   SkillCatalogPage,
   SkillCatalogParams,
   SkillDailyUsage,
+  SkillContext,
+  SkillContextSummary,
+  SkillHealth,
+  SkillHealthSummary,
   SkillInvocationPage,
   SkillRanking,
   SkillStatsParams,
@@ -634,6 +638,31 @@ export function getSkills(params: SkillCatalogParams = {}) {
 export function getSkillAnalysis(refresh = false) {
   return api<SkillUsageOverview>(
     `/api/v1/skills/analysis${buildQuery({ refresh: refresh || undefined })}`,
+  );
+}
+
+export function getSkillContextSummary(
+  provider?: string,
+  baselineTokens?: number,
+) {
+  return api<SkillContextSummary>(
+    `/api/v1/skills/context/summary${buildQuery({ provider, baselineTokens })}`,
+  );
+}
+
+export function getSkillContext(skillId: string, baselineTokens?: number) {
+  return api<SkillContext>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}/context${buildQuery({ baselineTokens })}`,
+  );
+}
+
+export function getSkillHealthSummary() {
+  return api<SkillHealthSummary>("/api/v1/skills/health/summary");
+}
+
+export function getSkillHealth(skillId: string) {
+  return api<SkillHealth>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}/health`,
   );
 }
 
