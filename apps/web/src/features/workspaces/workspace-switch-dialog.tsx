@@ -214,34 +214,33 @@ function WorkspaceHistoryRow({
 }) {
   return (
     <div
-      className="grid grid-cols-[minmax(0,1fr)_auto] items-stretch border-b last:border-b-0 rounded-md transition-all hover:bg-muted has-[button:active]:translate-y-px has-[button:active]:bg-muted/80"
+      className="group flex w-full items-center gap-1 rounded-md transition-colors hover:bg-muted"
       data-workspace-switch-item
     >
       <button
         type="button"
-        className="min-w-0 w-full cursor-pointer rounded-l-md px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-inset"
+        className="flex min-w-0 flex-1 flex-col gap-1 rounded-md px-2 py-2 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         onClick={() => onPick(workspace.path)}
       >
-        <span className="grid min-w-0 w-full gap-1">
-          <span className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
-            <strong className="truncate">{workspaceName(workspace.path, "memorph")}</strong>
-            <span className="flex shrink-0 items-center gap-3 font-mono text-xs text-muted-foreground">
-              {sessionCount !== undefined ? <span>{sessionCount} sessions</span> : null}
-              <span>{formatDateTime(workspace.last_viewed_at)}</span>
-            </span>
+        <span className="flex min-w-0 items-center justify-between gap-3">
+          <strong className="truncate">{workspaceName(workspace.path, "memorph")}</strong>
+          <span className="flex shrink-0 items-center gap-3 font-mono text-xs text-muted-foreground">
+            {sessionCount !== undefined ? <span>{sessionCount} sessions</span> : null}
+            <span>{formatDateTime(workspace.last_viewed_at)}</span>
           </span>
-          <PathText value={workspace.path} wrap="all" />
         </span>
+        <PathText value={workspace.path} wrap="all" />
       </button>
       <Button
         type="button"
         variant="ghost"
-        className="h-auto shrink-0 self-stretch rounded-none rounded-r-md active:translate-y-0 hover:bg-destructive/10 hover:text-destructive"
+        size="icon-sm"
+        className="mr-1 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         disabled={isRemoving}
+        aria-label="Remove workspace history"
         onClick={() => onRemove(workspace.path)}
       >
-        {isRemoving ? <Spinner data-icon="inline-start" /> : <Trash2Icon data-icon="inline-start" />}
-        Remove
+        {isRemoving ? <Spinner /> : <Trash2Icon />}
       </Button>
     </div>
   );
@@ -440,7 +439,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                   </span>
                 </div>
                 <ScrollArea className="h-full min-h-0 flex-1 rounded-md border">
-                  <div className="px-3">
+                  <div className="flex flex-col gap-0.5 p-2">
                     {workspaces.isLoading ? (
                       <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">
                         <Spinner />
@@ -462,7 +461,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                         />
                       ))
                     ) : (
-                      <Empty className="min-h-36">
+                      <Empty className="min-h-36 border-0">
                         <EmptyHeader>
                           <EmptyTitle>{search.trim() ? "No matches" : "No Workspace"}</EmptyTitle>
                           <EmptyDescription>

@@ -88,7 +88,7 @@ export function ActivityTrend({
     metric === "active_session_messages" && unknownMessageTimestamps > 0;
 
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex min-w-0 flex-col gap-3">
       <SectionHeading
         variant="compact"
         title="使用趋势"
@@ -430,7 +430,7 @@ export function RankingBoard({
   const breakdownTitle = all ? "工作空间排行" : "当前工作空间 Agent";
 
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex min-w-0 flex-col gap-3">
       <SectionHeading
         variant="compact"
         title="排行榜"

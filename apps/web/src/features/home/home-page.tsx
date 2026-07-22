@@ -23,6 +23,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { updateSettings, updateWorkspaceProviders } from "@/lib/api";
 import { formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 import { useUiStore } from "@/stores/ui-store";
 import { useHomeData } from "@/features/home/queries";
@@ -187,6 +188,7 @@ function SessionRowActions({
   onExport: (session: SessionItem) => void;
   onSync: (session: SessionItem) => void;
 }) {
+  const { t } = useI18n();
   const showView = homeButtonEnabled(homeButtons, "view");
   const showCompress = homeButtonEnabled(homeButtons, "compress");
   const showSwitch = homeButtonEnabled(homeButtons, "switch");
@@ -212,7 +214,7 @@ function SessionRowActions({
   if (showSwitch) {
     primaryActions.push(
       <Button key="switch" type="button" variant="outline" onClick={() => onSwitch(session)}>
-        Switch
+        {t("switch")}
       </Button>,
     );
   }

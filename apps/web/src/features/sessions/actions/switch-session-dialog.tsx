@@ -16,6 +16,7 @@ import type { SessionActionTarget } from "@/features/sessions/session-action-tar
 import { defaultSwitchTarget, switchSchema, workspaceOptions } from "@/features/sessions/model/schemas";
 import type { SwitchForm } from "@/features/sessions/model/schemas";
 import { nativeForkSession, switchSession } from "@/lib/api";
+import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 import type { MetaPayload, ProviderInfo } from "@/lib/types";
 
@@ -34,6 +35,7 @@ export function SwitchSessionDialog({
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { t } = useI18n();
   const form = useForm<SwitchForm>({
     resolver: zodResolver(switchSchema),
     defaultValues: { to: "", target_title: "", to_dir: "" },
@@ -66,7 +68,7 @@ export function SwitchSessionDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.home }),
       ]);
       onOpenChange(false);
-      toast.success(result.removed_original ? "Moved" : "Switch copied", {
+      toast.success(result.removed_original ? t("switchMoved") : t("switchCopied"), {
         description: `${result.from_name} -> ${result.to_name}: ${result.target_session_id}`,
       });
       navigate(`/sessions/${encodeURIComponent(variables.values.to)}/${encodeURIComponent(result.target_session_id)}`);
@@ -100,8 +102,8 @@ export function SwitchSessionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl" data-switch-session-dialog>
         <DialogHeader>
-          <DialogTitle>Copy</DialogTitle>
-          <DialogDescription>Switch Copy uses Memorph conversion. Native Fork uses the provider's own fork capability without conversion.</DialogDescription>
+          <DialogTitle>{t("switch")}</DialogTitle>
+          <DialogDescription>{t("switchDialogDescription")}</DialogDescription>
         </DialogHeader>
         <DialogForm onSubmit={form.handleSubmit((values) => submitSwitch(values, false))}>
           <input type="hidden" name="from" value={target?.providerId || ""} />
@@ -156,7 +158,7 @@ export function SwitchSessionDialog({
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}
             submitDisabled={!target || !exportProviders.length}
-            submitLabel="Switch Copy"
+            submitLabel={t("runSwitch")}
             submitting={switchMutation.isPending}
           >
             <Button

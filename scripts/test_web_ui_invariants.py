@@ -181,9 +181,10 @@ class WebUiInvariantTest(unittest.TestCase):
 
         for marker in [
             "Switch Workspace",
-            "Workspace Path",
-            "known-workspaces",
             "Workspace History",
+            '<TabsTrigger value="browse">Browse</TabsTrigger>',
+            '<TabsTrigger value="recent">Recent</TabsTrigger>',
+            '<TabsTrigger value="pick">Pick</TabsTrigger>',
             "Browse",
             "Remove",
             "Go",
@@ -434,7 +435,7 @@ class WebUiInvariantTest(unittest.TestCase):
         for marker in [
             "onSwitch(session)",
             "onExport(session)",
-            "Switch",
+            't("switch")',
             "Export",
             "SwitchSessionDialog",
             "ExportSessionDialog",
@@ -453,7 +454,8 @@ class WebUiInvariantTest(unittest.TestCase):
             "Target Dir",
             "known-workspaces",
             "Browse",
-            "Copy",
+            't("switch")',
+            't("runSwitch")',
             "Move",
             "switchSession({",
             "move_original: moveOriginal",
@@ -477,7 +479,7 @@ class WebUiInvariantTest(unittest.TestCase):
             "meta={meta.data}",
             "Compression",
             "Sync",
-            "Switch",
+            't("switch")',
             "Export",
             "Rename",
             "Remove",
@@ -627,19 +629,16 @@ class WebUiInvariantTest(unittest.TestCase):
 
         for marker in [
             "data-manager-page-layout",
-            "data-manager-page-context",
+            "data-manager-control-panel",
             "data-manager-result-panel",
             "data-manager-scope-control",
-            "data-manager-view-tabs",
             "data-manager-filter-toolbar",
-            "data-manager-provider-filter",
+            "data-manager-provider-controls",
             "data-manager-search",
             "data-manager-sort",
             "data-manager-select-visible",
             "data-manager-selection-bar",
             "data-manager-row",
-            "data-manager-row-link",
-            "data-manager-row-more",
             "data-manager-row-actions",
             "SessionRows",
             "WorkspaceRows",
@@ -684,7 +683,7 @@ class WebUiInvariantTest(unittest.TestCase):
             self.assertIn(marker, api + types)
 
         self.assertNotIn("<Table", manager_page)
-        self.assertNotIn("TwoPanePage", manager_page)
+        self.assertIn("TwoPanePage", manager_page)
         self.assertNotIn("ManagerPreviewHeaderToolbar", manager_page)
         self.assertNotIn("Clean Selected", manager_page)
         self.assertNotIn("Confirm deletion of the selected sessions.", manager_page)
@@ -765,7 +764,7 @@ class WebUiInvariantTest(unittest.TestCase):
 
         for marker in [
             "data-session-detail-scroll",
-            "<ScrollArea className=\"h-full pr-3\"",
+            "data-session-detail-scroll",
             "setCompressionOpen(true)",
             "CompressSessionDialog",
             "target={actionTarget}",

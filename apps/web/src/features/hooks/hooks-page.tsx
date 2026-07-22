@@ -318,6 +318,8 @@ function ErrorRows({ errors }: { errors: HookErrorRecord[] }) {
 
 function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPayload | undefined; isLoading: boolean }) {
   const runOperation = useRunHookProviderOperation();
+  const installedHooks = useInstalledHooks(detail?.provider.provider_id || null);
+  const removeInstalled = useRemoveInstalledHook();
 
   if (isLoading && !detail) {
     return (
@@ -341,8 +343,6 @@ function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPay
   }
 
   const provider = detail.provider;
-  const installedHooks = useInstalledHooks(provider.provider_id);
-  const removeInstalled = useRemoveInstalledHook();
   const hook = provider.hook || {};
   const profileEvents = provider.hook_profile?.events || [];
   const diagnosis = provider.hook_diagnosis || {};

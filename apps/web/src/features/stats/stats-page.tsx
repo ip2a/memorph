@@ -36,11 +36,11 @@ type OverviewMetric = {
 
 function StatsMetricRow({ label, value, hint }: OverviewMetric) {
   return (
-    <Field orientation="horizontal" className="items-center py-1.5">
+    <Field orientation="responsive" className="items-center py-1.5">
       <FieldContent className="gap-0">
         <FieldTitle className="text-sm">{label}</FieldTitle>
       </FieldContent>
-      <p className="shrink-0 text-sm tabular-nums">
+      <p className="min-w-0 text-sm tabular-nums @md/field-group:shrink-0">
         <span className="font-medium">{value}</span>
         {hint ? <span className="text-muted-foreground"> · {hint}</span> : null}
       </p>
@@ -107,8 +107,8 @@ export function StatsPage() {
   ];
 
   return (
-    <ScrollArea className="h-full" data-stats-page>
-      <div className="flex flex-col gap-6 pb-6">
+    <ScrollArea className="h-full min-w-0" data-stats-page>
+      <div className="flex min-w-0 flex-col gap-6 pb-6">
         <div className="flex flex-wrap items-center justify-end gap-2">
           <span className="text-xs text-muted-foreground">活跃指标范围</span>
           <Tabs
@@ -133,8 +133,8 @@ export function StatsPage() {
           </Tabs>
         </div>
 
-        <section className="grid grid-cols-10 items-start gap-4">
-          <div className="col-span-4 min-w-0" data-stats-overview>
+        <section className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 xl:grid-cols-10">
+          <div className="min-w-0 md:col-span-2 xl:col-span-4" data-stats-overview>
             <FieldGroup className="gap-0 divide-y divide-border">
               {metrics.map((metric) => (
                 <StatsMetricRow key={metric.label} {...metric} />
@@ -142,13 +142,13 @@ export function StatsPage() {
             </FieldGroup>
           </div>
 
-          <div className="col-span-3 min-w-0">
+          <div className="min-w-0 md:col-span-1 xl:col-span-3">
             <InactivityPanel
               data={data.attention}
               sessionSize={data.distributions.session_size}
             />
           </div>
-          <div className="col-span-3 min-w-0">
+          <div className="min-w-0 md:col-span-1 xl:col-span-3">
             <ProviderPiePanel
               items={data.providers}
               messageCount={data.distributions.message_count}
