@@ -4,10 +4,14 @@ import {
   getSkillAnalysis,
   getSkillDetail,
   getSkillFilePreview,
+  getSkillInvocations,
   getSkillRelationCandidates,
   getSkillRelations,
   getSkillTree,
   getSkills,
+  getSkillStatsDaily,
+  getSkillStatsRanking,
+  getSkillStatsSummary,
   ignoreSkillRelationCandidate,
   installSkill,
   saveSkillGroup,
@@ -15,7 +19,7 @@ import {
   uninstallSkill,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
-import type { SkillCatalogParams } from "@/lib/types";
+import type { SkillCatalogParams, SkillStatsParams } from "@/lib/types";
 
 export function useSkills(params: SkillCatalogParams = {}) {
   return useQuery({
@@ -29,6 +33,36 @@ export function useSkillAnalysis() {
   return useQuery({
     queryKey: queryKeys.skillAnalysis,
     queryFn: () => getSkillAnalysis(),
+  });
+}
+
+export function useSkillStats(params: SkillStatsParams) {
+  return {
+    summary: useQuery({
+      queryKey: queryKeys.skillStatsSummary(params),
+      queryFn: () => getSkillStatsSummary(params),
+    }),
+    daily: useQuery({
+      queryKey: queryKeys.skillStatsDaily(params),
+      queryFn: () => getSkillStatsDaily(params),
+    }),
+    ranking: useQuery({
+      queryKey: queryKeys.skillStatsRanking(params),
+      queryFn: () => getSkillStatsRanking(params),
+    }),
+  };
+}
+
+export function useSkillInvocations(
+  skillId: string | null,
+  params: SkillStatsParams,
+) {
+  return useQuery({
+    queryKey: skillId
+      ? queryKeys.skillInvocations(skillId, params)
+      : ["skills", "invocations", "none"],
+    queryFn: () => getSkillInvocations(skillId as string, params),
+    enabled: Boolean(skillId),
   });
 }
 

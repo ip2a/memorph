@@ -34,12 +34,24 @@ pub struct InstallationRecord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionSourceRecord {
     pub id: String,
+    pub session_id: Option<String>,
+    pub provider_session_id: Option<String>,
     pub provider_id: String,
     pub source_path: String,
+    pub workspace_dir: Option<String>,
     pub source_cursor: Option<String>,
     pub fingerprint: String,
     pub earliest_at_ms: Option<i64>,
     pub latest_at_ms: Option<i64>,
+}
+
+pub fn fail_scan(conn: &Connection, state_key: &str, error: &str, now_ms: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE skill_scan_state SET completeness_status = 'error', error_text = ?2,
+         updated_at_ms = ?3 WHERE state_key = ?1",
+        params![state_key, error, now_ms],
+    )?;
+    Ok(())
 }
 
 pub fn begin_scan(
@@ -267,8 +279,9 @@ fn upsert_installation(tx: &Transaction<'_>, item: &InstallationRecord, now_ms: 
 
 pub fn session_sources(conn: &Connection) -> Result<Vec<SessionSourceRecord>> {
     let mut statement = conn.prepare(
-        "SELECT src.id, src.provider_id, src.source_path, src.source_cursor,
-                printf('%s:%s:%s', COALESCE(src.file_mtime_ms, 0), COALESCE(src.file_size_bytes, 0), COALESCE(src.content_hash, '')),
+        "SELECT src.id, s.id, s.provider_session_id, src.provider_id, src.source_path,
+                COALESCE(s.workspace_dir, src.workspace_dir), src.source_cursor,
+                printf('%s:%s:%s:%s', COALESCE(src.file_mtime_ms, 0), COALESCE(src.file_size_bytes, 0), COALESCE(src.content_hash, ''), COALESCE(s.id, '')),
                 s.created_at_ms, s.last_active_at_ms
          FROM session_sources src
          LEFT JOIN sessions s ON s.primary_source_id = src.id
@@ -277,12 +290,15 @@ pub fn session_sources(conn: &Connection) -> Result<Vec<SessionSourceRecord>> {
     let rows = statement.query_map([], |row| {
         Ok(SessionSourceRecord {
             id: row.get(0)?,
-            provider_id: row.get(1)?,
-            source_path: row.get(2)?,
-            source_cursor: row.get(3)?,
-            fingerprint: row.get(4)?,
-            earliest_at_ms: row.get(5)?,
-            latest_at_ms: row.get(6)?,
+            session_id: row.get(1)?,
+            provider_session_id: row.get(2)?,
+            provider_id: row.get(3)?,
+            source_path: row.get(4)?,
+            workspace_dir: row.get(5)?,
+            source_cursor: row.get(6)?,
+            fingerprint: row.get(7)?,
+            earliest_at_ms: row.get(8)?,
+            latest_at_ms: row.get(9)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()

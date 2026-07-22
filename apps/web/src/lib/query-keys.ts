@@ -6,6 +6,7 @@ import type {
   SessionListParams,
   WorkspacesWithSessionsParams,
   SkillCatalogParams,
+  SkillStatsParams,
 } from "@/lib/types";
 
 export const queryKeys = {
@@ -69,6 +70,14 @@ export const queryKeys = {
   skills: (params: SkillCatalogParams = {}) =>
     ["skills", "catalog", params] as const,
   skillAnalysis: ["skills", "analysis"] as const,
+  skillStatsSummary: (params: SkillStatsParams = {}) =>
+    ["skills", "stats", "summary", params] as const,
+  skillStatsDaily: (params: SkillStatsParams = {}) =>
+    ["skills", "stats", "daily", params] as const,
+  skillStatsRanking: (params: SkillStatsParams = {}) =>
+    ["skills", "stats", "ranking", params] as const,
+  skillInvocations: (id: string, params: SkillStatsParams = {}) =>
+    ["skills", id, "invocations", params] as const,
   skillDetail: (id: string) => ["skills", id, "detail"] as const,
   skillRelations: ["skills", "relations"] as const,
   skillRelationCandidates: ["skills", "relation-candidates"] as const,

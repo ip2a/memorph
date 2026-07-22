@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   useSkillDetail: vi.fn(),
   useSkillTree: vi.fn(),
   useSkillFilePreview: vi.fn(),
+  useSkillStats: vi.fn(),
+  useSkillInvocations: vi.fn(),
   install: vi.fn(),
   uninstall: vi.fn(),
 }));
@@ -23,6 +25,8 @@ vi.mock("@/features/skills/queries", () => ({
   useSkillDetail: mocks.useSkillDetail,
   useSkillTree: mocks.useSkillTree,
   useSkillFilePreview: mocks.useSkillFilePreview,
+  useSkillStats: mocks.useSkillStats,
+  useSkillInvocations: mocks.useSkillInvocations,
   useInstallSkill: () => ({
     mutate: mocks.install,
     isPending: false,
@@ -140,6 +144,12 @@ beforeEach(() => {
     data: undefined,
     isLoading: false,
   });
+  mocks.useSkillStats.mockReturnValue({
+    summary: { data: undefined, isLoading: false },
+    daily: { data: [] },
+    ranking: { data: [] },
+  });
+  mocks.useSkillInvocations.mockReturnValue({ data: undefined });
 });
 
 afterEach(() => cleanup());

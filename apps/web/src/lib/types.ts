@@ -1596,3 +1596,66 @@ export type SkillCatalogPage = {
     updated_at_ms?: number | null;
   };
 };
+
+export type SkillStatsParams = {
+  from?: string;
+  to?: string;
+  provider?: string;
+  workspace?: string;
+  confidence?: "high" | "medium" | "low";
+  skillId?: string;
+  page?: number;
+  pageSize?: number;
+};
+
+export type SkillStatsSummary = {
+  invocations: number;
+  active_skills: number;
+  active_sessions: number;
+  active_days: number;
+  token_count?: number | null;
+  last_invoked_at_ms?: number | null;
+  completeness_status: "unknown" | "partial" | "complete" | "error";
+};
+
+export type SkillDailyUsage = {
+  date: string;
+  invocations: number;
+  sessions: number;
+  token_count?: number | null;
+};
+
+export type SkillRanking = {
+  skill_id: string;
+  name: string;
+  invocations: number;
+  sessions: number;
+  token_count?: number | null;
+  last_invoked_at_ms?: number | null;
+};
+
+export type SkillInvocation = {
+  id: string;
+  session_id: string;
+  event_id?: string | null;
+  provider_id: string;
+  workspace_dir?: string | null;
+  invoked_at_ms: number;
+  detection_kind:
+    | "explicit-tool"
+    | "entry-path"
+    | "bundle-path"
+    | "explicit-name"
+    | "content-evidence";
+  confidence: "high" | "medium" | "low";
+  evidence_text?: string | null;
+  evidence_path?: string | null;
+  token_count?: number | null;
+};
+
+export type SkillInvocationPage = {
+  items: SkillInvocation[];
+  page: number;
+  page_size: number;
+  total: number;
+};

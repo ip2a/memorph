@@ -61,6 +61,11 @@ import type {
   SkillMutation,
   SkillCatalogPage,
   SkillCatalogParams,
+  SkillDailyUsage,
+  SkillInvocationPage,
+  SkillRanking,
+  SkillStatsParams,
+  SkillStatsSummary,
   SkillUsageOverview,
   SkillsOverview,
   SkillDetail,
@@ -629,6 +634,33 @@ export function getSkills(params: SkillCatalogParams = {}) {
 export function getSkillAnalysis(refresh = false) {
   return api<SkillUsageOverview>(
     `/api/v1/skills/analysis${buildQuery({ refresh: refresh || undefined })}`,
+  );
+}
+
+export function getSkillStatsSummary(params: SkillStatsParams = {}) {
+  return api<SkillStatsSummary>(
+    `/api/v1/skills/stats/summary${buildQuery(params)}`,
+  );
+}
+
+export function getSkillStatsDaily(params: SkillStatsParams = {}) {
+  return api<SkillDailyUsage[]>(
+    `/api/v1/skills/stats/daily${buildQuery(params)}`,
+  );
+}
+
+export function getSkillStatsRanking(params: SkillStatsParams = {}) {
+  return api<SkillRanking[]>(
+    `/api/v1/skills/stats/ranking${buildQuery(params)}`,
+  );
+}
+
+export function getSkillInvocations(
+  skillId: string,
+  params: SkillStatsParams = {},
+) {
+  return api<SkillInvocationPage>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}/invocations${buildQuery(params)}`,
   );
 }
 

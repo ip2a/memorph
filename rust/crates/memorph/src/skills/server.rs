@@ -20,6 +20,7 @@ use walkdir::WalkDir;
 use super::{
     analysis,
     detection::{self, SkillDetectionResult},
+    invocation::{self, StatsQuery},
     model::{IgnoredSkillCandidate, SkillGroup, SkillRelationRule, SkillRelationsConfig},
     repository::{self, CatalogQuery},
     scanner::{self, ScanMode},
@@ -170,6 +171,9 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
         .route("/api/v1/skills", get(list_skills))
         .route("/api/v1/skills/scan", post(scan_skills))
         .route("/api/v1/skills/analysis", get(get_skill_analysis))
+        .route("/api/v1/skills/stats/summary", get(get_stats_summary))
+        .route("/api/v1/skills/stats/daily", get(get_stats_daily))
+        .route("/api/v1/skills/stats/ranking", get(get_stats_ranking))
         .route("/api/v1/skills/groups", post(upsert_skill_group))
         .route(
             "/api/v1/skills/relations",
@@ -190,6 +194,10 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
         .route("/api/v1/skills/{skill_id}", get(get_skill))
         .route("/api/v1/skills/{skill_id}/tree", get(get_skill_tree))
         .route("/api/v1/skills/{skill_id}/file", get(get_skill_file))
+        .route(
+            "/api/v1/skills/{skill_id}/invocations",
+            get(get_skill_invocations),
+        )
         .route(
             "/api/v1/skills/install",
             post(install_skill).delete(uninstall_skill),
@@ -1064,6 +1072,91 @@ async fn list_skills(
 struct SkillAnalysisQuery {
     #[serde(default)]
     refresh: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillStatsQuery {
+    from: Option<String>,
+    to: Option<String>,
+    provider: Option<String>,
+    workspace: Option<String>,
+    confidence: Option<String>,
+    skill_id: Option<String>,
+    page: Option<usize>,
+    page_size: Option<usize>,
+}
+
+impl From<SkillStatsQuery> for StatsQuery {
+    fn from(value: SkillStatsQuery) -> Self {
+        Self {
+            from: value.from,
+            to: value.to,
+            provider: value.provider,
+            workspace: value.workspace,
+            confidence: value.confidence,
+            page: value.page.unwrap_or(1),
+            page_size: value.page_size.unwrap_or(50),
+        }
+    }
+}
+
+fn stats_store(state: &SkillsState) -> Result<crate::storage::local_store::LocalSqliteStore> {
+    match state.database_path.as_deref() {
+        Some(path) => crate::storage::local_store::LocalSqliteStore::open(path),
+        None => crate::storage::local_store::LocalSqliteStore::open_default(),
+    }
+}
+
+async fn get_stats_summary(
+    State(state): State<SkillsState>,
+    Query(query): Query<SkillStatsQuery>,
+) -> impl IntoResponse {
+    let result = stats_store(&state)
+        .and_then(|store| invocation::summary(store.connection(), &query.into()));
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_stats_daily(
+    State(state): State<SkillsState>,
+    Query(query): Query<SkillStatsQuery>,
+) -> impl IntoResponse {
+    let skill_id = query.skill_id.clone();
+    let result = stats_store(&state).and_then(|store| {
+        invocation::daily(store.connection(), &query.into(), skill_id.as_deref())
+    });
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_stats_ranking(
+    State(state): State<SkillsState>,
+    Query(query): Query<SkillStatsQuery>,
+) -> impl IntoResponse {
+    let result = stats_store(&state)
+        .and_then(|store| invocation::ranking(store.connection(), &query.into()));
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn get_skill_invocations(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<SkillStatsQuery>,
+) -> impl IntoResponse {
+    let result = stats_store(&state)
+        .and_then(|store| invocation::invocations(store.connection(), &skill_id, &query.into()));
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
 }
 
 async fn get_skill_analysis(

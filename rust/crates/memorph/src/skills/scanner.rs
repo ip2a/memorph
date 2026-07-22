@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use super::{
-    repository,
+    invocation, repository,
     server::{inspect_bundle, read_frontmatter, SkillAgent, SkillEntry, SkillsOverview},
 };
 use crate::storage::local_store::LocalSqliteStore;
@@ -24,6 +24,7 @@ pub struct ScanSummary {
     pub skills_seen: usize,
     pub installations_seen: usize,
     pub session_sources_seen: usize,
+    pub session_index: invocation::IndexSummary,
 }
 
 pub fn persist_default(overview: &SkillsOverview, mode: ScanMode) -> Result<ScanSummary> {
@@ -67,7 +68,10 @@ pub fn persist(
         summary.roots_scanned += 1;
         summary.installations_seen += installations.len();
     }
-    summary.session_sources_seen = persist_session_source_states(conn, now_ms)?;
+    summary.session_index = invocation::index(conn)?;
+    summary.session_sources_seen = summary.session_index.sources_scanned
+        + summary.session_index.sources_skipped
+        + summary.session_index.sources_failed;
     Ok(summary)
 }
 
@@ -182,53 +186,6 @@ fn root_fingerprint(
     hash(value.as_bytes())
 }
 
-fn persist_session_source_states(conn: &rusqlite::Connection, now_ms: i64) -> Result<usize> {
-    let sources = repository::session_sources(conn)?;
-    for source in &sources {
-        let key = format!("session-source:{}", source.id);
-        repository::begin_scan(
-            conn,
-            &key,
-            "session-source",
-            Some(&source.provider_id),
-            Some(&source.source_path),
-            now_ms,
-        )?;
-        repository::complete_scan(
-            conn,
-            &key,
-            Some(&source.fingerprint),
-            source.source_cursor.as_deref(),
-            0,
-            false,
-            "partial",
-            source.earliest_at_ms,
-            source.latest_at_ms,
-            now_ms,
-        )?;
-    }
-    repository::begin_scan(conn, "aggregate:sessions", "aggregate", None, None, now_ms)?;
-    let earliest = sources.iter().filter_map(|item| item.earliest_at_ms).min();
-    let latest = sources.iter().filter_map(|item| item.latest_at_ms).max();
-    repository::complete_scan(
-        conn,
-        "aggregate:sessions",
-        None,
-        None,
-        sources.len(),
-        false,
-        if sources.is_empty() {
-            "unknown"
-        } else {
-            "partial"
-        },
-        earliest,
-        latest,
-        now_ms,
-    )?;
-    Ok(sources.len())
-}
-
 fn hash(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
@@ -249,7 +206,7 @@ mod tests {
                 rusqlite::params![format!("source-{index}"), format!("/tmp/{index}.jsonl")],
             ).unwrap();
         }
-        let count = persist_session_source_states(store.connection_mut(), 10).unwrap();
+        let summary = invocation::index(store.connection_mut()).unwrap();
         let states: i64 = store
             .connection()
             .query_row(
@@ -258,7 +215,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 250);
+        assert_eq!(summary.sources_scanned, 250);
         assert_eq!(states, 250);
     }
 
