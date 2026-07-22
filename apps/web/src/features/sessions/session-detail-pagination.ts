@@ -28,9 +28,20 @@ export {
   managerTotalPages as sessionEventTotalPages,
 } from "@/features/manager/manager-pagination";
 
-export function buildSessionEventQuery(page: number, pageSize: SessionEventPageSize) {
-  return {
+export function buildSessionEventQuery(
+  page: number,
+  pageSize: SessionEventPageSize,
+  eventSearch?: string,
+) {
+  const query: {
+    event_offset: number;
+    event_limit: number;
+    event_search?: string;
+  } = {
     event_offset: (page - 1) * pageSize,
     event_limit: pageSize,
   };
+  const trimmed = eventSearch?.trim();
+  if (trimmed) query.event_search = trimmed;
+  return query;
 }

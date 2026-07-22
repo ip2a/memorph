@@ -19,7 +19,14 @@ pub fn get_canonical_session(provider_id: &str, session_id: &str) -> Result<Impo
 }
 
 pub fn get_session_detail_view(provider_id: &str, session_id: &str) -> Result<SessionDetailView> {
-    get_session_detail_view_page(provider_id, session_id, 0, None)
+    Ok(get_session_detail_view_page_result(provider_id, session_id, 0, None, None)?.view)
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionDetailPageResult {
+    pub view: SessionDetailView,
+    pub returned_event_indices: Vec<usize>,
+    pub matched_event_count: Option<usize>,
 }
 
 pub fn get_session_detail_view_page(
@@ -28,6 +35,26 @@ pub fn get_session_detail_view_page(
     event_offset: usize,
     event_limit: Option<usize>,
 ) -> Result<SessionDetailView> {
+    Ok(get_session_detail_view_page_result(
+        provider_id,
+        session_id,
+        event_offset,
+        event_limit,
+        None,
+    )?
+    .view)
+}
+
+pub fn get_session_detail_view_page_result(
+    provider_id: &str,
+    session_id: &str,
+    event_offset: usize,
+    event_limit: Option<usize>,
+    event_search: Option<&str>,
+) -> Result<SessionDetailPageResult> {
+    let search_query = event_search
+        .map(str::trim)
+        .filter(|query| !query.is_empty());
     let mut conn = crate::storage::local_store::open_database()?;
     let identity = crate::storage::snapshot_store::SnapshotStore::new(&conn)
         .find_session_identity(provider_id, session_id)?
@@ -50,15 +77,46 @@ pub fn get_session_detail_view_page(
         .as_deref()
         .unwrap_or(session_id)
         .to_string();
-    let mut page = provider.import_session_page(source_path, event_offset, event_limit)?;
+    let mut page = if search_query.is_some() {
+        provider.import_session_page(source_path, 0, None)?
+    } else {
+        provider.import_session_page(source_path, event_offset, event_limit)?
+    };
+    let full_events = page.imported.session.events.clone();
+    let (events, returned_event_indices, matched_event_count) = if let Some(query) = search_query {
+        let matching_indices =
+            session_event_search::find_matching_event_indices(&full_events, query);
+        let matched_count = matching_indices.len();
+        let offset = event_offset.min(matched_count);
+        let limit = event_limit.unwrap_or(matched_count);
+        let indices = matching_indices
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let events = indices
+            .iter()
+            .map(|&index| full_events[index].clone())
+            .collect::<Vec<_>>();
+        (events, indices, Some(matched_count))
+    } else {
+        (page.imported.session.events.clone(), Vec::new(), None)
+    };
+    page.imported.session.events = events;
     let meta = ProviderSessionSummary {
         session_id: provider_session_id.clone(),
         title: identity.title.clone(),
         project_dir: identity.workspace_dir.clone(),
+        created_at: None,
         last_active_at: identity.last_active_at_ms,
         source_path: Some(source_path.to_string()),
     };
     enrich_imported_session_from_meta(&mut page.imported, provider_id, &meta);
+    page.turns = crate::session_projection::project_session_turns(
+        &identity.canonical_session_id,
+        &page.imported.session.events,
+        provider.capabilities().turn_quality,
+    );
     for turn in &mut page.turns {
         turn.session_id = identity.canonical_session_id.clone();
         turn.id = format!(
@@ -100,64 +158,79 @@ pub fn get_session_detail_view_page(
         .clone()
         .or_else(|| identity.display_title.clone());
     let title = display_title.clone().or_else(|| identity.title.clone());
-    let last_active_at = page.imported.session.context.last_active_at.or_else(|| {
-        identity
-            .last_active_at_ms
-            .and_then(chrono::DateTime::from_timestamp_millis)
-    });
-    let created_at = page.imported.session.context.created_at;
+    let last_active_at = page
+        .imported
+        .session
+        .context
+        .last_active_at
+        .filter(utils::is_plausible_session_time)
+        .or_else(|| {
+            identity
+                .last_active_at_ms
+                .and_then(utils::datetime_from_timestamp_ms)
+        });
+    let created_at = resolve_session_created_at(
+        page.imported.session.context.created_at,
+        &page.imported.session.events,
+    );
     let compressed_archive_refs = compression::compressed_archive_refs(&page.imported.session);
+    let mut metrics_session = page.imported.session.clone();
+    metrics_session.events = full_events;
     let length_metrics = session_length_metrics(
         provider.session_size(&provider_session_id)?,
-        &page.imported.session,
+        &metrics_session,
         page.event_count,
         page.message_count,
         page.turn_count.unwrap_or(page.turns.len()),
     )?;
 
-    Ok(SessionDetailView {
-        provider_id: provider_id.to_string(),
-        provider_name: provider.name().to_string(),
-        session_id: provider_session_id,
-        canonical_id: identity.canonical_session_id.clone(),
-        title,
-        native_title: identity.title,
-        display_title,
-        workspace_dir: page
-            .imported
-            .session
-            .context
-            .workspace_dir
-            .as_deref()
-            .map(utils::user_visible_path),
-        created_at,
-        last_active_at,
-        source_path: Some(utils::user_visible_path(source_path)),
-        resume_command: provider.resume_command(
-            identity
-                .provider_session_id
+    Ok(SessionDetailPageResult {
+        view: SessionDetailView {
+            provider_id: provider_id.to_string(),
+            provider_name: provider.name().to_string(),
+            session_id: provider_session_id,
+            canonical_id: identity.canonical_session_id.clone(),
+            title,
+            native_title: identity.title,
+            display_title,
+            workspace_dir: page
+                .imported
+                .session
+                .context
+                .workspace_dir
                 .as_deref()
-                .unwrap_or(session_id),
-        ),
-        local_state: local_state.clone(),
-        event_count: page.event_count,
-        message_count: page.message_count,
-        artifact_count: page.imported.session.artifacts.len(),
-        length_metrics,
-        stale,
-        hook_runtime_summary: None,
-        hook_diagnosis: None,
-        hook_runtime_sessions: Vec::new(),
-        projection_report: Some(source_mapping_report_view(
-            provider_id,
-            identity.source_id.as_deref(),
-            &page.imported,
-            page.event_count,
-        )),
-        turns: page.turns,
-        events: page.imported.session.events,
-        artifacts: page.imported.session.artifacts,
-        compressed_archive_refs,
+                .map(utils::user_visible_path),
+            created_at,
+            last_active_at,
+            source_path: Some(utils::user_visible_path(source_path)),
+            resume_command: provider.resume_command(
+                identity
+                    .provider_session_id
+                    .as_deref()
+                    .unwrap_or(session_id),
+            ),
+            local_state: local_state.clone(),
+            event_count: page.event_count,
+            message_count: page.message_count,
+            artifact_count: page.imported.session.artifacts.len(),
+            length_metrics,
+            stale,
+            hook_runtime_summary: None,
+            hook_diagnosis: None,
+            hook_runtime_sessions: Vec::new(),
+            projection_report: Some(source_mapping_report_view(
+                provider_id,
+                identity.source_id.as_deref(),
+                &page.imported,
+                page.event_count,
+            )),
+            turns: page.turns,
+            events: page.imported.session.events,
+            artifacts: page.imported.session.artifacts,
+            compressed_archive_refs,
+        },
+        returned_event_indices,
+        matched_event_count,
     })
 }
 
@@ -395,14 +468,23 @@ pub(super) fn compute_session_activity_timeline_in_connection(
         .events
         .iter()
         .map(|event| event.timestamp)
+        .filter(utils::is_plausible_session_time)
         .collect::<Vec<_>>();
     let first_event_at = event_timestamps.iter().copied().min();
     let last_event_at = event_timestamps.iter().copied().max();
-    let created_at = match (activity.created_at, first_event_at) {
+    let created_at = match (
+        activity.created_at.filter(utils::is_plausible_session_time),
+        first_event_at,
+    ) {
         (Some(source), Some(event)) => Some(source.min(event)),
         (source, event) => source.or(event),
     };
-    let last_active_at = match (activity.last_active_at, last_event_at) {
+    let last_active_at = match (
+        activity
+            .last_active_at
+            .filter(utils::is_plausible_session_time),
+        last_event_at,
+    ) {
         (Some(source), Some(event)) => Some(source.max(event)),
         (source, event) => source.or(event),
     };
@@ -475,6 +557,22 @@ pub(super) fn compute_session_activity_timeline_in_connection(
         total_messages,
         total_activity,
     })
+}
+
+fn resolve_session_created_at(
+    context: Option<chrono::DateTime<chrono::Utc>>,
+    events: &[SessionEvent],
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    let from_context = context.filter(utils::is_plausible_session_time);
+    let from_events = events
+        .iter()
+        .map(|event| event.timestamp)
+        .filter(utils::is_plausible_session_time)
+        .min();
+    match (from_context, from_events) {
+        (Some(context), Some(event)) => Some(context.min(event)),
+        (context, event) => context.or(event),
+    }
 }
 
 #[derive(Debug)]

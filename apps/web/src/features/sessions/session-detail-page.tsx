@@ -25,10 +25,9 @@ import { SessionEventSplitRow } from "@/features/sessions/session-event-split-ro
 import { getBlockLabel } from "@/features/sessions/session-block-utils";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
 import { SessionDetailHeaderActions } from "@/features/sessions/session-detail-header-actions";
-import { buildSessionEventQuery, sessionEventTotalPages } from "@/features/sessions/session-detail-pagination";
+import { buildSessionEventQuery, sessionEventTotalPages, type SessionEventPageSize } from "@/features/sessions/session-detail-pagination";
 import { readSessionDetailRouteState, writeSessionDetailRouteState } from "@/features/sessions/session-detail-route-state";
 import { SessionDetailResultPagination } from "@/features/sessions/session-detail-result-pagination";
-import type { SessionEventPageSize } from "@/features/sessions/session-detail-pagination";
 import { getMeta, listProviders } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -209,13 +208,16 @@ function SessionDetailMeta({
   view,
   page,
   pageSize,
+  matchedEventCount,
 }: {
   view: SessionDetailView;
   page: number;
   pageSize: number;
+  matchedEventCount?: number | null;
 }) {
   const activity = useSessionActivity(view.provider_id, view.session_id);
-  const totalEvents = view.event_count;
+  const searching = matchedEventCount != null;
+  const totalEvents = searching ? matchedEventCount : view.event_count;
   const totalPages = sessionEventTotalPages(totalEvents, pageSize);
   const currentPage = Math.min(page, totalPages);
   const loadedFrom = totalEvents === 0 ? 0 : (currentPage - 1) * pageSize + 1;
@@ -231,8 +233,8 @@ function SessionDetailMeta({
           <StatItem label="Messages / events / turns" value={`${view.length_metrics.message_count} / ${view.length_metrics.event_count} / ${view.length_metrics.turn_count}`} />
           <StatItem label="Compressed / archives" value={`${view.length_metrics.compressed_segment_count} / ${view.length_metrics.archive_count}`} />
           <StatItem
-            label="Loaded"
-            value={totalEvents === 0 ? "0" : `${loadedFrom}–${loadedTo}`}
+            label={searching ? "Matches loaded" : "Loaded"}
+            value={totalEvents === 0 ? "0" : `${loadedFrom}–${loadedTo}${searching ? ` of ${matchedEventCount}` : ""}`}
             title={totalPages > 1 ? `Page ${currentPage} of ${totalPages}` : undefined}
           />
         </div>
@@ -251,21 +253,6 @@ function SessionDetailMeta({
 
 function getBlockLabels(blocks: SessionEvent["blocks"]) {
   return (blocks ?? []).map(getBlockLabel).filter(Boolean);
-}
-
-function matchesEventSearch(event: SessionEvent, query: string) {
-  if (!query.trim()) return true;
-  const haystack = [
-    event.id,
-    event.role,
-    event.kind,
-    event.metadata?.model,
-    JSON.stringify(event.blocks ?? []),
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return haystack.includes(query.trim().toLowerCase());
 }
 
 function SessionArtifactsDialog({
@@ -328,10 +315,7 @@ function DetailEventItem({
   const eventArticle = (
     <article
       className={cn(
-        "flex h-full min-h-0 flex-col overflow-hidden border border-border",
-        "data-[role=assistant]:border-l-[3px] data-[role=assistant]:border-l-[#e4e4de] data-[role=assistant]:bg-[#f4f4f1]",
-        "data-[role=user]:border-l-[3px] data-[role=user]:border-l-[#d4dde6] data-[role=user]:bg-[#f0f4f8]",
-        "data-[role=system]:border-l-[3px] data-[role=system]:border-l-border data-[role=system]:bg-muted/50",
+        "flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card",
         highlighted && "outline-2 outline-foreground/35 -outline-offset-2",
       )}
       data-event-number={eventNumber}
@@ -382,8 +366,7 @@ function DetailEventItem({
       data-event-number={eventNumber}
       data-role={event.role ?? "unknown"}
       left={<SessionEventMetaPanel event={event} eventNumber={eventNumber} />}
-      right={<SessionEventJsonColumn className="h-full min-h-0" payloads={jsonPayloads} />}
-      syncKey={event.id}
+      right={<SessionEventJsonColumn payloads={jsonPayloads} timestamp={event.timestamp} />}
     />
   );
 }
@@ -397,15 +380,19 @@ export function SessionDetailPage() {
   const [syncOpen, setSyncOpen] = useState(false);
   const [artifactsOpen, setArtifactsOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [eventSearch, setEventSearch] = useState("");
+  const [eventSearchDraft, setEventSearchDraft] = useState("");
+  const [searchSubmitPending, setSearchSubmitPending] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
   const highlightTimeoutRef = useRef<number | null>(null);
   const { provider = "", sessionId = "" } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const route = useMemo(() => readSessionDetailRouteState(searchParams), [searchParams]);
+  useEffect(() => {
+    setEventSearchDraft(route.eventSearch);
+  }, [route.eventSearch, provider, sessionId]);
   const sessionQuery = useMemo(
-    () => buildSessionEventQuery(route.page, route.pageSize),
-    [route.page, route.pageSize],
+    () => buildSessionEventQuery(route.page, route.pageSize, route.eventSearch),
+    [route.page, route.pageSize, route.eventSearch],
   );
   const session = useSession(provider, sessionId, sessionQuery);
   const providers = useQuery({ queryKey: queryKeys.providers, queryFn: listProviders });
@@ -416,18 +403,29 @@ export function SessionDetailPage() {
   }, []);
 
   useEffect(() => {
+    if (!session.isFetching) setSearchSubmitPending(false);
+  }, [session.isFetching]);
+
+  useEffect(() => {
     setHighlightedIndex(null);
-  }, [provider, sessionId, route.page, route.pageSize]);
+  }, [provider, sessionId, route.page, route.pageSize, route.eventSearch]);
 
   useEffect(() => {
     if (!session.data) return;
-    const totalPages = sessionEventTotalPages(session.data.view.event_count, route.pageSize);
+    const paginationTotal = session.data.matched_event_count ?? session.data.view.event_count;
+    const totalPages = sessionEventTotalPages(paginationTotal, route.pageSize);
     if (route.page <= totalPages) return;
     setSearchParams(writeSessionDetailRouteState(searchParams, { page: totalPages }), { replace: true });
-  }, [route.page, route.pageSize, searchParams, session.data, setSearchParams]);
+  }, [route.page, route.pageSize, route.eventSearch, searchParams, session.data, setSearchParams]);
 
-  function updateRoute(next: Partial<{ page: number; pageSize: SessionEventPageSize }>) {
+  function updateRoute(next: Partial<{ page: number; pageSize: SessionEventPageSize; eventSearch: string }>) {
     setSearchParams(writeSessionDetailRouteState(searchParams, next));
+  }
+
+  function handleEventSearchSubmit() {
+    setSearchSubmitPending(true);
+    updateRoute({ eventSearch: eventSearchDraft.trim(), page: 1 });
+    scrollSessionDetailToTop();
   }
 
   function handleTimelineSelect(index: number) {
@@ -452,22 +450,22 @@ export function SessionDetailPage() {
     scrollSessionDetailToTop();
   }
 
-  if (session.isLoading) return <PageSkeleton />;
+  if (session.isLoading && !session.data) return <PageSkeleton />;
   if (session.error) return <PageError title="Session failed to load" message={session.error.message} />;
   if (!session.data) return <PageEmpty title="Session not found" description="Return to the session list and choose another session." />;
 
-  const { view, returned_event_count, has_more_events } = session.data;
+  const { view, returned_event_count, has_more_events, matched_event_count, returned_event_indices } = session.data;
   const localState = view.local_state ?? { archived: false, hidden: false, pinned: false, tags: [], preferred_targets: [], compressed_archive_refs: [] };
   const events = view.events ?? [];
-  const eventOffset = sessionQuery.event_offset ?? 0;
-  const visibleEvents = events
-    .map((event, index) => ({
-      event,
-      index,
-      eventNumber: eventOffset + index + 1,
-    }))
-    .filter(({ event }) => matchesEventSearch(event, eventSearch));
-  const totalEventCount = view.event_count;
+  const eventOffset = session.data.events_offset ?? 0;
+  const visibleEvents = events.map((event, index) => ({
+    event,
+    index,
+    eventNumber: (returned_event_indices?.[index] ?? eventOffset + index) + 1,
+  }));
+  const paginationTotal = matched_event_count ?? view.event_count;
+  const searching = Boolean(route.eventSearch.trim());
+  const eventSearchPending = searchSubmitPending && session.isFetching;
   const artifacts = view.artifacts ?? [];
   const archives = (view.compressed_archive_refs ?? []).length || (localState.compressed_archive_refs ?? []).length;
   const actionTarget = { providerId: view.provider_id, sessionId: view.session_id, title: detailTitle(view), workspace: view.workspace_dir };
@@ -507,12 +505,15 @@ export function SessionDetailPage() {
                 view={view}
                 page={route.page}
                 pageSize={route.pageSize}
+                matchedEventCount={matched_event_count}
               />
             )}
             actions={(
               <SessionDetailHeaderActions
-                eventSearch={eventSearch}
-                onEventSearchChange={setEventSearch}
+                eventSearchDraft={eventSearchDraft}
+                onEventSearchDraftChange={setEventSearchDraft}
+                onEventSearchSubmit={handleEventSearchSubmit}
+                eventSearchPending={eventSearchPending}
                 onOpenDetails={() => setDetailsOpen(true)}
                 onOpenArtifacts={() => setArtifactsOpen(true)}
                 onOpenCompression={() => setCompressionOpen(true)}
@@ -532,13 +533,16 @@ export function SessionDetailPage() {
               highlightedIndex={highlightedIndex}
               onScrollToMessage={(index) => handleTimelineSelect(index)}
             />
-            <div className="grid min-h-0 min-w-0 gap-4" data-session-message-list>
-              {events.length === 0 ? (
+            <div
+              className="grid min-h-0 min-w-0 [&>*+*]:mt-6 [&>*+*]:border-t [&>*+*]:border-border [&>*+*]:pt-6"
+              data-session-message-list
+            >
+              {!searching && view.event_count === 0 ? (
                 <PageEmpty title="No events" description="This session has no canonical events to render." />
-              ) : visibleEvents.length === 0 ? (
+              ) : searching && (matched_event_count ?? 0) === 0 ? (
                 <PageEmpty
                   title="No matching events"
-                  description={eventSearch.trim() ? "Try a different search term on this page." : "Try a different search term."}
+                  description="Try a different search term."
                 />
               ) : (
                 visibleEvents.map(({ event, index, eventNumber }) => (
@@ -555,7 +559,7 @@ export function SessionDetailPage() {
           </div>
           </div>
         </ScrollArea>
-        {totalEventCount > 0 ? (
+        {paginationTotal > 0 ? (
           <div
             className="shrink-0 border-t bg-background pr-3 pt-3 shadow-[0_-8px_16px_-12px_rgba(0,0,0,0.18)]"
             data-session-detail-pagination-bar
@@ -563,7 +567,7 @@ export function SessionDetailPage() {
             <SessionDetailResultPagination
               page={route.page}
               pageSize={route.pageSize}
-              totalCount={totalEventCount}
+              totalCount={paginationTotal}
               disabled={session.isFetching}
               onPageChange={changePage}
               onPageSizeChange={changePageSize}

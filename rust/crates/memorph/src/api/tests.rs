@@ -947,6 +947,9 @@ fn session_detail_payload_serializes_hook_runtime_sessions() {
         events_limit: Some(50),
         returned_event_count: 0,
         has_more_events: false,
+        event_search: None,
+        matched_event_count: None,
+        returned_event_indices: Vec::new(),
         hook_runtime_sessions: vec![runtime_session_for_payload("claude:session:session-1")],
     };
 

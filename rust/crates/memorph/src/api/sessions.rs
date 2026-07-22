@@ -97,18 +97,29 @@ pub(super) async fn get_session(
 ) -> impl IntoResponse {
     let events_offset = q.event_offset.unwrap_or(0);
     let events_limit = q.event_limit;
-    match core::sessions::get_session_detail_view_page(
+    let event_search = q
+        .event_search
+        .as_deref()
+        .map(str::trim)
+        .filter(|query| !query.is_empty());
+    match core::sessions::get_session_detail_view_page_result(
         &provider,
         &session_id,
         events_offset,
         events_limit,
+        event_search,
     ) {
-        Ok(view) => {
+        Ok(result) => {
+            let view = result.view;
             if let Some(project_dir) = view.workspace_dir.as_deref() {
                 let _ = config::remember_workspace(std::path::Path::new(project_dir));
             }
             let returned_event_count = view.events.len();
-            let has_more_events = events_offset + returned_event_count < view.event_count;
+            let has_more_events = if let Some(matched_count) = result.matched_event_count {
+                events_offset + returned_event_count < matched_count
+            } else {
+                events_offset + returned_event_count < view.event_count
+            };
             let hook_runtime_sessions = view.hook_runtime_sessions.clone();
             ApiResponse::success(SessionDetailPayload {
                 view,
@@ -116,6 +127,9 @@ pub(super) async fn get_session(
                 events_limit,
                 returned_event_count,
                 has_more_events,
+                event_search: event_search.map(str::to_string),
+                matched_event_count: result.matched_event_count,
+                returned_event_indices: result.returned_event_indices,
                 hook_runtime_sessions,
             })
             .into_response()

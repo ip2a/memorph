@@ -4,9 +4,9 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { renderHighlightedJson } from "@/lib/format-content";
+import { formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 function formatJson(value: unknown) {
@@ -55,10 +55,12 @@ async function copyJson(text: string) {
 export function SessionJsonPanel({
   value,
   label,
+  timestamp,
   className,
 }: {
   value: unknown;
   label: string;
+  timestamp?: string | null;
   className?: string;
 }) {
   const schemaId = useId();
@@ -73,12 +75,12 @@ export function SessionJsonPanel({
   return (
     <Card
       className={cn(
-        "flex h-full min-h-0 w-full min-w-0 flex-col gap-0 overflow-hidden rounded-xl border border-border bg-card py-0 shadow-none ring-0",
+        "flex w-full min-w-0 flex-col gap-0 overflow-hidden rounded-xl border border-border bg-card py-0 shadow-none ring-0",
         className,
       )}
       size="sm"
     >
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-2">
         <h3 className="text-sm font-semibold tracking-tight">{readableLabel(label)}</h3>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
@@ -102,10 +104,13 @@ export function SessionJsonPanel({
             <CopyIcon data-icon="inline-start" />
             Copy
           </Button>
+          {timestamp ? (
+            <span className="shrink-0 text-xs text-muted-foreground">{formatDateTime(timestamp)}</span>
+          ) : null}
         </div>
       </div>
 
-      <ScrollArea className="min-h-0 min-w-0 flex-1">
+      <div className="h-[17rem] min-w-0 overflow-auto">
         <div className="p-4">
           {highlighted ? (
             <pre
@@ -118,9 +123,9 @@ export function SessionJsonPanel({
             </pre>
           )}
         </div>
-      </ScrollArea>
+      </div>
 
-      <div className="shrink-0 border-t px-4 py-2.5 text-xs text-muted-foreground">
+      <div className="shrink-0 border-t px-4 py-2 text-xs text-muted-foreground">
         {previewFooter(label)}
       </div>
     </Card>
@@ -129,28 +134,31 @@ export function SessionJsonPanel({
 
 export function SessionEventJsonColumn({
   payloads,
+  timestamp,
   className,
 }: {
   payloads: Array<{ json: unknown; jsonLabel: string }>;
+  timestamp?: string | null;
   className?: string;
 }) {
   if (payloads.length === 1) {
     return (
       <SessionJsonPanel
-        className={cn("h-full", className)}
+        className={className}
         label={payloads[0].jsonLabel}
+        timestamp={timestamp}
         value={payloads[0].json}
       />
     );
   }
 
   return (
-    <div className={cn("flex h-full min-h-0 flex-col gap-3 overflow-hidden", className)}>
+    <div className={cn("flex min-w-0 flex-col gap-3", className)}>
       {payloads.map((payload, index) => (
         <SessionJsonPanel
           key={`${payload.jsonLabel}-${index}`}
-          className="min-h-0 flex-1"
           label={payload.jsonLabel}
+          timestamp={index === 0 ? timestamp : undefined}
           value={payload.json}
         />
       ))}

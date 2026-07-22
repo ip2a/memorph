@@ -37,6 +37,7 @@ pub mod management;
 pub mod manager;
 pub mod projection;
 pub mod query;
+pub mod session_event_search;
 pub mod session_management;
 pub mod session_mutation;
 pub mod sessions;

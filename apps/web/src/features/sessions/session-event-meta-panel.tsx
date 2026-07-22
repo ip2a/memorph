@@ -1,12 +1,8 @@
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Card } from "@/components/ui/card";
-import { Field, FieldContent, FieldGroup, FieldTitle } from "@/components/ui/field";
-import { Separator } from "@/components/ui/separator";
 import { getBlockSplitPayload } from "@/features/sessions/session-block-split";
 import { getBlockLabel } from "@/features/sessions/session-block-utils";
 import { SessionBlock } from "@/features/sessions/session-block";
-import { formatDateTime } from "@/lib/format";
 import type { EventBlock, SessionEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -32,25 +28,24 @@ function MetaFieldRow({ title, value, destructive = false, valueClassName }: Met
   const content = value === null || value === undefined || value === "" ? "-" : value;
 
   return (
-    <Field orientation="horizontal" className="items-center gap-3">
-      <FieldContent>
-        <FieldTitle>{title}</FieldTitle>
-      </FieldContent>
-      {destructive ? (
-        <Badge variant="destructive" className="max-w-[min(100%,16rem)] shrink-0 break-words">
-          {content}
-        </Badge>
-      ) : (
-        <div
-          className={cn(
-            "min-w-0 max-w-[min(100%,16rem)] shrink-0 text-right text-sm break-words [overflow-wrap:anywhere]",
-            valueClassName ?? "text-muted-foreground",
-          )}
-        >
-          {content}
-        </div>
-      )}
-    </Field>
+    <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-4 border-b border-border/70 py-2.5 last:border-b-0 text-sm">
+      <dt className="shrink-0 text-muted-foreground">{title}</dt>
+      <dd
+        className={cn(
+          "min-w-0 text-right break-words [overflow-wrap:anywhere]",
+          destructive && "text-destructive",
+          !destructive && (valueClassName ?? "text-foreground"),
+        )}
+      >
+        {destructive ? (
+          <Badge variant="destructive" className="max-w-full break-words">
+            {content}
+          </Badge>
+        ) : (
+          content
+        )}
+      </dd>
+    </div>
   );
 }
 
@@ -159,12 +154,13 @@ function getBlockMetaEntries(block: EventBlock): MetaEntry[] {
 }
 
 function SessionBlockMetaBody({ block }: { block: EventBlock }) {
-  if (getBlockSplitPayload(block)) {
+  // Left column is metadata-only; message/text bodies belong in the JSON column or the full-width article.
+  if (getBlockSplitPayload(block) || block.type === "text" || block.type === "thinking") {
     return null;
   }
 
   return (
-    <div className="px-4 py-2">
+    <div className="pt-2">
       <SessionBlock block={block} embedded />
     </div>
   );
@@ -186,35 +182,24 @@ export function SessionEventMetaPanel({
   ];
 
   return (
-    <Card
-      className={cn(
-        "flex w-full min-w-0 flex-col gap-0 overflow-hidden rounded-xl border border-border bg-card py-0 shadow-none ring-0",
-        className,
-      )}
-      size="sm"
-      data-session-event-meta
-    >
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-3">
+    <div className={cn("mx-auto flex w-full min-w-0 max-w-md flex-col gap-1 px-2 lg:mx-0 lg:max-w-none lg:px-3", className)} data-session-event-meta>
+      <div className="border-b border-border pb-2.5">
         <h3 className="text-sm font-semibold tracking-tight">Event #{eventNumber}</h3>
-        <span className="shrink-0 text-xs text-muted-foreground">{formatDateTime(event.timestamp)}</span>
       </div>
 
       {entries.length === 0 ? (
-        <p className="px-4 py-3 text-sm text-muted-foreground">No metadata.</p>
+        <p className="py-2 text-sm text-muted-foreground">No metadata.</p>
       ) : (
-        <FieldGroup className="gap-0">
+        <dl className="min-w-0">
           {entries.map((entry, index) => (
-            <div key={`${entry.title}-${index}`} className="px-4 py-2 sm:px-4 sm:py-2.5">
-              <MetaFieldRow {...entry} />
-              {index < entries.length - 1 ? <Separator className="mt-2.5" /> : null}
-            </div>
+            <MetaFieldRow key={`${entry.title}-${index}`} {...entry} />
           ))}
-        </FieldGroup>
+        </dl>
       )}
 
       {blocks.map((block, blockIndex) => (
         <SessionBlockMetaBody key={`${event.id}-body-${blockIndex}`} block={block} />
       ))}
-    </Card>
+    </div>
   );
 }
