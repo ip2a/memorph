@@ -1762,3 +1762,19 @@ export type SkillGraphParams = {
   workspace?: string;
   timezone?: string;
 };
+
+export type SkillCoverageEvidence = {
+  invocation_id: string;
+  session_id: string;
+  event_id?: string | null;
+  observed_at_ms: number;
+  match_kind: string;
+  confidence: string;
+  evidence_text?: string | null;
+};
+export type SkillCoverageEvidencePage = {
+  items: SkillCoverageEvidence[];
+  page: number;
+  page_size: number;
+  total: number;
+};

@@ -3,7 +3,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PanelCard } from "@/components/shared/panel-card";
 import { SectionHeading } from "@/components/shared/section-heading";
-import { useSkillConflicts, useSkillCoverage } from "@/features/skills/queries";
+import {
+  useSkillConflicts,
+  useSkillCoverage,
+  useSkillCoverageEvidence,
+} from "@/features/skills/queries";
 
 const ranges = ["7d", "30d", "90d", "all"];
 
@@ -13,8 +17,10 @@ export function SkillCoverageConflictsPanel({
   skillId: string | null;
 }) {
   const [range, setRange] = useState("90d");
+  const [targetKey, setTargetKey] = useState<string | null>(null);
   const coverage = useSkillCoverage(skillId, range);
   const conflicts = useSkillConflicts(skillId);
+  const evidence = useSkillCoverageEvidence(skillId, targetKey);
   if (!skillId) return null;
   return (
     <div className="grid gap-3 lg:grid-cols-2">
@@ -48,9 +54,11 @@ export function SkillCoverageConflictsPanel({
             </p>
             <div className="max-h-48 space-y-2 overflow-auto">
               {coverage.data?.targets.map((target) => (
-                <div
+                <button
+                  type="button"
                   key={`${target.target_kind}:${target.target_key}`}
-                  className="flex items-start justify-between gap-2 rounded-md border p-2 text-sm"
+                  className="flex w-full items-start justify-between gap-2 rounded-md border p-2 text-left text-sm"
+                  onClick={() => setTargetKey(target.target_key)}
                 >
                   <span>
                     {target.section_title ??
@@ -60,9 +68,28 @@ export function SkillCoverageConflictsPanel({
                   <Badge variant="outline">
                     {target.observations} · {target.confidence ?? "未覆盖"}
                   </Badge>
-                </div>
+                </button>
               ))}
             </div>
+            {targetKey && (
+              <div className="space-y-1 border-t pt-2 text-sm">
+                <p className="font-medium">调用证据</p>
+                {evidence.data?.items.map((item) => (
+                  <p key={item.invocation_id}>
+                    <a
+                      className="text-primary underline"
+                      href={`/sessions/${encodeURIComponent(item.session_id)}`}
+                    >
+                      {item.session_id}
+                    </a>{" "}
+                    · {item.match_kind} · {item.confidence}
+                  </p>
+                ))}
+                {evidence.data && evidence.data.items.length === 0 && (
+                  <p className="text-muted-foreground">暂无证据。</p>
+                )}
+              </div>
+            )}
           </>
         )}
       </PanelCard>

@@ -67,6 +67,7 @@ import type {
   SkillConflict,
   SkillCoverage,
   SkillCoverageSummaryItem,
+  SkillCoverageEvidencePage,
   SkillHealth,
   SkillHealthSummary,
   SkillGraph,
@@ -683,6 +684,16 @@ export function getSkillCoverageSummary(range = "90d") {
 export function getSkillCoverage(skillId: string, range = "90d") {
   return api<SkillCoverage>(
     `/api/v1/skills/${encodeURIComponent(skillId)}/coverage${buildQuery({ range })}`,
+  );
+}
+
+export function getSkillCoverageEvidence(
+  skillId: string,
+  targetKey: string,
+  page = 1,
+) {
+  return api<SkillCoverageEvidencePage>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}/coverage/${encodeURIComponent(targetKey)}/evidence${buildQuery({ page, pageSize: 20 })}`,
   );
 }
 

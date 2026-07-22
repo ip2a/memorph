@@ -9,6 +9,7 @@ import {
   getSkillConflicts,
   getSkillCoverage,
   getSkillCoverageSummary,
+  getSkillCoverageEvidence,
   getSkillDetail,
   getSkillFilePreview,
   getSkillInvocations,
@@ -97,6 +98,22 @@ export function useSkillCoverage(skillId: string | null, range: string) {
       : ["skills", "coverage", "none"],
     queryFn: () => getSkillCoverage(skillId as string, range),
     enabled: Boolean(skillId),
+  });
+}
+
+export function useSkillCoverageEvidence(
+  skillId: string | null,
+  targetKey: string | null,
+  page = 1,
+) {
+  return useQuery({
+    queryKey:
+      skillId && targetKey
+        ? queryKeys.skillCoverageEvidence(skillId, targetKey, page)
+        : ["skills", "coverage", "evidence", "none"],
+    queryFn: () =>
+      getSkillCoverageEvidence(skillId as string, targetKey as string, page),
+    enabled: Boolean(skillId && targetKey),
   });
 }
 
