@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nContext } from "@/lib/i18n-context";
 import { translate } from "@/lib/i18n-core";
 import type { SkillCatalogParams } from "@/lib/types";
+import { useUiStore } from "@/stores/ui-store";
 import { SkillsPage } from "./skills-page";
 
 const mocks = vi.hoisted(() => ({
@@ -133,6 +134,7 @@ function renderRoute() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useUiStore.setState({ selectedWorkspace: null });
   mocks.useSkills.mockImplementation((params: SkillCatalogParams) => {
     const filtered = params.query
       ? items.filter((item) =>
@@ -213,6 +215,37 @@ describe("SkillsPage", () => {
     );
     expect(screen.queryByText("Document Writer")).toBeNull();
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
+  });
+
+  it("filters the graph by the current project and drills into a day", async () => {
+    useUiStore.setState({ selectedWorkspace: "/work/demo" });
+    mocks.useSkillGraph.mockReturnValue({
+      data: {
+        days: [
+          {
+            date: "2026-07-22",
+            invocations: 3,
+            sessions: 2,
+            active_skills: 1,
+            level: 2,
+          },
+        ],
+        total_invocations: 3,
+        max_count: 3,
+      },
+      isError: false,
+    });
+    const user = userEvent.setup();
+    renderRoute();
+    await user.selectOptions(screen.getByRole("combobox", { name: "项目范围" }), "current");
+    expect(mocks.useSkillGraph).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspace: "/work/demo" }),
+    );
+    await user.click(screen.getByRole("button", { name: /2026-07-22/ }));
+    expect(screen.getByRole("dialog").textContent).toContain("2026-07-22 Skill 调用");
+    expect(mocks.useSkillStats).toHaveBeenLastCalledWith(
+      expect.objectContaining({ from: "2026-07-22", to: "2026-07-22" }),
+    );
   });
 
   it("installs into a missing provider and safely removes a managed installation", async () => {
