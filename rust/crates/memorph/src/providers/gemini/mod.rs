@@ -419,6 +419,7 @@ fn summary_from_parsed(
         session_id: session_id.to_string(),
         title: session_title(parsed),
         project_dir: None,
+        created_at: None,
         last_active_at: metadata_timestamp(&parsed.metadata, "lastUpdated")
             .or_else(|| path_mtime_ms(path)),
         source_path: Some(path.to_string_lossy().to_string()),

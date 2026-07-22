@@ -165,6 +165,7 @@ fn scan_root(root: &Path) -> Result<Vec<ProviderSessionSummary>> {
                 session_id,
                 title,
                 project_dir: None,
+                created_at: None,
                 last_active_at: Some(updated_at),
             });
         }

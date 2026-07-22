@@ -326,6 +326,7 @@ fn scan_sessions_from_db(db: &Path) -> Result<Vec<ProviderSessionSummary>> {
             session_id: id.clone(),
             title,
             project_dir: cwd,
+            created_at: None,
             last_active_at: timestamp_ms(started),
             source_path: Some(source_locator_for(db, &id)),
         })

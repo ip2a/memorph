@@ -1539,6 +1539,7 @@ pub(super) struct CodexRolloutSummary {
     pub(super) workspace_dir: Option<String>,
     pub(super) model_provider: Option<String>,
     pub(super) original_model_provider: Option<String>,
+    pub(super) created_at: Option<String>,
     pub(super) updated_at: Option<String>,
     pub(super) has_user_event: bool,
 }
@@ -1580,6 +1581,7 @@ pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRoll
     let mut title = None;
     let mut workspace_dir = None;
     let mut model_provider = None;
+    let mut created_at = None;
     let mut updated_at = None;
     let mut has_user_event = false;
 
@@ -1597,6 +1599,7 @@ pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRoll
         }
 
         if let Some(timestamp) = value.get("timestamp").and_then(|value| value.as_str()) {
+            created_at.get_or_insert_with(|| timestamp.to_string());
             updated_at = Some(timestamp.to_string());
         }
 
@@ -1640,6 +1643,7 @@ pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRoll
         workspace_dir,
         original_model_provider: model_provider.clone(),
         model_provider,
+        created_at,
         updated_at,
         has_user_event,
     }))

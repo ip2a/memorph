@@ -102,6 +102,7 @@ impl Provider for AntigravityProvider {
                         .and_then(|a| a.first())
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    created_at: None,
                     last_active_at: timestamp_ms(&doc, path),
                     source_path: Some(path.to_string_lossy().into_owned()),
                 });

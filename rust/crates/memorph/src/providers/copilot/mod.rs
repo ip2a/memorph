@@ -98,6 +98,7 @@ impl Provider for CopilotProvider {
                     session_id: id,
                     title,
                     project_dir: session_cwd(&events),
+                    created_at: None,
                     last_active_at: file_modified_ms(path),
                     source_path: Some(path.to_string_lossy().into_owned()),
                 });

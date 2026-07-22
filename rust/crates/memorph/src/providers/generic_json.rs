@@ -294,6 +294,17 @@ fn session_summary_from_value(path: &Path, value: &Value) -> ProviderSessionSumm
     let session_id = session_id_from_value(path, value);
     let title = title_from_value(value).or_else(|| first_message_title(value));
     let project_dir = workspace_from_value(value);
+    let created_at = timestamp_from_value_keys(
+        value,
+        &[
+            "createdAt",
+            "created_at",
+            "timeCreated",
+            "time_created",
+            "startTime",
+            "start_time",
+        ],
+    );
     let last_active_at = timestamp_from_value_keys(
         value,
         &["lastUpdated", "updatedAt", "updated_at", "timestamp"],
@@ -304,6 +315,7 @@ fn session_summary_from_value(path: &Path, value: &Value) -> ProviderSessionSumm
         session_id,
         title,
         project_dir,
+        created_at,
         last_active_at,
         source_path: Some(path.to_string_lossy().to_string()),
     }

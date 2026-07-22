@@ -158,12 +158,23 @@ pub(super) fn kimi_session_summary(
         .map(|title| title.trim().to_string())
         .filter(|title| !title.is_empty())
         .or_else(|| first_turn_begin_text(&session_dir.join("wire.jsonl")));
+    let created_at = File::open(session_dir.join("wire.jsonl"))
+        .ok()
+        .and_then(|file| {
+            BufReader::new(file)
+                .lines()
+                .map_while(Result::ok)
+                .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
+                .find_map(|value| parse_wire_timestamp(&value))
+                .map(|timestamp| timestamp.timestamp_millis())
+        });
     let last_active_at = file_modified_ms(&session_dir.join("context.jsonl"))?;
 
     Ok(Some(ProviderSessionSummary {
         session_id,
         title,
         project_dir,
+        created_at,
         last_active_at,
         source_path: Some(session_dir.to_string_lossy().to_string()),
     }))

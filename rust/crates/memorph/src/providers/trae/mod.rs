@@ -75,6 +75,7 @@ impl Provider for TraeProvider {
                         session_id: id,
                         title: session_title(session),
                         project_dir: workspace_dir(&db),
+                        created_at: None,
                         last_active_at: session_updated_at(session),
                         source_path: Some(locator(
                             &db,

@@ -97,6 +97,7 @@ impl Provider for ClineProvider {
                     session_id: task_id,
                     title,
                     project_dir: task_workspace(path),
+                    created_at: None,
                     last_active_at: file_modified_ms(path),
                     source_path: Some(path.to_string_lossy().into_owned()),
                 });

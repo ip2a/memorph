@@ -413,11 +413,17 @@ impl Provider for CodexProvider {
                 .as_deref()
                 .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                 .map(|value| value.timestamp_millis());
+            let created_at = rollout
+                .created_at
+                .as_deref()
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.timestamp_millis());
 
             sessions.push(ProviderSessionSummary {
                 session_id,
                 title,
                 project_dir,
+                created_at,
                 last_active_at,
                 source_path: Some(path.to_string_lossy().to_string()),
             });
@@ -469,6 +475,12 @@ impl Provider for CodexProvider {
                 .map(|dt| dt.timestamp_millis());
 
             let source_path = find_session_file(session_id);
+            let created_at = source_path
+                .as_deref()
+                .and_then(|path| read_codex_rollout_summary(path).ok().flatten())
+                .and_then(|summary| summary.created_at)
+                .and_then(|value| chrono::DateTime::parse_from_rfc3339(&value).ok())
+                .map(|value| value.timestamp_millis());
             let sqlite_meta = sqlite_lookup.get(session_id);
             let project_dir = sqlite_meta
                 .and_then(|meta| clean_non_empty(meta.cwd.as_deref()))
@@ -485,6 +497,7 @@ impl Provider for CodexProvider {
                 session_id: session_id.to_string(),
                 title,
                 project_dir,
+                created_at,
                 last_active_at: updated_at,
                 source_path: source_path.map(|p| p.to_string_lossy().to_string()),
             }));

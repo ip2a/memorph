@@ -139,6 +139,7 @@ impl Provider for DeepseekProvider {
                     }
                 }),
                 project_dir: Some(cwd),
+                created_at: None,
                 last_active_at: Some(updated),
                 source_path: Some(deepseek_source_locator(&id)?),
             });
@@ -183,6 +184,7 @@ impl Provider for DeepseekProvider {
                     }
                 }),
                 project_dir: Some(cwd),
+                created_at: None,
                 last_active_at: Some(updated),
                 source_path: Some(deepseek_source_locator(&id)?),
             })

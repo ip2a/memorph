@@ -18,7 +18,8 @@ use crate::provider::{
 use crate::session_projection::project_session_turns;
 use crate::storage::event_index;
 use crate::utils::{
-    encode_project_dir, extract_text, parse_timestamp_to_ms, path_basename, truncate_summary,
+    datetime_from_timestamp_ms, encode_project_dir, extract_text, is_plausible_session_time,
+    is_plausible_timestamp_ms, parse_timestamp_to_ms, path_basename, truncate_summary,
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -842,8 +843,10 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
         };
 
         let timestamp = claude_line_timestamp(&value, line_idx + 1);
-        created_at = created_at.or(Some(timestamp));
-        last_active_at = Some(timestamp);
+        if is_plausible_session_time(&timestamp) {
+            created_at = created_at.or(Some(timestamp));
+            last_active_at = Some(timestamp);
+        }
 
         session_id = value
             .get("sessionId")
@@ -1007,12 +1010,8 @@ fn import_claude_session_page(
             },
             context: SessionContext {
                 workspace_dir: state.workspace_dir.clone(),
-                created_at: state
-                    .created_at_ms
-                    .and_then(chrono::DateTime::from_timestamp_millis),
-                last_active_at: state
-                    .last_active_at_ms
-                    .and_then(chrono::DateTime::from_timestamp_millis),
+                created_at: state.created_at_ms.and_then(datetime_from_timestamp_ms),
+                last_active_at: state.last_active_at_ms.and_then(datetime_from_timestamp_ms),
                 tags: Vec::new(),
             },
             events,
@@ -1147,9 +1146,14 @@ fn build_claude_event_index(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
         let timestamp = claude_line_timestamp(&value, line_no);
-        let timestamp_ms = timestamp.timestamp_millis();
-        created_at_ms = created_at_ms.or(Some(timestamp_ms));
-        last_active_at_ms = Some(timestamp_ms);
+        if let Some(timestamp_ms) = value
+            .get("timestamp")
+            .and_then(parse_timestamp_to_ms)
+            .filter(|timestamp_ms| is_plausible_timestamp_ms(*timestamp_ms))
+        {
+            created_at_ms = created_at_ms.or(Some(timestamp_ms));
+            last_active_at_ms = Some(timestamp_ms);
+        }
 
         session_id = value
             .get("sessionId")
@@ -1732,6 +1736,7 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
         session_id: session_id.clone(),
         title,
         project_dir,
+        created_at,
         last_active_at,
         source_path: Some(path.to_string_lossy().to_string()),
     })

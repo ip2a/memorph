@@ -748,12 +748,13 @@ pub(super) fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
         let _project_id: String = row.get(1)?;
         let directory: String = row.get(2)?;
         let title: String = row.get(3)?;
-        let _created: i64 = row.get(4)?;
+        let created: i64 = row.get(4)?;
         let updated: i64 = row.get(5)?;
         Ok(ProviderSessionSummary {
             session_id: session_id.clone(),
             title: Some(title),
             project_dir: Some(directory),
+            created_at: Some(created),
             last_active_at: Some(updated),
             source_path: Some(opencode_db_session_source_locator(&session_id)),
         })
@@ -1340,7 +1341,7 @@ pub(super) fn parse_session_file(path: &Path) -> Option<ProviderSessionSummary> 
         .get("directory")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    let _created = json
+    let created = json
         .get("time")
         .and_then(|v| v.get("created"))
         .and_then(|v| v.as_i64());
@@ -1353,6 +1354,7 @@ pub(super) fn parse_session_file(path: &Path) -> Option<ProviderSessionSummary> 
         session_id,
         title,
         project_dir: directory,
+        created_at: created,
         last_active_at: updated,
         source_path: Some(path.to_string_lossy().to_string()),
     })

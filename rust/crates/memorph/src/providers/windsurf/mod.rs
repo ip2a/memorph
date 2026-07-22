@@ -97,6 +97,7 @@ impl Provider for WindsurfProvider {
                         .iter()
                         .find_map(|s| s.user_text.clone().or(s.visible.clone())),
                     project_dir: workspace_dir(&db, workspace),
+                    created_at: None,
                     last_active_at: modified_ms(&db),
                     source_path: Some(source),
                 });
@@ -116,6 +117,7 @@ impl Provider for WindsurfProvider {
                         session_id: id.clone(),
                         title,
                         project_dir: None,
+                        created_at: None,
                         last_active_at,
                         source_path: Some(legacy_locator(&path, &id)),
                     });

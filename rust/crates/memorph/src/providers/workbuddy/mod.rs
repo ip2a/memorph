@@ -93,6 +93,7 @@ impl Provider for WorkBuddyProvider {
                     session_id: id,
                     title: doc_title(&doc),
                     project_dir: None,
+                    created_at: None,
                     last_active_at: modified_ms(path),
                     source_path: Some(path.to_string_lossy().into_owned()),
                 });

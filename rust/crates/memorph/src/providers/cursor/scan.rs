@@ -41,6 +41,7 @@ fn session_to_summary(
         session_id: session.composer_id.clone(),
         title: session.title(),
         project_dir,
+        created_at: session.created_at_ms(),
         last_active_at: session.last_active_at_ms(),
         source_path: Some(source_path),
     }

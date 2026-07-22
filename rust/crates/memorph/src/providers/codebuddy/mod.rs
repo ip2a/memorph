@@ -94,6 +94,7 @@ impl Provider for CodeBuddyProvider {
                     session_id: id,
                     title,
                     project_dir: events.iter().find_map(workspace),
+                    created_at: None,
                     last_active_at: modified_ms(path),
                     source_path: Some(path.to_string_lossy().into_owned()),
                 });

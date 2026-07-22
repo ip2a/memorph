@@ -110,6 +110,7 @@ impl Provider for PiProvider {
                         .get("cwd")
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    created_at: None,
                     last_active_at: modified_ms(path),
                     source_path: Some(path.to_string_lossy().into_owned()),
                 });

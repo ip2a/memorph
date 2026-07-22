@@ -93,7 +93,7 @@ impl<'a> SessionIndexStore<'a> {
              (id, provider_id, provider_session_id, primary_source_id, workspace_dir, title, status,
               created_at_ms, updated_at_ms, last_active_at_ms, event_count, turn_count,
               projection_version, deleted_at_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'indexed', NULL, ?7, ?8, 0, 0, ?9, NULL)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'indexed', ?7, ?8, ?9, 0, 0, ?10, NULL)
              ON CONFLICT(id) DO UPDATE SET
               provider_id = excluded.provider_id,
               provider_session_id = excluded.provider_session_id,
@@ -101,6 +101,7 @@ impl<'a> SessionIndexStore<'a> {
               workspace_dir = excluded.workspace_dir,
               title = excluded.title,
               status = excluded.status,
+              created_at_ms = COALESCE(sessions.created_at_ms, excluded.created_at_ms),
               updated_at_ms = excluded.updated_at_ms,
               last_active_at_ms = excluded.last_active_at_ms,
               projection_version = excluded.projection_version,
@@ -112,6 +113,7 @@ impl<'a> SessionIndexStore<'a> {
                 source_id,
                 summary.project_dir.as_deref(),
                 title,
+                summary.created_at,
                 now_ms,
                 summary.last_active_at,
                 SESSION_INDEX_VERSION,
@@ -269,6 +271,7 @@ mod tests {
             session_id: "native-session".to_string(),
             title: Some("Indexed session".to_string()),
             project_dir: Some("/workspace/project".to_string()),
+            created_at: None,
             last_active_at: Some(123),
             source_path: Some("/provider/native/session-directory".to_string()),
         };
@@ -308,5 +311,64 @@ mod tests {
             )
             .unwrap();
         assert_eq!(snapshot_fingerprint, fingerprint.value);
+    }
+
+    #[test]
+    fn stores_and_backfills_creation_time_without_overwriting_known_value() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        local_store::apply_schema(&mut conn).unwrap();
+        let mut summary = ProviderSessionSummary {
+            session_id: "created-session".to_string(),
+            title: None,
+            project_dir: None,
+            created_at: None,
+            last_active_at: Some(300),
+            source_path: Some("/provider/created-session".to_string()),
+        };
+        let fingerprint = ProviderSourceFingerprint {
+            modified_at_ms: 300,
+            size_bytes: 1,
+            value: "creation-fingerprint".to_string(),
+        };
+
+        let stored = SessionIndexStore::new(&mut conn)
+            .write_session_summary(
+                "test-provider",
+                &summary,
+                ProviderCapabilities::default(),
+                &fingerprint,
+            )
+            .unwrap();
+        let read_created_at = |conn: &Connection| {
+            conn.query_row(
+                "SELECT created_at_ms FROM sessions WHERE id = ?1",
+                [&stored.canonical_session_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(read_created_at(&conn), None);
+
+        summary.created_at = Some(100);
+        SessionIndexStore::new(&mut conn)
+            .write_session_summary(
+                "test-provider",
+                &summary,
+                ProviderCapabilities::default(),
+                &fingerprint,
+            )
+            .unwrap();
+        assert_eq!(read_created_at(&conn), Some(100));
+
+        summary.created_at = Some(200);
+        SessionIndexStore::new(&mut conn)
+            .write_session_summary(
+                "test-provider",
+                &summary,
+                ProviderCapabilities::default(),
+                &fingerprint,
+            )
+            .unwrap();
+        assert_eq!(read_created_at(&conn), Some(100));
     }
 }

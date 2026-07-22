@@ -14,6 +14,7 @@ pub struct ProviderSessionSummary {
     pub session_id: String,
     pub title: Option<String>,
     pub project_dir: Option<String>,
+    pub created_at: Option<i64>,
     pub last_active_at: Option<i64>,
     pub source_path: Option<String>,
 }

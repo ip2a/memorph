@@ -145,6 +145,7 @@ pub(super) fn session_summary_from_dir(session_dir: &Path) -> Result<ProviderSes
         .map(|title| title.trim().to_string())
         .filter(|title| !title.is_empty());
     let project_dir = metadata.workspace_paths.first().cloned();
+    let created_at = metadata.created_at.as_deref().and_then(parse_timestamp_ms);
     let last_active_at = metadata
         .last_modified_at
         .as_deref()
@@ -156,6 +157,7 @@ pub(super) fn session_summary_from_dir(session_dir: &Path) -> Result<ProviderSes
         session_id: metadata.id,
         title,
         project_dir,
+        created_at,
         last_active_at,
         source_path: Some(session_dir.to_string_lossy().to_string()),
     })
