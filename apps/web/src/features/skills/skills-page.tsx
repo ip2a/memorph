@@ -398,6 +398,7 @@ export function SkillsPage() {
                       <Spinner />
                     ) : (
                       <SkillBundlePanel
+                        skillId={sourceId}
                         assets={treeQuery.data?.assets ?? []}
                         previewPath={previewPath}
                         onPreviewPathChange={setPreviewPath}

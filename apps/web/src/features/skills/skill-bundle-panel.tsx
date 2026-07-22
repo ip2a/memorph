@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
+import { useSkillCoverage } from "@/features/skills/queries";
 import { formatBytes } from "@/lib/format";
 import { renderHighlightedJson } from "@/lib/format-content";
 import type { SkillAsset, SkillFilePreview } from "@/lib/types";
@@ -55,10 +56,12 @@ function BundleFileList({
   assets,
   previewPath,
   onSelect,
+  coverage,
 }: {
   assets: SkillAsset[];
   previewPath: string | null;
   onSelect: (path: string) => void;
+  coverage: Map<string, { observations: number; confidence?: string | null }>;
 }) {
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
@@ -68,6 +71,7 @@ function BundleFileList({
         ) : (
           assets.map((asset) => {
             const selected = previewPath === asset.path;
+            const status = coverage.get(asset.path);
             return (
               <button
                 key={asset.path}
@@ -81,7 +85,14 @@ function BundleFileList({
                 <span className="min-w-0 truncate font-mono text-sm font-medium">
                   {basename(asset.path)}
                 </span>
-                <span className="shrink-0 text-xs text-muted-foreground">{formatBytes(asset.bytes)}</span>
+                <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
+                  <Badge variant={status?.confidence ? "outline" : "secondary"}>
+                    {status
+                      ? `${status.observations} · ${status.confidence ?? "未覆盖"}`
+                      : "未覆盖"}
+                  </Badge>
+                  {formatBytes(asset.bytes)}
+                </span>
               </button>
             );
           })
@@ -165,12 +176,14 @@ function BundlePreviewPanel({
 }
 
 export function SkillBundlePanel({
+  skillId,
   assets,
   previewPath,
   onPreviewPathChange,
   preview,
   previewLoading,
 }: {
+  skillId: string | null;
   assets: SkillAsset[];
   previewPath: string | null;
   onPreviewPathChange: (path: string) => void;
@@ -178,6 +191,12 @@ export function SkillBundlePanel({
   previewLoading?: boolean;
 }) {
   const selectedAsset = assets.find((asset) => asset.path === previewPath);
+  const coverage = useSkillCoverage(skillId, "90d");
+  const coverageByPath = new Map(
+    (coverage.data?.targets ?? [])
+      .filter((target) => target.target_path)
+      .map((target) => [target.target_path as string, target]),
+  );
 
   return (
     <div
@@ -191,6 +210,7 @@ export function SkillBundlePanel({
           assets={assets}
           previewPath={previewPath}
           onSelect={onPreviewPathChange}
+          coverage={coverageByPath}
         />
       </div>
       <div className="h-full min-h-0 overflow-hidden">

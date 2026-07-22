@@ -281,6 +281,45 @@ describe("SkillsPage", () => {
     );
   });
 
+  it("shows file coverage in the bundle list", () => {
+    mocks.useSkillCoverage.mockReturnValue({
+      data: {
+        skill_id: "document-writer",
+        covered: 1,
+        total: 1,
+        percent: 100,
+        completeness_status: "complete",
+        targets: [
+          {
+            target_kind: "script",
+            target_key: "scripts/run.sh",
+            target_path: "scripts/run.sh",
+            confidence: "high",
+            observations: 2,
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    mocks.useSkillTree.mockReturnValue({
+      data: {
+        assets: [
+          {
+            path: "scripts/run.sh",
+            category: "script",
+            bytes: 12,
+            previewable: true,
+            entry: false,
+          },
+        ],
+      },
+      isLoading: false,
+    });
+    renderRoute();
+    expect(screen.getByText("2 · high")).toBeTruthy();
+  });
+
   it("opens paged coverage evidence with the provider session route", async () => {
     mocks.useSkillCoverage.mockReturnValue({
       data: {
