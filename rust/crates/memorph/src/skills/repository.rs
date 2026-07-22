@@ -265,7 +265,7 @@ fn upsert_installation(tx: &Transaction<'_>, item: &InstallationRecord, now_ms: 
           install_kind, symlink_target, managed_marker_present, link_status, status, bundle_content_hash,
           discovered_at_ms, last_verified_at_ms)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12, ?13, ?13)
-         ON CONFLICT(provider_id, canonical_install_path) DO UPDATE SET
+         ON CONFLICT(provider_id, install_path) DO UPDATE SET
           skill_id = excluded.skill_id, scope_kind = excluded.scope_kind,
           workspace_dir = excluded.workspace_dir, install_path = excluded.install_path,
           install_kind = excluded.install_kind, symlink_target = excluded.symlink_target,

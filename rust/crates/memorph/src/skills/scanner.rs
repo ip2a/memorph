@@ -149,7 +149,7 @@ fn records(
                 .unwrap_or_else(|_| item.path.clone());
             let install_id = format!(
                 "installation:{}",
-                hash(format!("{}:{}", item.provider_id, canonical.display()).as_bytes())
+                hash(format!("{}:{}", item.provider_id, item.path.display()).as_bytes())
             );
             installations.push(repository::InstallationRecord {
                 id: install_id,

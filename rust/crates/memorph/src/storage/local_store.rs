@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 static JOURNAL_MODE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -245,7 +245,40 @@ fn apply_stats_schema(conn: &mut Connection) -> Result<()> {
         )?;
     }
     tx.commit()
-        .context("Failed to commit memorph DB schema v11 migration")
+        .context("Failed to commit memorph DB schema v11 migration")?;
+    apply_installation_identity_schema(conn)
+}
+
+fn apply_installation_identity_schema(conn: &mut Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let migration = (|| -> Result<()> {
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("Failed to start memorph DB schema v12 migration")?;
+        let applied = applied_migrations(&tx)?;
+        if !applied.contains(&12) {
+            tx.execute_batch(V12_SCHEMA)
+                .context("Failed to apply memorph DB schema v12")?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at_ms)
+                 VALUES (?1, ?2, strftime('%s','now') * 1000)",
+                params![12, "skill_installation_deployment_identity_v12"],
+            )?;
+        }
+        tx.commit()
+            .context("Failed to commit memorph DB schema v12 migration")
+    })();
+    let restore = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    migration?;
+    restore?;
+    let violations: i64 =
+        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })?;
+    if violations != 0 {
+        anyhow::bail!("Memorph DB schema v12 produced {violations} foreign key violations");
+    }
+    Ok(())
 }
 
 fn create_schema_migrations_table(conn: &Connection) -> Result<()> {
@@ -1134,6 +1167,40 @@ CREATE INDEX idx_session_daily_stats_day ON session_daily_stats(day_start_ms);
 UPDATE session_snapshots SET counts_complete = 0;
 "#;
 
+const V12_SCHEMA: &str = r#"
+CREATE TABLE skill_installations_v12 (
+    id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    scope_kind TEXT NOT NULL CHECK(scope_kind IN ('global', 'project')),
+    workspace_dir TEXT,
+    install_path TEXT NOT NULL,
+    canonical_install_path TEXT NOT NULL,
+    install_kind TEXT NOT NULL CHECK(install_kind IN ('directory', 'symlink', 'managed-copy')),
+    symlink_target TEXT,
+    source_path TEXT,
+    managed_marker_present INTEGER NOT NULL DEFAULT 0 CHECK(managed_marker_present IN (0, 1)),
+    link_status TEXT NOT NULL DEFAULT 'not-applicable'
+        CHECK(link_status IN ('not-applicable', 'valid', 'broken', 'outside-allowed-root', 'loop')),
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active', 'missing', 'removed', 'error')),
+    bundle_content_hash TEXT NOT NULL,
+    discovered_at_ms INTEGER NOT NULL,
+    last_verified_at_ms INTEGER NOT NULL,
+    removed_at_ms INTEGER,
+    error_text TEXT,
+    FOREIGN KEY(skill_id) REFERENCES skill_catalog(id) ON DELETE RESTRICT,
+    UNIQUE(provider_id, install_path)
+);
+INSERT INTO skill_installations_v12 SELECT * FROM skill_installations;
+DROP TABLE skill_installations;
+ALTER TABLE skill_installations_v12 RENAME TO skill_installations;
+CREATE INDEX idx_skill_installations_skill ON skill_installations(skill_id, status);
+CREATE INDEX idx_skill_installations_provider_scope
+    ON skill_installations(provider_id, scope_kind, workspace_dir, status);
+CREATE INDEX idx_skill_installations_link_status ON skill_installations(link_status, status);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1222,6 +1289,25 @@ mod tests {
             [],
         );
         assert!(duplicate.is_err());
+
+        conn.execute(
+            "INSERT INTO skill_installations (
+                id, skill_id, provider_id, scope_kind, install_path,
+                canonical_install_path, install_kind, bundle_content_hash,
+                discovered_at_ms, last_verified_at_ms
+             ) VALUES ('install:project', 'skill:test', 'codex', 'project', '/project/.codex/skills/test',
+                       '/tmp/test', 'symlink', 'bundle', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM skill_installations WHERE canonical_install_path = '/tmp/test'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[test]
