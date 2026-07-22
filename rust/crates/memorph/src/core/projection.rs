@@ -304,6 +304,29 @@ pub(super) fn bootstrap_provider_session(
         );
     match freshness {
         Ok(true) => {
+            if session.created_at.is_some()
+                && session_creation_time_needs_backfill(conn, provider_id, &session.session_id)
+                    .unwrap_or(false)
+            {
+                match crate::storage::session_index_store::SessionIndexStore::new(conn)
+                    .write_session_summary(
+                        provider_id,
+                        session,
+                        provider.capabilities(),
+                        &fingerprint,
+                    ) {
+                    Ok(_) => report.projected_sessions += 1,
+                    Err(error) => {
+                        report.failed_sessions += 1;
+                        report.failures.push(bootstrap_failure(
+                            provider_id,
+                            session,
+                            format!("failed to backfill session creation time: {error:#}"),
+                        ));
+                    }
+                }
+                return;
+            }
             report.unchanged_sessions += 1;
             return;
         }
@@ -335,6 +358,24 @@ pub(super) fn bootstrap_provider_session(
             ));
         }
     }
+}
+
+fn session_creation_time_needs_backfill(
+    conn: &rusqlite::Connection,
+    provider_id: &str,
+    provider_session_id: &str,
+) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM sessions
+           WHERE provider_id = ?1
+             AND provider_session_id = ?2
+             AND created_at_ms IS NULL
+             AND deleted_at_ms IS NULL
+         )",
+        rusqlite::params![provider_id, provider_session_id],
+        |row| row.get(0),
+    )
 }
 
 pub(super) fn bootstrap_failure(
