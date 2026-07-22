@@ -71,6 +71,7 @@ pub struct StatsOverview {
     pub total_providers: usize,
     pub active_providers: usize,
     pub unknown_message_counts: usize,
+    pub unknown_message_timestamps: usize,
     pub unknown_size_bytes: usize,
     pub unknown_activity_times: usize,
     pub unknown_created_times: usize,
@@ -152,6 +153,7 @@ struct EventFacts {
     message_count: usize,
     last_activity_at_ms: Option<i64>,
     timestamps: Vec<(i64, bool)>,
+    timestamped_messages: usize,
 }
 
 fn snapshot_facts(rows: &[ProjectedSessionSnapshotRow]) -> HashMap<String, EventFacts> {
@@ -164,6 +166,7 @@ fn snapshot_facts(rows: &[ProjectedSessionSnapshotRow]) -> HashMap<String, Event
                         message_count,
                         last_activity_at_ms: row.last_active_at_ms,
                         timestamps: Vec::new(),
+                        timestamped_messages: 0,
                     },
                 )
             })
@@ -195,7 +198,7 @@ fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<Stats
         })
         .collect();
     let created_at = load_created_at(&conn, &rows)?;
-    let event_facts = snapshot_facts(&rows);
+    let event_facts = load_event_facts(&conn, &rows)?;
     let range_start = query.range.days().map(|days| now - Duration::days(days));
     Ok(build_dashboard(
         &rows,
@@ -204,6 +207,13 @@ fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<Stats
         range_start,
         now,
     ))
+}
+
+fn load_event_facts(
+    _conn: &rusqlite::Connection,
+    rows: &[ProjectedSessionSnapshotRow],
+) -> Result<HashMap<String, EventFacts>> {
+    Ok(snapshot_facts(rows))
 }
 
 fn load_created_at(
@@ -301,6 +311,14 @@ fn build_dashboard(
             .iter()
             .filter(|row| !event_facts.contains_key(&row.canonical_session_id))
             .count(),
+        unknown_message_timestamps: event_facts
+            .values()
+            .map(|facts| {
+                facts
+                    .message_count
+                    .saturating_sub(facts.timestamped_messages)
+            })
+            .sum(),
         unknown_size_bytes: rows.iter().filter(|row| row.size_bytes.is_none()).count(),
         unknown_activity_times: rows
             .iter()
@@ -494,22 +512,62 @@ fn timeline(
             (dt.year(), dt.month(), dt.day())
         }
     };
+    let mut cursor = point_at(start, monthly).start;
+    loop {
+        points.insert(key(cursor), point_at(cursor, monthly));
+        if key(cursor) >= key(now) {
+            break;
+        }
+        cursor = if monthly {
+            let (year, month) = if cursor.month() == 12 {
+                (cursor.year() + 1, 1)
+            } else {
+                (cursor.year(), cursor.month() + 1)
+            };
+            Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0).unwrap()
+        } else {
+            cursor + Duration::days(1)
+        };
+    }
     for row in rows {
         if let Some(facts) = event_facts.get(&row.canonical_session_id) {
-            let mut active_days: HashMap<_, (DateTime<Utc>, usize)> = HashMap::new();
-            for (timestamp, is_message) in &facts.timestamps {
-                if let Some(dt) = date(*timestamp).filter(|dt| *dt >= start) {
-                    let entry = active_days.entry(key(dt)).or_insert((dt, 0));
-                    entry.1 += usize::from(*is_message);
+            if facts.timestamps.is_empty() {
+                if let Some(dt) = facts
+                    .last_activity_at_ms
+                    .or(row.last_active_at_ms)
+                    .and_then(date)
+                    .filter(|dt| *dt >= start)
+                {
+                    let point = points
+                        .entry(key(dt))
+                        .or_insert_with(|| point_at(dt, monthly));
+                    point.active_sessions += 1;
+                }
+            } else {
+                let mut active_days: HashMap<_, (DateTime<Utc>, usize)> = HashMap::new();
+                for (timestamp, is_message) in &facts.timestamps {
+                    if let Some(dt) = date(*timestamp).filter(|dt| *dt >= start) {
+                        let entry = active_days.entry(key(dt)).or_insert((dt, 0));
+                        entry.1 += usize::from(*is_message);
+                    }
+                }
+                for (bucket_key, (dt, message_count)) in active_days {
+                    let point = points
+                        .entry(bucket_key)
+                        .or_insert_with(|| point_at(dt, monthly));
+                    point.active_sessions += 1;
+                    point.active_session_messages += message_count;
                 }
             }
-            for (bucket_key, (dt, message_count)) in active_days {
-                let point = points
-                    .entry(bucket_key)
-                    .or_insert_with(|| point_at(dt, monthly));
-                point.active_sessions += 1;
-                point.active_session_messages += message_count;
-            }
+        } else if let Some(dt) = row
+            .last_active_at_ms
+            .and_then(date)
+            .filter(|dt| *dt >= start)
+        {
+            let point = points
+                .entry(key(dt))
+                .or_insert_with(|| point_at(dt, monthly));
+            point.active_sessions += 1;
         }
         if let Some(dt) = created
             .get(&row.canonical_session_id)
@@ -630,6 +688,72 @@ mod tests {
     }
 
     #[test]
+    fn loads_message_counts_from_bodyless_snapshots() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let rows = vec![row("session", "codex", Some("/a"), Some(20), 2, 100)];
+
+        let facts = load_event_facts(&conn, &rows).unwrap();
+        let session = &facts["session"];
+
+        assert_eq!(session.message_count, 2);
+        assert_eq!(session.last_activity_at_ms, Some(20));
+        assert!(session.timestamps.is_empty());
+        assert_eq!(session.timestamped_messages, 0);
+    }
+
+    #[test]
+    fn timeline_falls_back_to_last_active_when_timestamps_missing() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 18, 12, 0, 0).unwrap();
+        let active_ms = (now - Duration::days(3)).timestamp_millis();
+        let rows = vec![
+            row(
+                "with-messages",
+                "codex",
+                Some("/a"),
+                Some(active_ms),
+                12,
+                100,
+            ),
+            row("no-messages", "claude", Some("/a"), Some(active_ms), 0, 50),
+        ];
+        // Simulate production snapshot_facts: message_count present, timestamps empty.
+        let events = HashMap::from([(
+            "with-messages".into(),
+            EventFacts {
+                message_count: 12,
+                last_activity_at_ms: Some(active_ms),
+                timestamps: Vec::new(),
+                timestamped_messages: 0,
+            },
+        )]);
+        let result = build_dashboard(
+            &rows,
+            &HashMap::new(),
+            &events,
+            Some(now - Duration::days(7)),
+            now,
+        );
+
+        assert_eq!(result.timeline.len(), 8);
+        assert_eq!(
+            result
+                .timeline
+                .iter()
+                .map(|point| point.active_sessions)
+                .sum::<usize>(),
+            2
+        );
+        assert_eq!(
+            result
+                .timeline
+                .iter()
+                .map(|point| point.new_sessions)
+                .sum::<usize>(),
+            0
+        );
+    }
+
+    #[test]
     fn uses_event_timestamps_for_activity_and_message_counts() {
         let now = Utc.with_ymd_and_hms(2026, 7, 18, 12, 0, 0).unwrap();
         let rows = vec![row("session", "codex", Some("/a"), None, 99, 100)];
@@ -643,6 +767,7 @@ mod tests {
                     ((now - Duration::days(2)).timestamp_millis(), true),
                     ((now - Duration::days(1)).timestamp_millis(), true),
                 ],
+                timestamped_messages: 3,
             },
         )]);
         let result = build_dashboard(

@@ -47,4 +47,5 @@ export const queryKeys = {
   skillTree: (id: string) => ["skills", id, "tree"] as const,
   skillFile: (id: string, path: string, provider?: string) => ["skills", id, "file", path, provider] as const,
   hookProvider: (provider: string) => ["hooks", provider] as const,
+  installedHooks: (provider: string) => ["hooks", provider, "installed"] as const,
 };

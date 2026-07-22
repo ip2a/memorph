@@ -214,12 +214,11 @@ export type ArtifactManifestKind =
 
 export type ArtifactStorageKind = "file" | "directory" | "unknown";
 
-export type ArtifactVerificationStatus = "verified" | "missing" | "changed" | "unverifiable";
+export type ArtifactVerificationStatus =
+  "verified" | "missing" | "changed" | "unverifiable";
 
 export type ArtifactRetentionState =
-  | "current_event_payload"
-  | "detached_event_payload"
-  | "retained";
+  "current_event_payload" | "detached_event_payload" | "retained";
 
 export type ArtifactManifest = {
   id: string;
@@ -365,7 +364,8 @@ export type CompressionArchiveSummary = {
   compression_ratio: number;
 };
 
-export type CompressionFormat = "json" | "md" | "html" | "morph" | "both" | string;
+export type CompressionFormat =
+  "json" | "md" | "html" | "morph" | "both" | string;
 
 export type ActiveCompressionPolicy = {
   protect_recent_message_events: number;
@@ -504,8 +504,10 @@ export type ProviderCapabilities = {
   rename: boolean;
   resume: boolean;
   scan_strategy: "unknown" | "full_scan" | "indexed" | "hybrid" | string;
-  page_strategy: "unknown" | "full_import" | "indexed_page" | "native_page" | string;
-  storage_shape: "unknown" | "jsonl" | "sqlite" | "directory" | "mixed" | string;
+  page_strategy:
+    "unknown" | "full_import" | "indexed_page" | "native_page" | string;
+  storage_shape:
+    "unknown" | "jsonl" | "sqlite" | "directory" | "mixed" | string;
   turn_quality: "unknown" | "exact" | "inferred" | "grouped" | string;
   import_fidelity: ProviderContentFidelity;
   export_fidelity: ProviderContentFidelity;
@@ -617,7 +619,8 @@ export type MetaPayload = {
 
 export type SessionListSort = "recent" | "title" | "hook_attention";
 
-export type SessionHookFilter = "all" | "attention" | "weak" | "runtime" | "no_hook" | "no_match" | "linked";
+export type SessionHookFilter =
+  "all" | "attention" | "weak" | "runtime" | "no_hook" | "no_match" | "linked";
 
 export type SessionListParams = {
   all?: boolean;
@@ -664,11 +667,31 @@ export type SessionItem = {
 export type SessionDetailParams = {
   event_offset?: number;
   event_limit?: number;
+  event_search?: string;
 };
 
-export type MappingDisposition = "preserved" | "normalized" | "downgraded" | "dropped" | "unsupported" | string;
+export type SessionDetailPayload = {
+  view: SessionDetailView;
+  events_offset: number;
+  events_limit: number | null;
+  returned_event_count: number;
+  has_more_events: boolean;
+  event_search?: string | null;
+  matched_event_count?: number | null;
+  returned_event_indices?: number[];
+  hook_runtime_sessions: unknown[];
+};
 
-export type ProjectionFidelity = "preserved" | "normalized" | "dropped" | string;
+export type MappingDisposition =
+  | "preserved"
+  | "normalized"
+  | "downgraded"
+  | "dropped"
+  | "unsupported"
+  | string;
+
+export type ProjectionFidelity =
+  "preserved" | "normalized" | "dropped" | string;
 
 export type SessionProjectionReport = {
   id: string;
@@ -713,7 +736,8 @@ export type SessionTurn = {
   turn_order: number;
 };
 
-export type EventRole = "user" | "assistant" | "tool" | "system" | "developer" | "unknown" | string;
+export type EventRole =
+  "user" | "assistant" | "tool" | "system" | "developer" | "unknown" | string;
 
 export type SessionEventKind =
   | "message"
@@ -759,14 +783,48 @@ export type EventBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; text: string; signature?: string | null }
   | { type: "tool_call"; tool_call_id: string; name: string; input?: unknown }
-  | { type: "tool_result"; tool_call_id: string; content: string; is_error?: boolean }
-  | { type: "patch"; summary?: string | null; diff_text?: string | null; files?: string[]; hash?: string | null }
+  | {
+      type: "tool_result";
+      tool_call_id: string;
+      content: string;
+      is_error?: boolean;
+    }
+  | {
+      type: "patch";
+      summary?: string | null;
+      diff_text?: string | null;
+      files?: string[];
+      hash?: string | null;
+    }
   | { type: "command"; command: string; argv?: string[]; cwd?: string | null }
-  | { type: "command_result"; command?: string | null; exit_code?: number | null; stdout?: string | null; stderr?: string | null }
-  | { type: "file"; path: string; content?: string | null; mime_type?: string | null }
-  | { type: "image"; mime_type: string; data?: string | null; path?: string | null }
+  | {
+      type: "command_result";
+      command?: string | null;
+      exit_code?: number | null;
+      stdout?: string | null;
+      stderr?: string | null;
+    }
+  | {
+      type: "file";
+      path: string;
+      content?: string | null;
+      mime_type?: string | null;
+    }
+  | {
+      type: "image";
+      mime_type: string;
+      data?: string | null;
+      path?: string | null;
+    }
   | { type: "provider_payload"; kind: string; payload: unknown }
-  | { type: "compressed"; source_provider_id: string; summary: string; source_event_ids?: string[]; source_event_count?: number | null; archive_ref?: string | null }
+  | {
+      type: "compressed";
+      source_provider_id: string;
+      summary: string;
+      source_event_ids?: string[];
+      source_event_count?: number | null;
+      archive_ref?: string | null;
+    }
   | { type: "unknown"; raw: unknown };
 
 export type SessionEvent = {
@@ -791,7 +849,8 @@ export type CompressionArchive = {
   events: SessionEvent[];
 };
 
-export type SessionArtifactKind = "file" | "image" | "patch" | "attachment" | "unknown" | string;
+export type SessionArtifactKind =
+  "file" | "image" | "patch" | "attachment" | "unknown" | string;
 
 export type SessionArtifact = {
   id: string;
@@ -851,15 +910,6 @@ export type SessionDetailView = {
   compressed_archive_refs: string[];
 };
 
-export type SessionDetailPayload = {
-  view: SessionDetailView;
-  events_offset: number;
-  events_limit: number | null;
-  returned_event_count: number;
-  has_more_events: boolean;
-  hook_runtime_sessions: unknown[];
-};
-
 export type SessionStalenessRefreshReport = {
   checked_sources: number;
   fresh_snapshots: number;
@@ -882,7 +932,8 @@ export type SessionReprojectionReport = {
   }>;
 };
 
-export type SessionActivityBucketUnit = "minute" | "hour" | "twelve_hour" | "adaptive";
+export type SessionActivityBucketUnit =
+  "minute" | "hour" | "twelve_hour" | "adaptive";
 
 export type SessionActivityBucket = {
   start: string;
@@ -1205,7 +1256,8 @@ export type SessionSummary = {
   workspace?: string;
 };
 
-export type WorkflowStatus = "planned" | "in-progress" | "implemented" | "verified";
+export type WorkflowStatus =
+  "planned" | "in-progress" | "implemented" | "verified";
 
 export type StatsDashboardRange = "7d" | "30d" | "90d" | "all";
 
@@ -1247,6 +1299,7 @@ export type StatsDashboard = {
     total_providers: number;
     active_providers: number;
     unknown_message_counts: number;
+    unknown_message_timestamps: number;
     unknown_size_bytes: number;
     unknown_activity_times: number;
     unknown_created_times: number;
@@ -1277,8 +1330,18 @@ export type StatsDashboard = {
     recently_active: StatsSessionItem[];
   };
   distributions: {
-    session_size: Array<{ key: string; label: string; count: number; size_bytes: number }>;
-    message_count: Array<{ key: string; label: string; count: number; size_bytes: number }>;
+    session_size: Array<{
+      key: string;
+      label: string;
+      count: number;
+      size_bytes: number;
+    }>;
+    message_count: Array<{
+      key: string;
+      label: string;
+      count: number;
+      size_bytes: number;
+    }>;
   };
 };
 
