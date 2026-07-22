@@ -1548,3 +1548,51 @@ export type SkillMutation = {
   provider: string;
   source_provider?: string;
 };
+
+export type SkillCatalogParams = {
+  query?: string;
+  provider?: string;
+  scope?: "global" | "project";
+  sort?: "name" | "size" | "files" | "updated";
+  order?: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+};
+
+export type SkillCatalogInstallation = {
+  provider_id: string;
+  scope_kind: "global" | "project";
+  workspace_dir?: string | null;
+  install_path: string;
+  install_kind: "directory" | "symlink" | "managed-copy";
+  link_status:
+    "not-applicable" | "valid" | "broken" | "outside-allowed-root" | "loop";
+  status: "active" | "missing" | "removed" | "error";
+};
+
+export type SkillCatalogItem = {
+  id: string;
+  source_id: string;
+  name: string;
+  description?: string | null;
+  version?: string | null;
+  author?: string | null;
+  bundle_hash: string;
+  file_count: number;
+  total_bytes: number;
+  missing: boolean;
+  updated_at_ms: number;
+  installations: SkillCatalogInstallation[];
+};
+
+export type SkillCatalogPage = {
+  items: SkillCatalogItem[];
+  page: number;
+  page_size: number;
+  total: number;
+  providers: string[];
+  completeness: {
+    status: "unknown" | "partial" | "complete" | "error";
+    updated_at_ms?: number | null;
+  };
+};

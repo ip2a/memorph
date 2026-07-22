@@ -1,4 +1,12 @@
-import type { BackupQueryParams, CompressionArchivesParams, ManagerFilter, SessionDetailParams, SessionListParams, WorkspacesWithSessionsParams } from "@/lib/types";
+import type {
+  BackupQueryParams,
+  CompressionArchivesParams,
+  ManagerFilter,
+  SessionDetailParams,
+  SessionListParams,
+  WorkspacesWithSessionsParams,
+  SkillCatalogParams,
+} from "@/lib/types";
 
 export const queryKeys = {
   home: ["home"] as const,
@@ -6,13 +14,18 @@ export const queryKeys = {
   workspaces: ["workspaces"] as const,
   workspacesWithSessions: (params: WorkspacesWithSessionsParams = {}) =>
     ["workspaces", "with-sessions", params] as const,
-  workspaceProviders: (workspace: string) => ["workspaces", "providers", workspace] as const,
+  workspaceProviders: (workspace: string) =>
+    ["workspaces", "providers", workspace] as const,
   providers: ["providers"] as const,
-  providerCatalog: (workspace?: string | null) => ["providers", "catalog", workspace ?? "global"] as const,
+  providerCatalog: (workspace?: string | null) =>
+    ["providers", "catalog", workspace ?? "global"] as const,
   sessionsRoot: ["sessions"] as const,
   sessions: (params: SessionListParams = {}) => ["sessions", params] as const,
-  session: (provider: string, sessionId: string, params: SessionDetailParams = {}) =>
-    ["session", provider, sessionId, params] as const,
+  session: (
+    provider: string,
+    sessionId: string,
+    params: SessionDetailParams = {},
+  ) => ["session", provider, sessionId, params] as const,
   sessionActivity: (provider: string, sessionId: string) =>
     ["session", provider, sessionId, "activity"] as const,
   providerActivity: (
@@ -20,32 +33,49 @@ export const queryKeys = {
     workspace: string | null,
     range: number | "all" = 72,
     allWorkspaces = false,
-  ) => ["provider-activity", provider, allWorkspaces ? "all-workspaces" : workspace ?? "global", range] as const,
+  ) =>
+    [
+      "provider-activity",
+      provider,
+      allWorkspaces ? "all-workspaces" : (workspace ?? "global"),
+      range,
+    ] as const,
   syncGroups: ["sync-groups"] as const,
   syncGroup: (groupId: string) => ["sync-group", groupId] as const,
   syncStatus: (groupId?: string) => ["sync-status", groupId ?? "all"] as const,
-  manager: (view: string, filter: ManagerFilter = {}) => ["manager", view, filter] as const,
-  managerQuick: (providers: string[]) => ["manager", "quick", providers] as const,
-  managerQuickWorkspaces: (providers: string[]) => ["manager", "quick-workspaces", providers] as const,
-  managerStats: (filter: ManagerFilter = {}) => ["manager", "stats", filter] as const,
-  statsDashboard: (all: boolean, workspace: string | null, range: string) => ["stats-dashboard", all, workspace, range] as const,
+  manager: (view: string, filter: ManagerFilter = {}) =>
+    ["manager", view, filter] as const,
+  managerQuick: (providers: string[]) =>
+    ["manager", "quick", providers] as const,
+  managerQuickWorkspaces: (providers: string[]) =>
+    ["manager", "quick-workspaces", providers] as const,
+  managerStats: (filter: ManagerFilter = {}) =>
+    ["manager", "stats", filter] as const,
+  statsDashboard: (all: boolean, workspace: string | null, range: string) =>
+    ["stats-dashboard", all, workspace, range] as const,
   artifacts: ["artifacts"] as const,
   artifactInspection: ["artifacts", "inspection"] as const,
   backups: (params: BackupQueryParams = {}) => ["backups", params] as const,
   backup: (backupId: string) => ["backups", backupId] as const,
-  compression: (params: CompressionArchivesParams = {}) => ["compression", params] as const,
-  compressionArchive: (archiveRef: string) => ["compression-archive", archiveRef] as const,
+  compression: (params: CompressionArchivesParams = {}) =>
+    ["compression", params] as const,
+  compressionArchive: (archiveRef: string) =>
+    ["compression-archive", archiveRef] as const,
   compressionProviders: ["compression-providers"] as const,
   agentsSummary: ["agents", "summary"] as const,
   agent: (provider: string) => ["agents", provider] as const,
   hooks: ["hooks"] as const,
-  skills: ["skills"] as const,
+  skillsRoot: ["skills"] as const,
+  skills: (params: SkillCatalogParams = {}) =>
+    ["skills", "catalog", params] as const,
   skillAnalysis: ["skills", "analysis"] as const,
   skillDetail: (id: string) => ["skills", id, "detail"] as const,
   skillRelations: ["skills", "relations"] as const,
   skillRelationCandidates: ["skills", "relation-candidates"] as const,
   skillTree: (id: string) => ["skills", id, "tree"] as const,
-  skillFile: (id: string, path: string, provider?: string) => ["skills", id, "file", path, provider] as const,
+  skillFile: (id: string, path: string, provider?: string) =>
+    ["skills", id, "file", path, provider] as const,
   hookProvider: (provider: string) => ["hooks", provider] as const,
-  installedHooks: (provider: string) => ["hooks", provider, "installed"] as const,
+  installedHooks: (provider: string) =>
+    ["hooks", provider, "installed"] as const,
 };

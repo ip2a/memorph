@@ -7,8 +7,12 @@ pub struct CatalogRecord {
     pub name: String,
     pub normalized_name: String,
     pub description: Option<String>,
+    pub version: Option<String>,
+    pub author: Option<String>,
     pub entry_hash: String,
     pub bundle_hash: String,
+    pub metadata_json: String,
+    pub file_manifest_json: String,
     pub file_count: u64,
     pub total_bytes: u64,
 }
@@ -199,14 +203,17 @@ pub fn persist_root(
 fn upsert_catalog(tx: &Transaction<'_>, skill: &CatalogRecord, now_ms: i64) -> Result<()> {
     tx.execute(
         "INSERT INTO skill_catalog
-         (id, canonical_name, normalized_name, description, entry_content_hash,
-          bundle_content_hash, file_count, total_bytes, first_seen_at_ms,
+         (id, canonical_name, normalized_name, description, version, author, entry_content_hash,
+          bundle_content_hash, metadata_json, file_manifest_json, file_count, total_bytes, first_seen_at_ms,
           last_scanned_at_ms, created_at_ms, updated_at_ms)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?9, ?9)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13, ?13, ?13)
          ON CONFLICT(id) DO UPDATE SET canonical_name = excluded.canonical_name,
           normalized_name = excluded.normalized_name, description = excluded.description,
+          version = excluded.version, author = excluded.author,
           entry_content_hash = excluded.entry_content_hash,
-          bundle_content_hash = excluded.bundle_content_hash, file_count = excluded.file_count,
+          bundle_content_hash = excluded.bundle_content_hash,
+          metadata_json = excluded.metadata_json, file_manifest_json = excluded.file_manifest_json,
+          file_count = excluded.file_count,
           total_bytes = excluded.total_bytes, last_scanned_at_ms = excluded.last_scanned_at_ms,
           missing_since_ms = NULL, scan_error = NULL, updated_at_ms = excluded.updated_at_ms",
         params![
@@ -214,8 +221,12 @@ fn upsert_catalog(tx: &Transaction<'_>, skill: &CatalogRecord, now_ms: i64) -> R
             skill.name,
             skill.normalized_name,
             skill.description,
+            skill.version,
+            skill.author,
             skill.entry_hash,
             skill.bundle_hash,
+            skill.metadata_json,
+            skill.file_manifest_json,
             skill.file_count as i64,
             skill.total_bytes as i64,
             now_ms
@@ -276,4 +287,228 @@ pub fn session_sources(conn: &Connection) -> Result<Vec<SessionSourceRecord>> {
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .context("Failed to list session sources")
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CatalogQuery {
+    pub query: Option<String>,
+    pub provider: Option<String>,
+    pub scope: Option<String>,
+    pub sort: Option<String>,
+    pub descending: bool,
+    pub page: usize,
+    pub page_size: usize,
+}
+
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct CatalogInstallation {
+    pub provider_id: String,
+    pub scope_kind: String,
+    pub workspace_dir: Option<String>,
+    pub install_path: String,
+    pub install_kind: String,
+    pub link_status: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct CatalogItem {
+    pub id: String,
+    pub source_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub version: Option<String>,
+    pub author: Option<String>,
+    pub bundle_hash: String,
+    pub file_count: u64,
+    pub total_bytes: u64,
+    pub missing: bool,
+    pub updated_at_ms: i64,
+    pub installations: Vec<CatalogInstallation>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct CatalogCompleteness {
+    pub status: String,
+    pub updated_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct CatalogPage {
+    pub items: Vec<CatalogItem>,
+    pub page: usize,
+    pub page_size: usize,
+    pub total: usize,
+    pub providers: Vec<String>,
+    pub completeness: CatalogCompleteness,
+}
+
+pub fn list_catalog_default(query: &CatalogQuery) -> Result<CatalogPage> {
+    let store = crate::storage::local_store::LocalSqliteStore::open_default()?;
+    list_catalog(store.connection(), query)
+}
+
+pub fn list_catalog_path(path: &std::path::Path, query: &CatalogQuery) -> Result<CatalogPage> {
+    let store = crate::storage::local_store::LocalSqliteStore::open(path)?;
+    list_catalog(store.connection(), query)
+}
+
+pub fn list_catalog(conn: &Connection, query: &CatalogQuery) -> Result<CatalogPage> {
+    let page = query.page.max(1);
+    let page_size = query.page_size.clamp(1, 200);
+    let search = query
+        .query
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let provider = query
+        .provider
+        .as_deref()
+        .filter(|value| !value.is_empty() && *value != "all");
+    let scope = query
+        .scope
+        .as_deref()
+        .filter(|value| matches!(*value, "global" | "project"));
+    let filters = "(?1 IS NULL OR lower(c.canonical_name) LIKE '%' || lower(?1) || '%'
+                   OR lower(COALESCE(c.description, '')) LIKE '%' || lower(?1) || '%'
+                   OR EXISTS (SELECT 1 FROM skill_installations si WHERE si.skill_id = c.id
+                              AND lower(si.install_path) LIKE '%' || lower(?1) || '%'))
+                  AND (?2 IS NULL OR EXISTS (SELECT 1 FROM skill_installations si
+                       WHERE si.skill_id = c.id AND si.provider_id = ?2 AND si.status = 'active'))
+                  AND (?3 IS NULL OR EXISTS (SELECT 1 FROM skill_installations si
+                       WHERE si.skill_id = c.id AND si.scope_kind = ?3 AND si.status = 'active'))";
+    let total: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM skill_catalog c WHERE {filters}"),
+        params![search, provider, scope],
+        |row| row.get(0),
+    )?;
+    let order = match query.sort.as_deref() {
+        Some("size") => "c.total_bytes",
+        Some("files") => "c.file_count",
+        Some("updated") => "c.updated_at_ms",
+        _ => "c.canonical_name COLLATE NOCASE",
+    };
+    let direction = if query.descending { "DESC" } else { "ASC" };
+    let sql = format!(
+        "SELECT c.id, c.normalized_name, c.canonical_name, c.description, c.version, c.author,
+                c.bundle_content_hash, c.file_count, c.total_bytes,
+                c.missing_since_ms IS NOT NULL, c.updated_at_ms
+         FROM skill_catalog c WHERE {filters}
+         ORDER BY {order} {direction}, c.id ASC LIMIT ?4 OFFSET ?5"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(
+        params![
+            search,
+            provider,
+            scope,
+            page_size as i64,
+            ((page - 1) * page_size) as i64
+        ],
+        |row| {
+            Ok(CatalogItem {
+                id: row.get(0)?,
+                source_id: row.get(1)?,
+                name: row.get(2)?,
+                description: row.get(3)?,
+                version: row.get(4)?,
+                author: row.get(5)?,
+                bundle_hash: row.get(6)?,
+                file_count: row.get::<_, i64>(7)? as u64,
+                total_bytes: row.get::<_, i64>(8)? as u64,
+                missing: row.get(9)?,
+                updated_at_ms: row.get(10)?,
+                installations: Vec::new(),
+            })
+        },
+    )?;
+    let mut items = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut installation_statement = conn.prepare(
+        "SELECT provider_id, scope_kind, workspace_dir, install_path, install_kind, link_status, status
+         FROM skill_installations WHERE skill_id = ?1 ORDER BY provider_id, canonical_install_path",
+    )?;
+    for item in &mut items {
+        item.installations = installation_statement
+            .query_map([&item.id], |row| {
+                Ok(CatalogInstallation {
+                    provider_id: row.get(0)?,
+                    scope_kind: row.get(1)?,
+                    workspace_dir: row.get(2)?,
+                    install_path: row.get(3)?,
+                    install_kind: row.get(4)?,
+                    link_status: row.get(5)?,
+                    status: row.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+    }
+    let providers = conn.prepare(
+        "SELECT DISTINCT provider_id FROM skill_installations WHERE status = 'active' ORDER BY provider_id",
+    )?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let completeness = conn
+        .query_row(
+            "SELECT completeness_status, updated_at_ms FROM skill_scan_state
+         WHERE state_kind = 'aggregate' ORDER BY updated_at_ms DESC LIMIT 1",
+            [],
+            |row| {
+                Ok(CatalogCompleteness {
+                    status: row.get(0)?,
+                    updated_at_ms: row.get(1)?,
+                })
+            },
+        )
+        .optional()?
+        .unwrap_or(CatalogCompleteness {
+            status: "unknown".into(),
+            updated_at_ms: None,
+        });
+    Ok(CatalogPage {
+        items,
+        page,
+        page_size,
+        total: total as usize,
+        providers,
+        completeness,
+    })
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use crate::storage::local_store::LocalSqliteStore;
+
+    #[test]
+    fn catalog_filters_sorts_and_paginates_in_sqlite() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalSqliteStore::open(dir.path().join("memorph.db")).unwrap();
+        for index in 0..3 {
+            store.connection().execute(
+                "INSERT INTO skill_catalog (id, canonical_name, normalized_name, entry_content_hash,
+                 bundle_content_hash, file_count, total_bytes, first_seen_at_ms, last_scanned_at_ms,
+                 created_at_ms, updated_at_ms) VALUES (?1, ?2, ?3, 'entry', ?1, ?4, ?5, 1, 1, 1, 1)",
+                params![format!("skill-{index}"), format!("Skill {index}"), format!("skill-{index}"), index + 1, (index + 1) * 100],
+            ).unwrap();
+            store.connection().execute(
+                "INSERT INTO skill_installations (id, skill_id, provider_id, scope_kind, install_path,
+                 canonical_install_path, install_kind, bundle_content_hash, discovered_at_ms, last_verified_at_ms)
+                 VALUES (?1, ?2, ?3, 'global', ?4, ?4, 'directory', ?2, 1, 1)",
+                params![format!("install-{index}"), format!("skill-{index}"), if index == 2 { "claude" } else { "codex" }, format!("/tmp/skill-{index}")],
+            ).unwrap();
+        }
+        let page = list_catalog(
+            store.connection(),
+            &CatalogQuery {
+                provider: Some("codex".into()),
+                sort: Some("size".into()),
+                descending: true,
+                page: 1,
+                page_size: 1,
+                ..CatalogQuery::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(page.items[0].source_id, "skill-1");
+        assert_eq!(page.providers, vec!["claude", "codex"]);
+    }
 }

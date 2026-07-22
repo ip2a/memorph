@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nContext } from "@/lib/i18n-context";
 import { translate } from "@/lib/i18n-core";
+import type { SkillCatalogParams } from "@/lib/types";
 import { SkillsPage } from "./skills-page";
 
 const mocks = vi.hoisted(() => ({
@@ -13,7 +14,6 @@ const mocks = vi.hoisted(() => ({
   useSkillDetail: vi.fn(),
   useSkillTree: vi.fn(),
   useSkillFilePreview: vi.fn(),
-  useSkillAnalysis: vi.fn(),
   install: vi.fn(),
   uninstall: vi.fn(),
 }));
@@ -23,93 +23,70 @@ vi.mock("@/features/skills/queries", () => ({
   useSkillDetail: mocks.useSkillDetail,
   useSkillTree: mocks.useSkillTree,
   useSkillFilePreview: mocks.useSkillFilePreview,
-  useSkillAnalysis: mocks.useSkillAnalysis,
   useInstallSkill: () => ({
     mutate: mocks.install,
     isPending: false,
-    variables: undefined,
     error: null,
   }),
   useUninstallSkill: () => ({
     mutate: mocks.uninstall,
     isPending: false,
-    variables: undefined,
     error: null,
   }),
 }));
 
-const overview = {
-  agents: [
-    {
-      provider_id: "claude",
-      name: "Claude Code",
-      skills_dir: "/home/test/.claude/skills",
-    },
-    {
-      provider_id: "codex",
-      name: "Codex",
-      skills_dir: "/home/test/.codex/skills",
-    },
-    {
-      provider_id: "gemini",
-      name: "Gemini CLI",
-      skills_dir: "/home/test/.gemini/skills",
-    },
-  ],
-  skills: [
-    {
-      id: "document-writer",
-      name: "Document Writer",
-      description: "Writes concise documentation",
-      directory: "document-writer",
-      fingerprint: "sha256:document-writer",
-      conflict: false,
-      statistics: { files: 3, bytes: 128, scripts: 1, references: 1, assets: 0, previewable: 3 },
-      issues: [],
-      installations: [
-        {
-          provider_id: "claude",
-          path: "/home/test/.claude/skills/document-writer",
-          managed: false,
-          deployment_mode: "external",
-          link_valid: true,
-          fingerprint: "sha256:document-writer",
-          drifted: false,
-        },
-        {
-          provider_id: "gemini",
-          path: "/home/test/.gemini/skills/document-writer",
-          managed: true,
-          deployment_mode: "symlink",
-          link_valid: true,
-          fingerprint: "sha256:document-writer",
-          drifted: false,
-        },
-      ],
-    },
-    {
-      id: "reviewer",
-      name: "Reviewer",
-      description: "Reviews code",
-      directory: "reviewer",
-      fingerprint: "sha256:reviewer",
-      conflict: false,
-      statistics: { files: 1, bytes: 64, scripts: 0, references: 0, assets: 0, previewable: 1 },
-      issues: [],
-      installations: [
-        {
-          provider_id: "codex",
-          path: "/home/test/.codex/skills/reviewer",
-          managed: true,
-          deployment_mode: "copy",
-          link_valid: true,
-          fingerprint: "sha256:reviewer",
-          drifted: false,
-        },
-      ],
-    },
-  ],
-};
+const items = [
+  {
+    id: "skill:document-writer",
+    source_id: "document-writer",
+    name: "Document Writer",
+    description: "Writes concise documentation",
+    bundle_hash: "sha256:document-writer",
+    file_count: 3,
+    total_bytes: 128,
+    missing: false,
+    updated_at_ms: 1,
+    installations: [
+      {
+        provider_id: "claude",
+        scope_kind: "global",
+        install_path: "/home/test/.claude/skills/document-writer",
+        install_kind: "directory",
+        link_status: "not-applicable",
+        status: "active",
+      },
+      {
+        provider_id: "gemini",
+        scope_kind: "global",
+        install_path: "/home/test/.gemini/skills/document-writer",
+        install_kind: "symlink",
+        link_status: "valid",
+        status: "active",
+      },
+    ],
+  },
+  {
+    id: "skill:reviewer",
+    source_id: "reviewer",
+    name: "Reviewer",
+    description: "Reviews code",
+    bundle_hash: "sha256:reviewer",
+    file_count: 1,
+    total_bytes: 64,
+    missing: false,
+    updated_at_ms: 1,
+    installations: [
+      {
+        provider_id: "codex",
+        scope_kind: "global",
+        install_path: "/home/test/.codex/skills/reviewer",
+        install_kind: "managed-copy",
+        link_status: "not-applicable",
+        status: "active",
+      },
+    ],
+  },
+];
 
 function renderRoute() {
   return render(
@@ -132,49 +109,65 @@ function renderRoute() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.useSkills.mockReturnValue({
-    data: overview,
-    error: null,
-    isError: false,
-    isFetching: false,
-    isLoading: false,
-    refetch: vi.fn(),
+  mocks.useSkills.mockImplementation((params: SkillCatalogParams) => {
+    const filtered = params.query
+      ? items.filter((item) =>
+          item.name.toLowerCase().includes(params.query!.toLowerCase()),
+        )
+      : items;
+    return {
+      data: {
+        items: filtered,
+        page: 1,
+        page_size: 50,
+        total: filtered.length,
+        providers: ["claude", "codex", "gemini"],
+        completeness: { status: "partial" },
+      },
+      error: null,
+      isError: false,
+      isFetching: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    };
   });
   mocks.useSkillDetail.mockReturnValue({ data: undefined });
-  mocks.useSkillTree.mockReturnValue({ data: { assets: [] } });
-  mocks.useSkillFilePreview.mockReturnValue({ data: undefined });
-  mocks.useSkillAnalysis.mockReturnValue({ data: { skills: [] } });
+  mocks.useSkillTree.mockReturnValue({
+    data: { assets: [] },
+    isLoading: false,
+  });
+  mocks.useSkillFilePreview.mockReturnValue({
+    data: undefined,
+    isLoading: false,
+  });
 });
 
 afterEach(() => cleanup());
 
 describe("SkillsPage", () => {
-  it("renders the /skills route and filters discovered skills", async () => {
+  it("renders the SQLite catalog and sends search filters to the query", async () => {
     const user = userEvent.setup();
     renderRoute();
-
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Inspection/i })).toBeTruthy();
     expect(screen.getAllByText("Document Writer").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
-
     await user.type(
       screen.getByRole("textbox", { name: "Search Skills" }),
       "review",
+    );
+    expect(mocks.useSkills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: "review" }),
     );
     expect(screen.queryByText("Document Writer")).toBeNull();
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
   });
 
-  it("installs into a missing agent and confirms removal of a managed copy", async () => {
+  it("installs into a missing provider and safely removes a managed installation", async () => {
     const user = userEvent.setup();
     renderRoute();
-
     const codex = screen
-      .getAllByText("Codex")
+      .getAllByText("codex")
       .map((element) => element.closest("div.rounded-lg"))
       .find(Boolean);
-    expect(codex).toBeTruthy();
     await user.click(
       within(codex as HTMLElement).getByRole("button", { name: "Install" }),
     );
@@ -183,16 +176,13 @@ describe("SkillsPage", () => {
       provider: "codex",
       source_provider: "claude",
     });
-
     const gemini = screen
-      .getAllByText("Gemini CLI")
+      .getAllByText("gemini")
       .map((element) => element.closest("div.rounded-lg"))
       .find(Boolean);
-    expect(gemini).toBeTruthy();
     await user.click(
       within(gemini as HTMLElement).getByRole("button", { name: "Remove" }),
     );
-    expect(screen.getByRole("alertdialog")).toBeTruthy();
     await user.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
         name: "Remove",

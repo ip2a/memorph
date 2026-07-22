@@ -59,6 +59,8 @@ import type {
   SessionListParams,
   SessionReprojectionReport,
   SkillMutation,
+  SkillCatalogPage,
+  SkillCatalogParams,
   SkillUsageOverview,
   SkillsOverview,
   SkillDetail,
@@ -97,12 +99,19 @@ type ApiEnvelope<T> = {
   error?: string;
 };
 
-export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+export async function api<T>(
+  path: string,
+  options: RequestInit = {},
+): Promise<T> {
   const headers = new Headers(options.headers);
   headers.set("Accept", "application/json");
 
   const body = options.body;
-  if (body !== undefined && !(body instanceof FormData) && !headers.has("Content-Type")) {
+  if (
+    body !== undefined &&
+    !(body instanceof FormData) &&
+    !headers.has("Content-Type")
+  ) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -112,16 +121,23 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     body,
   });
 
-  const raw = (await response.json().catch(() => null)) as ApiEnvelope<T> | T | null;
+  const raw = (await response.json().catch(() => null)) as
+    ApiEnvelope<T> | T | null;
 
   if (!response.ok) {
-    const message = raw && typeof raw === "object" && "error" in raw ? raw.error : `HTTP ${response.status}`;
+    const message =
+      raw && typeof raw === "object" && "error" in raw
+        ? raw.error
+        : `HTTP ${response.status}`;
     throw new ApiError(message || `HTTP ${response.status}`, response.status);
   }
 
   if (raw && typeof raw === "object" && "ok" in raw) {
     if (!raw.ok) {
-      throw new ApiError(raw.error || `HTTP ${response.status}`, response.status);
+      throw new ApiError(
+        raw.error || `HTTP ${response.status}`,
+        response.status,
+      );
     }
     return raw.data as T;
   }
@@ -129,7 +145,9 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   return raw as T;
 }
 
-function buildQuery(params: Record<string, string | number | boolean | null | undefined>) {
+function buildQuery(
+  params: Record<string, string | number | boolean | null | undefined>,
+) {
   const search = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value === undefined || value === null || value === "") continue;
@@ -158,7 +176,9 @@ export function updateProviderCatalog(payload: ProviderCatalogUpdatePayload) {
 }
 
 export function getProviderCatalog(workspace?: string | null) {
-  return api<ProviderCatalogPayload>(`/api/v1/providers/catalog${buildQuery({ workspace })}`);
+  return api<ProviderCatalogPayload>(
+    `/api/v1/providers/catalog${buildQuery({ workspace })}`,
+  );
 }
 
 export function selectFolder(payload: SelectPathPayload) {
@@ -169,7 +189,9 @@ export function selectFolder(payload: SelectPathPayload) {
 }
 
 export function listDirectories(path?: string | null) {
-  return api<DirectoryListing>(`/api/v1/filesystem/directories${buildQuery({ path })}`);
+  return api<DirectoryListing>(
+    `/api/v1/filesystem/directories${buildQuery({ path })}`,
+  );
 }
 
 export function selectFile(payload: SelectPathPayload) {
@@ -194,8 +216,12 @@ export function listWorkspaces() {
   return api<WorkspaceEntry[]>("/api/v1/workspaces");
 }
 
-export function listWorkspacesWithSessions(params: WorkspacesWithSessionsParams = {}) {
-  return api<WorkspacesWithSessionsResult>(`/api/v1/workspaces/with-sessions${buildQuery(params)}`);
+export function listWorkspacesWithSessions(
+  params: WorkspacesWithSessionsParams = {},
+) {
+  return api<WorkspacesWithSessionsResult>(
+    `/api/v1/workspaces/with-sessions${buildQuery(params)}`,
+  );
 }
 
 export function deleteWorkspaceHistory(workspace: string) {
@@ -206,10 +232,15 @@ export function deleteWorkspaceHistory(workspace: string) {
 }
 
 export function getWorkspaceProviders(workspace: string) {
-  return api<string[]>(`/api/v1/workspaces/providers${buildQuery({ workspace })}`);
+  return api<string[]>(
+    `/api/v1/workspaces/providers${buildQuery({ workspace })}`,
+  );
 }
 
-export function updateWorkspaceProviders(workspace: string, providers: string[]) {
+export function updateWorkspaceProviders(
+  workspace: string,
+  providers: string[],
+) {
   return api<string[]>("/api/v1/workspaces/providers", {
     method: "PUT",
     body: JSON.stringify({ workspace, providers }),
@@ -221,16 +252,25 @@ export function listAgentsSummary() {
 }
 
 export function getAgent(provider: string) {
-  return api<AgentManagementEntry>(`/api/v1/agents/${encodeURIComponent(provider)}`);
+  return api<AgentManagementEntry>(
+    `/api/v1/agents/${encodeURIComponent(provider)}`,
+  );
 }
 
 export function detectAgent(provider: string) {
-  return api<AgentManagementEntry>(`/api/v1/agents/${encodeURIComponent(provider)}/detect`, {
-    method: "POST",
-  });
+  return api<AgentManagementEntry>(
+    `/api/v1/agents/${encodeURIComponent(provider)}/detect`,
+    {
+      method: "POST",
+    },
+  );
 }
 
-export function updateProviderSetting(provider: string, settingId: string, value: unknown) {
+export function updateProviderSetting(
+  provider: string,
+  settingId: string,
+  value: unknown,
+) {
   return api<ProviderSettingItem>(
     `/api/v1/providers/${encodeURIComponent(provider)}/settings/${encodeURIComponent(settingId)}`,
     {
@@ -240,7 +280,11 @@ export function updateProviderSetting(provider: string, settingId: string, value
   );
 }
 
-export function runProviderSetting(provider: string, settingId: string, workspace?: string | null) {
+export function runProviderSetting(
+  provider: string,
+  settingId: string,
+  workspace?: string | null,
+) {
   return api<ProviderSettingOutput>(
     `/api/v1/providers/${encodeURIComponent(provider)}/settings/${encodeURIComponent(settingId)}`,
     {
@@ -255,14 +299,23 @@ export function getHooksOverview() {
 }
 
 export function getHookProviderOverview(provider: string) {
-  return api<HookProviderOverviewPayload>(`/api/v1/hooks/providers/${encodeURIComponent(provider)}/overview`);
+  return api<HookProviderOverviewPayload>(
+    `/api/v1/hooks/providers/${encodeURIComponent(provider)}/overview`,
+  );
 }
 
 export function listInstalledHooks(provider: string) {
-  return api<InstalledHooks>(`/api/v1/hooks/providers/${encodeURIComponent(provider)}/installed`);
+  return api<InstalledHooks>(
+    `/api/v1/hooks/providers/${encodeURIComponent(provider)}/installed`,
+  );
 }
 
-export function removeInstalledHook(provider: string, event: string, index: number, fingerprint: string) {
+export function removeInstalledHook(
+  provider: string,
+  event: string,
+  index: number,
+  fingerprint: string,
+) {
   return api<InstalledHooks>(
     `/api/v1/hooks/providers/${encodeURIComponent(provider)}/installed/${encodeURIComponent(event)}/${index}/${encodeURIComponent(fingerprint)}`,
     { method: "DELETE" },
@@ -315,17 +368,26 @@ export function createSyncGroup(payload: CreateSyncPayload) {
   });
 }
 
-export function renameSyncGroup(groupId: string, payload: RenameSyncGroupPayload) {
+export function renameSyncGroup(
+  groupId: string,
+  payload: RenameSyncGroupPayload,
+) {
   return api<string>(`/api/v1/sync/${encodeURIComponent(groupId)}`, {
     method: "PATCH",
     body: JSON.stringify(payload),
   });
 }
 
-export function removeSyncGroup(groupId: string, deleteProviderSessions: boolean) {
-  return api<string>(`/api/v1/sync/${encodeURIComponent(groupId)}${buildQuery({ delete_provider_sessions: deleteProviderSessions })}`, {
-    method: "DELETE",
-  });
+export function removeSyncGroup(
+  groupId: string,
+  deleteProviderSessions: boolean,
+) {
+  return api<string>(
+    `/api/v1/sync/${encodeURIComponent(groupId)}${buildQuery({ delete_provider_sessions: deleteProviderSessions })}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export function bindSyncGroup(payload: BindSyncPayload) {
@@ -343,17 +405,24 @@ export function runSyncGroup(payload: SyncRunPayload) {
 }
 
 export function unbindSyncHolding(groupId: string, holdingId: string) {
-  return api<string>(`/api/v1/sync/holdings/${encodeURIComponent(groupId)}/${encodeURIComponent(holdingId)}`, {
-    method: "DELETE",
-  });
+  return api<string>(
+    `/api/v1/sync/holdings/${encodeURIComponent(groupId)}/${encodeURIComponent(holdingId)}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export function getManagerQuickPreview(providers: string[] = []) {
-  return api<ManagerQuickPreviewResult>(`/api/v1/manager/quick-preview${buildQuery({ providers: providers.join(",") })}`);
+  return api<ManagerQuickPreviewResult>(
+    `/api/v1/manager/quick-preview${buildQuery({ providers: providers.join(",") })}`,
+  );
 }
 
 export function getManagerQuickWorkspaces(providers: string[] = []) {
-  return api<ManagerWorkspacesResult>(`/api/v1/manager/quick-workspaces${buildQuery({ providers: providers.join(",") })}`);
+  return api<ManagerWorkspacesResult>(
+    `/api/v1/manager/quick-workspaces${buildQuery({ providers: providers.join(",") })}`,
+  );
 }
 
 export function getManagerStats(filter: ManagerFilter) {
@@ -425,17 +494,26 @@ export function getBackup(backupId: string) {
 }
 
 export function restoreBackup(backupId: string) {
-  return api<BackupRestoreRecord>(`/api/v1/backups/${encodeURIComponent(backupId)}/restore`, {
-    method: "POST",
-  });
+  return api<BackupRestoreRecord>(
+    `/api/v1/backups/${encodeURIComponent(backupId)}/restore`,
+    {
+      method: "POST",
+    },
+  );
 }
 
-export function listCompressionArchives(params: CompressionArchivesParams = {}) {
-  return api<CompressionArchiveSummary[]>(`/api/v1/compression/archives${buildQuery(params)}`);
+export function listCompressionArchives(
+  params: CompressionArchivesParams = {},
+) {
+  return api<CompressionArchiveSummary[]>(
+    `/api/v1/compression/archives${buildQuery(params)}`,
+  );
 }
 
 export function getCompressionArchive(archiveRef: string) {
-  return api<CompressionArchive>(`/api/v1/compression/archive${buildQuery({ archive_ref: archiveRef })}`);
+  return api<CompressionArchive>(
+    `/api/v1/compression/archive${buildQuery({ archive_ref: archiveRef })}`,
+  );
 }
 
 export function listCompressionProviders() {
@@ -456,7 +534,11 @@ export function restoreCompressionArchive(payload: RestoreCompressionPayload) {
   });
 }
 
-export function getStatsDashboard(params: { all: boolean; workspace?: string | null; range: StatsDashboardRange }) {
+export function getStatsDashboard(params: {
+  all: boolean;
+  workspace?: string | null;
+  range: StatsDashboardRange;
+}) {
   return api<StatsDashboard>(`/api/v1/stats/dashboard${buildQuery(params)}`);
 }
 
@@ -477,7 +559,11 @@ export function reprojectStaleSessions(provider?: string | null) {
   });
 }
 
-export function getSession(provider: string, sessionId: string, params: SessionDetailParams = {}) {
+export function getSession(
+  provider: string,
+  sessionId: string,
+  params: SessionDetailParams = {},
+) {
   return api<SessionDetailPayload>(
     `/api/v1/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}${buildQuery(params)}`,
   );
@@ -485,7 +571,12 @@ export function getSession(provider: string, sessionId: string, params: SessionD
 
 export function getProviderActivity(
   provider: string,
-  params: { all?: boolean; all_time?: boolean; hours?: number; workspace?: string } = {},
+  params: {
+    all?: boolean;
+    all_time?: boolean;
+    hours?: number;
+    workspace?: string;
+  } = {},
 ) {
   return api<ProviderActivityTimeline>(
     `/api/v1/providers/${encodeURIComponent(provider)}/activity${buildQuery(params)}`,
@@ -498,17 +589,27 @@ export function getSessionActivity(provider: string, sessionId: string) {
   );
 }
 
-export function renameSession(provider: string, sessionId: string, payload: RenameSessionPayload) {
-  return api<RenameSessionResult>(`/api/v1/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}`, {
-    method: "PATCH",
-    body: JSON.stringify(payload),
-  });
+export function renameSession(
+  provider: string,
+  sessionId: string,
+  payload: RenameSessionPayload,
+) {
+  return api<RenameSessionResult>(
+    `/api/v1/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function deleteSession(provider: string, sessionId: string) {
-  return api<string>(`/api/v1/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}`, {
-    method: "DELETE",
-  });
+  return api<string>(
+    `/api/v1/sessions/${encodeURIComponent(provider)}/${encodeURIComponent(sessionId)}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export function listSyncGroups() {
@@ -516,11 +617,13 @@ export function listSyncGroups() {
 }
 
 export function getSyncGroup(groupId: string) {
-  return api<SyncGroup>(`/api/v1/sync/status${buildQuery({ group_id: groupId })}`);
+  return api<SyncGroup>(
+    `/api/v1/sync/status${buildQuery({ group_id: groupId })}`,
+  );
 }
 
-export function getSkills() {
-  return api<SkillsOverview>("/api/v1/skills");
+export function getSkills(params: SkillCatalogParams = {}) {
+  return api<SkillCatalogPage>(`/api/v1/skills${buildQuery(params)}`);
 }
 
 export function getSkillAnalysis(refresh = false) {
@@ -537,7 +640,11 @@ export function getSkillTree(skillId: string) {
   return api<SkillTree>(`/api/v1/skills/${encodeURIComponent(skillId)}/tree`);
 }
 
-export function getSkillFilePreview(skillId: string, path: string, provider?: string) {
+export function getSkillFilePreview(
+  skillId: string,
+  path: string,
+  provider?: string,
+) {
   return api<SkillFilePreview>(
     `/api/v1/skills/${encodeURIComponent(skillId)}/file${buildQuery({ path, provider })}`,
   );
@@ -564,16 +671,22 @@ export function saveSkillRelation(relation: SkillRelationRule) {
 }
 
 export function deleteSkillRelation(relationId: string) {
-  return api<SkillRelationsConfig>(`/api/v1/skills/relations/${encodeURIComponent(relationId)}`, {
-    method: "DELETE",
-  });
+  return api<SkillRelationsConfig>(
+    `/api/v1/skills/relations/${encodeURIComponent(relationId)}`,
+    {
+      method: "DELETE",
+    },
+  );
 }
 
 export function ignoreSkillRelationCandidate(candidateKey: string) {
-  return api<SkillRelationsConfig>("/api/v1/skills/relation-candidates/ignore", {
-    method: "POST",
-    body: JSON.stringify({ candidate_key: candidateKey }),
-  });
+  return api<SkillRelationsConfig>(
+    "/api/v1/skills/relation-candidates/ignore",
+    {
+      method: "POST",
+      body: JSON.stringify({ candidate_key: candidateKey }),
+    },
+  );
 }
 export function installSkill(payload: SkillMutation) {
   return api<SkillsOverview>("/api/v1/skills/install", {

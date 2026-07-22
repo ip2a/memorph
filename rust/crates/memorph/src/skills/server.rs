@@ -21,6 +21,7 @@ use super::{
     analysis,
     detection::{self, SkillDetectionResult},
     model::{IgnoredSkillCandidate, SkillGroup, SkillRelationRule, SkillRelationsConfig},
+    repository::{self, CatalogQuery},
     scanner::{self, ScanMode},
     store,
 };
@@ -121,6 +122,7 @@ pub struct SkillsOverview {
 #[derive(Clone)]
 struct SkillsState {
     agents: Arc<Vec<SkillAgent>>,
+    database_path: Option<Arc<PathBuf>>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -151,10 +153,19 @@ impl<T: Serialize> ApiResponse<T> {
 }
 
 pub fn router() -> Router {
-    router_for(default_agents())
+    router_with_state(default_agents(), None)
 }
 
+#[cfg(test)]
 fn router_for(agents: Vec<SkillAgent>) -> Router {
+    let database_path = agents
+        .first()
+        .and_then(|agent| agent.skills_dir.parent()?.parent())
+        .map(|root| root.join("memorph-skills-test.db"));
+    router_with_state(agents, database_path)
+}
+
+fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) -> Router {
     Router::new()
         .route("/api/v1/skills", get(list_skills))
         .route("/api/v1/skills/scan", post(scan_skills))
@@ -185,6 +196,7 @@ fn router_for(agents: Vec<SkillAgent>) -> Router {
         )
         .with_state(SkillsState {
             agents: Arc::new(agents),
+            database_path: database_path.map(Arc::new),
         })
 }
 
@@ -300,11 +312,11 @@ fn discover(agents: &[SkillAgent]) -> SkillsOverview {
     }
 }
 
-struct BundleInspection {
-    fingerprint: String,
-    statistics: SkillStatistics,
-    assets: Vec<SkillAsset>,
-    issues: Vec<SkillIssue>,
+pub(super) struct BundleInspection {
+    pub(super) fingerprint: String,
+    pub(super) statistics: SkillStatistics,
+    pub(super) assets: Vec<SkillAsset>,
+    pub(super) issues: Vec<SkillIssue>,
 }
 
 fn is_image_extension(ext: &str) -> bool {
@@ -374,7 +386,7 @@ fn classify_asset(path: &str) -> (&'static str, bool) {
     (category, previewable)
 }
 
-fn inspect_bundle(root: &Path) -> BundleInspection {
+pub(super) fn inspect_bundle(root: &Path) -> BundleInspection {
     let mut hasher = Sha256::new();
     let mut assets = Vec::new();
     let mut issues = Vec::new();
@@ -509,7 +521,7 @@ fn scan_content_risks(path: &str, content: &[u8]) -> Vec<SkillIssue> {
     .collect()
 }
 
-fn read_frontmatter(path: &Path) -> BTreeMap<String, String> {
+pub(super) fn read_frontmatter(path: &Path) -> BTreeMap<String, String> {
     let Ok(contents) = fs::read_to_string(path) else {
         return BTreeMap::new();
     };
@@ -994,14 +1006,58 @@ async fn scan_skills(
     Json(request): Json<SkillScanRequest>,
 ) -> impl IntoResponse {
     let overview = discover(&state.agents);
-    match scanner::persist_default(&overview, request.mode.unwrap_or(ScanMode::Incremental)) {
+    let mode = request.mode.unwrap_or(ScanMode::Incremental);
+    let result = match state.database_path.as_deref() {
+        Some(path) => scanner::persist_path(path, &overview, mode),
+        None => scanner::persist_default(&overview, mode),
+    };
+    match result {
         Ok(summary) => ApiResponse::success(summary).into_response(),
         Err(error) => error_response(error),
     }
 }
 
-async fn list_skills(State(state): State<SkillsState>) -> impl IntoResponse {
-    ApiResponse::success(discover(&state.agents)).into_response()
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CatalogListQuery {
+    query: Option<String>,
+    provider: Option<String>,
+    scope: Option<String>,
+    sort: Option<String>,
+    order: Option<String>,
+    page: Option<usize>,
+    page_size: Option<usize>,
+}
+
+async fn list_skills(
+    State(state): State<SkillsState>,
+    Query(query): Query<CatalogListQuery>,
+) -> impl IntoResponse {
+    let overview = discover(&state.agents);
+    let catalog_query = CatalogQuery {
+        query: query.query,
+        provider: query.provider,
+        scope: query.scope,
+        sort: query.sort,
+        descending: query.order.as_deref() == Some("desc"),
+        page: query.page.unwrap_or(1),
+        page_size: query.page_size.unwrap_or(50),
+    };
+    let scanned = match state.database_path.as_deref() {
+        Some(path) => scanner::persist_path(path, &overview, ScanMode::Incremental),
+        None => scanner::persist_default(&overview, ScanMode::Incremental),
+    };
+    if let Err(error) = scanned {
+        return error_response(error);
+    }
+    let result = match state.database_path.as_deref() {
+        Some(path) => repository::list_catalog_path(path, &catalog_query),
+        None => repository::list_catalog_default(&catalog_query),
+    };
+    match result {
+        Ok(page) => ApiResponse::success(page).into_response(),
+        Err(error) => error_response(error),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1383,7 +1439,7 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(listed["data"]["skills"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["data"]["items"].as_array().unwrap().len(), 1);
 
         let request = serde_json::to_vec(&SkillMutation {
             skill_id: "writer".into(),

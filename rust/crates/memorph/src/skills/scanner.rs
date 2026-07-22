@@ -7,7 +7,7 @@ use std::fs;
 
 use super::{
     repository,
-    server::{SkillAgent, SkillEntry, SkillsOverview},
+    server::{inspect_bundle, read_frontmatter, SkillAgent, SkillEntry, SkillsOverview},
 };
 use crate::storage::local_store::LocalSqliteStore;
 
@@ -28,6 +28,15 @@ pub struct ScanSummary {
 
 pub fn persist_default(overview: &SkillsOverview, mode: ScanMode) -> Result<ScanSummary> {
     let mut store = LocalSqliteStore::open_default()?;
+    persist(store.connection_mut(), overview, mode)
+}
+
+pub fn persist_path(
+    path: &std::path::Path,
+    overview: &SkillsOverview,
+    mode: ScanMode,
+) -> Result<ScanSummary> {
+    let mut store = LocalSqliteStore::open(path)?;
     persist(store.connection_mut(), overview, mode)
 }
 
@@ -85,17 +94,20 @@ fn records(
     let mut catalog = BTreeMap::new();
     let mut installations = Vec::new();
     for skill in entries {
-        for item in skill.installations.iter().filter(|item| {
-            item.provider_id == provider_id
-                && entries.iter().any(|entry| entry.id == skill.id)
-                && item.path.join("SKILL.md").is_file()
-        }) {
-            let entry = fs::read(item.path.join("SKILL.md"))
+        for item in skill
+            .installations
+            .iter()
+            .filter(|item| item.provider_id == provider_id && item.path.join("SKILL.md").is_file())
+        {
+            let entry_path = item.path.join("SKILL.md");
+            let entry = fs::read(&entry_path)
                 .with_context(|| format!("Failed to read {}", item.path.display()))?;
             let entry_hash = hash(&entry);
+            let inspection = inspect_bundle(&item.path);
+            let frontmatter = read_frontmatter(&entry_path);
             let id = format!(
                 "skill:{}",
-                hash(format!("{entry_hash}:{}", item.fingerprint).as_bytes())
+                hash(format!("{entry_hash}:{}", inspection.fingerprint).as_bytes())
             );
             catalog
                 .entry(id.clone())
@@ -104,10 +116,16 @@ fn records(
                     name: skill.name.clone(),
                     normalized_name: skill.id.clone(),
                     description: skill.description.clone(),
+                    version: frontmatter.get("version").cloned(),
+                    author: frontmatter.get("author").cloned(),
                     entry_hash,
-                    bundle_hash: item.fingerprint.clone(),
-                    file_count: skill.statistics.files as u64,
-                    total_bytes: skill.statistics.bytes,
+                    bundle_hash: inspection.fingerprint.clone(),
+                    metadata_json: serde_json::to_string(&frontmatter)
+                        .expect("frontmatter map is serializable"),
+                    file_manifest_json: serde_json::to_string(&inspection.assets)
+                        .expect("bundle assets are serializable"),
+                    file_count: inspection.statistics.files as u64,
+                    total_bytes: inspection.statistics.bytes,
                 });
             let metadata = item.path.symlink_metadata()?;
             let is_link = metadata.file_type().is_symlink();
@@ -146,7 +164,7 @@ fn records(
                     "not-applicable"
                 }
                 .into(),
-                bundle_hash: item.fingerprint.clone(),
+                bundle_hash: inspection.fingerprint,
             });
         }
     }
@@ -250,7 +268,12 @@ mod tests {
         let root = dir.path().join("skills");
         let path = root.join("demo");
         fs::create_dir_all(&path).unwrap();
-        fs::write(path.join("SKILL.md"), "---\nname: Demo\n---\n# Demo").unwrap();
+        fs::write(
+            path.join("SKILL.md"),
+            "---\nname: Demo\nversion: 1.2.3\nauthor: Ada\n---\n# Demo",
+        )
+        .unwrap();
+        fs::write(path.join("notes.txt"), "actual bundle file").unwrap();
         let overview = SkillsOverview {
             agents: vec![SkillAgent {
                 provider_id: "codex".into(),
@@ -290,7 +313,19 @@ mod tests {
             .connection()
             .query_row("SELECT COUNT(*) FROM skill_catalog", [], |row| row.get(0))
             .unwrap();
+        let metadata: (Option<String>, Option<String>, i64, String) = store
+            .connection()
+            .query_row(
+                "SELECT version, author, file_count, file_manifest_json FROM skill_catalog",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
         assert_eq!(summary.installations_seen, 1);
         assert_eq!(count, 1);
+        assert_eq!(metadata.0.as_deref(), Some("1.2.3"));
+        assert_eq!(metadata.1.as_deref(), Some("Ada"));
+        assert_eq!(metadata.2, 2);
+        assert!(metadata.3.contains("notes.txt"));
     }
 }
