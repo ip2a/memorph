@@ -244,7 +244,7 @@ impl<'a> SnapshotStore<'a> {
                 {message_count_sql},
                 COALESCE(ss.event_count, s.event_count, 0),
                 COALESCE(ss.turn_count, s.turn_count, 0),
-                src.file_size_bytes,
+                CASE WHEN src.storage_shape = 'sqlite' OR instr(src.source_path, '#') > 0 THEN NULL ELSE src.file_size_bytes END,
                 ss.flags_json,
                 COALESCE(workspace.hidden, local.hidden),
                 COALESCE(workspace.pinned, local.pinned),
