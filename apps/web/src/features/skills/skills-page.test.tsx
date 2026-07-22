@@ -146,10 +146,7 @@ beforeEach(() => {
   mocks.useSkillAnalysis.mockReturnValue({ data: { skills: [] } });
 });
 
-afterEach(() => {
-  localStorage.clear();
-  cleanup();
-});
+afterEach(() => cleanup());
 
 describe("SkillsPage", () => {
   it("renders the /skills route and filters discovered skills", async () => {

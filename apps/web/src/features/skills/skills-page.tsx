@@ -4,7 +4,6 @@ import {
   CopyIcon,
   RefreshCwIcon,
   SearchIcon,
-  StarIcon,
   Trash2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -135,21 +134,6 @@ export function SkillsPage() {
   const uninstallMutation = useUninstallSkill();
   const [search, setSearch] = useState("");
   const [scope, setScope] = useState("all");
-  const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [favorites, setFavorites] = useState<string[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("memorph.skill-favorites") || "[]");
-    } catch {
-      return [];
-    }
-  });
-  const [collections, setCollections] = useState<Record<string, string>>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("memorph.skill-collections") || "{}");
-    } catch {
-      return {};
-    }
-  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [sourceProvider, setSourceProvider] = useState<string | undefined>();
@@ -168,35 +152,20 @@ export function SkillsPage() {
       ) {
         return false;
       }
-      if (favoritesOnly && !favorites.includes(skill.id)) return false;
-      return !query ||
-        `${skill.name} ${skill.description || ""} ${collections[skill.id] || ""}`
+      return (
+        !query ||
+        `${skill.name} ${skill.description || ""}`
           .toLocaleLowerCase()
-          .includes(query);
+          .includes(query)
+      );
     });
-  }, [collections, favorites, favoritesOnly, scope, search, skillsQuery.data?.skills]);
+  }, [scope, search, skillsQuery.data?.skills]);
 
   const selected =
     skills.find((skill) => skill.id === selectedId) || skills[0] || null;
   const selectedUsage = analysisQuery.data?.skills.find(
     (usage) => usage.skill_id === selected?.id,
   );
-  const favorite = selected ? favorites.includes(selected.id) : false;
-
-  function toggleFavorite(skillId: string) {
-    const next = favorites.includes(skillId)
-      ? favorites.filter((id) => id !== skillId)
-      : [...favorites, skillId];
-    setFavorites(next);
-    localStorage.setItem("memorph.skill-favorites", JSON.stringify(next));
-  }
-
-  function setCollection(skillId: string, value: string) {
-    const next = { ...collections, [skillId]: value };
-    if (!value.trim()) delete next[skillId];
-    setCollections(next);
-    localStorage.setItem("memorph.skill-collections", JSON.stringify(next));
-  }
   const selectedSource = selected?.installations.some(
     (item) => item.provider_id === sourceProvider,
   )
@@ -278,7 +247,7 @@ export function SkillsPage() {
                 className="pl-9"
               />
             </label>
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <div className="grid">
               <select
                 aria-label="Skill 范围"
                 value={scope}
@@ -292,15 +261,6 @@ export function SkillsPage() {
                   </option>
                 ))}
               </select>
-              <Button
-                type="button"
-                size="sm"
-                variant={favoritesOnly ? "secondary" : "outline"}
-                onClick={() => setFavoritesOnly((value) => !value)}
-              >
-                <StarIcon data-icon="inline-start" />
-                收藏
-              </Button>
             </div>
             <div className="grid grid-cols-3 gap-2 text-center text-xs">
               <div className="rounded-md border p-2">
@@ -391,20 +351,8 @@ export function SkillsPage() {
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <h2 className="text-xl font-semibold">{selected.name}</h2>
                   <Badge variant="secondary">{selected.directory}</Badge>
-                  {collections[selected.id] ? (
-                    <Badge variant="outline">{collections[selected.id]}</Badge>
-                  ) : null}
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant={favorite ? "secondary" : "outline"}
-                    size="icon-sm"
-                    aria-label={favorite ? "取消收藏" : "收藏 Skill"}
-                    onClick={() => toggleFavorite(selected.id)}
-                  >
-                    <StarIcon className={favorite ? "fill-current" : undefined} />
-                  </Button>
                   {refreshButton}
                 </div>
               </div>
@@ -450,16 +398,6 @@ export function SkillsPage() {
                     </strong>
                   </div>
                 </section>
-
-                <label className="flex items-center gap-3 rounded-lg border p-3 text-sm">
-                  <span className="shrink-0 font-medium">集合</span>
-                  <Input
-                    aria-label="Skill 集合"
-                    value={collections[selected.id] || ""}
-                    onChange={(event) => setCollection(selected.id, event.target.value)}
-                    placeholder="例如：文档、开发、设计"
-                  />
-                </label>
 
                 <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <div className="rounded-lg border p-3">
