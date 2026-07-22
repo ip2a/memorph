@@ -6,6 +6,7 @@ pub mod detection;
 pub mod health;
 pub mod invocation;
 pub mod model;
+pub mod prune;
 pub mod repository;
 pub mod scanner;
 pub mod server;

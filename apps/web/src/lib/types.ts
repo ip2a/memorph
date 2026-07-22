@@ -1754,3 +1754,32 @@ export type SkillCoverageSummaryItem = {
   total: number;
   percent: number;
 };
+
+export type SkillPruneItem = {
+  installation_id: string;
+  skill_id: string;
+  name: string;
+  install_path: string;
+  install_kind: string;
+  unused_since_ms: number;
+  last_invoked_at_ms?: number | null;
+  installation_bytes: number;
+  metadata_tokens: number;
+  low_confidence_observations: number;
+  action: string;
+  executable: boolean;
+  blocked_reason?: string | null;
+  expected_fingerprint: string;
+};
+export type SkillPrunePreview = {
+  preview_id: string;
+  days: number;
+  completeness_status: string;
+  blocked_reason?: string | null;
+  items: SkillPruneItem[];
+};
+export type SkillPruneResult = {
+  installation_id: string;
+  status: string;
+  message: string;
+};

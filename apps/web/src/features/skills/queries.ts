@@ -21,6 +21,8 @@ import {
   getSkillStatsSummary,
   ignoreSkillRelationCandidate,
   installSkill,
+  previewSkillPrune,
+  executeSkillPrune,
   saveSkillGroup,
   saveSkillRelation,
   uninstallSkill,
@@ -98,6 +100,27 @@ export function useSkillCoverage(skillId: string | null, range: string) {
       : ["skills", "coverage", "none"],
     queryFn: () => getSkillCoverage(skillId as string, range),
     enabled: Boolean(skillId),
+  });
+}
+
+export function useSkillPrune(days: number) {
+  return useQuery({
+    queryKey: queryKeys.skillPrune(days),
+    queryFn: () => previewSkillPrune(days),
+  });
+}
+export function useExecuteSkillPrune() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      preview,
+      installationIds,
+    }: {
+      preview: import("@/lib/types").SkillPrunePreview;
+      installationIds: string[];
+    }) => executeSkillPrune(preview, installationIds),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
   });
 }
 

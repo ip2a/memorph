@@ -71,6 +71,8 @@ import type {
   SkillHealthSummary,
   SkillInvocationPage,
   SkillRanking,
+  SkillPrunePreview,
+  SkillPruneResult,
   SkillStatsParams,
   SkillStatsSummary,
   SkillUsageOverview,
@@ -687,6 +689,31 @@ export function getSkillCoverage(skillId: string, range = "90d") {
   return api<SkillCoverage>(
     `/api/v1/skills/${encodeURIComponent(skillId)}/coverage${buildQuery({ range })}`,
   );
+}
+
+export function previewSkillPrune(days = 30) {
+  return api<SkillPrunePreview>("/api/v1/skills/prune/preview", {
+    method: "POST",
+    body: JSON.stringify({ days }),
+  });
+}
+export function executeSkillPrune(
+  preview: SkillPrunePreview,
+  installationIds: string[],
+) {
+  return api<SkillPruneResult[]>("/api/v1/skills/prune/execute", {
+    method: "POST",
+    body: JSON.stringify({
+      preview_id: preview.preview_id,
+      items: preview.items
+        .filter((item) => installationIds.includes(item.installation_id))
+        .map((item) => ({
+          installation_id: item.installation_id,
+          expected_fingerprint: item.expected_fingerprint,
+        })),
+      confirmation: "REMOVE_MANAGED_INSTALLATIONS",
+    }),
+  });
 }
 
 export function getSkillStatsSummary(params: SkillStatsParams = {}) {

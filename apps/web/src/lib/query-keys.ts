@@ -75,6 +75,7 @@ export const queryKeys = {
   skillContext: (id: string, baseline?: number) =>
     ["skills", id, "context", baseline] as const,
   skillHealthSummary: ["skills", "health", "summary"] as const,
+  skillPrune: (days: number) => ["skills", "prune", days] as const,
   skillHealth: (id: string) => ["skills", id, "health"] as const,
   skillConflicts: (id?: string) =>
     ["skills", id ?? "all", "conflicts"] as const,

@@ -23,6 +23,7 @@ use super::{
     health,
     invocation::{self, StatsQuery},
     model::{IgnoredSkillCandidate, SkillGroup, SkillRelationRule, SkillRelationsConfig},
+    prune,
     repository::{self, CatalogQuery},
     scanner::{self, ScanMode},
     store,
@@ -179,6 +180,8 @@ fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) ->
             get(get_conflicts).post(check_conflicts),
         )
         .route("/api/v1/skills/coverage/summary", get(get_coverage_summary))
+        .route("/api/v1/skills/prune/preview", post(preview_prune))
+        .route("/api/v1/skills/prune/execute", post(execute_prune))
         .route(
             "/api/v1/skills/health/summary",
             get(get_health_summary).post(check_health_summary),
@@ -1133,6 +1136,46 @@ fn stats_store(state: &SkillsState) -> Result<crate::storage::local_store::Local
     match state.database_path.as_deref() {
         Some(path) => crate::storage::local_store::LocalSqliteStore::open(path),
         None => crate::storage::local_store::LocalSqliteStore::open_default(),
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PrunePreviewRequest {
+    days: Option<u32>,
+}
+async fn preview_prune(
+    State(state): State<SkillsState>,
+    Json(request): Json<PrunePreviewRequest>,
+) -> impl IntoResponse {
+    let result = stats_store(&state)
+        .and_then(|store| prune::preview(store.connection(), request.days.unwrap_or(30)));
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+async fn execute_prune(
+    State(state): State<SkillsState>,
+    Json(request): Json<prune::ExecuteRequest>,
+) -> impl IntoResponse {
+    let roots = state
+        .agents
+        .iter()
+        .map(|agent| agent.skills_dir.clone())
+        .collect::<Vec<_>>();
+    let result =
+        stats_store(&state).and_then(|store| prune::execute(store.connection(), &roots, &request));
+    match result {
+        Ok(value) => ApiResponse::success(value).into_response(),
+        Err(error) => (
+            StatusCode::CONFLICT,
+            Json(ApiResponse::<()> {
+                ok: false,
+                data: None,
+                error: Some(error.to_string()),
+            }),
+        )
+            .into_response(),
     }
 }
 
