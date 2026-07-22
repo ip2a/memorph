@@ -1509,13 +1509,15 @@ impl App {
 
         let mut policy = core::active_compression::ActiveCompressionPolicy::default();
         policy.mode = core::active_compression::ActiveCompressionMode::PlanOnly;
-        match core::compression_application::active_compression_dry_run(&core::compression_application::ActiveCompressionDryRunParams {
-            source_provider_id: selected.provider_id,
-            target_provider_id: target.to_string(),
-            session_id: Some(selected.session_id),
-            file: None,
-            policy,
-        }) {
+        match core::compression_application::active_compression_dry_run(
+            &core::compression_application::ActiveCompressionDryRunParams {
+                source_provider_id: selected.provider_id,
+                target_provider_id: target.to_string(),
+                session_id: Some(selected.session_id),
+                file: None,
+                policy,
+            },
+        ) {
             Ok(report) => {
                 self.compression_selected_candidate_ids = report
                     .candidates

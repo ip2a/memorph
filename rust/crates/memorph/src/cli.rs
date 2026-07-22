@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "memorph")]
@@ -23,6 +23,18 @@ pub enum Commands {
         /// Filter to a provider (repeatable)
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Vec<String>,
+        /// Sort sessions
+        #[arg(long, value_enum, default_value_t = ListSort::Recent)]
+        sort: ListSort,
+        /// Maximum sessions to return
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Number of sessions to skip
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        /// Print sessions as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Export a session to file(s)
     Export {
@@ -98,6 +110,9 @@ pub enum Commands {
         /// Restrict to provider (can be used multiple times)
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Vec<String>,
+        /// Print matches as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Show provider capability quality and risk
     Providers {
@@ -185,6 +200,12 @@ pub enum Commands {
         #[arg(long)]
         blocking: bool,
     },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ListSort {
+    Recent,
+    Title,
 }
 
 #[derive(Subcommand)]
