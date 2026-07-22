@@ -229,6 +229,45 @@ impl<'a> SessionIndexStore<'a> {
         )?;
         Ok(changed == 1)
     }
+
+    pub fn replace_daily_stats(
+        &mut self,
+        canonical_session_id: &str,
+        events: &[crate::canonical::SessionEvent],
+    ) -> Result<()> {
+        const DAY_MS: i64 = 86_400_000;
+        let mut days = std::collections::BTreeMap::<i64, (usize, usize)>::new();
+        for event in events {
+            let timestamp = event.timestamp.timestamp_millis();
+            if !crate::utils::is_plausible_timestamp_ms(timestamp) {
+                continue;
+            }
+            let day = timestamp.div_euclid(DAY_MS) * DAY_MS;
+            let counts = days.entry(day).or_default();
+            counts.0 += 1;
+            counts.1 += usize::from(crate::provider::canonical_event_is_visible_message(event));
+        }
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM session_daily_stats WHERE session_id = ?1",
+            [canonical_session_id],
+        )?;
+        for (day, (event_count, message_count)) in days {
+            tx.execute(
+                "INSERT INTO session_daily_stats
+                 (session_id, day_start_ms, event_count, message_count)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    canonical_session_id,
+                    day,
+                    event_count as i64,
+                    message_count as i64
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 fn storage_shape_name(shape: StorageShape) -> &'static str {

@@ -304,31 +304,15 @@ pub(super) fn bootstrap_provider_session(
         );
     match freshness {
         Ok(true) => {
-            if session.created_at.is_some()
+            let needs_creation = session.created_at.is_some()
                 && session_creation_time_needs_backfill(conn, provider_id, &session.session_id)
-                    .unwrap_or(false)
-            {
-                match crate::storage::session_index_store::SessionIndexStore::new(conn)
-                    .write_session_summary(
-                        provider_id,
-                        session,
-                        provider.capabilities(),
-                        &fingerprint,
-                    ) {
-                    Ok(_) => report.projected_sessions += 1,
-                    Err(error) => {
-                        report.failed_sessions += 1;
-                        report.failures.push(bootstrap_failure(
-                            provider_id,
-                            session,
-                            format!("failed to backfill session creation time: {error:#}"),
-                        ));
-                    }
-                }
+                    .unwrap_or(false);
+            let needs_counts = session_counts_need_backfill(conn, provider_id, &session.session_id)
+                .unwrap_or(true);
+            if !needs_creation && !needs_counts {
+                report.unchanged_sessions += 1;
                 return;
             }
-            report.unchanged_sessions += 1;
-            return;
         }
         Ok(false) => {}
         Err(error) => {
@@ -342,13 +326,10 @@ pub(super) fn bootstrap_provider_session(
         }
     }
 
-    match crate::storage::session_index_store::SessionIndexStore::new(conn).write_session_summary(
-        provider_id,
-        session,
-        provider.capabilities(),
-        &fingerprint,
-    ) {
-        Ok(_) => report.projected_sessions += 1,
+    let stored = match crate::storage::session_index_store::SessionIndexStore::new(conn)
+        .write_session_summary(provider_id, session, provider.capabilities(), &fingerprint)
+    {
+        Ok(stored) => stored,
         Err(error) => {
             report.failed_sessions += 1;
             report.failures.push(bootstrap_failure(
@@ -356,8 +337,73 @@ pub(super) fn bootstrap_provider_session(
                 session,
                 format!("failed to project provider session: {error:#}"),
             ));
+            return;
+        }
+    };
+    match provider.import_session_page(source_path, 0, None) {
+        Ok(page) if page.turn_count.is_some() => {
+            let event_count = page.imported.session.events.len();
+            let message_count = page
+                .imported
+                .session
+                .events
+                .iter()
+                .filter(|event| crate::provider::canonical_event_is_visible_message(event))
+                .count();
+            let mut store = crate::storage::session_index_store::SessionIndexStore::new(conn);
+            let result = store
+                .record_complete_counts(
+                    &stored.canonical_session_id,
+                    &fingerprint.value,
+                    event_count,
+                    message_count,
+                    page.turn_count.unwrap(),
+                )
+                .and_then(|_| {
+                    store.replace_daily_stats(
+                        &stored.canonical_session_id,
+                        &page.imported.session.events,
+                    )
+                });
+            match result {
+                Ok(()) => report.projected_sessions += 1,
+                Err(error) => {
+                    report.failed_sessions += 1;
+                    report.failures.push(bootstrap_failure(
+                        provider_id,
+                        session,
+                        format!("failed to persist complete session statistics: {error:#}"),
+                    ));
+                }
+            }
+        }
+        Ok(_) => report.projected_sessions += 1,
+        Err(error) => {
+            report.failed_sessions += 1;
+            report.failures.push(bootstrap_failure(
+                provider_id,
+                session,
+                format!("failed to calculate complete session statistics: {error:#}"),
+            ));
         }
     }
+}
+
+fn session_counts_need_backfill(
+    conn: &rusqlite::Connection,
+    provider_id: &str,
+    provider_session_id: &str,
+) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT COALESCE(ss.counts_complete, 0) = 0
+         FROM sessions s
+         LEFT JOIN session_snapshots ss ON ss.session_id = s.id
+         WHERE s.provider_id = ?1 AND s.provider_session_id = ?2 AND s.deleted_at_ms IS NULL",
+            rusqlite::params![provider_id, provider_session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or(true))
 }
 
 fn session_creation_time_needs_backfill(

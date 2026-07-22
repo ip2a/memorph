@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 static JOURNAL_MODE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -227,7 +227,25 @@ fn apply_skill_schema(conn: &mut Connection) -> Result<()> {
     }
     tx.commit()
         .context("Failed to commit memorph DB schema v10 migration")?;
-    Ok(())
+    apply_stats_schema(conn)
+}
+
+fn apply_stats_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("Failed to start memorph DB schema v11 migration")?;
+    let applied = applied_migrations(&tx)?;
+    if !applied.contains(&11) {
+        tx.execute_batch(V11_SCHEMA)
+            .context("Failed to apply memorph DB schema v11")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![11, "session_daily_stats_v11"],
+        )?;
+    }
+    tx.commit()
+        .context("Failed to commit memorph DB schema v11 migration")
 }
 
 fn create_schema_migrations_table(conn: &Connection) -> Result<()> {
@@ -1101,6 +1119,19 @@ CREATE TABLE skill_coverage_observations (
 CREATE INDEX idx_skill_coverage_skill_target
     ON skill_coverage_observations(skill_id, target_kind, target_key, observed_at_ms DESC);
 CREATE INDEX idx_skill_coverage_invocation ON skill_coverage_observations(invocation_id);
+"#;
+
+const V11_SCHEMA: &str = r#"
+CREATE TABLE session_daily_stats (
+    session_id TEXT NOT NULL,
+    day_start_ms INTEGER NOT NULL,
+    event_count INTEGER NOT NULL,
+    message_count INTEGER NOT NULL,
+    PRIMARY KEY (session_id, day_start_ms),
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_session_daily_stats_day ON session_daily_stats(day_start_ms);
+UPDATE session_snapshots SET counts_complete = 0;
 "#;
 
 #[cfg(test)]

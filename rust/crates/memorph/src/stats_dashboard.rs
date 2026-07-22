@@ -210,10 +210,39 @@ fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<Stats
 }
 
 fn load_event_facts(
-    _conn: &rusqlite::Connection,
+    conn: &rusqlite::Connection,
     rows: &[ProjectedSessionSnapshotRow],
 ) -> Result<HashMap<String, EventFacts>> {
-    Ok(snapshot_facts(rows))
+    let mut facts = snapshot_facts(rows);
+    if rows.is_empty() {
+        return Ok(facts);
+    }
+    let ids: HashSet<_> = rows
+        .iter()
+        .map(|row| row.canonical_session_id.as_str())
+        .collect();
+    let mut stmt = conn.prepare(
+        "SELECT session_id, day_start_ms, event_count, message_count FROM session_daily_stats",
+    )?;
+    for row in stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?.max(0) as usize,
+            row.get::<_, i64>(3)?.max(0) as usize,
+        ))
+    })? {
+        let (session_id, day, event_count, message_count) = row?;
+        if !ids.contains(session_id.as_str()) {
+            continue;
+        }
+        if let Some(item) = facts.get_mut(&session_id) {
+            item.timestamps
+                .extend((0..event_count).map(|index| (day, index < message_count)));
+            item.timestamped_messages += message_count;
+        }
+    }
+    Ok(facts)
 }
 
 fn load_created_at(
@@ -298,14 +327,14 @@ fn build_dashboard(
                     .map_or(0, |facts| facts.message_count)
             })
             .sum(),
-        active_session_messages: active
-            .iter()
-            .map(|row| {
-                event_facts
-                    .get(&row.canonical_session_id)
-                    .map_or(0, |facts| facts.message_count)
+        active_session_messages: event_facts
+            .values()
+            .flat_map(|facts| &facts.timestamps)
+            .filter(|(timestamp, is_message)| {
+                *is_message
+                    && range_start.is_none_or(|start| *timestamp >= start.timestamp_millis())
             })
-            .sum(),
+            .count(),
         total_size_bytes: rows.iter().filter_map(|row| row.size_bytes).sum(),
         unknown_message_counts: rows
             .iter()
@@ -690,6 +719,12 @@ mod tests {
     #[test]
     fn loads_message_counts_from_bodyless_snapshots() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session_daily_stats (
+                session_id TEXT, day_start_ms INTEGER, event_count INTEGER, message_count INTEGER
+            );",
+        )
+        .unwrap();
         let rows = vec![row("session", "codex", Some("/a"), Some(20), 2, 100)];
 
         let facts = load_event_facts(&conn, &rows).unwrap();
