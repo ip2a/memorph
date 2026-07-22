@@ -9,8 +9,10 @@ pub mod copilot;
 pub mod cursor;
 pub mod deepseek;
 pub mod droid;
+pub mod emerging;
 pub(crate) mod environment_profiles;
 pub mod gemini;
+pub(crate) mod generic_json;
 pub mod hermes;
 pub mod kimi;
 pub mod kiro;
@@ -34,6 +36,7 @@ const PROVIDER_IDS: &[&str] = &[
     "cursor",
     "opencode",
     "openclaw",
+    "augment",
     "kiro",
     "deepseek",
     "kimi",
@@ -80,6 +83,7 @@ impl ProviderRegistry {
             "kimi" => Some(Box::new(kimi::KimiProvider)),
             "opencode" => Some(Box::new(opencode::OpenCodeProvider)),
             "openclaw" => Some(Box::new(openclaw::OpenClawProvider)),
+            "augment" => Some(Box::new(emerging::AugmentProvider)),
             _ => None,
         }
     }
@@ -145,6 +149,7 @@ mod tests {
             "hermes",
             "pi",
             "openclaw",
+            "augment",
         ] {
             assert!(
                 all_provider_ids().contains(&id),

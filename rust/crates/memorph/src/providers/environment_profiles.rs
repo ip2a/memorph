@@ -3,6 +3,7 @@ use std::path::PathBuf;
 pub(crate) fn executable_candidates(provider_id: &str) -> &'static [&'static str] {
     let provider_id = crate::providers::canonical_provider_id(provider_id);
     match provider_id.as_str() {
+        "augment" => &["auggie"],
         "antigravity" => &["antigravity"],
         "claude" => &["claude"],
         "codex" => &["codex"],
@@ -30,6 +31,7 @@ pub(crate) fn executable_candidates(provider_id: &str) -> &'static [&'static str
 pub(crate) fn config_path(provider_id: &str) -> PathBuf {
     let provider_id = crate::providers::canonical_provider_id(provider_id);
     match provider_id.as_str() {
+        "augment" => home_join(".augment"),
         "antigravity" => home_join(".antigravity"),
         "claude" => home_join(".claude"),
         "codex" => home_join(".codex"),

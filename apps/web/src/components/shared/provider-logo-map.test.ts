@@ -10,6 +10,8 @@ describe("resolveProviderLogoAssetId", () => {
     expect(resolveProviderLogoAssetId("codex")).toBe("codex");
     expect(resolveProviderLogoAssetId("kimi")).toBe("kimi-for-coding");
     expect(resolveProviderLogoAssetId("copilot")).toBe("github-copilot");
+    expect(resolveProviderLogoAssetId("openclaw")).toBe("openclaw");
+    expect(resolveProviderLogoAssetId("augment")).toBe("augment");
   });
 
   it("accepts direct asset ids", () => {

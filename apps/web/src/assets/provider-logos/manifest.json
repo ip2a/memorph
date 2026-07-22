@@ -5,8 +5,9 @@
   "providers": [
     "alibaba",
     "amazon-bedrock",
-    "antigravity",
     "anthropic",
+    "antigravity",
+    "augment",
     "claude",
     "cline",
     "codebuddy",
@@ -18,9 +19,10 @@
     "github-copilot",
     "google",
     "hermes",
-    "kiro",
     "kimi-for-coding",
+    "kiro",
     "openai",
+    "openclaw",
     "opencode",
     "pi",
     "qoder",
@@ -49,7 +51,9 @@
     "hermes": "hermes",
     "pi": "pi",
     "droid": "droid",
-    "workbuddy": "workbuddy"
+    "workbuddy": "workbuddy",
+    "augment": "augment",
+    "openclaw": "openclaw"
   },
   "unmapped_memorph_providers": [],
   "external_sources": {
@@ -67,6 +71,8 @@
     "kiro": "https://kiro.dev/icon.svg",
     "pi": "https://pi.dev/logo-auto.svg",
     "droid": "https://factory.ai/favicon.svg",
-    "workbuddy": "https://codebuddy-1328495429.cos.accelerate.myqcloud.com/web/workbuddy/d1d0b9329b771f020a1025d11661a33296390d7c/assets/logo.svg"
+    "workbuddy": "https://codebuddy-1328495429.cos.accelerate.myqcloud.com/web/workbuddy/d1d0b9329b771f020a1025d11661a33296390d7c/assets/logo.svg",
+    "augment": "https://www.augmentcode.com/favicon.svg",
+    "openclaw": "https://openclaw.ai/favicon.svg"
   }
 }

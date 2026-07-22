@@ -4,46 +4,6 @@ use crate::providers::generic_json::{self, JsonProviderSpec};
 use anyhow::Result;
 use std::path::PathBuf;
 
-macro_rules! json_read_provider {
-    ($struct_name:ident, $provider_id:literal, $name:literal, $roots:ident, $resume:expr) => {
-        pub struct $struct_name;
-
-        impl Provider for $struct_name {
-            fn id(&self) -> &'static str {
-                $provider_id
-            }
-
-            fn name(&self) -> &'static str {
-                $name
-            }
-
-            fn capabilities(&self) -> ProviderCapabilities {
-                ProviderCapabilities {
-                    scan: true,
-                    import: true,
-                    export: false,
-                    delete: false,
-                    rename: false,
-                    resume: $resume.is_some(),
-                    ..ProviderCapabilities::default()
-                }
-            }
-
-            fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
-                generic_json::scan_sessions(spec($provider_id, $roots))
-            }
-
-            fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
-                generic_json::import_session(spec($provider_id, $roots), source_path)
-            }
-
-            fn resume_command(&self, session_id: &str) -> Option<String> {
-                $resume.map(|command: &'static str| format!("{} {}", command, session_id))
-            }
-        }
-    };
-}
-
 fn spec(provider_id: &'static str, roots: fn() -> Vec<PathBuf>) -> JsonProviderSpec {
     JsonProviderSpec {
         provider_id,
@@ -85,10 +45,39 @@ fn vscode_global_storage(app: &str) -> Vec<PathBuf> {
     roots
 }
 
-fn trae_roots() -> Vec<PathBuf> {
-    let mut roots = vscode_global_storage("Trae");
-    if let Some(root) = home_join(".trae") {
-        roots.push(root);
+pub struct AugmentProvider;
+
+fn augment_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(home) = home_join(".augment") {
+        roots.push(home);
     }
+    roots.extend(
+        vscode_global_storage("Code")
+            .into_iter()
+            .map(|root| root.join("augmentcode.augment")),
+    );
     roots
+}
+
+impl Provider for AugmentProvider {
+    fn id(&self) -> &'static str {
+        "augment"
+    }
+    fn name(&self) -> &'static str {
+        "Augment"
+    }
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            scan: true,
+            import: true,
+            ..ProviderCapabilities::default()
+        }
+    }
+    fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
+        generic_json::scan_sessions(spec("augment", augment_roots))
+    }
+    fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
+        generic_json::import_session(spec("augment", augment_roots), source_path)
+    }
 }
