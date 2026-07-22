@@ -4,6 +4,7 @@ import {
   CopyIcon,
   RefreshCwIcon,
   SearchIcon,
+  StarIcon,
   Trash2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -133,6 +134,22 @@ export function SkillsPage() {
   const installMutation = useInstallSkill();
   const uninstallMutation = useUninstallSkill();
   const [search, setSearch] = useState("");
+  const [scope, setScope] = useState("all");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [favorites, setFavorites] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("memorph.skill-favorites") || "[]");
+    } catch {
+      return [];
+    }
+  });
+  const [collections, setCollections] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("memorph.skill-collections") || "{}");
+    } catch {
+      return {};
+    }
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [sourceProvider, setSourceProvider] = useState<string | undefined>();
@@ -144,19 +161,42 @@ export function SkillsPage() {
 
   const skills = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
-    if (!query) return skillsQuery.data?.skills || [];
-    return (skillsQuery.data?.skills || []).filter((skill) =>
-      `${skill.name} ${skill.description || ""}`
-        .toLocaleLowerCase()
-        .includes(query),
-    );
-  }, [search, skillsQuery.data?.skills]);
+    return (skillsQuery.data?.skills || []).filter((skill) => {
+      if (
+        scope !== "all" &&
+        !skill.installations.some((item) => item.provider_id === scope)
+      ) {
+        return false;
+      }
+      if (favoritesOnly && !favorites.includes(skill.id)) return false;
+      return !query ||
+        `${skill.name} ${skill.description || ""} ${collections[skill.id] || ""}`
+          .toLocaleLowerCase()
+          .includes(query);
+    });
+  }, [collections, favorites, favoritesOnly, scope, search, skillsQuery.data?.skills]);
 
   const selected =
     skills.find((skill) => skill.id === selectedId) || skills[0] || null;
   const selectedUsage = analysisQuery.data?.skills.find(
     (usage) => usage.skill_id === selected?.id,
   );
+  const favorite = selected ? favorites.includes(selected.id) : false;
+
+  function toggleFavorite(skillId: string) {
+    const next = favorites.includes(skillId)
+      ? favorites.filter((id) => id !== skillId)
+      : [...favorites, skillId];
+    setFavorites(next);
+    localStorage.setItem("memorph.skill-favorites", JSON.stringify(next));
+  }
+
+  function setCollection(skillId: string, value: string) {
+    const next = { ...collections, [skillId]: value };
+    if (!value.trim()) delete next[skillId];
+    setCollections(next);
+    localStorage.setItem("memorph.skill-collections", JSON.stringify(next));
+  }
   const selectedSource = selected?.installations.some(
     (item) => item.provider_id === sourceProvider,
   )
@@ -238,6 +278,63 @@ export function SkillsPage() {
                 className="pl-9"
               />
             </label>
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+              <select
+                aria-label="Skill 范围"
+                value={scope}
+                onChange={(event) => setScope(event.target.value)}
+                className="h-8 rounded-lg border bg-background px-2 text-sm"
+              >
+                <option value="all">全部范围</option>
+                {skillsQuery.data?.agents.map((agent) => (
+                  <option key={agent.provider_id} value={agent.provider_id}>
+                    {agent.name}
+                  </option>
+                ))}
+              </select>
+              <Button
+                type="button"
+                size="sm"
+                variant={favoritesOnly ? "secondary" : "outline"}
+                onClick={() => setFavoritesOnly((value) => !value)}
+              >
+                <StarIcon data-icon="inline-start" />
+                收藏
+              </Button>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="rounded-md border p-2">
+                <strong className="block text-base">
+                  {analysisQuery.data?.scanned_sessions ?? 0}
+                </strong>
+                已扫描会话
+              </div>
+              <div className="rounded-md border p-2">
+                <strong className="block text-base">
+                  {analysisQuery.data?.invocations ?? 0}
+                </strong>
+                调用
+              </div>
+              <div className="rounded-md border p-2">
+                <strong className="block text-base">
+                  {analysisQuery.data?.skills.filter((item) => item.prune_candidate)
+                    .length ?? 0}
+                </strong>
+                清理建议
+              </div>
+              <div className="rounded-md border p-2">
+                <strong className="block text-base">
+                  {analysisQuery.data?.total_tokens?.toLocaleString() ?? 0}
+                </strong>
+                Token（令牌）
+              </div>
+              <div className="rounded-md border p-2">
+                <strong className="block text-base">
+                  {analysisQuery.data?.hook_sessions ?? 0}
+                </strong>
+                Hook（钩子）会话
+              </div>
+            </div>
             <div className="text-muted-foreground flex items-center justify-between text-xs">
               <span>{t("skillsFound", { count: skills.length })}</span>
               <span>
@@ -294,8 +391,22 @@ export function SkillsPage() {
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <h2 className="text-xl font-semibold">{selected.name}</h2>
                   <Badge variant="secondary">{selected.directory}</Badge>
+                  {collections[selected.id] ? (
+                    <Badge variant="outline">{collections[selected.id]}</Badge>
+                  ) : null}
                 </div>
-                {refreshButton}
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant={favorite ? "secondary" : "outline"}
+                    size="icon-sm"
+                    aria-label={favorite ? "取消收藏" : "收藏 Skill"}
+                    onClick={() => toggleFavorite(selected.id)}
+                  >
+                    <StarIcon className={favorite ? "fill-current" : undefined} />
+                  </Button>
+                  {refreshButton}
+                </div>
               </div>
               <ScrollPane
                 className="flex-1"
@@ -328,6 +439,51 @@ export function SkillsPage() {
                     <span className="text-muted-foreground text-xs">Hook（钩子）观测</span>
                     <strong className="mt-1 block text-xl">
                       {selectedUsage?.hook_observed ? "是" : "否"}
+                    </strong>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <span className="text-muted-foreground text-xs">成本</span>
+                    <strong className="mt-1 block text-xl">
+                      {selectedUsage?.estimated_cost_usd == null
+                        ? "未记录"
+                        : `$${selectedUsage.estimated_cost_usd.toFixed(4)}`}
+                    </strong>
+                  </div>
+                </section>
+
+                <label className="flex items-center gap-3 rounded-lg border p-3 text-sm">
+                  <span className="shrink-0 font-medium">集合</span>
+                  <Input
+                    aria-label="Skill 集合"
+                    value={collections[selected.id] || ""}
+                    onChange={(event) => setCollection(selected.id, event.target.value)}
+                    placeholder="例如：文档、开发、设计"
+                  />
+                </label>
+
+                <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <div className="rounded-lg border p-3">
+                    <span className="text-muted-foreground text-xs">健康分</span>
+                    <strong className="mt-1 block text-xl">
+                      {selectedUsage?.health_score ?? 100}
+                    </strong>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <span className="text-muted-foreground text-xs">上下文预算</span>
+                    <strong className="mt-1 block text-xl">
+                      {selectedUsage?.context_tokens.toLocaleString() ?? 0}
+                    </strong>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <span className="text-muted-foreground text-xs">覆盖率</span>
+                    <strong className="mt-1 block text-xl">
+                      {(selectedUsage?.coverage_percent ?? 0).toFixed(0)}%
+                    </strong>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <span className="text-muted-foreground text-xs">清理建议</span>
+                    <strong className="mt-1 block text-xl">
+                      {selectedUsage?.prune_candidate ? "未使用" : "保留"}
                     </strong>
                   </div>
                 </section>
@@ -408,6 +564,13 @@ export function SkillsPage() {
                     </button>
                   </Badge>
                 </div>
+                {analysisQuery.data?.trigger_conflicts?.some((item) =>
+                  item.skills.includes(selected.id),
+                ) ? (
+                  <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
+                    Trigger Conflict（触发冲突）：该 Skill 与其他 Skill 使用了相同触发词。
+                  </div>
+                ) : null}
                 {selected.conflict ? (
                   <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
                     多来源内容存在冲突。安装时必须明确选择来源。

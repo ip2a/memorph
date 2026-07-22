@@ -146,7 +146,10 @@ beforeEach(() => {
   mocks.useSkillAnalysis.mockReturnValue({ data: { skills: [] } });
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  localStorage.clear();
+  cleanup();
+});
 
 describe("SkillsPage", () => {
   it("renders the /skills route and filters discovered skills", async () => {
@@ -170,7 +173,10 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
 
-    const codex = screen.getByText("Codex").closest("div.rounded-lg");
+    const codex = screen
+      .getAllByText("Codex")
+      .map((element) => element.closest("div.rounded-lg"))
+      .find(Boolean);
     expect(codex).toBeTruthy();
     await user.click(
       within(codex as HTMLElement).getByRole("button", { name: "Install" }),
@@ -181,7 +187,10 @@ describe("SkillsPage", () => {
       source_provider: "claude",
     });
 
-    const gemini = screen.getByText("Gemini CLI").closest("div.rounded-lg");
+    const gemini = screen
+      .getAllByText("Gemini CLI")
+      .map((element) => element.closest("div.rounded-lg"))
+      .find(Boolean);
     expect(gemini).toBeTruthy();
     await user.click(
       within(gemini as HTMLElement).getByRole("button", { name: "Remove" }),
