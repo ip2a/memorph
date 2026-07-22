@@ -1766,6 +1766,7 @@ export type SkillGraphParams = {
 export type SkillCoverageEvidence = {
   invocation_id: string;
   session_id: string;
+  provider_id: string;
   event_id?: string | null;
   observed_at_ms: number;
   match_kind: string;

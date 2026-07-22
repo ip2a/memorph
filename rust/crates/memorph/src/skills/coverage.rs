@@ -55,6 +55,7 @@ pub struct CoverageSummaryItem {
 pub struct CoverageEvidence {
     pub invocation_id: String,
     pub session_id: String,
+    pub provider_id: String,
     pub event_id: Option<String>,
     pub observed_at_ms: i64,
     pub match_kind: String,
@@ -231,7 +232,7 @@ pub fn evidence(
         params![skill_id, target_key],
         |row| row.get::<_, i64>(0),
     )? as u64;
-    let mut statement = conn.prepare("SELECT o.invocation_id, i.session_id, i.event_id, o.observed_at_ms, o.match_kind, o.confidence, o.evidence_text FROM skill_coverage_observations o JOIN skill_invocations i ON i.id = o.invocation_id WHERE o.skill_id = ?1 AND o.target_key = ?2 ORDER BY o.observed_at_ms DESC LIMIT ?3 OFFSET ?4")?;
+    let mut statement = conn.prepare("SELECT o.invocation_id, i.session_id, i.provider_id, i.event_id, o.observed_at_ms, o.match_kind, o.confidence, o.evidence_text FROM skill_coverage_observations o JOIN skill_invocations i ON i.id = o.invocation_id WHERE o.skill_id = ?1 AND o.target_key = ?2 ORDER BY o.observed_at_ms DESC LIMIT ?3 OFFSET ?4")?;
     let rows = statement.query_map(
         params![
             skill_id,
@@ -243,11 +244,12 @@ pub fn evidence(
             Ok(CoverageEvidence {
                 invocation_id: row.get(0)?,
                 session_id: row.get(1)?,
-                event_id: row.get(2)?,
-                observed_at_ms: row.get(3)?,
-                match_kind: row.get(4)?,
-                confidence: row.get(5)?,
-                evidence_text: row.get(6)?,
+                provider_id: row.get(2)?,
+                event_id: row.get(3)?,
+                observed_at_ms: row.get(4)?,
+                match_kind: row.get(5)?,
+                confidence: row.get(6)?,
+                evidence_text: row.get(7)?,
             })
         },
     )?;

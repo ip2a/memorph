@@ -248,6 +248,53 @@ describe("SkillsPage", () => {
     );
   });
 
+  it("opens paged coverage evidence with the provider session route", async () => {
+    mocks.useSkillCoverage.mockReturnValue({
+      data: {
+        skill_id: "skill:document-writer",
+        covered: 1,
+        total: 1,
+        percent: 100,
+        completeness_status: "complete",
+        targets: [
+          {
+            target_kind: "section",
+            target_key: "intro",
+            section_title: "Introduction",
+            confidence: "high",
+            observations: 1,
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+    });
+    mocks.useSkillCoverageEvidence.mockReturnValue({
+      data: {
+        items: [
+          {
+            invocation_id: "invocation-1",
+            session_id: "session-1",
+            provider_id: "codex",
+            observed_at_ms: 1,
+            match_kind: "section-anchor",
+            confidence: "high",
+          },
+        ],
+        page: 1,
+        page_size: 20,
+        total: 1,
+      },
+    });
+    const user = userEvent.setup();
+    renderRoute();
+    await user.click(screen.getByText("Introduction"));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("覆盖证据");
+    expect(within(dialog).getByRole("link", { name: /打开会话/ }).getAttribute("href"))
+      .toBe("/sessions/codex/session-1");
+  });
+
   it("installs into a missing provider and safely removes a managed installation", async () => {
     const user = userEvent.setup();
     renderRoute();
