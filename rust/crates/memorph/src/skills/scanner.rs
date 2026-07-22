@@ -59,7 +59,11 @@ pub fn persist(
             conn,
             &agent.provider_id,
             &agent.scope_kind,
-            agent.workspace_dir.as_deref().map(|path| path.to_string_lossy()).as_deref(),
+            agent
+                .workspace_dir
+                .as_deref()
+                .map(|path| path.to_string_lossy())
+                .as_deref(),
             &agent.skills_dir.to_string_lossy(),
             &fingerprint,
             &catalog,
@@ -100,11 +104,9 @@ fn records(
     let mut catalog = BTreeMap::new();
     let mut installations = Vec::new();
     for skill in entries {
-        for item in skill
-            .installations
-            .iter()
-            .filter(|item| item.provider_id == agent.provider_id && item.path.join("SKILL.md").is_file())
-        {
+        for item in skill.installations.iter().filter(|item| {
+            item.provider_id == agent.provider_id && item.path.join("SKILL.md").is_file()
+        }) {
             let entry_path = item.path.join("SKILL.md");
             let entry = fs::read(&entry_path)
                 .with_context(|| format!("Failed to read {}", item.path.display()))?;
@@ -154,7 +156,10 @@ fn records(
                 skill_id: id,
                 provider_id: item.provider_id.clone(),
                 scope_kind: agent.scope_kind.clone(),
-                workspace_dir: agent.workspace_dir.as_ref().map(|path| path.to_string_lossy().into_owned()),
+                workspace_dir: agent
+                    .workspace_dir
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
                 install_path: item.path.to_string_lossy().into_owned(),
                 canonical_path: canonical.to_string_lossy().into_owned(),
                 install_kind: if is_link {
@@ -375,7 +380,9 @@ mod tests {
             .unwrap();
         let installation_status: String = store
             .connection()
-            .query_row("SELECT status FROM skill_installations", [], |row| row.get(0))
+            .query_row("SELECT status FROM skill_installations", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(rebuilt_state.0, 3);
         assert!(rebuilt_state.1.is_some());

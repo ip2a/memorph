@@ -1,13 +1,10 @@
 pub mod conflicts;
 pub mod context;
 pub mod coverage;
-pub mod detection;
 pub mod graph;
 pub mod health;
 pub mod invocation;
-pub mod model;
 pub mod prune;
 pub mod repository;
 pub mod scanner;
 pub mod server;
-pub mod store;
