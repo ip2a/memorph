@@ -167,7 +167,8 @@ pub(super) fn kimi_session_summary(
                 .filter_map(|line| serde_json::from_str::<Value>(&line).ok())
                 .find_map(|value| parse_wire_timestamp(&value))
                 .map(|timestamp| timestamp.timestamp_millis())
-        });
+        })
+        .or_else(|| file_created_ms(session_dir));
     let last_active_at = file_modified_ms(&session_dir.join("context.jsonl"))?;
 
     Ok(Some(ProviderSessionSummary {
@@ -223,6 +224,16 @@ pub(super) fn file_modified_ms(path: &Path) -> Result<Option<i64>> {
         Err(error) => Err(error)
             .with_context(|| format!("Failed to read Kimi source metadata: {}", path.display())),
     }
+}
+
+fn file_created_ms(path: &Path) -> Option<i64> {
+    std::fs::metadata(path)
+        .ok()?
+        .created()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
 }
 
 pub(super) fn metadata_modified_ms(metadata: &std::fs::Metadata) -> i64 {

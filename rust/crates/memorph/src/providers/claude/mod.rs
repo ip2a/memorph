@@ -1731,6 +1731,9 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
         });
 
     let _summary = summary.map(|text| truncate_summary(&text, 160));
+    let metadata = std::fs::metadata(path).ok();
+    created_at = created_at.or_else(|| metadata.as_ref().and_then(metadata_created_ms));
+    last_active_at = last_active_at.or_else(|| metadata.as_ref().and_then(metadata_modified_ms));
 
     Some(ProviderSessionSummary {
         session_id: session_id.clone(),
@@ -1740,6 +1743,20 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
         last_active_at,
         source_path: Some(path.to_string_lossy().to_string()),
     })
+}
+
+fn metadata_created_ms(metadata: &std::fs::Metadata) -> Option<i64> {
+    system_time_ms(metadata.created().ok()?)
+}
+
+fn metadata_modified_ms(metadata: &std::fs::Metadata) -> Option<i64> {
+    system_time_ms(metadata.modified().ok()?)
+}
+
+fn system_time_ms(time: std::time::SystemTime) -> Option<i64> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
 }
 
 #[cfg(test)]
@@ -1759,6 +1776,21 @@ mod tests {
         let session_path = project_dir.join(format!("{session_id}.jsonl"));
         std::fs::write(&session_path, content).unwrap();
         session_path
+    }
+
+    #[test]
+    fn summary_uses_file_times_when_title_only_source_has_no_timestamp() {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            br#"{"type":"ai-title","aiTitle":"Title","sessionId":"title-only"}
+"#,
+        )
+        .unwrap();
+
+        let summary = parse_session(file.path()).unwrap();
+        assert!(summary.created_at.is_some());
+        assert!(summary.last_active_at.is_some());
     }
 
     fn build_structured_claude_session() -> NamedTempFile {

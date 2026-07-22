@@ -203,6 +203,7 @@ fn scans_known_kimi_work_dirs_from_context_and_uses_directory_locators() {
         normal.last_active_at,
         file_modified_ms(&normal_dir.join("context.jsonl")).unwrap()
     );
+    assert!(normal.created_at.is_some());
 
     let context_only = sessions
         .iter()
