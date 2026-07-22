@@ -24,6 +24,8 @@ pub struct InstallationRecord {
     pub id: String,
     pub skill_id: String,
     pub provider_id: String,
+    pub scope_kind: String,
+    pub workspace_dir: Option<String>,
     pub install_path: String,
     pub canonical_path: String,
     pub install_kind: String,
@@ -132,6 +134,8 @@ pub fn scan_fingerprint(conn: &Connection, state_key: &str) -> Result<Option<Str
 pub fn persist_root(
     conn: &mut Connection,
     provider_id: &str,
+    scope_kind: &str,
+    workspace_dir: Option<&str>,
     root_path: &str,
     fingerprint: &str,
     catalog: &[CatalogRecord],
@@ -175,10 +179,12 @@ pub fn persist_root(
     }
     tx.execute(
         "UPDATE skill_installations SET status = 'missing', error_text = NULL
-         WHERE provider_id = ?1 AND status = 'active'
-           AND id NOT IN (SELECT value FROM json_each(?2))",
+         WHERE provider_id = ?1 AND scope_kind = ?2 AND workspace_dir IS ?3 AND status = 'active'
+           AND id NOT IN (SELECT value FROM json_each(?4))",
         params![
             provider_id,
+            scope_kind,
+            workspace_dir,
             serde_json::to_string(
                 &installations
                     .iter()
@@ -255,12 +261,13 @@ fn upsert_catalog(tx: &Transaction<'_>, skill: &CatalogRecord, now_ms: i64) -> R
 fn upsert_installation(tx: &Transaction<'_>, item: &InstallationRecord, now_ms: i64) -> Result<()> {
     tx.execute(
         "INSERT INTO skill_installations
-         (id, skill_id, provider_id, scope_kind, install_path, canonical_install_path,
+         (id, skill_id, provider_id, scope_kind, workspace_dir, install_path, canonical_install_path,
           install_kind, symlink_target, managed_marker_present, link_status, status, bundle_content_hash,
           discovered_at_ms, last_verified_at_ms)
-         VALUES (?1, ?2, ?3, 'global', ?4, ?5, ?6, ?7, ?8, ?9, 'active', ?10, ?11, ?11)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'active', ?12, ?13, ?13)
          ON CONFLICT(provider_id, canonical_install_path) DO UPDATE SET
-          skill_id = excluded.skill_id, install_path = excluded.install_path,
+          skill_id = excluded.skill_id, scope_kind = excluded.scope_kind,
+          workspace_dir = excluded.workspace_dir, install_path = excluded.install_path,
           install_kind = excluded.install_kind, symlink_target = excluded.symlink_target,
           managed_marker_present = excluded.managed_marker_present,
           link_status = excluded.link_status, bundle_content_hash = excluded.bundle_content_hash, status = 'active', removed_at_ms = NULL,
@@ -269,6 +276,8 @@ fn upsert_installation(tx: &Transaction<'_>, item: &InstallationRecord, now_ms: 
             item.id,
             item.skill_id,
             item.provider_id,
+            item.scope_kind,
+            item.workspace_dir,
             item.install_path,
             item.canonical_path,
             item.install_kind,

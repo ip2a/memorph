@@ -73,6 +73,8 @@ pub struct SkillAgent {
     pub provider_id: String,
     pub name: String,
     pub skills_dir: PathBuf,
+    pub scope_kind: String,
+    pub workspace_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -247,26 +249,36 @@ fn default_agents() -> Vec<SkillAgent> {
             provider_id: "claude".into(),
             name: "Claude Code".into(),
             skills_dir: home.join(".claude/skills"),
+            scope_kind: "global".into(),
+            workspace_dir: None,
         },
         SkillAgent {
             provider_id: "codex".into(),
             name: "Codex".into(),
             skills_dir: home.join(".codex/skills"),
+            scope_kind: "global".into(),
+            workspace_dir: None,
         },
         SkillAgent {
             provider_id: "gemini".into(),
             name: "Gemini CLI".into(),
             skills_dir: home.join(".gemini/skills"),
+            scope_kind: "global".into(),
+            workspace_dir: None,
         },
         SkillAgent {
             provider_id: "opencode".into(),
             name: "OpenCode".into(),
             skills_dir: home.join(".config/opencode/skills"),
+            scope_kind: "global".into(),
+            workspace_dir: None,
         },
         SkillAgent {
             provider_id: "hermes".into(),
             name: "Hermes".into(),
             skills_dir: home.join(".hermes/skills"),
+            scope_kind: "global".into(),
+            workspace_dir: None,
         },
     ]
 }
@@ -1039,13 +1051,36 @@ async fn get_skill_relation_candidates(State(state): State<SkillsState>) -> impl
 struct SkillScanRequest {
     #[serde(default)]
     mode: Option<ScanMode>,
+    #[serde(default)]
+    workspace: Option<PathBuf>,
 }
 
 async fn scan_skills(
     State(state): State<SkillsState>,
     Json(request): Json<SkillScanRequest>,
 ) -> impl IntoResponse {
-    let overview = discover(&state.agents);
+    let mut agents = state.agents.as_ref().clone();
+    if let Some(workspace) = request.workspace {
+        if !workspace.is_absolute() || !workspace.is_dir() {
+            return error_response(anyhow!("Skill workspace must be an existing absolute directory"));
+        }
+        for (provider_id, name, relative) in [
+            ("claude", "Claude Code", ".claude/skills"),
+            ("codex", "Codex", ".codex/skills"),
+            ("gemini", "Gemini CLI", ".gemini/skills"),
+            ("opencode", "OpenCode", ".opencode/skills"),
+            ("hermes", "Hermes", ".hermes/skills"),
+        ] {
+            agents.push(SkillAgent {
+                provider_id: provider_id.into(),
+                name: name.into(),
+                skills_dir: workspace.join(relative),
+                scope_kind: "project".into(),
+                workspace_dir: Some(workspace.clone()),
+            });
+        }
+    }
+    let overview = discover(&agents);
     let mode = request.mode.unwrap_or(ScanMode::Incremental);
     let result = match state.database_path.as_deref() {
         Some(path) => scanner::persist_path(path, &overview, mode),
@@ -1494,6 +1529,8 @@ mod tests {
             provider_id: provider_id.into(),
             name: name.into(),
             skills_dir: root.join(provider_id).join("skills"),
+            scope_kind: "global".into(),
+            workspace_dir: None,
         })
         .collect()
     }
@@ -1788,6 +1825,48 @@ mod tests {
         assert_eq!(image.encoding, "base64");
         assert_eq!(image.mime_type.as_deref(), Some("image/png"));
         assert!(!image.content.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scan_includes_project_roots_without_global_scan_hiding_them() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let skill = workspace.join(".claude/skills/project-writer");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(skill.join("SKILL.md"), "# Project Writer").unwrap();
+        let app = router_for(agents(root.path()));
+        let request = serde_json::json!({
+            "mode": "full",
+            "workspace": workspace,
+        });
+
+        let (status, scanned) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/scan")
+                .header("content-type", "application/json")
+                .body(Body::from(request.to_string()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(scanned["data"]["roots_scanned"], 8);
+
+        let (status, listed) = json(
+            app,
+            Request::builder()
+                .uri("/api/v1/skills?scope=project")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed["data"]["total"], 1);
+        assert_eq!(
+            listed["data"]["items"][0]["installations"][0]["workspace_dir"],
+            workspace.to_string_lossy().as_ref()
+        );
     }
 
     #[tokio::test]

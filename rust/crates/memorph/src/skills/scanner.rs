@@ -53,11 +53,13 @@ pub fn persist(
     };
     for agent in &overview.agents {
         let entries = entries_for_agent(overview, agent);
-        let (catalog, installations) = records(&entries, &agent.provider_id)?;
+        let (catalog, installations) = records(&entries, agent)?;
         let fingerprint = root_fingerprint(agent, &installations);
         repository::persist_root(
             conn,
             &agent.provider_id,
+            &agent.scope_kind,
+            agent.workspace_dir.as_deref().map(|path| path.to_string_lossy()).as_deref(),
             &agent.skills_dir.to_string_lossy(),
             &fingerprint,
             &catalog,
@@ -90,7 +92,7 @@ fn entries_for_agent<'a>(overview: &'a SkillsOverview, agent: &SkillAgent) -> Ve
 
 fn records(
     entries: &[&SkillEntry],
-    provider_id: &str,
+    agent: &SkillAgent,
 ) -> Result<(
     Vec<repository::CatalogRecord>,
     Vec<repository::InstallationRecord>,
@@ -101,7 +103,7 @@ fn records(
         for item in skill
             .installations
             .iter()
-            .filter(|item| item.provider_id == provider_id && item.path.join("SKILL.md").is_file())
+            .filter(|item| item.provider_id == agent.provider_id && item.path.join("SKILL.md").is_file())
         {
             let entry_path = item.path.join("SKILL.md");
             let entry = fs::read(&entry_path)
@@ -151,6 +153,8 @@ fn records(
                 id: install_id,
                 skill_id: id,
                 provider_id: item.provider_id.clone(),
+                scope_kind: agent.scope_kind.clone(),
+                workspace_dir: agent.workspace_dir.as_ref().map(|path| path.to_string_lossy().into_owned()),
                 install_path: item.path.to_string_lossy().into_owned(),
                 canonical_path: canonical.to_string_lossy().into_owned(),
                 install_kind: if is_link {
@@ -295,6 +299,8 @@ mod tests {
                 provider_id: "codex".into(),
                 name: "Codex".into(),
                 skills_dir: root,
+                scope_kind: "global".into(),
+                workspace_dir: None,
             }],
             skills: vec![SkillEntry {
                 id: "demo".into(),
