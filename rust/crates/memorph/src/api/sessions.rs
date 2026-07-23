@@ -8,7 +8,7 @@ pub(super) struct RenameBody {
 pub(super) async fn get_stats_dashboard(
     Query(query): Query<crate::stats_dashboard::StatsDashboardQuery>,
 ) -> impl IntoResponse {
-    match manager::run_manager_blocking(move || crate::stats_dashboard::dashboard(&query)).await {
+    match run_blocking(move || crate::stats_dashboard::dashboard(&query)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -39,14 +39,16 @@ pub(super) async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoRespon
         sort: q.sort.unwrap_or_default(),
         hook_filter: q.hook_filter.unwrap_or_default(),
     };
-    match core::projection::list_sessions(&params) {
+    match run_blocking(move || core::projection::list_sessions(&params)).await {
         Ok(groups) => ApiResponse::success(groups).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
 
 pub(super) async fn refresh_session_staleness() -> impl IntoResponse {
-    match core::projection::refresh_projected_session_staleness(ActivityActor::Api) {
+    match run_blocking(|| core::projection::refresh_projected_session_staleness(ActivityActor::Api))
+        .await
+    {
         Ok(report) => ApiResponse::success(SessionStalenessRefreshPayload {
             checked_sources: report.checked_sources,
             fresh_snapshots: report.fresh_snapshots,
@@ -62,10 +64,14 @@ pub(super) async fn refresh_session_staleness() -> impl IntoResponse {
 pub(super) async fn bootstrap_session_projections(
     Json(request): Json<SessionProjectionBootstrapRequest>,
 ) -> impl IntoResponse {
-    match core::projection::bootstrap_session_projections(
-        request.provider.as_deref(),
-        ActivityActor::Api,
-    ) {
+    match run_blocking(move || {
+        core::projection::bootstrap_session_projections(
+            request.provider.as_deref(),
+            ActivityActor::Api,
+        )
+    })
+    .await
+    {
         Ok(report) => ApiResponse::success(report).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -74,10 +80,11 @@ pub(super) async fn bootstrap_session_projections(
 pub(super) async fn reproject_stale_sessions(
     Json(request): Json<SessionReprojectStaleRequest>,
 ) -> impl IntoResponse {
-    match core::projection::reproject_stale_sessions(
-        request.provider.as_deref(),
-        ActivityActor::Api,
-    ) {
+    match run_blocking(move || {
+        core::projection::reproject_stale_sessions(request.provider.as_deref(), ActivityActor::Api)
+    })
+    .await
+    {
         Ok(report) => ApiResponse::success(SessionReprojectionPayload {
             candidate_snapshots: report.candidate_snapshots,
             reprojected_snapshots: report.reprojected_snapshots,
@@ -99,16 +106,20 @@ pub(super) async fn get_session(
     let events_limit = q.event_limit;
     let event_search = q
         .event_search
-        .as_deref()
-        .map(str::trim)
+        .map(|query| query.trim().to_string())
         .filter(|query| !query.is_empty());
-    match core::sessions::get_session_detail_view_page_result(
-        &provider,
-        &session_id,
-        events_offset,
-        events_limit,
-        event_search,
-    ) {
+    let requested_search = event_search.clone();
+    match run_blocking(move || {
+        core::sessions::get_session_detail_view_page_result(
+            &provider,
+            &session_id,
+            events_offset,
+            events_limit,
+            event_search.as_deref(),
+        )
+    })
+    .await
+    {
         Ok(result) => {
             let view = result.view;
             if let Some(project_dir) = view.workspace_dir.as_deref() {
@@ -127,7 +138,7 @@ pub(super) async fn get_session(
                 events_limit,
                 returned_event_count,
                 has_more_events,
-                event_search: event_search.map(str::to_string),
+                event_search: requested_search,
                 matched_event_count: result.matched_event_count,
                 returned_event_indices: result.returned_event_indices,
                 hook_runtime_sessions,
@@ -211,7 +222,11 @@ pub(super) async fn get_session_activity(
 pub(super) async fn delete_session(
     Path((provider, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match core::session_mutation::delete_session(&provider, &session_id, ActivityActor::Api) {
+    match run_blocking(move || {
+        core::session_mutation::delete_session(&provider, &session_id, ActivityActor::Api)
+    })
+    .await
+    {
         Ok(()) => ApiResponse::success("deleted").into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -221,12 +236,16 @@ pub(super) async fn rename_session(
     Path((provider, session_id)): Path<(String, String)>,
     Json(body): Json<RenameBody>,
 ) -> impl IntoResponse {
-    match core::session_mutation::rename_session(
-        &provider,
-        &session_id,
-        &body.title,
-        ActivityActor::Api,
-    ) {
+    match run_blocking(move || {
+        core::session_mutation::rename_session(
+            &provider,
+            &session_id,
+            &body.title,
+            ActivityActor::Api,
+        )
+    })
+    .await
+    {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -236,12 +255,16 @@ pub(super) async fn update_session_local_state(
     Path((provider, session_id)): Path<(String, String)>,
     Json(body): Json<crate::storage::session_state::SessionLocalStateUpdate>,
 ) -> impl IntoResponse {
-    match core::session_mutation::update_session_local_state(
-        &provider,
-        &session_id,
-        &body,
-        ActivityActor::Api,
-    ) {
+    match run_blocking(move || {
+        core::session_mutation::update_session_local_state(
+            &provider,
+            &session_id,
+            &body,
+            ActivityActor::Api,
+        )
+    })
+    .await
+    {
         Ok(state) => ApiResponse::success(state).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

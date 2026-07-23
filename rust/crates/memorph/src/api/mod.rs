@@ -66,6 +66,31 @@ impl<T: Serialize> ApiResponse<T> {
     }
 }
 
+pub(super) async fn run_blocking<T, F>(task: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    #[cfg(test)]
+    let test_home = config::test_home_dir();
+
+    tokio::task::spawn_blocking(move || {
+        #[cfg(test)]
+        if let Some(path) = test_home {
+            config::set_test_home_dir(path);
+        }
+
+        let result = task();
+
+        #[cfg(test)]
+        config::reset_test_home_dir();
+
+        result
+    })
+    .await
+    .map_err(|error| anyhow!("blocking API task failed: {error}"))?
+}
+
 fn api_error(status: StatusCode, msg: impl ToString) -> impl IntoResponse {
     let message = msg.to_string();
     logging::error("api_error", &message);

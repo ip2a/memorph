@@ -257,6 +257,11 @@ pub fn memorph_dir() -> Result<PathBuf> {
 }
 
 #[cfg(test)]
+pub(crate) fn test_home_dir() -> Option<PathBuf> {
+    TEST_HOME_DIR.with(|cell| cell.borrow().clone())
+}
+
+#[cfg(test)]
 pub(crate) fn set_test_home_dir(path: PathBuf) {
     TEST_HOME_DIR.with(|cell| *cell.borrow_mut() = Some(path));
 }

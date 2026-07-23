@@ -32,21 +32,11 @@ fn manager_filter_from_body(
     }
 }
 
-pub(super) async fn run_manager_blocking<T, F>(task: F) -> Result<T, anyhow::Error>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, anyhow::Error> + Send + 'static,
-{
-    tokio::task::spawn_blocking(task)
-        .await
-        .map_err(|e| anyhow!("manager task failed: {}", e))?
-}
-
 pub(super) async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
     let workspace = body.workspace.clone();
     let limit = body.limit;
     let filter = manager_filter_from_body(body, workspace, limit);
-    match run_manager_blocking(move || crate::core::manager::preview(&filter)).await {
+    match run_blocking(move || crate::core::manager::preview(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -125,7 +115,7 @@ pub(super) async fn manager_quick_preview(
     let selected_agent_count = provider_ids.len();
     let filter = quick_filter(provider_ids);
 
-    match run_manager_blocking(move || crate::core::manager::preview(&filter)).await {
+    match run_blocking(move || crate::core::manager::preview(&filter)).await {
         Ok(preview) => ApiResponse::success(ManagerQuickPreviewResult {
             selected_agent_count,
             total_count: preview.total_count,
@@ -155,7 +145,7 @@ pub(super) async fn manager_quick_workspaces(
     }
 
     let filter = quick_filter(provider_ids);
-    match run_manager_blocking(move || crate::core::manager::workspaces(&filter)).await {
+    match run_blocking(move || crate::core::manager::workspaces(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -164,7 +154,7 @@ pub(super) async fn manager_quick_workspaces(
 pub(super) async fn manager_stats(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
     let workspace = body.workspace.clone();
     let filter = manager_filter_from_body(body, workspace, None);
-    match run_manager_blocking(move || crate::core::manager::stats(&filter)).await {
+    match run_blocking(move || crate::core::manager::stats(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -177,38 +167,56 @@ pub(super) struct ManagerItemsBody {
 }
 
 pub(super) async fn manager_clean(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
-    let result = crate::core::manager::clean(&body.items, ActivityActor::Api);
-    logging::info(
-        "manager_clean",
-        format!(
-            "success={} failed={} freed_bytes={}",
-            result.success, result.failed, result.freed_bytes
-        ),
-    );
-    ApiResponse::success(result).into_response()
+    match run_blocking(move || Ok(crate::core::manager::clean(&body.items, ActivityActor::Api)))
+        .await
+    {
+        Ok(result) => {
+            logging::info(
+                "manager_clean",
+                format!(
+                    "success={} failed={} freed_bytes={}",
+                    result.success, result.failed, result.freed_bytes
+                ),
+            );
+            ApiResponse::success(result).into_response()
+        }
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
 }
 
 pub(super) async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
     let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
     let resolved_output_dir = resolve_backup_output_dir(&output_dir, None);
-    let result =
-        crate::core::manager::backup(&body.items, &resolved_output_dir, ActivityActor::Api);
-    logging::info(
-        "manager_backup",
-        format!(
-            "success={} failed={} output_dir={}",
-            result.success,
-            result.failed,
-            resolved_output_dir.display()
-        ),
-    );
-    ApiResponse::success(result).into_response()
+    let logged_output_dir = resolved_output_dir.clone();
+    match run_blocking(move || {
+        Ok(crate::core::manager::backup(
+            &body.items,
+            &resolved_output_dir,
+            ActivityActor::Api,
+        ))
+    })
+    .await
+    {
+        Ok(result) => {
+            logging::info(
+                "manager_backup",
+                format!(
+                    "success={} failed={} output_dir={}",
+                    result.success,
+                    result.failed,
+                    logged_output_dir.display()
+                ),
+            );
+            ApiResponse::success(result).into_response()
+        }
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
 }
 
 pub(super) async fn manager_workspaces(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
     let limit = body.limit;
     let filter = manager_filter_from_body(body, None, limit);
-    match run_manager_blocking(move || crate::core::manager::workspaces(&filter)).await {
+    match run_blocking(move || crate::core::manager::workspaces(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -224,19 +232,29 @@ pub(super) struct ManagerWorkspaceBody {
 pub(super) async fn manager_clean_workspace(
     Json(body): Json<ManagerWorkspaceBody>,
 ) -> impl IntoResponse {
-    let result = crate::core::manager::clean_workspace(
-        &body.provider_id,
-        &body.workspace,
-        ActivityActor::Api,
-    );
-    logging::info(
-        "manager_clean_workspace",
-        format!(
-            "provider={} workspace={} success={} failed={} freed_bytes={}",
-            body.provider_id, body.workspace, result.success, result.failed, result.freed_bytes
-        ),
-    );
-    ApiResponse::success(result).into_response()
+    let provider_id = body.provider_id.clone();
+    let workspace = body.workspace.clone();
+    match run_blocking(move || {
+        Ok(crate::core::manager::clean_workspace(
+            &body.provider_id,
+            &body.workspace,
+            ActivityActor::Api,
+        ))
+    })
+    .await
+    {
+        Ok(result) => {
+            logging::info(
+                "manager_clean_workspace",
+                format!(
+                    "provider={} workspace={} success={} failed={} freed_bytes={}",
+                    provider_id, workspace, result.success, result.failed, result.freed_bytes
+                ),
+            );
+            ApiResponse::success(result).into_response()
+        }
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
 }
 
 pub(super) async fn manager_backup_workspace(
@@ -244,22 +262,33 @@ pub(super) async fn manager_backup_workspace(
 ) -> impl IntoResponse {
     let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
     let resolved_output_dir = resolve_backup_output_dir(&output_dir, Some(&body.workspace));
-    let result = crate::core::manager::backup_workspace(
-        &body.provider_id,
-        &body.workspace,
-        &resolved_output_dir,
-        ActivityActor::Api,
-    );
-    logging::info(
-        "manager_backup_workspace",
-        format!(
-            "provider={} workspace={} success={} failed={} output_dir={}",
-            body.provider_id,
-            body.workspace,
-            result.success,
-            result.failed,
-            resolved_output_dir.display()
-        ),
-    );
-    ApiResponse::success(result).into_response()
+    let provider_id = body.provider_id.clone();
+    let workspace = body.workspace.clone();
+    let logged_output_dir = resolved_output_dir.clone();
+    match run_blocking(move || {
+        Ok(crate::core::manager::backup_workspace(
+            &body.provider_id,
+            &body.workspace,
+            &resolved_output_dir,
+            ActivityActor::Api,
+        ))
+    })
+    .await
+    {
+        Ok(result) => {
+            logging::info(
+                "manager_backup_workspace",
+                format!(
+                    "provider={} workspace={} success={} failed={} output_dir={}",
+                    provider_id,
+                    workspace,
+                    result.success,
+                    result.failed,
+                    logged_output_dir.display()
+                ),
+            );
+            ApiResponse::success(result).into_response()
+        }
+        Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
 }
