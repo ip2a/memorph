@@ -192,14 +192,14 @@ async fn list_session_diagnosis(Query(query): Query<SessionDiagnosisQuery>) -> i
         hook_filter,
     };
 
-    match crate::core::projection::list_sessions(&params) {
+    match crate::api::run_blocking(move || crate::core::projection::list_sessions(&params)).await {
         Ok(groups) => HookApiResponse::success(groups).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn list_installed_hooks(Path(provider): Path<String>) -> impl IntoResponse {
-    match crate::hooks::discovery::list(&provider) {
+    match crate::api::run_blocking(move || crate::hooks::discovery::list(&provider)).await {
         Ok(payload) => HookApiResponse::success(payload).into_response(),
         Err(error) => hook_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
@@ -208,21 +208,25 @@ async fn list_installed_hooks(Path(provider): Path<String>) -> impl IntoResponse
 async fn remove_installed_hook(
     Path((provider, event, index, fingerprint)): Path<(String, String, usize, String)>,
 ) -> impl IntoResponse {
-    match crate::hooks::discovery::remove(&provider, &event, index, &fingerprint) {
+    match crate::api::run_blocking(move || {
+        crate::hooks::discovery::remove(&provider, &event, index, &fingerprint)
+    })
+    .await
+    {
         Ok(payload) => HookApiResponse::success(payload).into_response(),
         Err(error) => hook_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
 }
 
 async fn get_overview() -> impl IntoResponse {
-    match build_overview() {
+    match crate::api::run_blocking(build_overview).await {
         Ok(payload) => HookApiResponse::success(payload).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn provider_overview(Path(provider): Path<String>) -> impl IntoResponse {
-    match build_provider_overview(&provider) {
+    match crate::api::run_blocking(move || build_provider_overview(&provider)).await {
         Ok(payload) => HookApiResponse::success(payload).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -231,7 +235,7 @@ async fn provider_overview(Path(provider): Path<String>) -> impl IntoResponse {
 async fn run_provider_hook_operation(
     Path((provider, operation)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match run_hook_operation(&provider, &operation) {
+    match crate::api::run_blocking(move || run_hook_operation(&provider, &operation)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
@@ -550,15 +554,21 @@ fn persist_runtime_state(state: &RuntimeState) -> Result<()> {
 }
 
 async fn get_status() -> impl IntoResponse {
-    let _ = cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
-    let state = runtime_state().read().unwrap();
-    HookApiResponse::success(HookStatusPayload {
-        server: current_hook_server_status(),
-        runtime_sessions: state.sessions.len(),
-        active_sessions: state.active_sessions().len(),
-        providers: crate::hooks::registry::profiles(),
+    match crate::api::run_blocking(|| {
+        let _ = cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
+        let state = runtime_state().read().unwrap();
+        Ok(HookStatusPayload {
+            server: current_hook_server_status(),
+            runtime_sessions: state.sessions.len(),
+            active_sessions: state.active_sessions().len(),
+            providers: crate::hooks::registry::profiles(),
+        })
     })
-    .into_response()
+    .await
+    {
+        Ok(payload) => HookApiResponse::success(payload).into_response(),
+        Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
 }
 
 fn current_hook_server_status() -> HookServerStatus {
@@ -582,44 +592,58 @@ async fn ingest_event(
     let mut events = match normalizer::normalize_request(&request) {
         Ok(events) => events,
         Err(error) => {
-            let _ = store::append_error("normalize", error.to_string());
-            return hook_error(StatusCode::BAD_REQUEST, error).into_response();
+            let message = error.to_string();
+            let stored_message = message.clone();
+            let _ = crate::api::run_blocking(move || {
+                store::append_error("normalize", stored_message)?;
+                Ok(())
+            })
+            .await;
+            return hook_error(StatusCode::BAD_REQUEST, message).into_response();
         }
     };
     for event in &mut events {
         enrich_event_from_environment(event, &request.environment);
     }
 
-    let mut event_ids = Vec::new();
-    let mut updates = Vec::new();
-    for event in &events {
-        event_ids.push(event.event_id.clone());
-        if let Err(error) = store::append_event(event) {
-            let _ = store::append_error("append_event", error.to_string());
-            return hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+    match crate::api::run_blocking(move || {
+        let mut event_ids = Vec::new();
+        let mut updates = Vec::new();
+        for event in &events {
+            event_ids.push(event.event_id.clone());
+            if let Err(error) = store::append_event(event) {
+                let _ = store::append_error("append_event", error.to_string());
+                return Err(error);
+            }
+            let correlation = crate::hooks::correlation::correlate_event(event);
+            updates.push((event, correlation));
         }
-        let correlation = crate::hooks::correlation::correlate_event(event);
-        updates.push((event, correlation));
-    }
-    {
-        let mut state = runtime_state().write().unwrap();
-        for (event, correlation) in updates {
-            let runtime_id = runtime_session_id_for_event(event);
-            state.apply_event(event);
-            if let Some(correlation) = correlation {
-                state.attach_correlation(&runtime_id, correlation);
+        {
+            let mut state = runtime_state().write().unwrap();
+            for (event, correlation) in updates {
+                let runtime_id = runtime_session_id_for_event(event);
+                state.apply_event(event);
+                if let Some(correlation) = correlation {
+                    state.attach_correlation(&runtime_id, correlation);
+                }
+            }
+            if let Err(error) = persist_runtime_state(&state) {
+                let _ = store::append_error("persist_runtime_state", error.to_string());
+                return Err(error);
             }
         }
-        if let Err(error) = persist_runtime_state(&state) {
-            let _ = store::append_error("persist_runtime_state", error.to_string());
-            return hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
-        }
+        Ok(HookIngestResponse::accepted(event_ids))
+    })
+    .await
+    {
+        Ok(response) => HookApiResponse::success(response).into_response(),
+        Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
-    HookApiResponse::success(HookIngestResponse::accepted(event_ids)).into_response()
 }
 
 async fn list_events(Query(query): Query<EventsQuery>) -> impl IntoResponse {
-    match store::load_recent_events(query.limit.unwrap_or(100).min(1000)) {
+    let limit = query.limit.unwrap_or(100).min(1000);
+    match crate::api::run_blocking(move || store::load_recent_events(limit)).await {
         Ok(events) => HookApiResponse::success(events).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -647,7 +671,7 @@ async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> imp
 }
 
 async fn provider_status(Path(provider): Path<String>) -> impl IntoResponse {
-    match crate::hooks::operations::status(&provider) {
+    match crate::api::run_blocking(move || crate::hooks::operations::status(&provider)).await {
         Ok(status) => HookApiResponse::success(status).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -658,7 +682,7 @@ async fn get_diagnostics(Query(query): Query<DiagnosticsQuery>) -> impl IntoResp
         event_limit: query.event_limit.unwrap_or(100).min(1000),
         error_limit: query.error_limit.unwrap_or(50).min(1000),
     };
-    match crate::hooks::diagnostics::collect(options) {
+    match crate::api::run_blocking(move || crate::hooks::diagnostics::collect(options)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -667,7 +691,7 @@ async fn get_diagnostics(Query(query): Query<DiagnosticsQuery>) -> impl IntoResp
 async fn run_doctor(
     Json(request): Json<crate::hooks::doctor::HookDoctorRequest>,
 ) -> impl IntoResponse {
-    match crate::hooks::doctor::verify(request) {
+    match crate::api::run_blocking(move || crate::hooks::doctor::verify(request)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -678,7 +702,7 @@ async fn cleanup_runtime_sessions(Query(query): Query<CleanupQuery>) -> impl Int
         idle_after_seconds: query.idle_after_seconds.unwrap_or(30 * 60),
         orphan_after_seconds: query.orphan_after_seconds.unwrap_or(60 * 60),
     };
-    match cleanup_runtime_state(options) {
+    match crate::api::run_blocking(move || cleanup_runtime_state(options)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }

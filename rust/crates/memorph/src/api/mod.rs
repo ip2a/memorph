@@ -66,7 +66,7 @@ impl<T: Serialize> ApiResponse<T> {
     }
 }
 
-pub(super) async fn run_blocking<T, F>(task: F) -> anyhow::Result<T>
+pub(crate) async fn run_blocking<T, F>(task: F) -> anyhow::Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> anyhow::Result<T> + Send + 'static,
