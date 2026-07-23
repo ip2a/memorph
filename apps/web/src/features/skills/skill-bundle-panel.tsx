@@ -7,6 +7,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { useSkillCoverage } from "@/features/skills/queries";
 import { formatBytes } from "@/lib/format";
 import { renderHighlightedJson } from "@/lib/format-content";
+import { useI18n } from "@/lib/i18n-context";
 import type { SkillAsset, SkillFilePreview } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -43,12 +44,12 @@ function imageDataUrl(preview: SkillFilePreview) {
   return `data:${mime};base64,${preview.content}`;
 }
 
-async function copyContent(text: string) {
+async function copyContent(text: string, copied: string, failed: string) {
   try {
     await navigator.clipboard.writeText(text);
-    toast.success("Copied");
+    toast.success(copied);
   } catch {
-    toast.error("Failed to copy");
+    toast.error(failed);
   }
 }
 
@@ -63,11 +64,12 @@ function BundleFileList({
   onSelect: (path: string) => void;
   coverage: Map<string, { observations: number; confidence?: string | null }>;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto border-y border-border">
         {assets.length === 0 ? (
-          <p className="px-2 py-3 text-sm text-muted-foreground">No bundle files.</p>
+          <p className="px-2 py-3 text-sm text-muted-foreground">{t("skillsNoBundleFiles")}</p>
         ) : (
           assets.map((asset) => {
             const selected = previewPath === asset.path;
@@ -88,8 +90,8 @@ function BundleFileList({
                 <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
                   <Badge variant={status?.confidence ? "outline" : "secondary"}>
                     {status
-                      ? `${status.observations} · ${status.confidence ?? "未覆盖"}`
-                      : "未覆盖"}
+                      ? `${status.observations} · ${status.confidence ?? t("skillsUncovered")}`
+                      : t("skillsUncovered")}
                   </Badge>
                   {formatBytes(asset.bytes)}
                 </span>
@@ -113,6 +115,7 @@ function BundlePreviewPanel({
   asset?: SkillAsset;
   loading?: boolean;
 }) {
+  const { t } = useI18n();
   const text = preview?.encoding === "text" ? (preview.content ?? "") : "";
   const highlighted = text ? renderHighlightedJson(text) : null;
   const showImage = Boolean(preview && isImageAsset(asset, preview));
@@ -121,7 +124,7 @@ function BundlePreviewPanel({
     <Card className={CARD_CLASS} size="sm">
       <div className="flex shrink-0 items-center justify-between gap-3 border-b px-4 py-2">
         <h4 className="truncate font-mono text-sm font-semibold tracking-tight">
-          {path ? basename(path) : "Preview"}
+          {path ? basename(path) : t("skillsPreview")}
         </h4>
         <div className="flex shrink-0 items-center gap-2">
           {asset ? <Badge variant="outline">{asset.category}</Badge> : null}
@@ -131,10 +134,10 @@ function BundlePreviewPanel({
             size="sm"
             className="h-8 px-2 text-xs text-muted-foreground"
             disabled={!text}
-            onClick={() => copyContent(text)}
+            onClick={() => copyContent(text, t("skillsCopied"), t("skillsCopyFailed"))}
           >
             <CopyIcon data-icon="inline-start" />
-            Copy
+            {t("skillsCopy")}
           </Button>
         </div>
       </div>
@@ -146,9 +149,9 @@ function BundlePreviewPanel({
               <Spinner />
             </div>
           ) : !path ? (
-            <p className="text-sm text-muted-foreground">Select a file to preview.</p>
+            <p className="text-sm text-muted-foreground">{t("skillsSelectFilePreview")}</p>
           ) : !asset?.previewable ? (
-            <p className="text-sm text-muted-foreground">This file is not previewable.</p>
+            <p className="text-sm text-muted-foreground">{t("skillsFileNotPreviewable")}</p>
           ) : showImage && preview ? (
             <img
               alt={basename(path)}

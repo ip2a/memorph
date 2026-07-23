@@ -1,4 +1,5 @@
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
+import { useMemo, useState, type ReactNode } from "react";
 import {
   Area,
   AreaChart,
@@ -15,6 +16,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import {
   Table,
   TableBody,
   TableCell,
@@ -23,201 +31,269 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useSkillInvocations, useSkillStats } from "@/features/skills/queries";
-import type { SkillStatsParams } from "@/lib/types";
-
-const RANGE_DAYS = { "7d": 7, "30d": 30, "90d": 90 } as const;
-type Range = keyof typeof RANGE_DAYS | "custom";
-
-function localDate(date: Date) {
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
-}
-
-function presetRange(range: keyof typeof RANGE_DAYS) {
-  const to = new Date();
-  const from = new Date(to);
-  from.setDate(from.getDate() - RANGE_DAYS[range] + 1);
-  return { from: localDate(from), to: localDate(to) };
-}
+import {
+  useSkillStatsFilters,
+} from "@/features/skills/skill-stats-filters";
+import { workspaceName } from "@/components/shared/workspace-name";
+import type {
+  SkillRanking,
+  SkillStatsBreakdownItem,
+} from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n-context";
+import { useUiStore } from "@/stores/ui-store";
 
 function formatTime(value?: number | null) {
   return value ? new Date(value).toLocaleString() : "—";
 }
 
-function Sparkline({ values }: { values: number[] }) {
-  if (values.length < 2)
-    return <span className="text-muted-foreground">—</span>;
-  const max = Math.max(...values, 1);
-  const points = values
-    .map(
-      (value, index) =>
-        `${(index / (values.length - 1)) * 64},${20 - (value / max) * 18}`,
-    )
-    .join(" ");
+type WorkspaceBreakdownRow = SkillStatsBreakdownItem & {
+  paths: string[];
+};
+
+function aggregateWorkspaceBreakdown(
+  items: SkillStatsBreakdownItem[],
+): WorkspaceBreakdownRow[] {
+  const grouped = new Map<
+    string,
+    { invocations: number; sessions: number; paths: string[] }
+  >();
+
+  for (const item of items) {
+    const label = workspaceName(item.key, item.key);
+    const bucket = grouped.get(label) ?? {
+      invocations: 0,
+      sessions: 0,
+      paths: [],
+    };
+    bucket.invocations += item.invocations;
+    bucket.sessions += item.sessions;
+    if (!bucket.paths.includes(item.key)) bucket.paths.push(item.key);
+    grouped.set(label, bucket);
+  }
+
+  return Array.from(grouped.entries())
+    .map(([label, stats]) => ({
+      key: label,
+      invocations: stats.invocations,
+      sessions: stats.sessions,
+      paths: stats.paths,
+    }))
+    .sort(
+      (left, right) =>
+        right.invocations - left.invocations ||
+        left.key.localeCompare(right.key),
+    );
+}
+
+function WorkspaceBreakdownTick({
+  x = 0,
+  y = 0,
+  index = 0,
+  rows,
+  onQuickSwitch,
+}: {
+  x?: string | number;
+  y?: string | number;
+  index?: number;
+  rows: WorkspaceBreakdownRow[];
+  onQuickSwitch: (paths: string[]) => void;
+}) {
+  const row = rows[index];
+  const name = row?.key ?? "";
+  const title = row?.paths.join("\n") ?? name;
   return (
-    <svg aria-label="调用趋势" className="h-5 w-16" viewBox="0 0 64 20">
-      <polyline
-        fill="none"
-        points={points}
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
-    </svg>
+    <foreignObject x={Number(x) - 96} y={Number(y) - 10} width={94} height={20}>
+      <button
+        type="button"
+        title={title}
+        className="block w-full cursor-pointer truncate text-left text-[11px] leading-5 underline-offset-2 transition-colors hover:text-primary hover:underline"
+        onClick={(event) => {
+          event.stopPropagation();
+          if (row?.paths.length) onQuickSwitch(row.paths);
+        }}
+      >
+        {name}
+      </button>
+    </foreignObject>
+  );
+}
+
+function BreakdownBarChart({
+  kind,
+  providerData,
+  workspaceRows,
+  onQuickSwitchWorkspace,
+}: {
+  kind: "providers" | "workspaces";
+  providerData: SkillStatsBreakdownItem[];
+  workspaceRows: WorkspaceBreakdownRow[];
+  onQuickSwitchWorkspace: (paths: string[]) => void;
+}) {
+  const chartData = kind === "workspaces" ? workspaceRows : providerData;
+  const chartHeight = Math.max(176, chartData.length * 32);
+
+  return (
+    <div style={{ height: chartHeight }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart
+          data={chartData}
+          layout="vertical"
+          margin={{ left: 18, right: 8 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+          <XAxis type="number" allowDecimals={false} />
+          <YAxis
+            type="category"
+            dataKey="key"
+            width={kind === "workspaces" ? 100 : 90}
+            interval={0}
+            tick={
+              kind === "workspaces"
+                ? (props) => (
+                    <WorkspaceBreakdownTick
+                      {...props}
+                      rows={workspaceRows}
+                      onQuickSwitch={onQuickSwitchWorkspace}
+                    />
+                  )
+                : { fontSize: 11 }
+            }
+          />
+          <Tooltip
+            labelFormatter={(value, items) => {
+              if (kind !== "workspaces") return String(value);
+              const row = items?.[0]?.payload as WorkspaceBreakdownRow | undefined;
+              return row?.paths.join(" · ") ?? String(value);
+            }}
+          />
+          <Bar
+            dataKey="invocations"
+            fill="var(--primary)"
+            radius={[0, 3, 3, 0]}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function StatsPanelSection({
+  borderless,
+  title,
+  header,
+  children,
+  className,
+}: {
+  borderless?: boolean;
+  title?: ReactNode;
+  header?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  if (borderless) {
+    return (
+      <section className={cn("py-4 first:pt-0", className)}>
+        {header ? <div className="mb-3 grid gap-3">{header}</div> : null}
+        {!header && title ? (
+          <h3 className="mb-3 text-base font-semibold">{title}</h3>
+        ) : null}
+        {children}
+      </section>
+    );
+  }
+  return (
+    <Card className={className}>
+      {header ? (
+        <CardHeader className="gap-3 pb-2">{header}</CardHeader>
+      ) : title ? (
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">{title}</CardTitle>
+        </CardHeader>
+      ) : null}
+      <CardContent>{children}</CardContent>
+    </Card>
   );
 }
 
 export function SkillStatsPanel({
-  skillId,
   provider,
+  section = "all",
 }: {
-  skillId: string | null;
   provider?: string;
+  section?: "all" | "summary" | "ranking";
 }) {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const rawRange = searchParams.get("statsRange");
-  const range: Range =
-    rawRange === "custom" || (rawRange && rawRange in RANGE_DAYS)
-      ? (rawRange as Range)
-      : "30d";
-  const dates =
-    range === "custom"
-      ? {
-          from: searchParams.get("statsFrom") || localDate(new Date()),
-          to: searchParams.get("statsTo") || localDate(new Date()),
-        }
-      : presetRange(range);
-  const confidence = searchParams.get("statsConfidence") || undefined;
-  const page = Math.max(1, Number(searchParams.get("statsPage")) || 1);
-  const params: SkillStatsParams = {
-    ...dates,
-    provider,
-    confidence: confidence as SkillStatsParams["confidence"],
-  };
+  const { t } = useI18n();
+  const { params } = useSkillStatsFilters(provider);
   const stats = useSkillStats(params);
-  const invocationQuery = useSkillInvocations(skillId, {
+  const openWorkspaceQuickSwitch = useUiStore(
+    (state) => state.openWorkspaceQuickSwitch,
+  );
+  const [evidenceTarget, setEvidenceTarget] = useState<SkillRanking | null>(
+    null,
+  );
+  const [evidencePage, setEvidencePage] = useState(1);
+  const evidenceInvocations = useSkillInvocations(evidenceTarget?.skill_id ?? null, {
     ...params,
-    page,
+    page: evidencePage,
     pageSize: 10,
   });
   const summary = stats.summary.data;
-  const invocations = invocationQuery.data;
-  const update = (values: Record<string, string | null>) => {
-    const next = new URLSearchParams(searchParams);
-    Object.entries(values).forEach(([key, value]) =>
-      value ? next.set(key, value) : next.delete(key),
-    );
-    setSearchParams(next, { replace: true });
-  };
+  const showSummary = section === "all" || section === "summary";
+  const showRanking = section === "all" || section === "ranking";
+  const summaryBorderless = section === "summary";
+  const workspaceBreakdown = useMemo(
+    () => aggregateWorkspaceBreakdown(stats.breakdown.data?.workspaces ?? []),
+    [stats.breakdown.data?.workspaces],
+  );
+  const providerBreakdown = stats.breakdown.data?.providers ?? [];
 
-  return (
-    <section className="grid shrink-0 gap-3 xl:grid-cols-2">
-      <Card>
-        <CardHeader className="gap-3 pb-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <CardTitle className="text-base">使用统计</CardTitle>
-            <div className="flex flex-wrap gap-2">
-              <select
-                aria-label="统计范围"
-                className="border-input bg-background h-8 rounded-md border px-2 text-sm"
-                value={range}
-                onChange={(event) =>
-                  update({ statsRange: event.target.value, statsPage: null })
-                }
-              >
-                <option value="7d">7 天</option>
-                <option value="30d">30 天</option>
-                <option value="90d">90 天</option>
-                <option value="custom">自定义</option>
-              </select>
-              <select
-                aria-label="置信度"
-                className="border-input bg-background h-8 rounded-md border px-2 text-sm"
-                value={confidence || ""}
-                onChange={(event) =>
-                  update({
-                    statsConfidence: event.target.value || null,
-                    statsPage: null,
-                  })
-                }
-              >
-                <option value="">全部置信度</option>
-                <option value="high">高</option>
-                <option value="medium">中</option>
-                <option value="low">低</option>
-              </select>
-            </div>
-          </div>
-          {range === "custom" ? (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <input
-                aria-label="开始日期"
-                className="border-input bg-background h-8 rounded-md border px-2"
-                type="date"
-                value={dates.from}
-                onChange={(event) =>
-                  update({ statsFrom: event.target.value, statsPage: null })
-                }
-              />
-              <span>至</span>
-              <input
-                aria-label="结束日期"
-                className="border-input bg-background h-8 rounded-md border px-2"
-                type="date"
-                value={dates.to}
-                onChange={(event) =>
-                  update({ statsTo: event.target.value, statsPage: null })
-                }
-              />
-            </div>
-          ) : null}
-        </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
-          <div>
-            <strong className="block text-xl">
-              {summary?.invocations ?? "—"}
-            </strong>
-            调用
-          </div>
-          <div>
-            <strong className="block text-xl">
-              {summary?.active_skills ?? "—"}
-            </strong>
-            活跃 Skill
-          </div>
-          <div>
-            <strong className="block text-xl">
-              {summary?.active_sessions ?? "—"}
-            </strong>
-            会话
-          </div>
-          <div>
-            <strong className="block text-xl">
-              {summary?.active_days ?? "—"}
-            </strong>
-            活跃天
-          </div>
-          <div className="col-span-2">
-            <strong className="block text-sm">
-              {formatTime(summary?.last_invoked_at_ms)}
-            </strong>
-            最近调用
-          </div>
-          {summary && summary.completeness_status !== "complete" ? (
-            <Alert className="col-span-full py-2">
-              <AlertTitle>索引尚未完整</AlertTitle>
-              <AlertDescription>
-                当前统计可能继续增长，清理结论应保持禁用。
-              </AlertDescription>
-            </Alert>
-          ) : null}
-        </CardContent>
-      </Card>
+  const usageMetrics = (
+    <div className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+      <div>
+        <strong className="block text-xl">{summary?.invocations ?? "—"}</strong>
+        {t("skillsInvocationLabel")}
+      </div>
+      <div>
+        <strong className="block text-xl">
+          {summary?.active_skills ?? "—"}
+        </strong>
+        {t("skillsActiveSkills")}
+      </div>
+      <div>
+        <strong className="block text-xl">
+          {summary?.active_sessions ?? "—"}
+        </strong>
+        {t("skillsSessionLabel")}
+      </div>
+      <div>
+        <strong className="block text-xl">{summary?.active_days ?? "—"}</strong>
+        {t("skillsActiveDays")}
+      </div>
+      <div className="col-span-2">
+        <strong className="block text-sm">
+          {formatTime(summary?.last_invoked_at_ms)}
+        </strong>
+        {t("skillsLastInvocation")}
+      </div>
+      {summary && summary.completeness_status !== "complete" ? (
+        <Alert className="col-span-full py-2">
+          <AlertTitle>{t("skillsIndexIncomplete")}</AlertTitle>
+          <AlertDescription>
+            {t("skillsIndexIncompleteHint")}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+    </div>
+  );
 
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">每日调用趋势</CardTitle>
-        </CardHeader>
-        <CardContent className="h-44">
+  const summarySections = showSummary ? (
+    <>
+      <StatsPanelSection borderless={summaryBorderless} title={t("skillsUsageStats")}>
+        {usageMetrics}
+      </StatsPanelSection>
+      <StatsPanelSection borderless={summaryBorderless} title={t("skillsDailyInvocations")}>
+        <div className="h-44">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart
               data={stats.daily.data ?? []}
@@ -236,60 +312,66 @@ export function SkillStatsPanel({
               />
             </AreaChart>
           </ResponsiveContainer>
-        </CardContent>
-      </Card>
-
+        </div>
+      </StatsPanelSection>
       {(["providers", "workspaces"] as const).map((kind) => (
-        <Card key={kind}>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">
-              {kind === "providers" ? "Provider 分布" : "项目分布"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="h-44">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={stats.breakdown.data?.[kind] ?? []}
-                layout="vertical"
-                margin={{ left: 18, right: 8 }}
-              >
-                <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                <XAxis type="number" allowDecimals={false} />
-                <YAxis
-                  type="category"
-                  dataKey="key"
-                  width={90}
-                  tick={{ fontSize: 11 }}
-                />
-                <Tooltip />
-                <Bar
-                  dataKey="invocations"
-                  fill="var(--primary)"
-                  radius={[0, 3, 3, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
+        <StatsPanelSection
+          key={kind}
+          borderless={summaryBorderless}
+          title={kind === "providers" ? t("skillsProviderDistribution") : t("skillsProjectDistribution")}
+        >
+          <BreakdownBarChart
+            kind={kind}
+            providerData={providerBreakdown}
+            workspaceRows={workspaceBreakdown}
+            onQuickSwitchWorkspace={openWorkspaceQuickSwitch}
+          />
+        </StatsPanelSection>
       ))}
+    </>
+  ) : null;
 
-      <Card className="xl:col-span-2">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Skill 排名与调用证据</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 xl:grid-cols-[2fr_3fr]">
+  return (
+    <section
+      className={cn(
+        section === "all" && "grid shrink-0 gap-3 xl:grid-cols-2",
+        section === "summary" && "shrink-0",
+        section === "ranking" && "shrink-0",
+      )}
+    >
+      {showSummary && summaryBorderless ? (
+        <div className="flex flex-col divide-y divide-border">{summarySections}</div>
+      ) : (
+        summarySections
+      )}
+
+      {showRanking ? (
+      <>
+      <div className={section === "all" ? "xl:col-span-2" : undefined}>
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead>Skill</TableHead>
-                <TableHead>调用</TableHead>
-                <TableHead>会话</TableHead>
-                <TableHead>最近</TableHead>
+                <TableHead>{t("skillsInvocationLabel")}</TableHead>
+                <TableHead>{t("skillsSessionLabel")}</TableHead>
+                <TableHead>{t("skillsRecent")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {(stats.ranking.data ?? []).slice(0, 8).map((item) => (
-                <TableRow key={item.skill_id}>
+                <TableRow
+                  key={item.skill_id}
+                  className="cursor-pointer"
+                  data-state={
+                    evidenceTarget?.skill_id === item.skill_id
+                      ? "selected"
+                      : undefined
+                  }
+                  onClick={() => {
+                    setEvidencePage(1);
+                    setEvidenceTarget(item);
+                  }}
+                >
                   <TableCell>{item.name}</TableCell>
                   <TableCell>{item.invocations}</TableCell>
                   <TableCell>{item.sessions}</TableCell>
@@ -300,13 +382,32 @@ export function SkillStatsPanel({
               ))}
             </TableBody>
           </Table>
-          <div className="space-y-2">
-            {!skillId ? (
-              <p className="text-muted-foreground text-sm">
-                选择 Skill 后查看调用证据。
-              </p>
-            ) : null}
-            {(invocations?.items ?? []).map((item) => (
+          {!stats.ranking.data?.length ? (
+            <p className="text-muted-foreground mt-3 text-sm">{t("skillsNoRanking")}</p>
+          ) : (
+            <p className="text-muted-foreground mt-3 text-xs">
+              {t("skillsClickRowForEvidence")}
+            </p>
+          )}
+      </div>
+      <Sheet
+        open={Boolean(evidenceTarget)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEvidenceTarget(null);
+            setEvidencePage(1);
+          }
+        }}
+      >
+        <SheetContent className="overflow-y-auto sm:max-w-md">
+          <SheetHeader>
+            <SheetTitle>{t("skillsInvocationEvidence", { skill: evidenceTarget?.name ?? "Skill" })}</SheetTitle>
+            <SheetDescription>
+              {t("skillsInvocationEvidenceDescription")}
+            </SheetDescription>
+          </SheetHeader>
+          <div className="space-y-2 px-4 pb-4">
+            {(evidenceInvocations.data?.items ?? []).map((item) => (
               <div key={item.id} className="rounded-md border p-2 text-xs">
                 <div className="flex flex-wrap items-center gap-2">
                   <time>{formatTime(item.invoked_at_ms)}</time>
@@ -323,48 +424,54 @@ export function SkillStatsPanel({
                     className="text-primary underline"
                     to={`/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`}
                   >
-                    打开会话
+                    {t("skillsOpenSession", { session: "" })}
                   </Link>
                 </div>
                 <p className="text-muted-foreground mt-1">
-                  项目：{item.workspace_dir || "未指定"}
+                  {t("skillsProject", { project: item.workspace_dir || t("skillsUnspecified") })}
                 </p>
-                <p className="text-muted-foreground mt-1 line-clamp-2">
-                  {item.evidence_text || item.evidence_path || "无证据摘要"}
+                <p className="text-muted-foreground mt-1 line-clamp-3">
+                  {item.evidence_text || item.evidence_path || t("skillsNoEvidenceSummary")}
                 </p>
               </div>
             ))}
-            {skillId && invocations?.items.length === 0 ? (
+            {evidenceTarget &&
+            evidenceInvocations.data &&
+            evidenceInvocations.data.items.length === 0 ? (
               <p className="text-muted-foreground text-sm">
-                所选 Skill 在该范围内没有调用证据。
+                {t("skillsNoInvocationEvidence")}
               </p>
             ) : null}
-            {skillId &&
-            invocations &&
-            invocations.total > invocations.page_size ? (
-              <div className="flex items-center justify-end gap-2">
+            {evidenceInvocations.data &&
+            evidenceInvocations.data.total > evidenceInvocations.data.page_size ? (
+              <div className="flex items-center justify-end gap-2 pt-2">
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={page <= 1}
-                  onClick={() => update({ statsPage: String(page - 1) })}
+                  disabled={evidencePage <= 1}
+                  onClick={() => setEvidencePage((value) => value - 1)}
                 >
-                  上一页
+                  {t("skillsPreviousPage")}
                 </Button>
-                <span className="text-xs">第 {page} 页</span>
+                <span className="text-xs">{t("skillsPageNumber", { page: evidencePage })}</span>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={page * invocations.page_size >= invocations.total}
-                  onClick={() => update({ statsPage: String(page + 1) })}
+                  disabled={
+                    evidencePage * evidenceInvocations.data.page_size >=
+                    evidenceInvocations.data.total
+                  }
+                  onClick={() => setEvidencePage((value) => value + 1)}
                 >
-                  下一页
+                  {t("skillsNextPage")}
                 </Button>
               </div>
             ) : null}
           </div>
-        </CardContent>
-      </Card>
+        </SheetContent>
+      </Sheet>
+      </>
+      ) : null}
     </section>
   );
 }

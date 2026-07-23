@@ -70,7 +70,14 @@ pub struct CoverageEvidencePage {
     pub total: u64,
 }
 
-pub fn rebuild(conn: &Connection) -> Result<()> {
+pub fn rebuild(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+    rebuild_in(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+fn rebuild_in(conn: &Connection) -> Result<()> {
     conn.execute("DELETE FROM skill_coverage_observations", [])?;
     let mut statement = conn.prepare("SELECT i.id, i.skill_id, i.invoked_at_ms, COALESCE(i.evidence_text, ''), COALESCE(i.evidence_path, ''), c.section_index_json, c.file_manifest_json FROM skill_invocations i JOIN skill_catalog c ON c.id = i.skill_id")?;
     let rows = statement.query_map([], |row| {
@@ -299,6 +306,33 @@ fn normalize(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebuild_rolls_back_when_insertion_fails() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE skill_catalog (id TEXT, section_index_json TEXT, file_manifest_json TEXT);
+             CREATE TABLE skill_invocations (id TEXT, skill_id TEXT, invoked_at_ms INTEGER, evidence_text TEXT, evidence_path TEXT);
+             CREATE TABLE skill_coverage_observations (id TEXT, skill_id TEXT, invocation_id TEXT, target_kind TEXT, target_key TEXT, target_path TEXT, section_title TEXT, match_kind TEXT, confidence TEXT, observed_at_ms INTEGER, evidence_text TEXT, created_at_ms INTEGER);
+             INSERT INTO skill_catalog VALUES ('skill', '[]', '[{\"path\":\"run.sh\",\"category\":\"script\",\"entry\":false}]');
+             INSERT INTO skill_invocations VALUES ('invocation', 'skill', 1, 'run.sh', '');
+             INSERT INTO skill_coverage_observations VALUES ('old', 'skill', 'invocation', 'script', 'old.sh', 'old.sh', NULL, 'exact-path', 'high', 1, '', 1);
+             CREATE TRIGGER reject_coverage BEFORE INSERT ON skill_coverage_observations BEGIN SELECT RAISE(ABORT, 'stop'); END;",
+        )
+        .unwrap();
+
+        assert!(rebuild(&mut conn).is_err());
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM skill_coverage_observations WHERE id = 'old'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+    }
+
     #[test]
     fn keeps_section_identity_and_rejects_ambiguous_basenames() {
         let sections = r#"[{"id":"stable","title":"Setup"}]"#;

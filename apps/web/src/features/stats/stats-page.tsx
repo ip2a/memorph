@@ -6,7 +6,7 @@ import {
   FieldGroup,
   FieldTitle,
 } from "@/components/ui/field";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollPane } from "@/components/shared/scroll-pane";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ActivityTrend,
@@ -82,12 +82,16 @@ export function StatsPage() {
     {
       label: "消息总量",
       value: data.overview.total_messages.toLocaleString(),
-      hint: `活跃会话含 ${data.overview.active_session_messages.toLocaleString()} 条`,
+      hint: data.overview.unknown_message_counts
+        ? `${data.overview.unknown_message_counts.toLocaleString()} 个会话未统计`
+        : `活跃会话含 ${data.overview.active_session_messages.toLocaleString()} 条`,
     },
     {
       label: "数据占用",
       value: formatBytes(data.overview.total_size_bytes),
-      hint: `长期未活跃 ${formatBytes(data.overview.stale_size_bytes)}`,
+      hint: data.overview.unknown_size_bytes
+        ? `${data.overview.unknown_size_bytes.toLocaleString()} 个会话大小未知`
+        : `长期未活跃 ${formatBytes(data.overview.stale_size_bytes)}`,
     },
     {
       label: "90 天以上未活跃",
@@ -107,8 +111,11 @@ export function StatsPage() {
   ];
 
   return (
-    <ScrollArea className="h-full min-w-0" data-stats-page>
-      <div className="flex min-w-0 flex-col gap-6 pb-6">
+    <ScrollPane
+      className="min-h-0 flex-1 size-full"
+      data-stats-page
+      innerClassName="flex min-w-0 flex-col gap-6 pb-6"
+    >
         <div className="flex flex-wrap items-center justify-end gap-2">
           <span className="text-xs text-muted-foreground">活跃指标范围</span>
           <Tabs
@@ -167,7 +174,6 @@ export function StatsPage() {
           workspaces={data.workspaces}
           all={all}
         />
-      </div>
-    </ScrollArea>
+    </ScrollPane>
   );
 }

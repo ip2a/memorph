@@ -6,6 +6,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use walkdir::WalkDir;
 
 const MARKER: &str = ".memorph-managed-skill";
 
@@ -257,12 +258,49 @@ fn fingerprint(path: &Path, kind: &str, bundle_hash: &str) -> Result<String> {
         String::new()
     };
     let marker = path.join(MARKER).is_file();
+    let content_hash = if kind == "managed-copy" {
+        managed_copy_hash(path)?
+    } else {
+        bundle_hash.to_string()
+    };
     Ok(format!(
         "sha256:{:x}",
         Sha256::digest(
-            format!("{}:{kind}:{bundle_hash}:{target}:{marker}", path.display()).as_bytes()
+            format!("{}:{kind}:{content_hash}:{target}:{marker}", path.display()).as_bytes()
         )
     ))
+}
+
+fn managed_copy_hash(path: &Path) -> Result<String> {
+    let mut files = WalkDir::new(path)
+        .min_depth(1)
+        .follow_links(false)
+        .into_iter()
+        .map(|entry| entry.map_err(Into::into))
+        .collect::<Result<Vec<_>>>()?;
+    files.sort_by_key(|entry| entry.path().to_path_buf());
+
+    let mut hasher = Sha256::new();
+    for entry in files {
+        let relative = entry.path().strip_prefix(path)?;
+        if relative == Path::new(MARKER) {
+            continue;
+        }
+        if entry.path_is_symlink() {
+            return Err(anyhow!("Managed copy contains a symbolic link"));
+        }
+        hasher.update(if entry.file_type().is_dir() {
+            b"d"
+        } else {
+            b"f"
+        });
+        hasher.update(relative.to_string_lossy().as_bytes());
+        hasher.update(b"\0");
+        if entry.file_type().is_file() {
+            hasher.update(fs::read(entry.path())?);
+        }
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 #[cfg(test)]
@@ -308,6 +346,7 @@ mod tests {
         let managed = root.path().join("managed");
         fs::create_dir(&managed).unwrap();
         fs::write(managed.join(MARKER), "managed").unwrap();
+        fs::write(managed.join("SKILL.md"), "before").unwrap();
         insert(
             store.connection(),
             "managed",
@@ -322,7 +361,7 @@ mod tests {
             .find(|item| item.skill_id == "managed")
             .unwrap()
             .clone();
-        fs::remove_file(managed.join(MARKER)).unwrap();
+        fs::write(managed.join("SKILL.md"), "after").unwrap();
         assert!(execute(
             store.connection(),
             &[root.path().to_path_buf()],

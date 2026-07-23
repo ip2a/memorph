@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { PanelCard } from "@/components/shared/panel-card";
 import { SectionHeading } from "@/components/shared/section-heading";
@@ -18,21 +18,34 @@ import {
   useSkillCoverage,
   useSkillCoverageEvidence,
 } from "@/features/skills/queries";
+import { useI18n } from "@/lib/i18n-context";
+import type { I18nKey } from "@/lib/i18n-core";
 
 const ranges = ["7d", "30d", "90d", "all"];
-const categories = [
-  ["section", "章节"],
-  ["script", "脚本"],
-  ["reference", "参考资料"],
-  ["asset", "资源"],
-  ["other-file", "其他"],
-] as const;
+function PanelShell({ embedded, children }: { embedded: boolean; children: ReactNode }) {
+  return embedded ? (
+    <div className="space-y-3">{children}</div>
+  ) : (
+    <PanelCard className="space-y-3 p-4">{children}</PanelCard>
+  );
+}
+
+const categories: readonly [string, I18nKey][] = [
+  ["section", "skillsCategorySection"],
+  ["script", "skillsCategoryScript"],
+  ["reference", "skillsCategoryReference"],
+  ["asset", "skillsCategoryAsset"],
+  ["other-file", "skillsCategoryOther"],
+];
 
 export function SkillCoverageConflictsPanel({
   skillId,
+  embedded = false,
 }: {
   skillId: string | null;
+  embedded?: boolean;
 }) {
+  const { t } = useI18n();
   const [range, setRange] = useState("90d");
   const [category, setCategory] = useState("section");
   const [targetKey, setTargetKey] = useState<string | null>(null);
@@ -44,12 +57,19 @@ export function SkillCoverageConflictsPanel({
     () => coverage.data?.targets.filter((target) => target.target_kind === category) ?? [],
     [category, coverage.data?.targets],
   );
-  if (!skillId) return null;
+  if (!skillId) {
+    return (
+      <p className="text-muted-foreground text-sm">
+        {t("skillsSelectForCoverage")}
+      </p>
+    );
+  }
+
   return (
     <div className="grid gap-3 lg:grid-cols-2">
-      <PanelCard className="space-y-3 p-4">
+      <PanelShell embedded={embedded}>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <SectionHeading title="覆盖率" className="border-0 pb-0" />
+          <SectionHeading title={t("skillsCoverage")} className="border-0 pb-0" />
           <div className="flex gap-1">
             {ranges.map((item) => (
               <Button
@@ -64,7 +84,7 @@ export function SkillCoverageConflictsPanel({
           </div>
         </div>
         {coverage.isLoading ? (
-          <p className="text-sm text-muted-foreground">加载中…</p>
+          <p className="text-sm text-muted-foreground">{t("skillsLoading")}</p>
         ) : coverage.isError ? (
           <p className="text-sm text-destructive">{coverage.error.message}</p>
         ) : (
@@ -79,7 +99,7 @@ export function SkillCoverageConflictsPanel({
               <Progress value={coverage.data?.percent ?? 0} className="mt-2" />
               {coverage.data?.completeness_status !== "complete" ? (
                 <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                  历史索引尚未完成，未覆盖对象不代表从未使用。
+                  {t("skillsIncompleteCoverageHint")}
                 </p>
               ) : null}
             </div>
@@ -87,7 +107,7 @@ export function SkillCoverageConflictsPanel({
               <TabsList className="max-w-full overflow-x-auto">
                 {categories.map(([value, label]) => (
                   <TabsTrigger key={value} value={value}>
-                    {label}
+                    {t(label)}
                   </TabsTrigger>
                 ))}
               </TabsList>
@@ -105,21 +125,21 @@ export function SkillCoverageConflictsPanel({
                 >
                   <span>{target.section_title ?? target.target_path ?? target.target_key}</span>
                   <Badge variant={target.confidence ? "outline" : "secondary"}>
-                    {target.observations} · {target.confidence ?? "未覆盖"}
+                    {target.observations} · {target.confidence ?? t("skillsUncovered")}
                   </Badge>
                 </button>
               ))}
               {targets.length === 0 ? (
-                <p className="text-sm text-muted-foreground">此分类没有对象。</p>
+                <p className="text-sm text-muted-foreground">{t("skillsEmptyCategory")}</p>
               ) : null}
             </div>
           </>
         )}
-      </PanelCard>
-      <PanelCard className="space-y-3 p-4">
-        <SectionHeading title="触发冲突" className="border-0 pb-0" />
+      </PanelShell>
+      <PanelShell embedded={embedded}>
+        <SectionHeading title={t("skillsConflicts")} className="border-0 pb-0" />
         {conflicts.isLoading ? (
-          <p className="text-sm text-muted-foreground">加载中…</p>
+          <p className="text-sm text-muted-foreground">{t("skillsLoading")}</p>
         ) : conflicts.isError ? (
           <p className="text-sm text-destructive">{conflicts.error.message}</p>
         ) : conflicts.data?.length ? (
@@ -134,19 +154,19 @@ export function SkillCoverageConflictsPanel({
                 </div>
                 <p className="mt-2 font-medium">{item.left_name} ↔ {item.right_name}</p>
                 <p className="text-muted-foreground">{item.evidence}</p>
-                <p className="text-muted-foreground">建议：{item.recommendation}</p>
+                <p className="text-muted-foreground">{t("skillsRecommendation", { recommendation: item.recommendation })}</p>
               </div>
             ))}
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">未发现冲突。</p>
+          <p className="text-sm text-muted-foreground">{t("skillsNoConflicts")}</p>
         )}
-      </PanelCard>
+      </PanelShell>
       <Sheet open={Boolean(targetKey)} onOpenChange={(open) => !open && setTargetKey(null)}>
         <SheetContent className="overflow-y-auto">
           <SheetHeader>
-            <SheetTitle>覆盖证据</SheetTitle>
-            <SheetDescription>匹配方式、置信度和对应会话。</SheetDescription>
+            <SheetTitle>{t("skillsCoverageEvidence")}</SheetTitle>
+            <SheetDescription>{t("skillsCoverageEvidenceDescription")}</SheetDescription>
           </SheetHeader>
           <div className="space-y-3 px-4 pb-4">
             {(evidence.data?.items ?? []).map((item) => (
@@ -164,12 +184,12 @@ export function SkillCoverageConflictsPanel({
                   className="mt-2 inline-block text-primary underline"
                   to={`/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`}
                 >
-                  打开会话 {item.session_id}
+                  {t("skillsOpenSession", { session: item.session_id })}
                 </Link>
               </div>
             ))}
             {evidence.data?.items.length === 0 ? (
-              <p className="text-sm text-muted-foreground">暂无证据。</p>
+              <p className="text-sm text-muted-foreground">{t("skillsNoEvidence")}</p>
             ) : null}
             {(evidence.data?.total ?? 0) > (evidence.data?.page_size ?? 20) ? (
               <div className="flex justify-between">
@@ -179,7 +199,7 @@ export function SkillCoverageConflictsPanel({
                   disabled={evidencePage === 1}
                   onClick={() => setEvidencePage((page) => page - 1)}
                 >
-                  上一页
+                  {t("skillsPreviousPage")}
                 </Button>
                 <Button
                   size="sm"
@@ -187,7 +207,7 @@ export function SkillCoverageConflictsPanel({
                   disabled={evidencePage * (evidence.data?.page_size ?? 20) >= (evidence.data?.total ?? 0)}
                   onClick={() => setEvidencePage((page) => page + 1)}
                 >
-                  下一页
+                  {t("skillsNextPage")}
                 </Button>
               </div>
             ) : null}

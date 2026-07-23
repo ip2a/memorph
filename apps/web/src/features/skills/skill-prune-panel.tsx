@@ -1,43 +1,77 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PanelCard } from "@/components/shared/panel-card";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { useExecuteSkillPrune, useSkillPrune } from "@/features/skills/queries";
 import { formatBytes } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
 
-export function SkillPrunePanel() {
-  const [days, setDays] = useState(30);
+const PRUNE_DAY_OPTIONS = [30, 60, 90] as const;
+
+export function SkillPruneDayTabs({
+  days,
+  onDaysChange,
+  className,
+}: {
+  days: number;
+  onDaysChange: (days: number) => void;
+  className?: string;
+}) {
+  const { t } = useI18n();
+  return (
+    <Tabs
+      value={String(days)}
+      onValueChange={(value) => onDaysChange(Number(value))}
+      className={className}
+    >
+      <TabsList aria-label={t("skillsCleanupRange")}>
+        {PRUNE_DAY_OPTIONS.map((value) => (
+          <TabsTrigger key={value} value={String(value)}>
+            {t("skillsDays", { count: value })}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
+  );
+}
+
+export function SkillPrunePanel({
+  embedded = false,
+  days: daysProp,
+  onDaysChange,
+}: {
+  embedded?: boolean;
+  days?: number;
+  onDaysChange?: (days: number) => void;
+} = {}) {
+  const { t } = useI18n();
+  const [internalDays, setInternalDays] = useState(30);
+  const days = daysProp ?? internalDays;
+  const setDays = onDaysChange ?? setInternalDays;
   const [selected, setSelected] = useState<string[]>([]);
   const preview = useSkillPrune(days);
   const execute = useExecuteSkillPrune();
-  return (
-    <PanelCard className="space-y-3 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <SectionHeading title="安全清理" className="border-0 pb-0" />
-        <div className="flex gap-1">
-          {[30, 60, 90].map((value) => (
-            <Button
-              key={value}
-              size="sm"
-              variant={days === value ? "default" : "outline"}
-              onClick={() => {
-                setDays(value);
-                setSelected([]);
-              }}
-            >
-              {value} 天
-            </Button>
-          ))}
+
+  useEffect(() => {
+    setSelected([]);
+  }, [days]);
+
+  const content = (
+    <>
+      {!embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <SectionHeading title={t("skillsSafePrune")} className="border-0 pb-0" />
+          <SkillPruneDayTabs days={days} onDaysChange={setDays} />
         </div>
-      </div>
+      ) : null}
       <Alert>
-        <AlertTitle>真实目录永不删除</AlertTitle>
+        <AlertTitle>{t("skillsRealDirectoriesSafe")}</AlertTitle>
         <AlertDescription>
-          Prune 只会移除安全符号链接或带有效 Memorph
-          标记的受管复制；历史不完整或路径变化时后端会拒绝执行。
+          {t("skillsPruneSafetyHint")}
         </AlertDescription>
       </Alert>
       {preview.data?.blocked_reason && (
@@ -69,7 +103,7 @@ export function SkillPrunePanel() {
               </span>
               <span className="text-muted-foreground">
                 {item.install_kind} · {formatBytes(item.installation_bytes)} ·{" "}
-                {item.metadata_tokens} metadata tokens
+                {item.metadata_tokens} {t("skillsTokens")}
               </span>
               {item.blocked_reason && (
                 <span className="block text-destructive">
@@ -88,7 +122,7 @@ export function SkillPrunePanel() {
             { preview: preview.data, installationIds: selected },
             {
               onSuccess: () => {
-                toast.success(`已安全移除 ${selected.length} 个安装`);
+                toast.success(t("skillsPruned", { count: selected.length }));
                 setSelected([]);
               },
               onError: (error) => toast.error(error.message),
@@ -96,8 +130,16 @@ export function SkillPrunePanel() {
           )
         }
       >
-        确认移除 {selected.length ? `${selected.length} 项` : "所选项"}
+        {selected.length
+          ? t("skillsSelectedItems", { count: selected.length })
+          : t("skillsSelectedItemFallback")}
       </Button>
-    </PanelCard>
+    </>
   );
+
+  if (embedded) {
+    return <div className="space-y-3">{content}</div>;
+  }
+
+  return <PanelCard className="space-y-3 p-4">{content}</PanelCard>;
 }

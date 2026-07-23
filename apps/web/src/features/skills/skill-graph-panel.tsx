@@ -23,7 +23,9 @@ import {
   useSkillInvocations,
   useSkillStats,
 } from "@/features/skills/queries";
-import { useUiStore } from "@/stores/ui-store";
+import { useI18n } from "@/lib/i18n-context";
+
+const GRAPH_WEEKS = 52;
 
 const colors = [
   "bg-muted",
@@ -32,6 +34,7 @@ const colors = [
   "bg-emerald-600",
   "bg-emerald-800 dark:bg-emerald-400",
 ];
+
 function localDate(date: Date) {
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
     .toISOString()
@@ -41,35 +44,32 @@ function localDate(date: Date) {
 export function SkillGraphPanel({
   skillId,
   provider,
+  embedded = false,
 }: {
   skillId: string | null;
   provider?: string;
+  embedded?: boolean;
 }) {
-  const currentWorkspace = useUiStore((state) => state.selectedWorkspace) ?? undefined;
-  const [weeks, setWeeks] = useState(52);
-  const [projectOnly, setProjectOnly] = useState(false);
+  const { t } = useI18n();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
-  const workspace = projectOnly ? currentWorkspace : undefined;
   const params = useMemo(() => {
     const to = new Date();
     const from = new Date(to);
-    from.setDate(from.getDate() - weeks * 7 + 1);
+    from.setDate(from.getDate() - GRAPH_WEEKS * 7 + 1);
     return {
       from: localDate(from),
       to: localDate(to),
       skillId: skillId ?? undefined,
       provider,
-      workspace,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     };
-  }, [provider, skillId, weeks, workspace]);
+  }, [provider, skillId]);
   const graph = useSkillGraph(params);
   const dayParams = {
     from: selectedDate ?? undefined,
     to: selectedDate ?? undefined,
     skillId: skillId ?? undefined,
     provider,
-    workspace,
     pageSize: 50,
   };
   const dayStats = useSkillStats(dayParams);
@@ -85,34 +85,11 @@ export function SkillGraphPanel({
       })) ?? [],
     [graph.data?.days],
   );
-  return (
-    <PanelCard className="space-y-3 p-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <SectionHeading title="Skill 活跃热力图" className="border-0 pb-0" />
-        <div className="flex gap-2">
-          <select
-            aria-label="项目范围"
-            className="h-8 max-w-48 rounded-md border bg-background px-2 text-sm"
-            value={projectOnly ? "current" : "all"}
-            onChange={(event) => setProjectOnly(event.target.value === "current")}
-          >
-            <option value="all">全部项目</option>
-            <option value="current" disabled={!currentWorkspace}>
-              当前项目{currentWorkspace ? `：${currentWorkspace}` : ""}
-            </option>
-          </select>
-          <select
-            aria-label="热力图范围"
-            className="h-8 rounded-md border bg-background px-2 text-sm"
-            value={weeks}
-            onChange={(event) => setWeeks(Number(event.target.value))}
-          >
-            <option value={13}>13 周</option>
-            <option value={26}>26 周</option>
-            <option value={52}>52 周</option>
-          </select>
-        </div>
-      </div>
+  const content = (
+    <>
+      {!embedded ? (
+        <SectionHeading title={t("skillsActivityHeatmap")} className="border-0 pb-0" />
+      ) : null}
       {graph.isError ? (
         <p className="text-sm text-destructive">{graph.error.message}</p>
       ) : (
@@ -120,14 +97,14 @@ export function SkillGraphPanel({
           <div
             className="grid w-max grid-flow-col grid-rows-7 gap-1"
             role="grid"
-            aria-label="每日 Skill 调用"
+            aria-label={t("skillsDailyInvocations")}
           >
             {graph.data?.days.map((day) => (
               <button
                 key={day.date}
                 className={`size-3 rounded-[2px] ${colors[day.level]}`}
-                title={`${day.date}: ${day.invocations} 次调用，${day.sessions} 个会话，${day.active_skills} 个 Skill`}
-                aria-label={`${day.date}，${day.invocations} 次调用，${day.sessions} 个会话，${day.active_skills} 个活跃 Skill`}
+                title={t("skillsDaySummary", { date: day.date, invocations: day.invocations, sessions: day.sessions, skills: day.active_skills })}
+                aria-label={t("skillsDaySummary", { date: day.date, invocations: day.invocations, sessions: day.sessions, skills: day.active_skills })}
                 onClick={() => setSelectedDate(day.date)}
               />
             ))}
@@ -135,10 +112,10 @@ export function SkillGraphPanel({
         </div>
       )}
       <div className="flex flex-wrap gap-4 text-sm text-muted-foreground">
-        <span>总调用 {graph.data?.total_invocations ?? "—"}</span>
-        <span>峰值 {graph.data?.max_count ?? "—"}</span>
+        <span>{t("skillsTotalInvocations")} {graph.data?.total_invocations ?? "—"}</span>
+        <span>{t("skillsPeak")} {graph.data?.max_count ?? "—"}</span>
       </div>
-      <div className="h-36" aria-label="7 日滚动调用趋势">
+      <div className="h-36" aria-label={t("skillsRollingTrend")}>
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={trend} margin={{ left: -24, right: 8 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} />
@@ -148,7 +125,7 @@ export function SkillGraphPanel({
             <Area
               type="monotone"
               dataKey="rolling"
-              name="7 日调用"
+              name={t("skillsRollingTrend")}
               stroke="var(--primary)"
               fill="var(--primary)"
               fillOpacity={0.18}
@@ -159,27 +136,27 @@ export function SkillGraphPanel({
       <Sheet open={Boolean(selectedDate)} onOpenChange={(open) => !open && setSelectedDate(null)}>
         <SheetContent className="overflow-y-auto">
           <SheetHeader>
-            <SheetTitle>{selectedDate} Skill 调用</SheetTitle>
+            <SheetTitle>{selectedDate} {t("skillsInvocations")}</SheetTitle>
             <SheetDescription>
               {selected
-                ? `${selected.invocations} 次调用，${selected.sessions} 个会话，${selected.active_skills} 个活跃 Skill`
-                : "加载当日调用数据"}
+                ? t("skillsDaySummary", { date: selected.date, invocations: selected.invocations, sessions: selected.sessions, skills: selected.active_skills })
+                : t("skillsLoadingDayInvocations")}
             </SheetDescription>
           </SheetHeader>
           <div className="space-y-4 px-4 pb-4">
             <section>
-              <h3 className="mb-2 font-medium">当日排名</h3>
+              <h3 className="mb-2 font-medium">{t("skillsDailyRanking")}</h3>
               {(dayStats.ranking.data ?? []).map((item) => (
                 <div key={item.skill_id} className="flex justify-between border-b py-2 text-sm">
                   <span>{item.name}</span>
-                  <span>{item.invocations} 次</span>
+                  <span>{t("skillsInvocationCount", { count: item.invocations })}</span>
                 </div>
               ))}
             </section>
             <section>
-              <h3 className="mb-2 font-medium">调用明细</h3>
+              <h3 className="mb-2 font-medium">{t("skillsInvocationDetails")}</h3>
               {!skillId ? (
-                <p className="text-sm text-muted-foreground">选择一个 Skill 后查看调用证据。</p>
+                <p className="text-sm text-muted-foreground">{t("skillsSelectForEvidence")}</p>
               ) : (
                 (invocations.data?.items ?? []).map((item) => (
                   <Link
@@ -195,6 +172,12 @@ export function SkillGraphPanel({
           </div>
         </SheetContent>
       </Sheet>
-    </PanelCard>
+    </>
   );
+
+  if (embedded) {
+    return <div className="space-y-3">{content}</div>;
+  }
+
+  return <PanelCard className="space-y-3 p-4">{content}</PanelCard>;
 }

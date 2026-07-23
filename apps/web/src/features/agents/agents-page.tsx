@@ -512,7 +512,6 @@ function ProviderDetail({
     );
   }
 
-  const environment = environmentOf(provider);
   const pendingKey = updateSetting.isPending
     ? `${updateSetting.variables?.provider}:${updateSetting.variables?.settingId}`
     : runSetting.isPending

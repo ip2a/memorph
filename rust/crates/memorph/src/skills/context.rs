@@ -119,7 +119,15 @@ fn build(
         .and_then(|value| value.as_object().cloned())
         .map(|map| {
             map.into_iter()
-                .map(|(key, value)| format!("{key}: {}", value.as_str().unwrap_or("")))
+                .map(|(key, value)| {
+                    format!(
+                        "{key}: {}",
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.to_string())
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         })
@@ -179,7 +187,27 @@ pub(crate) fn estimate(text: &str, baseline: Option<u64>) -> ContextLayer {
 
 #[cfg(test)]
 mod tests {
-    use super::estimate;
+    use super::{build, estimate};
+    use std::fs;
+
+    #[test]
+    fn includes_non_string_metadata_values() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("SKILL.md"), "---\n---\n").unwrap();
+        let context = build(
+            "skill:test".into(),
+            "test".into(),
+            r#"{"enabled":true,"priority":10,"tags":["rust","sqlite"]}"#,
+            root.path(),
+            None,
+            None,
+            None,
+        );
+        assert!(
+            context.metadata.bytes
+                >= "enabled: true\npriority: 10\ntags: [\"rust\",\"sqlite\"]".len() as u64
+        );
+    }
 
     #[test]
     fn estimates_cjk_latin_and_code_differently() {

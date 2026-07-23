@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -121,7 +121,7 @@ pub struct StatsSessionItem {
     pub session_id: String,
     pub title: String,
     pub workspace: Option<String>,
-    pub message_count: usize,
+    pub message_count: Option<usize>,
     pub size_bytes: u64,
     pub created_at: Option<DateTime<Utc>>,
     pub last_active_at: Option<DateTime<Utc>>,
@@ -182,21 +182,27 @@ pub fn dashboard(query: &StatsDashboardQuery) -> Result<StatsDashboard> {
 }
 
 fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<StatsDashboard> {
-    let conn = local_store::open_database()?;
-    let rows =
-        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
-    let rows: Vec<_> = rows
-        .into_iter()
-        .filter(|row| {
-            query.all
-                || crate::core::session_management::normalized_workspace_key(
-                    &row.provider_id,
-                    query.workspace.as_deref(),
-                )
-                .as_deref()
-                    == row.workspace_dir.as_deref()
-        })
-        .collect();
+    let mut conn = local_store::open_database()?;
+    let filter_rows = |rows: Vec<ProjectedSessionSnapshotRow>| {
+        rows.into_iter()
+            .filter(|row| {
+                query.all
+                    || crate::core::session_management::normalized_workspace_key(
+                        &row.provider_id,
+                        query.workspace.as_deref(),
+                    )
+                    .as_deref()
+                        == row.workspace_dir.as_deref()
+            })
+            .collect::<Vec<_>>()
+    };
+    let rows = filter_rows(
+        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?,
+    );
+    complete_missing_counts(&mut conn, &rows)?;
+    let rows = filter_rows(
+        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?,
+    );
     let created_at = load_created_at(&conn, &rows)?;
     let event_facts = load_event_facts(&conn, &rows)?;
     let range_start = query.range.days().map(|days| now - Duration::days(days));
@@ -207,6 +213,93 @@ fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<Stats
         range_start,
         now,
     ))
+}
+
+fn complete_missing_counts(
+    conn: &mut rusqlite::Connection,
+    rows: &[ProjectedSessionSnapshotRow],
+) -> Result<()> {
+    for row in rows.iter().filter(|row| row.message_count.is_none()) {
+        let source_path = row
+            .source_path
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .with_context(|| {
+                format!(
+                    "Cannot count messages for {}/{}: source path is missing",
+                    row.provider_id, row.canonical_session_id
+                )
+            })?;
+        let provider = crate::providers::find_provider(&row.provider_id)
+            .with_context(|| format!("Unknown provider: {}", row.provider_id))?;
+        if !provider.capabilities().import {
+            anyhow::bail!(
+                "Provider does not support message counting: {}",
+                row.provider_id
+            );
+        }
+        let fingerprint = provider
+            .session_source_fingerprint(source_path)?
+            .with_context(|| format!("Session source is missing: {source_path}"))?;
+        let page = provider
+            .import_session_page(source_path, 0, None)
+            .with_context(|| {
+                format!(
+                    "Failed to count messages for {}/{}",
+                    row.provider_id, row.canonical_session_id
+                )
+            })?;
+        let turn_count = page.turn_count.unwrap_or_else(|| {
+            crate::session_projection::project_session_turns(
+                &row.canonical_session_id,
+                &page.imported.session.events,
+                provider.capabilities().turn_quality,
+            )
+            .len()
+        });
+        let mut store = crate::storage::session_index_store::SessionIndexStore::new(conn);
+        let mut canonical_session_id = row.canonical_session_id.clone();
+        if !store.record_complete_counts(
+            &canonical_session_id,
+            &fingerprint.value,
+            page.event_count,
+            page.message_count,
+            turn_count,
+        )? {
+            let indexed = store.write_session_summary(
+                &row.provider_id,
+                &crate::provider::ProviderSessionSummary {
+                    session_id: row
+                        .provider_session_id
+                        .clone()
+                        .unwrap_or_else(|| row.canonical_session_id.clone()),
+                    title: row.title.clone(),
+                    project_dir: row.workspace_dir.clone(),
+                    created_at: None,
+                    last_active_at: row.last_active_at_ms,
+                    source_path: Some(source_path.to_string()),
+                },
+                provider.capabilities(),
+                &fingerprint,
+            )?;
+            canonical_session_id = indexed.canonical_session_id;
+            if !store.record_complete_counts(
+                &canonical_session_id,
+                &fingerprint.value,
+                page.event_count,
+                page.message_count,
+                turn_count,
+            )? {
+                anyhow::bail!(
+                    "Session changed while counting messages: {}/{}",
+                    row.provider_id,
+                    row.canonical_session_id
+                );
+            }
+        }
+        store.replace_daily_stats(&canonical_session_id, &page.imported.session.events)?;
+    }
+    Ok(())
 }
 
 fn load_event_facts(
@@ -439,7 +532,7 @@ fn build_dashboard(
             workspace: row.workspace_dir.clone(),
             message_count: event_facts
                 .get(&row.canonical_session_id)
-                .map_or(0, |facts| facts.message_count),
+                .map(|facts| facts.message_count),
             size_bytes: row.size_bytes.unwrap_or_default(),
             created_at: created
                 .get(&row.canonical_session_id)
@@ -447,7 +540,11 @@ fn build_dashboard(
             last_active_at: activity_at(row, event_facts).and_then(date),
         })
         .collect();
-    let mut by_messages = sessions.clone();
+    let mut by_messages: Vec<_> = sessions
+        .iter()
+        .filter(|item| item.message_count.is_some())
+        .cloned()
+        .collect();
     by_messages.sort_by_key(|item| std::cmp::Reverse(item.message_count));
     by_messages.truncate(10);
     let mut by_size = sessions.clone();
@@ -816,7 +913,7 @@ mod tests {
         assert_eq!(result.overview.total_messages, 3);
         assert_eq!(result.overview.active_sessions, 1);
         assert_eq!(result.overview.active_session_messages, 3);
-        assert_eq!(result.top_sessions.by_messages[0].message_count, 3);
+        assert_eq!(result.top_sessions.by_messages[0].message_count, Some(3));
         assert_eq!(
             result.top_sessions.recently_active[0].last_active_at,
             date((now - Duration::days(1)).timestamp_millis())
@@ -915,5 +1012,19 @@ mod tests {
             3
         );
         assert_eq!(result.top_sessions.by_messages[0].session_id, "recent");
+        assert!(result
+            .top_sessions
+            .by_messages
+            .iter()
+            .all(|item| item.session_id != "unknown"));
+        assert_eq!(
+            result
+                .top_sessions
+                .by_size
+                .iter()
+                .find(|item| item.session_id == "unknown")
+                .and_then(|item| item.message_count),
+            None
+        );
     }
 }

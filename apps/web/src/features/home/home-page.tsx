@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDownIcon } from "lucide-react";
-import { PageError, PageSkeleton } from "@/components/shared/page-states";
+import { PageLoadError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
 import { ProviderLogo } from "@/components/shared/provider-logo";
 import { TrailingMoreButtonGroup } from "@/components/shared/trailing-more-button-group";
@@ -20,7 +20,7 @@ import {
   EmptyHeader,
   EmptyTitle,
 } from "@/components/ui/empty";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollPane } from "@/components/shared/scroll-pane";
 import { updateSettings, updateWorkspaceProviders } from "@/lib/api";
 import { formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
@@ -534,8 +534,24 @@ export function HomePage() {
   const sessionCount = totalSessions(sessionGroups);
   const agentCount = sessionGroups.length;
 
+  function retryHomeShell() {
+    void meta.refetch();
+    void providers.refetch();
+    void catalog.refetch();
+    void workspaceProviders.refetch();
+    void syncGroups.refetch();
+  }
+
   if (loading) return <PageSkeleton />;
-  if (shellError) return <PageError title="Home data failed to load" message={shellError.message} />;
+  if (shellError) {
+    return (
+      <PageLoadError
+        error={shellError}
+        title="Home data failed to load"
+        onRetry={retryHomeShell}
+      />
+    );
+  }
 
   const syncItems = syncGroups.data ?? [];
   const homeButtons = meta.data?.settings.home_buttons;
@@ -544,8 +560,8 @@ export function HomePage() {
     <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 overflow-hidden">
       <HomeHero workspace={selectedWorkspace} />
 
-      <section className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] rounded-md border bg-background">
-        <div className="flex items-center gap-3 border-b p-3">
+      <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border bg-background">
+        <div className="flex shrink-0 items-center gap-3 border-b p-3">
           <strong className="shrink-0">Recent Sessions</strong>
           <HomeSessionToolbar
             className="min-w-0 flex-1"
@@ -569,10 +585,11 @@ export function HomePage() {
             </Button>
           </div>
         </div>
-        <div className="grid min-h-0 grid-cols-[auto_minmax(0,1fr)] overflow-hidden">
+        <div className="flex min-h-0 flex-1 overflow-hidden">
           <HomeSessionGroupRail groups={sessionGroups} />
-          <ScrollArea
-            className="h-full min-h-0 [&_[data-slot=scroll-area-viewport]>div]:flex [&_[data-slot=scroll-area-viewport]>div]:min-h-full [&_[data-slot=scroll-area-viewport]>div]:flex-col"
+          <ScrollPane
+            className="min-h-0 flex-1"
+            innerClassName="min-h-full"
             data-home-session-scroll
           >
             <HomeSessionListPanel
@@ -593,7 +610,7 @@ export function HomePage() {
                 onSync={setSyncTarget}
               />
             </HomeSessionListPanel>
-          </ScrollArea>
+          </ScrollPane>
         </div>
       </section>
       <RenameSessionDialog

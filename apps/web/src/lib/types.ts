@@ -1277,7 +1277,7 @@ export type StatsSessionItem = {
   session_id: string;
   title: string;
   workspace: string | null;
-  message_count: number;
+  message_count: number | null;
   size_bytes: number;
   created_at: string | null;
   last_active_at: string | null;

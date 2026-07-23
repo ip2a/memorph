@@ -5,6 +5,7 @@ import type { I18nKey } from "@/lib/i18n-core";
 import { cn } from "@/lib/utils";
 import { AppShellNav } from "@/components/layout/app-shell-nav";
 import { WorkspaceSwitchDialog } from "@/features/workspaces/workspace-switch-dialog";
+import { WorkspaceQuickSwitchDialog } from "@/features/workspaces/workspace-quick-switch-dialog";
 import { useUiStore } from "@/stores/ui-store";
 
 const ImportSessionDialog = lazy(() =>
@@ -76,6 +77,7 @@ export function AppShell() {
       </header>
 
       <WorkspaceSwitchDialog open={workspaceSwitchOpen} onOpenChange={setWorkspaceSwitchOpen} />
+      <WorkspaceQuickSwitchDialog />
       {importSessionOpen ? (
         <Suspense fallback={null}>
           <ImportSessionDialog open={importSessionOpen} onOpenChange={setImportSessionOpen} />

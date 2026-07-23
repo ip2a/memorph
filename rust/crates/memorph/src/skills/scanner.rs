@@ -51,11 +51,12 @@ pub fn persist(
         skills_seen: overview.skills.len(),
         ..ScanSummary::default()
     };
+    let mut catalog_changed = false;
     for agent in &overview.agents {
         let entries = entries_for_agent(overview, agent);
         let (catalog, installations) = records(&entries, agent)?;
         let fingerprint = root_fingerprint(agent, &installations);
-        repository::persist_root(
+        catalog_changed |= repository::persist_root(
             conn,
             &agent.provider_id,
             &agent.scope_kind,
@@ -74,7 +75,7 @@ pub fn persist(
         summary.roots_scanned += 1;
         summary.installations_seen += installations.len();
     }
-    summary.session_index = invocation::index(conn)?;
+    summary.session_index = invocation::index(conn, catalog_changed)?;
     summary.session_sources_seen = summary.session_index.sources_scanned
         + summary.session_index.sources_skipped
         + summary.session_index.sources_failed;
@@ -274,7 +275,7 @@ mod tests {
                 rusqlite::params![format!("source-{index}"), format!("/tmp/{index}.jsonl")],
             ).unwrap();
         }
-        let summary = invocation::index(store.connection_mut()).unwrap();
+        let summary = invocation::index(store.connection_mut(), false).unwrap();
         let states: i64 = store
             .connection()
             .query_row(
@@ -354,8 +355,23 @@ mod tests {
         assert_eq!(metadata.1.as_deref(), Some("Ada"));
         assert_eq!(metadata.2, 2);
         assert!(metadata.3.contains("notes.txt"));
+        let catalog_id: String = store
+            .connection()
+            .query_row("SELECT id FROM skill_catalog LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        store.connection().execute(
+            "INSERT INTO skill_usage_daily (usage_date, skill_id, provider_id, workspace_key, invocation_count, session_count, updated_at_ms) VALUES ('2026-07-23', ?1, 'codex', '', 1, 1, 1)",
+            [&catalog_id],
+        ).unwrap();
 
         persist(store.connection_mut(), &overview, ScanMode::Incremental).unwrap();
+        let usage_rows: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM skill_usage_daily", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(usage_rows, 1);
         let incremental_state: (i64, Option<i64>) = store
             .connection()
             .query_row(

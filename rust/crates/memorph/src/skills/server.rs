@@ -975,7 +975,6 @@ async fn list_skills(
     State(state): State<SkillsState>,
     Query(query): Query<CatalogListQuery>,
 ) -> impl IntoResponse {
-    let overview = discover(&state.agents);
     let catalog_query = CatalogQuery {
         query: query.query,
         provider: query.provider,
@@ -985,13 +984,6 @@ async fn list_skills(
         page: query.page.unwrap_or(1),
         page_size: query.page_size.unwrap_or(50),
     };
-    let scanned = match state.database_path.as_deref() {
-        Some(path) => scanner::persist_path(path, &overview, ScanMode::Incremental),
-        None => scanner::persist_default(&overview, ScanMode::Incremental),
-    };
-    if let Err(error) = scanned {
-        return error_response(error);
-    }
     let result = match state.database_path.as_deref() {
         Some(path) => repository::list_catalog_path(path, &catalog_query),
         None => repository::list_catalog_default(&catalog_query),
@@ -1729,6 +1721,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_does_not_scan_skill_directories() {
+        let root = tempfile::tempdir().unwrap();
+        create_skill(root.path(), "claude", "writer", "# Writer");
+        let app = router_for(agents(root.path()));
+
+        let (status, listed) = json(
+            app,
+            Request::builder()
+                .uri("/api/v1/skills")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed["data"]["total"], 0);
+        assert_eq!(listed["data"]["completeness"]["status"], "unknown");
+    }
+
+    #[tokio::test]
     async fn api_lists_installs_and_removes_skills() {
         let root = tempfile::tempdir().unwrap();
         create_skill(
@@ -1738,6 +1750,18 @@ mod tests {
             "---\nname: Writer\n---\n# Writer",
         );
         let app = router_for(agents(root.path()));
+
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/scan")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"incremental"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
 
         let (status, listed) = json(
             app.clone(),

@@ -49,8 +49,6 @@
 
 # Local draft documentation.
 /docs/*
-!/docs/session-management-redesign.md
-!/docs/skills-management-goal.md
 
 # Web app source.
 !/apps/

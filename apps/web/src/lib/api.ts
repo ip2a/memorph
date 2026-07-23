@@ -108,6 +108,39 @@ export class ApiError extends Error {
   }
 }
 
+const backendUnavailableStatuses = new Set([502, 503, 504]);
+
+const backendUnavailableMessages = [
+  "failed to fetch",
+  "networkerror",
+  "network request failed",
+  "load failed",
+  "connection refused",
+  "econnrefused",
+  "http 502",
+  "http 503",
+  "http 504",
+];
+
+export function isBackendUnavailableError(error: unknown): boolean {
+  if (!error) return false;
+
+  if (error instanceof ApiError) {
+    return backendUnavailableStatuses.has(error.status);
+  }
+
+  if (error instanceof TypeError) {
+    return true;
+  }
+
+  if (error instanceof Error) {
+    const message = error.message.trim().toLowerCase();
+    return backendUnavailableMessages.some((pattern) => message.includes(pattern));
+  }
+
+  return false;
+}
+
 type ApiEnvelope<T> = {
   ok?: boolean;
   data?: T;

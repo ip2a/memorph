@@ -142,7 +142,7 @@ pub fn persist_root(
     installations: &[InstallationRecord],
     full: bool,
     now_ms: i64,
-) -> Result<()> {
+) -> Result<bool> {
     let state_key = format!("skill-root:{provider_id}:{root_path}");
     begin_scan(
         conn,
@@ -165,7 +165,7 @@ pub fn persist_root(
             None,
             now_ms,
         )?;
-        return Ok(());
+        return Ok(false);
     }
 
     let tx = conn
@@ -217,7 +217,8 @@ pub fn persist_root(
         now_ms,
     )?;
     tx.commit()
-        .context("Failed to commit skill root transaction")
+        .context("Failed to commit skill root transaction")?;
+    Ok(true)
 }
 
 fn upsert_catalog(tx: &Transaction<'_>, skill: &CatalogRecord, now_ms: i64) -> Result<()> {

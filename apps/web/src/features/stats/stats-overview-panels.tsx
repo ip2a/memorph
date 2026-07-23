@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   CartesianGrid,
@@ -13,10 +13,11 @@ import {
   YAxis,
 } from "recharts";
 import type { PieSectorShapeProps } from "recharts";
+import { PathText } from "@/components/shared/path-text";
+import { ProviderLogo } from "@/components/shared/provider-logo";
 import { workspaceName } from "@/components/shared/workspace-name";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { Badge } from "@/components/ui/badge";
-import { CardDescription, CardTitle } from "@/components/ui/card";
 import {
   ChartContainer,
   ChartTooltip,
@@ -24,7 +25,6 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatBytes, formatDateTime } from "@/lib/format";
 import type {
@@ -56,11 +56,6 @@ function PanelEmpty() {
 function breakdownLabel(item: StatsBreakdownItem, kind: BreakdownKind) {
   if (kind === "workspace") return workspaceName(item.id);
   return item.id.split(/[\\/]/).filter(Boolean).at(-1) ?? item.id;
-}
-
-function progressValue(value: number, max: number) {
-  if (max <= 0) return 0;
-  return Math.max(0, Math.min(100, (value / max) * 100));
 }
 
 export function ActivityTrend({
@@ -420,43 +415,37 @@ export function RankingBoard({
   workspaces: StatsBreakdownItem[];
   all: boolean;
 }) {
-  const [view, setView] = useState<"sessions" | "breakdown">("sessions");
   const [limit, setLimit] = useState<"5" | "10">("5");
   const [rank, setRank] = useState<RankKey>("by_messages");
+  const [breakdownKind, setBreakdownKind] = useState<BreakdownKind>("provider");
   const topN = Number(limit);
-  const breakdownKind: BreakdownKind = all ? "workspace" : "provider";
-  const breakdownItems = (all ? workspaces : providers).slice(0, topN);
+  const effectiveKind: BreakdownKind = all ? breakdownKind : "provider";
+  const breakdownItems = (effectiveKind === "workspace" ? workspaces : providers).slice(
+    0,
+    topN,
+  );
   const sessionItems = sessions[rank].slice(0, topN);
-  const breakdownTitle = all ? "工作空间排行" : "当前工作空间 Agent";
+
+  const topLimitTabs = (
+    <Tabs
+      value={limit}
+      onValueChange={(value) => setLimit(value as "5" | "10")}
+    >
+      <TabsList>
+        <TabsTrigger value="5">Top 5</TabsTrigger>
+        <TabsTrigger value="10">Top 10</TabsTrigger>
+      </TabsList>
+    </Tabs>
+  );
 
   return (
-    <section className="flex min-w-0 flex-col gap-3">
-      <SectionHeading
-        variant="compact"
-        title="排行榜"
-        actions={
-          <div className="flex flex-wrap justify-end gap-2">
-            <Tabs
-              value={view}
-              onValueChange={(value) =>
-                setView(value as "sessions" | "breakdown")
-              }
-            >
-              <TabsList>
-                <TabsTrigger value="sessions">会话排行</TabsTrigger>
-                <TabsTrigger value="breakdown">{breakdownTitle}</TabsTrigger>
-              </TabsList>
-            </Tabs>
-            <Tabs
-              value={limit}
-              onValueChange={(value) => setLimit(value as "5" | "10")}
-            >
-              <TabsList>
-                <TabsTrigger value="5">Top 5</TabsTrigger>
-                <TabsTrigger value="10">Top 10</TabsTrigger>
-              </TabsList>
-            </Tabs>
-            {view === "sessions" ? (
+    <section className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-10">
+      <div className="min-w-0 xl:col-span-7">
+        <SectionHeading
+          variant="compact"
+          title="会话排行"
+          actions={
+            <>
               <Tabs
                 value={rank}
                 onValueChange={(value) => setRank(value as RankKey)}
@@ -467,24 +456,129 @@ export function RankingBoard({
                   <TabsTrigger value="recently_active">最近活跃</TabsTrigger>
                 </TabsList>
               </Tabs>
-            ) : null}
-          </div>
-        }
-      />
-      <div className="flex flex-col divide-y divide-border">
-        {view === "sessions" ? (
-          sessionItems.length ? (
+              {topLimitTabs}
+            </>
+          }
+        />
+        <div className="flex flex-col divide-y divide-border">
+          {sessionItems.length ? (
             <SessionList items={sessionItems} />
           ) : (
             <PanelEmpty />
-          )
-        ) : breakdownItems.length ? (
-          <BreakdownRows items={breakdownItems} kind={breakdownKind} />
-        ) : (
-          <PanelEmpty />
-        )}
+          )}
+        </div>
+      </div>
+
+      <div className="min-w-0 xl:col-span-3">
+        <SectionHeading
+          variant="compact"
+          title={
+            <Tabs
+              value={effectiveKind}
+              onValueChange={(value) => setBreakdownKind(value as BreakdownKind)}
+            >
+              <TabsList>
+                <TabsTrigger value="provider">Agent 排行</TabsTrigger>
+                <TabsTrigger value="workspace" disabled={!all}>
+                  工作空间排行
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          }
+          actions={topLimitTabs}
+        />
+        <div className="flex flex-col divide-y divide-border">
+          {breakdownItems.length ? (
+            <BreakdownRows items={breakdownItems} kind={effectiveKind} />
+          ) : (
+            <PanelEmpty />
+          )}
+        </div>
       </div>
     </section>
+  );
+}
+
+function RankingRow({
+  rank,
+  title,
+  leadingTags,
+  trailingTags,
+}: {
+  rank: number;
+  title: ReactNode;
+  leadingTags?: ReactNode;
+  trailingTags?: ReactNode;
+}) {
+  return (
+    <div className="flex min-h-[4.5rem] gap-3 py-3">
+      <span className="w-5 shrink-0 pt-0.5 text-sm tabular-nums text-muted-foreground">
+        {rank}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="min-w-0 truncate text-sm leading-5 font-medium">{title}</div>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex min-w-0 flex-wrap gap-2">{leadingTags}</div>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2">{trailingTags}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BreakdownRankingRow({
+  rank,
+  kind,
+  item,
+}: {
+  rank: number;
+  kind: BreakdownKind;
+  item: StatsBreakdownItem;
+}) {
+  const tags = (
+    <>
+      <Badge variant="secondary">{item.session_count} 会话</Badge>
+      <Badge variant="outline">
+        {item.message_count.toLocaleString()} 消息
+      </Badge>
+      <Badge variant="outline">{formatBytes(item.size_bytes)}</Badge>
+    </>
+  );
+
+  if (kind === "provider") {
+    return (
+      <div className="flex min-h-[4.5rem] gap-3 py-3">
+        <span className="w-5 shrink-0 self-center text-sm tabular-nums text-muted-foreground">
+          {rank}
+        </span>
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <ProviderLogo providerId={item.id} size="sm" alt={item.id} />
+            <span className="min-w-0 truncate text-base leading-tight font-semibold">
+              {item.id}
+            </span>
+          </div>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2">{tags}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-[4.5rem] gap-3 py-3">
+      <span className="w-5 shrink-0 pt-0.5 text-sm tabular-nums text-muted-foreground">
+        {rank}
+      </span>
+      <div className="flex min-w-0 flex-1 items-center gap-3">
+        <div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
+          <div className="min-w-0 truncate text-sm leading-5 font-medium">
+            {workspaceName(item.id)}
+          </div>
+          <PathText value={item.id} wrap="truncate" className="min-w-0 leading-5" />
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-2">{tags}</div>
+      </div>
+    </div>
   );
 }
 
@@ -495,31 +589,15 @@ function BreakdownRows({
   items: StatsBreakdownItem[];
   kind: BreakdownKind;
 }) {
-  const maxSize = Math.max(...items.map((item) => item.size_bytes), 1);
-
   return (
     <>
       {items.map((item, index) => (
-        <div key={item.id} className="flex flex-col gap-2 py-3">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <Badge variant="outline">{index + 1}</Badge>
-              <CardTitle className="truncate text-sm" title={item.id}>
-                {breakdownLabel(item, kind)}
-              </CardTitle>
-            </div>
-            <CardDescription className="shrink-0 tabular-nums">
-              {formatBytes(item.size_bytes)}
-            </CardDescription>
-          </div>
-          <Progress value={progressValue(item.size_bytes, maxSize)} />
-          <div className="flex flex-wrap gap-2">
-            <Badge variant="secondary">{item.session_count} 会话</Badge>
-            <Badge variant="outline">
-              {item.message_count.toLocaleString()} 消息
-            </Badge>
-          </div>
-        </div>
+        <BreakdownRankingRow
+          key={item.id}
+          rank={index + 1}
+          kind={kind}
+          item={item}
+        />
       ))}
     </>
   );
@@ -529,32 +607,34 @@ function SessionList({ items }: { items: StatsSessionItem[] }) {
   return (
     <>
       {items.map((item, index) => (
-        <div
+        <RankingRow
           key={`${item.provider_id}:${item.session_id}`}
-          className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between"
-        >
-          <div className="flex min-w-0 flex-col gap-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{index + 1}</Badge>
-              <Badge variant="secondary">{item.provider_id}</Badge>
-            </div>
+          rank={index + 1}
+          title={
             <Link
-              className="truncate font-medium hover:underline"
+              className="block truncate hover:underline"
               to={`/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`}
             >
               {item.title}
             </Link>
-          </div>
-          <div className="flex flex-wrap gap-2 sm:justify-end">
-            <Badge variant="secondary">
-              {item.message_count.toLocaleString()} 消息
-            </Badge>
-            <Badge variant="outline">{formatBytes(item.size_bytes)}</Badge>
-            <Badge variant="outline">
-              {formatDateTime(item.last_active_at)}
-            </Badge>
-          </div>
-        </div>
+          }
+          leadingTags={
+            <>
+              <Badge variant="secondary">{item.provider_id}</Badge>
+              <Badge variant="outline">
+                {formatDateTime(item.last_active_at)}
+              </Badge>
+            </>
+          }
+          trailingTags={
+            <>
+              <Badge variant="secondary">
+                {item.message_count?.toLocaleString() ?? "—"} 消息
+              </Badge>
+              <Badge variant="outline">{formatBytes(item.size_bytes)}</Badge>
+            </>
+          }
+        />
       ))}
     </>
   );

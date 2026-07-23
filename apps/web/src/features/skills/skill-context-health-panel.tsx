@@ -7,6 +7,7 @@ import {
   useSkillHealth,
   useSkillHealthSummary,
 } from "@/features/skills/queries";
+import { useI18n } from "@/lib/i18n-context";
 
 const BASELINES = [32_000, 128_000, 200_000] as const;
 
@@ -17,6 +18,7 @@ export function SkillContextHealthPanel({
   skillId: string | null;
   provider?: string;
 }) {
+  const { t } = useI18n();
   const [baseline, setBaseline] = useState<number>();
   const contextSummary = useSkillContextSummary(provider, baseline);
   const context = useSkillContext(skillId, baseline);
@@ -28,9 +30,9 @@ export function SkillContextHealthPanel({
     <section className="grid gap-3 lg:grid-cols-2">
       <Card>
         <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>Context Budget</CardTitle>
+          <CardTitle>{t("skillsContextBudget")}</CardTitle>
           <select
-            aria-label="上下文基准"
+            aria-label={t("skillsContextBaseline")}
             value={baseline ?? ""}
             onChange={(event) =>
               setBaseline(
@@ -39,7 +41,7 @@ export function SkillContextHealthPanel({
             }
             className="h-8 rounded-md border bg-background px-2 text-sm"
           >
-            <option value="">未知模型</option>
+            <option value="">{t("skillsUnknownModel")}</option>
             {BASELINES.map((value) => (
               <option key={value} value={value}>
                 {value / 1000}K
@@ -49,23 +51,24 @@ export function SkillContextHealthPanel({
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-muted-foreground text-xs">
-            本地估算。算法：
-            {contextSummary.data?.algorithm_version ?? "unicode-mixed-v1"}
+            {t("skillsLocalEstimateAlgorithm", {
+              algorithm: contextSummary.data?.algorithm_version ?? "unicode-mixed-v1",
+            })}
           </p>
           {selected ? (
             <div className="grid grid-cols-3 gap-2 text-sm">
               {(
                 [
-                  ["常驻元数据", selected.metadata],
-                  ["按需正文", selected.body],
-                  ["辅助文件", selected.auxiliary],
+                  [t("skillsResidentMetadata"), selected.metadata],
+                  [t("skillsOnDemandBody"), selected.body],
+                  [t("skillsAuxiliaryFiles"), selected.auxiliary],
                 ] as const
               ).map(([label, layer]) => (
                 <div key={label} className="rounded-md border p-2">
                   <div className="text-muted-foreground text-xs">{label}</div>
                   <strong>≈ {layer.estimated_tokens.toLocaleString()}</strong>
                   <div className="text-muted-foreground text-xs">
-                    {layer.token_lower}–{layer.token_upper} tokens
+                    {layer.token_lower}–{layer.token_upper} {t("skillsTokens")}
                   </div>
                   {layer.baseline_percent != null ? (
                     <div className="mt-1 h-1.5 overflow-hidden rounded bg-muted">
@@ -82,7 +85,7 @@ export function SkillContextHealthPanel({
             </div>
           ) : (
             <p className="text-muted-foreground text-sm">
-              选择 Skill 查看分层预算。
+              {t("skillsSelectForBudget")}
             </p>
           )}
         </CardContent>
@@ -90,20 +93,20 @@ export function SkillContextHealthPanel({
 
       <Card>
         <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>Health</CardTitle>
+          <CardTitle>{t("skillsHealth")}</CardTitle>
           <div className="flex gap-1 text-xs">
             <Badge variant="destructive">
-              {healthSummary.data?.errors ?? 0} 错误
+              {t("skillsErrors", { count: healthSummary.data?.errors ?? 0 })}
             </Badge>
             <Badge variant="outline">
-              {healthSummary.data?.warnings ?? 0} 警告
+              {t("skillsWarnings", { count: healthSummary.data?.warnings ?? 0 })}
             </Badge>
           </div>
         </CardHeader>
         <CardContent className="space-y-2">
           {healthSummary.data?.completeness_status !== "complete" ? (
             <p className="rounded border border-amber-500/50 bg-amber-500/10 p-2 text-xs">
-              会话索引不完整，长期未使用等结论不会标记为确定结果。
+              {t("skillsIncompleteHealthHint")}
             </p>
           ) : null}
           {health.data?.checks
@@ -124,20 +127,20 @@ export function SkillContextHealthPanel({
                   </Badge>
                   {item.title}
                 </summary>
-                <p className="mt-2 text-xs">证据：{item.evidence}</p>
+                <p className="mt-2 text-xs">{t("skillsEvidence", { evidence: item.evidence })}</p>
                 <p className="text-muted-foreground mt-1 text-xs">
-                  建议：{item.recommendation}
+                  {t("skillsRecommendation", { recommendation: item.recommendation })}
                 </p>
               </details>
             ))}
           {skillId &&
           health.data &&
           health.data.checks.every((item) => item.severity === "pass") ? (
-            <p className="text-sm">所选 Skill 的静态检查全部通过。</p>
+            <p className="text-sm">{t("skillsHealthPassed")}</p>
           ) : null}
           {!skillId ? (
             <p className="text-muted-foreground text-sm">
-              选择 Skill 查看检查证据。
+              {t("skillsSelectForHealth")}
             </p>
           ) : null}
         </CardContent>

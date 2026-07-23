@@ -1,6 +1,6 @@
 import * as React from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
-import { ArrowLeftIcon, DatabaseIcon, PackageIcon, SettingsIcon } from "lucide-react"
+import { SettingsIcon } from "lucide-react"
 
 import { CollapsibleToolbar, type CollapsibleToolbarEntry } from "@/components/shared/collapsible-toolbar"
 import { Button } from "@/components/ui/button"
@@ -42,13 +42,11 @@ export function AppShellNav({
         collapsePriority: 0,
         renderButton: () => (
           <Button type="button" variant="outline" onClick={() => navigate(-1)}>
-            <ArrowLeftIcon data-icon="inline-start" />
             {t("back")}
           </Button>
         ),
         renderMenuItem: () => (
           <DropdownMenuItem onSelect={() => navigate(-1)}>
-            <ArrowLeftIcon />
             {t("back")}
           </DropdownMenuItem>
         ),
@@ -91,18 +89,12 @@ export function AppShellNav({
         collapsePriority: 10,
         renderButton: () => (
           <Button asChild variant="outline">
-            <Link to="/storage">
-              <DatabaseIcon data-icon="inline-start" />
-              {t("storage")}
-            </Link>
+            <Link to="/storage">{t("storage")}</Link>
           </Button>
         ),
         renderMenuItem: () => (
           <DropdownMenuItem asChild>
-            <Link to="/storage">
-              <DatabaseIcon />
-              {t("storage")}
-            </Link>
+            <Link to="/storage">{t("storage")}</Link>
           </DropdownMenuItem>
         ),
       })
@@ -131,18 +123,12 @@ export function AppShellNav({
         collapsePriority: 12,
         renderButton: () => (
           <Button asChild variant="outline" size="sm">
-            <Link to="/skills">
-              <PackageIcon data-icon="inline-start" />
-              {t("skills")}
-            </Link>
+            <Link to="/skills">{t("skills")}</Link>
           </Button>
         ),
         renderMenuItem: () => (
           <DropdownMenuItem asChild>
-            <Link to="/skills">
-              <PackageIcon />
-              {t("skills")}
-            </Link>
+            <Link to="/skills">{t("skills")}</Link>
           </DropdownMenuItem>
         ),
       })

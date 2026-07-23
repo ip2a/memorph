@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api } from "./api";
+import { api, ApiError, isBackendUnavailableError } from "./api";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -32,5 +32,21 @@ describe("api", () => {
       message: "HTTP 500",
       status: 500,
     });
+  });
+});
+
+describe("isBackendUnavailableError", () => {
+  it("detects gateway and network failures", () => {
+    expect(isBackendUnavailableError(new ApiError("HTTP 502", 502))).toBe(true);
+    expect(isBackendUnavailableError(new ApiError("HTTP 503", 503))).toBe(true);
+    expect(isBackendUnavailableError(new ApiError("HTTP 504", 504))).toBe(true);
+    expect(isBackendUnavailableError(new TypeError("Failed to fetch"))).toBe(true);
+    expect(isBackendUnavailableError(new Error("Load failed"))).toBe(true);
+  });
+
+  it("ignores ordinary API failures", () => {
+    expect(isBackendUnavailableError(new ApiError("bad request", 400))).toBe(false);
+    expect(isBackendUnavailableError(new ApiError("HTTP 500", 500))).toBe(false);
+    expect(isBackendUnavailableError(new Error("Settings not loaded"))).toBe(false);
   });
 });

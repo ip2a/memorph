@@ -122,7 +122,7 @@ pub struct InvocationPage {
     pub total: usize,
 }
 
-pub fn index(conn: &mut Connection) -> Result<IndexSummary> {
+pub fn index(conn: &mut Connection, force: bool) -> Result<IndexSummary> {
     let now_ms = Utc::now().timestamp_millis();
     let identities = load_identities(conn)?;
     let sources = repository::session_sources(conn)?;
@@ -134,7 +134,7 @@ pub fn index(conn: &mut Connection) -> Result<IndexSummary> {
         let state_key = format!("session-source:{}", source.id);
         let unchanged = repository::scan_fingerprint(conn, &state_key)?.as_deref()
             == Some(source.fingerprint.as_str());
-        if unchanged && scan_complete(conn, &state_key)? {
+        if !force && unchanged && scan_complete(conn, &state_key)? {
             summary.sources_skipped += 1;
             continue;
         }
@@ -170,8 +170,10 @@ pub fn index(conn: &mut Connection) -> Result<IndexSummary> {
             }
         }
     }
-    rebuild_daily(conn, now_ms)?;
-    super::coverage::rebuild(conn)?;
+    if force || summary.sources_scanned > 0 {
+        rebuild_daily(conn, now_ms)?;
+        super::coverage::rebuild(conn)?;
+    }
     let (count, earliest, latest): (i64, Option<i64>, Option<i64>) = conn.query_row(
         "SELECT COUNT(*), MIN(invoked_at_ms), MAX(invoked_at_ms) FROM skill_invocations",
         [],

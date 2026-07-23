@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -214,6 +215,50 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("SkillsPage", () => {
+  it("starts one incremental scan for an uninitialized catalog", async () => {
+    mocks.useSkills.mockReturnValue({
+      data: {
+        items: [],
+        page: 1,
+        page_size: 50,
+        total: 0,
+        providers: [],
+        completeness: { status: "unknown" },
+      },
+      error: null,
+      isError: false,
+      isFetching: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    });
+
+    renderRoute();
+
+    await waitFor(() =>
+      expect(mocks.scan).toHaveBeenCalledWith({
+        mode: "incremental",
+        workspace: undefined,
+      }),
+    );
+    expect(mocks.scan).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the page visible while only the catalog list is loading", () => {
+    mocks.useSkills.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isFetching: true,
+      isLoading: true,
+      refetch: vi.fn(),
+    });
+
+    renderRoute();
+
+    expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Incremental Scan" })).toBeTruthy();
+  });
+
   it("renders the SQLite catalog and sends search filters to the query", async () => {
     const user = userEvent.setup();
     renderRoute();
@@ -235,7 +280,7 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
 
-    await user.click(screen.getByRole("button", { name: "增量扫描" }));
+    await user.click(screen.getByRole("button", { name: "Incremental Scan" }));
 
     expect(mocks.scan).toHaveBeenCalledWith(
       { mode: "incremental", workspace: "/work/demo" },
@@ -243,34 +288,25 @@ describe("SkillsPage", () => {
     );
   });
 
-  it("stores custom stats dates and confidence in the URL-backed query", async () => {
+  it("stores custom stats dates in the URL-backed query", async () => {
     const user = userEvent.setup();
     renderRoute();
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "统计范围" }),
-      "custom",
-    );
-    fireEvent.change(screen.getByLabelText("开始日期"), {
+    await user.click(screen.getByRole("tab", { name: "Custom" }));
+    fireEvent.change(screen.getByLabelText("Start date"), {
       target: { value: "2026-07-01" },
     });
-    fireEvent.change(screen.getByLabelText("结束日期"), {
+    fireEvent.change(screen.getByLabelText("End date"), {
       target: { value: "2026-07-22" },
     });
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "置信度" }),
-      "low",
-    );
     expect(mocks.useSkillStats).toHaveBeenLastCalledWith(
       expect.objectContaining({
         from: "2026-07-01",
         to: "2026-07-22",
-        confidence: "low",
       }),
     );
   });
 
-  it("filters the graph by the current project and drills into a day", async () => {
-    useUiStore.setState({ selectedWorkspace: "/work/demo" });
+  it("drills into a day on the activity heatmap", async () => {
     mocks.useSkillGraph.mockReturnValue({
       data: {
         days: [
@@ -289,18 +325,20 @@ describe("SkillsPage", () => {
     });
     const user = userEvent.setup();
     renderRoute();
-    await user.selectOptions(screen.getByRole("combobox", { name: "项目范围" }), "current");
+    await user.click(screen.getByRole("tab", { name: "活跃热力" }));
     expect(mocks.useSkillGraph).toHaveBeenLastCalledWith(
-      expect.objectContaining({ workspace: "/work/demo" }),
+      expect.not.objectContaining({ workspace: expect.anything() }),
     );
     await user.click(screen.getByRole("button", { name: /2026-07-22/ }));
-    expect(screen.getByRole("dialog").textContent).toContain("2026-07-22 Skill 调用");
+    expect(screen.getByRole("dialog").textContent).toContain(
+      "2026-07-22 Skill Invocations",
+    );
     expect(mocks.useSkillStats).toHaveBeenLastCalledWith(
       expect.objectContaining({ from: "2026-07-22", to: "2026-07-22" }),
     );
   });
 
-  it("shows file coverage in the bundle list", () => {
+  it("shows file coverage in the bundle list", async () => {
     mocks.useSkillCoverage.mockReturnValue({
       data: {
         skill_id: "document-writer",
@@ -335,7 +373,9 @@ describe("SkillsPage", () => {
       },
       isLoading: false,
     });
+    const user = userEvent.setup();
     renderRoute();
+    await user.click(screen.getByText("Document Writer"));
     expect(screen.getByText("2 · high")).toBeTruthy();
   });
 
@@ -379,16 +419,21 @@ describe("SkillsPage", () => {
     });
     const user = userEvent.setup();
     renderRoute();
+    await user.click(screen.getByText("Document Writer"));
     await user.click(screen.getByText("Introduction"));
     const dialog = screen.getByRole("dialog");
-    expect(dialog.textContent).toContain("覆盖证据");
-    expect(within(dialog).getByRole("link", { name: /打开会话/ }).getAttribute("href"))
-      .toBe("/sessions/codex/session-1");
+    expect(dialog.textContent).toContain("Coverage Evidence");
+    expect(
+      within(dialog)
+        .getByRole("link", { name: /Open session/ })
+        .getAttribute("href"),
+    ).toBe("/sessions/codex/session-1");
   });
 
   it("installs into a missing provider and safely removes a managed installation", async () => {
     const user = userEvent.setup();
     renderRoute();
+    await user.click(screen.getByText("Document Writer"));
     const codex = screen
       .getAllByText("codex")
       .map((element) => element.closest("div.rounded-lg"))
