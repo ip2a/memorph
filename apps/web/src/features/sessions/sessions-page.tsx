@@ -42,10 +42,12 @@ export function SessionsPage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SessionListSort>("recent");
   const [hookFilter, setHookFilter] = useState<SessionHookFilter>("all");
+  const [page, setPage] = useState(0);
+  const pageSize = 25;
 
   const params = useMemo(
-    () => ({ all: true, details: true, limit: 100, sort, hook_filter: hookFilter }),
-    [hookFilter, sort],
+    () => ({ all: true, details: true, limit: pageSize, offset: page * pageSize, sort, hook_filter: hookFilter }),
+    [hookFilter, page, sort],
   );
   const sessions = useSessions(params);
   const refreshStaleness = useRefreshSessionStaleness();
@@ -54,7 +56,7 @@ export function SessionsPage() {
   if (sessions.isLoading) return <PageSkeleton />;
   if (sessions.error) return <PageError title="Sessions failed to load" message={sessions.error.message} />;
 
-  const groups = (sessions.data ?? [])
+  const groups = (sessions.data?.groups ?? [])
     .map((group) => ({
       ...group,
       sessions: group.sessions.filter((session) => matchesSearch(session, search)),
@@ -136,7 +138,10 @@ export function SessionsPage() {
                 placeholder="Search title, id, or workspace"
               />
             </div>
-            <Select value={sort} onValueChange={(value) => setSort(value as SessionListSort)}>
+            <Select value={sort} onValueChange={(value) => {
+              setSort(value as SessionListSort);
+              setPage(0);
+            }}>
               <SelectTrigger>
                 <SelectValue placeholder="Sort" />
               </SelectTrigger>
@@ -148,7 +153,10 @@ export function SessionsPage() {
                 </SelectGroup>
               </SelectContent>
             </Select>
-            <Select value={hookFilter} onValueChange={(value) => setHookFilter(value as SessionHookFilter)}>
+            <Select value={hookFilter} onValueChange={(value) => {
+              setHookFilter(value as SessionHookFilter);
+              setPage(0);
+            }}>
               <SelectTrigger>
                 <SelectValue placeholder="Hook filter" />
               </SelectTrigger>
@@ -169,7 +177,8 @@ export function SessionsPage() {
       {total === 0 ? (
         <PageEmpty title="No sessions matched" description="Change filters or switch workspace to inspect provider sessions." />
       ) : (
-        groups.map((group) => (
+        <>
+          {groups.map((group) => (
           <Card key={group.provider_id}>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -226,7 +235,17 @@ export function SessionsPage() {
               </Table>
             </CardContent>
           </Card>
-        ))
+          ))}
+          <div className="flex items-center justify-end gap-2">
+            <span className="text-muted-foreground text-sm">Page {page + 1}</span>
+            <Button type="button" variant="outline" disabled={page === 0 || sessions.isFetching} onClick={() => setPage((current) => current - 1)}>
+              Previous
+            </Button>
+            <Button type="button" variant="outline" disabled={!sessions.data?.has_more || sessions.isFetching} onClick={() => setPage((current) => current + 1)}>
+              Next
+            </Button>
+          </div>
+        </>
       )}
     </div>
   );

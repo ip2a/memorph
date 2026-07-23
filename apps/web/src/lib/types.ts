@@ -974,6 +974,13 @@ export type SessionGroup = {
   sessions: SessionItem[];
 };
 
+export type SessionPage = {
+  groups: SessionGroup[];
+  offset: number;
+  limit: number;
+  has_more: boolean;
+};
+
 export type SyncHolding = {
   id: string;
   provider: string;

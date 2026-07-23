@@ -14,8 +14,8 @@ pub(super) async fn get_stats_dashboard(
     }
 }
 
-pub(super) async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
-    let providers: Vec<String> = q
+fn session_list_params(q: ListQuery, limit: Option<usize>) -> core::SessionListParams {
+    let providers = q
         .provider
         .map(|p| p.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
@@ -29,18 +29,53 @@ pub(super) async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoRespon
         let _ = config::remember_workspace(std::path::Path::new(workspace));
     }
 
-    let params = core::SessionListParams {
+    core::SessionListParams {
         all: q.all.unwrap_or(false),
         providers,
         cwd,
         include_message_counts: q.details.unwrap_or(true),
-        limit: q.limit,
+        limit,
         offset: q.offset,
         sort: q.sort.unwrap_or_default(),
         hook_filter: q.hook_filter.unwrap_or_default(),
-    };
+    }
+}
+
+pub(super) async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
+    let limit = q.limit;
+    let params = session_list_params(q, limit);
     match run_blocking(move || core::projection::list_sessions(&params)).await {
         Ok(groups) => ApiResponse::success(groups).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[derive(Serialize)]
+struct SessionPagePayload {
+    groups: Vec<core::SessionGroup>,
+    offset: usize,
+    limit: usize,
+    has_more: bool,
+}
+
+pub(super) async fn list_session_page(Query(q): Query<ListQuery>) -> impl IntoResponse {
+    let limit = q.limit.unwrap_or(25).clamp(1, 100);
+    let offset = q.offset.unwrap_or(0);
+    let params = session_list_params(q, Some(limit.saturating_add(1)));
+    match run_blocking(move || core::projection::list_sessions(&params)).await {
+        Ok(mut groups) => {
+            let has_more = groups.iter().any(|group| group.sessions.len() > limit);
+            for group in &mut groups {
+                group.sessions.truncate(limit);
+            }
+            ApiResponse::success(SessionPagePayload {
+                groups,
+                offset,
+                limit,
+                has_more,
+            })
+            .into_response()
+        }
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }

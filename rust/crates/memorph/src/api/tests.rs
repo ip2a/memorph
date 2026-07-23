@@ -1956,3 +1956,24 @@ async fn provider_feature_and_control_routes_are_not_registered() {
         );
     }
 }
+
+#[tokio::test]
+async fn session_page_returns_pagination_metadata() {
+    let home = Builder::new()
+        .prefix("memorph-session-page")
+        .tempdir()
+        .unwrap();
+    let _config_home = ConfigTestHome::new(home.path());
+    let request = Request::builder()
+        .uri("/api/v1/sessions/page?all=true&provider=missing-provider&limit=25")
+        .body(Body::empty())
+        .unwrap();
+
+    let (status, body) = read_json(router(), request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["groups"], serde_json::json!([]));
+    assert_eq!(body["data"]["offset"], 0);
+    assert_eq!(body["data"]["limit"], 25);
+    assert_eq!(body["data"]["has_more"], false);
+}
