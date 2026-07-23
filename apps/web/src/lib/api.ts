@@ -55,7 +55,6 @@ import type {
   SessionDetailPayload,
   SessionActivityTimeline,
   ProviderActivityTimeline,
-  SessionGroup,
   SessionListParams,
   SessionPage,
   SessionReprojectionReport,
@@ -592,11 +591,7 @@ export function getStatsDashboard(params: {
 }
 
 export function listSessions(params: SessionListParams = {}) {
-  return api<SessionGroup[]>(`/api/v1/sessions${buildQuery(params)}`);
-}
-
-export function listSessionPage(params: SessionListParams = {}) {
-  return api<SessionPage>(`/api/v1/sessions/page${buildQuery(params)}`);
+  return api<SessionPage>(`/api/v1/sessions${buildQuery(params)}`);
 }
 
 export function refreshSessionStaleness() {

@@ -56,7 +56,7 @@ export function useHomeData(
   });
 
   const sessions = useQuery({
-    queryKey: queryKeys.sessions(sessionParams),
+    queryKey: queryKeys.sessionPage(sessionParams),
     queryFn: () => listSessions(sessionParams),
     enabled: !meta.isLoading && Boolean(selectedProviders?.length),
     placeholderData: (previous) => previous,

@@ -520,7 +520,7 @@ export function HomePage() {
 
   const sessionGroups = useMemo(
     () =>
-      (sessions.data ?? [])
+      (sessions.data?.groups ?? [])
         .map((group) => ({
           ...group,
           sessions: group.sessions.filter((session) => matchesSearch(session, search)),

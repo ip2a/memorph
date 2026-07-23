@@ -41,15 +41,6 @@ fn session_list_params(q: ListQuery, limit: Option<usize>) -> core::SessionListP
     }
 }
 
-pub(super) async fn list_sessions(Query(q): Query<ListQuery>) -> impl IntoResponse {
-    let limit = q.limit;
-    let params = session_list_params(q, limit);
-    match run_blocking(move || core::projection::list_sessions(&params)).await {
-        Ok(groups) => ApiResponse::success(groups).into_response(),
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-    }
-}
-
 #[derive(Serialize)]
 struct SessionPagePayload {
     groups: Vec<core::SessionGroup>,

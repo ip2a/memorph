@@ -1965,7 +1965,7 @@ async fn session_page_returns_pagination_metadata() {
         .unwrap();
     let _config_home = ConfigTestHome::new(home.path());
     let request = Request::builder()
-        .uri("/api/v1/sessions/page?all=true&provider=missing-provider&limit=25")
+        .uri("/api/v1/sessions?all=true&provider=missing-provider&limit=25")
         .body(Body::empty())
         .unwrap();
 

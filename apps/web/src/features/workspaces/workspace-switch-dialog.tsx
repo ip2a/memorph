@@ -285,7 +285,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
 
   const switchWorkspace = useMutation({
     mutationFn: async (workspace: string) => {
-      await listSessions({ all: true, details: true, limit: 1, workspace });
+      await listSessions({ all: true, details: false, limit: 1, workspace });
       return workspace;
     },
     onSuccess: (workspace) => {

@@ -21,7 +21,6 @@ export const queryKeys = {
   providerCatalog: (workspace?: string | null) =>
     ["providers", "catalog", workspace ?? "global"] as const,
   sessionsRoot: ["sessions"] as const,
-  sessions: (params: SessionListParams = {}) => ["sessions", params] as const,
   sessionPage: (params: SessionListParams = {}) => ["sessions", "page", params] as const,
   session: (
     provider: string,

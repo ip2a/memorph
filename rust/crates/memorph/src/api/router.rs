@@ -77,8 +77,7 @@ pub fn router() -> Router {
             "/api/v1/artifacts/cleanup",
             post(management::cleanup_artifacts),
         )
-        .route("/api/v1/sessions", get(sessions::list_sessions))
-        .route("/api/v1/sessions/page", get(sessions::list_session_page))
+        .route("/api/v1/sessions", get(sessions::list_session_page))
         .route(
             "/api/v1/stats/dashboard",
             get(sessions::get_stats_dashboard),

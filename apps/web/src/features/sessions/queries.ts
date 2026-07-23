@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { getSession, getSessionActivity, listSessionPage, refreshSessionStaleness, reprojectStaleSessions } from "@/lib/api";
+import { getSession, getSessionActivity, listSessions, refreshSessionStaleness, reprojectStaleSessions } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import type { SessionDetailParams, SessionListParams } from "@/lib/types";
 
 export function useSessions(params: SessionListParams) {
   return useQuery({
     queryKey: queryKeys.sessionPage(params),
-    queryFn: () => listSessionPage(params),
+    queryFn: () => listSessions(params),
     placeholderData: keepPreviousData,
   });
 }
