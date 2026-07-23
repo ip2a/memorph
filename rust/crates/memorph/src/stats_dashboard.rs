@@ -148,11 +148,18 @@ pub struct StatsDistributions {
     pub message_count: Vec<StatsDistributionBucket>,
 }
 
+#[derive(Clone, Copy)]
+struct DailyEventFacts {
+    day_start_ms: i64,
+    event_count: usize,
+    message_count: usize,
+}
+
 #[derive(Default)]
 struct EventFacts {
     message_count: usize,
     last_activity_at_ms: Option<i64>,
-    timestamps: Vec<(i64, bool)>,
+    daily: Vec<DailyEventFacts>,
     timestamped_messages: usize,
 }
 
@@ -165,7 +172,7 @@ fn snapshot_facts(rows: &[ProjectedSessionSnapshotRow]) -> HashMap<String, Event
                     EventFacts {
                         message_count,
                         last_activity_at_ms: row.last_active_at_ms,
-                        timestamps: Vec::new(),
+                        daily: Vec::new(),
                         timestamped_messages: 0,
                     },
                 )
@@ -330,8 +337,11 @@ fn load_event_facts(
             continue;
         }
         if let Some(item) = facts.get_mut(&session_id) {
-            item.timestamps
-                .extend((0..event_count).map(|index| (day, index < message_count)));
+            item.daily.push(DailyEventFacts {
+                day_start_ms: day,
+                event_count,
+                message_count,
+            });
             item.timestamped_messages += message_count;
         }
     }
@@ -422,12 +432,12 @@ fn build_dashboard(
             .sum(),
         active_session_messages: event_facts
             .values()
-            .flat_map(|facts| &facts.timestamps)
-            .filter(|(timestamp, is_message)| {
-                *is_message
-                    && range_start.is_none_or(|start| *timestamp >= start.timestamp_millis())
+            .flat_map(|facts| &facts.daily)
+            .filter(|daily| {
+                range_start.is_none_or(|start| daily.day_start_ms >= start.timestamp_millis())
             })
-            .count(),
+            .map(|daily| daily.message_count)
+            .sum(),
         total_size_bytes: rows.iter().filter_map(|row| row.size_bytes).sum(),
         unknown_message_counts: rows
             .iter()
@@ -657,7 +667,7 @@ fn timeline(
     }
     for row in rows {
         if let Some(facts) = event_facts.get(&row.canonical_session_id) {
-            if facts.timestamps.is_empty() {
+            if facts.daily.is_empty() {
                 if let Some(dt) = facts
                     .last_activity_at_ms
                     .or(row.last_active_at_ms)
@@ -670,14 +680,17 @@ fn timeline(
                     point.active_sessions += 1;
                 }
             } else {
-                let mut active_days: HashMap<_, (DateTime<Utc>, usize)> = HashMap::new();
-                for (timestamp, is_message) in &facts.timestamps {
-                    if let Some(dt) = date(*timestamp).filter(|dt| *dt >= start) {
-                        let entry = active_days.entry(key(dt)).or_insert((dt, 0));
-                        entry.1 += usize::from(*is_message);
+                let mut active_periods: HashMap<_, (DateTime<Utc>, usize)> = HashMap::new();
+                for daily in &facts.daily {
+                    if daily.event_count == 0 {
+                        continue;
+                    }
+                    if let Some(dt) = date(daily.day_start_ms).filter(|dt| *dt >= start) {
+                        let entry = active_periods.entry(key(dt)).or_insert((dt, 0));
+                        entry.1 += daily.message_count;
                     }
                 }
-                for (bucket_key, (dt, message_count)) in active_days {
+                for (bucket_key, (dt, message_count)) in active_periods {
                     let point = points
                         .entry(bucket_key)
                         .or_insert_with(|| point_at(dt, monthly));
@@ -829,7 +842,7 @@ mod tests {
 
         assert_eq!(session.message_count, 2);
         assert_eq!(session.last_activity_at_ms, Some(20));
-        assert!(session.timestamps.is_empty());
+        assert!(session.daily.is_empty());
         assert_eq!(session.timestamped_messages, 0);
     }
 
@@ -848,13 +861,13 @@ mod tests {
             ),
             row("no-messages", "claude", Some("/a"), Some(active_ms), 0, 50),
         ];
-        // Simulate production snapshot_facts: message_count present, timestamps empty.
+        // Simulate production snapshot_facts: message count present, daily facts missing.
         let events = HashMap::from([(
             "with-messages".into(),
             EventFacts {
                 message_count: 12,
                 last_activity_at_ms: Some(active_ms),
-                timestamps: Vec::new(),
+                daily: Vec::new(),
                 timestamped_messages: 0,
             },
         )]);
@@ -894,10 +907,17 @@ mod tests {
             EventFacts {
                 message_count: 3,
                 last_activity_at_ms: Some((now - Duration::days(1)).timestamp_millis()),
-                timestamps: vec![
-                    ((now - Duration::days(2)).timestamp_millis(), true),
-                    ((now - Duration::days(2)).timestamp_millis(), true),
-                    ((now - Duration::days(1)).timestamp_millis(), true),
+                daily: vec![
+                    DailyEventFacts {
+                        day_start_ms: (now - Duration::days(2)).timestamp_millis(),
+                        event_count: 2,
+                        message_count: 2,
+                    },
+                    DailyEventFacts {
+                        day_start_ms: (now - Duration::days(1)).timestamp_millis(),
+                        event_count: 1,
+                        message_count: 1,
+                    },
                 ],
                 timestamped_messages: 3,
             },
