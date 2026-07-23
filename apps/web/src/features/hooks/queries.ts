@@ -41,7 +41,6 @@ export function useRunHookProviderOperation() {
       runHookProviderOperation(provider, operation),
     onSuccess: (_report, variables) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.hooks });
-      queryClient.invalidateQueries({ queryKey: queryKeys.hookProvider(variables.provider) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agent(variables.provider) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agentsSummary });
     },
@@ -61,8 +60,7 @@ export function useRemoveInstalledHook() {
   return useMutation({
     mutationFn: ({ provider, event, index, fingerprint }: { provider: string; event: string; index: number; fingerprint: string }) =>
       removeInstalledHook(provider, event, index, fingerprint),
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.installedHooks(variables.provider) });
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.hooks });
     },
   });
