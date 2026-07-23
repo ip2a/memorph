@@ -585,7 +585,7 @@ async fn ingest_event(
     headers: HeaderMap,
     Json(request): Json<HookIngestRequest>,
 ) -> impl IntoResponse {
-    if let Err(error) = authorize_ingest(&headers) {
+    if let Err(error) = crate::api::run_blocking(move || authorize_ingest(&headers)).await {
         return hook_error(StatusCode::UNAUTHORIZED, error).into_response();
     }
 
@@ -650,24 +650,30 @@ async fn list_events(Query(query): Query<EventsQuery>) -> impl IntoResponse {
 }
 
 async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> impl IntoResponse {
-    let sessions: Vec<RuntimeSession> = runtime_sessions_snapshot()
-        .into_iter()
-        .filter(|session| {
-            query
-                .provider
-                .as_deref()
-                .map(|provider| session.provider == provider)
-                .unwrap_or(true)
-        })
-        .filter(|session| {
-            query
-                .session_id
-                .as_deref()
-                .map(|session_id| session.provider_session_id.as_deref() == Some(session_id))
-                .unwrap_or(true)
-        })
-        .collect();
-    HookApiResponse::success(sessions).into_response()
+    match crate::api::run_blocking(move || {
+        Ok(runtime_sessions_snapshot()
+            .into_iter()
+            .filter(|session| {
+                query
+                    .provider
+                    .as_deref()
+                    .map(|provider| session.provider == provider)
+                    .unwrap_or(true)
+            })
+            .filter(|session| {
+                query
+                    .session_id
+                    .as_deref()
+                    .map(|session_id| session.provider_session_id.as_deref() == Some(session_id))
+                    .unwrap_or(true)
+            })
+            .collect::<Vec<_>>())
+    })
+    .await
+    {
+        Ok(sessions) => HookApiResponse::success(sessions).into_response(),
+        Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
+    }
 }
 
 async fn provider_status(Path(provider): Path<String>) -> impl IntoResponse {
