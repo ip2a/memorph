@@ -7,6 +7,7 @@ export function useSessions(params: SessionListParams) {
   return useQuery({
     queryKey: queryKeys.sessions(params),
     queryFn: () => listSessions(params),
+    placeholderData: keepPreviousData,
   });
 }
 
