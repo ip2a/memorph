@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Trash2Icon, WrenchIcon } from "lucide-react";
 import { EntityRow } from "@/components/shared/entity-row";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
@@ -32,6 +33,7 @@ import type {
   InstalledHook,
 } from "@/lib/types";
 import {
+  prefetchHookProviderOverview,
   useHookProviderOverview,
   useHooksMeta,
   useHooksOverview,
@@ -166,10 +168,12 @@ function HooksProviderList({
   providers,
   selectedProvider,
   onSelect,
+  onPrefetch,
 }: {
   providers: AgentManagementEntry[];
   selectedProvider: string | null;
   onSelect: (provider: string) => void;
+  onPrefetch: (provider: string) => void;
 }) {
   const ordered = useMemo(
     () =>
@@ -208,6 +212,8 @@ function HooksProviderList({
               title={providerName(provider)}
               trailing={<ProviderListStatusTrailing attention={attention} status={status} />}
               onClick={() => onSelect(provider.provider_id)}
+              onFocus={() => onPrefetch(provider.provider_id)}
+              onPointerEnter={() => onPrefetch(provider.provider_id)}
             />
           );
         })}
@@ -316,9 +322,9 @@ function ErrorRows({ errors }: { errors: HookErrorRecord[] }) {
   );
 }
 
-function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPayload | undefined; isLoading: boolean }) {
+function ProviderDetail({ detail, isLoading, providerId }: { detail: HookProviderOverviewPayload | undefined; isLoading: boolean; providerId: string | null }) {
   const runOperation = useRunHookProviderOperation();
-  const installedHooks = useInstalledHooks(detail?.provider.provider_id || null);
+  const installedHooks = useInstalledHooks(providerId);
   const removeInstalled = useRemoveInstalledHook();
 
   if (isLoading && !detail) {
@@ -481,6 +487,7 @@ function ProviderDetail({ detail, isLoading }: { detail: HookProviderOverviewPay
 }
 
 export function HooksPage() {
+  const queryClient = useQueryClient();
   const overview = useHooksOverview();
   const meta = useHooksMeta();
   const providers = overview.data?.providers ?? [];
@@ -501,7 +508,12 @@ export function HooksPage() {
         <section className="flex flex-col gap-3 border-b pb-4">
           <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
         </section>
-        <HooksProviderList providers={providers} selectedProvider={selected} onSelect={setSelectedProvider} />
+        <HooksProviderList
+          providers={providers}
+          selectedProvider={selected}
+          onSelect={setSelectedProvider}
+          onPrefetch={(provider) => void prefetchHookProviderOverview(queryClient, provider)}
+        />
       </PanelCard>
 
       <PanelCard
@@ -516,7 +528,7 @@ export function HooksPage() {
         />
         <Separator />
         {detail.error ? <PageError title="Hook provider detail failed to load" message={detail.error.message} /> : null}
-        <ProviderDetail detail={detail.data} isLoading={detail.isLoading} />
+        <ProviderDetail detail={detail.data} isLoading={detail.isLoading} providerId={selected} />
       </PanelCard>
     </TwoPanePage>
   );

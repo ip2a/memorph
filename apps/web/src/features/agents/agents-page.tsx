@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowRightIcon, PlayIcon, RefreshCwIcon } from "lucide-react";
 import { EntityRow } from "@/components/shared/entity-row";
@@ -35,6 +36,7 @@ import type {
   ProviderSettingItem,
 } from "@/lib/types";
 import {
+  prefetchAgent,
   useAgent,
   useAgentProviderCatalog,
   useAgentsMeta,
@@ -124,10 +126,12 @@ function ProviderList({
   providers,
   selectedProvider,
   onSelect,
+  onPrefetch,
 }: {
   providers: AgentManagementEntry[];
   selectedProvider: string | null;
   onSelect: (provider: string) => void;
+  onPrefetch: (provider: string) => void;
 }) {
   const ordered = useMemo(
     () =>
@@ -165,6 +169,8 @@ function ProviderList({
               title={provider.name || provider.provider_id}
               trailing={<ProviderListStatusTrailing status={status} />}
               onClick={() => onSelect(provider.provider_id)}
+              onFocus={() => onPrefetch(provider.provider_id)}
+              onPointerEnter={() => onPrefetch(provider.provider_id)}
             />
           );
         })}
@@ -623,6 +629,7 @@ function ProviderDetail({
 }
 
 export function AgentsPage() {
+  const queryClient = useQueryClient();
   const summary = useAgentsSummary();
   const meta = useAgentsMeta();
   const catalog = useAgentProviderCatalog(meta.data?.selected_workspace);
@@ -646,7 +653,12 @@ export function AgentsPage() {
         <section className="flex flex-col gap-3 border-b pb-4">
           <WorkspaceIdentity workspace={workspace} titleClassName="mt-1 block text-lg leading-tight" pathClassName="mt-1" />
         </section>
-        <ProviderList providers={providers} selectedProvider={selected} onSelect={setSelectedProvider} />
+        <ProviderList
+          providers={providers}
+          selectedProvider={selected}
+          onSelect={setSelectedProvider}
+          onPrefetch={(provider) => void prefetchAgent(queryClient, provider)}
+        />
       </PanelCard>
 
       <PanelCard

@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getHookProviderOverview, getHooksOverview, getMeta, listInstalledHooks, removeInstalledHook, runHookProviderOperation } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -16,12 +16,22 @@ export function useHooksMeta() {
   });
 }
 
+function hookProviderOverviewOptions(provider: string) {
+  return queryOptions({
+    queryKey: queryKeys.hookProvider(provider),
+    queryFn: () => getHookProviderOverview(provider),
+  });
+}
+
 export function useHookProviderOverview(provider: string | null) {
   return useQuery({
-    queryKey: queryKeys.hookProvider(provider || ""),
-    queryFn: () => getHookProviderOverview(provider || ""),
+    ...hookProviderOverviewOptions(provider || ""),
     enabled: !!provider,
   });
+}
+
+export function prefetchHookProviderOverview(queryClient: QueryClient, provider: string) {
+  return queryClient.prefetchQuery(hookProviderOverviewOptions(provider));
 }
 
 export function useRunHookProviderOperation() {

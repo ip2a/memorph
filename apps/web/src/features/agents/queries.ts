@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { detectAgent, getAgent, getMeta, getProviderCatalog, listAgentsSummary, runProviderSetting, updateProviderSetting } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
@@ -9,12 +9,22 @@ export function useAgentsSummary() {
   });
 }
 
+function agentOptions(provider: string) {
+  return queryOptions({
+    queryKey: queryKeys.agent(provider),
+    queryFn: () => getAgent(provider),
+  });
+}
+
 export function useAgent(provider: string | null) {
   return useQuery({
-    queryKey: queryKeys.agent(provider || ""),
-    queryFn: () => getAgent(provider || ""),
+    ...agentOptions(provider || ""),
     enabled: !!provider,
   });
+}
+
+export function prefetchAgent(queryClient: QueryClient, provider: string) {
+  return queryClient.prefetchQuery(agentOptions(provider));
 }
 
 export function useAgentsMeta() {
