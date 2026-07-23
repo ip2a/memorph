@@ -222,89 +222,154 @@ fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<Stats
     ))
 }
 
+struct MissingCountComputation {
+    canonical_session_id: String,
+    provider_id: String,
+    provider_session_id: Option<String>,
+    title: Option<String>,
+    workspace_dir: Option<String>,
+    last_active_at_ms: Option<i64>,
+    source_path: String,
+    capabilities: crate::provider::ProviderCapabilities,
+    fingerprint: crate::provider::ProviderSourceFingerprint,
+    event_count: usize,
+    message_count: usize,
+    turn_count: usize,
+    events: Vec<crate::canonical::SessionEvent>,
+}
+
+fn compute_missing_count(row: &ProjectedSessionSnapshotRow) -> Result<MissingCountComputation> {
+    let source_path = row
+        .source_path
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .with_context(|| {
+            format!(
+                "Cannot count messages for {}/{}: source path is missing",
+                row.provider_id, row.canonical_session_id
+            )
+        })?;
+    let provider = crate::providers::find_provider(&row.provider_id)
+        .with_context(|| format!("Unknown provider: {}", row.provider_id))?;
+    let capabilities = provider.capabilities();
+    if !capabilities.import {
+        anyhow::bail!(
+            "Provider does not support message counting: {}",
+            row.provider_id
+        );
+    }
+    let fingerprint = provider
+        .session_source_fingerprint(source_path)?
+        .with_context(|| format!("Session source is missing: {source_path}"))?;
+    let page = provider
+        .import_session_page(source_path, 0, None)
+        .with_context(|| {
+            format!(
+                "Failed to count messages for {}/{}",
+                row.provider_id, row.canonical_session_id
+            )
+        })?;
+    let turn_count = page.turn_count.unwrap_or_else(|| {
+        crate::session_projection::project_session_turns(
+            &row.canonical_session_id,
+            &page.imported.session.events,
+            capabilities.turn_quality,
+        )
+        .len()
+    });
+    Ok(MissingCountComputation {
+        canonical_session_id: row.canonical_session_id.clone(),
+        provider_id: row.provider_id.clone(),
+        provider_session_id: row.provider_session_id.clone(),
+        title: row.title.clone(),
+        workspace_dir: row.workspace_dir.clone(),
+        last_active_at_ms: row.last_active_at_ms,
+        source_path: source_path.to_string(),
+        capabilities,
+        fingerprint,
+        event_count: page.event_count,
+        message_count: page.message_count,
+        turn_count,
+        events: page.imported.session.events,
+    })
+}
+
 fn complete_missing_counts(
     conn: &mut rusqlite::Connection,
     rows: &[ProjectedSessionSnapshotRow],
 ) -> Result<()> {
-    for row in rows.iter().filter(|row| row.message_count.is_none()) {
-        let source_path = row
-            .source_path
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .with_context(|| {
-                format!(
-                    "Cannot count messages for {}/{}: source path is missing",
-                    row.provider_id, row.canonical_session_id
-                )
-            })?;
-        let provider = crate::providers::find_provider(&row.provider_id)
-            .with_context(|| format!("Unknown provider: {}", row.provider_id))?;
-        if !provider.capabilities().import {
-            anyhow::bail!(
-                "Provider does not support message counting: {}",
-                row.provider_id
-            );
-        }
-        let fingerprint = provider
-            .session_source_fingerprint(source_path)?
-            .with_context(|| format!("Session source is missing: {source_path}"))?;
-        let page = provider
-            .import_session_page(source_path, 0, None)
-            .with_context(|| {
-                format!(
-                    "Failed to count messages for {}/{}",
-                    row.provider_id, row.canonical_session_id
-                )
-            })?;
-        let turn_count = page.turn_count.unwrap_or_else(|| {
-            crate::session_projection::project_session_turns(
-                &row.canonical_session_id,
-                &page.imported.session.events,
-                provider.capabilities().turn_quality,
-            )
-            .len()
-        });
-        let mut store = crate::storage::session_index_store::SessionIndexStore::new(conn);
-        let mut canonical_session_id = row.canonical_session_id.clone();
+    let missing: Vec<_> = rows
+        .iter()
+        .filter(|row| row.message_count.is_none())
+        .collect();
+    let worker_count = std::thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(missing.len().max(1));
+    let chunk_size = missing.len().div_ceil(worker_count).max(1);
+    let computations = std::thread::scope(|scope| {
+        missing
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|row| compute_missing_count(row))
+                        .collect::<Result<Vec<_>>>()
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("message count worker panicked"))?
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(|chunks| chunks.into_iter().flatten().collect::<Vec<_>>())
+    })?;
+
+    let mut store = crate::storage::session_index_store::SessionIndexStore::new(conn);
+    for computation in computations {
+        let mut canonical_session_id = computation.canonical_session_id.clone();
         if !store.record_complete_counts(
             &canonical_session_id,
-            &fingerprint.value,
-            page.event_count,
-            page.message_count,
-            turn_count,
+            &computation.fingerprint.value,
+            computation.event_count,
+            computation.message_count,
+            computation.turn_count,
         )? {
             let indexed = store.write_session_summary(
-                &row.provider_id,
+                &computation.provider_id,
                 &crate::provider::ProviderSessionSummary {
-                    session_id: row
+                    session_id: computation
                         .provider_session_id
                         .clone()
-                        .unwrap_or_else(|| row.canonical_session_id.clone()),
-                    title: row.title.clone(),
-                    project_dir: row.workspace_dir.clone(),
+                        .unwrap_or_else(|| computation.canonical_session_id.clone()),
+                    title: computation.title.clone(),
+                    project_dir: computation.workspace_dir.clone(),
                     created_at: None,
-                    last_active_at: row.last_active_at_ms,
-                    source_path: Some(source_path.to_string()),
+                    last_active_at: computation.last_active_at_ms,
+                    source_path: Some(computation.source_path.clone()),
                 },
-                provider.capabilities(),
-                &fingerprint,
+                computation.capabilities,
+                &computation.fingerprint,
             )?;
             canonical_session_id = indexed.canonical_session_id;
             if !store.record_complete_counts(
                 &canonical_session_id,
-                &fingerprint.value,
-                page.event_count,
-                page.message_count,
-                turn_count,
+                &computation.fingerprint.value,
+                computation.event_count,
+                computation.message_count,
+                computation.turn_count,
             )? {
                 anyhow::bail!(
                     "Session changed while counting messages: {}/{}",
-                    row.provider_id,
-                    row.canonical_session_id
+                    computation.provider_id,
+                    computation.canonical_session_id
                 );
             }
         }
-        store.replace_daily_stats(&canonical_session_id, &page.imported.session.events)?;
+        store.replace_daily_stats(&canonical_session_id, &computation.events)?;
     }
     Ok(())
 }
