@@ -1,5 +1,7 @@
 use super::*;
 
+static PROJECTION_OPERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn resolve_providers(filter: &[String]) -> Vec<String> {
     if filter.is_empty() {
         providers::all_provider_ids()
@@ -18,6 +20,10 @@ pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
 pub fn refresh_projected_session_staleness(
     actor: ActivityActor,
 ) -> Result<SnapshotStaleScanReport> {
+    let _operation = PROJECTION_OPERATION_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Projection operation lock is poisoned"))?;
+    let started_at = std::time::Instant::now();
     let activity_conn = local_store::open_database()?;
     let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
         provider_id: None,
@@ -39,6 +45,10 @@ pub fn refresh_projected_session_staleness(
                     .map(|fingerprint| fingerprint.value))
             })
     })();
+    crate::logging::info(
+        "snapshot_staleness",
+        format!("completed in {} ms", started_at.elapsed().as_millis()),
+    );
     match result {
         Ok(report) => {
             ActivityStore::new(&activity_conn).finish(
@@ -114,6 +124,10 @@ pub fn bootstrap_session_projections(
     provider_filter: Option<&str>,
     actor: ActivityActor,
 ) -> Result<SessionProjectionBootstrapReport> {
+    let _operation = PROJECTION_OPERATION_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Projection operation lock is poisoned"))?;
+    let started_at = std::time::Instant::now();
     let provider_filter = provider_filter.map(providers::canonical_provider_id);
     let activity_conn = local_store::open_database()?;
     let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
@@ -132,6 +146,10 @@ pub fn bootstrap_session_projections(
         let mut conn = local_store::open_database()?;
         bootstrap_session_projections_in_connection(&mut conn, provider_filter.as_deref())
     })();
+    crate::logging::info(
+        "projection_bootstrap",
+        format!("completed in {} ms", started_at.elapsed().as_millis()),
+    );
     match result {
         Ok(report) => {
             let has_failures = report.failed_providers > 0
@@ -379,6 +397,10 @@ pub fn reproject_stale_sessions(
     provider_filter: Option<&str>,
     actor: ActivityActor,
 ) -> Result<SessionReprojectionReport> {
+    let _operation = PROJECTION_OPERATION_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Projection operation lock is poisoned"))?;
+    let started_at = std::time::Instant::now();
     let provider_filter = provider_filter.map(providers::canonical_provider_id);
     let activity_conn = local_store::open_database()?;
     let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
@@ -399,6 +421,10 @@ pub fn reproject_stale_sessions(
             .list_stale_snapshot_sources(provider_filter.as_deref())?;
         reproject_stale_snapshot_sources(&mut conn, sources)
     })();
+    crate::logging::info(
+        "stale_reprojection",
+        format!("completed in {} ms", started_at.elapsed().as_millis()),
+    );
     match result {
         Ok(report) => {
             let status = if report.failed_snapshots == 0
