@@ -684,6 +684,14 @@ pub(super) fn projected_snapshot_groups(
     };
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(usize::MAX);
+    let mut snapshots_by_provider: HashMap<String, Vec<ProjectedSessionSnapshotRow>> =
+        HashMap::new();
+    for snapshot in snapshots {
+        snapshots_by_provider
+            .entry(snapshot.provider_id.clone())
+            .or_default()
+            .push(snapshot);
+    }
 
     provider_ids
         .into_iter()
@@ -695,9 +703,10 @@ pub(super) fn projected_snapshot_groups(
                 session_management::normalized_workspace_key(&provider_id, Some(workspace))
             });
             let hook_status = hook_statuses.get(&provider_id);
-            let mut sessions: Vec<SessionItem> = snapshots
-                .iter()
-                .filter(|snapshot| snapshot.provider_id == provider_id)
+            let mut sessions: Vec<SessionItem> = snapshots_by_provider
+                .remove(&provider_id)
+                .unwrap_or_default()
+                .into_iter()
                 .filter(|snapshot| {
                     let Some(requested_workspace_key) = requested_workspace_key.as_deref() else {
                         return true;
@@ -709,7 +718,7 @@ pub(super) fn projected_snapshot_groups(
                     session_workspace_key.as_deref() == Some(requested_workspace_key)
                 })
                 .map(|snapshot| {
-                    let mut item = projected_snapshot_item(snapshot);
+                    let mut item = projected_snapshot_item(&snapshot);
                     if let Some(hook_status) = hook_status {
                         let hook_augmentation =
                             crate::hooks::augmentation::augment_session_from_snapshot_with_status(
