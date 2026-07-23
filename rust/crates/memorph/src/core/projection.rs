@@ -703,6 +703,8 @@ pub(super) fn projected_snapshot_groups(
                 session_management::normalized_workspace_key(&provider_id, Some(workspace))
             });
             let hook_status = hook_statuses.get(&provider_id);
+            let needs_hook_before_pagination = params.hook_filter != SessionHookFilter::All
+                || params.sort == SessionListSort::HookAttention;
             let mut sessions: Vec<SessionItem> = snapshots_by_provider
                 .remove(&provider_id)
                 .unwrap_or_default()
@@ -719,17 +721,13 @@ pub(super) fn projected_snapshot_groups(
                 })
                 .map(|snapshot| {
                     let mut item = projected_snapshot_item(&snapshot);
-                    if let Some(hook_status) = hook_status {
-                        let hook_augmentation =
-                            crate::hooks::augmentation::augment_session_from_snapshot_with_status(
-                                hook_runtime_snapshot,
-                                hook_status.clone(),
-                                &provider_id,
-                                &item.session_id,
-                                snapshot.workspace_dir.as_deref(),
-                            );
-                        item.hook_runtime_summary = hook_augmentation.runtime_summary;
-                        item.hook_diagnosis = hook_augmentation.diagnosis;
+                    if needs_hook_before_pagination {
+                        augment_session_item(
+                            &mut item,
+                            hook_runtime_snapshot,
+                            hook_status,
+                            &provider_id,
+                        );
                     }
                     item
                 })
@@ -737,8 +735,13 @@ pub(super) fn projected_snapshot_groups(
 
             sessions.retain(|item| session_matches_hook_filter(item, &params.hook_filter));
             sort_session_items(&mut sessions, &params.sort);
-            let sessions: Vec<SessionItem> =
+            let mut sessions: Vec<SessionItem> =
                 sessions.into_iter().skip(offset).take(limit).collect();
+            if !needs_hook_before_pagination {
+                for item in &mut sessions {
+                    augment_session_item(item, hook_runtime_snapshot, hook_status, &provider_id);
+                }
+            }
             if sessions.is_empty() {
                 None
             } else {
@@ -750,6 +753,26 @@ pub(super) fn projected_snapshot_groups(
             }
         })
         .collect()
+}
+
+fn augment_session_item(
+    item: &mut SessionItem,
+    hook_runtime_snapshot: &[crate::hooks::model::RuntimeSession],
+    hook_status: Option<&crate::hooks::model::HookInstallStatus>,
+    provider_id: &str,
+) {
+    let Some(hook_status) = hook_status else {
+        return;
+    };
+    let hook_augmentation = crate::hooks::augmentation::augment_session_from_snapshot_with_status(
+        hook_runtime_snapshot,
+        hook_status.clone(),
+        provider_id,
+        &item.session_id,
+        item.project_dir.as_deref(),
+    );
+    item.hook_runtime_summary = hook_augmentation.runtime_summary;
+    item.hook_diagnosis = hook_augmentation.diagnosis;
 }
 
 pub(super) fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) -> SessionItem {
@@ -1045,6 +1068,18 @@ mod session_list_hook_tests {
             sort: SessionListSort::Recent,
             hook_filter: SessionHookFilter::All,
         };
+        let hook_statuses = HashMap::from([(
+            "claude".to_string(),
+            crate::hooks::model::HookInstallStatus {
+                provider: "claude".to_string(),
+                status: HookHealthStatus::InstalledOk,
+                config_path: None,
+                installed_version: None,
+                current_version: None,
+                message: None,
+                last_event_at: None,
+            },
+        )]);
         let groups = projected_snapshot_groups(
             vec![
                 projected_row("canonical-new", "native-new", "/tmp/project", 30),
@@ -1053,7 +1088,7 @@ mod session_list_hook_tests {
             ],
             &params,
             &[],
-            &HashMap::new(),
+            &hook_statuses,
         );
 
         assert_eq!(groups.len(), 1);
@@ -1061,6 +1096,7 @@ mod session_list_hook_tests {
         assert_eq!(groups[0].sessions.len(), 1);
         assert_eq!(groups[0].sessions[0].session_id, "native-new");
         assert_eq!(groups[0].sessions[0].message_count, Some(3));
+        assert!(groups[0].sessions[0].hook_diagnosis.is_some());
         assert_eq!(
             groups[0].sessions[0].project_dir.as_deref(),
             Some("/tmp/project")
