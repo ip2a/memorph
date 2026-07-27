@@ -215,9 +215,6 @@ pub fn get_session_detail_view_page_result(
             artifact_count: page.imported.session.artifacts.len(),
             length_metrics,
             stale,
-            hook_runtime_summary: None,
-            hook_diagnosis: None,
-            hook_runtime_sessions: Vec::new(),
             projection_report: Some(source_mapping_report_view(
                 provider_id,
                 identity.source_id.as_deref(),

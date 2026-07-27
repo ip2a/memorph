@@ -905,29 +905,6 @@ fn session_detail_payload_serializes_hook_runtime_sessions() {
                 archive_count: 0,
             },
             stale: true,
-            hook_runtime_summary: Some(hooks::augmentation::HookRuntimeSummary {
-                linked_sessions: 1,
-                waiting_sessions: 0,
-                status: hooks::model::RuntimeSessionStatus::Running,
-                current_tool_name: Some("Bash".to_string()),
-                has_pending_permission: false,
-                has_pending_question: false,
-                last_event_at: None,
-                matched_by: Some("provider_session_id".to_string()),
-                confidence: Some(hooks::augmentation::HookLinkConfidence::High),
-            }),
-            hook_diagnosis: Some(hooks::augmentation::SessionHookDiagnosis {
-                kind: hooks::augmentation::SessionHookDiagnosisKind::Linked,
-                provider_status: hooks::model::HookHealthStatus::InstalledOk,
-                linked_runtime_sessions: 1,
-                provider_runtime_sessions: 1,
-                matched_by: Some("provider_session_id".to_string()),
-                confidence: Some(hooks::augmentation::HookLinkConfidence::High),
-                last_event_at: None,
-                message: "Hook runtime is linked directly to this session.".to_string(),
-                actions: Vec::new(),
-            }),
-            hook_runtime_sessions: vec![runtime_session_for_payload("claude:session:session-1")],
             projection_report: None,
             turns: vec![memorph::session_projection::TurnProjection {
                 id: "turn-1".to_string(),
@@ -950,23 +927,11 @@ fn session_detail_payload_serializes_hook_runtime_sessions() {
         event_search: None,
         matched_event_count: None,
         returned_event_indices: Vec::new(),
-        hook_runtime_sessions: vec![runtime_session_for_payload("claude:session:session-1")],
     };
 
     let value = serde_json::to_value(payload).unwrap();
-    assert_eq!(value["hook_runtime_sessions"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        value["view"]["hook_runtime_summary"]["matched_by"],
-        "provider_session_id"
-    );
-    assert_eq!(value["view"]["hook_runtime_summary"]["confidence"], "high");
-    assert_eq!(value["view"]["hook_diagnosis"]["kind"], "linked");
     assert_eq!(value["view"]["stale"], true);
     assert_eq!(value["view"]["turns"][0]["confidence"], "inferred");
-    assert_eq!(
-        value["hook_runtime_sessions"][0]["provider_session_id"],
-        "session-1"
-    );
 }
 
 #[test]

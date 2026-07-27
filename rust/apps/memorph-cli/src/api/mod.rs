@@ -182,8 +182,6 @@ struct SessionDetailPayload {
     matched_event_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     returned_event_indices: Vec<usize>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    hook_runtime_sessions: Vec<hooks::model::RuntimeSession>,
 }
 
 #[derive(Debug, Serialize)]

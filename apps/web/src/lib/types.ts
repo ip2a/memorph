@@ -673,7 +673,6 @@ export type SessionDetailPayload = {
   event_search?: string | null;
   matched_event_count?: number | null;
   returned_event_indices?: number[];
-  hook_runtime_sessions: unknown[];
 };
 
 export type MappingDisposition =
@@ -894,9 +893,6 @@ export type SessionDetailView = {
     archive_count: number;
   };
   stale: boolean;
-  hook_runtime_summary?: HookRuntimeSummary | null;
-  hook_diagnosis?: SessionHookDiagnosis | null;
-  hook_runtime_sessions: unknown[];
   projection_report?: SessionProjectionReport | null;
   turns: SessionTurn[];
   events: SessionEvent[];

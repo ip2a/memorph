@@ -156,7 +156,6 @@ pub(super) async fn get_session(
             } else {
                 events_offset + returned_event_count < view.event_count
             };
-            let hook_runtime_sessions = view.hook_runtime_sessions.clone();
             ApiResponse::success(SessionDetailPayload {
                 view,
                 events_offset,
@@ -166,7 +165,6 @@ pub(super) async fn get_session(
                 event_search: requested_search,
                 matched_event_count: result.matched_event_count,
                 returned_event_indices: result.returned_event_indices,
-                hook_runtime_sessions,
             })
             .into_response()
         }

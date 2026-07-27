@@ -160,12 +160,6 @@ pub struct SessionDetailView {
     pub length_metrics: SessionLengthMetrics,
     pub stale: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hook_runtime_summary: Option<crate::hooks::augmentation::HookRuntimeSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hook_diagnosis: Option<crate::hooks::augmentation::SessionHookDiagnosis>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hook_runtime_sessions: Vec<crate::hooks::model::RuntimeSession>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection_report: Option<SessionProjectionReportView>,
     pub turns: Vec<crate::session_projection::TurnProjection>,
     pub events: Vec<SessionEvent>,
