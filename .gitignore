@@ -41,6 +41,12 @@
 !/rust/crates/**/assets/
 !/rust/crates/**/assets/*.json
 /rust/crates/**/assets/web/
+!/rust/apps/
+!/rust/apps/**/Cargo.toml
+!/rust/apps/**/*.rs
+!/rust/apps/**/assets/
+!/rust/apps/**/assets/*.json
+/rust/apps/**/assets/web/
 
 # GitHub workflows.
 !/.github/

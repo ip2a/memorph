@@ -1,0 +1,13 @@
+[package]
+name = "memorph-cli"
+version = "0.1.32"
+edition = "2021"
+publish = false
+description = "memorph CLI - command line, TUI, and web/API server"
+
+[lib]
+name = "memorph_cli"
+path = "src/lib.rs"
+
+[dependencies]
+memorph = { path = "../../crates/memorph" }
