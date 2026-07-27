@@ -32,4 +32,5 @@ pub mod shared;
 pub mod store;
 pub mod strategies;
 
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

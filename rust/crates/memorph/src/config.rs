@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+#[cfg(any(test, feature = "test-support"))]
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -227,11 +228,14 @@ pub struct WorkspaceEntry {
     pub hidden_state: Vec<String>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
+    #[cfg(any(test, feature = "test-support"))]
     static TEST_HOME_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 fn home_dir() -> Result<PathBuf> {
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(path) = TEST_HOME_DIR.with(|cell| cell.borrow().clone()) {
         return Ok(path);
     }
@@ -253,14 +257,17 @@ pub fn memorph_dir() -> Result<PathBuf> {
     Ok(home.join(".memorph"))
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn test_home_dir() -> Option<PathBuf> {
     TEST_HOME_DIR.with(|cell| cell.borrow().clone())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn set_test_home_dir(path: PathBuf) {
     TEST_HOME_DIR.with(|cell| *cell.borrow_mut() = Some(path));
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn reset_test_home_dir() {
     TEST_HOME_DIR.with(|cell| *cell.borrow_mut() = None);
 }

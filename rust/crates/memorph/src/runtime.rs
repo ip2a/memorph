@@ -4,6 +4,7 @@
 
 use anyhow::anyhow;
 
+#[cfg(any(test, feature = "test-support"))]
 use crate::config;
 
 /// 在阻塞线程池上运行同步任务并返回其结果。
@@ -15,15 +16,18 @@ where
     T: Send + 'static,
     F: FnOnce() -> anyhow::Result<T> + Send + 'static,
 {
+    #[cfg(any(test, feature = "test-support"))]
     let test_home = config::test_home_dir();
 
     tokio::task::spawn_blocking(move || {
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(path) = test_home {
             config::set_test_home_dir(path);
         }
 
         let result = task();
 
+        #[cfg(any(test, feature = "test-support"))]
         config::reset_test_home_dir();
 
         result

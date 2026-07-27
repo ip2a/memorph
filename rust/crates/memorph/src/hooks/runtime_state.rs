@@ -80,6 +80,7 @@ fn current_or_new_token() -> String {
         .unwrap_or_else(|| Uuid::new_v4().to_string())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn linked_runtime_sessions_from_state(
     state: &RuntimeState,
     provider: &str,
@@ -206,11 +207,13 @@ pub fn cleanup_runtime_state(options: RuntimeCleanupOptions) -> Result<RuntimeCl
     Ok(report)
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn reset_for_tests() {
     *runtime_state().write().unwrap() = RuntimeState::default();
     *runtime_endpoint_cell().write().unwrap() = None;
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub fn set_runtime_endpoint_for_tests(endpoint: HookRuntimeEndpoint) {
     *runtime_endpoint_cell().write().unwrap() = Some(endpoint);
 }

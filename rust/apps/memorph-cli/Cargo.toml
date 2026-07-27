@@ -19,7 +19,7 @@ name = "memo"
 path = "src/bin/memo.rs"
 
 [dependencies]
-memorph = { path = "../../crates/memorph" }
+memorph = { path = "../../crates/memorph", features = ["test-support"] }
 anyhow = "1.0"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
