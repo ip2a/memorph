@@ -7,7 +7,7 @@ use std::fs;
 
 use super::{
     invocation, repository,
-    server::{inspect_bundle, read_frontmatter, SkillAgent, SkillEntry, SkillsOverview},
+    inspection::{inspect_bundle, read_frontmatter, SkillAgent, SkillEntry, SkillsOverview},
 };
 use crate::storage::local_store::LocalSqliteStore;
 
@@ -262,7 +262,7 @@ fn hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::server::{SkillInstallation, SkillStatistics};
+    use crate::skills::inspection::{SkillInstallation, SkillStatistics};
 
     #[test]
     fn persists_all_session_sources_without_a_200_item_limit() {

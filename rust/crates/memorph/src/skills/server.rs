@@ -25,95 +25,10 @@ use super::{
     scanner::{self, ScanMode},
 };
 
-const MANAGED_MARKER: &str = ".memorph-managed-skill";
-const MAX_ASSETS: usize = 200;
-const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024;
-const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SkillAsset {
-    pub path: String,
-    pub category: String,
-    pub extension: Option<String>,
-    pub bytes: u64,
-    pub previewable: bool,
-    pub entry: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SkillStatistics {
-    pub files: usize,
-    pub bytes: u64,
-    pub scripts: usize,
-    pub references: usize,
-    pub assets: usize,
-    pub previewable: usize,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SkillIssue {
-    pub path: Option<String>,
-    pub message: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SkillAgent {
-    pub provider_id: String,
-    pub name: String,
-    pub skills_dir: PathBuf,
-    pub scope_kind: String,
-    pub workspace_dir: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SkillInstallation {
-    pub provider_id: String,
-    pub path: PathBuf,
-    pub managed: bool,
-    pub deployment_mode: String,
-    pub link_valid: bool,
-    pub fingerprint: String,
-    pub drifted: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SkillEntry {
-    pub id: String,
-    pub name: String,
-    pub description: Option<String>,
-    pub directory: String,
-    pub fingerprint: String,
-    pub conflict: bool,
-    pub statistics: SkillStatistics,
-    pub issues: Vec<SkillIssue>,
-    pub installations: Vec<SkillInstallation>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SkillDetail {
-    #[serde(flatten)]
-    pub skill: SkillEntry,
-    pub frontmatter: BTreeMap<String, String>,
-    pub provider_metadata: Vec<SkillAsset>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SkillTree {
-    pub skill_id: String,
-    pub fingerprint: String,
-    pub assets: Vec<SkillAsset>,
-    pub issues: Vec<SkillIssue>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct SkillsOverview {
-    pub agents: Vec<SkillAgent>,
-    pub skills: Vec<SkillEntry>,
-}
 
 #[derive(Clone)]
 struct SkillsState {
-    agents: Arc<Vec<SkillAgent>>,
+    agents: Arc<Vec<crate::skills::inspection::SkillAgent>>,
     database_path: Option<Arc<PathBuf>>,
 }
 
@@ -149,7 +64,7 @@ pub fn router() -> Router {
 }
 
 #[cfg(test)]
-fn router_for(agents: Vec<SkillAgent>) -> Router {
+fn router_for(agents: Vec<crate::skills::inspection::SkillAgent>) -> Router {
     let database_path = agents
         .first()
         .and_then(|agent| agent.skills_dir.parent()?.parent())
@@ -157,7 +72,7 @@ fn router_for(agents: Vec<SkillAgent>) -> Router {
     router_with_state(agents, database_path)
 }
 
-fn router_with_state(agents: Vec<SkillAgent>, database_path: Option<PathBuf>) -> Router {
+fn router_with_state(agents: Vec<crate::skills::inspection::SkillAgent>, database_path: Option<PathBuf>) -> Router {
     Router::new()
         .route("/api/v1/skills", get(list_skills))
         .route("/api/v1/skills/scan", post(scan_skills))
@@ -225,11 +140,11 @@ const SKILL_PROVIDERS: [(&str, &str, &str, &str); 5] = [
     ("hermes", "Hermes", ".hermes/skills", ".hermes/skills"),
 ];
 
-fn default_agents() -> Vec<SkillAgent> {
+fn default_agents() -> Vec<crate::skills::inspection::SkillAgent> {
     let home = dirs::home_dir().unwrap_or_default();
     SKILL_PROVIDERS
         .iter()
-        .map(|(provider_id, name, global_root, _)| SkillAgent {
+        .map(|(provider_id, name, global_root, _)| crate::skills::inspection::SkillAgent {
             provider_id: (*provider_id).into(),
             name: (*name).into(),
             skills_dir: home.join(global_root),
@@ -239,8 +154,8 @@ fn default_agents() -> Vec<SkillAgent> {
         .collect()
 }
 
-fn discover(agents: &[SkillAgent]) -> SkillsOverview {
-    let mut skills: BTreeMap<String, SkillEntry> = BTreeMap::new();
+fn discover(agents: &[crate::skills::inspection::SkillAgent]) -> crate::skills::inspection::SkillsOverview {
+    let mut skills: BTreeMap<String, crate::skills::inspection::SkillEntry> = BTreeMap::new();
 
     for agent in agents {
         let Ok(children) = fs::read_dir(&agent.skills_dir) else {
@@ -264,18 +179,18 @@ fn discover(agents: &[SkillAgent]) -> SkillsOverview {
                     normalized
                 }
             };
-            let bundle = inspect_bundle(&path);
+            let bundle = crate::skills::inspection::inspect_bundle(&path);
             let is_link = path
                 .symlink_metadata()
                 .is_ok_and(|metadata| metadata.file_type().is_symlink());
-            let installation = SkillInstallation {
+            let installation = crate::skills::inspection::SkillInstallation {
                 provider_id: agent.provider_id.clone(),
                 fingerprint: bundle.fingerprint.clone(),
                 drifted: false,
-                managed: is_link || path.join(MANAGED_MARKER).is_file(),
+                managed: is_link || path.join(crate::skills::inspection::MANAGED_MARKER).is_file(),
                 deployment_mode: if is_link {
                     "symlink"
-                } else if path.join(MANAGED_MARKER).is_file() {
+                } else if path.join(crate::skills::inspection::MANAGED_MARKER).is_file() {
                     "copy"
                 } else {
                     "external"
@@ -284,7 +199,7 @@ fn discover(agents: &[SkillAgent]) -> SkillsOverview {
                 link_valid: !is_link || path.canonicalize().is_ok(),
                 path,
             };
-            let skill = skills.entry(id.clone()).or_insert_with(|| SkillEntry {
+            let skill = skills.entry(id.clone()).or_insert_with(|| crate::skills::inspection::SkillEntry {
                 id,
                 name,
                 description: description.clone(),
@@ -314,50 +229,12 @@ fn discover(agents: &[SkillAgent]) -> SkillsOverview {
             skill
         })
         .collect();
-    SkillsOverview {
+    crate::skills::inspection::SkillsOverview {
         agents: agents.to_vec(),
         skills,
     }
 }
 
-pub(super) struct BundleInspection {
-    pub(super) fingerprint: String,
-    pub(super) statistics: SkillStatistics,
-    pub(super) assets: Vec<SkillAsset>,
-    pub(super) issues: Vec<SkillIssue>,
-}
-
-fn is_image_extension(ext: &str) -> bool {
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "bmp"
-    )
-}
-
-fn is_text_preview_extension(ext: &str) -> bool {
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "md" | "markdown"
-            | "txt"
-            | "json"
-            | "jsonc"
-            | "yaml"
-            | "yml"
-            | "toml"
-            | "js"
-            | "ts"
-            | "tsx"
-            | "py"
-            | "sh"
-            | "bash"
-            | "zsh"
-            | "sql"
-            | "css"
-            | "html"
-            | "csv"
-            | "ini"
-    )
-}
 
 fn image_mime_type(ext: &str) -> &'static str {
     match ext.to_ascii_lowercase().as_str() {
@@ -372,188 +249,7 @@ fn image_mime_type(ext: &str) -> &'static str {
     }
 }
 
-fn classify_asset(path: &str) -> (&'static str, bool) {
-    let lower = path.to_ascii_lowercase();
-    let category = if lower == "skill.md" {
-        "entry"
-    } else if lower.starts_with("scripts/") || lower.starts_with("script/") {
-        "script"
-    } else if lower.starts_with("references/") || lower.starts_with("reference/") {
-        "reference"
-    } else if lower.starts_with("assets/") || lower.starts_with("asset/") {
-        "asset"
-    } else if lower.starts_with("agents/") {
-        "metadata"
-    } else {
-        "other"
-    };
-    let previewable = Path::new(path)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| is_text_preview_extension(ext) || is_image_extension(ext));
-    (category, previewable)
-}
-
-pub(super) fn inspect_bundle(root: &Path) -> BundleInspection {
-    let mut hasher = Sha256::new();
-    let mut assets = Vec::new();
-    let mut issues = Vec::new();
-    let mut total_bytes = 0;
-    let mut statistics = SkillStatistics {
-        files: 0,
-        bytes: 0,
-        scripts: 0,
-        references: 0,
-        assets: 0,
-        previewable: 0,
-    };
-
-    for entry in WalkDir::new(root).min_depth(1).follow_links(false) {
-        let Ok(entry) = entry else {
-            issues.push(SkillIssue {
-                path: None,
-                message: "Failed to read a bundle entry".into(),
-            });
-            continue;
-        };
-        let relative = match entry.path().strip_prefix(root) {
-            Ok(value) => value.to_string_lossy().replace('\\', "/"),
-            Err(_) => continue,
-        };
-        if relative == MANAGED_MARKER || relative.starts_with(&format!("{MANAGED_MARKER}/")) {
-            continue;
-        }
-        if entry.path_is_symlink() {
-            issues.push(SkillIssue {
-                path: Some(relative),
-                message: "Symbolic links are not indexed".into(),
-            });
-            continue;
-        }
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let Ok(metadata) = fs::metadata(entry.path()) else {
-            issues.push(SkillIssue {
-                path: Some(relative),
-                message: "File metadata is unreadable".into(),
-            });
-            continue;
-        };
-        let bytes = metadata.len();
-        if assets.len() >= MAX_ASSETS || total_bytes + bytes > MAX_TOTAL_BYTES {
-            issues.push(SkillIssue {
-                path: Some(relative),
-                message: "Asset index budget exceeded".into(),
-            });
-            continue;
-        }
-        let Ok(content) = fs::read(entry.path()) else {
-            issues.push(SkillIssue {
-                path: Some(relative),
-                message: "File is unreadable".into(),
-            });
-            continue;
-        };
-        hasher.update(relative.as_bytes());
-        hasher.update((bytes as u128).to_le_bytes());
-        hasher.update(&content);
-        let (category, previewable) = classify_asset(&relative);
-        issues.extend(scan_content_risks(&relative, &content));
-        let extension = Path::new(&relative)
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(str::to_ascii_lowercase);
-        assets.push(SkillAsset {
-            entry: relative == "SKILL.md",
-            path: relative,
-            category: category.to_string(),
-            extension,
-            bytes,
-            previewable: previewable && bytes <= MAX_PREVIEW_BYTES,
-        });
-        total_bytes += bytes;
-        statistics.files += 1;
-        statistics.bytes += bytes;
-        statistics.previewable += usize::from(previewable && bytes <= MAX_PREVIEW_BYTES);
-        match category {
-            "script" => statistics.scripts += 1,
-            "reference" => statistics.references += 1,
-            "asset" => statistics.assets += 1,
-            _ => {}
-        }
-    }
-    let frontmatter = read_frontmatter(&root.join("SKILL.md"));
-    if !frontmatter.contains_key("name") {
-        issues.push(SkillIssue {
-            path: Some("SKILL.md".into()),
-            message: "Quality signal: missing frontmatter name".into(),
-        });
-    }
-    if !frontmatter.contains_key("description") {
-        issues.push(SkillIssue {
-            path: Some("SKILL.md".into()),
-            message: "Quality signal: missing frontmatter description".into(),
-        });
-    }
-    assets.sort_by(|left, right| left.path.cmp(&right.path));
-    BundleInspection {
-        fingerprint: format!("sha256:{:x}", hasher.finalize()),
-        statistics,
-        assets,
-        issues,
-    }
-}
-
-fn scan_content_risks(path: &str, content: &[u8]) -> Vec<SkillIssue> {
-    let Ok(text) = std::str::from_utf8(content) else {
-        return Vec::new();
-    };
-    let lower = text.to_ascii_lowercase();
-    // ponytail: literal static signals only; add token-aware rules if false positives matter.
-    [
-        ("rm -rf", "Risk signal: recursive delete command"),
-        ("curl", "Risk signal: curl network command"),
-        ("wget", "Risk signal: wget network command"),
-        ("sudo", "Risk signal: sudo privilege command"),
-        ("~/.ssh", "Risk signal: SSH directory access"),
-        ("os.environ", "Risk signal: environment variable access"),
-        ("process.env", "Risk signal: environment variable access"),
-    ]
-    .into_iter()
-    .filter(|(pattern, _)| lower.contains(pattern))
-    .map(|(_, message)| SkillIssue {
-        path: Some(path.to_string()),
-        message: message.to_string(),
-    })
-    .collect()
-}
-
-pub(super) fn read_frontmatter(path: &Path) -> BTreeMap<String, String> {
-    let Ok(contents) = fs::read_to_string(path) else {
-        return BTreeMap::new();
-    };
-    let mut result = BTreeMap::new();
-    let mut lines = contents.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return result;
-    }
-    for line in lines {
-        let line = line.trim();
-        if line == "---" {
-            break;
-        }
-        if let Some((key, value)) = line.split_once(':') {
-            let value = value.trim().trim_matches(['\'', '"']);
-            if !key.trim().is_empty() && !value.is_empty() {
-                result.insert(key.trim().to_string(), value.to_string());
-            }
-        }
-    }
-    result
-}
-
-fn bundle_detail(overview: &SkillsOverview, id: &str) -> Result<SkillDetail> {
+fn bundle_detail(overview: &crate::skills::inspection::SkillsOverview, id: &str) -> Result<crate::skills::inspection::SkillDetail> {
     let skill = overview
         .skills
         .iter()
@@ -564,9 +260,9 @@ fn bundle_detail(overview: &SkillsOverview, id: &str) -> Result<SkillDetail> {
         .installations
         .first()
         .ok_or_else(|| anyhow!("Skill has no installation"))?;
-    let inspection = inspect_bundle(&source.path);
-    Ok(SkillDetail {
-        frontmatter: read_frontmatter(&source.path.join("SKILL.md")),
+    let inspection = crate::skills::inspection::inspect_bundle(&source.path);
+    Ok(crate::skills::inspection::SkillDetail {
+        frontmatter: crate::skills::inspection::read_frontmatter(&source.path.join("SKILL.md")),
         provider_metadata: inspection
             .assets
             .iter()
@@ -633,7 +329,7 @@ fn validate_directory(directory: &str) -> Result<()> {
     Ok(())
 }
 
-fn install(agents: &[SkillAgent], request: &SkillMutation) -> Result<SkillsOverview> {
+fn install(agents: &[crate::skills::inspection::SkillAgent], request: &SkillMutation) -> Result<crate::skills::inspection::SkillsOverview> {
     let overview = discover(agents);
     let skill = overview
         .skills
@@ -688,7 +384,7 @@ fn deploy_skill(source: &Path, destination: &Path) -> Result<()> {
     }
 
     copy_skill(&source, destination)?;
-    if let Err(error) = fs::write(destination.join(MANAGED_MARKER), b"managed by memorph\n") {
+    if let Err(error) = fs::write(destination.join(crate::skills::inspection::MANAGED_MARKER), b"managed by memorph\n") {
         let _ = fs::remove_dir_all(destination);
         return Err(error).with_context(|| format!("Failed to mark {}", destination.display()));
     }
@@ -741,7 +437,7 @@ fn copy_skill(source: &Path, destination: &Path) -> Result<()> {
     result
 }
 
-fn uninstall(agents: &[SkillAgent], request: &SkillMutation) -> Result<SkillsOverview> {
+fn uninstall(agents: &[crate::skills::inspection::SkillAgent], request: &SkillMutation) -> Result<crate::skills::inspection::SkillsOverview> {
     let overview = discover(agents);
     let skill = overview
         .skills
@@ -773,7 +469,7 @@ fn uninstall(agents: &[SkillAgent], request: &SkillMutation) -> Result<SkillsOve
     {
         fs::remove_file(&expected)
             .with_context(|| format!("Failed to remove symbolic link {}", expected.display()))?;
-    } else if expected.join(MANAGED_MARKER).is_file() {
+    } else if expected.join(crate::skills::inspection::MANAGED_MARKER).is_file() {
         fs::remove_dir_all(&expected)
             .with_context(|| format!("Failed to remove {}", expected.display()))?;
     } else {
@@ -801,7 +497,7 @@ struct SkillFilePreview {
 }
 
 fn preview_file(
-    overview: &SkillsOverview,
+    overview: &crate::skills::inspection::SkillsOverview,
     skill_id: &str,
     query: &SkillFileQuery,
 ) -> Result<SkillFilePreview> {
@@ -830,7 +526,7 @@ fn preview_file(
     {
         return Err(anyhow!("Unsafe skill file path"));
     }
-    let inspection = inspect_bundle(&installation.path);
+    let inspection = crate::skills::inspection::inspect_bundle(&installation.path);
     let asset = inspection
         .assets
         .iter()
@@ -846,13 +542,13 @@ fn preview_file(
     }
     let file = fs::File::open(&target)?;
     let mut bytes = Vec::new();
-    file.take(MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+    file.take(crate::skills::inspection::MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > crate::skills::inspection::MAX_PREVIEW_BYTES {
         return Err(anyhow!("Skill asset exceeds preview limit"));
     }
 
     let extension = asset.extension.as_deref().unwrap_or("");
-    let (encoding, mime_type, content) = if is_image_extension(extension) {
+    let (encoding, mime_type, content) = if crate::skills::inspection::is_image_extension(extension) {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         (
             "base64".to_string(),
@@ -897,8 +593,8 @@ async fn get_skill_tree(
     let Some(source) = skill.installations.first() else {
         return error_response(anyhow!("Skill has no installation"));
     };
-    let inspection = inspect_bundle(&source.path);
-    ApiResponse::success(SkillTree {
+    let inspection = crate::skills::inspection::inspect_bundle(&source.path);
+    ApiResponse::success(crate::skills::inspection::SkillTree {
         skill_id,
         fingerprint: inspection.fingerprint,
         assets: inspection.assets,
@@ -938,7 +634,7 @@ async fn scan_skills(
             ));
         }
         for (provider_id, name, _, relative) in SKILL_PROVIDERS {
-            agents.push(SkillAgent {
+            agents.push(crate::skills::inspection::SkillAgent {
                 provider_id: provider_id.into(),
                 name: name.into(),
                 skills_dir: workspace.join(relative),
@@ -1377,14 +1073,14 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    fn agents(root: &Path) -> Vec<SkillAgent> {
+    fn agents(root: &Path) -> Vec<crate::skills::inspection::SkillAgent> {
         [
             ("claude", "Claude Code"),
             ("codex", "Codex"),
             ("gemini", "Gemini CLI"),
         ]
         .into_iter()
-        .map(|(provider_id, name)| SkillAgent {
+        .map(|(provider_id, name)| crate::skills::inspection::SkillAgent {
             provider_id: provider_id.into(),
             name: name.into(),
             skills_dir: root.join(provider_id).join("skills"),
@@ -1605,7 +1301,7 @@ mod tests {
         let skill = create_skill(root.path(), "claude", "writer", "# Writer");
         symlink(root.path(), skill.join("outside")).unwrap();
 
-        let inspection = inspect_bundle(&skill);
+        let inspection = crate::skills::inspection::inspect_bundle(&skill);
         assert!(inspection
             .issues
             .iter()
