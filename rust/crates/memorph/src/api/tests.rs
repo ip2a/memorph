@@ -1246,6 +1246,27 @@ async fn settings_route_lists_codex_repair_setting() {
         .iter()
         .any(|setting| setting["id"] == "repair_workspace_sessions"));
 }
+
+#[tokio::test]
+async fn provider_hooks_route_reports_scan_support() {
+    let home = Builder::new()
+        .prefix("memorph-provider-hooks")
+        .tempdir()
+        .unwrap();
+    let _config_home = ConfigTestHome::new(home.path());
+    let request = Request::builder()
+        .uri("/api/v1/providers/kimi/hooks")
+        .body(Body::empty())
+        .unwrap();
+
+    let (status, value) = read_json(router(), request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["provider"], "kimi");
+    assert_eq!(value["data"]["scan_supported"], false);
+}
+
 #[tokio::test]
 async fn settings_route_lists_codeisland_gap_provider_hook_actions() {
     let request = Request::builder()

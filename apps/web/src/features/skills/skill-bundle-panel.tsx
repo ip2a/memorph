@@ -4,14 +4,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
-import { useSkillCoverage } from "@/features/skills/queries";
+import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { formatBytes } from "@/lib/format";
 import { renderHighlightedJson } from "@/lib/format-content";
 import { useI18n } from "@/lib/i18n-context";
 import type { SkillAsset, SkillFilePreview } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const BUNDLE_SHELL_HEIGHT = "h-[calc(15rem+5rem)]";
 const CARD_CLASS =
   "flex h-full min-h-0 w-full flex-col gap-0 overflow-hidden rounded-xl border border-border bg-card py-0 shadow-none ring-0";
 
@@ -53,49 +52,69 @@ async function copyContent(text: string, copied: string, failed: string) {
   }
 }
 
+function fileTypeLabel(asset: SkillAsset) {
+  const ext = asset.extension?.replace(/^\./, "").trim();
+  if (ext) return `.${ext.toLowerCase()}`;
+  return asset.category;
+}
+
+function categoryLabel(
+  category: SkillAsset["category"],
+  t: (key: keyof import("@/lib/i18n-core").I18nKey) => string,
+) {
+  switch (category) {
+    case "entry":
+      return t("skillsAssetCategoryEntry");
+    case "script":
+      return t("skillsAssetCategoryScript");
+    case "reference":
+      return t("skillsAssetCategoryReference");
+    case "asset":
+      return t("skillsAssetCategoryAsset");
+    case "metadata":
+      return t("skillsAssetCategoryMetadata");
+    default:
+      return t("skillsAssetCategoryOther");
+  }
+}
+
 function BundleFileList({
   assets,
   previewPath,
   onSelect,
-  coverage,
 }: {
   assets: SkillAsset[];
   previewPath: string | null;
   onSelect: (path: string) => void;
-  coverage: Map<string, { observations: number; confidence?: string | null }>;
 }) {
   const { t } = useI18n();
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto border-y border-border">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
         {assets.length === 0 ? (
           <p className="px-2 py-3 text-sm text-muted-foreground">{t("skillsNoBundleFiles")}</p>
         ) : (
           assets.map((asset) => {
             const selected = previewPath === asset.path;
-            const status = coverage.get(asset.path);
             return (
-              <button
+              <SelectableRowButton
                 key={asset.path}
-                type="button"
+                selected={selected}
+                className="[&_strong]:font-mono"
+                title={basename(asset.path)}
+                details={
+                  <span className="flex flex-wrap items-center gap-2">
+                    <Badge variant="outline">{fileTypeLabel(asset)}</Badge>
+                    <Badge variant="secondary">
+                      {categoryLabel(asset.category, t)}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {formatBytes(asset.bytes)}
+                    </span>
+                  </span>
+                }
                 onClick={() => onSelect(asset.path)}
-                className={cn(
-                  "flex w-full items-center justify-between gap-3 border-b border-border px-2 py-2 text-left transition-colors last:border-b-0 hover:bg-muted/50",
-                  selected && "bg-secondary hover:bg-secondary",
-                )}
-              >
-                <span className="min-w-0 truncate font-mono text-sm font-medium">
-                  {basename(asset.path)}
-                </span>
-                <span className="flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-                  <Badge variant={status?.confidence ? "outline" : "secondary"}>
-                    {status
-                      ? `${status.observations} · ${status.confidence ?? t("skillsUncovered")}`
-                      : t("skillsUncovered")}
-                  </Badge>
-                  {formatBytes(asset.bytes)}
-                </span>
-              </button>
+              />
             );
           })
         )}
@@ -179,33 +198,27 @@ function BundlePreviewPanel({
 }
 
 export function SkillBundlePanel({
-  skillId,
   assets,
   previewPath,
   onPreviewPathChange,
   preview,
   previewLoading,
+  className,
 }: {
-  skillId: string | null;
   assets: SkillAsset[];
   previewPath: string | null;
   onPreviewPathChange: (path: string) => void;
   preview?: SkillFilePreview | null;
   previewLoading?: boolean;
+  className?: string;
 }) {
   const selectedAsset = assets.find((asset) => asset.path === previewPath);
-  const coverage = useSkillCoverage(skillId, "90d");
-  const coverageByPath = new Map(
-    (coverage.data?.targets ?? [])
-      .filter((target) => target.target_path)
-      .map((target) => [target.target_path as string, target]),
-  );
 
   return (
     <div
       className={cn(
-        "grid w-full min-w-0 grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4",
-        BUNDLE_SHELL_HEIGHT,
+        "grid h-full min-h-0 w-full min-w-0 flex-1 grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-4",
+        className,
       )}
     >
       <div className="h-full min-h-0 overflow-hidden">
@@ -213,7 +226,6 @@ export function SkillBundlePanel({
           assets={assets}
           previewPath={previewPath}
           onSelect={onPreviewPathChange}
-          coverage={coverageByPath}
         />
       </div>
       <div className="h-full min-h-0 overflow-hidden">

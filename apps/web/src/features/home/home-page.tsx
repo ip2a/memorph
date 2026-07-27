@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, RefreshCwIcon } from "lucide-react";
 import { PageLoadError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
 import { ProviderLogo } from "@/components/shared/provider-logo";
@@ -89,10 +89,6 @@ const ASCII = `███    ███   ███████   ███    █
 ██ ████ ██   █████     ██ ████ ██  ██    ██  ██████   ██████   ████████
 ██  ██  ██   ██        ██  ██  ██  ██    ██  ██   ██  ██       ██    ██
 ██      ██   ███████   ██      ██   ██████   ██   ██  ██       ██    ██`;
-
-function totalSessions(groups: SessionGroup[]) {
-  return groups.reduce((sum, group) => sum + group.sessions.length, 0);
-}
 
 function findSyncRef(syncGroups: SyncGroup[], providerId: string, sessionId: string) {
   return syncGroups.find((group) => group.holdings.some((holding) => holding.provider === providerId && holding.session_id === sessionId))?.id ?? null;
@@ -418,6 +414,7 @@ function SessionGroups({
 }
 
 export function HomePage() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [renameTarget, setRenameTarget] = useState<SessionItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SessionItem | null>(null);
@@ -531,8 +528,11 @@ export function HomePage() {
 
   const listLoading = !providersReady || (Boolean(selectedProviders.length) && sessions.isLoading && !sessions.data);
   const listRefreshing = Boolean(selectedProviders.length) && sessions.isFetching && Boolean(sessions.data);
-  const sessionCount = totalSessions(sessionGroups);
-  const agentCount = sessionGroups.length;
+
+  function refreshSessions() {
+    void sessions.refetch();
+    void syncGroups.refetch();
+  }
 
   function retryHomeShell() {
     void meta.refetch();
@@ -576,14 +576,18 @@ export function HomePage() {
             onSortChange={setSort}
             onFiltersApply={applyFilters}
           />
-          <div className="flex shrink-0 items-center gap-2">
-            <Button asChild variant="outline">
-              <Link to="/manager">sessions={sessionCount}</Link>
-            </Button>
-            <Button asChild variant="outline">
-              <Link to="/agents">agents={agentCount}</Link>
-            </Button>
-          </div>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={!selectedProviders.length || sessions.isFetching}
+            onClick={refreshSessions}
+          >
+            <RefreshCwIcon
+              className={listRefreshing ? "animate-spin" : undefined}
+              data-icon="inline-start"
+            />
+            {t("refresh")}
+          </Button>
         </div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <HomeSessionGroupRail groups={sessionGroups} />

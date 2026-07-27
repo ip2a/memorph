@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HookProviderCapabilities {
-    pub detect: bool,
+    pub scan_existing: bool,
     pub verify: bool,
     pub install: bool,
     pub repair: bool,
@@ -17,7 +17,7 @@ pub struct HookProviderCapabilities {
 impl HookProviderCapabilities {
     pub const fn unsupported() -> Self {
         Self {
-            detect: false,
+            scan_existing: false,
             verify: false,
             install: false,
             repair: false,
@@ -25,9 +25,9 @@ impl HookProviderCapabilities {
         }
     }
 
-    pub const fn managed_hook() -> Self {
+    pub const fn managed_hook(scan_existing: bool) -> Self {
         Self {
-            detect: true,
+            scan_existing,
             verify: true,
             install: true,
             repair: true,
@@ -48,9 +48,12 @@ impl HookProviderCapabilities {
 
 pub fn for_provider(provider: &str) -> HookProviderCapabilities {
     if crate::hooks::operations::find_provider_hook(provider).is_some() {
-        HookProviderCapabilities::managed_hook()
+        HookProviderCapabilities::managed_hook(crate::hooks::discovery::supports_provider(provider))
     } else {
-        HookProviderCapabilities::unsupported()
+        HookProviderCapabilities {
+            scan_existing: crate::hooks::discovery::supports_provider(provider),
+            ..HookProviderCapabilities::unsupported()
+        }
     }
 }
 
@@ -67,7 +70,9 @@ mod tests {
         for descriptor in crate::hooks::registry::all() {
             assert_eq!(
                 for_provider(descriptor.provider()),
-                HookProviderCapabilities::managed_hook(),
+                HookProviderCapabilities::managed_hook(crate::hooks::discovery::supports_provider(
+                    descriptor.provider()
+                )),
                 "missing capability coverage for {}",
                 descriptor.provider()
             );

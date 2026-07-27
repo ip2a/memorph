@@ -101,6 +101,6 @@ export const queryKeys = {
   skillFile: (id: string, path: string, provider?: string) =>
     ["skills", id, "file", path, provider] as const,
   hookProvider: (provider: string) => ["hooks", provider] as const,
-  installedHooks: (provider: string) =>
-    ["hooks", provider, "installed"] as const,
+  detectedHooks: (provider: string) =>
+    ["providers", provider, "hooks"] as const,
 };

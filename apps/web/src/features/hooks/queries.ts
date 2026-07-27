@@ -1,5 +1,5 @@
 import { queryOptions, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getHookProviderOverview, getHooksOverview, getMeta, listInstalledHooks, removeInstalledHook, runHookProviderOperation } from "@/lib/api";
+import { getHookProviderOverview, getHooksOverview, getMeta, listDetectedHooks, runHookProviderOperation } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useHooksOverview() {
@@ -47,21 +47,10 @@ export function useRunHookProviderOperation() {
   });
 }
 
-export function useInstalledHooks(provider: string | null) {
+export function useDetectedHooks(provider: string | null) {
   return useQuery({
-    queryKey: queryKeys.installedHooks(provider || ""),
-    queryFn: () => listInstalledHooks(provider || ""),
+    queryKey: queryKeys.detectedHooks(provider || ""),
+    queryFn: () => listDetectedHooks(provider || ""),
     enabled: !!provider,
-  });
-}
-
-export function useRemoveInstalledHook() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ provider, event, index, fingerprint }: { provider: string; event: string; index: number; fingerprint: string }) =>
-      removeInstalledHook(provider, event, index, fingerprint),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.hooks });
-    },
   });
 }

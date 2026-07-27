@@ -1,4 +1,4 @@
-import { FolderSearchIcon, RefreshCwIcon, UnplugIcon } from "lucide-react";
+import { FolderSearchIcon, RefreshCwIcon } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -83,27 +83,14 @@ export function PageError({
   );
 }
 
-export function PageBackendUnavailable({ onRetry }: { onRetry?: () => void }) {
+export function PageBackendUnavailable() {
   const { t } = useI18n();
 
   return (
     <Empty className="min-h-[min(420px,calc(100dvh-12rem))] border-none">
       <EmptyHeader>
-        <EmptyMedia variant="icon" className="size-12 rounded-xl [&_svg:not([class*='size-'])]:size-5">
-          <UnplugIcon />
-        </EmptyMedia>
-        <span className="font-mono text-lg font-bold tracking-tight">memorph</span>
         <EmptyTitle>{t("backendUnavailableTitle")}</EmptyTitle>
-        <EmptyDescription>{t("backendUnavailableDescription")}</EmptyDescription>
       </EmptyHeader>
-      {onRetry ? (
-        <EmptyContent>
-          <Button variant="outline" className="min-h-10" onClick={onRetry}>
-            <RefreshCwIcon data-icon="inline-start" />
-            {t("refresh")}
-          </Button>
-        </EmptyContent>
-      ) : null}
     </Empty>
   );
 }
@@ -120,7 +107,7 @@ export function PageLoadError({
   onRetry?: () => void;
 }) {
   if (isBackendUnavailableError(error)) {
-    return <PageBackendUnavailable onRetry={onRetry} />;
+    return <PageBackendUnavailable />;
   }
 
   return (

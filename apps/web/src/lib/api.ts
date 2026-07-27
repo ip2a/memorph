@@ -21,7 +21,7 @@ import type {
   HookOperationReport,
   HookOverviewPayload,
   HookProviderOverviewPayload,
-  InstalledHooks,
+  DetectedHooks,
   ImportSessionPayload,
   ImportSessionResult,
   MetaPayload,
@@ -352,21 +352,9 @@ export function getHookProviderOverview(provider: string) {
   );
 }
 
-export function listInstalledHooks(provider: string) {
-  return api<InstalledHooks>(
-    `/api/v1/hooks/providers/${encodeURIComponent(provider)}/installed`,
-  );
-}
-
-export function removeInstalledHook(
-  provider: string,
-  event: string,
-  index: number,
-  fingerprint: string,
-) {
-  return api<InstalledHooks>(
-    `/api/v1/hooks/providers/${encodeURIComponent(provider)}/installed/${encodeURIComponent(event)}/${index}/${encodeURIComponent(fingerprint)}`,
-    { method: "DELETE" },
+export function listDetectedHooks(provider: string) {
+  return api<DetectedHooks>(
+    `/api/v1/providers/${encodeURIComponent(provider)}/hooks`,
   );
 }
 

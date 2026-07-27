@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Trash2Icon, WrenchIcon } from "lucide-react";
+import { WrenchIcon } from "lucide-react";
 import { EntityRow } from "@/components/shared/entity-row";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PanelCard } from "@/components/shared/panel-card";
@@ -30,15 +30,14 @@ import type {
   HookEventRecord,
   HookProviderOverviewPayload,
   HookRuntimeSession,
-  InstalledHook,
+  DetectedHook,
 } from "@/lib/types";
 import {
   prefetchHookProviderOverview,
   useHookProviderOverview,
   useHooksMeta,
   useHooksOverview,
-  useInstalledHooks,
-  useRemoveInstalledHook,
+  useDetectedHooks,
   useRunHookProviderOperation,
 } from "@/features/hooks/queries";
 
@@ -324,8 +323,7 @@ function ErrorRows({ errors }: { errors: HookErrorRecord[] }) {
 
 function ProviderDetail({ detail, isLoading, providerId }: { detail: HookProviderOverviewPayload | undefined; isLoading: boolean; providerId: string | null }) {
   const runOperation = useRunHookProviderOperation();
-  const installedHooks = useInstalledHooks(providerId);
-  const removeInstalled = useRemoveInstalledHook();
+  const detectedHooks = useDetectedHooks(providerId);
 
   if (isLoading && !detail) {
     return (
@@ -418,14 +416,16 @@ function ProviderDetail({ detail, isLoading, providerId }: { detail: HookProvide
 
 
         <DetailSection
-          title="Installed Hooks"
-          description={installedHooks.data?.config_path ? `All hooks found in ${installedHooks.data.config_path}` : "All hooks found in the provider configuration."}
+          title="Detected Hooks"
+          description={detectedHooks.data?.config_path ? `Read-only discovery from ${detectedHooks.data.config_path}` : "Hooks detected in the provider configuration. Third-party hooks are read-only."}
         >
-          {installedHooks.isLoading ? <Spinner /> : null}
-          {installedHooks.error ? <PageError title="Installed hooks failed to load" message={installedHooks.error.message} /> : null}
-          {installedHooks.data?.hooks.length ? (
+          {detectedHooks.isLoading ? <Spinner /> : null}
+          {detectedHooks.error ? <PageError title="Hook discovery failed to load" message={detectedHooks.error.message} /> : null}
+          {detectedHooks.data && !detectedHooks.data.scan_supported ? (
+            <Empty><EmptyHeader><EmptyTitle>Discovery not supported</EmptyTitle><EmptyDescription>This provider uses a hook format that is not yet recognized.</EmptyDescription></EmptyHeader></Empty>
+          ) : detectedHooks.data?.hooks.length ? (
             <div className="flex flex-col gap-2">
-              {installedHooks.data.hooks.map((item: InstalledHook) => (
+              {detectedHooks.data.hooks.map((item: DetectedHook) => (
                 <div key={`${item.event}-${item.index}`} className="flex items-start justify-between gap-3 rounded-md border p-3 text-sm">
                   <div className="min-w-0">
                     <div className="flex flex-wrap gap-2">
@@ -434,21 +434,10 @@ function ProviderDetail({ detail, isLoading, providerId }: { detail: HookProvide
                     </div>
                     <p className="mt-2 break-all text-muted-foreground">{item.command || item.hook_type || "configured hook"}</p>
                   </div>
-                  <Button
-                    type="button"
-                    size="icon"
-                    variant="ghost"
-                    title="Remove hook"
-                    disabled={removeInstalled.isPending}
-                    onClick={() => removeInstalled.mutate({ provider: provider.provider_id, event: item.event, index: item.index, fingerprint: item.fingerprint })}
-                  >
-                    <Trash2Icon />
-                  </Button>
                 </div>
               ))}
             </div>
-          ) : !installedHooks.isLoading ? <Empty><EmptyHeader><EmptyTitle>No installed hooks</EmptyTitle></EmptyHeader></Empty> : null}
-          {removeInstalled.error ? <PageError title="Remove hook failed" message={removeInstalled.error.message} /> : null}
+          ) : !detectedHooks.isLoading ? <Empty><EmptyHeader><EmptyTitle>No hooks detected</EmptyTitle></EmptyHeader></Empty> : null}
         </DetailSection>
 
         <DetailSection title="Hook Event Profile" description="Provider events that memorph records or blocks for runtime correlation.">

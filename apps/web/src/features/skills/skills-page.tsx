@@ -1,14 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  getCoreRowModel,
-  useReactTable,
-  type ColumnDef,
-} from "@tanstack/react-table";
+import { useEffect, useRef, useState } from "react";
 import { RefreshCwIcon, SearchIcon } from "lucide-react";
 import { toast } from "sonner";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PanelCard } from "@/components/shared/panel-card";
 import { ScrollPane } from "@/components/shared/scroll-pane";
+import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { TwoPanePage } from "@/components/shared/two-pane-page";
 import {
@@ -31,14 +27,6 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
   useInstallSkill,
   useScanSkills,
   useSkillDetail,
@@ -53,9 +41,7 @@ import {
   type SkillsCatalogFilters,
 } from "@/features/skills/skills-catalog-filters";
 import { SkillOverviewPanel } from "@/features/skills/skill-overview-panel";
-import { formatBytes } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
-import type { SkillCatalogItem } from "@/lib/types";
 import { useUiStore } from "@/stores/ui-store";
 
 export function SkillsPage() {
@@ -130,20 +116,6 @@ export function SkillsPage() {
       (assets.find((asset) => asset.previewable) ?? assets[0])?.path ?? null,
     );
   }, [previewPath, treeQuery.data?.assets]);
-
-  const columns = useMemo<ColumnDef<SkillCatalogItem>[]>(
-    () => [
-      { accessorKey: "name", header: "Skill" },
-      { accessorKey: "file_count", header: "文件" },
-      { accessorKey: "total_bytes", header: "大小" },
-    ],
-    [],
-  );
-  const table = useReactTable({
-    data: items,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-  });
 
   if (skillsQuery.isError) {
     return (
@@ -257,52 +229,24 @@ export function SkillsPage() {
                 onApply={applyCatalogFilters}
               />
             </section>
-            <ScrollPane className="flex-1">
+            <ScrollPane className="flex-1" innerClassName="flex flex-col gap-2">
               {skillsQuery.isLoading ? (
                 <div className="p-3">
                   <PageSkeleton />
                 </div>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Skill</TableHead>
-                      <TableHead className="w-14">{t("skillsFileCount")}</TableHead>
-                      <TableHead className="w-20">{t("skillsSize")}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {table.getRowModel().rows.map((row) => {
-                      const item = row.original;
-                      return (
-                        <TableRow
-                          key={item.id}
-                          data-state={
-                            rightView === "detail" && item.id === selectedId
-                              ? "selected"
-                              : undefined
-                          }
-                          className="cursor-pointer"
-                          onClick={() => {
-                            setSelectedId(item.id);
-                            setRightView("detail");
-                          }}
-                        >
-                          <TableCell>
-                            <strong className="block truncate">
-                              {item.name}
-                            </strong>
-                            <span className="text-muted-foreground block max-w-52 truncate text-xs">
-                              {item.description || item.source_id}
-                            </span>
-                          </TableCell>
-                          <TableCell>{item.file_count}</TableCell>
-                          <TableCell>{formatBytes(item.total_bytes)}</TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
+                items.map((item) => (
+                  <SelectableRowButton
+                    key={item.id}
+                    selected={rightView === "detail" && item.id === selectedId}
+                    title={item.name}
+                    meta={item.description || item.source_id}
+                    onClick={() => {
+                      setSelectedId(item.id);
+                      setRightView("detail");
+                    }}
+                  />
+                ))
               )}
               {!skillsQuery.isLoading && !items.length ? (
                 <Empty className="border border-dashed">

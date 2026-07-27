@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { orderProviderPills } from "@/features/home/model/providers";
 import { ProviderPicker } from "@/features/home/provider-picker";
 import type { ProviderCatalogEntry, SessionHookFilter, SessionListSort } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -90,13 +91,15 @@ export function HomeFiltersDialog({
   const [draftHookFilter, setDraftHookFilter] = useState(hookFilter);
   const [draftProviders, setDraftProviders] = useState(selectedProviders);
   const [draftSessionsPerProvider, setDraftSessionsPerProvider] = useState(sessionsPerProvider);
+  const [providerOrder, setProviderOrder] = useState(providerCandidates);
 
   useEffect(() => {
     if (!open) return;
     setDraftHookFilter(hookFilter);
     setDraftProviders(selectedProviders);
     setDraftSessionsPerProvider(sessionsPerProvider);
-  }, [hookFilter, open, selectedProviders, sessionsPerProvider]);
+    setProviderOrder(orderProviderPills(providerCandidates, selectedProviders));
+  }, [hookFilter, open, providerCandidates, selectedProviders, sessionsPerProvider]);
 
   function toggleDraftProvider(providerId: string) {
     setDraftProviders((current) =>
@@ -105,9 +108,11 @@ export function HomeFiltersDialog({
   }
 
   function resetDraft() {
+    const allProviderIds = providerCandidates.map((item) => item.provider_id);
     setDraftHookFilter("all");
-    setDraftProviders(providerCandidates.map((item) => item.provider_id));
+    setDraftProviders(allProviderIds);
     setDraftSessionsPerProvider(defaultSessionsPerProvider);
+    setProviderOrder(orderProviderPills(providerCandidates, allProviderIds));
   }
 
   return (
@@ -121,7 +126,7 @@ export function HomeFiltersDialog({
         <div className="grid gap-5">
           <section className="grid gap-2">
             <p className="font-mono text-xs uppercase text-muted-foreground">Providers</p>
-            <ProviderPicker candidates={providerCandidates} selected={draftProviders} onToggle={toggleDraftProvider} />
+            <ProviderPicker candidates={providerOrder} selected={draftProviders} onToggle={toggleDraftProvider} />
           </section>
 
           <section className="grid gap-2">

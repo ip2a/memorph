@@ -1,11 +1,5 @@
 import { useState } from "react";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
-import {
-  Field,
-  FieldContent,
-  FieldGroup,
-  FieldTitle,
-} from "@/components/ui/field";
 import { ScrollPane } from "@/components/shared/scroll-pane";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -13,6 +7,8 @@ import {
   InactivityPanel,
   ProviderPiePanel,
   RankingBoard,
+  StatsOverviewPanel,
+  type StatsOverviewMetric,
 } from "@/features/stats/stats-overview-panels";
 import {
   type StatsWorkspaceScope,
@@ -27,26 +23,6 @@ const rangeLabels: Record<StatsDashboardRange, string> = {
   "90d": "近 90 天",
   all: "全部时间",
 };
-
-type OverviewMetric = {
-  label: string;
-  value: string;
-  hint: string;
-};
-
-function StatsMetricRow({ label, value, hint }: OverviewMetric) {
-  return (
-    <Field orientation="responsive" className="items-center py-1.5">
-      <FieldContent className="gap-0">
-        <FieldTitle className="text-sm">{label}</FieldTitle>
-      </FieldContent>
-      <p className="min-w-0 text-sm tabular-nums @md/field-group:shrink-0">
-        <span className="font-medium">{value}</span>
-        {hint ? <span className="text-muted-foreground"> · {hint}</span> : null}
-      </p>
-    </Field>
-  );
-}
 
 export function StatsPage() {
   const [range, setRange] = useState<StatsDashboardRange>("30d");
@@ -68,7 +44,7 @@ export function StatsPage() {
 
   const data = dashboard.data;
   const period = rangeLabels[range];
-  const metrics: OverviewMetric[] = [
+  const overviewMetrics: StatsOverviewMetric[] = [
     {
       label: "总会话",
       value: data.overview.total_sessions.toLocaleString(),
@@ -117,7 +93,6 @@ export function StatsPage() {
       innerClassName="flex min-w-0 flex-col gap-6 pb-6"
     >
         <div className="flex flex-wrap items-center justify-end gap-2">
-          <span className="text-xs text-muted-foreground">活跃指标范围</span>
           <Tabs
             value={scope}
             onValueChange={(value) => setScope(value as StatsWorkspaceScope)}
@@ -140,22 +115,18 @@ export function StatsPage() {
           </Tabs>
         </div>
 
-        <section className="grid grid-cols-1 items-start gap-4 md:grid-cols-2 xl:grid-cols-10">
-          <div className="min-w-0 md:col-span-2 xl:col-span-4" data-stats-overview>
-            <FieldGroup className="gap-0 divide-y divide-border">
-              {metrics.map((metric) => (
-                <StatsMetricRow key={metric.label} {...metric} />
-              ))}
-            </FieldGroup>
+        <section className="@container/stats-panel grid min-w-0 grid-cols-10 items-stretch gap-4">
+          <div className="col-span-4 min-w-0" data-stats-overview>
+            <StatsOverviewPanel metrics={overviewMetrics} />
           </div>
 
-          <div className="min-w-0 md:col-span-1 xl:col-span-3">
+          <div className="col-span-3 min-w-0">
             <InactivityPanel
               data={data.attention}
               sessionSize={data.distributions.session_size}
             />
           </div>
-          <div className="min-w-0 md:col-span-1 xl:col-span-3">
+          <div className="col-span-3 min-w-0">
             <ProviderPiePanel
               items={data.providers}
               messageCount={data.distributions.message_count}

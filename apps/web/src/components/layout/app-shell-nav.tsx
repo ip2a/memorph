@@ -122,7 +122,7 @@ export function AppShellNav({
         id: "skills",
         collapsePriority: 12,
         renderButton: () => (
-          <Button asChild variant="outline" size="sm">
+          <Button asChild variant="outline">
             <Link to="/skills">{t("skills")}</Link>
           </Button>
         ),

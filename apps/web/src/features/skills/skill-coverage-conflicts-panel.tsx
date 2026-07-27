@@ -24,7 +24,9 @@ import type { I18nKey } from "@/lib/i18n-core";
 const ranges = ["7d", "30d", "90d", "all"];
 function PanelShell({ embedded, children }: { embedded: boolean; children: ReactNode }) {
   return embedded ? (
-    <div className="space-y-3">{children}</div>
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden rounded-lg border p-3">
+      {children}
+    </div>
   ) : (
     <PanelCard className="space-y-3 p-4">{children}</PanelCard>
   );
@@ -66,9 +68,9 @@ export function SkillCoverageConflictsPanel({
   }
 
   return (
-    <div className="grid gap-3 lg:grid-cols-2">
+    <div className="grid h-full min-h-0 grid-cols-1 gap-3 md:grid-cols-2">
       <PanelShell embedded={embedded}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2">
           <SectionHeading title={t("skillsCoverage")} className="border-0 pb-0" />
           <div className="flex gap-1">
             {ranges.map((item) => (
@@ -89,7 +91,7 @@ export function SkillCoverageConflictsPanel({
           <p className="text-sm text-destructive">{coverage.error.message}</p>
         ) : (
           <>
-            <div>
+            <div className="shrink-0">
               <p className="text-2xl font-semibold">
                 {coverage.data?.percent.toFixed(1)}%{" "}
                 <span className="text-sm font-normal text-muted-foreground">
@@ -103,7 +105,7 @@ export function SkillCoverageConflictsPanel({
                 </p>
               ) : null}
             </div>
-            <Tabs value={category} onValueChange={setCategory}>
+            <Tabs value={category} onValueChange={setCategory} className="shrink-0">
               <TabsList className="max-w-full overflow-x-auto">
                 {categories.map(([value, label]) => (
                   <TabsTrigger key={value} value={value}>
@@ -112,7 +114,7 @@ export function SkillCoverageConflictsPanel({
                 ))}
               </TabsList>
             </Tabs>
-            <div className="max-h-56 space-y-2 overflow-auto">
+            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
               {targets.map((target) => (
                 <button
                   type="button"
@@ -137,13 +139,16 @@ export function SkillCoverageConflictsPanel({
         )}
       </PanelShell>
       <PanelShell embedded={embedded}>
-        <SectionHeading title={t("skillsConflicts")} className="border-0 pb-0" />
+        <SectionHeading
+          title={t("skillsConflicts")}
+          className="shrink-0 border-0 pb-0"
+        />
         {conflicts.isLoading ? (
           <p className="text-sm text-muted-foreground">{t("skillsLoading")}</p>
         ) : conflicts.isError ? (
           <p className="text-sm text-destructive">{conflicts.error.message}</p>
         ) : conflicts.data?.length ? (
-          <div className="max-h-64 space-y-2 overflow-auto">
+          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
             {conflicts.data.map((item) => (
               <div key={item.id} className="rounded-md border p-3 text-sm">
                 <div className="flex items-center gap-2">

@@ -1,19 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import {
-  CartesianGrid,
-  Cell,
-  Label,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  Sector,
-  XAxis,
-  YAxis,
-} from "recharts";
-import type { PieSectorShapeProps } from "recharts";
-import { PathText } from "@/components/shared/path-text";
+import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { ProviderLogo } from "@/components/shared/provider-logo";
 import { workspaceName } from "@/components/shared/workspace-name";
 import { SectionHeading } from "@/components/shared/section-heading";
@@ -25,6 +12,7 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
+import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatBytes, formatDateTime } from "@/lib/format";
 import type {
@@ -153,123 +141,155 @@ const CHART_COLORS = [
   "var(--chart-5)",
 ] as const;
 
-function pieSliceKey(id: string, index: number) {
+export const STATS_BAR_MAX_ROWS = 4;
+
+const statsPanelTabListClassName =
+  "h-9 max-w-full flex-nowrap overflow-x-auto";
+const rankingTabListClassName = "max-w-full shrink-0 flex-nowrap overflow-x-auto";
+const rankingTabTriggerClassName = "flex-none px-2 text-xs";
+const statsPanelBodyClassName = "flex min-w-0 flex-col gap-3 py-1";
+const statsPanelRowsClassName = "flex flex-col divide-y divide-border";
+const statsPanelRowClassName = "flex min-w-0 flex-col gap-1.5 py-1.5";
+const statsPanelRowHeaderClassName =
+  "flex items-center justify-between gap-2 text-xs";
+
+function barItemKey(id: string, index: number) {
   const safe = id.replace(/[^a-zA-Z0-9_-]/g, "_") || `item_${index}`;
   return `${safe}_${index}`;
 }
 
-function ActivePieShape({ isActive, ...props }: PieSectorShapeProps) {
-  return (
-    <Sector
-      {...props}
-      outerRadius={isActive ? props.outerRadius + 8 : props.outerRadius}
-    />
-  );
-}
-
-type PieSeries = {
+type BarDatum = {
   id: string;
-  label: string;
-  centerLabel?: string;
-  config: ChartConfig;
-  data: Array<{ id: string; value: number; fill: string }>;
+  value: number;
+  fill: string;
+  label?: ReactNode;
 };
 
-function StatsPieChart({
+type BarSeries = {
+  id: string;
+  label: string;
+  unitLabel?: string;
+  config: ChartConfig;
+  data: BarDatum[];
+};
+
+function barLabel(item: BarDatum, config: ChartConfig) {
+  if (item.label) return item.label;
+  const entry = config[item.id];
+  return typeof entry?.label === "string" ? entry.label : item.id;
+}
+
+function barFill(config: ChartConfig, id: string, index: number) {
+  const entry = config[id];
+  if (entry && "color" in entry && entry.color) return entry.color;
+  return CHART_COLORS[index % CHART_COLORS.length];
+}
+
+function trimBarRows(data: BarDatum[], max = STATS_BAR_MAX_ROWS): BarDatum[] {
+  if (data.length <= max) return data;
+  const head = data.slice(0, max - 1);
+  const tail = data.slice(max - 1);
+  const otherValue = tail.reduce((sum, item) => sum + item.value, 0);
+  return [
+    ...head,
+    {
+      id: "__other__",
+      value: otherValue,
+      fill: CHART_COLORS[max - 1],
+      label: "其他",
+    },
+  ];
+}
+
+function StatsBarList({
   config,
   data,
-  centerLabel = "会话",
+  unitLabel = "会话",
+  maxRows = STATS_BAR_MAX_ROWS,
 }: {
   config: ChartConfig;
-  data: Array<{ id: string; value: number; fill: string }>;
-  centerLabel?: string;
+  data: BarDatum[];
+  unitLabel?: string;
+  maxRows?: number;
 }) {
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const total = data.reduce((sum, item) => sum + item.value, 0);
-  const selected = selectedIndex == null ? null : (data[selectedIndex] ?? null);
-  const selectedConfig = selected ? config[selected.id] : null;
-  const displayValue = selected?.value ?? total;
-  const displayLabel =
-    selected == null
-      ? centerLabel
-      : typeof selectedConfig?.label === "string"
-        ? selectedConfig.label
-        : String(selected.id);
-
   if (!data.length) return <PanelEmpty />;
+  const rows = trimBarRows(data, maxRows);
 
   return (
-    <ChartContainer
-      config={config}
-      className="mx-auto aspect-square max-h-52 w-full"
-    >
-      <PieChart>
-        <ChartTooltip
-          content={<ChartTooltipContent nameKey="id" hideLabel />}
-        />
-        <Pie
-          data={data}
-          dataKey="value"
-          nameKey="id"
-          innerRadius={48}
-          outerRadius={72}
-          strokeWidth={2}
-          isAnimationActive
-          animationBegin={80}
-          animationDuration={900}
-          animationEasing="ease-out"
-          shape={(props: PieSectorShapeProps) => (
-            <ActivePieShape
-              {...props}
-              isActive={props.index === selectedIndex || props.isActive}
-            />
-          )}
-          onMouseEnter={(_, index) => setSelectedIndex(index)}
-          onClick={(_, index) => setSelectedIndex(index)}
-        >
-          {data.map((item) => (
-            <Cell
-              key={item.id}
-              fill={item.fill}
-              className="cursor-pointer outline-none"
-            />
-          ))}
-          <Label
-            content={({ viewBox }) => {
-              if (!viewBox || !("cx" in viewBox) || !("cy" in viewBox))
-                return null;
-              return (
-                <text
-                  x={viewBox.cx}
-                  y={viewBox.cy}
-                  textAnchor="middle"
-                  dominantBaseline="middle"
-                >
-                  <tspan
-                    x={viewBox.cx}
-                    y={(viewBox.cy ?? 0) - 6}
-                    className="fill-foreground text-xl font-semibold tabular-nums"
-                  >
-                    {displayValue.toLocaleString()}
-                  </tspan>
-                  <tspan
-                    x={viewBox.cx}
-                    y={(viewBox.cy ?? 0) + 14}
-                    className="fill-muted-foreground text-xs"
-                  >
-                    {displayLabel}
-                  </tspan>
-                </text>
-              );
-            }}
-          />
-        </Pie>
-      </PieChart>
-    </ChartContainer>
+    <div className={statsPanelBodyClassName}>
+      <p className="text-xs leading-none text-muted-foreground">
+        共{" "}
+        <span className="font-medium text-foreground tabular-nums">
+          {total.toLocaleString()}
+        </span>{" "}
+        {unitLabel}
+      </p>
+      <div className={statsPanelRowsClassName}>
+        {rows.map((item, index) => {
+          const percent = total > 0 ? (item.value / total) * 100 : 0;
+          const color = item.fill || barFill(config, item.id, index);
+          return (
+            <div key={item.id} className={statsPanelRowClassName}>
+              <div className={statsPanelRowHeaderClassName}>
+                <span className="min-w-0 max-w-[45%] truncate">
+                  {barLabel(item, config)}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-right tabular-nums text-muted-foreground">
+                  {item.value.toLocaleString()}
+                  <span className="ml-1 text-[10px]">({percent.toFixed(0)}%)</span>
+                </span>
+              </div>
+              <Progress
+                value={percent}
+                className="h-1.5 bg-muted/60 [&_[data-slot=progress-indicator]]:rounded-full [&_[data-slot=progress-indicator]]:bg-[var(--bar-color)]"
+                style={{ "--bar-color": color } as React.CSSProperties}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
-function TabbedStatsPie({ series }: { series: PieSeries[] }) {
+export type StatsOverviewMetric = {
+  label: string;
+  value: string;
+  hint: string;
+};
+
+export function StatsOverviewPanel({
+  metrics,
+}: {
+  metrics: StatsOverviewMetric[];
+}) {
+  return (
+    <section className="flex h-full min-w-0 flex-col py-1">
+      <div className={statsPanelRowsClassName}>
+        {metrics.map((metric) => (
+          <div
+            key={metric.label}
+            className="flex items-center justify-between gap-3 py-1.5 text-sm"
+          >
+            <span className="shrink-0">{metric.label}</span>
+            <p
+              className="min-w-0 truncate text-right tabular-nums"
+              title={metric.hint ? `${metric.value} · ${metric.hint}` : metric.value}
+            >
+              <span className="font-medium">{metric.value}</span>
+              {metric.hint ? (
+                <span className="text-muted-foreground"> · {metric.hint}</span>
+              ) : null}
+            </p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function TabbedStatsBars({ series }: { series: BarSeries[] }) {
   const [tab, setTab] = useState(series[0]?.id ?? "");
   const active = series.find((item) => item.id === tab) ?? series[0];
   if (!active) return null;
@@ -277,7 +297,7 @@ function TabbedStatsPie({ series }: { series: PieSeries[] }) {
   return (
     <section className="flex h-full min-w-0 flex-col gap-2">
       <Tabs value={active.id} onValueChange={setTab}>
-        <TabsList className="w-full flex-wrap">
+        <TabsList className={statsPanelTabListClassName}>
           {series.map((item) => (
             <TabsTrigger key={item.id} value={item.id} className="flex-1">
               {item.label}
@@ -285,25 +305,25 @@ function TabbedStatsPie({ series }: { series: PieSeries[] }) {
           ))}
         </TabsList>
       </Tabs>
-      <StatsPieChart
+      <StatsBarList
         key={active.id}
         config={active.config}
         data={active.data}
-        centerLabel={active.centerLabel}
+        unitLabel={active.unitLabel}
       />
     </section>
   );
 }
 
-function distributionPieSeries(
+function distributionBarSeries(
   id: string,
   label: string,
   items: StatsDashboard["distributions"]["session_size"],
-  centerLabel: string,
-): PieSeries {
+  unitLabel: string,
+): BarSeries {
   const top = items.filter((item) => item.count > 0);
   const config: ChartConfig = {
-    value: { label: centerLabel },
+    value: { label: unitLabel },
     ...Object.fromEntries(
       top.map((item, index) => [
         item.key,
@@ -314,12 +334,12 @@ function distributionPieSeries(
   return {
     id,
     label,
-    centerLabel,
+    unitLabel,
     config,
-    data: top.map((item) => ({
+    data: top.map((item, index) => ({
       id: item.key,
       value: item.count,
-      fill: `var(--color-${item.key})`,
+      fill: barFill(config, item.key, index),
     })),
   };
 }
@@ -340,19 +360,19 @@ export function InactivityPanel({
   ].filter((item) => item.value > 0);
 
   return (
-    <TabbedStatsPie
+    <TabbedStatsBars
       series={[
         {
           id: "activity",
           label: "活跃状态",
-          centerLabel: "会话",
+          unitLabel: "会话",
           config: inactivityChartConfig,
-          data: items.map((item) => ({
+          data: items.map((item, index) => ({
             ...item,
-            fill: `var(--color-${item.id})`,
+            fill: barFill(inactivityChartConfig, item.id, index),
           })),
         },
-        distributionPieSeries("session_size", "会话大小", sessionSize, "会话"),
+        distributionBarSeries("session_size", "会话大小", sessionSize, "会话"),
       ]}
     />
   );
@@ -365,12 +385,12 @@ export function ProviderPiePanel({
   items: StatsBreakdownItem[];
   messageCount: StatsDashboard["distributions"]["message_count"];
 }) {
-  const top = items.filter((item) => item.session_count > 0).slice(0, 8);
+  const top = items.filter((item) => item.session_count > 0);
   const config: ChartConfig = {
     value: { label: "会话" },
     ...Object.fromEntries(
       top.map((item, index) => [
-        pieSliceKey(item.id, index),
+        barItemKey(item.id, index),
         {
           label: breakdownLabel(item, "provider"),
           color: CHART_COLORS[index % CHART_COLORS.length],
@@ -378,22 +398,32 @@ export function ProviderPiePanel({
       ]),
     ),
   };
-  const pieData = top.map((item, index) => {
-    const id = pieSliceKey(item.id, index);
-    return { id, value: item.session_count, fill: `var(--color-${id})` };
+  const providerData = top.map((item, index) => {
+    const id = barItemKey(item.id, index);
+    return {
+      id,
+      value: item.session_count,
+      fill: barFill(config, id, index),
+      label: (
+        <span className="flex min-w-0 items-center gap-1.5">
+          <ProviderLogo providerId={item.id} size="xs" alt={item.id} />
+          <span className="truncate">{breakdownLabel(item, "provider")}</span>
+        </span>
+      ),
+    };
   });
 
   return (
-    <TabbedStatsPie
+    <TabbedStatsBars
       series={[
         {
           id: "providers",
           label: "Agent",
-          centerLabel: "会话",
+          unitLabel: "会话",
           config,
-          data: pieData,
+          data: providerData,
         },
-        distributionPieSeries(
+        distributionBarSeries(
           "message_count",
           "消息数量",
           messageCount,
@@ -431,36 +461,53 @@ export function RankingBoard({
       value={limit}
       onValueChange={(value) => setLimit(value as "5" | "10")}
     >
-      <TabsList>
-        <TabsTrigger value="5">Top 5</TabsTrigger>
-        <TabsTrigger value="10">Top 10</TabsTrigger>
+      <TabsList className={rankingTabListClassName}>
+        <TabsTrigger value="5" className={rankingTabTriggerClassName}>
+          Top 5
+        </TabsTrigger>
+        <TabsTrigger value="10" className={rankingTabTriggerClassName}>
+          Top 10
+        </TabsTrigger>
       </TabsList>
     </Tabs>
   );
 
+  const rankingHeadingClassName =
+    "grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b pb-2";
+  const rankingActionsClassName =
+    "flex min-w-0 flex-nowrap items-center justify-end gap-2 overflow-x-auto";
+
   return (
-    <section className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-10">
-      <div className="min-w-0 xl:col-span-7">
+    <section className="@container/stats-ranking grid min-w-0 grid-cols-10 items-start gap-4">
+      <div className="col-span-7 min-w-0">
         <SectionHeading
           variant="compact"
+          className={rankingHeadingClassName}
           title="会话排行"
+          actionsProps={{ className: rankingActionsClassName }}
           actions={
             <>
               <Tabs
                 value={rank}
                 onValueChange={(value) => setRank(value as RankKey)}
               >
-                <TabsList>
-                  <TabsTrigger value="by_messages">消息最多</TabsTrigger>
-                  <TabsTrigger value="by_size">占用最大</TabsTrigger>
-                  <TabsTrigger value="recently_active">最近活跃</TabsTrigger>
+                <TabsList className={rankingTabListClassName}>
+                  <TabsTrigger value="by_messages" className={rankingTabTriggerClassName}>
+                    消息最多
+                  </TabsTrigger>
+                  <TabsTrigger value="by_size" className={rankingTabTriggerClassName}>
+                    占用最大
+                  </TabsTrigger>
+                  <TabsTrigger value="recently_active" className={rankingTabTriggerClassName}>
+                    最近活跃
+                  </TabsTrigger>
                 </TabsList>
               </Tabs>
               {topLimitTabs}
             </>
           }
         />
-        <div className="flex flex-col divide-y divide-border">
+        <div className="grid min-w-0 divide-y divide-border overflow-hidden">
           {sessionItems.length ? (
             <SessionList items={sessionItems} />
           ) : (
@@ -469,25 +516,29 @@ export function RankingBoard({
         </div>
       </div>
 
-      <div className="min-w-0 xl:col-span-3">
+      <div className="col-span-3 min-w-0">
         <SectionHeading
           variant="compact"
+          className={rankingHeadingClassName}
           title={
             <Tabs
               value={effectiveKind}
               onValueChange={(value) => setBreakdownKind(value as BreakdownKind)}
             >
-              <TabsList>
-                <TabsTrigger value="provider">Agent 排行</TabsTrigger>
-                <TabsTrigger value="workspace" disabled={!all}>
+              <TabsList className={rankingTabListClassName}>
+                <TabsTrigger value="provider" className={rankingTabTriggerClassName}>
+                  Agent 排行
+                </TabsTrigger>
+                <TabsTrigger value="workspace" disabled={!all} className={rankingTabTriggerClassName}>
                   工作空间排行
                 </TabsTrigger>
               </TabsList>
             </Tabs>
           }
+          actionsProps={{ className: rankingActionsClassName }}
           actions={topLimitTabs}
         />
-        <div className="flex flex-col divide-y divide-border">
+        <div className="grid min-w-0 divide-y divide-border overflow-hidden">
           {breakdownItems.length ? (
             <BreakdownRows items={breakdownItems} kind={effectiveKind} />
           ) : (
@@ -499,86 +550,73 @@ export function RankingBoard({
   );
 }
 
-function RankingRow({
-  rank,
-  title,
-  leadingTags,
-  trailingTags,
-}: {
-  rank: number;
-  title: ReactNode;
-  leadingTags?: ReactNode;
-  trailingTags?: ReactNode;
-}) {
-  return (
-    <div className="flex min-h-[4.5rem] gap-3 py-3">
-      <span className="w-5 shrink-0 pt-0.5 text-sm tabular-nums text-muted-foreground">
-        {rank}
-      </span>
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="min-w-0 truncate text-sm leading-5 font-medium">{title}</div>
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-wrap gap-2">{leadingTags}</div>
-          <div className="flex shrink-0 flex-wrap justify-end gap-2">{trailingTags}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function BreakdownRankingRow({
-  rank,
   kind,
   item,
 }: {
-  rank: number;
   kind: BreakdownKind;
   item: StatsBreakdownItem;
 }) {
-  const tags = (
-    <>
-      <Badge variant="secondary">{item.session_count} 会话</Badge>
-      <Badge variant="outline">
-        {item.message_count.toLocaleString()} 消息
-      </Badge>
-      <Badge variant="outline">{formatBytes(item.size_bytes)}</Badge>
-    </>
-  );
-
-  if (kind === "provider") {
-    return (
-      <div className="flex min-h-[4.5rem] gap-3 py-3">
-        <span className="w-5 shrink-0 self-center text-sm tabular-nums text-muted-foreground">
-          {rank}
-        </span>
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <ProviderLogo providerId={item.id} size="sm" alt={item.id} />
-            <span className="min-w-0 truncate text-base leading-tight font-semibold">
-              {item.id}
-            </span>
-          </div>
-          <div className="flex shrink-0 flex-wrap justify-end gap-2">{tags}</div>
-        </div>
-      </div>
-    );
-  }
+  const title =
+    kind === "provider" ? item.id : workspaceName(item.id);
 
   return (
-    <div className="flex min-h-[4.5rem] gap-3 py-3">
-      <span className="w-5 shrink-0 pt-0.5 text-sm tabular-nums text-muted-foreground">
-        {rank}
-      </span>
-      <div className="flex min-w-0 flex-1 items-center gap-3">
-        <div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
-          <div className="min-w-0 truncate text-sm leading-5 font-medium">
-            {workspaceName(item.id)}
+    <article className="grid min-h-14 min-w-0 py-2.5 hover:bg-muted/60">
+      <div className="min-w-0 overflow-hidden">
+        {kind === "provider" ? (
+          <div className="flex min-w-0 items-center gap-2">
+            <ProviderLogo providerId={item.id} size="sm" alt={item.id} />
+            <span className="min-w-0 truncate font-semibold" title={title}>
+              {title}
+            </span>
           </div>
-          <PathText value={item.id} wrap="truncate" className="min-w-0 leading-5" />
+        ) : (
+          <span className="block min-w-0 truncate font-semibold" title={title}>
+            {title}
+          </span>
+        )}
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
+          {kind === "workspace" ? (
+            <Badge variant="outline" className="max-w-full font-mono">
+              <span className="truncate">{item.id}</span>
+            </Badge>
+          ) : null}
+          <span className="shrink-0">{item.session_count} 会话</span>
+          <span className="shrink-0">
+            {item.message_count.toLocaleString()} messages
+          </span>
+          <span className="shrink-0">{formatBytes(item.size_bytes)}</span>
         </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-2">{tags}</div>
       </div>
-    </div>
+    </article>
+  );
+}
+
+function StatsSessionRow({ item }: { item: StatsSessionItem }) {
+  const detailHref = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
+
+  return (
+    <article className="grid min-h-14 min-w-0 py-2.5 hover:bg-muted/60">
+      <div className="min-w-0 overflow-hidden">
+        <Link
+          to={detailHref}
+          className="block min-w-0 truncate font-semibold hover:underline"
+          title={item.title}
+        >
+          {item.title}
+        </Link>
+        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
+          <Badge variant="outline" className="max-w-full font-mono">
+            <span className="truncate">{item.provider_id}</span>
+          </Badge>
+          <span className="shrink-0">{formatDateTime(item.last_active_at)}</span>
+          <span className="shrink-0">
+            {item.message_count?.toLocaleString() ?? "—"} messages
+          </span>
+          <span className="shrink-0">{formatBytes(item.size_bytes)}</span>
+        </div>
+      </div>
+    </article>
   );
 }
 
@@ -591,13 +629,8 @@ function BreakdownRows({
 }) {
   return (
     <>
-      {items.map((item, index) => (
-        <BreakdownRankingRow
-          key={item.id}
-          rank={index + 1}
-          kind={kind}
-          item={item}
-        />
+      {items.map((item) => (
+        <BreakdownRankingRow key={item.id} kind={kind} item={item} />
       ))}
     </>
   );
@@ -606,34 +639,10 @@ function BreakdownRows({
 function SessionList({ items }: { items: StatsSessionItem[] }) {
   return (
     <>
-      {items.map((item, index) => (
-        <RankingRow
+      {items.map((item) => (
+        <StatsSessionRow
           key={`${item.provider_id}:${item.session_id}`}
-          rank={index + 1}
-          title={
-            <Link
-              className="block truncate hover:underline"
-              to={`/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`}
-            >
-              {item.title}
-            </Link>
-          }
-          leadingTags={
-            <>
-              <Badge variant="secondary">{item.provider_id}</Badge>
-              <Badge variant="outline">
-                {formatDateTime(item.last_active_at)}
-              </Badge>
-            </>
-          }
-          trailingTags={
-            <>
-              <Badge variant="secondary">
-                {item.message_count?.toLocaleString() ?? "—"} 消息
-              </Badge>
-              <Badge variant="outline">{formatBytes(item.size_bytes)}</Badge>
-            </>
-          }
+          item={item}
         />
       ))}
     </>

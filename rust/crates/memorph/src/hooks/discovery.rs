@@ -1,10 +1,10 @@
-//! Read and manage hook entries already present in provider configuration files.
+//! Read hook entries already present in provider configuration files.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -14,7 +14,7 @@ pub enum HookSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InstalledHook {
+pub struct DetectedHook {
     pub event: String,
     pub index: usize,
     pub fingerprint: String,
@@ -29,63 +29,64 @@ pub struct InstalledHook {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InstalledHooks {
+pub struct DetectedHooks {
     pub provider: String,
+    pub scan_supported: bool,
     pub config_path: Option<String>,
-    pub hooks: Vec<InstalledHook>,
+    pub hooks: Vec<DetectedHook>,
 }
 
-pub fn list(provider: &str) -> Result<InstalledHooks> {
-    let status = crate::hooks::operations::status(provider)?;
-    let Some(path) = status
-        .config_path
-        .clone()
-        .filter(|path| Path::new(path).is_file())
-    else {
-        return Ok(InstalledHooks {
+pub fn list(provider: &str) -> Result<DetectedHooks> {
+    let Some((provider, path)) = scan_target(provider) else {
+        return Ok(DetectedHooks {
             provider: provider.to_string(),
-            config_path: status.config_path,
+            scan_supported: false,
+            config_path: None,
             hooks: Vec::new(),
         });
     };
-    let root =
-        crate::hooks::config_formats::json_hooks::read_json_object_or_empty(Path::new(&path))?;
-    Ok(InstalledHooks {
+    let config_path = path.display().to_string();
+    if !path.is_file() {
+        return Ok(DetectedHooks {
+            provider: provider.to_string(),
+            scan_supported: true,
+            config_path: Some(config_path),
+            hooks: Vec::new(),
+        });
+    }
+    let root = crate::hooks::config_formats::json_hooks::read_json_object_or_empty(&path)?;
+    Ok(DetectedHooks {
         provider: provider.to_string(),
-        config_path: Some(path),
+        scan_supported: true,
+        config_path: Some(config_path),
         hooks: parse_json_hooks(&root),
     })
 }
 
-pub fn remove(
-    provider: &str,
-    event: &str,
-    index: usize,
-    expected_fingerprint: &str,
-) -> Result<InstalledHooks> {
-    let current = list(provider)?;
-    let path = current
-        .config_path
-        .as_deref()
-        .context("Hook configuration file is not available")?;
-    let mut root =
-        crate::hooks::config_formats::json_hooks::read_json_object_or_empty(Path::new(path))?;
-    let entries = root
-        .get_mut("hooks")
-        .and_then(Value::as_object_mut)
-        .and_then(|hooks| hooks.get_mut(event))
-        .and_then(Value::as_array_mut)
-        .context("Hook event is not present")?;
-    let entry = entries.get(index).context("Hook index is out of range")?;
-    if fingerprint(entry) != expected_fingerprint {
-        anyhow::bail!("Hook changed; refresh the installed hooks list and try again");
-    }
-    entries.remove(index);
-    crate::hooks::config_formats::json_hooks::write_json_object(Path::new(path), &root)?;
-    list(provider)
+pub fn supports_provider(provider: &str) -> bool {
+    scan_target(provider).is_some()
 }
 
-fn parse_json_hooks(root: &Map<String, Value>) -> Vec<InstalledHook> {
+fn scan_target(provider: &str) -> Option<(&'static str, PathBuf)> {
+    let profile = crate::hooks::profiles::find(provider)?;
+    let home = crate::hooks::shared::hook_home_dir();
+    let path = match profile.provider {
+        "claude" => home.join(".claude/settings.json"),
+        "codex" => crate::providers::codex::hook::hooks_path(),
+        "cursor" => home.join(".cursor/hooks.json"),
+        "gemini" => home.join(".gemini/settings.json"),
+        "qoder" => crate::providers::qoder::hook::settings_path(),
+        "droid" => crate::providers::droid::hook::settings_path(),
+        "codebuddy" => crate::providers::codebuddy::hook::settings_path(),
+        "antigravity" => crate::providers::antigravity::hook::settings_path(),
+        "workbuddy" => crate::providers::workbuddy::hook::settings_path(),
+        "hermes" => crate::providers::hermes::hook::settings_path(),
+        _ => return None,
+    };
+    Some((profile.provider, path))
+}
+
+fn parse_json_hooks(root: &Map<String, Value>) -> Vec<DetectedHook> {
     root.get("hooks")
         .and_then(Value::as_object)
         .into_iter()
@@ -105,10 +106,11 @@ fn fingerprint(entry: &Value) -> String {
     format!("{:x}", Sha256::digest(serde_json::to_vec(entry).unwrap()))
 }
 
-fn parse_entry(event: &str, index: usize, entry: &Value) -> InstalledHook {
+fn parse_entry(event: &str, index: usize, entry: &Value) -> DetectedHook {
     let command = entry
         .get("command")
         .and_then(Value::as_str)
+        .or_else(|| entry.get("bash").and_then(Value::as_str))
         .or_else(|| entry.pointer("/hooks/0/command").and_then(Value::as_str))
         .map(str::to_string);
     let managed = command
@@ -116,7 +118,7 @@ fn parse_entry(event: &str, index: usize, entry: &Value) -> InstalledHook {
         .map(crate::hooks::shared::command_contains_memorph_hook)
         .unwrap_or(false)
         || crate::hooks::config_formats::json_hooks::entry_contains_memorph_hook(entry);
-    InstalledHook {
+    DetectedHook {
         event: event.to_string(),
         index,
         fingerprint: fingerprint(entry),
@@ -161,5 +163,32 @@ mod tests {
         let first = serde_json::json!({"command": "memorph --hook"});
         let second = serde_json::json!({"command": "memorph --hook --event"});
         assert_ne!(fingerprint(&first), fingerprint(&second));
+    }
+
+    #[test]
+    fn reports_non_json_providers_as_unsupported() {
+        let hooks = list("kimi").unwrap();
+        assert!(!hooks.scan_supported);
+        assert!(hooks.hooks.is_empty());
+    }
+
+    #[test]
+    fn discovery_does_not_require_a_memorph_hook_installation() {
+        let _home = crate::hooks::test_support::TestHookHomeGuard::new();
+        let path = crate::hooks::shared::hook_home_dir().join(".claude/settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        crate::hooks::config_formats::json_hooks::write_json_object(
+            &path,
+            &serde_json::from_value(serde_json::json!({
+                "hooks": {"PreToolUse": [{"command": "echo third-party"}]}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let hooks = list("claude").unwrap();
+        assert!(hooks.scan_supported);
+        assert_eq!(hooks.hooks.len(), 1);
+        assert_eq!(hooks.hooks[0].source, HookSource::ThirdParty);
     }
 }

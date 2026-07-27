@@ -263,7 +263,9 @@ mod tests {
             );
             assert_eq!(
                 entry.hook_capabilities,
-                crate::hooks::capabilities::HookProviderCapabilities::managed_hook(),
+                crate::hooks::capabilities::HookProviderCapabilities::managed_hook(
+                    crate::hooks::discovery::supports_provider(profile.provider),
+                ),
                 "missing hook capabilities for {}",
                 profile.provider
             );

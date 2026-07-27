@@ -51,6 +51,13 @@ pub(super) async fn list_providers() -> impl IntoResponse {
     ApiResponse::success(provider_info_list()).into_response()
 }
 
+pub(super) async fn list_provider_hooks(Path(provider): Path<String>) -> impl IntoResponse {
+    match run_blocking(move || hooks::discovery::list(&provider)).await {
+        Ok(hooks) => ApiResponse::success(hooks).into_response(),
+        Err(error) => api_error(StatusCode::BAD_REQUEST, error).into_response(),
+    }
+}
+
 pub(super) async fn get_provider_catalog(Query(q): Query<CatalogQuery>) -> impl IntoResponse {
     match build_provider_catalog_light(q.workspace.as_deref()).await {
         Ok(catalog) => ApiResponse::success(catalog).into_response(),

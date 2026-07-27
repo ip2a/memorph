@@ -1,7 +1,6 @@
-import { useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { ProviderLogo } from "@/components/shared/provider-logo";
-import { orderProviderPills } from "@/features/home/model/providers";
+import { cn } from "@/lib/utils";
 import type { ProviderCatalogEntry } from "@/lib/types";
 
 type ProviderPickerProps = {
@@ -11,19 +10,22 @@ type ProviderPickerProps = {
 };
 
 export function ProviderPicker({ candidates, selected, onToggle }: ProviderPickerProps) {
-  const ordered = useMemo(() => orderProviderPills(candidates, selected), [candidates, selected]);
-
   return (
     <div className="flex max-h-56 flex-wrap gap-2 overflow-y-auto">
-      {ordered.map((provider) => {
+      {candidates.map((provider) => {
         const checked = selected.includes(provider.provider_id);
         return (
           <Button
             key={provider.provider_id}
             type="button"
-            variant={checked ? "default" : "outline"}
+            variant="outline"
             size="sm"
-            className="rounded-full"
+            className={cn(
+              "rounded-full",
+              checked &&
+                "border-primary/50 bg-primary/10 text-foreground hover:bg-primary/15 dark:bg-primary/15 dark:hover:bg-primary/20",
+            )}
+            aria-pressed={checked}
             onClick={() => onToggle(provider.provider_id)}
           >
             <ProviderLogo

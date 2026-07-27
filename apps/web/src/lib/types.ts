@@ -1151,7 +1151,7 @@ export type HookProviderOverviewPayload = {
   recent_errors: HookErrorRecord[];
 };
 
-export type InstalledHook = {
+export type DetectedHook = {
   event: string;
   index: number;
   fingerprint: string;
@@ -1162,10 +1162,11 @@ export type InstalledHook = {
   managed_by_memorph: boolean;
 };
 
-export type InstalledHooks = {
+export type DetectedHooks = {
   provider: string;
+  scan_supported: boolean;
   config_path?: string | null;
-  hooks: InstalledHook[];
+  hooks: DetectedHook[];
 };
 
 export type HookOperationReport = {

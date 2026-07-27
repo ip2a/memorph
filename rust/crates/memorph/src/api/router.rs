@@ -31,6 +31,10 @@ pub fn router() -> Router {
             get(sessions::get_provider_activity),
         )
         .route(
+            "/api/v1/providers/{provider}/hooks",
+            get(providers::list_provider_hooks),
+        )
+        .route(
             "/api/v1/providers/{provider}/settings",
             get(providers::list_provider_settings),
         )
