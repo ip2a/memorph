@@ -1735,7 +1735,6 @@ mod tests {
             limit: None,
             offset: None,
             sort: crate::core::SessionListSort::Recent,
-            hook_filter: crate::core::SessionHookFilter::All,
         })?;
         let session = groups
             .iter()

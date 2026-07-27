@@ -880,7 +880,6 @@ struct ListQuery {
     limit: Option<usize>,
     offset: Option<usize>,
     sort: Option<core::SessionListSort>,
-    hook_filter: Option<core::SessionHookFilter>,
 }
 
 #[derive(Deserialize)]

@@ -121,21 +121,9 @@ struct CleanupQuery {
     orphan_after_seconds: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SessionDiagnosisQuery {
-    provider: Option<String>,
-    hook_filter: Option<memorph::core::SessionHookFilter>,
-    limit: Option<usize>,
-    offset: Option<usize>,
-}
-
 pub fn router() -> Router {
     Router::new()
         .route("/api/v1/hooks/overview", get(get_overview))
-        .route(
-            "/api/v1/hooks/session-diagnosis",
-            get(list_session_diagnosis),
-        )
         .route("/api/v1/hooks/status", get(get_status))
         .route("/api/v1/hooks/ingest", post(ingest_event))
         .route("/api/v1/hooks/events", get(list_events))
@@ -157,37 +145,6 @@ pub fn router() -> Router {
         )
 }
 
-async fn list_session_diagnosis(Query(query): Query<SessionDiagnosisQuery>) -> impl IntoResponse {
-    let providers: Vec<String> = query
-        .provider
-        .map(|providers| {
-            providers
-                .split(',')
-                .map(str::trim)
-                .filter(|provider| !provider.is_empty())
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default();
-    let hook_filter = query
-        .hook_filter
-        .unwrap_or(memorph::core::SessionHookFilter::Attention);
-    let params = memorph::core::SessionListParams {
-        all: true,
-        providers,
-        cwd: None,
-        include_message_counts: false,
-        limit: Some(query.limit.unwrap_or(8).clamp(1, 100)),
-        offset: query.offset,
-        sort: memorph::core::SessionListSort::HookAttention,
-        hook_filter,
-    };
-
-    match memorph::runtime::run_blocking(move || memorph::core::projection::list_sessions(&params)).await {
-        Ok(groups) => HookApiResponse::success(groups).into_response(),
-        Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
-    }
-}
 
 async fn get_overview() -> impl IntoResponse {
     match memorph::runtime::run_blocking(build_overview).await {
@@ -818,46 +775,6 @@ mod tests {
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(value["ok"], false);
-    }
-
-    #[tokio::test]
-    async fn session_diagnosis_route_exposes_session_groups() {
-        let _guard = test_guard();
-        let dir = tempfile::tempdir().unwrap();
-        store::set_test_store_root(dir.path().to_path_buf());
-        memorph::hooks::runtime_state::reset_for_tests();
-
-        let (status, value) = read_json(
-            router(),
-            Request::builder()
-                .uri("/api/v1/hooks/session-diagnosis?hook_filter=attention&limit=2")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert!(value["data"].as_array().is_some());
-    }
-
-    #[tokio::test]
-    async fn session_diagnosis_route_accepts_non_default_hook_filter() {
-        let _guard = test_guard();
-        let dir = tempfile::tempdir().unwrap();
-        store::set_test_store_root(dir.path().to_path_buf());
-        memorph::hooks::runtime_state::reset_for_tests();
-
-        let (status, value) = read_json(
-            router(),
-            Request::builder()
-                .uri("/api/v1/hooks/session-diagnosis?hook_filter=weak&limit=2")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::OK);
-        assert!(value["data"].as_array().is_some());
     }
 
     #[tokio::test]

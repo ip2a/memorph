@@ -1534,7 +1534,6 @@ fn print_session_list(
             memorph_cli::cli::ListSort::Recent => core::SessionListSort::Recent,
             memorph_cli::cli::ListSort::Title => core::SessionListSort::Title,
         },
-        hook_filter: core::SessionHookFilter::All,
     })?;
     let total_shown: usize = groups.iter().map(|group| group.sessions.len()).sum();
 

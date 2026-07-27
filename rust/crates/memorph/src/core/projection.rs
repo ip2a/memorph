@@ -628,53 +628,12 @@ pub(super) fn list_projected_session_snapshots(
             workspace_scopes.as_deref(),
             params.include_message_counts,
         )?;
-    let hook_runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
-    let providers_with_snapshots: Vec<String> = provider_ids
-        .iter()
-        .filter(|provider_id| {
-            snapshots
-                .iter()
-                .any(|snapshot| snapshot.provider_id == **provider_id)
-        })
-        .cloned()
-        .collect();
-    let last_event_at_cache =
-        crate::hooks::store::last_event_observed_at_ms_for_providers(&providers_with_snapshots)
-            .unwrap_or_default();
-    let hook_statuses = providers_with_snapshots
-        .iter()
-        .map(|provider_id| {
-            let hook_status = crate::hooks::operations::status_with_cached_last_event_at(
-                provider_id,
-                &last_event_at_cache,
-            )
-            .unwrap_or(crate::hooks::model::HookInstallStatus {
-                provider: provider_id.clone(),
-                status: crate::hooks::model::HookHealthStatus::InstalledBrokenConfig,
-                config_path: None,
-                installed_version: None,
-                current_version: None,
-                message: Some(
-                    "Failed to inspect hook status while building session list.".to_string(),
-                ),
-                last_event_at: None,
-            });
-            (provider_id.clone(), hook_status)
-        })
-        .collect();
-    Ok(projected_snapshot_groups(
-        snapshots,
-        params,
-        &hook_runtime_snapshot,
-        &hook_statuses,
-    ))
+    Ok(projected_snapshot_groups(snapshots, params))
 }
 
 pub(super) fn projected_snapshot_groups(
     snapshots: Vec<ProjectedSessionSnapshotRow>,
     params: &SessionListParams,
-    hook_runtime_snapshot: &[crate::hooks::model::RuntimeSession],
-    hook_statuses: &HashMap<String, crate::hooks::model::HookInstallStatus>,
 ) -> Vec<SessionGroup> {
     let provider_ids = resolve_providers(&params.providers);
     let requested_workspace = if params.all {
@@ -702,9 +661,6 @@ pub(super) fn projected_snapshot_groups(
             let requested_workspace_key = requested_workspace.and_then(|workspace| {
                 session_management::normalized_workspace_key(&provider_id, Some(workspace))
             });
-            let hook_status = hook_statuses.get(&provider_id);
-            let needs_hook_before_pagination = params.hook_filter != SessionHookFilter::All
-                || params.sort == SessionListSort::HookAttention;
             let mut sessions: Vec<SessionItem> = snapshots_by_provider
                 .remove(&provider_id)
                 .unwrap_or_default()
@@ -719,29 +675,12 @@ pub(super) fn projected_snapshot_groups(
                     );
                     session_workspace_key.as_deref() == Some(requested_workspace_key)
                 })
-                .map(|snapshot| {
-                    let mut item = projected_snapshot_item(&snapshot);
-                    if needs_hook_before_pagination {
-                        augment_session_item(
-                            &mut item,
-                            hook_runtime_snapshot,
-                            hook_status,
-                            &provider_id,
-                        );
-                    }
-                    item
-                })
+                .map(|snapshot| projected_snapshot_item(&snapshot))
                 .collect();
 
-            sessions.retain(|item| session_matches_hook_filter(item, &params.hook_filter));
             sort_session_items(&mut sessions, &params.sort);
-            let mut sessions: Vec<SessionItem> =
+            let sessions: Vec<SessionItem> =
                 sessions.into_iter().skip(offset).take(limit).collect();
-            if !needs_hook_before_pagination {
-                for item in &mut sessions {
-                    augment_session_item(item, hook_runtime_snapshot, hook_status, &provider_id);
-                }
-            }
             if sessions.is_empty() {
                 None
             } else {
@@ -753,26 +692,6 @@ pub(super) fn projected_snapshot_groups(
             }
         })
         .collect()
-}
-
-fn augment_session_item(
-    item: &mut SessionItem,
-    hook_runtime_snapshot: &[crate::hooks::model::RuntimeSession],
-    hook_status: Option<&crate::hooks::model::HookInstallStatus>,
-    provider_id: &str,
-) {
-    let Some(hook_status) = hook_status else {
-        return;
-    };
-    let hook_augmentation = crate::hooks::augmentation::augment_session_from_snapshot_with_status(
-        hook_runtime_snapshot,
-        hook_status.clone(),
-        provider_id,
-        &item.session_id,
-        item.project_dir.as_deref(),
-    );
-    item.hook_runtime_summary = hook_augmentation.runtime_summary;
-    item.hook_diagnosis = hook_augmentation.diagnosis;
 }
 
 pub(super) fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) -> SessionItem {
@@ -801,65 +720,7 @@ pub(super) fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) ->
         provider_id: snapshot.provider_id.clone(),
         message_count: snapshot.message_count,
         size_bytes: snapshot.size_bytes,
-        hook_runtime_summary: None,
-        hook_diagnosis: None,
     }
-}
-
-pub(super) fn session_matches_hook_filter(
-    item: &SessionItem,
-    hook_filter: &SessionHookFilter,
-) -> bool {
-    use crate::hooks::augmentation::SessionHookDiagnosisKind;
-
-    match hook_filter {
-        SessionHookFilter::All => true,
-        SessionHookFilter::Attention => item
-            .hook_diagnosis
-            .as_ref()
-            .map(|diagnosis| {
-                matches!(
-                    diagnosis.kind,
-                    SessionHookDiagnosisKind::HookNotInstalled
-                        | SessionHookDiagnosisKind::HookNeedsAttention
-                        | SessionHookDiagnosisKind::NoEventsYet
-                        | SessionHookDiagnosisKind::NoActiveRuntime
-                        | SessionHookDiagnosisKind::NoSessionMatch
-                )
-            })
-            .unwrap_or(false),
-        SessionHookFilter::Weak => item
-            .hook_diagnosis
-            .as_ref()
-            .map(|diagnosis| diagnosis.kind == SessionHookDiagnosisKind::WeaklyLinked)
-            .unwrap_or(false),
-        SessionHookFilter::Runtime => item.hook_runtime_summary.is_some(),
-        SessionHookFilter::NoHook => item
-            .hook_diagnosis
-            .as_ref()
-            .map(|diagnosis| {
-                matches!(
-                    diagnosis.kind,
-                    SessionHookDiagnosisKind::HookNotInstalled
-                        | SessionHookDiagnosisKind::HookUnsupported
-                )
-            })
-            .unwrap_or(false),
-        SessionHookFilter::NoMatch => item
-            .hook_diagnosis
-            .as_ref()
-            .map(|diagnosis| diagnosis.kind == SessionHookDiagnosisKind::NoSessionMatch)
-            .unwrap_or(false),
-        SessionHookFilter::Linked => item
-            .hook_diagnosis
-            .as_ref()
-            .map(|diagnosis| diagnosis.kind == SessionHookDiagnosisKind::Linked)
-            .unwrap_or(false),
-    }
-}
-
-pub(super) fn sort_session_items(items: &mut [SessionItem], sort: &SessionListSort) {
-    items.sort_by(|left, right| compare_session_items(left, right, sort));
 }
 
 pub(super) fn compare_session_items(
@@ -875,14 +736,11 @@ pub(super) fn compare_session_items(
     match sort {
         SessionListSort::Recent => compare_recent_then_title(left, right),
         SessionListSort::Title => compare_title_then_recent(left, right),
-        SessionListSort::HookAttention => {
-            let severity_order = hook_attention_priority(left).cmp(&hook_attention_priority(right));
-            if severity_order != std::cmp::Ordering::Equal {
-                return severity_order;
-            }
-            compare_recent_then_title(left, right)
-        }
     }
+}
+
+pub(super) fn sort_session_items(items: &mut [SessionItem], sort: &SessionListSort) {
+    items.sort_by(|left, right| compare_session_items(left, right, sort));
 }
 
 pub(super) fn compare_recent_then_title(
@@ -912,230 +770,3 @@ pub(super) fn session_display_key(item: &SessionItem) -> String {
         .to_ascii_lowercase()
 }
 
-pub(super) fn hook_attention_priority(item: &SessionItem) -> usize {
-    use crate::hooks::augmentation::SessionHookDiagnosisKind;
-
-    match item
-        .hook_diagnosis
-        .as_ref()
-        .map(|diagnosis| &diagnosis.kind)
-    {
-        Some(SessionHookDiagnosisKind::HookNeedsAttention) => 0,
-        Some(SessionHookDiagnosisKind::NoSessionMatch) => 1,
-        Some(SessionHookDiagnosisKind::HookNotInstalled) => 2,
-        Some(SessionHookDiagnosisKind::NoActiveRuntime) => 3,
-        Some(SessionHookDiagnosisKind::NoEventsYet) => 4,
-        Some(SessionHookDiagnosisKind::WeaklyLinked) => 5,
-        Some(SessionHookDiagnosisKind::Linked) => 6,
-        Some(SessionHookDiagnosisKind::HookUnsupported) => 7,
-        None => 8,
-    }
-}
-
-#[cfg(test)]
-mod session_list_hook_tests {
-    use super::*;
-    use crate::hooks::augmentation::{SessionHookDiagnosis, SessionHookDiagnosisKind};
-    use crate::hooks::model::HookHealthStatus;
-
-    fn session_item(
-        session_id: &str,
-        last_active_at: Option<i64>,
-        diagnosis: Option<SessionHookDiagnosisKind>,
-        has_runtime: bool,
-    ) -> SessionItem {
-        SessionItem {
-            session_id: session_id.to_string(),
-            title: Some(session_id.to_string()),
-            native_title: Some(session_id.to_string()),
-            display_title: None,
-            hidden: false,
-            pinned: false,
-            stale: false,
-            preferred_targets: Vec::new(),
-            project_dir: Some("/tmp/project".to_string()),
-            last_active_at,
-            source_path: None,
-            provider_id: "claude".to_string(),
-            message_count: None,
-            size_bytes: None,
-            hook_runtime_summary: has_runtime.then_some({
-                crate::hooks::augmentation::HookRuntimeSummary {
-                    linked_sessions: 1,
-                    waiting_sessions: 0,
-                    status: crate::hooks::model::RuntimeSessionStatus::Running,
-                    current_tool_name: None,
-                    has_pending_permission: false,
-                    has_pending_question: false,
-                    last_event_at: None,
-                    matched_by: None,
-                    confidence: None,
-                }
-            }),
-            hook_diagnosis: diagnosis.map(|kind| SessionHookDiagnosis {
-                kind,
-                provider_status: HookHealthStatus::InstalledOk,
-                linked_runtime_sessions: usize::from(has_runtime),
-                provider_runtime_sessions: usize::from(has_runtime),
-                matched_by: None,
-                confidence: None,
-                last_event_at: None,
-                message: String::new(),
-                actions: Vec::new(),
-            }),
-        }
-    }
-
-    #[test]
-    fn session_matches_attention_hook_filter() {
-        let attention = session_item(
-            "session-attention",
-            Some(20),
-            Some(SessionHookDiagnosisKind::HookNeedsAttention),
-            false,
-        );
-        let linked = session_item(
-            "session-linked",
-            Some(10),
-            Some(SessionHookDiagnosisKind::Linked),
-            true,
-        );
-
-        assert!(session_matches_hook_filter(
-            &attention,
-            &SessionHookFilter::Attention
-        ));
-        assert!(!session_matches_hook_filter(
-            &linked,
-            &SessionHookFilter::Attention
-        ));
-    }
-
-    #[test]
-    fn session_matches_runtime_hook_filter() {
-        let runtime = session_item("session-runtime", Some(20), None, true);
-        let offline = session_item("session-offline", Some(10), None, false);
-
-        assert!(session_matches_hook_filter(
-            &runtime,
-            &SessionHookFilter::Runtime
-        ));
-        assert!(!session_matches_hook_filter(
-            &offline,
-            &SessionHookFilter::Runtime
-        ));
-    }
-
-    #[test]
-    fn hook_attention_sort_prioritizes_diagnosis_before_recency() {
-        let mut items = vec![
-            session_item(
-                "linked-newer",
-                Some(300),
-                Some(SessionHookDiagnosisKind::Linked),
-                true,
-            ),
-            session_item(
-                "attention-older",
-                Some(100),
-                Some(SessionHookDiagnosisKind::HookNeedsAttention),
-                false,
-            ),
-            session_item(
-                "weak-middle",
-                Some(200),
-                Some(SessionHookDiagnosisKind::WeaklyLinked),
-                true,
-            ),
-        ];
-
-        sort_session_items(&mut items, &SessionListSort::HookAttention);
-
-        assert_eq!(items[0].session_id, "attention-older");
-        assert_eq!(items[1].session_id, "weak-middle");
-        assert_eq!(items[2].session_id, "linked-newer");
-    }
-
-    #[test]
-    fn projected_snapshot_groups_filter_workspace_and_apply_limit() {
-        let params = SessionListParams {
-            all: false,
-            providers: vec!["claude".to_string()],
-            cwd: Some("/tmp/project".to_string()),
-            include_message_counts: true,
-            limit: Some(1),
-            offset: None,
-            sort: SessionListSort::Recent,
-            hook_filter: SessionHookFilter::All,
-        };
-        let hook_statuses = HashMap::from([(
-            "claude".to_string(),
-            crate::hooks::model::HookInstallStatus {
-                provider: "claude".to_string(),
-                status: HookHealthStatus::InstalledOk,
-                config_path: None,
-                installed_version: None,
-                current_version: None,
-                message: None,
-                last_event_at: None,
-            },
-        )]);
-        let groups = projected_snapshot_groups(
-            vec![
-                projected_row("canonical-new", "native-new", "/tmp/project", 30),
-                projected_row("canonical-old", "native-old", "/tmp/project", 20),
-                projected_row("canonical-other", "native-other", "/tmp/other", 40),
-            ],
-            &params,
-            &[],
-            &hook_statuses,
-        );
-
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].provider_id, "claude");
-        assert_eq!(groups[0].sessions.len(), 1);
-        assert_eq!(groups[0].sessions[0].session_id, "native-new");
-        assert_eq!(groups[0].sessions[0].message_count, Some(3));
-        assert!(groups[0].sessions[0].hook_diagnosis.is_some());
-        assert_eq!(
-            groups[0].sessions[0].project_dir.as_deref(),
-            Some("/tmp/project")
-        );
-    }
-
-    #[test]
-    fn projected_snapshot_item_exposes_stale_snapshot_state() {
-        let mut row = projected_row("canonical-1", "native-1", "/tmp/project", 30);
-        row.stale = true;
-
-        let item = projected_snapshot_item(&row);
-
-        assert!(item.stale);
-    }
-
-    fn projected_row(
-        canonical_session_id: &str,
-        provider_session_id: &str,
-        workspace_dir: &str,
-        last_active_at_ms: i64,
-    ) -> ProjectedSessionSnapshotRow {
-        ProjectedSessionSnapshotRow {
-            canonical_session_id: canonical_session_id.to_string(),
-            provider_id: "claude".to_string(),
-            provider_session_id: Some(provider_session_id.to_string()),
-            title: Some(provider_session_id.to_string()),
-            display_title: None,
-            workspace_dir: Some(workspace_dir.to_string()),
-            last_active_at_ms: Some(last_active_at_ms),
-            source_path: Some(format!("/tmp/{provider_session_id}.jsonl")),
-            message_count: Some(3),
-            event_count: 5,
-            turn_count: 2,
-            size_bytes: Some(128),
-            hidden: false,
-            pinned: false,
-            preferred_targets: Vec::new(),
-            stale: false,
-        }
-    }
-}

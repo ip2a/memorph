@@ -78,8 +78,6 @@ pub struct SessionListParams {
     pub offset: Option<usize>,
     #[serde(default)]
     pub sort: SessionListSort,
-    #[serde(default)]
-    pub hook_filter: SessionHookFilter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -88,20 +86,6 @@ pub enum SessionListSort {
     #[default]
     Recent,
     Title,
-    HookAttention,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionHookFilter {
-    #[default]
-    All,
-    Attention,
-    Weak,
-    Runtime,
-    NoHook,
-    NoMatch,
-    Linked,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,10 +117,6 @@ pub struct SessionItem {
     pub provider_id: String,
     pub message_count: Option<usize>,
     pub size_bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hook_runtime_summary: Option<crate::hooks::augmentation::HookRuntimeSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hook_diagnosis: Option<crate::hooks::augmentation::SessionHookDiagnosis>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

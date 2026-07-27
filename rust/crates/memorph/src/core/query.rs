@@ -16,7 +16,6 @@ pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
         limit: None,
         offset: None,
         sort: SessionListSort::Recent,
-        hook_filter: SessionHookFilter::All,
     })?;
 
     Ok(groups
