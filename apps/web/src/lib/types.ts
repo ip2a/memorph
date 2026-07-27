@@ -617,10 +617,7 @@ export type MetaPayload = {
   config_file: ConfigFilePayload;
 };
 
-export type SessionListSort = "recent" | "title" | "hook_attention";
-
-export type SessionHookFilter =
-  "all" | "attention" | "weak" | "runtime" | "no_hook" | "no_match" | "linked";
+export type SessionListSort = "recent" | "title";
 
 export type SessionListParams = {
   all?: boolean;
@@ -631,7 +628,6 @@ export type SessionListParams = {
   limit?: number;
   offset?: number;
   sort?: SessionListSort;
-  hook_filter?: SessionHookFilter;
 };
 
 export type HookRuntimeSummary = Record<string, unknown>;

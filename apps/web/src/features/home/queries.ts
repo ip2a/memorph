@@ -1,10 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { getMeta, getProviderCatalog, getWorkspaceProviders, listProviders, listSessions, listSyncGroups } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
-import type { SessionHookFilter, SessionListSort } from "@/lib/types";
+import type { SessionListSort } from "@/lib/types";
 
 type HomeSessionOptions = {
-  hookFilter?: SessionHookFilter;
   sort?: SessionListSort;
   sessionLimit?: number;
 };
@@ -34,7 +33,6 @@ export function useHomeData(
     limit: sessionLimit,
     workspace: selectedWorkspace,
     sort: sessionOptions.sort ?? "recent",
-    hook_filter: sessionOptions.hookFilter ?? "all",
     ...(providerFilter ? { provider: providerFilter } : {}),
   } as const;
 

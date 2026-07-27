@@ -26,7 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
-import type { SessionHookFilter, SessionItem, SessionListSort } from "@/lib/types";
+import type { SessionItem, SessionListSort } from "@/lib/types";
 import { useRefreshSessionStaleness, useReprojectStaleSessions, useSessions } from "@/features/sessions/queries";
 
 function matchesSearch(session: SessionItem, query: string) {
@@ -41,13 +41,12 @@ function matchesSearch(session: SessionItem, query: string) {
 export function SessionsPage() {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SessionListSort>("recent");
-  const [hookFilter, setHookFilter] = useState<SessionHookFilter>("all");
   const [page, setPage] = useState(0);
   const pageSize = 25;
 
   const params = useMemo(
-    () => ({ all: true, details: true, limit: pageSize, offset: page * pageSize, sort, hook_filter: hookFilter }),
-    [hookFilter, page, sort],
+    () => ({ all: true, details: true, limit: pageSize, offset: page * pageSize, sort }),
+    [page, sort],
   );
   const sessions = useSessions(params);
   const refreshStaleness = useRefreshSessionStaleness();
@@ -149,24 +148,6 @@ export function SessionsPage() {
                 <SelectGroup>
                   <SelectItem value="recent">Recent</SelectItem>
                   <SelectItem value="title">Title</SelectItem>
-                  <SelectItem value="hook_attention">Hook attention</SelectItem>
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-            <Select value={hookFilter} onValueChange={(value) => {
-              setHookFilter(value as SessionHookFilter);
-              setPage(0);
-            }}>
-              <SelectTrigger>
-                <SelectValue placeholder="Hook filter" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectItem value="all">All hooks</SelectItem>
-                  <SelectItem value="attention">Attention</SelectItem>
-                  <SelectItem value="runtime">Runtime</SelectItem>
-                  <SelectItem value="linked">Linked</SelectItem>
-                  <SelectItem value="no_hook">No hook</SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>

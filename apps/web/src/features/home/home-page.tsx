@@ -35,7 +35,7 @@ import { ProviderActivitySparkline } from "@/features/home/provider-activity-spa
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
 import { targetFromSession } from "@/features/sessions/session-action-target";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
-import type { HomeButtonSettingsPayload, SessionGroup, SessionHookFilter, SessionItem, SessionListSort, SettingsPayload, SyncGroup, UpdateSettingsPayload } from "@/lib/types";
+import type { HomeButtonSettingsPayload, SessionGroup, SessionItem, SessionListSort, SettingsPayload, SyncGroup, UpdateSettingsPayload } from "@/lib/types";
 
 type HomeButtons = Record<string, unknown> | undefined;
 
@@ -426,13 +426,12 @@ export function HomePage() {
   const [providersReady, setProvidersReady] = useState(false);
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SessionListSort>("recent");
-  const [hookFilter, setHookFilter] = useState<SessionHookFilter>("all");
   const [sessionsPerProvider, setSessionsPerProvider] = useState(6);
   const selectedWorkspaceOverride = useUiStore((state) => state.selectedWorkspace);
   const { meta, providers, catalog, workspaceProviders, sessions, syncGroups } = useHomeData(
     selectedWorkspaceOverride || undefined,
     selectedProviders,
-    { sort, hookFilter, sessionLimit: sessionsPerProvider },
+    { sort, sessionLimit: sessionsPerProvider },
   );
   const loading =
     meta.isLoading ||
@@ -492,11 +491,9 @@ export function HomePage() {
   });
 
   function applyFilters(next: {
-    hookFilter: SessionHookFilter;
     selectedProviders: string[];
     sessionsPerProvider: number;
   }) {
-    setHookFilter(next.hookFilter);
     const nextLimit = clampSessionsPerProvider(next.sessionsPerProvider);
     setSessionsPerProvider(nextLimit);
     const savedLimit = clampSessionsPerProvider(meta.data?.settings.sessions_per_provider ?? defaultSessionsPerProvider);
@@ -567,7 +564,6 @@ export function HomePage() {
             className="min-w-0 flex-1"
             search={search}
             sort={sort}
-            hookFilter={hookFilter}
             selectedProviders={selectedProviders}
             sessionsPerProvider={sessionsPerProvider}
             defaultSessionsPerProvider={defaultSessionsPerProvider}

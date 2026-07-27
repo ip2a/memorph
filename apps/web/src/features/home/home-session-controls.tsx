@@ -12,21 +12,12 @@ import {
 import { Input } from "@/components/ui/input";
 import { orderProviderPills } from "@/features/home/model/providers";
 import { ProviderPicker } from "@/features/home/provider-picker";
-import type { ProviderCatalogEntry, SessionHookFilter, SessionListSort } from "@/lib/types";
+import type { ProviderCatalogEntry, SessionListSort } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const SORT_OPTIONS: Array<{ label: string; value: SessionListSort }> = [
   { label: "Recent", value: "recent" },
   { label: "Title", value: "title" },
-  { label: "Hook attention", value: "hook_attention" },
-];
-
-const HOOK_FILTER_OPTIONS: Array<{ label: string; value: SessionHookFilter }> = [
-  { label: "All hooks", value: "all" },
-  { label: "Attention", value: "attention" },
-  { label: "Runtime", value: "runtime" },
-  { label: "Linked", value: "linked" },
-  { label: "No hook", value: "no_hook" },
 ];
 
 type HomeSortDialogProps = {
@@ -69,18 +60,16 @@ const SESSIONS_PER_AGENT_PRESETS = [6, 12, 24, 50] as const;
 
 type HomeFiltersDialogProps = {
   open: boolean;
-  hookFilter: SessionHookFilter;
   selectedProviders: string[];
   sessionsPerProvider: number;
   defaultSessionsPerProvider: number;
   providerCandidates: ProviderCatalogEntry[];
   onOpenChange: (open: boolean) => void;
-  onApply: (next: { hookFilter: SessionHookFilter; selectedProviders: string[]; sessionsPerProvider: number }) => void;
+  onApply: (next: { selectedProviders: string[]; sessionsPerProvider: number }) => void;
 };
 
 export function HomeFiltersDialog({
   open,
-  hookFilter,
   selectedProviders,
   sessionsPerProvider,
   defaultSessionsPerProvider,
@@ -88,18 +77,16 @@ export function HomeFiltersDialog({
   onOpenChange,
   onApply,
 }: HomeFiltersDialogProps) {
-  const [draftHookFilter, setDraftHookFilter] = useState(hookFilter);
   const [draftProviders, setDraftProviders] = useState(selectedProviders);
   const [draftSessionsPerProvider, setDraftSessionsPerProvider] = useState(sessionsPerProvider);
   const [providerOrder, setProviderOrder] = useState(providerCandidates);
 
   useEffect(() => {
     if (!open) return;
-    setDraftHookFilter(hookFilter);
     setDraftProviders(selectedProviders);
     setDraftSessionsPerProvider(sessionsPerProvider);
     setProviderOrder(orderProviderPills(providerCandidates, selectedProviders));
-  }, [hookFilter, open, providerCandidates, selectedProviders, sessionsPerProvider]);
+  }, [open, providerCandidates, selectedProviders, sessionsPerProvider]);
 
   function toggleDraftProvider(providerId: string) {
     setDraftProviders((current) =>
@@ -109,7 +96,6 @@ export function HomeFiltersDialog({
 
   function resetDraft() {
     const allProviderIds = providerCandidates.map((item) => item.provider_id);
-    setDraftHookFilter("all");
     setDraftProviders(allProviderIds);
     setDraftSessionsPerProvider(defaultSessionsPerProvider);
     setProviderOrder(orderProviderPills(providerCandidates, allProviderIds));
@@ -120,7 +106,7 @@ export function HomeFiltersDialog({
       <DialogContent className="sm:max-w-lg" data-home-filters-dialog>
         <DialogHeader>
           <DialogTitle>Filter sessions</DialogTitle>
-          <DialogDescription>Select scan providers and hook visibility for the recent session list.</DialogDescription>
+          <DialogDescription>Select scan providers for the recent session list.</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-5">
@@ -155,23 +141,6 @@ export function HomeFiltersDialog({
               />
             </div>
           </section>
-
-          <section className="grid gap-2">
-            <p className="font-mono text-xs uppercase text-muted-foreground">Hook status</p>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {HOOK_FILTER_OPTIONS.map((option) => (
-                <Button
-                  key={option.value}
-                  type="button"
-                  variant={draftHookFilter === option.value ? "secondary" : "outline"}
-                  className="justify-start"
-                  onClick={() => setDraftHookFilter(option.value)}
-                >
-                  {option.label}
-                </Button>
-              ))}
-            </div>
-          </section>
         </div>
 
         <DialogFooter className="gap-2 sm:justify-between">
@@ -187,7 +156,6 @@ export function HomeFiltersDialog({
               disabled={!draftProviders.length}
               onClick={() => {
                 onApply({
-                  hookFilter: draftHookFilter,
                   selectedProviders: draftProviders,
                   sessionsPerProvider: draftSessionsPerProvider,
                 });
@@ -207,14 +175,12 @@ type HomeSessionToolbarProps = {
   className?: string;
   search: string;
   sort: SessionListSort;
-  hookFilter: SessionHookFilter;
   selectedProviders: string[];
   sessionsPerProvider: number;
   defaultSessionsPerProvider: number;
   onSearchChange: (value: string) => void;
   onSortChange: (sort: SessionListSort) => void;
   onFiltersApply: (next: {
-    hookFilter: SessionHookFilter;
     selectedProviders: string[];
     sessionsPerProvider: number;
   }) => void;
@@ -222,14 +188,12 @@ type HomeSessionToolbarProps = {
 };
 
 function activeFilterCount(
-  hookFilter: SessionHookFilter,
   selectedProviders: string[],
   providerCandidates: ProviderCatalogEntry[],
   sessionsPerProvider: number,
   defaultSessionsPerProvider: number,
 ) {
   let count = 0;
-  if (hookFilter !== "all") count += 1;
   if (selectedProviders.length !== providerCandidates.length) count += 1;
   if (sessionsPerProvider !== defaultSessionsPerProvider) count += 1;
   return count;
@@ -239,7 +203,6 @@ export function HomeSessionToolbar({
   className,
   search,
   sort,
-  hookFilter,
   selectedProviders,
   sessionsPerProvider,
   defaultSessionsPerProvider,
@@ -251,7 +214,6 @@ export function HomeSessionToolbar({
   const [sortOpen, setSortOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersActive = activeFilterCount(
-    hookFilter,
     selectedProviders,
     providerCandidates,
     sessionsPerProvider,
@@ -300,7 +262,6 @@ export function HomeSessionToolbar({
       <HomeFiltersDialog
         open={filtersOpen}
         onOpenChange={setFiltersOpen}
-        hookFilter={hookFilter}
         selectedProviders={selectedProviders}
         sessionsPerProvider={sessionsPerProvider}
         defaultSessionsPerProvider={defaultSessionsPerProvider}

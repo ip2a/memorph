@@ -224,7 +224,7 @@ manager::invalidate_stats_cache()
 ### 6.1 列出当前 workspace 的会话
 
 ```rust
-use memorph::core::{projection::{list_sessions, SessionListParams, SessionListSort, SessionHookFilter}};
+use memorph::core::{projection::{list_sessions, SessionListParams, SessionListSort}};
 
 let groups = list_sessions(&SessionListParams {
     all: false,
@@ -234,9 +234,10 @@ let groups = list_sessions(&SessionListParams {
     limit: Some(50),
     offset: None,
     sort: SessionListSort::Recent,
-    hook_filter: SessionHookFilter::All,
 })?;
 ```
+
+> **hook 状态不混入 list**:`list_sessions` 只负责返回会话本身,**不计算 hook 安装状态/诊断** —— 避免每次 list 都对每个 provider 读 hook 配置文件(`hooks::operations::status`)的磁盘 IO。需要 hook 状态时**独立查询**:`memorph::hooks::operations::status(provider)`(或 CLI 侧 `/api/v1/hooks/status`、`/api/v1/hooks/providers/{provider}/status`),与 list 完全解耦。因此 `SessionListParams` 不含 hook 过滤参数,`SessionItem` 不含 hook 字段。
 
 ### 6.2 把一个 Claude Code 会话切换到 Codex
 
