@@ -3,10 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use crate::canonical::{
-    CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole, EventSource,
-    MappingDisposition, SessionEvent, SessionEventKind,
-};
+use crate::canonical::{Block, Event, EventKind, Fidelity, Links, Metadata, Role, Session, Source};
 use crate::core::compression;
 use crate::provider::canonical_event_text;
 
@@ -39,7 +36,7 @@ pub struct ActiveCompressionApplyParams {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveCompressionApplyResult {
-    pub session: CanonicalSession,
+    pub session: Session,
     pub report: ActiveCompressionReport,
 }
 
@@ -199,7 +196,7 @@ pub enum CompressionRisk {
 
 /// Build a read-only report for active compression planning.
 pub fn build_dry_run_report(
-    session: &CanonicalSession,
+    session: &Session,
     params: ActiveCompressionParams,
 ) -> ActiveCompressionReport {
     let policy = params.policy;
@@ -231,7 +228,7 @@ pub fn build_dry_run_report(
         message_event_count: session
             .events
             .iter()
-            .filter(|event| event.kind == SessionEventKind::Message)
+            .filter(|event| event.kind == EventKind::Message)
             .count(),
         already_compressed_event_count: session
             .events
@@ -240,7 +237,7 @@ pub fn build_dry_run_report(
                 event
                     .blocks
                     .iter()
-                    .any(|block| matches!(block, EventBlock::Compressed { .. }))
+                    .any(|block| matches!(block, Block::Compressed { .. }))
             })
             .count(),
         original_estimated_bytes,
@@ -256,7 +253,7 @@ pub fn build_dry_run_report(
 }
 
 pub fn plan_compression_candidates(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &ActiveCompressionPolicy,
 ) -> (Vec<CompressionCandidateReport>, Vec<CompressionSkipReport>) {
     planner::plan_compression_candidates_with_estimator(
@@ -267,7 +264,7 @@ pub fn plan_compression_candidates(
 }
 
 pub fn apply_active_compression(
-    session: &CanonicalSession,
+    session: &Session,
     params: ActiveCompressionApplyParams,
 ) -> Result<ActiveCompressionApplyResult> {
     let archive_dir = crate::config::memorph_dir()?.join("compression_archives");
@@ -275,7 +272,7 @@ pub fn apply_active_compression(
 }
 
 pub(crate) fn apply_active_compression_with_archive_dir(
-    session: &CanonicalSession,
+    session: &Session,
     params: ActiveCompressionApplyParams,
     archive_dir: &Path,
 ) -> Result<ActiveCompressionApplyResult> {
@@ -383,7 +380,7 @@ pub(crate) fn apply_active_compression_with_archive_dir(
     })
 }
 
-pub fn estimate_session_bytes(session: &CanonicalSession) -> usize {
+pub fn estimate_session_bytes(session: &Session) -> usize {
     session.events.iter().map(estimate_event_bytes).sum()
 }
 
@@ -430,7 +427,7 @@ fn default_chars_per_token_x100() -> usize {
 }
 
 fn protected_recent_message_indexes(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &ActiveCompressionPolicy,
 ) -> Vec<usize> {
     session
@@ -438,13 +435,13 @@ fn protected_recent_message_indexes(
         .iter()
         .enumerate()
         .rev()
-        .filter(|(_, event)| event.kind == SessionEventKind::Message)
+        .filter(|(_, event)| event.kind == EventKind::Message)
         .take(policy.protect_recent_message_events)
         .map(|(idx, _)| idx)
         .collect()
 }
 
-fn estimate_event_bytes(event: &SessionEvent) -> usize {
+fn estimate_event_bytes(event: &Event) -> usize {
     canonical_event_text(event).len()
 }
 
@@ -469,11 +466,11 @@ fn recompute_report_estimates(report: &mut ActiveCompressionReport) {
 
 fn active_summary_event(
     candidate: &CompressionCandidateReport,
-    source_events: &[SessionEvent],
+    source_events: &[Event],
     source_provider_id: &str,
     summary: String,
     archive_ref: Option<String>,
-) -> SessionEvent {
+) -> Event {
     let source_event_ids = source_events
         .iter()
         .map(|event| event.id.clone())
@@ -496,21 +493,21 @@ fn active_summary_event(
         }),
     );
 
-    SessionEvent {
+    Event {
         id: format!("memorph-active-compressed-{}", candidate.id),
-        kind: SessionEventKind::Message,
-        role: EventRole::Assistant,
+        kind: EventKind::Message,
+        role: Role::Assistant,
         timestamp,
-        links: EventLinks::default(),
-        blocks: vec![EventBlock::Compressed {
+        links: Links::default(),
+        blocks: vec![Block::Compressed {
             source_provider_id: source_provider_id.to_string(),
             summary,
             source_event_ids,
             source_event_count: Some(source_event_count),
             archive_ref,
         }],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: "memorph".to_string(),
                 original_id: Some(candidate.id.clone()),
                 original_role: Some("assistant".to_string()),
@@ -518,7 +515,7 @@ fn active_summary_event(
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Normalized,
+            fidelity: Fidelity::Normalized,
             provider_ext,
         },
     }
@@ -540,9 +537,8 @@ fn default_min_savings_ratio() -> u8 {
 mod tests {
     use super::*;
     use crate::canonical::{
-        CanonicalSchema, EventBlock, EventLinks, EventMetadata, EventRole, EventSource,
-        MappingDisposition, ProviderSessionRef, SessionContext, SessionEvent, SessionIdentity,
-        SessionProvenance,
+        Block, Context, Event, Fidelity, Identity, Links, Metadata, Provenance, ProviderRef, Role,
+        Schema, Source,
     };
     use chrono::Utc;
     use std::collections::BTreeMap;
@@ -623,8 +619,8 @@ mod tests {
 
     #[test]
     fn dry_run_uses_target_provider_token_estimator() {
-        let session = CanonicalSession {
-            events: vec![text_event("old-user", EventRole::User, &"x".repeat(400))],
+        let session = Session {
+            events: vec![text_event("old-user", Role::User, &"x".repeat(400))],
             ..sample_session()
         };
         let policy = ActiveCompressionPolicy {
@@ -727,7 +723,7 @@ mod tests {
     #[test]
     fn planner_rejects_candidates_below_required_savings_ratio() {
         let mut session = sample_session();
-        session.events = vec![text_event("old-user", EventRole::User, &"x".repeat(200))];
+        session.events = vec![text_event("old-user", Role::User, &"x".repeat(200))];
         let report = build_dry_run_report(
             &session,
             ActiveCompressionParams {
@@ -787,7 +783,7 @@ mod tests {
             .iter()
             .find(|event| event.id == "memorph-active-compressed-candidate-0001")
             .expect("compressed replacement event");
-        let EventBlock::Compressed {
+        let Block::Compressed {
             source_provider_id,
             source_event_ids,
             source_event_count,
@@ -860,19 +856,19 @@ mod tests {
         session.events = vec![
             text_event(
                 "old-user",
-                EventRole::User,
+                Role::User,
                 &"user goal mentions src/core.rs ".repeat(8),
             ),
             text_event(
                 "old-assistant",
-                EventRole::Assistant,
+                Role::Assistant,
                 &"assistant decision mentions rust/crates/memorph/src/core.rs ".repeat(8),
             ),
             command_result_event(
                 "command-output",
                 &"warning: later command output\n".repeat(8),
             ),
-            text_event("recent", EventRole::User, &"latest request ".repeat(8)),
+            text_event("recent", Role::User, &"latest request ".repeat(8)),
         ];
 
         let report = build_dry_run_report(
@@ -986,7 +982,7 @@ mod tests {
             .iter()
             .find(|event| event.id == "memorph-active-compressed-candidate-0001")
             .expect("compressed diff replacement event");
-        let EventBlock::Compressed { summary, .. } =
+        let Block::Compressed { summary, .. } =
             compressed_event.blocks.first().expect("compressed block")
         else {
             panic!("expected compressed block");
@@ -1102,28 +1098,28 @@ mod tests {
         assert!(summary.contains("tail context three"));
     }
 
-    fn sample_session() -> CanonicalSession {
+    fn sample_session() -> Session {
         let now = Utc::now();
-        CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: "active-compression-sample".to_string(),
                 source_title: Some("Active compression sample".to_string()),
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: now,
                 imported_by: Some("test".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: "claude".to_string(),
                     session_id: "s1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext::default(),
+            context: Context::default(),
             events: vec![
-                text_event("u1", EventRole::User, "original task"),
-                text_event("a1", EventRole::Assistant, "implementation notes"),
+                text_event("u1", Role::User, "original task"),
+                text_event("a1", Role::Assistant, "implementation notes"),
                 compressed_event("c1"),
             ],
             artifacts: Vec::new(),
@@ -1131,24 +1127,16 @@ mod tests {
         }
     }
 
-    fn planner_sample_session() -> CanonicalSession {
+    fn planner_sample_session() -> Session {
         let mut session = sample_session();
         session.events = vec![
-            text_event(
-                "system",
-                EventRole::System,
-                &"system instruction ".repeat(4),
-            ),
-            text_event(
-                "old-user",
-                EventRole::User,
-                &"historical context ".repeat(40),
-            ),
+            text_event("system", Role::System, &"system instruction ".repeat(4)),
+            text_event("old-user", Role::User, &"historical context ".repeat(40)),
             tool_result_event("tool-output", &"tool output line\n".repeat(12)),
             command_result_event("command-output", &"compiler warning\n".repeat(12)),
             text_event(
                 "search",
-                EventRole::Tool,
+                Role::Tool,
                 &[
                     "src/lib.rs:10:match one repeated context",
                     "src/core.rs:22:match two repeated context",
@@ -1158,38 +1146,34 @@ mod tests {
                 .repeat(8),
             ),
             compressed_event("compressed"),
-            text_event("small", EventRole::Assistant, "tiny"),
-            text_event(
-                "recent",
-                EventRole::User,
-                &"latest active request ".repeat(8),
-            ),
+            text_event("small", Role::Assistant, "tiny"),
+            text_event("recent", Role::User, &"latest active request ".repeat(8)),
         ];
         session
     }
 
-    fn text_event(id: &str, role: EventRole, text: &str) -> SessionEvent {
-        SessionEvent {
+    fn text_event(id: &str, role: Role, text: &str) -> Event {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Message,
+            kind: EventKind::Message,
             role,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Text {
+            links: Links::default(),
+            blocks: vec![Block::Text {
                 text: text.to_string(),
             }],
             metadata: event_metadata("claude", id),
         }
     }
 
-    fn compressed_event(id: &str) -> SessionEvent {
-        SessionEvent {
+    fn compressed_event(id: &str) -> Event {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Message,
-            role: EventRole::Assistant,
+            kind: EventKind::Message,
+            role: Role::Assistant,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Compressed {
+            links: Links::default(),
+            blocks: vec![Block::Compressed {
                 source_provider_id: "claude".to_string(),
                 summary: "compressed summary".to_string(),
                 source_event_ids: vec!["u0".to_string()],
@@ -1200,14 +1184,14 @@ mod tests {
         }
     }
 
-    fn tool_result_event(id: &str, content: &str) -> SessionEvent {
-        SessionEvent {
+    fn tool_result_event(id: &str, content: &str) -> Event {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::ToolResult,
-            role: EventRole::Tool,
+            kind: EventKind::ToolResult,
+            role: Role::Tool,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::ToolResult {
+            links: Links::default(),
+            blocks: vec![Block::ToolResult {
                 tool_call_id: "tool-1".to_string(),
                 content: content.to_string(),
                 is_error: false,
@@ -1216,7 +1200,7 @@ mod tests {
         }
     }
 
-    fn command_result_event(id: &str, stdout: &str) -> SessionEvent {
+    fn command_result_event(id: &str, stdout: &str) -> Event {
         command_result_event_with_status(id, Some("cargo check".to_string()), Some(0), stdout)
     }
 
@@ -1225,14 +1209,14 @@ mod tests {
         command: Option<String>,
         exit_code: Option<i32>,
         stdout: &str,
-    ) -> SessionEvent {
-        SessionEvent {
+    ) -> Event {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::CommandResult,
-            role: EventRole::Tool,
+            kind: EventKind::CommandResult,
+            role: Role::Tool,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::CommandResult {
+            links: Links::default(),
+            blocks: vec![Block::CommandResult {
                 command,
                 exit_code,
                 stdout: Some(stdout.to_string()),
@@ -1242,9 +1226,9 @@ mod tests {
         }
     }
 
-    fn event_metadata(provider_id: &str, original_id: &str) -> EventMetadata {
-        EventMetadata {
-            source: EventSource {
+    fn event_metadata(provider_id: &str, original_id: &str) -> Metadata {
+        Metadata {
+            source: Source {
                 provider_id: provider_id.to_string(),
                 original_id: Some(original_id.to_string()),
                 original_role: None,
@@ -1252,7 +1236,7 @@ mod tests {
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         }
     }
@@ -1274,15 +1258,14 @@ mod tests {
         );
     }
 
-    fn compressed_summary(session: &CanonicalSession, candidate_id: &str) -> String {
+    fn compressed_summary(session: &Session, candidate_id: &str) -> String {
         let event_id = format!("memorph-active-compressed-{}", candidate_id);
         let event = session
             .events
             .iter()
             .find(|event| event.id == event_id)
             .expect("compressed replacement event");
-        let EventBlock::Compressed { summary, .. } =
-            event.blocks.first().expect("compressed block")
+        let Block::Compressed { summary, .. } = event.blocks.first().expect("compressed block")
         else {
             panic!("expected compressed block");
         };

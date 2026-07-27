@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Context as _, Result};
 use axum::{
     extract::{Path as AxumPath, Query, State},
     http::StatusCode,
@@ -23,7 +23,6 @@ use memorph::skills::{
     repository::{self, CatalogQuery},
     scanner::{self, ScanMode},
 };
-
 
 #[derive(Clone)]
 struct SkillsState {
@@ -71,7 +70,10 @@ fn router_for(agents: Vec<memorph::skills::inspection::SkillAgent>) -> Router {
     router_with_state(agents, database_path)
 }
 
-fn router_with_state(agents: Vec<memorph::skills::inspection::SkillAgent>, database_path: Option<PathBuf>) -> Router {
+fn router_with_state(
+    agents: Vec<memorph::skills::inspection::SkillAgent>,
+    database_path: Option<PathBuf>,
+) -> Router {
     Router::new()
         .route("/api/v1/skills", get(list_skills))
         .route("/api/v1/skills/scan", post(scan_skills))
@@ -143,17 +145,21 @@ fn default_agents() -> Vec<memorph::skills::inspection::SkillAgent> {
     let home = dirs::home_dir().unwrap_or_default();
     SKILL_PROVIDERS
         .iter()
-        .map(|(provider_id, name, global_root, _)| memorph::skills::inspection::SkillAgent {
-            provider_id: (*provider_id).into(),
-            name: (*name).into(),
-            skills_dir: home.join(global_root),
-            scope_kind: "global".into(),
-            workspace_dir: None,
-        })
+        .map(
+            |(provider_id, name, global_root, _)| memorph::skills::inspection::SkillAgent {
+                provider_id: (*provider_id).into(),
+                name: (*name).into(),
+                skills_dir: home.join(global_root),
+                scope_kind: "global".into(),
+                workspace_dir: None,
+            },
+        )
         .collect()
 }
 
-fn discover(agents: &[memorph::skills::inspection::SkillAgent]) -> memorph::skills::inspection::SkillsOverview {
+fn discover(
+    agents: &[memorph::skills::inspection::SkillAgent],
+) -> memorph::skills::inspection::SkillsOverview {
     let mut skills: BTreeMap<String, memorph::skills::inspection::SkillEntry> = BTreeMap::new();
 
     for agent in agents {
@@ -186,10 +192,16 @@ fn discover(agents: &[memorph::skills::inspection::SkillAgent]) -> memorph::skil
                 provider_id: agent.provider_id.clone(),
                 fingerprint: bundle.fingerprint.clone(),
                 drifted: false,
-                managed: is_link || path.join(memorph::skills::inspection::MANAGED_MARKER).is_file(),
+                managed: is_link
+                    || path
+                        .join(memorph::skills::inspection::MANAGED_MARKER)
+                        .is_file(),
                 deployment_mode: if is_link {
                     "symlink"
-                } else if path.join(memorph::skills::inspection::MANAGED_MARKER).is_file() {
+                } else if path
+                    .join(memorph::skills::inspection::MANAGED_MARKER)
+                    .is_file()
+                {
                     "copy"
                 } else {
                     "external"
@@ -198,16 +210,18 @@ fn discover(agents: &[memorph::skills::inspection::SkillAgent]) -> memorph::skil
                 link_valid: !is_link || path.canonicalize().is_ok(),
                 path,
             };
-            let skill = skills.entry(id.clone()).or_insert_with(|| memorph::skills::inspection::SkillEntry {
-                id,
-                name,
-                description: description.clone(),
-                directory,
-                fingerprint: bundle.fingerprint.clone(),
-                conflict: false,
-                statistics: bundle.statistics.clone(),
-                issues: bundle.issues.clone(),
-                installations: Vec::new(),
+            let skill = skills.entry(id.clone()).or_insert_with(|| {
+                memorph::skills::inspection::SkillEntry {
+                    id,
+                    name,
+                    description: description.clone(),
+                    directory,
+                    fingerprint: bundle.fingerprint.clone(),
+                    conflict: false,
+                    statistics: bundle.statistics.clone(),
+                    issues: bundle.issues.clone(),
+                    installations: Vec::new(),
+                }
             });
             if skill.description.is_none() {
                 skill.description = description;
@@ -234,7 +248,6 @@ fn discover(agents: &[memorph::skills::inspection::SkillAgent]) -> memorph::skil
     }
 }
 
-
 fn image_mime_type(ext: &str) -> &'static str {
     match ext.to_ascii_lowercase().as_str() {
         "png" => "image/png",
@@ -248,7 +261,10 @@ fn image_mime_type(ext: &str) -> &'static str {
     }
 }
 
-fn bundle_detail(overview: &memorph::skills::inspection::SkillsOverview, id: &str) -> Result<memorph::skills::inspection::SkillDetail> {
+fn bundle_detail(
+    overview: &memorph::skills::inspection::SkillsOverview,
+    id: &str,
+) -> Result<memorph::skills::inspection::SkillDetail> {
     let skill = overview
         .skills
         .iter()
@@ -328,7 +344,10 @@ fn validate_directory(directory: &str) -> Result<()> {
     Ok(())
 }
 
-fn install(agents: &[memorph::skills::inspection::SkillAgent], request: &SkillMutation) -> Result<memorph::skills::inspection::SkillsOverview> {
+fn install(
+    agents: &[memorph::skills::inspection::SkillAgent],
+    request: &SkillMutation,
+) -> Result<memorph::skills::inspection::SkillsOverview> {
     let overview = discover(agents);
     let skill = overview
         .skills
@@ -383,7 +402,10 @@ fn deploy_skill(source: &Path, destination: &Path) -> Result<()> {
     }
 
     copy_skill(&source, destination)?;
-    if let Err(error) = fs::write(destination.join(memorph::skills::inspection::MANAGED_MARKER), b"managed by memorph\n") {
+    if let Err(error) = fs::write(
+        destination.join(memorph::skills::inspection::MANAGED_MARKER),
+        b"managed by memorph\n",
+    ) {
         let _ = fs::remove_dir_all(destination);
         return Err(error).with_context(|| format!("Failed to mark {}", destination.display()));
     }
@@ -436,7 +458,10 @@ fn copy_skill(source: &Path, destination: &Path) -> Result<()> {
     result
 }
 
-fn uninstall(agents: &[memorph::skills::inspection::SkillAgent], request: &SkillMutation) -> Result<memorph::skills::inspection::SkillsOverview> {
+fn uninstall(
+    agents: &[memorph::skills::inspection::SkillAgent],
+    request: &SkillMutation,
+) -> Result<memorph::skills::inspection::SkillsOverview> {
     let overview = discover(agents);
     let skill = overview
         .skills
@@ -468,7 +493,10 @@ fn uninstall(agents: &[memorph::skills::inspection::SkillAgent], request: &Skill
     {
         fs::remove_file(&expected)
             .with_context(|| format!("Failed to remove symbolic link {}", expected.display()))?;
-    } else if expected.join(memorph::skills::inspection::MANAGED_MARKER).is_file() {
+    } else if expected
+        .join(memorph::skills::inspection::MANAGED_MARKER)
+        .is_file()
+    {
         fs::remove_dir_all(&expected)
             .with_context(|| format!("Failed to remove {}", expected.display()))?;
     } else {
@@ -541,24 +569,26 @@ fn preview_file(
     }
     let file = fs::File::open(&target)?;
     let mut bytes = Vec::new();
-    file.take(memorph::skills::inspection::MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes)?;
+    file.take(memorph::skills::inspection::MAX_PREVIEW_BYTES + 1)
+        .read_to_end(&mut bytes)?;
     if bytes.len() as u64 > memorph::skills::inspection::MAX_PREVIEW_BYTES {
         return Err(anyhow!("Skill asset exceeds preview limit"));
     }
 
     let extension = asset.extension.as_deref().unwrap_or("");
-    let (encoding, mime_type, content) = if memorph::skills::inspection::is_image_extension(extension) {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        (
-            "base64".to_string(),
-            Some(image_mime_type(extension).to_string()),
-            STANDARD.encode(&bytes),
-        )
-    } else {
-        let text =
-            String::from_utf8(bytes).map_err(|_| anyhow!("Skill asset is not UTF-8 text"))?;
-        ("text".to_string(), None, text)
-    };
+    let (encoding, mime_type, content) =
+        if memorph::skills::inspection::is_image_extension(extension) {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            (
+                "base64".to_string(),
+                Some(image_mime_type(extension).to_string()),
+                STANDARD.encode(&bytes),
+            )
+        } else {
+            let text =
+                String::from_utf8(bytes).map_err(|_| anyhow!("Skill asset is not UTF-8 text"))?;
+            ("text".to_string(), None, text)
+        };
 
     Ok(SkillFilePreview {
         path: asset.path.clone(),
@@ -1079,13 +1109,15 @@ mod tests {
             ("gemini", "Gemini CLI"),
         ]
         .into_iter()
-        .map(|(provider_id, name)| memorph::skills::inspection::SkillAgent {
-            provider_id: provider_id.into(),
-            name: name.into(),
-            skills_dir: root.join(provider_id).join("skills"),
-            scope_kind: "global".into(),
-            workspace_dir: None,
-        })
+        .map(
+            |(provider_id, name)| memorph::skills::inspection::SkillAgent {
+                provider_id: provider_id.into(),
+                name: name.into(),
+                skills_dir: root.join(provider_id).join("skills"),
+                scope_kind: "global".into(),
+                workspace_dir: None,
+            },
+        )
         .collect()
     }
 

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::canonical::{EventBlock, EventRole, SessionEvent};
+use crate::canonical::{Block, Event, Role};
 use crate::provider::canonical_event_text;
 
 use super::adaptive::adaptive_keep_count;
@@ -9,7 +9,7 @@ use super::{CompressionCandidateKind, CompressionCandidateReport};
 
 pub(super) fn reduce_candidate_to_summary(
     candidate: &CompressionCandidateReport,
-    source_events: &[SessionEvent],
+    source_events: &[Event],
     archive_ref: Option<&str>,
 ) -> String {
     let mut lines = vec![
@@ -48,7 +48,7 @@ pub(super) fn reduce_candidate_to_summary(
     lines.join("\n")
 }
 
-fn rule_strategy(kind: CompressionCandidateKind, source_events: &[SessionEvent]) -> String {
+fn rule_strategy(kind: CompressionCandidateKind, source_events: &[Event]) -> String {
     match kind {
         CompressionCandidateKind::LargeToolOutput => {
             "tool-output reducer: preserve tool ids, error state, detected content kind, and bounded high-signal lines"
@@ -77,15 +77,15 @@ fn rule_strategy(kind: CompressionCandidateKind, source_events: &[SessionEvent])
     }
 }
 
-fn source_content_profile(source_events: &[SessionEvent]) -> String {
+fn source_content_profile(source_events: &[Event]) -> String {
     content_profile(&joined_event_text(source_events)).describe()
 }
 
-fn detected_content_profile(source_events: &[SessionEvent]) -> &'static str {
+fn detected_content_profile(source_events: &[Event]) -> &'static str {
     detect_text_kind(&joined_event_text(source_events)).as_str()
 }
 
-fn joined_event_text(source_events: &[SessionEvent]) -> String {
+fn joined_event_text(source_events: &[Event]) -> String {
     source_events
         .iter()
         .map(canonical_event_text)
@@ -93,10 +93,7 @@ fn joined_event_text(source_events: &[SessionEvent]) -> String {
         .join("\n")
 }
 
-fn compression_signals(
-    kind: CompressionCandidateKind,
-    source_events: &[SessionEvent],
-) -> Vec<String> {
+fn compression_signals(kind: CompressionCandidateKind, source_events: &[Event]) -> Vec<String> {
     match kind {
         CompressionCandidateKind::LargeToolOutput => tool_output_signals(source_events),
         CompressionCandidateKind::LargeLogOutput => command_log_signals(source_events),
@@ -109,7 +106,7 @@ fn compression_signals(
     }
 }
 
-fn tool_output_signals(source_events: &[SessionEvent]) -> Vec<String> {
+fn tool_output_signals(source_events: &[Event]) -> Vec<String> {
     let mut signals = Vec::new();
     let mut result_count = 0usize;
     let mut error_count = 0usize;
@@ -117,7 +114,7 @@ fn tool_output_signals(source_events: &[SessionEvent]) -> Vec<String> {
     let mut highlights = Vec::new();
 
     for block in source_events.iter().flat_map(|event| event.blocks.iter()) {
-        let EventBlock::ToolResult {
+        let Block::ToolResult {
             tool_call_id,
             content,
             is_error,
@@ -156,7 +153,7 @@ struct SearchMatch {
     order: usize,
 }
 
-fn search_result_signals(source_events: &[SessionEvent]) -> Vec<String> {
+fn search_result_signals(source_events: &[Event]) -> Vec<String> {
     let matches = parse_search_matches(source_events);
     if matches.is_empty() {
         return tool_output_signals(source_events);
@@ -242,7 +239,7 @@ fn search_result_signals(source_events: &[SessionEvent]) -> Vec<String> {
     signals
 }
 
-fn parse_search_matches(source_events: &[SessionEvent]) -> Vec<SearchMatch> {
+fn parse_search_matches(source_events: &[Event]) -> Vec<SearchMatch> {
     let mut matches = Vec::new();
     for event in source_events {
         let event_text = canonical_event_text(event);
@@ -346,7 +343,7 @@ enum LogLevel {
     Unknown,
 }
 
-fn command_log_signals(source_events: &[SessionEvent]) -> Vec<String> {
+fn command_log_signals(source_events: &[Event]) -> Vec<String> {
     let (records, commands, exit_codes) = collect_log_records(source_events);
     if records.is_empty() {
         return Vec::new();
@@ -408,16 +405,14 @@ fn command_log_signals(source_events: &[SessionEvent]) -> Vec<String> {
     signals
 }
 
-fn collect_log_records(
-    source_events: &[SessionEvent],
-) -> (Vec<LogRecord>, Vec<String>, Vec<String>) {
+fn collect_log_records(source_events: &[Event]) -> (Vec<LogRecord>, Vec<String>, Vec<String>) {
     let mut raw_lines = Vec::new();
     let mut commands = Vec::new();
     let mut exit_codes = Vec::new();
     let mut saw_command_result = false;
 
     for block in source_events.iter().flat_map(|event| event.blocks.iter()) {
-        let EventBlock::CommandResult {
+        let Block::CommandResult {
             command,
             exit_code,
             stdout,
@@ -620,7 +615,7 @@ struct DiffHunk {
     order: usize,
 }
 
-fn diff_signals(source_events: &[SessionEvent]) -> Vec<String> {
+fn diff_signals(source_events: &[Event]) -> Vec<String> {
     let files = parse_diff_files(&joined_event_text(source_events));
     if files.is_empty() {
         return tool_output_signals(source_events);
@@ -844,14 +839,14 @@ fn representative_diff_lines(hunk: &DiffHunk) -> Vec<String> {
     samples
 }
 
-fn provider_payload_signals(source_events: &[SessionEvent]) -> Vec<String> {
+fn provider_payload_signals(source_events: &[Event]) -> Vec<String> {
     let mut signals = Vec::new();
     let mut kinds = Vec::new();
     let mut keys = Vec::new();
     let mut payload_bytes = 0usize;
 
     for block in source_events.iter().flat_map(|event| event.blocks.iter()) {
-        let EventBlock::ProviderPayload { kind, payload } = block else {
+        let Block::ProviderPayload { kind, payload } = block else {
             continue;
         };
         push_unique(&mut kinds, kind);
@@ -873,7 +868,7 @@ fn provider_payload_signals(source_events: &[SessionEvent]) -> Vec<String> {
     signals
 }
 
-fn conversation_signals(source_events: &[SessionEvent]) -> Vec<String> {
+fn conversation_signals(source_events: &[Event]) -> Vec<String> {
     let mut signals = Vec::new();
     let mut user_count = 0usize;
     let mut assistant_count = 0usize;
@@ -884,18 +879,18 @@ fn conversation_signals(source_events: &[SessionEvent]) -> Vec<String> {
 
     for event in source_events {
         match event.role {
-            EventRole::User => {
+            Role::User => {
                 user_count += 1;
                 if first_user.is_none() {
                     first_user = concise_event_text(event);
                 }
             }
-            EventRole::Assistant => {
+            Role::Assistant => {
                 assistant_count += 1;
                 last_assistant = concise_event_text(event);
             }
-            EventRole::Tool => tool_count += 1,
-            EventRole::System | EventRole::Developer | EventRole::Unknown => {}
+            Role::Tool => tool_count += 1,
+            Role::System | Role::Developer | Role::Unknown => {}
         }
         collect_path_mentions(&canonical_event_text(event), &mut paths);
     }
@@ -939,7 +934,7 @@ fn collect_highlight_lines(text: &str, out: &mut Vec<String>) {
     }
 }
 
-fn concise_event_text(event: &SessionEvent) -> Option<String> {
+fn concise_event_text(event: &Event) -> Option<String> {
     let text = canonical_event_text(event);
     let text = text.trim();
     (!text.is_empty()).then(|| truncate_preview(text, 160))

@@ -4,9 +4,8 @@ use super::session_mutation::*;
 use super::sessions::*;
 use super::*;
 use crate::canonical::{
-    CanonicalSchema, EventBlock, EventLinks, EventMetadata, EventRole, EventSource,
-    MappingDirection, MappingDisposition, MappingReport, ProviderSessionRef, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
+    Block, Context, Event, EventKind, Fidelity, Identity, Links, MappingDirection, MappingReport,
+    Metadata, Provenance, ProviderRef, Role, Schema, Source,
 };
 use crate::hooks::model::{
     HookToolCall, PermissionRequest, QuestionRequest, RuntimeSession, RuntimeSessionId,
@@ -309,23 +308,23 @@ fn imported_session_title_prefers_display_title_before_native_and_meta() {
         source_path: Some("/tmp/session.jsonl".to_string()),
     };
     let mut imported = ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: "canonical-1".to_string(),
                 source_title: Some("Native".to_string()),
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: None,
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: "codex".to_string(),
                     session_id: "session-1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: None,
                 created_at: None,
                 last_active_at: None,
@@ -358,17 +357,17 @@ fn session_from_compression_archive_restores_source_events() {
         workspace_dir: None,
         summary_event_id: "summary-event".to_string(),
         source_event_ids: vec!["old-event".to_string()],
-        events: vec![SessionEvent {
+        events: vec![Event {
             id: "old-event".to_string(),
-            kind: SessionEventKind::Message,
-            role: EventRole::User,
+            kind: EventKind::Message,
+            role: Role::User,
             timestamp: now,
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Text {
+            links: Links::default(),
+            blocks: vec![Block::Text {
                 text: "restored source context".to_string(),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "opencode".to_string(),
                     original_id: Some("old-event".to_string()),
                     original_role: None,
@@ -376,7 +375,7 @@ fn session_from_compression_archive_restores_source_events() {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: BTreeMap::new(),
             },
         }],
@@ -560,7 +559,7 @@ fn active_compression_archive_is_expandable_and_retrievable() {
         event.blocks.iter().any(|block| {
             matches!(
                 block,
-                EventBlock::Compressed {
+                Block::Compressed {
                     archive_ref: Some(archive_ref),
                     ..
                 } if archive_ref == &archive_refs[0]
@@ -571,7 +570,7 @@ fn active_compression_archive_is_expandable_and_retrievable() {
         event.blocks.iter().any(|block| {
             matches!(
                 block,
-                EventBlock::Text { text }
+                Block::Text { text }
                     if text.contains("historical context historical context historical context")
             )
         })
@@ -879,17 +878,17 @@ fn archive_query_search_ranks_phrase_before_repeated_scattered_terms() {
         archive_search_event(
             "earlier-single",
             "needle appears once in an earlier event",
-            EventRole::User,
+            Role::User,
         ),
         archive_search_event(
             "phrase-match",
             "the exact needle detail phrase should outrank scattered terms",
-            EventRole::Assistant,
+            Role::Assistant,
         ),
         archive_search_event(
             "term-frequency",
             "needle appears repeatedly but detail is only connected loosely to needle",
-            EventRole::User,
+            Role::User,
         ),
     ];
 
@@ -923,12 +922,12 @@ fn archive_query_search_ranks_term_coverage_before_single_term_repetition() {
         archive_search_event(
             "single-term-repeated",
             "needle needle needle needle needle",
-            EventRole::User,
+            Role::User,
         ),
         archive_search_event(
             "covered-terms",
             "needle appears with the missing detail",
-            EventRole::Assistant,
+            Role::Assistant,
         ),
     ];
 
@@ -947,8 +946,8 @@ fn archive_query_search_ranks_term_coverage_before_single_term_repetition() {
 #[test]
 fn archive_query_search_keeps_source_order_for_equal_scores() {
     let events = vec![
-        archive_search_event("first", "same needle evidence", EventRole::User),
-        archive_search_event("second", "same needle evidence", EventRole::Assistant),
+        archive_search_event("first", "same needle evidence", Role::User),
+        archive_search_event("second", "same needle evidence", Role::Assistant),
     ];
 
     let (events, matches) = search_archive_events(&events, "needle", 10);
@@ -965,19 +964,19 @@ fn archive_query_search_keeps_source_order_for_equal_scores() {
     assert_eq!(matches[0].score, matches[1].score);
 }
 
-fn archive_search_event(id: &str, text: &str, role: EventRole) -> SessionEvent {
+fn archive_search_event(id: &str, text: &str, role: Role) -> Event {
     let now = Utc::now();
-    SessionEvent {
+    Event {
         id: id.to_string(),
-        kind: SessionEventKind::Message,
+        kind: EventKind::Message,
         role,
         timestamp: now,
-        links: EventLinks::default(),
-        blocks: vec![EventBlock::Text {
+        links: Links::default(),
+        blocks: vec![Block::Text {
             text: text.to_string(),
         }],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: "claude".to_string(),
                 original_id: Some(id.to_string()),
                 original_role: None,
@@ -985,43 +984,43 @@ fn archive_search_event(id: &str, text: &str, role: EventRole) -> SessionEvent {
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     }
 }
 
-fn active_compression_source_session() -> CanonicalSession {
+fn active_compression_source_session() -> Session {
     let now = Utc::now();
-    CanonicalSession {
-        schema: CanonicalSchema::default(),
-        identity: SessionIdentity {
+    Session {
+        schema: Schema::default(),
+        identity: Identity {
             canonical_id: "dry-run-file".to_string(),
             source_title: Some("Dry Run File".to_string()),
         },
-        provenance: SessionProvenance {
+        provenance: Provenance {
             imported_at: now,
             imported_by: None,
-            primary_source: ProviderSessionRef {
+            primary_source: ProviderRef {
                 provider_id: "claude".to_string(),
                 session_id: "dry-run-file".to_string(),
                 source_path: None,
             },
             aliases: Vec::new(),
         },
-        context: SessionContext::default(),
+        context: Context::default(),
         events: vec![
-            SessionEvent {
+            Event {
                 id: "old-user".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::User,
+                kind: EventKind::Message,
+                role: Role::User,
                 timestamp: now,
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
+                links: Links::default(),
+                blocks: vec![Block::Text {
                     text: "historical context ".repeat(80),
                 }],
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: "claude".to_string(),
                         original_id: Some("old-user".to_string()),
                         original_role: Some("user".to_string()),
@@ -1029,21 +1028,21 @@ fn active_compression_source_session() -> CanonicalSession {
                     },
                     model: None,
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: BTreeMap::new(),
                 },
             },
-            SessionEvent {
+            Event {
                 id: "recent-user".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::User,
+                kind: EventKind::Message,
+                role: Role::User,
                 timestamp: now,
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
+                links: Links::default(),
+                blocks: vec![Block::Text {
                     text: "latest active request".to_string(),
                 }],
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: "claude".to_string(),
                         original_id: Some("recent-user".to_string()),
                         original_role: Some("user".to_string()),
@@ -1051,7 +1050,7 @@ fn active_compression_source_session() -> CanonicalSession {
                     },
                     model: None,
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: BTreeMap::new(),
                 },
             },
@@ -1061,7 +1060,7 @@ fn active_compression_source_session() -> CanonicalSession {
     }
 }
 
-fn write_active_compression_source_file(session: &CanonicalSession) -> tempfile::NamedTempFile {
+fn write_active_compression_source_file(session: &Session) -> tempfile::NamedTempFile {
     let mut file = Builder::new().suffix(".json").tempfile().unwrap();
     write!(file, "{}", serde_json::to_string(session).unwrap()).unwrap();
     file

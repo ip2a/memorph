@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 #[cfg(any(test, feature = "test-support"))]
@@ -235,8 +235,8 @@ thread_local! {
 }
 
 fn home_dir() -> Result<PathBuf> {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(path) = TEST_HOME_DIR.with(|cell| cell.borrow().clone()) {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(path) = TEST_HOME_DIR.with(|cell| cell.borrow().clone()) {
         return Ok(path);
     }
 

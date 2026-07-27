@@ -29,7 +29,11 @@ pub(super) async fn list_agent_management_summary() -> impl IntoResponse {
 pub(super) async fn get_agent_management_provider(
     Path(provider): Path<String>,
 ) -> impl IntoResponse {
-    match memorph::runtime::run_blocking(move || agent_management::get_agent_management_entry(&provider)).await {
+    match memorph::runtime::run_blocking(move || {
+        agent_management::get_agent_management_entry(&provider)
+    })
+    .await
+    {
         Ok(provider) => ApiResponse::success(provider).into_response(),
         Err(error) => api_error(StatusCode::NOT_FOUND, error).into_response(),
     }
@@ -38,7 +42,11 @@ pub(super) async fn get_agent_management_provider(
 pub(super) async fn detect_agent_management_provider(
     Path(provider): Path<String>,
 ) -> impl IntoResponse {
-    match memorph::runtime::run_blocking(move || agent_management::detect_agent_management_entry(&provider)).await {
+    match memorph::runtime::run_blocking(move || {
+        agent_management::detect_agent_management_entry(&provider)
+    })
+    .await
+    {
         Ok(provider) => {
             invalidate_catalog_cache();
             ApiResponse::success(provider).into_response()

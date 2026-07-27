@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::{OnceLock, RwLock};
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 
 pub const HOOK_COMMAND_MARKER: &str = "__hook-bridge";
@@ -21,8 +21,8 @@ pub fn current_hook_managed_version() -> &'static str {
 }
 
 pub fn hook_home_dir() -> PathBuf {
-        #[cfg(any(test, feature = "test-support"))]
-        if let Some(path) = TEST_HOME_DIR
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(path) = TEST_HOME_DIR
         .get_or_init(|| RwLock::new(None))
         .read()
         .unwrap()

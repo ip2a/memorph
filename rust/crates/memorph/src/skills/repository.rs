@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -972,32 +972,32 @@ fn import_canonical_session_preserves_codex_runtime_and_message_events() {
         Some("/tmp/project")
     );
     assert!(events.iter().any(|event| {
-        event.role == EventRole::System
+        event.role == Role::System
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::Text { text }) if text == "Be careful."
+                Some(Block::Text { text }) if text == "Be careful."
             )
     }));
     assert!(events.iter().any(|event| {
-        event.role == EventRole::Developer
+        event.role == Role::Developer
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::Text { text }) if text == "# AGENTS.md instructions"
+                Some(Block::Text { text }) if text == "# AGENTS.md instructions"
             )
     }));
     assert!(events.iter().any(|event| {
-        event.role == EventRole::Assistant
+        event.role == Role::Assistant
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::Thinking { text, .. }) if text == "Thinking out loud"
+                Some(Block::Thinking { text, .. }) if text == "Thinking out loud"
             )
     }));
     assert!(events.iter().any(|event| {
         event.id == "codex:response_item:6"
-            && event.role == EventRole::Assistant
+            && event.role == Role::Assistant
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::ToolCall { name, tool_call_id, .. })
+                Some(Block::ToolCall { name, tool_call_id, .. })
                     if name == "shell" && tool_call_id == "call_1"
             )
     }));
@@ -1005,7 +1005,7 @@ fn import_canonical_session_preserves_codex_runtime_and_message_events() {
         event.id == "codex:response_item:7"
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::ToolResult { content, tool_call_id, .. })
+                Some(Block::ToolResult { content, tool_call_id, .. })
                     if content == "hello" && tool_call_id == "call_1"
             )
     }));
@@ -1013,7 +1013,7 @@ fn import_canonical_session_preserves_codex_runtime_and_message_events() {
         event.id == "codex:event_msg:task_complete:8"
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::Text { text }) if text == "Done."
+                Some(Block::Text { text }) if text == "Done."
             )
     }));
     let started = events
@@ -1210,31 +1210,29 @@ fn import_canonical_session_hides_turn_aborted_and_internal_developer_controls()
     let events = &imported.session.events;
 
     assert!(!events.iter().any(|event| {
-        event.role == EventRole::User
-            && event
-                .blocks
-                .iter()
-                .any(|block| matches!(block, EventBlock::Text { text } if text.contains("<turn_aborted>")))
+        event.role == Role::User
+            && event.blocks.iter().any(
+                |block| matches!(block, Block::Text { text } if text.contains("<turn_aborted>")),
+            )
     }));
     assert!(!events.iter().any(|event| {
-        event.role == EventRole::Developer
-            && event
-                .blocks
-                .iter()
-                .any(|block| matches!(block, EventBlock::Text { text } if text.contains("<model_switch>")))
+        event.role == Role::Developer
+            && event.blocks.iter().any(
+                |block| matches!(block, Block::Text { text } if text.contains("<model_switch>")),
+            )
     }));
     assert!(!events.iter().any(|event| {
-        event.role == EventRole::User
+        event.role == Role::User
             && event.blocks.iter().any(|block| {
-                matches!(block, EventBlock::Text { text } if text.contains("<environment_context>") || text.contains("# AGENTS.md instructions") || text.contains("<codex_internal_context"))
+                matches!(block, Block::Text { text } if text.contains("<environment_context>") || text.contains("# AGENTS.md instructions") || text.contains("<codex_internal_context"))
             })
     }));
     assert!(events.iter().any(|event| {
-        event.kind == SessionEventKind::Lifecycle
-            && event.role == EventRole::System
+        event.kind == EventKind::Lifecycle
+            && event.role == Role::System
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::ProviderPayload { kind, .. }) if kind == "turn_aborted_sentinel"
+                Some(Block::ProviderPayload { kind, .. }) if kind == "turn_aborted_sentinel"
             )
             && event
                 .metadata
@@ -1245,11 +1243,11 @@ fn import_canonical_session_hides_turn_aborted_and_internal_developer_controls()
                 == Some("lifecycle_sentinel")
     }));
     assert!(events.iter().any(|event| {
-        event.kind == SessionEventKind::Lifecycle
-            && event.role == EventRole::System
+        event.kind == EventKind::Lifecycle
+            && event.role == Role::System
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::ProviderPayload { kind, .. }) if kind == "developer_control_message"
+                Some(Block::ProviderPayload { kind, .. }) if kind == "developer_control_message"
             )
             && event
                 .metadata
@@ -1260,11 +1258,11 @@ fn import_canonical_session_hides_turn_aborted_and_internal_developer_controls()
                 == Some("provider_control")
     }));
     assert!(events.iter().any(|event| {
-        event.kind == SessionEventKind::Lifecycle
-            && event.role == EventRole::System
+        event.kind == EventKind::Lifecycle
+            && event.role == Role::System
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::ProviderPayload { kind, .. }) if kind == "user_context_message"
+                Some(Block::ProviderPayload { kind, .. }) if kind == "user_context_message"
             )
             && event
                 .metadata
@@ -1327,7 +1325,7 @@ fn import_canonical_session_decodes_input_image_data_uri() {
         .iter()
         .flat_map(|event| event.blocks.iter())
         .find_map(|block| match block {
-            EventBlock::Image {
+            Block::Image {
                 mime_type,
                 data,
                 path,
@@ -1357,7 +1355,7 @@ fn codex_response_blocks_preserve_reasoning_and_json_tool_output() {
     );
     assert!(matches!(
         output.blocks.as_slice(),
-        [EventBlock::ToolResult { content, .. }]
+        [Block::ToolResult { content, .. }]
             if content == r#"{"items":[1,2],"status":"ok"}"#
     ));
 
@@ -1374,7 +1372,7 @@ fn codex_response_blocks_preserve_reasoning_and_json_tool_output() {
     );
     assert!(matches!(
         reasoning.blocks.as_slice(),
-        [EventBlock::ProviderPayload { kind, payload }]
+        [Block::ProviderPayload { kind, payload }]
             if kind == "reasoning" && payload == &json!({"type": "reasoning", "summary": "internal"})
     ));
     assert!(report
@@ -1400,7 +1398,7 @@ fn codex_text_block_without_text_is_not_silently_dropped() {
 
     assert!(matches!(
         event.blocks.as_slice(),
-        [EventBlock::ProviderPayload { kind, .. }]
+        [Block::ProviderPayload { kind, .. }]
             if kind == "output_text"
     ));
     assert!(report
@@ -1465,7 +1463,7 @@ fn import_canonical_session_maps_native_compacted_to_compressed_block() {
         .iter()
         .find_map(|event| {
             event.blocks.iter().find_map(|block| match block {
-                EventBlock::Compressed {
+                Block::Compressed {
                     source_provider_id,
                     summary,
                     source_event_ids,
@@ -1509,36 +1507,36 @@ fn compressed_segment_exports_as_native_codex_compacted_rollout() {
     )
     .unwrap();
 
-    let session = CanonicalSession {
-        schema: CanonicalSchema::default(),
-        identity: SessionIdentity {
+    let session = Session {
+        schema: Schema::default(),
+        identity: Identity {
             canonical_id: "session-native-compact".to_string(),
             source_title: Some("Native Compact".to_string()),
         },
-        provenance: SessionProvenance {
+        provenance: Provenance {
             imported_at: Utc::now(),
             imported_by: None,
-            primary_source: ProviderSessionRef {
+            primary_source: ProviderRef {
                 provider_id: "claude".to_string(),
                 session_id: "session-native-compact".to_string(),
                 source_path: None,
             },
             aliases: Vec::new(),
         },
-        context: SessionContext {
+        context: Context {
             workspace_dir: Some(workspace.to_string_lossy().to_string()),
             created_at: None,
             last_active_at: None,
             tags: Vec::new(),
         },
         events: vec![
-            SessionEvent {
+            Event {
                 id: "compressed-source".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::Assistant,
+                kind: EventKind::Message,
+                role: Role::Assistant,
                 timestamp: Utc::now(),
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Compressed {
+                links: Links::default(),
+                blocks: vec![Block::Compressed {
                     source_provider_id: "claude".to_string(),
                     summary: "compressed summary".to_string(),
                     source_event_ids: vec![
@@ -1549,8 +1547,8 @@ fn compressed_segment_exports_as_native_codex_compacted_rollout() {
                     source_event_count: None,
                     archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
                 }],
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: "memorph".to_string(),
                         original_id: None,
                         original_role: Some("assistant".to_string()),
@@ -1558,21 +1556,21 @@ fn compressed_segment_exports_as_native_codex_compacted_rollout() {
                     },
                     model: None,
                     usage: None,
-                    fidelity: MappingDisposition::Normalized,
+                    fidelity: Fidelity::Normalized,
                     provider_ext: BTreeMap::new(),
                 },
             },
-            SessionEvent {
+            Event {
                 id: "tail-user".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::User,
+                kind: EventKind::Message,
+                role: Role::User,
                 timestamp: Utc::now(),
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
+                links: Links::default(),
+                blocks: vec![Block::Text {
                     text: "latest request".to_string(),
                 }],
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: "memorph".to_string(),
                         original_id: None,
                         original_role: Some("user".to_string()),
@@ -1580,7 +1578,7 @@ fn compressed_segment_exports_as_native_codex_compacted_rollout() {
                     },
                     model: None,
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: BTreeMap::new(),
                 },
             },
@@ -1669,23 +1667,23 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
     .unwrap();
 
     let now = Utc::now();
-    let mut source_session = CanonicalSession {
-        schema: CanonicalSchema::default(),
-        identity: SessionIdentity {
+    let mut source_session = Session {
+        schema: Schema::default(),
+        identity: Identity {
             canonical_id: "active-to-codex".to_string(),
             source_title: Some("Active to Codex".to_string()),
         },
-        provenance: SessionProvenance {
+        provenance: Provenance {
             imported_at: now,
             imported_by: None,
-            primary_source: ProviderSessionRef {
+            primary_source: ProviderRef {
                 provider_id: "claude".to_string(),
                 session_id: "active-to-codex".to_string(),
                 source_path: None,
             },
             aliases: Vec::new(),
         },
-        context: SessionContext {
+        context: Context {
             workspace_dir: Some(workspace.to_string_lossy().to_string()),
             created_at: None,
             last_active_at: None,
@@ -1695,17 +1693,17 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
         artifacts: Vec::new(),
         extensions: BTreeMap::new(),
     };
-    source_session.events.push(SessionEvent {
+    source_session.events.push(Event {
         id: "old-user".to_string(),
-        kind: SessionEventKind::Message,
-        role: EventRole::User,
+        kind: EventKind::Message,
+        role: Role::User,
         timestamp: now,
-        links: EventLinks::default(),
-        blocks: vec![EventBlock::Text {
+        links: Links::default(),
+        blocks: vec![Block::Text {
             text: "historical context that should be archived ".repeat(80),
         }],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: "claude".to_string(),
                 original_id: Some("old-user".to_string()),
                 original_role: Some("user".to_string()),
@@ -1713,21 +1711,21 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     });
-    source_session.events.push(SessionEvent {
+    source_session.events.push(Event {
         id: "recent-user".to_string(),
-        kind: SessionEventKind::Message,
-        role: EventRole::User,
+        kind: EventKind::Message,
+        role: Role::User,
         timestamp: now,
-        links: EventLinks::default(),
-        blocks: vec![EventBlock::Text {
+        links: Links::default(),
+        blocks: vec![Block::Text {
             text: "latest request".to_string(),
         }],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: "claude".to_string(),
                 original_id: Some("recent-user".to_string()),
                 original_role: Some("user".to_string()),
@@ -1735,7 +1733,7 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     });
@@ -1827,7 +1825,7 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
         .iter()
         .find_map(|event| {
             event.blocks.iter().find_map(|block| match block {
-                EventBlock::Compressed {
+                Block::Compressed {
                     source_provider_id,
                     source_event_ids,
                     archive_ref,
@@ -1844,13 +1842,13 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
 
 #[test]
 fn compressed_segment_content_fallback_stays_portable_for_non_native_paths() {
-    let event = SessionEvent {
+    let event = Event {
         id: "compressed-source".to_string(),
-        kind: SessionEventKind::Message,
-        role: EventRole::Assistant,
+        kind: EventKind::Message,
+        role: Role::Assistant,
         timestamp: Utc::now(),
-        links: EventLinks::default(),
-        blocks: vec![EventBlock::Compressed {
+        links: Links::default(),
+        blocks: vec![Block::Compressed {
             source_provider_id: "opencode".to_string(),
             summary: "compressed summary".to_string(),
             source_event_ids: vec![
@@ -1861,8 +1859,8 @@ fn compressed_segment_content_fallback_stays_portable_for_non_native_paths() {
             source_event_count: None,
             archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
         }],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: "memorph".to_string(),
                 original_id: None,
                 original_role: Some("assistant".to_string()),
@@ -1870,7 +1868,7 @@ fn compressed_segment_content_fallback_stays_portable_for_non_native_paths() {
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Normalized,
+            fidelity: Fidelity::Normalized,
             provider_ext: BTreeMap::new(),
         },
     };
@@ -1898,40 +1896,40 @@ fn compressed_segment_content_fallback_stays_portable_for_non_native_paths() {
 
 #[test]
 fn first_user_message_skips_empty_user_events_but_has_user_event_stays_true() {
-    let session = CanonicalSession {
-        schema: CanonicalSchema::default(),
-        identity: SessionIdentity {
+    let session = Session {
+        schema: Schema::default(),
+        identity: Identity {
             canonical_id: "session-3".to_string(),
             source_title: None,
         },
-        provenance: SessionProvenance {
+        provenance: Provenance {
             imported_at: Utc::now(),
             imported_by: None,
-            primary_source: ProviderSessionRef {
+            primary_source: ProviderRef {
                 provider_id: PROVIDER_ID.to_string(),
                 session_id: "session-3".to_string(),
                 source_path: None,
             },
             aliases: Vec::new(),
         },
-        context: SessionContext {
+        context: Context {
             workspace_dir: None,
             created_at: None,
             last_active_at: None,
             tags: Vec::new(),
         },
         events: vec![
-            SessionEvent {
+            Event {
                 id: "user-empty".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::User,
+                kind: EventKind::Message,
+                role: Role::User,
                 timestamp: Utc::now(),
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
+                links: Links::default(),
+                blocks: vec![Block::Text {
                     text: "   ".to_string(),
                 }],
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: PROVIDER_ID.to_string(),
                         original_id: None,
                         original_role: Some("user".to_string()),
@@ -1939,21 +1937,21 @@ fn first_user_message_skips_empty_user_events_but_has_user_event_stays_true() {
                     },
                     model: None,
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: BTreeMap::new(),
                 },
             },
-            SessionEvent {
+            Event {
                 id: "user-real".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::User,
+                kind: EventKind::Message,
+                role: Role::User,
                 timestamp: Utc::now(),
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
+                links: Links::default(),
+                blocks: vec![Block::Text {
                     text: "real prompt".to_string(),
                 }],
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: PROVIDER_ID.to_string(),
                         original_id: None,
                         original_role: Some("user".to_string()),
@@ -1961,7 +1959,7 @@ fn first_user_message_skips_empty_user_events_but_has_user_event_stays_true() {
                     },
                     model: None,
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: BTreeMap::new(),
                 },
             },
@@ -2713,7 +2711,9 @@ fn import_canonical_session_drops_token_count() {
     // session_meta + message = 2 events; token_count is dropped
     assert_eq!(imported.session.events.len(), 2);
     assert!(!imported.session.events.iter().any(|event| {
-        event.blocks.iter().any(|block| matches!(block, EventBlock::ProviderPayload { kind, .. } if kind == "token_count"))
+        event.blocks.iter().any(
+            |block| matches!(block, Block::ProviderPayload { kind, .. } if kind == "token_count"),
+        )
     }));
 }
 
@@ -2775,7 +2775,7 @@ fn import_canonical_session_dedupes_last_agent_message() {
         .blocks
         .iter()
         .filter_map(|b| match b {
-            EventBlock::Text { text } => Some(text.as_str()),
+            Block::Text { text } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -2789,7 +2789,7 @@ fn import_canonical_session_dedupes_last_agent_message() {
         .blocks
         .iter()
         .filter_map(|b| match b {
-            EventBlock::Text { text } => Some(text.as_str()),
+            Block::Text { text } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -2798,23 +2798,23 @@ fn import_canonical_session_dedupes_last_agent_message() {
 
 #[test]
 fn provider_payload_block_is_skipped_in_codex_export() {
-    let event = SessionEvent {
+    let event = Event {
         id: "test".to_string(),
-        kind: SessionEventKind::Message,
-        role: EventRole::Assistant,
+        kind: EventKind::Message,
+        role: Role::Assistant,
         timestamp: Utc::now(),
-        links: EventLinks::default(),
+        links: Links::default(),
         blocks: vec![
-            EventBlock::Text {
+            Block::Text {
                 text: "Hello".to_string(),
             },
-            EventBlock::ProviderPayload {
+            Block::ProviderPayload {
                 kind: "task_complete".to_string(),
                 payload: serde_json::json!({"type": "task_complete"}),
             },
         ],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: "codex".to_string(),
                 original_id: None,
                 original_role: None,
@@ -2822,7 +2822,7 @@ fn provider_payload_block_is_skipped_in_codex_export() {
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     };
@@ -2844,23 +2844,23 @@ fn codex_base_instructions_use_instruction_context_not_lifecycle() {
     std::fs::create_dir_all(&workspace).unwrap();
     std::fs::write(codex_dir.join("config.toml"), "model_provider = \"test\"\n").unwrap();
 
-    let session = CanonicalSession {
-        schema: CanonicalSchema::default(),
-        identity: SessionIdentity {
+    let session = Session {
+        schema: Schema::default(),
+        identity: Identity {
             canonical_id: "session-base-instructions".to_string(),
             source_title: Some("Base Instructions".to_string()),
         },
-        provenance: SessionProvenance {
+        provenance: Provenance {
             imported_at: Utc::now(),
             imported_by: None,
-            primary_source: ProviderSessionRef {
+            primary_source: ProviderRef {
                 provider_id: "claude".to_string(),
                 session_id: "session-base-instructions".to_string(),
                 source_path: None,
             },
             aliases: Vec::new(),
         },
-        context: SessionContext {
+        context: Context {
             workspace_dir: Some(workspace.to_string_lossy().to_string()),
             created_at: None,
             last_active_at: None,
@@ -2869,42 +2869,42 @@ fn codex_base_instructions_use_instruction_context_not_lifecycle() {
         events: vec![
             codex_test_event(
                 "system",
-                SessionEventKind::Message,
-                EventRole::System,
-                vec![EventBlock::Text {
+                EventKind::Message,
+                Role::System,
+                vec![Block::Text {
                     text: "system instructions".to_string(),
                 }],
             ),
             codex_test_event(
                 "runtime",
-                SessionEventKind::Lifecycle,
-                EventRole::System,
-                vec![EventBlock::Text {
+                EventKind::Lifecycle,
+                Role::System,
+                vec![Block::Text {
                     text: "runtime context".to_string(),
                 }],
             ),
             codex_test_event(
                 "developer",
-                SessionEventKind::Message,
-                EventRole::Developer,
-                vec![EventBlock::Text {
+                EventKind::Message,
+                Role::Developer,
+                vec![Block::Text {
                     text: "developer instructions".to_string(),
                 }],
             ),
             codex_test_event(
                 "payload",
-                SessionEventKind::Message,
-                EventRole::System,
-                vec![EventBlock::ProviderPayload {
+                EventKind::Message,
+                Role::System,
+                vec![Block::ProviderPayload {
                     kind: "internal".to_string(),
                     payload: serde_json::json!({"text": "provider payload"}),
                 }],
             ),
             codex_test_event(
                 "user",
-                SessionEventKind::Message,
-                EventRole::User,
-                vec![EventBlock::Text {
+                EventKind::Message,
+                Role::User,
+                vec![Block::Text {
                     text: "real prompt".to_string(),
                 }],
             ),
@@ -2947,21 +2947,16 @@ fn codex_base_instructions_use_instruction_context_not_lifecycle() {
     assert!(!instructions.contains("real prompt"));
 }
 
-fn codex_test_event(
-    id: &str,
-    kind: SessionEventKind,
-    role: EventRole,
-    blocks: Vec<EventBlock>,
-) -> SessionEvent {
-    SessionEvent {
+fn codex_test_event(id: &str, kind: EventKind, role: Role, blocks: Vec<Block>) -> Event {
+    Event {
         id: id.to_string(),
         kind,
         role,
         timestamp: Utc::now(),
-        links: EventLinks::default(),
+        links: Links::default(),
         blocks,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.to_string(),
                 original_id: None,
                 original_role: None,
@@ -2969,7 +2964,7 @@ fn codex_test_event(
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     }

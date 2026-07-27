@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::repository::{self, SessionSourceRecord};
 use crate::{
-    canonical::{EventBlock, SessionEvent},
+    canonical::{Block, Event},
     providers,
 };
 
@@ -259,7 +259,7 @@ fn index_source(
     Ok(invocations.len())
 }
 
-fn detect_event(event: &SessionEvent, identities: &[SkillIdentity]) -> Vec<Invocation> {
+fn detect_event(event: &Event, identities: &[SkillIdentity]) -> Vec<Invocation> {
     let text = event_text(event);
     let normalized_text = text.replace('\\', "/").to_lowercase();
     let explicit = explicit_names(event);
@@ -333,7 +333,7 @@ fn detect_event(event: &SessionEvent, identities: &[SkillIdentity]) -> Vec<Invoc
 }
 
 fn invocation(
-    event: &SessionEvent,
+    event: &Event,
     skill: &SkillIdentity,
     installation_id: Option<String>,
     kind: &'static str,
@@ -358,12 +358,12 @@ fn invocation(
     }
 }
 
-fn explicit_names(event: &SessionEvent) -> BTreeSet<String> {
+fn explicit_names(event: &Event) -> BTreeSet<String> {
     event
         .blocks
         .iter()
         .filter_map(|block| match block {
-            EventBlock::ToolCall {
+            Block::ToolCall {
                 name,
                 input: Some(input),
                 ..
@@ -401,22 +401,20 @@ fn command_names(text: &str) -> BTreeSet<String> {
     result
 }
 
-fn event_text(event: &SessionEvent) -> String {
+fn event_text(event: &Event) -> String {
     event
         .blocks
         .iter()
         .filter_map(|block| match block {
-            EventBlock::Text { text } | EventBlock::Thinking { text, .. } => Some(text.clone()),
-            EventBlock::ToolCall { name, input, .. } => Some(format!(
+            Block::Text { text } | Block::Thinking { text, .. } => Some(text.clone()),
+            Block::ToolCall { name, input, .. } => Some(format!(
                 "{} {}",
                 name,
                 input.as_ref().map(Value::to_string).unwrap_or_default()
             )),
-            EventBlock::ToolResult { content, .. } => Some(content.clone()),
-            EventBlock::Command { command, argv, .. } => {
-                Some(format!("{} {}", command, argv.join(" ")))
-            }
-            EventBlock::CommandResult {
+            Block::ToolResult { content, .. } => Some(content.clone()),
+            Block::Command { command, argv, .. } => Some(format!("{} {}", command, argv.join(" "))),
+            Block::CommandResult {
                 command,
                 stdout,
                 stderr,
@@ -427,8 +425,8 @@ fn event_text(event: &SessionEvent) -> String {
                 stdout.as_deref().unwrap_or(""),
                 stderr.as_deref().unwrap_or("")
             )),
-            EventBlock::File { path, .. } => Some(path.clone()),
-            EventBlock::Patch { files, .. } => Some(files.join(" ")),
+            Block::File { path, .. } => Some(path.clone()),
+            Block::Patch { files, .. } => Some(files.join(" ")),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -753,21 +751,19 @@ fn hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{
-        EventLinks, EventMetadata, EventRole, EventSource, MappingDisposition, SessionEventKind,
-    };
+    use crate::canonical::{EventKind, Fidelity, Links, Metadata, Role, Source};
     use chrono::TimeZone;
 
-    fn event(blocks: Vec<EventBlock>) -> SessionEvent {
-        SessionEvent {
+    fn event(blocks: Vec<Block>) -> Event {
+        Event {
             id: "event-1".into(),
-            kind: SessionEventKind::ToolCall,
-            role: EventRole::Assistant,
+            kind: EventKind::ToolCall,
+            role: Role::Assistant,
             timestamp: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
-            links: EventLinks::default(),
+            links: Links::default(),
             blocks,
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "codex".into(),
                     original_id: None,
                     original_role: None,
@@ -775,7 +771,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: BTreeMap::new(),
             },
         }
@@ -828,7 +824,7 @@ mod tests {
             files: vec!["scripts/run.sh".into()],
         };
         let found = detect_event(
-            &event(vec![EventBlock::ToolCall {
+            &event(vec![Block::ToolCall {
                 tool_call_id: "1".into(),
                 name: "skill".into(),
                 input: Some(serde_json::json!({"skill":"demo", "path":"/tmp/demo/SKILL.md"})),

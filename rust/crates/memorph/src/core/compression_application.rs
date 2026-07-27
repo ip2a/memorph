@@ -289,7 +289,7 @@ pub struct RetrievedCompressionArchive {
     pub omitted_event_count: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub matches: Vec<RetrievedCompressionArchiveMatch>,
-    pub events: Vec<SessionEvent>,
+    pub events: Vec<Event>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -392,7 +392,7 @@ pub fn compression_retrieval_tool_spec() -> CompressionRetrievalToolSpec {
         output_contract: CompressionRetrievalToolOutputContract {
             full_retrieval: vec![
                 "retrieval_mode is full_archive".to_string(),
-                "events contains every original archived SessionEvent".to_string(),
+                "events contains every original archived Event".to_string(),
                 "source_event_count equals the archive's full original event count".to_string(),
                 "returned_event_ids contains every returned event id".to_string(),
                 "returned_event_count equals events.length".to_string(),
@@ -400,7 +400,7 @@ pub fn compression_retrieval_tool_spec() -> CompressionRetrievalToolSpec {
             ],
             query_retrieval: vec![
                 "retrieval_mode is query_matches or query_no_matches".to_string(),
-                "events contains only matching archived SessionEvent values".to_string(),
+                "events contains only matching archived Event values".to_string(),
                 "returned_event_ids contains only matching event ids".to_string(),
                 "omitted_event_count reports archived events not returned by the query".to_string(),
                 "matches contains event_id, event_index, score, and snippets for each returned event".to_string(),
@@ -532,10 +532,10 @@ pub(super) fn retrieval_next_action(mode: CompressionRetrievalMode) -> String {
 }
 
 pub(super) fn search_archive_events(
-    events: &[SessionEvent],
+    events: &[Event],
     query: &str,
     max_results: usize,
-) -> (Vec<SessionEvent>, Vec<RetrievedCompressionArchiveMatch>) {
+) -> (Vec<Event>, Vec<RetrievedCompressionArchiveMatch>) {
     if max_results == 0 {
         return (Vec::new(), Vec::new());
     }
@@ -818,7 +818,7 @@ pub fn active_compression_apply(
 
 pub(super) fn apply_active_compression_to_session(
     params: &ActiveCompressionApplyCommandParams,
-    session: &CanonicalSession,
+    session: &Session,
     archive_dir: &std::path::Path,
 ) -> Result<active_compression::ActiveCompressionApplyResult> {
     let apply_params = ActiveCompressionApplyParams {
@@ -879,7 +879,7 @@ pub(super) fn register_active_compression_archive_artifacts(
     conn: &mut rusqlite::Connection,
     operation_id: &str,
     params: &ActiveCompressionApplyCommandParams,
-    session: &CanonicalSession,
+    session: &Session,
     archive_dir: &std::path::Path,
     archive_refs: &[String],
 ) -> Result<Vec<crate::storage::artifact_store::ArtifactManifest>> {
@@ -918,7 +918,7 @@ pub(super) fn load_active_compression_source_session(
     source_provider_id: &str,
     session_id: Option<&str>,
     file: Option<&str>,
-) -> Result<CanonicalSession> {
+) -> Result<Session> {
     match (session_id, file) {
         (Some(_), Some(_)) => anyhow::bail!("Use either session_id or file, not both"),
         (Some(session_id), None) => {

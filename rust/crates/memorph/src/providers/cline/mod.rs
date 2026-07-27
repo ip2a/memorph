@@ -2,17 +2,15 @@ pub mod adapter;
 pub mod hook;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingReport,
-    ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
-    SessionProvenance,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionSummary, ProviderSourceFingerprint, ProviderWriteRisk,
     ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -42,11 +40,11 @@ impl Provider for ClineProvider {
             page_strategy: PageStrategy::FullImport,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },
             resume_quality: ResumeQuality::None,
@@ -120,23 +118,23 @@ impl Provider for ClineProvider {
         let mut extensions = BTreeMap::new();
         extensions.insert("cline_api_conversation_history".into(), value);
         Ok(ImportedSession {
-            session: CanonicalSession {
-                schema: CanonicalSchema::default(),
-                identity: SessionIdentity {
+            session: Session {
+                schema: Schema::default(),
+                identity: Identity {
                     canonical_id: task_id.clone(),
                     source_title: title,
                 },
-                provenance: SessionProvenance {
+                provenance: Provenance {
                     imported_at: Utc::now(),
                     imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderSessionRef {
+                    primary_source: ProviderRef {
                         provider_id: PROVIDER_ID.into(),
                         session_id: task_id,
                         source_path: Some(path.to_string_lossy().into_owned()),
                     },
                     aliases: Vec::new(),
                 },
-                context: SessionContext {
+                context: Context {
                     workspace_dir: task_workspace(&path),
                     created_at: Some(timestamp),
                     last_active_at: Some(timestamp),
@@ -242,7 +240,7 @@ fn first_text(value: &Value) -> Option<String> {
         message_blocks(item)
             .into_iter()
             .find_map(|block| match block {
-                EventBlock::Text { text } if !text.trim().is_empty() => Some(text),
+                Block::Text { text } if !text.trim().is_empty() => Some(text),
                 _ => None,
             })
     })
@@ -252,7 +250,7 @@ fn history_events(
     value: &Value,
     timestamp: DateTime<Utc>,
     report: &mut MappingReport,
-) -> Vec<SessionEvent> {
+) -> Vec<Event> {
     value
         .as_array()
         .into_iter()
@@ -264,11 +262,11 @@ fn history_events(
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
             let role = match role_raw {
-                "user" => EventRole::User,
-                "assistant" => EventRole::Assistant,
-                "tool" => EventRole::Tool,
-                "system" => EventRole::System,
-                _ => EventRole::Unknown,
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                "tool" => Role::Tool,
+                "system" => Role::System,
+                _ => Role::Unknown,
             };
             let blocks = message_blocks(item);
             if blocks.is_empty() {
@@ -276,26 +274,26 @@ fn history_events(
             }
             let kind = if blocks
                 .iter()
-                .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+                .any(|block| matches!(block, Block::ToolCall { .. }))
             {
-                SessionEventKind::ToolCall
+                EventKind::ToolCall
             } else if blocks
                 .iter()
-                .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+                .any(|block| matches!(block, Block::ToolResult { .. }))
             {
-                SessionEventKind::ToolResult
+                EventKind::ToolResult
             } else {
-                SessionEventKind::Message
+                EventKind::Message
             };
             report.push_issue(crate::canonical::MappingIssue {
                 level: crate::canonical::MappingIssueLevel::Info,
-                disposition: MappingDisposition::Preserved,
+                disposition: Fidelity::Preserved,
                 code: "cline-native-block".into(),
                 message: "Mapped current Cline API conversation history block".into(),
                 path: Some(format!("messages[{index}]")),
                 raw: None,
             });
-            Some(SessionEvent {
+            Some(Event {
                 id: item
                     .get("id")
                     .and_then(Value::as_str)
@@ -304,10 +302,10 @@ fn history_events(
                 kind,
                 role,
                 timestamp,
-                links: EventLinks::default(),
+                links: Links::default(),
                 blocks,
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: PROVIDER_ID.into(),
                         original_id: None,
                         original_role: Some(role_raw.into()),
@@ -315,7 +313,7 @@ fn history_events(
                     },
                     model: None,
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: BTreeMap::new(),
                 },
             })
@@ -323,10 +321,10 @@ fn history_events(
         .collect()
 }
 
-fn message_blocks(item: &Value) -> Vec<EventBlock> {
+fn message_blocks(item: &Value) -> Vec<Block> {
     let content = item.get("content").unwrap_or(item);
     if let Some(text) = content.as_str() {
-        return vec![EventBlock::Text { text: text.into() }];
+        return vec![Block::Text { text: text.into() }];
     }
     content
         .as_array()
@@ -337,17 +335,17 @@ fn message_blocks(item: &Value) -> Vec<EventBlock> {
                 "text" => block
                     .get("text")
                     .and_then(Value::as_str)
-                    .map(|text| EventBlock::Text { text: text.into() }),
+                    .map(|text| Block::Text { text: text.into() }),
                 "thinking" => {
                     block
                         .get("thinking")
                         .and_then(Value::as_str)
-                        .map(|text| EventBlock::Thinking {
+                        .map(|text| Block::Thinking {
                             text: text.into(),
                             signature: None,
                         })
                 }
-                "tool_use" => Some(EventBlock::ToolCall {
+                "tool_use" => Some(Block::ToolCall {
                     tool_call_id: block
                         .get("id")
                         .and_then(Value::as_str)
@@ -360,7 +358,7 @@ fn message_blocks(item: &Value) -> Vec<EventBlock> {
                         .into(),
                     input: block.get("input").cloned(),
                 }),
-                "tool_result" => Some(EventBlock::ToolResult {
+                "tool_result" => Some(Block::ToolResult {
                     tool_call_id: block
                         .get("tool_use_id")
                         .and_then(Value::as_str)
@@ -412,7 +410,7 @@ mod tests {
     fn maps_current_cline_content_blocks() {
         let value = serde_json::json!({"role":"assistant","content":[{"type":"thinking","thinking":"reason"},{"type":"tool_use","id":"call-1","name":"bash","input":{"cmd":"pwd"}}]});
         let blocks = message_blocks(&value);
-        assert!(matches!(blocks[0], EventBlock::Thinking { .. }));
-        assert!(matches!(blocks[1], EventBlock::ToolCall { ref name, .. } if name == "bash"));
+        assert!(matches!(blocks[0], Block::Thinking { .. }));
+        assert!(matches!(blocks[1], Block::ToolCall { ref name, .. } if name == "bash"));
     }
 }

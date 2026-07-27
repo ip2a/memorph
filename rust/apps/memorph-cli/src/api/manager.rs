@@ -145,7 +145,8 @@ pub(super) async fn manager_quick_workspaces(
     }
 
     let filter = quick_filter(provider_ids);
-    match memorph::runtime::run_blocking(move || memorph::core::manager::workspaces(&filter)).await {
+    match memorph::runtime::run_blocking(move || memorph::core::manager::workspaces(&filter)).await
+    {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -167,8 +168,13 @@ pub(super) struct ManagerItemsBody {
 }
 
 pub(super) async fn manager_clean(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
-    match memorph::runtime::run_blocking(move || Ok(memorph::core::manager::clean(&body.items, ActivityActor::Api)))
-        .await
+    match memorph::runtime::run_blocking(move || {
+        Ok(memorph::core::manager::clean(
+            &body.items,
+            ActivityActor::Api,
+        ))
+    })
+    .await
     {
         Ok(result) => {
             logging::info(
@@ -216,7 +222,8 @@ pub(super) async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl I
 pub(super) async fn manager_workspaces(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
     let limit = body.limit;
     let filter = manager_filter_from_body(body, None, limit);
-    match memorph::runtime::run_blocking(move || memorph::core::manager::workspaces(&filter)).await {
+    match memorph::runtime::run_blocking(move || memorph::core::manager::workspaces(&filter)).await
+    {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

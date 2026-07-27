@@ -5,7 +5,7 @@
 //! diagnostics)直接调用;hooks HTTP handler(`hooks::server`)也共享同一份
 //! 全局状态。本模块不依赖 axum,可独立留在核心 crate。
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use std::sync::{OnceLock, RwLock};
 use uuid::Uuid;

@@ -24,10 +24,7 @@ pub(super) struct OpenCodeProjection {
     pub(super) parts: Vec<(String, String, i64, Value)>,
 }
 
-pub(super) fn export_canonical_session(
-    session: &CanonicalSession,
-    target_dir: &Path,
-) -> Result<String> {
+pub(super) fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<String> {
     let now = Utc::now().timestamp_millis();
     let session_id = generate_opencode_id("ses");
     let project_id = find_or_create_project(target_dir)?;
@@ -69,7 +66,7 @@ pub(super) fn export_canonical_session(
 }
 
 pub(super) struct OpenCodeProjectionInput<'a> {
-    pub(super) session: &'a CanonicalSession,
+    pub(super) session: &'a Session,
     pub(super) session_id: &'a str,
     pub(super) project_id: &'a str,
     pub(super) slug: &'a str,
@@ -130,8 +127,8 @@ pub(super) fn build_opencode_projection(input: OpenCodeProjectionInput<'_>) -> O
         let msg_id = generate_opencode_id("msg");
         let msg_created = event.timestamp.timestamp_millis();
         let (role, parent_id) = match visible_role {
-            EventRole::Assistant => ("assistant", last_user_msg_id.clone()),
-            EventRole::User => {
+            Role::Assistant => ("assistant", last_user_msg_id.clone()),
+            Role::User => {
                 last_user_msg_id = Some(msg_id.clone());
                 ("user", None)
             }
@@ -176,7 +173,7 @@ pub(super) fn build_opencode_projection(input: OpenCodeProjectionInput<'_>) -> O
 
 pub(super) fn append_compressed_opencode_segment(
     session_id: &str,
-    event: &SessionEvent,
+    event: &Event,
     segment: CompressedSegment<'_>,
     target_dir: &str,
     last_user_msg_id: &mut Option<String>,
@@ -278,7 +275,7 @@ pub(super) fn opencode_compaction_part(
 
 pub(super) fn build_opencode_message_data_from_event(
     session_id: &str,
-    event: &SessionEvent,
+    event: &Event,
     msg_id: &str,
     role: &str,
     parent_id: Option<&str>,
@@ -340,25 +337,25 @@ pub(super) fn canonical_block_to_opencode_part(
     session_id: &str,
     msg_id: &str,
     part_id: &str,
-    block: &EventBlock,
+    block: &Block,
     part_created: i64,
 ) -> Option<Value> {
     match block {
-        EventBlock::Text { text } => Some(serde_json::json!({
+        Block::Text { text } => Some(serde_json::json!({
             "id": part_id,
             "sessionID": session_id,
             "messageID": msg_id,
             "type": "text",
             "text": text,
         })),
-        EventBlock::Thinking { text, .. } => Some(serde_json::json!({
+        Block::Thinking { text, .. } => Some(serde_json::json!({
             "id": part_id,
             "sessionID": session_id,
             "messageID": msg_id,
             "type": "reasoning",
             "text": text,
         })),
-        EventBlock::ToolResult {
+        Block::ToolResult {
             tool_call_id,
             content,
             is_error,
@@ -381,7 +378,7 @@ pub(super) fn canonical_block_to_opencode_part(
                 }
             }
         })),
-        EventBlock::Image {
+        Block::Image {
             mime_type, data, ..
         } => Some(serde_json::json!({
             "id": part_id,
@@ -392,7 +389,7 @@ pub(super) fn canonical_block_to_opencode_part(
             "filename": "image.png",
             "url": data.as_deref().unwrap_or(""),
         })),
-        EventBlock::File { path, content, .. } => Some(serde_json::json!({
+        Block::File { path, content, .. } => Some(serde_json::json!({
             "id": part_id,
             "sessionID": session_id,
             "messageID": msg_id,

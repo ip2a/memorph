@@ -250,11 +250,11 @@ fn current_format_scan_uses_directory_locators_and_truthful_capabilities() -> Re
     assert_eq!(capabilities.turn_quality, TurnQuality::Exact);
     assert_eq!(
         capabilities.import_fidelity.tool_call,
-        Some(MappingDisposition::Preserved)
+        Some(Fidelity::Preserved)
     );
     assert_eq!(
         capabilities.import_fidelity.provider_payload,
-        Some(MappingDisposition::Preserved)
+        Some(Fidelity::Preserved)
     );
     assert_eq!(
         capabilities.write_risk,
@@ -1001,7 +1001,7 @@ fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifac
     );
     assert_eq!(imported.session.events.len(), 12);
     assert!(imported.session.artifacts.is_empty());
-    assert_eq!(imported.report.overall, MappingDisposition::Preserved);
+    assert_eq!(imported.report.overall, Fidelity::Preserved);
     assert!(imported
         .report
         .issues
@@ -1026,15 +1026,15 @@ fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifac
     );
     assert!(matches!(
         event("msg-reasoning-1").blocks.as_slice(),
-        [EventBlock::Thinking { text, .. }] if text == "[sanitized reasoning]"
+        [Block::Thinking { text, .. }] if text == "[sanitized reasoning]"
     ));
     assert!(matches!(
         event("msg-assistant-1").blocks.as_slice(),
-        [EventBlock::Text { text }] if text == "[sanitized assistant response]"
+        [Block::Text { text }] if text == "[sanitized assistant response]"
     ));
     assert!(matches!(
         event("msg-tool-call-1").blocks.as_slice(),
-        [EventBlock::ToolCall { tool_call_id, name, input: Some(input) }]
+        [Block::ToolCall { tool_call_id, name, input: Some(input) }]
             if tool_call_id == "tool-1"
                 && name == "read_file"
                 && input["path"] == "src/example.rs"
@@ -1045,7 +1045,7 @@ fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifac
     );
     assert!(matches!(
         event("msg-tool-result-1").blocks.as_slice(),
-        [EventBlock::ToolResult { tool_call_id, content, is_error }]
+        [Block::ToolResult { tool_call_id, content, is_error }]
             if tool_call_id == "tool-1"
                 && content == "[sanitized tool output]"
                 && !is_error
@@ -1164,7 +1164,7 @@ fn current_format_import_reports_malformed_and_preserves_unknown_payloads() -> R
     fs::copy(variants.join("messages.malformed.jsonl"), &messages_path)?;
     let malformed = KiroProvider.import_session(session_dir.to_str().unwrap())?;
     assert_eq!(malformed.session.events.len(), 2);
-    assert_eq!(malformed.report.overall, MappingDisposition::Dropped);
+    assert_eq!(malformed.report.overall, Fidelity::Dropped);
     let issue = malformed
         .report
         .issues
@@ -1177,17 +1177,17 @@ fn current_format_import_reports_malformed_and_preserves_unknown_payloads() -> R
     fs::copy(variants.join("messages.unknown.jsonl"), &messages_path)?;
     let unknown = KiroProvider.import_session(session_dir.to_str().unwrap())?;
     assert_eq!(unknown.session.events.len(), 1);
-    assert_eq!(unknown.report.overall, MappingDisposition::Preserved);
+    assert_eq!(unknown.report.overall, Fidelity::Preserved);
     assert!(unknown
         .report
         .issues
         .iter()
         .any(|issue| issue.code == "unknown_payload_preserved"));
-    assert_eq!(unknown.session.events[0].kind, SessionEventKind::Unknown);
-    assert_eq!(unknown.session.events[0].role, EventRole::Unknown);
+    assert_eq!(unknown.session.events[0].kind, EventKind::Unknown);
+    assert_eq!(unknown.session.events[0].role, Role::Unknown);
     assert!(matches!(
         unknown.session.events[0].blocks.as_slice(),
-        [EventBlock::ProviderPayload { kind, payload }]
+        [Block::ProviderPayload { kind, payload }]
             if kind == "future_kiro_payload"
                 && payload["futureField"]["preserve"] == true
     ));
@@ -1211,7 +1211,7 @@ fn current_format_import_reports_missing_tool_identifiers() -> Result<()> {
     )?;
 
     let imported = KiroProvider.import_session(session_dir.to_str().unwrap())?;
-    assert_eq!(imported.report.overall, MappingDisposition::Normalized);
+    assert_eq!(imported.report.overall, Fidelity::Normalized);
     assert!(imported
         .report
         .issues
@@ -1229,12 +1229,12 @@ fn current_format_import_reports_missing_tool_identifiers() -> Result<()> {
         .any(|issue| issue.code == "missing_tool_result_call_id"));
     assert!(matches!(
         imported.session.events[0].blocks.as_slice(),
-        [EventBlock::ToolCall { tool_call_id, name, .. }]
+        [Block::ToolCall { tool_call_id, name, .. }]
             if tool_call_id == "tool-call-missing-id" && name == "unknown"
     ));
     assert!(matches!(
         imported.session.events[1].blocks.as_slice(),
-        [EventBlock::ToolResult { tool_call_id, .. }]
+        [Block::ToolResult { tool_call_id, .. }]
             if tool_call_id == "unknown"
     ));
     Ok(())
@@ -1255,20 +1255,17 @@ fn current_format_import_classifies_known_payload_matrix() -> Result<()> {
 
     let imported = KiroProvider.import_session(session_dir.to_str().unwrap())?;
     assert_eq!(imported.session.events.len(), 11);
-    assert_eq!(imported.report.overall, MappingDisposition::Preserved);
-    assert_eq!(imported.session.events[0].kind, SessionEventKind::Message);
-    assert_eq!(imported.session.events[0].role, EventRole::System);
-    assert_eq!(imported.session.events[1].kind, SessionEventKind::Message);
-    assert_eq!(imported.session.events[1].role, EventRole::Assistant);
+    assert_eq!(imported.report.overall, Fidelity::Preserved);
+    assert_eq!(imported.session.events[0].kind, EventKind::Message);
+    assert_eq!(imported.session.events[0].role, Role::System);
+    assert_eq!(imported.session.events[1].kind, EventKind::Message);
+    assert_eq!(imported.session.events[1].role, Role::Assistant);
     assert!(imported.session.events[2..]
         .iter()
-        .all(|event| event.kind == SessionEventKind::Lifecycle));
-    assert!(imported.session.events[2..].iter().all(|event| {
-        matches!(
-            event.blocks.as_slice(),
-            [EventBlock::ProviderPayload { .. }]
-        )
-    }));
+        .all(|event| event.kind == EventKind::Lifecycle));
+    assert!(imported.session.events[2..]
+        .iter()
+        .all(|event| { matches!(event.blocks.as_slice(), [Block::ProviderPayload { .. }]) }));
     Ok(())
 }
 

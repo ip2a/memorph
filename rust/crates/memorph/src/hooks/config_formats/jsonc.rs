@@ -1,6 +1,6 @@
 //! Minimal JSONC object helpers used by hook provider config installers.
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Copy)]

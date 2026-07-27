@@ -769,4 +769,3 @@ pub(super) fn session_display_key(item: &SessionItem) -> String {
         .unwrap_or(&item.session_id)
         .to_ascii_lowercase()
 }
-

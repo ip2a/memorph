@@ -1,5 +1,5 @@
 use crate::sync::{Holding, SyncGroup, SyncReport};
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::json;
 
@@ -288,7 +288,7 @@ mod tests {
             errors: Vec::new(),
             target_assessments: vec![crate::sync::SyncTargetAssessment {
                 provider: "codex".to_string(),
-                fidelity: crate::canonical::MappingDisposition::Normalized,
+                fidelity: crate::canonical::Fidelity::Normalized,
                 write_risk: crate::providers::find_provider("codex")
                     .unwrap()
                     .capabilities()

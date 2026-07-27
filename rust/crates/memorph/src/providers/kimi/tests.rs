@@ -134,9 +134,9 @@ fn read_jsonl_values(path: &Path) -> Vec<Result<Value, serde_json::Error>> {
         .collect()
 }
 
-fn provider_payload_kind(event: &SessionEvent) -> Option<&str> {
+fn provider_payload_kind(event: &Event) -> Option<&str> {
     event.blocks.iter().find_map(|block| match block {
-        EventBlock::ProviderPayload { kind, .. } => Some(kind.as_str()),
+        Block::ProviderPayload { kind, .. } => Some(kind.as_str()),
         _ => None,
     })
 }
@@ -428,10 +428,10 @@ fn kimi_import_accepts_only_directory_locators_and_context_only_sessions() {
         vec!["[sanitized context-only request]".to_string()]
     );
     assert!(context_only.session.events.iter().any(|event| {
-        event.role == EventRole::System
+        event.role == Role::System
             && matches!(
                 event.blocks.first(),
-                Some(EventBlock::Text { text })
+                Some(Block::Text { text })
                     if text == "[sanitized context-only system prompt]"
             )
     }));
@@ -440,7 +440,7 @@ fn kimi_import_accepts_only_directory_locators_and_context_only_sessions() {
         .session
         .extensions
         .contains_key("kimi_wire_metadata"));
-    assert_eq!(context_only.report.overall, MappingDisposition::Preserved);
+    assert_eq!(context_only.report.overall, Fidelity::Preserved);
     assert!(!context_only_dir.join("wire.jsonl").exists());
 }
 
@@ -753,29 +753,29 @@ fn kimi_backup_contract_and_capabilities_are_truthful() {
     assert_eq!(
         capabilities.import_fidelity,
         ProviderContentFidelity {
-            text: Some(MappingDisposition::Preserved),
-            thinking: Some(MappingDisposition::Preserved),
-            tool_call: Some(MappingDisposition::Downgraded),
-            tool_result: Some(MappingDisposition::Downgraded),
-            patch: Some(MappingDisposition::Unsupported),
-            image: Some(MappingDisposition::Normalized),
-            file: Some(MappingDisposition::Downgraded),
-            compressed: Some(MappingDisposition::Unsupported),
-            provider_payload: Some(MappingDisposition::Preserved),
+            text: Some(Fidelity::Preserved),
+            thinking: Some(Fidelity::Preserved),
+            tool_call: Some(Fidelity::Downgraded),
+            tool_result: Some(Fidelity::Downgraded),
+            patch: Some(Fidelity::Unsupported),
+            image: Some(Fidelity::Normalized),
+            file: Some(Fidelity::Downgraded),
+            compressed: Some(Fidelity::Unsupported),
+            provider_payload: Some(Fidelity::Preserved),
         }
     );
     assert_eq!(
         capabilities.export_fidelity,
         ProviderContentFidelity {
-            text: Some(MappingDisposition::Preserved),
-            thinking: Some(MappingDisposition::Preserved),
-            tool_call: Some(MappingDisposition::Downgraded),
-            tool_result: Some(MappingDisposition::Downgraded),
-            patch: Some(MappingDisposition::Downgraded),
-            image: Some(MappingDisposition::Downgraded),
-            file: Some(MappingDisposition::Downgraded),
-            compressed: Some(MappingDisposition::Downgraded),
-            provider_payload: Some(MappingDisposition::Dropped),
+            text: Some(Fidelity::Preserved),
+            thinking: Some(Fidelity::Preserved),
+            tool_call: Some(Fidelity::Downgraded),
+            tool_result: Some(Fidelity::Downgraded),
+            patch: Some(Fidelity::Downgraded),
+            image: Some(Fidelity::Downgraded),
+            file: Some(Fidelity::Downgraded),
+            compressed: Some(Fidelity::Downgraded),
+            provider_payload: Some(Fidelity::Dropped),
         }
     );
     assert_eq!(capabilities.resume_quality, ResumeQuality::Native);
@@ -899,16 +899,16 @@ fn native_export_is_discoverable_resumable_and_round_trips_declared_fidelity() {
         .session
         .events
         .iter()
-        .find(|event| event.role == EventRole::Assistant)
+        .find(|event| event.role == Role::Assistant)
         .unwrap();
     assert!(assistant
         .blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::Thinking { text, .. } if text == "reasoning")));
+        .any(|block| matches!(block, Block::Thinking { text, .. } if text == "reasoning")));
     assert!(assistant
         .blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::Text { text } if text == "answer")));
+        .any(|block| matches!(block, Block::Text { text } if text == "answer")));
 
     let second = KimiProvider
         .export_session(&canonical, &target_dir)
@@ -1187,9 +1187,7 @@ fn kimi_full_import_pages_keep_total_counts_and_project_only_page_turns() {
         .session
         .events
         .iter()
-        .position(|event| {
-            event.role == EventRole::Assistant && event.links.provider_turn_id.is_some()
-        })
+        .position(|event| event.role == Role::Assistant && event.links.provider_turn_id.is_some())
         .unwrap();
     let expected_turn_id = full.imported.session.events[assistant_index]
         .links
@@ -1819,9 +1817,10 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
         "1.9"
     );
     assert!(!imported.session.events.iter().any(|event| {
-        event.blocks.iter().any(
-            |block| matches!(block, EventBlock::ProviderPayload { kind, .. } if kind == "metadata"),
-        )
+        event
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::ProviderPayload { kind, .. } if kind == "metadata"))
     }));
 
     let visible = imported
@@ -1836,34 +1835,35 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
         visible,
         vec![
             (
-                EventRole::User,
+                Role::User,
                 "hello\n[Image: image/png]\ndata:image/png;base64,abc".to_string()
             ),
-            (EventRole::Assistant, "reasoning\nanswer".to_string()),
+            (Role::Assistant, "reasoning\nanswer".to_string()),
         ]
     );
     let user = imported
         .session
         .events
         .iter()
-        .find(|event| event.role == EventRole::User)
+        .find(|event| event.role == Role::User)
         .unwrap();
     assert!(user.blocks.iter().any(
-        |block| matches!(block, EventBlock::Image { data: Some(data), .. } if data == "data:image/png;base64,abc")
+        |block| matches!(block, Block::Image { data: Some(data), .. } if data == "data:image/png;base64,abc")
     ));
     let assistant = imported
         .session
         .events
         .iter()
-        .find(|event| event.role == EventRole::Assistant && event.kind == SessionEventKind::Message)
+        .find(|event| event.role == Role::Assistant && event.kind == EventKind::Message)
         .unwrap();
     assert!(assistant
         .blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::Thinking { text, .. } if text == "reasoning")));
-    assert!(assistant.blocks.iter().any(
-        |block| matches!(block, EventBlock::ProviderPayload { kind, .. } if kind == "custom")
-    ));
+        .any(|block| matches!(block, Block::Thinking { text, .. } if text == "reasoning")));
+    assert!(assistant
+        .blocks
+        .iter()
+        .any(|block| matches!(block, Block::ProviderPayload { kind, .. } if kind == "custom")));
 
     let turn_begin = imported
         .session
@@ -1898,7 +1898,7 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
             .iter()
             .any(|event| provider_payload_kind(event) == Some(kind)));
     }
-    assert_eq!(imported.report.overall, MappingDisposition::Preserved);
+    assert_eq!(imported.report.overall, Fidelity::Preserved);
     assert!(imported
         .report
         .issues
@@ -1936,14 +1936,14 @@ fn sanitized_kimi_fixture_imports_context_authoritatively_with_native_turns() {
     assert_eq!(
         visible,
         vec![
-            (EventRole::User, "[sanitized user request]".to_string()),
+            (Role::User, "[sanitized user request]".to_string()),
             (
-                EventRole::Assistant,
+                Role::Assistant,
                 "[sanitized reasoning]\n[sanitized assistant response]".to_string()
             ),
-            (EventRole::User, "[sanitized follow-up]".to_string()),
+            (Role::User, "[sanitized follow-up]".to_string()),
             (
-                EventRole::Assistant,
+                Role::Assistant,
                 "[sanitized follow-up response]".to_string()
             ),
         ]
@@ -1966,14 +1966,14 @@ fn sanitized_kimi_fixture_imports_context_authoritatively_with_native_turns() {
         .session
         .events
         .iter()
-        .filter(|event| matches!(event.role, EventRole::User | EventRole::Assistant))
+        .filter(|event| matches!(event.role, Role::User | Role::Assistant))
         .filter_map(|event| event.links.provider_turn_id.as_deref())
         .collect::<Vec<_>>();
     assert_eq!(turn_ids.len(), 4);
     assert_eq!(turn_ids[0], turn_ids[1]);
     assert_eq!(turn_ids[2], turn_ids[3]);
     assert_ne!(turn_ids[0], turn_ids[2]);
-    assert_eq!(imported.report.overall, MappingDisposition::Preserved);
+    assert_eq!(imported.report.overall, Fidelity::Preserved);
     assert!(imported.report.issues.is_empty());
 }
 
@@ -2014,7 +2014,7 @@ fn malformed_wire_line_is_reported_without_losing_context_messages() {
         .issues
         .iter()
         .any(|issue| issue.code == "invalid_wire_jsonl_line"
-            && issue.disposition == MappingDisposition::Dropped));
+            && issue.disposition == Fidelity::Dropped));
     assert!(imported
         .session
         .events
@@ -2025,7 +2025,7 @@ fn malformed_wire_line_is_reported_without_losing_context_messages() {
         .events
         .iter()
         .any(|event| provider_payload_kind(event) == Some("TurnEnd")));
-    assert_eq!(imported.report.overall, MappingDisposition::Dropped);
+    assert_eq!(imported.report.overall, Fidelity::Dropped);
 }
 
 #[test]
@@ -2167,7 +2167,7 @@ fn kimi_session_activity_is_computed_from_the_live_source() {
 
 #[test]
 fn compressed_segment_exports_as_portable_kimi_text_part() {
-    let block = EventBlock::Compressed {
+    let block = Block::Compressed {
         source_provider_id: "opencode".to_string(),
         summary: "compressed summary".to_string(),
         source_event_ids: vec![
@@ -2198,7 +2198,7 @@ fn compressed_segment_exports_as_portable_kimi_text_part() {
 
 #[test]
 fn provider_payload_block_is_skipped_in_kimi_text_part_export() {
-    let block = EventBlock::ProviderPayload {
+    let block = Block::ProviderPayload {
         kind: "custom".to_string(),
         payload: serde_json::json!({"kept": true}),
     };

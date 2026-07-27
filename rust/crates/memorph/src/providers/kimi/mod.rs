@@ -7,10 +7,9 @@ use self::load::*;
 use self::write::*;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
-    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary,
+    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
+    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
+    ProviderRef, Role, Schema, Session, Source, TurnBoundary,
 };
 use crate::provider::{
     canonical_event_is_visible_message, canonical_event_visible_message_role,
@@ -21,7 +20,7 @@ use crate::provider::{
     ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
     TurnQuality, WriteRiskLevel,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -63,26 +62,26 @@ impl Provider for KimiProvider {
             storage_shape: StorageShape::Directory,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Downgraded),
-                tool_result: Some(MappingDisposition::Downgraded),
-                patch: Some(MappingDisposition::Unsupported),
-                image: Some(MappingDisposition::Normalized),
-                file: Some(MappingDisposition::Downgraded),
-                compressed: Some(MappingDisposition::Unsupported),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Downgraded),
+                tool_result: Some(Fidelity::Downgraded),
+                patch: Some(Fidelity::Unsupported),
+                image: Some(Fidelity::Normalized),
+                file: Some(Fidelity::Downgraded),
+                compressed: Some(Fidelity::Unsupported),
+                provider_payload: Some(Fidelity::Preserved),
             },
             export_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Downgraded),
-                tool_result: Some(MappingDisposition::Downgraded),
-                patch: Some(MappingDisposition::Downgraded),
-                image: Some(MappingDisposition::Downgraded),
-                file: Some(MappingDisposition::Downgraded),
-                compressed: Some(MappingDisposition::Downgraded),
-                provider_payload: Some(MappingDisposition::Dropped),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Downgraded),
+                tool_result: Some(Fidelity::Downgraded),
+                patch: Some(Fidelity::Downgraded),
+                image: Some(Fidelity::Downgraded),
+                file: Some(Fidelity::Downgraded),
+                compressed: Some(Fidelity::Downgraded),
+                provider_payload: Some(Fidelity::Dropped),
             },
             resume_quality: ResumeQuality::Native,
             write_risk: ProviderWriteRisk {
@@ -218,11 +217,7 @@ impl Provider for KimiProvider {
         kimi_session_source_fingerprint(Path::new(source_path))
     }
 
-    fn export_session(
-        &self,
-        session: &CanonicalSession,
-        target_dir: &Path,
-    ) -> Result<ExportedSession> {
+    fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
         Ok(canonical_export_result(
             PROVIDER_ID,

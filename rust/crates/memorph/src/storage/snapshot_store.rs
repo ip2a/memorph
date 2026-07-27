@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 use serde::Deserialize;
 

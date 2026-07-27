@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde_json::{json, Value};
 
 use crate::hooks::model::{HookHealthStatus, HookInstallStatus, HookOperationReport};

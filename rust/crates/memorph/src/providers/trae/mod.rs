@@ -2,16 +2,14 @@ pub mod adapter;
 pub mod hook;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingReport,
-    ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
-    SessionProvenance,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
     ProviderSourceFingerprint, ResumeQuality, ScanStrategy, StorageShape, TurnQuality,
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context as _, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
@@ -44,10 +42,10 @@ impl Provider for TraeProvider {
             page_strategy: PageStrategy::FullImport,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },
             resume_quality: ResumeQuality::None,
@@ -111,23 +109,23 @@ impl Provider for TraeProvider {
         let mut extensions = BTreeMap::new();
         extensions.insert("trae_storage_key".into(), Value::String(STORAGE_KEY.into()));
         Ok(ImportedSession {
-            session: CanonicalSession {
-                schema: CanonicalSchema::default(),
-                identity: SessionIdentity {
+            session: Session {
+                schema: Schema::default(),
+                identity: Identity {
                     canonical_id: id.clone(),
                     source_title: title,
                 },
-                provenance: SessionProvenance {
+                provenance: Provenance {
                     imported_at: Utc::now(),
                     imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderSessionRef {
+                    primary_source: ProviderRef {
                         provider_id: PROVIDER_ID.into(),
                         session_id: id,
                         source_path: Some(source_path.into()),
                     },
                     aliases: Vec::new(),
                 },
-                context: SessionContext {
+                context: Context {
                     workspace_dir: workspace_dir(&db),
                     created_at: None,
                     last_active_at: Some(now),
@@ -274,15 +272,15 @@ fn parse_locator(source: &str) -> Result<(PathBuf, String)> {
     Ok((PathBuf::from(path), fragment.to_owned()))
 }
 
-fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Option<SessionEvent> {
+fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Option<Event> {
     let role = match message.get("role").and_then(Value::as_str) {
-        Some("user") => EventRole::User,
-        Some("assistant") | Some("ai") => EventRole::Assistant,
-        Some("tool") => EventRole::Tool,
+        Some("user") => Role::User,
+        Some("assistant") | Some("ai") => Role::Assistant,
+        Some("tool") => Role::Tool,
         _ => {
             report.push_issue(crate::canonical::MappingIssue {
                 level: crate::canonical::MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Unsupported,
+                disposition: Fidelity::Unsupported,
                 code: "trae-unknown-role".into(),
                 message: "Dropped Trae message with unknown role".into(),
                 path: Some(format!("messages[{index}]")),
@@ -298,10 +296,10 @@ fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Opt
         .and_then(Value::as_str)
         .map(str::to_owned);
     let mut blocks = text
-        .map(|text| vec![EventBlock::Text { text }])
+        .map(|text| vec![Block::Text { text }])
         .unwrap_or_default();
     if let Some(task) = message.get("agentTaskContent") {
-        blocks.push(EventBlock::ProviderPayload {
+        blocks.push(Block::ProviderPayload {
             kind: "agent_task_content".into(),
             payload: task.clone(),
         });
@@ -311,25 +309,25 @@ fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Opt
     }
     report.push_issue(crate::canonical::MappingIssue {
         level: crate::canonical::MappingIssueLevel::Info,
-        disposition: MappingDisposition::Preserved,
+        disposition: Fidelity::Preserved,
         code: "trae-native-message".into(),
         message: "Mapped Trae workspaceStorage message".into(),
         path: Some(format!("messages[{index}]")),
         raw: None,
     });
-    Some(SessionEvent {
+    Some(Event {
         id: format!("trae:event:{index}"),
-        kind: SessionEventKind::Message,
+        kind: EventKind::Message,
         role,
         timestamp: message
             .get("timestamp")
             .and_then(Value::as_i64)
             .and_then(datetime_from_ms)
             .unwrap_or_else(Utc::now),
-        links: EventLinks::default(),
+        links: Links::default(),
         blocks,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.into(),
                 original_id: message.get("id").and_then(Value::as_str).map(str::to_owned),
                 original_role: message
@@ -340,7 +338,7 @@ fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Opt
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     })

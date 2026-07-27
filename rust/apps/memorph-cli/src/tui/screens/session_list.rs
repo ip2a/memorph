@@ -7,13 +7,13 @@ use ratatui::{
     Frame,
 };
 
-use memorph::canonical::{EventBlock, EventRole, SessionEvent};
-use memorph::core::{SessionGroup, SessionItem};
 use crate::tui::app::{
     provider_label, ActionDialog, ActionField, ActionResult, AgentManagementFocus, App, AppResult,
     MainFocus, SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
 };
 use crate::tui::theme::{self, Theme};
+use memorph::canonical::{Block as EventBlock, Event, Role};
+use memorph::core::{SessionGroup, SessionItem};
 
 /// Draw session table page
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
@@ -1548,12 +1548,12 @@ fn section_block(title: &str, focused: bool, theme: &Theme) -> Block<'static> {
         })
 }
 
-fn role_style(event: &SessionEvent, theme: &Theme) -> Style {
+fn role_style(event: &Event, theme: &Theme) -> Style {
     let color = match event.role {
-        EventRole::User => theme.accent,
-        EventRole::Assistant => theme.primary,
-        EventRole::Tool => theme.secondary,
-        EventRole::Unknown => theme.warning,
+        Role::User => theme.accent,
+        Role::Assistant => theme.primary,
+        Role::Tool => theme.secondary,
+        Role::Unknown => theme.warning,
         _ => theme.text_dim,
     };
 
@@ -1563,18 +1563,18 @@ fn role_style(event: &SessionEvent, theme: &Theme) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
-fn role_name(role: EventRole) -> &'static str {
+fn role_name(role: Role) -> &'static str {
     match role {
-        EventRole::User => "user",
-        EventRole::Assistant => "assistant",
-        EventRole::Tool => "tool",
-        EventRole::System => "system",
-        EventRole::Developer => "developer",
-        EventRole::Unknown => "unknown",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+        Role::System => "system",
+        Role::Developer => "developer",
+        Role::Unknown => "unknown",
     }
 }
 
-fn content_preview(event: &SessionEvent) -> String {
+fn content_preview(event: &Event) -> String {
     if let Some(block) = event.blocks.first() {
         match block {
             EventBlock::Text { text } => return theme::truncate(text, 96),

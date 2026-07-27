@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context};
+use anyhow::{anyhow, Context as _};
 use axum::{
     extract::{Path, Query},
     http::StatusCode,

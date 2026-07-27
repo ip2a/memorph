@@ -1,11 +1,9 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use self::transfer::ExportResult;
-use crate::canonical::{
-    CanonicalSession, ImportedSession, SessionArtifact, SessionEvent, SessionEventKind,
-};
+use crate::canonical::{Artifact, Event, EventKind, ImportedSession, Session};
 use crate::core::active_compression::{
     ActiveCompressionApplyParams, ActiveCompressionParams, ActiveCompressionPolicy,
     ActiveCompressionReport,
@@ -162,8 +160,8 @@ pub struct SessionDetailView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection_report: Option<SessionProjectionReportView>,
     pub turns: Vec<crate::session_projection::TurnProjection>,
-    pub events: Vec<SessionEvent>,
-    pub artifacts: Vec<SessionArtifact>,
+    pub events: Vec<Event>,
+    pub artifacts: Vec<Artifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compressed_archive_refs: Vec<String>,
 }
@@ -192,7 +190,7 @@ pub struct SessionProjectionReportSummaryView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mapping_direction: Option<crate::canonical::MappingDirection>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mapping_overall: Option<crate::canonical::MappingDisposition>,
+    pub mapping_overall: Option<crate::canonical::Fidelity>,
     pub preserved_count: usize,
     pub normalized_count: usize,
     pub dropped_count: usize,

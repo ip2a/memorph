@@ -1,14 +1,11 @@
 use super::*;
 
-pub(super) fn export_canonical_session(
-    session: &CanonicalSession,
-    target_dir: &Path,
-) -> Result<String> {
+pub(super) fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<String> {
     export_canonical_session_in_codex_dir(session, target_dir, &get_codex_dir())
 }
 
 pub(super) fn export_canonical_session_in_codex_dir(
-    session: &CanonicalSession,
+    session: &Session,
     target_dir: &Path,
     codex_dir: &Path,
 ) -> Result<String> {
@@ -36,7 +33,7 @@ pub(super) fn export_canonical_session_in_codex_dir(
 }
 
 pub(super) fn write_canonical_codex_rollout(
-    session: &CanonicalSession,
+    session: &Session,
     target_dir: &Path,
     codex_dir: &Path,
     session_id: &str,
@@ -121,7 +118,7 @@ pub(super) fn write_canonical_codex_rollout(
     for event in &session.events {
         if let Some(segment) = compression::compressed_segment(event) {
             write_codex_compacted_rollout_item(&mut file, event, segment)?;
-            if event.role == EventRole::Assistant {
+            if event.role == Role::Assistant {
                 last_agent_message = segment.summary.to_string();
             }
             continue;
@@ -130,9 +127,9 @@ pub(super) fn write_canonical_codex_rollout(
             continue;
         };
         let role = match visible_role {
-            EventRole::Assistant => "assistant",
-            EventRole::User | EventRole::Tool => "user",
-            EventRole::System | EventRole::Developer | EventRole::Unknown => continue,
+            Role::Assistant => "assistant",
+            Role::User | Role::Tool => "user",
+            Role::System | Role::Developer | Role::Unknown => continue,
         };
         let content = canonical_event_to_codex_content(event);
         if content.is_empty() {
@@ -143,7 +140,7 @@ pub(super) fn write_canonical_codex_rollout(
             "role": role,
             "content": content,
         });
-        if event.role == EventRole::Assistant {
+        if event.role == Role::Assistant {
             payload["phase"] = Value::String("final_answer".to_string());
             last_agent_message = canonical_event_visible_text(event);
             writeln!(
@@ -170,7 +167,7 @@ pub(super) fn write_canonical_codex_rollout(
                 "payload": payload,
             }))?
         )?;
-        if visible_role == EventRole::User && !wrote_user_event {
+        if visible_role == Role::User && !wrote_user_event {
             let user_text = canonical_event_visible_text(event);
             writeln!(
                 file,
@@ -244,7 +241,7 @@ pub(super) fn write_canonical_codex_rollout(
     Ok(())
 }
 
-pub(super) fn replace_codex_session(session_id: &str, session: &CanonicalSession) -> Result<()> {
+pub(super) fn replace_codex_session(session_id: &str, session: &Session) -> Result<()> {
     let codex_dir = get_codex_dir();
     let rollout_path = find_session_file(session_id)
         .with_context(|| format!("Codex session not found: {session_id}"))?;
@@ -282,7 +279,7 @@ pub(super) fn replace_codex_session(session_id: &str, session: &CanonicalSession
 
 fn write_codex_compacted_rollout_item(
     file: &mut impl Write,
-    event: &SessionEvent,
+    event: &Event,
     segment: CompressedSegment<'_>,
 ) -> Result<()> {
     let model_visible_summary = codex_compacted_history_text(segment);
@@ -343,30 +340,30 @@ fn codex_compacted_history_text(segment: CompressedSegment<'_>) -> String {
     parts.join("\n")
 }
 
-pub(super) fn canonical_event_to_codex_content(event: &SessionEvent) -> Vec<Value> {
+pub(super) fn canonical_event_to_codex_content(event: &Event) -> Vec<Value> {
     event
         .blocks
         .iter()
         .filter_map(|block| match block {
-            EventBlock::Text { text } => Some(serde_json::json!({
-                "type": if event.role == EventRole::Assistant { "output_text" } else { "input_text" },
+            Block::Text { text } => Some(serde_json::json!({
+                "type": if event.role == Role::Assistant { "output_text" } else { "input_text" },
                 "text": text,
             })),
-            EventBlock::Thinking { text, .. } => Some(serde_json::json!({
+            Block::Thinking { text, .. } => Some(serde_json::json!({
                 "type": "output_text",
                 "text": format!("[Thinking]\n{}", text),
             })),
-            EventBlock::Image { data: Some(data), .. } if event.role != EventRole::Assistant => {
+            Block::Image { data: Some(data), .. } if event.role != Role::Assistant => {
                 Some(serde_json::json!({
                     "type": "input_image",
                     "image_url": data,
                 }))
             }
-            EventBlock::ProviderPayload { .. } => None,
+            Block::ProviderPayload { .. } => None,
             _ => {
                 let text = canonical_visible_block_text(block)?;
                 (!text.trim().is_empty()).then(|| serde_json::json!({
-                    "type": if event.role == EventRole::Assistant { "output_text" } else { "input_text" },
+                    "type": if event.role == Role::Assistant { "output_text" } else { "input_text" },
                     "text": text,
                 }))
             }

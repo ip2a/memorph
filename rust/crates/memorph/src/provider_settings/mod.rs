@@ -18,7 +18,7 @@ mod registry;
 mod trae;
 mod workbuddy;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::Serialize;
 use serde_json::Value;
 

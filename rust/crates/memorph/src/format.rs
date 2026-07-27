@@ -1,8 +1,7 @@
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventRole, SessionArtifact, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
+    Artifact, Block, Context, Event, EventKind, Identity, Provenance, Role, Schema, Session,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -13,23 +12,23 @@ use std::path::Path;
 #[derive(Debug, Serialize, Deserialize)]
 struct MorphMetaLine {
     #[serde(default)]
-    schema: CanonicalSchema,
-    identity: SessionIdentity,
-    provenance: SessionProvenance,
+    schema: Schema,
+    identity: Identity,
+    provenance: Provenance,
     #[serde(default)]
-    context: SessionContext,
+    context: Context,
     #[serde(default)]
-    artifacts: Vec<SessionArtifact>,
+    artifacts: Vec<Artifact>,
     #[serde(default)]
     extensions: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct MorphEventLine {
-    event: SessionEvent,
+    event: Event,
 }
 
-pub fn read_session(path: &Path) -> Result<CanonicalSession> {
+pub fn read_session(path: &Path) -> Result<Session> {
     let file = File::open(path)
         .with_context(|| format!("Failed to open morph file: {}", path.display()))?;
     let reader = BufReader::new(file);
@@ -77,7 +76,7 @@ pub fn read_session(path: &Path) -> Result<CanonicalSession> {
     }
 
     let meta = meta.context("Missing meta line in morph file")?;
-    Ok(CanonicalSession {
+    Ok(Session {
         schema: meta.schema,
         identity: meta.identity,
         provenance: meta.provenance,
@@ -88,7 +87,7 @@ pub fn read_session(path: &Path) -> Result<CanonicalSession> {
     })
 }
 
-pub fn write_session(path: &Path, session: &CanonicalSession) -> Result<()> {
+pub fn write_session(path: &Path, session: &Session) -> Result<()> {
     let mut file = File::create(path)
         .with_context(|| format!("Failed to create morph file: {}", path.display()))?;
 
@@ -120,7 +119,7 @@ pub fn write_session(path: &Path, session: &CanonicalSession) -> Result<()> {
     Ok(())
 }
 
-pub fn write_markdown(path: &Path, session: &CanonicalSession) -> Result<()> {
+pub fn write_markdown(path: &Path, session: &Session) -> Result<()> {
     let mut out = String::new();
     let title = session_title(session);
     out.push_str("# ");
@@ -169,7 +168,7 @@ pub fn write_markdown(path: &Path, session: &CanonicalSession) -> Result<()> {
         .with_context(|| format!("Failed to write markdown file: {}", path.display()))
 }
 
-pub fn write_html(path: &Path, session: &CanonicalSession) -> Result<()> {
+pub fn write_html(path: &Path, session: &Session) -> Result<()> {
     let title = session_title(session);
     let mut out = String::new();
     out.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
@@ -219,7 +218,7 @@ pub fn write_html(path: &Path, session: &CanonicalSession) -> Result<()> {
         .with_context(|| format!("Failed to write html file: {}", path.display()))
 }
 
-pub fn read_markdown(path: &Path) -> Result<CanonicalSession> {
+pub fn read_markdown(path: &Path) -> Result<Session> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read markdown file: {}", path.display()))?;
     let json = extract_markdown_session_json(&raw)
@@ -232,7 +231,7 @@ pub fn read_markdown(path: &Path) -> Result<CanonicalSession> {
     })
 }
 
-pub fn read_html(path: &Path) -> Result<CanonicalSession> {
+pub fn read_html(path: &Path) -> Result<Session> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read html file: {}", path.display()))?;
     let json = extract_html_session_json(&raw)
@@ -246,43 +245,43 @@ pub fn read_html(path: &Path) -> Result<CanonicalSession> {
     })
 }
 
-fn session_title(session: &CanonicalSession) -> &str {
+fn session_title(session: &Session) -> &str {
     session
         .primary_title()
         .filter(|title| !title.trim().is_empty())
         .unwrap_or(&session.identity.canonical_id)
 }
 
-fn event_role_label(role: EventRole) -> &'static str {
+fn event_role_label(role: Role) -> &'static str {
     match role {
-        EventRole::User => "user",
-        EventRole::Assistant => "assistant",
-        EventRole::Tool => "tool",
-        EventRole::System => "system",
-        EventRole::Developer => "developer",
-        EventRole::Unknown => "unknown",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+        Role::System => "system",
+        Role::Developer => "developer",
+        Role::Unknown => "unknown",
     }
 }
 
-fn event_kind_label(kind: SessionEventKind) -> &'static str {
+fn event_kind_label(kind: EventKind) -> &'static str {
     match kind {
-        SessionEventKind::Message => "message",
-        SessionEventKind::ToolCall => "tool_call",
-        SessionEventKind::ToolResult => "tool_result",
-        SessionEventKind::Command => "command",
-        SessionEventKind::CommandResult => "command_result",
-        SessionEventKind::Patch => "patch",
-        SessionEventKind::Lifecycle => "lifecycle",
-        SessionEventKind::Artifact => "artifact",
-        SessionEventKind::Unknown => "unknown",
+        EventKind::Message => "message",
+        EventKind::ToolCall => "tool_call",
+        EventKind::ToolResult => "tool_result",
+        EventKind::Command => "command",
+        EventKind::CommandResult => "command_result",
+        EventKind::Patch => "patch",
+        EventKind::Lifecycle => "lifecycle",
+        EventKind::Artifact => "artifact",
+        EventKind::Unknown => "unknown",
     }
 }
 
-fn event_block_markdown(block: &EventBlock) -> String {
+fn event_block_markdown(block: &Block) -> String {
     match block {
-        EventBlock::Text { text } => text.clone(),
-        EventBlock::Thinking { text, .. } => format!("```text\n[Thinking]\n{}\n```", text),
-        EventBlock::ToolCall {
+        Block::Text { text } => text.clone(),
+        Block::Thinking { text, .. } => format!("```text\n[Thinking]\n{}\n```", text),
+        Block::ToolCall {
             tool_call_id,
             name,
             input,
@@ -291,7 +290,7 @@ fn event_block_markdown(block: &EventBlock) -> String {
             "name": name,
             "input": input,
         })),
-        EventBlock::ToolResult {
+        Block::ToolResult {
             tool_call_id,
             content,
             is_error,
@@ -301,7 +300,7 @@ fn event_block_markdown(block: &EventBlock) -> String {
             if *is_error { " error" } else { "" },
             content
         ),
-        EventBlock::Patch {
+        Block::Patch {
             summary,
             diff_text,
             files,
@@ -331,12 +330,12 @@ fn event_block_markdown(block: &EventBlock) -> String {
             }
             format!("```diff\n{}\n```", body.trim_end())
         }
-        EventBlock::Command { command, argv, cwd } => json_block_markdown(&serde_json::json!({
+        Block::Command { command, argv, cwd } => json_block_markdown(&serde_json::json!({
             "command": command,
             "argv": argv,
             "cwd": cwd,
         })),
-        EventBlock::CommandResult {
+        Block::CommandResult {
             command,
             exit_code,
             stdout,
@@ -365,7 +364,7 @@ fn event_block_markdown(block: &EventBlock) -> String {
             }
             format!("```text\n{}\n```", body.trim_end())
         }
-        EventBlock::File {
+        Block::File {
             path,
             content,
             mime_type,
@@ -388,7 +387,7 @@ fn event_block_markdown(block: &EventBlock) -> String {
                     .unwrap_or_default()
             ),
         },
-        EventBlock::Image {
+        Block::Image {
             mime_type,
             data,
             path,
@@ -400,11 +399,11 @@ fn event_block_markdown(block: &EventBlock) -> String {
                 .unwrap_or_default(),
             if data.is_some() { ", embedded" } else { "" }
         ),
-        EventBlock::ProviderPayload { kind, payload } => json_block_markdown(&serde_json::json!({
+        Block::ProviderPayload { kind, payload } => json_block_markdown(&serde_json::json!({
             "kind": kind,
             "payload": payload,
         })),
-        EventBlock::Compressed {
+        Block::Compressed {
             source_provider_id,
             summary,
             source_event_ids,
@@ -433,17 +432,17 @@ fn event_block_markdown(block: &EventBlock) -> String {
             out.push_str(&escape_markdown_text(summary));
             out
         }
-        EventBlock::Unknown { raw } => json_block_markdown(raw),
+        Block::Unknown { raw } => json_block_markdown(raw),
     }
 }
 
-fn event_block_html(block: &EventBlock) -> String {
+fn event_block_html(block: &Block) -> String {
     match block {
-        EventBlock::Text { text } => format!("<p>{}</p>", html_escape(text).replace('\n', "<br>")),
-        EventBlock::Thinking { text, .. } => {
+        Block::Text { text } => format!("<p>{}</p>", html_escape(text).replace('\n', "<br>")),
+        Block::Thinking { text, .. } => {
             format!("<pre>[Thinking]\n{}</pre>", html_escape(text))
         }
-        EventBlock::ToolCall {
+        Block::ToolCall {
             tool_call_id,
             name,
             input,
@@ -452,7 +451,7 @@ fn event_block_html(block: &EventBlock) -> String {
             "name": name,
             "input": input,
         })),
-        EventBlock::ToolResult {
+        Block::ToolResult {
             tool_call_id,
             content,
             is_error,
@@ -462,7 +461,7 @@ fn event_block_html(block: &EventBlock) -> String {
             if *is_error { " error" } else { "" },
             html_escape(content)
         ),
-        EventBlock::Patch {
+        Block::Patch {
             summary,
             diff_text,
             files,
@@ -476,12 +475,12 @@ fn event_block_html(block: &EventBlock) -> String {
             });
             json_block_html(&payload)
         }
-        EventBlock::Command { command, argv, cwd } => json_block_html(&serde_json::json!({
+        Block::Command { command, argv, cwd } => json_block_html(&serde_json::json!({
             "command": command,
             "argv": argv,
             "cwd": cwd,
         })),
-        EventBlock::CommandResult {
+        Block::CommandResult {
             command,
             exit_code,
             stdout,
@@ -492,7 +491,7 @@ fn event_block_html(block: &EventBlock) -> String {
             "stdout": stdout,
             "stderr": stderr,
         })),
-        EventBlock::File {
+        Block::File {
             path,
             content,
             mime_type,
@@ -515,7 +514,7 @@ fn event_block_html(block: &EventBlock) -> String {
                     .unwrap_or_default()
             ),
         },
-        EventBlock::Image {
+        Block::Image {
             mime_type,
             data,
             path,
@@ -534,11 +533,11 @@ fn event_block_html(block: &EventBlock) -> String {
                     .unwrap_or_default()
             ),
         },
-        EventBlock::ProviderPayload { kind, payload } => json_block_html(&serde_json::json!({
+        Block::ProviderPayload { kind, payload } => json_block_html(&serde_json::json!({
             "kind": kind,
             "payload": payload,
         })),
-        EventBlock::Compressed {
+        Block::Compressed {
             source_provider_id,
             summary,
             source_event_ids,
@@ -566,7 +565,7 @@ fn event_block_html(block: &EventBlock) -> String {
             out.push_str("</pre>");
             out
         }
-        EventBlock::Unknown { raw } => json_block_html(raw),
+        Block::Unknown { raw } => json_block_html(raw),
     }
 }
 
@@ -623,51 +622,51 @@ fn html_unescape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{MappingDisposition, ProviderSessionRef};
+    use crate::canonical::{Fidelity, ProviderRef};
     use chrono::Utc;
     use tempfile::tempdir;
 
-    fn sample_session() -> CanonicalSession {
-        CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+    fn sample_session() -> Session {
+        Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: "session-1".to_string(),
                 source_title: Some("Session Title".to_string()),
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("test".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: "codex".to_string(),
                     session_id: "source-1".to_string(),
                     source_path: Some("/tmp/source.jsonl".to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: Some("/tmp/project".to_string()),
                 created_at: Some(Utc::now()),
                 last_active_at: Some(Utc::now()),
                 tags: vec!["demo".to_string()],
             },
-            events: vec![SessionEvent {
+            events: vec![Event {
                 id: "event-1".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::Assistant,
+                kind: EventKind::Message,
+                role: Role::Assistant,
                 timestamp: Utc::now(),
                 links: Default::default(),
                 blocks: vec![
-                    EventBlock::Text {
+                    Block::Text {
                         text: "hello".to_string(),
                     },
-                    EventBlock::ToolCall {
+                    Block::ToolCall {
                         tool_call_id: "call-1".to_string(),
                         name: "exec".to_string(),
                         input: Some(serde_json::json!({"cmd":"ls"})),
                     },
                 ],
-                metadata: crate::canonical::EventMetadata {
-                    source: crate::canonical::EventSource {
+                metadata: crate::canonical::Metadata {
+                    source: crate::canonical::Source {
                         provider_id: "codex".to_string(),
                         original_id: Some("event-1".to_string()),
                         original_role: Some("assistant".to_string()),
@@ -675,11 +674,11 @@ mod tests {
                     },
                     model: Some("gpt-5.3-codex".to_string()),
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: BTreeMap::new(),
                 },
             }],
-            artifacts: vec![SessionArtifact {
+            artifacts: vec![Artifact {
                 id: "artifact-1".to_string(),
                 kind: crate::canonical::ArtifactKind::Patch,
                 path: None,

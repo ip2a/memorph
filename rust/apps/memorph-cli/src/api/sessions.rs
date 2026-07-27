@@ -8,7 +8,8 @@ pub(super) struct RenameBody {
 pub(super) async fn get_stats_dashboard(
     Query(query): Query<memorph::stats_dashboard::StatsDashboardQuery>,
 ) -> impl IntoResponse {
-    match memorph::runtime::run_blocking(move || memorph::stats_dashboard::dashboard(&query)).await {
+    match memorph::runtime::run_blocking(move || memorph::stats_dashboard::dashboard(&query)).await
+    {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -71,8 +72,10 @@ pub(super) async fn list_session_page(Query(q): Query<ListQuery>) -> impl IntoRe
 }
 
 pub(super) async fn refresh_session_staleness() -> impl IntoResponse {
-    match memorph::runtime::run_blocking(|| core::projection::refresh_projected_session_staleness(ActivityActor::Api))
-        .await
+    match memorph::runtime::run_blocking(|| {
+        core::projection::refresh_projected_session_staleness(ActivityActor::Api)
+    })
+    .await
     {
         Ok(report) => ApiResponse::success(SessionStalenessRefreshPayload {
             checked_sources: report.checked_sources,

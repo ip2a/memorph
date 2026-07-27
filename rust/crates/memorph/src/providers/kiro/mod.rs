@@ -6,10 +6,9 @@ mod management;
 use self::load::*;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingIssue,
-    MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext, SessionEvent,
-    SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
+    Schema, Session, Source, TurnBoundary,
 };
 use crate::provider::{
     canonical_event_is_visible_message, PageStrategy, Provider, ProviderActivitySupport,
@@ -18,7 +17,7 @@ use crate::provider::{
     ProviderSourceMutation, ProviderWriteRisk, ScanStrategy, StorageShape, TurnQuality,
     WriteRiskLevel,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -75,15 +74,15 @@ impl Provider for KiroProvider {
                 session_activity: true,
             },
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                patch: Some(MappingDisposition::Unsupported),
-                image: Some(MappingDisposition::Unsupported),
-                file: Some(MappingDisposition::Unsupported),
-                compressed: Some(MappingDisposition::Unsupported),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                patch: Some(Fidelity::Unsupported),
+                image: Some(Fidelity::Unsupported),
+                file: Some(Fidelity::Unsupported),
+                compressed: Some(Fidelity::Unsupported),
+                provider_payload: Some(Fidelity::Preserved),
             },
             ..ProviderCapabilities::default()
         }

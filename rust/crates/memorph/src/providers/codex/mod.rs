@@ -11,10 +11,9 @@ use self::management::*;
 use self::write::*;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
-    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary,
+    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
+    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
+    ProviderRef, Role, Schema, Session, Source, TurnBoundary,
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
@@ -35,7 +34,7 @@ use crate::storage::{
     event_index, local_store, session_state,
 };
 use crate::utils;
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -133,7 +132,7 @@ struct CodexTurnLink {
 }
 
 impl CodexTurnLink {
-    fn apply_to(self, event: &mut SessionEvent) {
+    fn apply_to(self, event: &mut Event) {
         event.links.provider_turn_id = self.provider_turn_id;
         event.links.turn_index = self.turn_index;
         event.links.turn_boundary = self.turn_boundary;
@@ -339,26 +338,26 @@ impl Provider for CodexProvider {
             storage_shape: StorageShape::Mixed,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Normalized),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                patch: Some(MappingDisposition::Unsupported),
-                image: Some(MappingDisposition::Preserved),
-                file: Some(MappingDisposition::Unsupported),
-                compressed: Some(MappingDisposition::Normalized),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Normalized),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                patch: Some(Fidelity::Unsupported),
+                image: Some(Fidelity::Preserved),
+                file: Some(Fidelity::Unsupported),
+                compressed: Some(Fidelity::Normalized),
+                provider_payload: Some(Fidelity::Preserved),
             },
             export_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Downgraded),
-                tool_call: Some(MappingDisposition::Downgraded),
-                tool_result: Some(MappingDisposition::Downgraded),
-                patch: Some(MappingDisposition::Downgraded),
-                image: Some(MappingDisposition::Normalized),
-                file: Some(MappingDisposition::Downgraded),
-                compressed: Some(MappingDisposition::Normalized),
-                provider_payload: Some(MappingDisposition::Dropped),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Downgraded),
+                tool_call: Some(Fidelity::Downgraded),
+                tool_result: Some(Fidelity::Downgraded),
+                patch: Some(Fidelity::Downgraded),
+                image: Some(Fidelity::Normalized),
+                file: Some(Fidelity::Downgraded),
+                compressed: Some(Fidelity::Normalized),
+                provider_payload: Some(Fidelity::Dropped),
             },
             resume_quality: ResumeQuality::Native,
             write_risk: ProviderWriteRisk {
@@ -537,15 +536,11 @@ impl Provider for CodexProvider {
         true
     }
 
-    fn replace_session(&self, session_id: &str, session: &CanonicalSession) -> Result<()> {
+    fn replace_session(&self, session_id: &str, session: &Session) -> Result<()> {
         replace_codex_session(session_id, session)
     }
 
-    fn export_session(
-        &self,
-        session: &CanonicalSession,
-        target_dir: &Path,
-    ) -> Result<ExportedSession> {
+    fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
         Ok(canonical_export_result(
             PROVIDER_ID,
@@ -699,11 +694,11 @@ fn get_git_info(dir: &Path) -> Option<GitInfo> {
     Some(info)
 }
 
-fn first_user_message(session: &CanonicalSession) -> Option<String> {
+fn first_user_message(session: &Session) -> Option<String> {
     session
         .events
         .iter()
-        .filter(|event| canonical_event_visible_message_role(event) == Some(EventRole::User))
+        .filter(|event| canonical_event_visible_message_role(event) == Some(Role::User))
         .find_map(|event| {
             let text = canonical_event_visible_message_text(event)?;
             let trimmed = text.trim();
@@ -711,11 +706,11 @@ fn first_user_message(session: &CanonicalSession) -> Option<String> {
         })
 }
 
-fn has_user_event(session: &CanonicalSession) -> bool {
+fn has_user_event(session: &Session) -> bool {
     session
         .events
         .iter()
-        .any(|event| canonical_event_visible_message_role(event) == Some(EventRole::User))
+        .any(|event| canonical_event_visible_message_role(event) == Some(Role::User))
 }
 
 struct CodexSqliteUpdate<'a> {

@@ -2,10 +2,9 @@ pub mod adapter;
 pub mod hook;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
-    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance, TurnBoundary, UsageStats,
+    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
+    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
+    ProviderRef, Role, Schema, Session, Source, TurnBoundary, Usage,
 };
 use crate::provider::{
     canonical_block_text, canonical_event_is_visible_message, canonical_event_visible_message_role,
@@ -21,7 +20,7 @@ use crate::utils::{
     datetime_from_timestamp_ms, encode_project_dir, extract_text, is_plausible_session_time,
     is_plausible_timestamp_ms, parse_timestamp_to_ms, path_basename, truncate_summary,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,26 +73,26 @@ impl Provider for ClaudeProvider {
             storage_shape: StorageShape::Jsonl,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                patch: Some(MappingDisposition::Unsupported),
-                image: Some(MappingDisposition::Downgraded),
-                file: Some(MappingDisposition::Downgraded),
-                compressed: Some(MappingDisposition::Unsupported),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                patch: Some(Fidelity::Unsupported),
+                image: Some(Fidelity::Downgraded),
+                file: Some(Fidelity::Downgraded),
+                compressed: Some(Fidelity::Unsupported),
+                provider_payload: Some(Fidelity::Preserved),
             },
             export_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                patch: Some(MappingDisposition::Downgraded),
-                image: Some(MappingDisposition::Downgraded),
-                file: Some(MappingDisposition::Downgraded),
-                compressed: Some(MappingDisposition::Downgraded),
-                provider_payload: Some(MappingDisposition::Dropped),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                patch: Some(Fidelity::Downgraded),
+                image: Some(Fidelity::Downgraded),
+                file: Some(Fidelity::Downgraded),
+                compressed: Some(Fidelity::Downgraded),
+                provider_payload: Some(Fidelity::Dropped),
             },
             resume_quality: ResumeQuality::Native,
             write_risk: ProviderWriteRisk {
@@ -193,11 +192,7 @@ impl Provider for ClaudeProvider {
         import_claude_session_page(Path::new(source_path), event_offset, event_limit)
     }
 
-    fn export_session(
-        &self,
-        session: &CanonicalSession,
-        target_dir: &Path,
-    ) -> Result<ExportedSession> {
+    fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
         Ok(canonical_export_result(
             PROVIDER_ID,
@@ -610,7 +605,7 @@ fn get_git_branch(dir: &Path) -> Option<String> {
     }
 }
 
-fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
+fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<String> {
     let session_id = Uuid::new_v4().to_string();
     let encoded_dir = encode_project_dir(&target_dir.to_string_lossy());
     let claude_projects_dir = get_claude_config_dir().join("projects").join(&encoded_dir);
@@ -663,7 +658,7 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
             "role": message_role,
             "content": content,
         });
-        if event.role == EventRole::Assistant {
+        if event.role == Role::Assistant {
             message["id"] = Value::String(format!(
                 "msg_{}",
                 Uuid::new_v4()
@@ -681,7 +676,7 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
                 if event
                     .blocks
                     .iter()
-                    .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+                    .any(|block| matches!(block, Block::ToolCall { .. }))
                 {
                     "tool_use"
                 } else {
@@ -718,17 +713,17 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     Ok(session_id)
 }
 
-fn claude_message_role(event: &SessionEvent) -> Option<&'static str> {
+fn claude_message_role(event: &Event) -> Option<&'static str> {
     let role = canonical_event_visible_message_role(event)?;
-    Some(if role == EventRole::Assistant {
+    Some(if role == Role::Assistant {
         "assistant"
     } else {
         "user"
     })
 }
 
-fn canonical_event_to_claude_message_content(event: &SessionEvent) -> Option<Value> {
-    if event.role == EventRole::Assistant {
+fn canonical_event_to_claude_message_content(event: &Event) -> Option<Value> {
+    if event.role == Role::Assistant {
         let content = event
             .blocks
             .iter()
@@ -740,7 +735,7 @@ fn canonical_event_to_claude_message_content(event: &SessionEvent) -> Option<Val
     if event
         .blocks
         .iter()
-        .all(|block| matches!(block, EventBlock::ToolResult { .. }))
+        .all(|block| matches!(block, Block::ToolResult { .. }))
     {
         let content = event
             .blocks
@@ -754,13 +749,13 @@ fn canonical_event_to_claude_message_content(event: &SessionEvent) -> Option<Val
     (!text.trim().is_empty()).then_some(Value::String(text))
 }
 
-fn canonical_block_to_claude_content(block: &EventBlock) -> Option<Value> {
+fn canonical_block_to_claude_content(block: &Block) -> Option<Value> {
     match block {
-        EventBlock::Text { text } => Some(serde_json::json!({
+        Block::Text { text } => Some(serde_json::json!({
             "type": "text",
             "text": text,
         })),
-        EventBlock::Thinking { text, signature } => {
+        Block::Thinking { text, signature } => {
             let mut value = serde_json::json!({
                 "type": "thinking",
                 "thinking": text,
@@ -770,7 +765,7 @@ fn canonical_block_to_claude_content(block: &EventBlock) -> Option<Value> {
             }
             Some(value)
         }
-        EventBlock::ToolCall {
+        Block::ToolCall {
             tool_call_id,
             name,
             input,
@@ -785,7 +780,7 @@ fn canonical_block_to_claude_content(block: &EventBlock) -> Option<Value> {
             }
             Some(value)
         }
-        EventBlock::ToolResult {
+        Block::ToolResult {
             tool_call_id,
             content,
             is_error,
@@ -795,7 +790,7 @@ fn canonical_block_to_claude_content(block: &EventBlock) -> Option<Value> {
             "content": content,
             "is_error": is_error,
         })),
-        EventBlock::ProviderPayload { .. } => None,
+        Block::ProviderPayload { .. } => None,
         _ => {
             let text = canonical_block_text(block);
             (!text.trim().is_empty()).then(|| {
@@ -832,7 +827,7 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
             Err(error) => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Warning,
-                    disposition: MappingDisposition::Dropped,
+                    disposition: Fidelity::Dropped,
                     code: "invalid_jsonl_line".to_string(),
                     message: format!("Failed to parse Claude session line: {}", error),
                     path: Some(format!("line:{}", line_idx + 1)),
@@ -893,23 +888,23 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
     let source_session_id = session_id.unwrap_or(fallback_id);
 
     Ok(ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: source_session_id.clone(),
                 source_title,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id: source_session_id,
                     source_path: Some(path.to_string_lossy().to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: project_dir,
                 created_at,
                 last_active_at,
@@ -961,7 +956,7 @@ fn import_claude_session_page(
             Err(error) => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Warning,
-                    disposition: MappingDisposition::Dropped,
+                    disposition: Fidelity::Dropped,
                     code: "invalid_jsonl_line".to_string(),
                     message: format!("Failed to parse Claude session line: {}", error),
                     path: Some(format!("line:{}", location.line_no)),
@@ -992,23 +987,23 @@ fn import_claude_session_page(
     }
 
     let imported = ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: state.session_id.clone(),
                 source_title: state.source_title.clone(),
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id: state.session_id.clone(),
                     source_path: Some(path.to_string_lossy().to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: state.workspace_dir.clone(),
                 created_at: state.created_at_ms.and_then(datetime_from_timestamp_ms),
                 last_active_at: state.last_active_at_ms.and_then(datetime_from_timestamp_ms),
@@ -1239,7 +1234,7 @@ fn canonical_event_from_claude_line(
     timestamp: chrono::DateTime<Utc>,
     value: &Value,
     report: &mut MappingReport,
-) -> Option<SessionEvent> {
+) -> Option<Event> {
     let event_id = value
         .get("uuid")
         .and_then(|v| v.as_str())
@@ -1253,8 +1248,8 @@ fn canonical_event_from_claude_line(
     let Some(message) = value.get("message") else {
         return Some(provider_payload_event(
             event_id,
-            SessionEventKind::Lifecycle,
-            EventRole::System,
+            EventKind::Lifecycle,
+            Role::System,
             timestamp,
             line_type,
             ClaudeProviderPayloadData {
@@ -1270,7 +1265,7 @@ fn canonical_event_from_claude_line(
     if blocks.is_empty() {
         return Some(provider_payload_event(
             event_id,
-            SessionEventKind::Unknown,
+            EventKind::Unknown,
             role,
             timestamp,
             line_type,
@@ -1287,18 +1282,18 @@ fn canonical_event_from_claude_line(
         .get("model")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let usage = message.get("usage").map(|usage| UsageStats {
+    let usage = message.get("usage").map(|usage| Usage {
         input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()),
         output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()),
         total_tokens: usage.get("total_tokens").and_then(|v| v.as_u64()),
     });
 
-    Some(SessionEvent {
+    Some(Event {
         id: event_id,
         kind,
         role,
         timestamp,
-        links: EventLinks {
+        links: Links {
             parent_event_id: parent_id.clone(),
             provider_parent_id: parent_id,
             provider_turn_id: None,
@@ -1307,8 +1302,8 @@ fn canonical_event_from_claude_line(
             related_event_ids: Vec::new(),
         },
         blocks,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.to_string(),
                 original_id: value
                     .get("uuid")
@@ -1323,7 +1318,7 @@ fn canonical_event_from_claude_line(
             },
             model,
             usage,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: {
                 let mut ext = BTreeMap::new();
                 ext.insert("claude_raw_line".to_string(), value.clone());
@@ -1341,9 +1336,9 @@ fn claude_turn_boundary(message: &Value) -> Option<TurnBoundary> {
     }
 }
 
-fn claude_event_role(line_type: &str, message: &Value, raw: &Value) -> EventRole {
+fn claude_event_role(line_type: &str, message: &Value, raw: &Value) -> Role {
     match line_type {
-        "assistant" => EventRole::Assistant,
+        "assistant" => Role::Assistant,
         "user" => {
             if let Some(Value::Array(items)) = message.get("content") {
                 let all_tool_results = !items.is_empty()
@@ -1351,13 +1346,13 @@ fn claude_event_role(line_type: &str, message: &Value, raw: &Value) -> EventRole
                         item.get("type").and_then(|v| v.as_str()) == Some("tool_result")
                     });
                 if all_tool_results {
-                    return EventRole::Tool;
+                    return Role::Tool;
                 }
             }
-            EventRole::User
+            Role::User
         }
         _ => match message.get("role").and_then(|v| v.as_str()) {
-            Some("assistant") => EventRole::Assistant,
+            Some("assistant") => Role::Assistant,
             Some("user") => {
                 if raw
                     .get("message")
@@ -1371,13 +1366,13 @@ fn claude_event_role(line_type: &str, message: &Value, raw: &Value) -> EventRole
                     })
                     .unwrap_or(false)
                 {
-                    EventRole::Tool
+                    Role::Tool
                 } else {
-                    EventRole::User
+                    Role::User
                 }
             }
-            Some("system") => EventRole::System,
-            _ => EventRole::Unknown,
+            Some("system") => Role::System,
+            _ => Role::Unknown,
         },
     }
 }
@@ -1387,9 +1382,9 @@ fn claude_event_blocks(
     raw_line: &Value,
     line_number: usize,
     report: &mut MappingReport,
-) -> Vec<EventBlock> {
+) -> Vec<Block> {
     match content {
-        Some(Value::String(text)) => vec![EventBlock::Text { text: text.clone() }],
+        Some(Value::String(text)) => vec![Block::Text { text: text.clone() }],
         Some(Value::Array(items)) => items
             .iter()
             .enumerate()
@@ -1398,18 +1393,18 @@ fn claude_event_blocks(
         Some(other) => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "claude_content_shape_preserved".to_string(),
                 message: "Claude message content was preserved as an unknown block because it was neither a string nor an array".to_string(),
                 path: Some(format!("line:{}:content", line_number)),
                 raw: Some(other.clone()),
             });
-            vec![EventBlock::Unknown { raw: other.clone() }]
+            vec![Block::Unknown { raw: other.clone() }]
         }
         None => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "claude_content_missing".to_string(),
                 message: "Claude message had no content; the raw message event was preserved"
                     .to_string(),
@@ -1426,9 +1421,9 @@ fn claude_content_block(
     line_number: usize,
     block_index: usize,
     report: &mut MappingReport,
-) -> EventBlock {
+) -> Block {
     match value.get("type").and_then(|v| v.as_str()) {
-        Some("text") if value.get("text").and_then(Value::as_str).is_some() => EventBlock::Text {
+        Some("text") if value.get("text").and_then(Value::as_str).is_some() => Block::Text {
             text: value
                 .get("text")
                 .and_then(Value::as_str)
@@ -1436,7 +1431,7 @@ fn claude_content_block(
                 .to_string(),
         },
         Some("thinking") if value.get("thinking").and_then(Value::as_str).is_some() => {
-            EventBlock::Thinking {
+            Block::Thinking {
                 text: value
                     .get("thinking")
                     .and_then(Value::as_str)
@@ -1453,7 +1448,7 @@ fn claude_content_block(
                 && value.get("name").and_then(Value::as_str).is_some()
                 && value.get("input").is_some() =>
         {
-            EventBlock::ToolCall {
+            Block::ToolCall {
                 tool_call_id: value.get("id").and_then(Value::as_str).unwrap().to_string(),
                 name: value
                     .get("name")
@@ -1467,7 +1462,7 @@ fn claude_content_block(
             if value.get("tool_use_id").and_then(Value::as_str).is_some()
                 && value.get("content").is_some() =>
         {
-            EventBlock::ToolResult {
+            Block::ToolResult {
                 tool_call_id: value
                     .get("tool_use_id")
                     .and_then(Value::as_str)
@@ -1490,14 +1485,14 @@ fn claude_content_block(
         Some("text" | "thinking" | "tool_use" | "tool_result") => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "claude_malformed_content_block".to_string(),
                 message: "Malformed Claude content block was preserved as provider payload"
                     .to_string(),
                 path: Some(format!("line:{}:block:{}", line_number, block_index)),
                 raw: Some(value.clone()),
             });
-            EventBlock::ProviderPayload {
+            Block::ProviderPayload {
                 kind: value
                     .get("type")
                     .and_then(Value::as_str)
@@ -1509,13 +1504,13 @@ fn claude_content_block(
         Some(kind) => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Info,
-                disposition: MappingDisposition::Preserved,
+                disposition: Fidelity::Preserved,
                 code: "provider_block_preserved".to_string(),
                 message: format!("Preserved unsupported Claude content block '{}'", kind),
                 path: Some(format!("line:{}:block:{}", line_number, block_index)),
                 raw: Some(value.clone()),
             });
-            EventBlock::ProviderPayload {
+            Block::ProviderPayload {
                 kind: kind.to_string(),
                 payload: value.clone(),
             }
@@ -1523,37 +1518,35 @@ fn claude_content_block(
         None => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "claude_block_missing_type".to_string(),
                 message: "Claude content block without a type was preserved as unknown".to_string(),
                 path: Some(format!("line:{}:block:{}", line_number, block_index)),
                 raw: Some(value.clone()),
             });
-            EventBlock::Unknown { raw: value.clone() }
+            Block::Unknown { raw: value.clone() }
         }
     }
 }
 
-fn claude_event_kind(blocks: &[EventBlock]) -> SessionEventKind {
+fn claude_event_kind(blocks: &[Block]) -> EventKind {
     if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+        .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        SessionEventKind::ToolResult
+        EventKind::ToolResult
     } else if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+        .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        SessionEventKind::ToolCall
-    } else if blocks.iter().all(|block| {
-        matches!(
-            block,
-            EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
-        )
-    }) {
-        SessionEventKind::Unknown
+        EventKind::ToolCall
+    } else if blocks
+        .iter()
+        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }))
+    {
+        EventKind::Unknown
     } else {
-        SessionEventKind::Message
+        EventKind::Message
     }
 }
 
@@ -1565,23 +1558,23 @@ struct ClaudeProviderPayloadData {
 
 fn provider_payload_event(
     id: String,
-    kind: SessionEventKind,
-    role: EventRole,
+    kind: EventKind,
+    role: Role,
     timestamp: chrono::DateTime<Utc>,
     payload_kind: &str,
     data: ClaudeProviderPayloadData,
-) -> SessionEvent {
+) -> Event {
     let ClaudeProviderPayloadData {
         payload,
         raw_line,
         parent_id,
     } = data;
-    SessionEvent {
+    Event {
         id,
         kind,
         role,
         timestamp,
-        links: EventLinks {
+        links: Links {
             parent_event_id: parent_id.clone(),
             provider_parent_id: parent_id,
             provider_turn_id: None,
@@ -1589,12 +1582,12 @@ fn provider_payload_event(
             turn_boundary: None,
             related_event_ids: Vec::new(),
         },
-        blocks: vec![EventBlock::ProviderPayload {
+        blocks: vec![Block::ProviderPayload {
             kind: payload_kind.to_string(),
             payload,
         }],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.to_string(),
                 original_id: None,
                 original_role: Some(payload_kind.to_string()),
@@ -1602,7 +1595,7 @@ fn provider_payload_event(
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: {
                 let mut ext = BTreeMap::new();
                 ext.insert("claude_raw_line".to_string(), raw_line);
@@ -2073,20 +2066,16 @@ mod tests {
         assert!(!metadata.sidecar_present);
     }
 
-    fn test_event(
-        kind: SessionEventKind,
-        role: EventRole,
-        blocks: Vec<EventBlock>,
-    ) -> SessionEvent {
-        SessionEvent {
+    fn test_event(kind: EventKind, role: Role, blocks: Vec<Block>) -> Event {
+        Event {
             id: "test-event".to_string(),
             kind,
             role,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
+            links: Links::default(),
             blocks,
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "codex".to_string(),
                     original_id: None,
                     original_role: None,
@@ -2094,7 +2083,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: BTreeMap::new(),
             },
         }
@@ -2243,10 +2232,10 @@ mod tests {
             Some("/tmp/project")
         );
         assert!(imported.session.events.iter().any(|event| {
-            event.kind == SessionEventKind::Lifecycle
+            event.kind == EventKind::Lifecycle
                 && matches!(
                     event.blocks.first(),
-                    Some(EventBlock::ProviderPayload { kind, .. })
+                    Some(Block::ProviderPayload { kind, .. })
                         if kind == "file-history-snapshot"
                 )
         }));
@@ -2256,17 +2245,17 @@ mod tests {
             .iter()
             .find(|event| event.id == "assistant-1")
             .unwrap();
-        assert_eq!(assistant.kind, SessionEventKind::ToolCall);
+        assert_eq!(assistant.kind, EventKind::ToolCall);
         assert!(matches!(
             assistant.blocks.first(),
-            Some(EventBlock::Thinking {
+            Some(Block::Thinking {
                 text,
                 signature: Some(signature)
             }) if text == "Thinking" && signature == "sig"
         ));
         assert!(assistant.blocks.iter().any(|block| matches!(
             block,
-            EventBlock::ToolCall {
+            Block::ToolCall {
                 tool_call_id,
                 name,
                 ..
@@ -2278,10 +2267,10 @@ mod tests {
             .iter()
             .find(|event| event.id == "tool-result-1")
             .unwrap();
-        assert_eq!(tool_result.role, EventRole::Tool);
+        assert_eq!(tool_result.role, Role::Tool);
         assert!(matches!(
             tool_result.blocks.first(),
-            Some(EventBlock::ToolResult {
+            Some(Block::ToolResult {
                 tool_call_id,
                 content,
                 is_error
@@ -2332,7 +2321,7 @@ mod tests {
 
     #[test]
     fn compressed_segment_exports_as_portable_claude_text_block() {
-        let block = EventBlock::Compressed {
+        let block = Block::Compressed {
             source_provider_id: "opencode".to_string(),
             summary: "compressed summary".to_string(),
             source_event_ids: vec![
@@ -2363,7 +2352,7 @@ mod tests {
 
     #[test]
     fn provider_payload_block_is_skipped_in_export() {
-        let block = EventBlock::ProviderPayload {
+        let block = Block::ProviderPayload {
             kind: "function_call".to_string(),
             payload: serde_json::json!({ "name": "shell" }),
         };
@@ -2373,13 +2362,13 @@ mod tests {
     #[test]
     fn lifecycle_events_are_skipped_in_claude_export() {
         let event = test_event(
-            SessionEventKind::Lifecycle,
-            EventRole::Assistant,
+            EventKind::Lifecycle,
+            Role::Assistant,
             vec![
-                EventBlock::Text {
+                Block::Text {
                     text: "Done.".to_string(),
                 },
-                EventBlock::ProviderPayload {
+                Block::ProviderPayload {
                     kind: "task_complete".to_string(),
                     payload: serde_json::json!({
                         "type": "task_complete",
@@ -2396,9 +2385,9 @@ mod tests {
     #[test]
     fn developer_events_are_skipped_in_claude_export() {
         let event = test_event(
-            SessionEventKind::Message,
-            EventRole::Developer,
-            vec![EventBlock::Text {
+            EventKind::Message,
+            Role::Developer,
+            vec![Block::Text {
                 text: "<model_switch>internal</model_switch>".to_string(),
             }],
         );
@@ -2409,9 +2398,9 @@ mod tests {
     #[test]
     fn assistant_tool_calls_export_as_structured_tool_use() {
         let event = test_event(
-            SessionEventKind::ToolCall,
-            EventRole::Assistant,
-            vec![EventBlock::ToolCall {
+            EventKind::ToolCall,
+            Role::Assistant,
+            vec![Block::ToolCall {
                 tool_call_id: "call_1".to_string(),
                 name: "exec_command".to_string(),
                 input: Some(serde_json::json!({
@@ -2437,13 +2426,13 @@ mod tests {
     #[test]
     fn non_assistant_text_fallback_omits_provider_payload_blocks() {
         let event = test_event(
-            SessionEventKind::Message,
-            EventRole::User,
+            EventKind::Message,
+            Role::User,
             vec![
-                EventBlock::Text {
+                Block::Text {
                     text: "Build this".to_string(),
                 },
-                EventBlock::ProviderPayload {
+                Block::ProviderPayload {
                     kind: "token_count".to_string(),
                     payload: serde_json::json!({
                         "input_tokens": 10,
@@ -2469,7 +2458,7 @@ mod tests {
 
         assert!(matches!(
             block,
-            EventBlock::ProviderPayload { ref kind, ref payload }
+            Block::ProviderPayload { ref kind, ref payload }
                 if kind == "tool_use" && payload == &serde_json::json!({"type": "tool_use", "name": "Read"})
         ));
         assert!(report
@@ -2496,7 +2485,7 @@ mod tests {
 
         assert!(matches!(
             blocks.as_slice(),
-            [EventBlock::Unknown { raw }] if raw == &serde_json::json!({"unexpected": true})
+            [Block::Unknown { raw }] if raw == &serde_json::json!({"unexpected": true})
         ));
         assert!(report
             .issues

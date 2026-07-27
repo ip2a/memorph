@@ -1,10 +1,10 @@
-use crate::canonical::{CanonicalSession, EventRole, SessionEvent};
+use crate::canonical::{Event, Role, Session};
 use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
     canonical_session_title, ProviderSourceMutation,
 };
 use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::types::Value as SqliteValue;
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
@@ -394,7 +394,7 @@ fn build_bubble_json(
     })
 }
 
-pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
+pub fn export_session(session: &Session, target_dir: &Path) -> Result<String> {
     let mut conn = open_global_db()?;
     let tx = conn.transaction()?;
     let composer_id = Uuid::new_v4().to_string();
@@ -416,7 +416,7 @@ pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<S
             let text = cursor_bubble_text(event)?;
             Some(BubbleMeta {
                 id: Uuid::new_v4().to_string(),
-                bubble_type: if role == EventRole::User { 1 } else { 2 },
+                bubble_type: if role == Role::User { 1 } else { 2 },
                 text,
                 timestamp: event.timestamp,
             })
@@ -602,28 +602,26 @@ pub fn export_session(session: &CanonicalSession, target_dir: &Path) -> Result<S
     Ok(composer_id)
 }
 
-fn cursor_bubble_text(event: &SessionEvent) -> Option<String> {
+fn cursor_bubble_text(event: &Event) -> Option<String> {
     canonical_event_visible_message_text(event)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{
-        EventBlock, EventLinks, EventMetadata, EventSource, MappingDisposition, SessionEventKind,
-    };
+    use crate::canonical::{Block, EventKind, Fidelity, Links, Metadata, Source};
     use chrono::Utc;
     use std::collections::BTreeMap;
 
     #[test]
     fn compressed_segment_exports_as_portable_cursor_bubble_text() {
-        let event = SessionEvent {
+        let event = Event {
             id: "compressed-source".to_string(),
-            kind: SessionEventKind::Message,
-            role: EventRole::Assistant,
+            kind: EventKind::Message,
+            role: Role::Assistant,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Compressed {
+            links: Links::default(),
+            blocks: vec![Block::Compressed {
                 source_provider_id: "opencode".to_string(),
                 summary: "compressed summary".to_string(),
                 source_event_ids: vec![
@@ -634,8 +632,8 @@ mod tests {
                 source_event_count: None,
                 archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "memorph".to_string(),
                     original_id: None,
                     original_role: Some("assistant".to_string()),
@@ -643,7 +641,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Normalized,
+                fidelity: Fidelity::Normalized,
                 provider_ext: BTreeMap::new(),
             },
         };
@@ -662,17 +660,17 @@ mod tests {
 
     #[test]
     fn internal_events_do_not_export_as_cursor_bubble_text() {
-        let event = SessionEvent {
+        let event = Event {
             id: "internal".to_string(),
-            kind: SessionEventKind::Lifecycle,
-            role: EventRole::System,
+            kind: EventKind::Lifecycle,
+            role: Role::System,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Text {
+            links: Links::default(),
+            blocks: vec![Block::Text {
                 text: "internal context".to_string(),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "codex".to_string(),
                     original_id: None,
                     original_role: Some("user".to_string()),
@@ -680,7 +678,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Normalized,
+                fidelity: Fidelity::Normalized,
                 provider_ext: BTreeMap::new(),
             },
         };

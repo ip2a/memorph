@@ -4,7 +4,7 @@
 //! observations, errors, and the local hook endpoint are memorph management
 //! data and are stored in the local SQLite database.
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

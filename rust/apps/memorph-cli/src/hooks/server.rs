@@ -4,7 +4,7 @@
 //! the existing memorph API router so Web, API-only, and Desktop/Tauri surfaces
 //! all share the same hook runtime.
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use axum::{
     extract::{Path, Query},
     http::{HeaderMap, StatusCode},
@@ -13,18 +13,17 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
 use memorph::hooks::identity::runtime_session_id_for_event;
 use memorph::hooks::model::{HookEvent, RuntimeSession, RuntimeSessionStatus};
 use memorph::hooks::normalizer;
 use memorph::hooks::protocol::{HookIngestRequest, HookIngestResponse};
 use memorph::hooks::store;
+use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 use memorph::hooks::protocol::HookRuntimeEndpoint;
 #[cfg(test)]
 use memorph::hooks::runtime::RuntimeState;
-
 
 #[derive(Debug, Serialize)]
 struct HookApiResponse<T: Serialize> {
@@ -145,7 +144,6 @@ pub fn router() -> Router {
         )
 }
 
-
 async fn get_overview() -> impl IntoResponse {
     match memorph::runtime::run_blocking(build_overview).await {
         Ok(payload) => HookApiResponse::success(payload).into_response(),
@@ -194,10 +192,11 @@ fn normalize_hook_operation(
 fn build_provider_overview(provider: &str) -> Result<HookProviderOverviewPayload> {
     let provider_entry = memorph::agent_management::get_agent_management_entry(provider)
         .with_context(|| format!("Failed to collect hook overview for provider: {provider}"))?;
-    let runtime_sessions: Vec<RuntimeSession> = memorph::hooks::runtime_state::runtime_sessions_snapshot()
-        .into_iter()
-        .filter(|session| session.provider == provider)
-        .collect();
+    let runtime_sessions: Vec<RuntimeSession> =
+        memorph::hooks::runtime_state::runtime_sessions_snapshot()
+            .into_iter()
+            .filter(|session| session.provider == provider)
+            .collect();
     let recent_events: Vec<HookEvent> = store::load_recent_events(100)
         .unwrap_or_default()
         .into_iter()
@@ -310,8 +309,12 @@ fn hook_status_needs_attention(status: &memorph::hooks::model::HookHealthStatus)
 
 async fn get_status() -> impl IntoResponse {
     match memorph::runtime::run_blocking(|| {
-        let _ = memorph::hooks::runtime_state::cleanup_runtime_state(memorph::hooks::lifecycle::RuntimeCleanupOptions::default());
-        let state = memorph::hooks::runtime_state::runtime_state().read().unwrap();
+        let _ = memorph::hooks::runtime_state::cleanup_runtime_state(
+            memorph::hooks::lifecycle::RuntimeCleanupOptions::default(),
+        );
+        let state = memorph::hooks::runtime_state::runtime_state()
+            .read()
+            .unwrap();
         Ok(HookStatusPayload {
             server: current_hook_server_status(),
             runtime_sessions: state.sessions.len(),
@@ -374,7 +377,9 @@ async fn ingest_event(
             updates.push((event, correlation));
         }
         {
-            let mut state = memorph::hooks::runtime_state::runtime_state().write().unwrap();
+            let mut state = memorph::hooks::runtime_state::runtime_state()
+                .write()
+                .unwrap();
             for (event, correlation) in updates {
                 let runtime_id = runtime_session_id_for_event(event);
                 state.apply_event(event);
@@ -383,7 +388,10 @@ async fn ingest_event(
                 }
             }
             if let Err(error) = memorph::hooks::runtime_state::persist_runtime_state(&state) {
-                let _ = store::append_error("memorph::hooks::runtime_state::persist_runtime_state", error.to_string());
+                let _ = store::append_error(
+                    "memorph::hooks::runtime_state::persist_runtime_state",
+                    error.to_string(),
+                );
                 return Err(error);
             }
         }
@@ -432,7 +440,9 @@ async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> imp
 }
 
 async fn provider_status(Path(provider): Path<String>) -> impl IntoResponse {
-    match memorph::runtime::run_blocking(move || memorph::hooks::operations::status(&provider)).await {
+    match memorph::runtime::run_blocking(move || memorph::hooks::operations::status(&provider))
+        .await
+    {
         Ok(status) => HookApiResponse::success(status).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -443,7 +453,9 @@ async fn get_diagnostics(Query(query): Query<DiagnosticsQuery>) -> impl IntoResp
         event_limit: query.event_limit.unwrap_or(100).min(1000),
         error_limit: query.error_limit.unwrap_or(50).min(1000),
     };
-    match memorph::runtime::run_blocking(move || memorph::hooks::diagnostics::collect(options)).await {
+    match memorph::runtime::run_blocking(move || memorph::hooks::diagnostics::collect(options))
+        .await
+    {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -463,7 +475,11 @@ async fn cleanup_runtime_sessions(Query(query): Query<CleanupQuery>) -> impl Int
         idle_after_seconds: query.idle_after_seconds.unwrap_or(30 * 60),
         orphan_after_seconds: query.orphan_after_seconds.unwrap_or(60 * 60),
     };
-    match memorph::runtime::run_blocking(move || memorph::hooks::runtime_state::cleanup_runtime_state(options)).await {
+    match memorph::runtime::run_blocking(move || {
+        memorph::hooks::runtime_state::cleanup_runtime_state(options)
+    })
+    .await
+    {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -529,9 +545,9 @@ fn hook_error(status: StatusCode, msg: impl ToString) -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memorph::hooks::model::{RuntimeSessionCorrelation, RuntimeSessionId};
     use axum::{body::to_bytes, body::Body, http::Request};
     use chrono::Utc;
+    use memorph::hooks::model::{RuntimeSessionCorrelation, RuntimeSessionId};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -604,7 +620,9 @@ mod tests {
             runtime_session("sample:session:s1", "sample", Some("s1")),
         );
 
-        let sessions = memorph::hooks::runtime_state::linked_runtime_sessions_from_state(&state, "sample", "s1", None);
+        let sessions = memorph::hooks::runtime_state::linked_runtime_sessions_from_state(
+            &state, "sample", "s1", None,
+        );
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].provider_session_id.as_deref(), Some("s1"));
     }
@@ -623,8 +641,12 @@ mod tests {
         });
         state.sessions.insert(session.runtime_id.clone(), session);
 
-        let sessions =
-            memorph::hooks::runtime_state::linked_runtime_sessions_from_state(&state, "sample", "session-from-correlation", None);
+        let sessions = memorph::hooks::runtime_state::linked_runtime_sessions_from_state(
+            &state,
+            "sample",
+            "session-from-correlation",
+            None,
+        );
         assert_eq!(sessions.len(), 1);
         assert_eq!(
             sessions[0]

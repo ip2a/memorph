@@ -188,7 +188,7 @@ fn opencode_malformed_parts_are_preserved_and_reported() {
     assert_eq!(blocks.len(), 4);
     assert!(blocks
         .iter()
-        .all(|block| matches!(block, EventBlock::ProviderPayload { .. })));
+        .all(|block| matches!(block, Block::ProviderPayload { .. })));
     assert!(report
         .issues
         .iter()
@@ -224,7 +224,7 @@ fn opencode_message_without_parts_is_preserved_as_an_event() {
 
     assert!(matches!(
         imported.session.events[0].blocks.as_slice(),
-        [EventBlock::ProviderPayload { kind, .. }]
+        [Block::ProviderPayload { kind, .. }]
             if kind == "message_without_mappable_parts"
     ));
     assert!(imported
@@ -1188,27 +1188,27 @@ fn database_import_uses_stable_message_and_part_order() {
     );
     assert!(matches!(
         first.session.events[0].blocks.as_slice(),
-        [EventBlock::Text { text: first }, EventBlock::Text { text: second }]
+        [Block::Text { text: first }, Block::Text { text: second }]
             if first == "first block" && second == "second block"
     ));
 }
 
 #[test]
 fn opencode_message_data_preserves_model_provider_metadata() {
-    let event = SessionEvent {
+    let event = Event {
         id: "source-message".to_string(),
-        kind: SessionEventKind::Message,
-        role: EventRole::Assistant,
-        blocks: vec![EventBlock::Text {
+        kind: EventKind::Message,
+        role: Role::Assistant,
+        blocks: vec![Block::Text {
             text: "hello".to_string(),
         }],
         timestamp: Utc
             .timestamp_millis_opt(1_700_000_000_000)
             .single()
             .unwrap(),
-        links: EventLinks::default(),
-        metadata: EventMetadata {
-            source: EventSource {
+        links: Links::default(),
+        metadata: Metadata {
+            source: Source {
                 provider_id: "codex".to_string(),
                 original_id: None,
                 original_role: None,
@@ -1216,7 +1216,7 @@ fn opencode_message_data_preserves_model_provider_metadata() {
             },
             model: Some("gpt-5.4".to_string()),
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     };
@@ -1254,7 +1254,7 @@ fn opencode_message_data_preserves_model_provider_metadata() {
 
 #[test]
 fn provider_payload_block_is_skipped_in_opencode_part_export() {
-    let block = EventBlock::ProviderPayload {
+    let block = Block::ProviderPayload {
         kind: "internal".to_string(),
         payload: serde_json::json!({"id": "hidden"}),
     };
@@ -1271,11 +1271,11 @@ fn provider_payload_block_is_skipped_in_opencode_part_export() {
 
 #[test]
 fn compressed_segment_exports_as_native_opencode_compaction() {
-    let event = SessionEvent {
+    let event = Event {
         id: "compressed-source".to_string(),
-        kind: SessionEventKind::Message,
-        role: EventRole::Assistant,
-        blocks: vec![EventBlock::Compressed {
+        kind: EventKind::Message,
+        role: Role::Assistant,
+        blocks: vec![Block::Compressed {
             source_provider_id: "opencode".to_string(),
             summary: "portable summary".to_string(),
             source_event_ids: vec!["old-1".to_string(), "old-2".to_string()],
@@ -1286,9 +1286,9 @@ fn compressed_segment_exports_as_native_opencode_compaction() {
             .timestamp_millis_opt(1_700_000_000_000)
             .single()
             .unwrap(),
-        links: EventLinks::default(),
-        metadata: EventMetadata {
-            source: EventSource {
+        links: Links::default(),
+        metadata: Metadata {
+            source: Source {
                 provider_id: "memorph".to_string(),
                 original_id: None,
                 original_role: None,
@@ -1296,7 +1296,7 @@ fn compressed_segment_exports_as_native_opencode_compaction() {
             },
             model: Some("gpt-5.4".to_string()),
             usage: None,
-            fidelity: MappingDisposition::Normalized,
+            fidelity: Fidelity::Normalized,
             provider_ext: BTreeMap::new(),
         },
     };

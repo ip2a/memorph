@@ -1,6 +1,6 @@
 use super::{get_session_index_path, get_state_db_path, PROVIDER_ID};
 use crate::provider::{ProviderSessionBackup, ProviderSourceMutation};
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

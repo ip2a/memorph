@@ -26,7 +26,11 @@ pub(super) async fn list_workspaces_with_sessions(
         page_size: query.page_size.unwrap_or(5),
     };
 
-    match memorph::runtime::run_blocking(move || memorph::core::manager::workspaces_with_sessions(&options)).await {
+    match memorph::runtime::run_blocking(move || {
+        memorph::core::manager::workspaces_with_sessions(&options)
+    })
+    .await
+    {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

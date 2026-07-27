@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -537,7 +537,7 @@ pub fn backup(
     }
 }
 
-fn export_session_to_json(session: &crate::canonical::CanonicalSession, path: &Path) -> Result<()> {
+fn export_session_to_json(session: &crate::canonical::Session, path: &Path) -> Result<()> {
     let json = serde_json::to_string_pretty(session)?;
     std::fs::write(path, json)
         .with_context(|| format!("Failed to write export file: {}", path.display()))?;

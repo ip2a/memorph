@@ -1,8 +1,8 @@
 use crate::provider::{
     ProviderCapabilities, ProviderSessionSummary, ProviderSourceFingerprint, StorageShape,
 };
-use crate::session_projection::{SessionIdentity, SessionIdentityInput};
-use anyhow::{Context, Result};
+use crate::session_projection::{Identity, SessionIdentityInput};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use serde_json::json;
@@ -37,7 +37,7 @@ impl<'a> SessionIndexStore<'a> {
             .as_deref()
             .filter(|value| !value.is_empty())
             .context("Provider session summary has no source path")?;
-        let identity = SessionIdentity::from_source(SessionIdentityInput {
+        let identity = Identity::from_source(SessionIdentityInput {
             provider_id,
             provider_session_id: Some(&summary.session_id),
             source_path: Some(source_path),
@@ -233,7 +233,7 @@ impl<'a> SessionIndexStore<'a> {
     pub fn replace_daily_stats(
         &mut self,
         canonical_session_id: &str,
-        events: &[crate::canonical::SessionEvent],
+        events: &[crate::canonical::Event],
     ) -> Result<()> {
         const DAY_MS: i64 = 86_400_000;
         let mut days = std::collections::BTreeMap::<i64, (usize, usize)>::new();

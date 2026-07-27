@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use axum::Router;
 use std::io;
 use tower_http::cors::{Any, CorsLayer};

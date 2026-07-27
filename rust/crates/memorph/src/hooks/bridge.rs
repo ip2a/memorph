@@ -5,7 +5,7 @@
 //! the currently running memorph API endpoint, and emits no provider decision
 //! output. Hook failures are fail-open by design.
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{self, Read};

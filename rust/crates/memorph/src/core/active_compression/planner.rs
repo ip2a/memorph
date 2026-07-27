@@ -1,4 +1,4 @@
-use crate::canonical::{CanonicalSession, EventBlock, EventRole, SessionEvent, SessionEventKind};
+use crate::canonical::{Block, Event, EventKind, Role, Session};
 use crate::provider::canonical_event_text;
 
 use super::content::{content_profile, DetectedContentKind};
@@ -10,7 +10,7 @@ use super::{
 };
 
 pub(super) fn plan_compression_candidates_with_estimator(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &ActiveCompressionPolicy,
     token_estimator: &CompressionTokenEstimatorReport,
 ) -> (Vec<CompressionCandidateReport>, Vec<CompressionSkipReport>) {
@@ -156,18 +156,18 @@ pub(super) fn plan_compression_candidates_with_estimator(
 }
 
 fn hard_skip_reason(
-    event: &SessionEvent,
+    event: &Event,
     event_index: usize,
     protected_message_indexes: &[usize],
 ) -> Option<CompressionSkipReason> {
-    if matches!(event.role, EventRole::System | EventRole::Developer) {
+    if matches!(event.role, Role::System | Role::Developer) {
         return Some(CompressionSkipReason::SystemOrDeveloperInstruction);
     }
 
     if event
         .blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::Compressed { .. }))
+        .any(|block| matches!(block, Block::Compressed { .. }))
     {
         return Some(CompressionSkipReason::AlreadyCompressed);
     }
@@ -188,7 +188,7 @@ struct HistoricalRange {
 }
 
 fn collect_historical_range(
-    session: &CanonicalSession,
+    session: &Session,
     start_event_index: usize,
     protected_message_indexes: &[usize],
     token_estimator: &CompressionTokenEstimatorReport,
@@ -229,7 +229,7 @@ fn collect_historical_range(
 }
 
 fn push_range_skips(
-    session: &CanonicalSession,
+    session: &Session,
     start_event_index: usize,
     end_event_index: usize,
     reason: CompressionSkipReason,
@@ -315,7 +315,7 @@ fn savings_ratio_is_too_low(
 }
 
 pub(super) fn classify_candidate(
-    event: &SessionEvent,
+    event: &Event,
 ) -> Option<(
     CompressionCandidateKind,
     CompressionSelectionReason,
@@ -343,7 +343,7 @@ pub(super) fn classify_candidate(
     if event
         .blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::CommandResult { .. }))
+        .any(|block| matches!(block, Block::CommandResult { .. }))
         || profile.kind == DetectedContentKind::Log
     {
         return Some((
@@ -356,7 +356,7 @@ pub(super) fn classify_candidate(
     if event
         .blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+        .any(|block| matches!(block, Block::ToolResult { .. }))
     {
         return Some((
             CompressionCandidateKind::LargeToolOutput,
@@ -368,7 +368,7 @@ pub(super) fn classify_candidate(
     if event
         .blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ProviderPayload { .. }))
+        .any(|block| matches!(block, Block::ProviderPayload { .. }))
     {
         return Some((
             CompressionCandidateKind::ProviderPayloadText,
@@ -377,11 +377,8 @@ pub(super) fn classify_candidate(
         ));
     }
 
-    if event.kind == SessionEventKind::Message
-        && matches!(
-            event.role,
-            EventRole::User | EventRole::Assistant | EventRole::Tool
-        )
+    if event.kind == EventKind::Message
+        && matches!(event.role, Role::User | Role::Assistant | Role::Tool)
         && !text.trim().is_empty()
     {
         return Some((
@@ -411,7 +408,7 @@ fn estimate_candidate_compressed_bytes(
 }
 
 fn skip_report(
-    event: &SessionEvent,
+    event: &Event,
     event_index: usize,
     reason: CompressionSkipReason,
     estimated_bytes: usize,

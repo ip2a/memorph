@@ -1,12 +1,11 @@
 use super::transfer::ExportResult;
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, ImportedSession, ProviderSessionRef, SessionContext,
-    SessionIdentity, SessionProvenance,
+    Context, Identity, ImportedSession, Provenance, ProviderRef, Schema, Session,
 };
 use crate::core::compression;
 use crate::format;
@@ -283,7 +282,7 @@ pub struct NativeSessionReplaceResult {
 pub fn replace_native_session(
     provider_id: &str,
     session_id: &str,
-    session: &CanonicalSession,
+    session: &Session,
     expected_archive_refs: &[String],
     operation_id: &str,
     backup_root: &Path,
@@ -634,18 +633,18 @@ fn reconstruct_provider_session_backup(
 }
 
 pub fn prepare_session_for_export(
-    session: &CanonicalSession,
+    session: &Session,
     source_provider_id: &str,
     target_provider_id: &str,
-) -> Result<(CanonicalSession, compression::CompressionReport)> {
+) -> Result<(Session, compression::CompressionReport)> {
     let policy = compression::CompressionPolicy::preserve(source_provider_id, target_provider_id);
     compression::prepare_for_export_with_archive(session, &policy)
 }
 
 pub fn prepare_session_for_target_provider(
-    session: &CanonicalSession,
+    session: &Session,
     target_provider_id: &str,
-) -> Result<(CanonicalSession, compression::CompressionReport)> {
+) -> Result<(Session, compression::CompressionReport)> {
     let source_provider_id = session.provenance.primary_source.provider_id.trim();
     let source_provider_id = if source_provider_id.is_empty() {
         target_provider_id
@@ -657,7 +656,7 @@ pub fn prepare_session_for_target_provider(
 
 pub fn expand_compression_session(
     params: &ExpandCompressionSessionParams,
-    session: &CanonicalSession,
+    session: &Session,
 ) -> Result<ExportResult> {
     let source_provider_id = session.provenance.primary_source.provider_id.trim();
     let source_provider_id = if source_provider_id.is_empty() {
@@ -678,7 +677,7 @@ pub fn expand_compression_session(
 
 pub fn restore_compression_archive(
     params: &RestoreCompressionArchiveParams,
-    session: &CanonicalSession,
+    session: &Session,
 ) -> Result<ExportResult> {
     let default_prefix = format!("{}_compression_archive", session.identity.canonical_id);
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
@@ -710,7 +709,7 @@ pub fn list_compression_provider_support() -> Vec<crate::provider::ProviderCompr
         .collect()
 }
 
-pub fn read_session_export_file(file: &str) -> Result<CanonicalSession> {
+pub fn read_session_export_file(file: &str) -> Result<Session> {
     let path = Path::new(file);
     if file.ends_with(".morph") {
         format::read_session(path)
@@ -730,7 +729,7 @@ pub fn read_session_export_file(file: &str) -> Result<CanonicalSession> {
 }
 
 pub fn write_session_export_files(
-    session: &CanonicalSession,
+    session: &Session,
     prefix: &str,
     format_name: &str,
     output_dir: Option<&Path>,
@@ -786,32 +785,32 @@ pub fn write_session_export_files(
 pub(crate) fn session_from_compression_archive(
     archive_ref: &str,
     archive: compression::CompressionArchive,
-) -> Result<CanonicalSession> {
+) -> Result<Session> {
     let created_at = archive.events.first().map(|event| event.timestamp);
     let last_active_at = archive.events.last().map(|event| event.timestamp);
     let archive_value = serde_json::to_value(&archive)?;
 
-    Ok(CanonicalSession {
-        schema: CanonicalSchema::default(),
-        identity: SessionIdentity {
+    Ok(Session {
+        schema: Schema::default(),
+        identity: Identity {
             canonical_id: archive.canonical_id.clone(),
             source_title: Some(format!("Compression archive {}", archive.canonical_id)),
         },
-        provenance: SessionProvenance {
+        provenance: Provenance {
             imported_at: chrono::Utc::now(),
             imported_by: Some("memorph-cli".to_string()),
-            primary_source: ProviderSessionRef {
+            primary_source: ProviderRef {
                 provider_id: "memorph".to_string(),
                 session_id: archive.summary_event_id.clone(),
                 source_path: Some(archive_ref.to_string()),
             },
-            aliases: vec![ProviderSessionRef {
+            aliases: vec![ProviderRef {
                 provider_id: archive.source_provider_id.clone(),
                 session_id: archive.canonical_id.clone(),
                 source_path: None,
             }],
         },
-        context: SessionContext {
+        context: Context {
             workspace_dir: None,
             created_at,
             last_active_at,
@@ -827,8 +826,7 @@ pub(crate) fn session_from_compression_archive(
 mod tests {
     use super::*;
     use crate::canonical::{
-        EventBlock, EventLinks, EventMetadata, EventRole, EventSource, ImportedSession,
-        MappingDisposition, SessionEvent, SessionEventKind,
+        Block, Event, EventKind, Fidelity, ImportedSession, Links, Metadata, Role, Source,
     };
     use crate::provider::{ProviderBackupSupport, ProviderCapabilities, ProviderSessionSummary};
     use crate::storage::{artifact_store::ArtifactQuery, local_store};
@@ -1371,57 +1369,57 @@ mod tests {
                 .events
                 .first()
                 .and_then(|event| event.blocks.first()),
-            Some(EventBlock::Compressed { .. })
+            Some(Block::Compressed { .. })
         ));
     }
 
-    fn sample_opencode_compacted_session() -> CanonicalSession {
+    fn sample_opencode_compacted_session() -> Session {
         let now = Utc::now();
-        CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: "s1".to_string(),
                 source_title: None,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: now,
                 imported_by: Some("test".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: "opencode".to_string(),
                     session_id: "s1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext::default(),
+            context: Context::default(),
             events: vec![
-                text_event("old-user", EventRole::User, "large old context", false),
+                text_event("old-user", Role::User, "large old context", false),
                 compaction_event("compact-marker"),
-                text_event("summary", EventRole::Assistant, "compressed summary", true),
-                text_event("tail", EventRole::User, "new request", false),
+                text_event("summary", Role::Assistant, "compressed summary", true),
+                text_event("tail", Role::User, "new request", false),
             ],
             artifacts: Vec::new(),
             extensions: BTreeMap::new(),
         }
     }
 
-    fn text_event(id: &str, role: EventRole, text: &str, summary: bool) -> SessionEvent {
+    fn text_event(id: &str, role: Role, text: &str, summary: bool) -> Event {
         let mut provider_ext = BTreeMap::new();
         provider_ext.insert(
             "opencode_message".to_string(),
             serde_json::json!({ "summary": summary }),
         );
-        SessionEvent {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Message,
+            kind: EventKind::Message,
             role,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Text {
+            links: Links::default(),
+            blocks: vec![Block::Text {
                 text: text.to_string(),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "opencode".to_string(),
                     original_id: Some(id.to_string()),
                     original_role: None,
@@ -1429,25 +1427,25 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext,
             },
         }
     }
 
-    fn compaction_event(id: &str) -> SessionEvent {
-        SessionEvent {
+    fn compaction_event(id: &str) -> Event {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Unknown,
-            role: EventRole::User,
+            kind: EventKind::Unknown,
+            role: Role::User,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::ProviderPayload {
+            links: Links::default(),
+            blocks: vec![Block::ProviderPayload {
                 kind: "compaction".to_string(),
                 payload: serde_json::json!({ "type": "compaction" }),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "opencode".to_string(),
                     original_id: Some(id.to_string()),
                     original_role: None,
@@ -1455,7 +1453,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: BTreeMap::new(),
             },
         }

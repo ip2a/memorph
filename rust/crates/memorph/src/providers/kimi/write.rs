@@ -101,10 +101,7 @@ pub(super) fn fail_kimi_mutation_after_write(_mutation: ProviderSourceMutation) 
     Ok(())
 }
 
-pub(super) fn export_canonical_session(
-    session: &CanonicalSession,
-    target_dir: &Path,
-) -> Result<String> {
+pub(super) fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<String> {
     let session_id = Uuid::new_v4().to_string();
     let project_hash = md5_hex(target_dir.to_string_lossy().as_bytes());
     let session_dir = get_kimi_sessions_dir()
@@ -130,7 +127,7 @@ pub(super) fn export_canonical_session(
         };
         let ts = event.timestamp.timestamp_millis() as f64 / 1000.0;
         match visible_role {
-            EventRole::Assistant => {
+            Role::Assistant => {
                 let content_parts = event
                     .blocks
                     .iter()
@@ -264,13 +261,13 @@ pub(super) fn export_canonical_session(
     Ok(session_id)
 }
 
-pub(super) fn canonical_block_to_kimi_content_part(block: &EventBlock) -> Option<Value> {
+pub(super) fn canonical_block_to_kimi_content_part(block: &Block) -> Option<Value> {
     match block {
-        EventBlock::Text { text } => Some(serde_json::json!({
+        Block::Text { text } => Some(serde_json::json!({
             "type": "text",
             "text": text
         })),
-        EventBlock::Thinking { text, .. } => Some(serde_json::json!({
+        Block::Thinking { text, .. } => Some(serde_json::json!({
             "type": "think",
             "think": text,
             "encrypted": null

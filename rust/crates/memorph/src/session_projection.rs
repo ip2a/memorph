@@ -1,4 +1,4 @@
-use crate::canonical::{EventRole, SessionEvent, TurnBoundary};
+use crate::canonical::{Event, Role, TurnBoundary};
 use crate::provider::{canonical_event_visible_message_role, TurnQuality};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 pub const SESSION_PROJECTION_VERSION: i64 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionIdentity {
+pub struct Identity {
     pub canonical_session_id: String,
     pub provider_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -21,7 +21,7 @@ pub struct SessionIdentity {
     pub aliases: Vec<SessionAlias>,
 }
 
-impl SessionIdentity {
+impl Identity {
     pub fn from_source(input: SessionIdentityInput<'_>) -> Result<Self> {
         let provider_id = required_text(input.provider_id, "provider_id")?;
         let provider_session_id = optional_text(input.provider_session_id);
@@ -191,7 +191,7 @@ struct TurnAccumulator {
 
 pub fn project_session_turns(
     session_id: &str,
-    events: &[SessionEvent],
+    events: &[Event],
     turn_quality: TurnQuality,
 ) -> Vec<TurnProjection> {
     let mut ordered_events = events
@@ -270,7 +270,7 @@ pub fn project_session_turns(
 
         if matches!(
             canonical_event_visible_message_role(event),
-            Some(EventRole::User)
+            Some(Role::User)
         ) {
             if let Some(turn_index) = current_inferred.take() {
                 complete_open_turn(&mut turns[turn_index]);
@@ -572,14 +572,14 @@ mod tests {
 
     #[test]
     fn session_identity_is_stable_for_same_provider_source() {
-        let first = SessionIdentity::from_source(SessionIdentityInput {
+        let first = Identity::from_source(SessionIdentityInput {
             provider_id: "codex",
             provider_session_id: Some("turns-123"),
             source_path: Some("/tmp/a.jsonl"),
             workspace_dir: Some("/work/a"),
         })
         .unwrap();
-        let second = SessionIdentity::from_source(SessionIdentityInput {
+        let second = Identity::from_source(SessionIdentityInput {
             provider_id: "codex",
             provider_session_id: Some("turns-123"),
             source_path: Some("/tmp/moved.jsonl"),
@@ -593,14 +593,14 @@ mod tests {
 
     #[test]
     fn session_identity_uses_source_path_when_provider_session_id_is_missing() {
-        let first = SessionIdentity::from_source(SessionIdentityInput {
+        let first = Identity::from_source(SessionIdentityInput {
             provider_id: "claude",
             provider_session_id: None,
             source_path: Some("/sessions/one.jsonl"),
             workspace_dir: None,
         })
         .unwrap();
-        let second = SessionIdentity::from_source(SessionIdentityInput {
+        let second = Identity::from_source(SessionIdentityInput {
             provider_id: "claude",
             provider_session_id: None,
             source_path: Some("/sessions/one.jsonl"),
@@ -614,14 +614,14 @@ mod tests {
 
     #[test]
     fn session_identity_requires_provider_and_source_identity() {
-        assert!(SessionIdentity::from_source(SessionIdentityInput {
+        assert!(Identity::from_source(SessionIdentityInput {
             provider_id: "",
             provider_session_id: Some("s1"),
             source_path: None,
             workspace_dir: None,
         })
         .is_err());
-        assert!(SessionIdentity::from_source(SessionIdentityInput {
+        assert!(Identity::from_source(SessionIdentityInput {
             provider_id: "opencode",
             provider_session_id: None,
             source_path: None,

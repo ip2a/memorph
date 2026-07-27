@@ -1,5 +1,5 @@
 use crate::canonical::TurnBoundary;
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;

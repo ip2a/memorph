@@ -1,15 +1,13 @@
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingReport,
-    ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
-    SessionProvenance,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionSummary, ProviderSourceFingerprint, ProviderWriteRisk,
     ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use rusqlite::Connection;
@@ -39,11 +37,11 @@ impl Provider for WindsurfProvider {
             page_strategy: PageStrategy::FullImport,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },
             resume_quality: ResumeQuality::None,
@@ -150,25 +148,25 @@ impl Provider for WindsurfProvider {
         );
         let now = modified_datetime(&db).unwrap_or_else(Utc::now);
         Ok(ImportedSession {
-            session: CanonicalSession {
-                schema: CanonicalSchema::default(),
-                identity: SessionIdentity {
+            session: Session {
+                schema: Schema::default(),
+                identity: Identity {
                     canonical_id: id.clone(),
                     source_title: steps
                         .iter()
                         .find_map(|s| s.user_text.clone().or(s.visible.clone())),
                 },
-                provenance: SessionProvenance {
+                provenance: Provenance {
                     imported_at: Utc::now(),
                     imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderSessionRef {
+                    primary_source: ProviderRef {
                         provider_id: PROVIDER_ID.into(),
                         session_id: id,
                         source_path: Some(source_path.into()),
                     },
                     aliases: Vec::new(),
                 },
-                context: SessionContext {
+                context: Context {
                     workspace_dir: workspace_dir(&db, workspace),
                     created_at: Some(now),
                     last_active_at: Some(now),
@@ -321,21 +319,21 @@ fn import_legacy_session(source: &str) -> Result<ImportedSession> {
         };
         report.push_issue(crate::canonical::MappingIssue {
             level: crate::canonical::MappingIssueLevel::Info,
-            disposition: MappingDisposition::Preserved,
+            disposition: Fidelity::Preserved,
             code: "windsurf-legacy-pbtxt".into(),
             message: "Mapped Windsurf legacy chat_state user message".into(),
             path: Some(format!("message[{i}]")),
             raw: None,
         });
-        events.push(SessionEvent {
+        events.push(Event {
             id: format!("windsurf:legacy:{i}"),
-            kind: SessionEventKind::Message,
-            role: EventRole::User,
+            kind: EventKind::Message,
+            role: Role::User,
             timestamp: modified_datetime(&path).unwrap_or_else(Utc::now),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Text { text }],
-            metadata: EventMetadata {
-                source: EventSource {
+            links: Links::default(),
+            blocks: vec![Block::Text { text }],
+            metadata: Metadata {
+                source: Source {
                     provider_id: PROVIDER_ID.into(),
                     original_id: Some(id.into()),
                     original_role: Some("user".into()),
@@ -343,29 +341,29 @@ fn import_legacy_session(source: &str) -> Result<ImportedSession> {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: BTreeMap::new(),
             },
         });
     }
     Ok(ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: id.into(),
                 source_title: None,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".into()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.into(),
                     session_id: id.into(),
                     source_path: Some(source.into()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: None,
                 created_at: modified_datetime(&path),
                 last_active_at: modified_datetime(&path),
@@ -614,28 +612,28 @@ fn decode_ai(blob: &[u8], step: &mut Step) {
         }
     }
 }
-fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<SessionEvent> {
+fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<Event> {
     let mut blocks = Vec::new();
     if let Some(t) = &step.user_text {
-        blocks.push(EventBlock::Text { text: t.clone() })
+        blocks.push(Block::Text { text: t.clone() })
     }
     if let Some(t) = &step.thinking {
-        blocks.push(EventBlock::Thinking {
+        blocks.push(Block::Thinking {
             text: t.clone(),
             signature: None,
         })
     }
     if let Some(t) = &step.visible {
-        blocks.push(EventBlock::Text { text: t.clone() })
+        blocks.push(Block::Text { text: t.clone() })
     }
     for tool in &step.tools {
-        blocks.push(EventBlock::ToolCall {
+        blocks.push(Block::ToolCall {
             tool_call_id: tool.id.clone(),
             name: tool.name.clone(),
             input: tool.input.clone(),
         });
         if let Some(result) = &tool.result {
-            blocks.push(EventBlock::ToolResult {
+            blocks.push(Block::ToolResult {
                 tool_call_id: tool.id.clone(),
                 content: result.clone(),
                 is_error: false,
@@ -646,32 +644,32 @@ fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<SessionEvent
         return None;
     }
     let role = if step.user_text.is_some() {
-        EventRole::User
+        Role::User
     } else {
-        EventRole::Assistant
+        Role::Assistant
     };
     let kind = if step.tools.is_empty() {
-        SessionEventKind::Message
+        EventKind::Message
     } else {
-        SessionEventKind::ToolCall
+        EventKind::ToolCall
     };
     r.push_issue(crate::canonical::MappingIssue {
         level: crate::canonical::MappingIssueLevel::Info,
-        disposition: MappingDisposition::Preserved,
+        disposition: Fidelity::Preserved,
         code: "windsurf-native-step".into(),
         message: "Mapped Windsurf trajectory step".into(),
         path: Some(format!("steps[{i}]")),
         raw: None,
     });
-    Some(SessionEvent {
+    Some(Event {
         id: format!("windsurf:event:{i}"),
         kind,
         role,
         timestamp: step.timestamp.unwrap_or_else(Utc::now),
-        links: EventLinks::default(),
+        links: Links::default(),
         blocks,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.into(),
                 original_id: step.id.map(|v| v.to_string()),
                 original_role: None,
@@ -679,7 +677,7 @@ fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<SessionEvent
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     })
@@ -746,7 +744,7 @@ message:{source: CHAT_MESSAGE_SOURCE_USER conversation_id: "other" intent:{text:
         assert_eq!(imported.session.events.len(), 1);
         assert!(matches!(
             imported.session.events[0].blocks[0],
-            EventBlock::Text { ref text } if text == "hello"
+            Block::Text { ref text } if text == "hello"
         ));
         assert!(legacy_fingerprint(&legacy_locator(&path, "legacy-1"))
             .unwrap()

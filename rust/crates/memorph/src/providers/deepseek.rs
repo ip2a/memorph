@@ -1,8 +1,7 @@
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
-    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext,
-    SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
+    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
+    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
+    ProviderRef, Role, Schema, Session, Source,
 };
 use crate::provider::{
     canonical_event_role_label, canonical_event_visible_message_role,
@@ -12,7 +11,7 @@ use crate::provider::{
     ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
     ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use rusqlite::types::ValueRef;
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -60,26 +59,26 @@ impl Provider for DeepseekProvider {
             storage_shape: StorageShape::Sqlite,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Unsupported),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                patch: Some(MappingDisposition::Unsupported),
-                image: Some(MappingDisposition::Unsupported),
-                file: Some(MappingDisposition::Unsupported),
-                compressed: Some(MappingDisposition::Unsupported),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Unsupported),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                patch: Some(Fidelity::Unsupported),
+                image: Some(Fidelity::Unsupported),
+                file: Some(Fidelity::Unsupported),
+                compressed: Some(Fidelity::Unsupported),
+                provider_payload: Some(Fidelity::Preserved),
             },
             export_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Unsupported),
-                tool_call: Some(MappingDisposition::Downgraded),
-                tool_result: Some(MappingDisposition::Downgraded),
-                patch: Some(MappingDisposition::Unsupported),
-                image: Some(MappingDisposition::Unsupported),
-                file: Some(MappingDisposition::Unsupported),
-                compressed: Some(MappingDisposition::Unsupported),
-                provider_payload: Some(MappingDisposition::Dropped),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Unsupported),
+                tool_call: Some(Fidelity::Downgraded),
+                tool_result: Some(Fidelity::Downgraded),
+                patch: Some(Fidelity::Unsupported),
+                image: Some(Fidelity::Unsupported),
+                file: Some(Fidelity::Unsupported),
+                compressed: Some(Fidelity::Unsupported),
+                provider_payload: Some(Fidelity::Dropped),
             },
             resume_quality: ResumeQuality::Native,
             write_risk: ProviderWriteRisk {
@@ -205,11 +204,7 @@ impl Provider for DeepseekProvider {
         deepseek_source_fingerprint(source_path)
     }
 
-    fn export_session(
-        &self,
-        session: &CanonicalSession,
-        target_dir: &Path,
-    ) -> Result<ExportedSession> {
+    fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
         Ok(canonical_export_result(
             PROVIDER_ID,
@@ -536,7 +531,7 @@ fn get_session_index_path() -> PathBuf {
     get_deepseek_dir().join("session_index.jsonl")
 }
 
-fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Result<String> {
+fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<String> {
     let db_path = get_state_db_path();
     if !db_path.exists() {
         anyhow::bail!(
@@ -580,10 +575,10 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
             continue;
         };
         let role = match visible_role {
-            EventRole::Assistant => "assistant",
-            EventRole::Tool => "tool",
-            EventRole::User => "user",
-            EventRole::System | EventRole::Developer | EventRole::Unknown => continue,
+            Role::Assistant => "assistant",
+            Role::Tool => "tool",
+            Role::User => "user",
+            Role::System | Role::Developer | Role::Unknown => continue,
         };
         let item_json = serde_json::json!({
             "source": "memorph-canonical",
@@ -611,7 +606,7 @@ fn export_canonical_session(session: &CanonicalSession, target_dir: &Path) -> Re
     Ok(thread_id)
 }
 
-fn deepseek_message_content(event: &SessionEvent) -> Option<String> {
+fn deepseek_message_content(event: &Event) -> Option<String> {
     canonical_event_visible_message_text(event)
 }
 
@@ -652,15 +647,15 @@ fn import_canonical_session_from_connection(
         let role = deepseek_event_role(&message.role, &raw_message, &mut report);
         let (blocks, fidelity) = canonical_blocks_from_message(&message, &raw_message, &mut report);
 
-        events.push(SessionEvent {
+        events.push(Event {
             id: format!("deepseek:message:{}", message.id),
             kind: deepseek_event_kind(&message.role, &blocks),
             role,
             timestamp,
-            links: EventLinks::default(),
+            links: Links::default(),
             blocks,
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: PROVIDER_ID.to_string(),
                     original_id: Some(message.id.to_string()),
                     original_role: Some(message.role.clone()),
@@ -692,23 +687,23 @@ fn import_canonical_session_from_connection(
     );
 
     Ok(ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: thread.id.clone(),
                 source_title,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id: thread.id.clone(),
                     source_path: Some(source_path.to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: Some(thread.cwd.clone()),
                 created_at: chrono::DateTime::from_timestamp(thread.created_at, 0),
                 last_active_at: chrono::DateTime::from_timestamp(thread.updated_at, 0),
@@ -777,24 +772,24 @@ fn deepseek_thread_title(thread: &ThreadRow) -> Option<String> {
     })
 }
 
-fn deepseek_event_role(role: &str, raw_message: &Value, report: &mut MappingReport) -> EventRole {
+fn deepseek_event_role(role: &str, raw_message: &Value, report: &mut MappingReport) -> Role {
     match role {
-        "user" => EventRole::User,
-        "assistant" => EventRole::Assistant,
-        "tool" => EventRole::Tool,
-        "system" => EventRole::System,
-        "developer" => EventRole::Developer,
-        "history" => EventRole::System,
+        "user" => Role::User,
+        "assistant" => Role::Assistant,
+        "tool" => Role::Tool,
+        "system" => Role::System,
+        "developer" => Role::Developer,
+        "history" => Role::System,
         other => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Info,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "unknown_role_normalized".to_string(),
                 message: format!("Normalized unknown DeepSeek role '{}'", other),
                 path: None,
                 raw: Some(raw_message.clone()),
             });
-            EventRole::Unknown
+            Role::Unknown
         }
     }
 }
@@ -803,22 +798,22 @@ fn canonical_blocks_from_message(
     message: &MessageRow,
     raw_message: &Value,
     report: &mut MappingReport,
-) -> (Vec<EventBlock>, MappingDisposition) {
+) -> (Vec<Block>, Fidelity) {
     let mut blocks = Vec::new();
-    let mut fidelity = MappingDisposition::Preserved;
+    let mut fidelity = Fidelity::Preserved;
     let content = message.content.trim();
 
     match message.item_json.as_deref() {
         Some(raw_item) => match serde_json::from_str::<Value>(raw_item) {
             Ok(item) => {
                 if message.role == "history" && !content.is_empty() {
-                    blocks.push(EventBlock::Text {
+                    blocks.push(Block::Text {
                         text: message.content.clone(),
                     });
                 }
 
                 if let Some(tool_name) = item.get("tool_name").and_then(|value| value.as_str()) {
-                    blocks.push(EventBlock::ToolCall {
+                    blocks.push(Block::ToolCall {
                         tool_call_id: item
                             .get("call_id")
                             .and_then(|value| value.as_str())
@@ -828,12 +823,12 @@ fn canonical_blocks_from_message(
                         input: item.get("arguments").cloned(),
                     });
                     if !content.is_empty() {
-                        blocks.push(EventBlock::Text {
+                        blocks.push(Block::Text {
                             text: message.content.clone(),
                         });
                     }
                 } else if let Some(output) = item.get("output").and_then(|value| value.as_str()) {
-                    blocks.push(EventBlock::ToolResult {
+                    blocks.push(Block::ToolResult {
                         tool_call_id: item
                             .get("tool_use_id")
                             .and_then(|value| value.as_str())
@@ -846,44 +841,44 @@ fn canonical_blocks_from_message(
                             .unwrap_or(false),
                     });
                     if !content.is_empty() && content != output {
-                        blocks.push(EventBlock::Text {
+                        blocks.push(Block::Text {
                             text: message.content.clone(),
                         });
                     }
                 } else if !content.is_empty() {
-                    blocks.push(EventBlock::Text {
+                    blocks.push(Block::Text {
                         text: message.content.clone(),
                     });
                 }
 
-                blocks.push(EventBlock::ProviderPayload {
+                blocks.push(Block::ProviderPayload {
                     kind: "message_item".to_string(),
                     payload: item,
                 });
             }
             Err(error) => {
-                fidelity = MappingDisposition::Normalized;
+                fidelity = Fidelity::Normalized;
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Warning,
-                    disposition: MappingDisposition::Normalized,
+                    disposition: Fidelity::Normalized,
                     code: "invalid_item_json".to_string(),
                     message: format!("Failed to parse DeepSeek item_json: {}", error),
                     path: Some(format!("message:{}", message.id)),
                     raw: Some(raw_message.clone()),
                 });
                 if !content.is_empty() {
-                    blocks.push(EventBlock::Text {
+                    blocks.push(Block::Text {
                         text: message.content.clone(),
                     });
                 }
-                blocks.push(EventBlock::ProviderPayload {
+                blocks.push(Block::ProviderPayload {
                     kind: "message_item_raw".to_string(),
                     payload: Value::String(raw_item.to_string()),
                 });
             }
         },
         None if !content.is_empty() => {
-            blocks.push(EventBlock::Text {
+            blocks.push(Block::Text {
                 text: message.content.clone(),
             });
         }
@@ -891,8 +886,8 @@ fn canonical_blocks_from_message(
     }
 
     if blocks.is_empty() {
-        fidelity = MappingDisposition::Normalized;
-        blocks.push(EventBlock::Unknown {
+        fidelity = Fidelity::Normalized;
+        blocks.push(Block::Unknown {
             raw: raw_message.clone(),
         });
     }
@@ -900,28 +895,26 @@ fn canonical_blocks_from_message(
     (blocks, fidelity)
 }
 
-fn deepseek_event_kind(role: &str, blocks: &[EventBlock]) -> SessionEventKind {
+fn deepseek_event_kind(role: &str, blocks: &[Block]) -> EventKind {
     if role == "history" {
-        SessionEventKind::Lifecycle
+        EventKind::Lifecycle
     } else if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+        .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        SessionEventKind::ToolResult
+        EventKind::ToolResult
     } else if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+        .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        SessionEventKind::ToolCall
-    } else if blocks.iter().all(|block| {
-        matches!(
-            block,
-            EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
-        )
-    }) {
-        SessionEventKind::Unknown
+        EventKind::ToolCall
+    } else if blocks
+        .iter()
+        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }))
+    {
+        EventKind::Unknown
     } else {
-        SessionEventKind::Message
+        EventKind::Message
     }
 }
 
@@ -1312,11 +1305,11 @@ mod tests {
         assert!(!capabilities.activity_support.session_activity);
         assert_eq!(
             capabilities.import_fidelity.provider_payload,
-            Some(MappingDisposition::Preserved)
+            Some(Fidelity::Preserved)
         );
         assert_eq!(
             capabilities.export_fidelity.provider_payload,
-            Some(MappingDisposition::Dropped)
+            Some(Fidelity::Dropped)
         );
     }
 
@@ -2207,10 +2200,10 @@ mod tests {
             Some("Named Thread")
         );
         assert_eq!(imported.session.events.len(), 3);
-        assert_eq!(imported.session.events[0].kind, SessionEventKind::Lifecycle);
+        assert_eq!(imported.session.events[0].kind, EventKind::Lifecycle);
         assert!(matches!(
             imported.session.events[1].blocks.first(),
-            Some(EventBlock::ToolCall {
+            Some(Block::ToolCall {
                 name,
                 tool_call_id,
                 ..
@@ -2218,7 +2211,7 @@ mod tests {
         ));
         assert!(matches!(
             imported.session.events[2].blocks.first(),
-            Some(EventBlock::ToolResult {
+            Some(Block::ToolResult {
                 tool_call_id,
                 content,
                 is_error
@@ -2229,13 +2222,13 @@ mod tests {
 
     #[test]
     fn compressed_segment_exports_as_portable_deepseek_message_content() {
-        let event = SessionEvent {
+        let event = Event {
             id: "compressed-source".to_string(),
-            kind: SessionEventKind::Message,
-            role: EventRole::Assistant,
+            kind: EventKind::Message,
+            role: Role::Assistant,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Compressed {
+            links: Links::default(),
+            blocks: vec![Block::Compressed {
                 source_provider_id: "opencode".to_string(),
                 summary: "compressed summary".to_string(),
                 source_event_ids: vec![
@@ -2246,8 +2239,8 @@ mod tests {
                 source_event_count: None,
                 archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "memorph".to_string(),
                     original_id: None,
                     original_role: Some("assistant".to_string()),
@@ -2255,7 +2248,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Normalized,
+                fidelity: Fidelity::Normalized,
                 provider_ext: BTreeMap::new(),
             },
         };
@@ -2274,17 +2267,17 @@ mod tests {
 
     #[test]
     fn internal_events_do_not_export_as_deepseek_message_content() {
-        let event = SessionEvent {
+        let event = Event {
             id: "internal".to_string(),
-            kind: SessionEventKind::Lifecycle,
-            role: EventRole::System,
+            kind: EventKind::Lifecycle,
+            role: Role::System,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Text {
+            links: Links::default(),
+            blocks: vec![Block::Text {
                 text: "internal context".to_string(),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "codex".to_string(),
                     original_id: None,
                     original_role: Some("user".to_string()),
@@ -2292,7 +2285,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Normalized,
+                fidelity: Fidelity::Normalized,
                 provider_ext: BTreeMap::new(),
             },
         };

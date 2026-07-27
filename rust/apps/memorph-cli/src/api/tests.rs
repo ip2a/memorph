@@ -1,17 +1,16 @@
 use super::*;
-use memorph::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, MappingDisposition, ProviderSessionRef, SessionContext, SessionEvent,
-    SessionEventKind, SessionIdentity, SessionProvenance,
-};
-use memorph::hooks::model::{RuntimeSession, RuntimeSessionId, RuntimeSessionStatus};
-use memorph::hooks::protocol::{HookIngestRequest, HookRuntimeEndpoint};
-use memorph::storage::session_state::ResolvedLocalSessionState;
 use axum::{
     body::{to_bytes, Body},
     http::Request,
 };
 use chrono::Utc;
+use memorph::canonical::{
+    Block, Context, Event, EventKind, Fidelity, Identity, Links, Metadata, Provenance, ProviderRef,
+    Role, Schema, Session, Source,
+};
+use memorph::hooks::model::{RuntimeSession, RuntimeSessionId, RuntimeSessionStatus};
+use memorph::hooks::protocol::{HookIngestRequest, HookRuntimeEndpoint};
+use memorph::storage::session_state::ResolvedLocalSessionState;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
@@ -694,17 +693,17 @@ fn write_api_retrieve_archive_fixture() -> ArchiveFixture {
         .join(&group);
     std::fs::create_dir_all(&archive_dir).unwrap();
 
-    let source = EventSource {
+    let source = Source {
         provider_id: "claude".to_string(),
         original_id: None,
         original_role: Some("user".to_string()),
         phase: None,
     };
-    let metadata = EventMetadata {
+    let metadata = Metadata {
         source,
         model: None,
         usage: None,
-        fidelity: MappingDisposition::Preserved,
+        fidelity: Fidelity::Preserved,
         provider_ext: BTreeMap::new(),
     };
     let archive = core::compression::CompressionArchive {
@@ -717,24 +716,24 @@ fn write_api_retrieve_archive_fixture() -> ArchiveFixture {
         summary_event_id: "summary-event".to_string(),
         source_event_ids: vec!["needle-event".to_string(), "other-event".to_string()],
         events: vec![
-            SessionEvent {
+            Event {
                 id: "needle-event".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::User,
+                kind: EventKind::Message,
+                role: Role::User,
                 timestamp: now,
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
+                links: Links::default(),
+                blocks: vec![Block::Text {
                     text: "needle detail from archived original event".to_string(),
                 }],
                 metadata: metadata.clone(),
             },
-            SessionEvent {
+            Event {
                 id: "other-event".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::Assistant,
+                kind: EventKind::Message,
+                role: Role::Assistant,
                 timestamp: now,
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
+                links: Links::default(),
+                blocks: vec![Block::Text {
                     text: "unrelated archived original event".to_string(),
                 }],
                 metadata,
@@ -759,35 +758,35 @@ fn write_api_retrieve_archive_fixture() -> ArchiveFixture {
 #[tokio::test]
 async fn compression_plan_route_returns_candidates_from_file() {
     let now = Utc::now();
-    let session = CanonicalSession {
-        schema: CanonicalSchema::default(),
-        identity: SessionIdentity {
+    let session = Session {
+        schema: Schema::default(),
+        identity: Identity {
             canonical_id: "api-dry-run-file".to_string(),
             source_title: Some("API Dry Run File".to_string()),
         },
-        provenance: SessionProvenance {
+        provenance: Provenance {
             imported_at: now,
             imported_by: None,
-            primary_source: ProviderSessionRef {
+            primary_source: ProviderRef {
                 provider_id: "claude".to_string(),
                 session_id: "api-dry-run-file".to_string(),
                 source_path: None,
             },
             aliases: Vec::new(),
         },
-        context: SessionContext::default(),
+        context: Context::default(),
         events: vec![
-            SessionEvent {
+            Event {
                 id: "old-user".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::User,
+                kind: EventKind::Message,
+                role: Role::User,
                 timestamp: now,
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
+                links: Links::default(),
+                blocks: vec![Block::Text {
                     text: "historical context ".repeat(80),
                 }],
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: "claude".to_string(),
                         original_id: Some("old-user".to_string()),
                         original_role: Some("user".to_string()),
@@ -795,21 +794,21 @@ async fn compression_plan_route_returns_candidates_from_file() {
                     },
                     model: None,
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: BTreeMap::new(),
                 },
             },
-            SessionEvent {
+            Event {
                 id: "recent-user".to_string(),
-                kind: SessionEventKind::Message,
-                role: EventRole::User,
+                kind: EventKind::Message,
+                role: Role::User,
                 timestamp: now,
-                links: EventLinks::default(),
-                blocks: vec![EventBlock::Text {
+                links: Links::default(),
+                blocks: vec![Block::Text {
                     text: "latest active request".to_string(),
                 }],
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: "claude".to_string(),
                         original_id: Some("recent-user".to_string()),
                         original_role: Some("user".to_string()),
@@ -817,7 +816,7 @@ async fn compression_plan_route_returns_candidates_from_file() {
                     },
                     model: None,
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: BTreeMap::new(),
                 },
             },

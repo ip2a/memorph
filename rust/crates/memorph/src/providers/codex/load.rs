@@ -25,7 +25,7 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
             Err(error) => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Warning,
-                    disposition: MappingDisposition::Dropped,
+                    disposition: Fidelity::Dropped,
                     code: "invalid_jsonl_line".to_string(),
                     message: format!("Failed to parse Codex session line: {}", error),
                     path: Some(format!("line:{}", line_idx + 1)),
@@ -70,23 +70,23 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                         .and_then(|v| v.get("text"))
                         .and_then(|v| v.as_str())
                     {
-                        events.push(SessionEvent {
+                        events.push(Event {
                             id: format!("codex:base_instructions:{}", line_idx + 1),
-                            kind: SessionEventKind::Lifecycle,
-                            role: EventRole::System,
+                            kind: EventKind::Lifecycle,
+                            role: Role::System,
                             timestamp,
-                            links: EventLinks::default(),
+                            links: Links::default(),
                             blocks: vec![
-                                EventBlock::Text {
+                                Block::Text {
                                     text: text.to_string(),
                                 },
-                                EventBlock::ProviderPayload {
+                                Block::ProviderPayload {
                                     kind: "session_meta".to_string(),
                                     payload: payload.clone(),
                                 },
                             ],
-                            metadata: EventMetadata {
-                                source: EventSource {
+                            metadata: Metadata {
+                                source: Source {
                                     provider_id: PROVIDER_ID.to_string(),
                                     original_id: None,
                                     original_role: Some("developer".to_string()),
@@ -97,7 +97,7 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                                     .and_then(|v| v.as_str())
                                     .map(str::to_string),
                                 usage: None,
-                                fidelity: MappingDisposition::Preserved,
+                                fidelity: Fidelity::Preserved,
                                 provider_ext: {
                                     let mut ext = BTreeMap::new();
                                     ext.insert("codex_raw_line".to_string(), value.clone());
@@ -108,8 +108,8 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                     } else {
                         events.push(provider_payload_event(
                             format!("codex:session_meta:{}", line_idx + 1),
-                            SessionEventKind::Lifecycle,
-                            EventRole::System,
+                            EventKind::Lifecycle,
+                            Role::System,
                             timestamp,
                             "session_meta",
                             ProviderPayloadData {
@@ -138,8 +138,8 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                         .or(project_dir);
                     events.push(provider_payload_event(
                         format!("codex:turn_context:{}", line_idx + 1),
-                        SessionEventKind::Lifecycle,
-                        EventRole::System,
+                        EventKind::Lifecycle,
+                        Role::System,
                         timestamp,
                         "turn_context",
                         ProviderPayloadData {
@@ -188,7 +188,7 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
             other => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Info,
-                    disposition: MappingDisposition::Normalized,
+                    disposition: Fidelity::Normalized,
                     code: "unknown_codex_line".to_string(),
                     message: format!("Preserved unknown Codex line type '{}'", other),
                     path: Some(format!("line:{}", line_idx + 1)),
@@ -196,8 +196,8 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                 });
                 events.push(provider_payload_event(
                     format!("codex:unknown:{}", line_idx + 1),
-                    SessionEventKind::Unknown,
-                    EventRole::Unknown,
+                    EventKind::Unknown,
+                    Role::Unknown,
                     timestamp,
                     other,
                     ProviderPayloadData {
@@ -224,23 +224,23 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
         select_codex_display_title(None, None, source_title.as_deref(), &canonical_id);
 
     Ok(ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: canonical_id.clone(),
                 source_title,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id: canonical_id,
                     source_path: Some(path.to_string_lossy().to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: project_dir,
                 created_at,
                 last_active_at,
@@ -293,7 +293,7 @@ pub(super) fn import_canonical_session_page(
             Err(error) => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Warning,
-                    disposition: MappingDisposition::Dropped,
+                    disposition: Fidelity::Dropped,
                     code: "invalid_jsonl_line".to_string(),
                     message: format!("Failed to parse Codex session line: {}", error),
                     path: Some(format!("line:{}", location.line_no)),
@@ -329,23 +329,23 @@ pub(super) fn import_canonical_session_page(
     }
 
     let imported = ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: state.session_id.clone(),
                 source_title: state.source_title.clone(),
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id: state.session_id.clone(),
                     source_path: Some(path.to_string_lossy().to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: state.workspace_dir.clone(),
                 created_at: state
                     .created_at_ms
@@ -621,7 +621,7 @@ pub(super) fn codex_event_from_line(
     line_no: usize,
     raw_line: Value,
     report: &mut MappingReport,
-) -> Option<SessionEvent> {
+) -> Option<Event> {
     match line_type {
         "session_meta" => payload.map(|payload| {
             if let Some(text) = payload
@@ -629,23 +629,23 @@ pub(super) fn codex_event_from_line(
                 .and_then(|v| v.get("text"))
                 .and_then(Value::as_str)
             {
-                SessionEvent {
+                Event {
                     id: format!("codex:base_instructions:{}", line_no),
-                    kind: SessionEventKind::Lifecycle,
-                    role: EventRole::System,
+                    kind: EventKind::Lifecycle,
+                    role: Role::System,
                     timestamp,
-                    links: EventLinks::default(),
+                    links: Links::default(),
                     blocks: vec![
-                        EventBlock::Text {
+                        Block::Text {
                             text: text.to_string(),
                         },
-                        EventBlock::ProviderPayload {
+                        Block::ProviderPayload {
                             kind: "session_meta".to_string(),
                             payload: payload.clone(),
                         },
                     ],
-                    metadata: EventMetadata {
-                        source: EventSource {
+                    metadata: Metadata {
+                        source: Source {
                             provider_id: PROVIDER_ID.to_string(),
                             original_id: None,
                             original_role: Some("developer".to_string()),
@@ -656,7 +656,7 @@ pub(super) fn codex_event_from_line(
                             .and_then(Value::as_str)
                             .map(str::to_string),
                         usage: None,
-                        fidelity: MappingDisposition::Preserved,
+                        fidelity: Fidelity::Preserved,
                         provider_ext: {
                             let mut ext = BTreeMap::new();
                             ext.insert("codex_raw_line".to_string(), raw_line);
@@ -667,8 +667,8 @@ pub(super) fn codex_event_from_line(
             } else {
                 provider_payload_event(
                     format!("codex:session_meta:{}", line_no),
-                    SessionEventKind::Lifecycle,
-                    EventRole::System,
+                    EventKind::Lifecycle,
+                    Role::System,
                     timestamp,
                     "session_meta",
                     ProviderPayloadData {
@@ -682,8 +682,8 @@ pub(super) fn codex_event_from_line(
         "turn_context" => payload.map(|payload| {
             provider_payload_event(
                 format!("codex:turn_context:{}", line_no),
-                SessionEventKind::Lifecycle,
-                EventRole::System,
+                EventKind::Lifecycle,
+                Role::System,
                 timestamp,
                 "turn_context",
                 ProviderPayloadData {
@@ -712,7 +712,7 @@ pub(super) fn codex_event_from_line(
         other => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Info,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "unknown_codex_line".to_string(),
                 message: format!("Preserved unknown Codex line type '{}'", other),
                 path: Some(format!("line:{}", line_no)),
@@ -720,8 +720,8 @@ pub(super) fn codex_event_from_line(
             });
             Some(provider_payload_event(
                 format!("codex:unknown:{}", line_no),
-                SessionEventKind::Unknown,
-                EventRole::Unknown,
+                EventKind::Unknown,
+                Role::Unknown,
                 timestamp,
                 other,
                 ProviderPayloadData {
@@ -739,7 +739,7 @@ pub(super) fn codex_compacted_event(
     timestamp: chrono::DateTime<Utc>,
     line_no: usize,
     raw_line: Value,
-) -> SessionEvent {
+) -> Event {
     let memorph = payload.get("memorph").and_then(Value::as_object);
     let source_provider_id = memorph
         .and_then(|value| value.get("source_provider_id"))
@@ -790,21 +790,21 @@ pub(super) fn codex_compacted_event(
         }),
     );
 
-    SessionEvent {
+    Event {
         id: format!("codex:compacted:{}", line_no),
-        kind: SessionEventKind::Message,
-        role: EventRole::Assistant,
+        kind: EventKind::Message,
+        role: Role::Assistant,
         timestamp,
-        links: EventLinks::default(),
-        blocks: vec![EventBlock::Compressed {
+        links: Links::default(),
+        blocks: vec![Block::Compressed {
             source_provider_id,
             summary,
             source_event_ids,
             source_event_count,
             archive_ref,
         }],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.to_string(),
                 original_id: None,
                 original_role: Some("assistant".to_string()),
@@ -812,7 +812,7 @@ pub(super) fn codex_compacted_event(
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Normalized,
+            fidelity: Fidelity::Normalized,
             provider_ext,
         },
     }
@@ -824,7 +824,7 @@ pub(super) fn codex_response_item_event(
     line_no: usize,
     raw_line: Value,
     report: &mut MappingReport,
-) -> SessionEvent {
+) -> Event {
     let role_str = payload.get("role").and_then(|v| v.as_str());
     let msg_type = payload.get("type").and_then(|v| v.as_str());
     let phase = payload
@@ -848,22 +848,22 @@ pub(super) fn codex_response_item_event(
             .unwrap_or("");
         let input = payload.get("arguments").cloned();
         let role = match role_str {
-            Some("assistant") | None => EventRole::Assistant,
-            _ => EventRole::Unknown,
+            Some("assistant") | None => Role::Assistant,
+            _ => Role::Unknown,
         };
-        return SessionEvent {
+        return Event {
             id: event_id,
-            kind: SessionEventKind::ToolCall,
+            kind: EventKind::ToolCall,
             role,
             timestamp,
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::ToolCall {
+            links: Links::default(),
+            blocks: vec![Block::ToolCall {
                 tool_call_id: call_id.to_string(),
                 name: name.to_string(),
                 input,
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: PROVIDER_ID.to_string(),
                     original_id: None,
                     original_role: role_str.map(str::to_string),
@@ -871,7 +871,7 @@ pub(super) fn codex_response_item_event(
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: {
                     let mut ext = BTreeMap::new();
                     ext.insert("codex_payload".to_string(), payload.clone());
@@ -896,19 +896,19 @@ pub(super) fn codex_response_item_event(
                     .unwrap_or_else(|| value.to_string())
             })
             .unwrap_or_default();
-        return SessionEvent {
+        return Event {
             id: event_id,
-            kind: SessionEventKind::ToolResult,
-            role: EventRole::Tool,
+            kind: EventKind::ToolResult,
+            role: Role::Tool,
             timestamp,
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::ToolResult {
+            links: Links::default(),
+            blocks: vec![Block::ToolResult {
                 tool_call_id: call_id.to_string(),
                 content,
                 is_error: false,
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: PROVIDER_ID.to_string(),
                     original_id: None,
                     original_role: Some("tool".to_string()),
@@ -916,7 +916,7 @@ pub(super) fn codex_response_item_event(
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: {
                     let mut ext = BTreeMap::new();
                     ext.insert("codex_payload".to_string(), payload.clone());
@@ -930,8 +930,8 @@ pub(super) fn codex_response_item_event(
     if msg_type != Some("message") {
         return provider_payload_event(
             event_id,
-            SessionEventKind::Unknown,
-            EventRole::Unknown,
+            EventKind::Unknown,
+            Role::Unknown,
             timestamp,
             msg_type.unwrap_or("response_item"),
             ProviderPayloadData {
@@ -948,26 +948,26 @@ pub(super) fn codex_response_item_event(
             let Some(block_type) = block.get("type").and_then(|v| v.as_str()) else {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Warning,
-                    disposition: MappingDisposition::Normalized,
+                    disposition: Fidelity::Normalized,
                     code: "codex_block_missing_type".to_string(),
                     message: "Codex content block without a type was preserved as unknown"
                         .to_string(),
                     path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                     raw: Some(block.clone()),
                 });
-                blocks.push(EventBlock::Unknown { raw: block.clone() });
+                blocks.push(Block::Unknown { raw: block.clone() });
                 continue;
             };
             match block_type {
                 "input_text" | "output_text" => {
                     if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                        blocks.push(EventBlock::Text {
+                        blocks.push(Block::Text {
                             text: text.to_string(),
                         });
                     } else {
                         report.push_issue(MappingIssue {
                             level: MappingIssueLevel::Warning,
-                            disposition: MappingDisposition::Normalized,
+                            disposition: Fidelity::Normalized,
                             code: "codex_text_block_missing_text".to_string(),
                             message:
                                 "Codex text block without text was preserved as provider payload"
@@ -975,7 +975,7 @@ pub(super) fn codex_response_item_event(
                             path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                             raw: Some(block.clone()),
                         });
-                        blocks.push(EventBlock::ProviderPayload {
+                        blocks.push(Block::ProviderPayload {
                             kind: block_type.to_string(),
                             payload: block.clone(),
                         });
@@ -983,13 +983,13 @@ pub(super) fn codex_response_item_event(
                 }
                 "refusal" => {
                     if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                        blocks.push(EventBlock::Text {
+                        blocks.push(Block::Text {
                             text: text.to_string(),
                         });
                     } else {
                         report.push_issue(MappingIssue {
                             level: MappingIssueLevel::Warning,
-                            disposition: MappingDisposition::Normalized,
+                            disposition: Fidelity::Normalized,
                             code: "codex_refusal_block_missing_text".to_string(),
                             message:
                                 "Codex refusal block without text was preserved as provider payload"
@@ -997,7 +997,7 @@ pub(super) fn codex_response_item_event(
                             path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                             raw: Some(block.clone()),
                         });
-                        blocks.push(EventBlock::ProviderPayload {
+                        blocks.push(Block::ProviderPayload {
                             kind: block_type.to_string(),
                             payload: block.clone(),
                         });
@@ -1009,14 +1009,14 @@ pub(super) fn codex_response_item_event(
                     } else {
                         report.push_issue(MappingIssue {
                             level: MappingIssueLevel::Info,
-                            disposition: MappingDisposition::Normalized,
+                            disposition: Fidelity::Normalized,
                             code: "codex_input_image_preserved_raw".to_string(),
                             message: "Codex input_image block was preserved as provider payload"
                                 .to_string(),
                             path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                             raw: Some(block.clone()),
                         });
-                        blocks.push(EventBlock::ProviderPayload {
+                        blocks.push(Block::ProviderPayload {
                             kind: "input_image".to_string(),
                             payload: block.clone(),
                         });
@@ -1025,14 +1025,14 @@ pub(super) fn codex_response_item_event(
                 "reasoning" => {
                     report.push_issue(MappingIssue {
                         level: MappingIssueLevel::Info,
-                        disposition: MappingDisposition::Normalized,
+                        disposition: Fidelity::Normalized,
                         code: "codex_reasoning_preserved_as_provider_payload".to_string(),
                         message: "Codex reasoning block was preserved as provider payload instead of being exposed as user-visible thinking"
                             .to_string(),
                         path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                         raw: Some(block.clone()),
                     });
-                    blocks.push(EventBlock::ProviderPayload {
+                    blocks.push(Block::ProviderPayload {
                         kind: "reasoning".to_string(),
                         payload: block.clone(),
                     });
@@ -1040,22 +1040,22 @@ pub(super) fn codex_response_item_event(
                 other => {
                     report.push_issue(MappingIssue {
                         level: MappingIssueLevel::Info,
-                        disposition: MappingDisposition::Normalized,
+                        disposition: Fidelity::Normalized,
                         code: "codex_unknown_block_preserved".to_string(),
                         message: format!("Preserved unknown Codex content block '{}'", other),
                         path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                         raw: Some(block.clone()),
                     });
-                    blocks.push(EventBlock::Unknown { raw: block.clone() });
+                    blocks.push(Block::Unknown { raw: block.clone() });
                 }
             }
         }
     } else if let Some(text) = payload.get("content").and_then(|v| v.as_str()) {
-        blocks.push(EventBlock::Text {
+        blocks.push(Block::Text {
             text: text.to_string(),
         });
     } else {
-        blocks.push(EventBlock::ProviderPayload {
+        blocks.push(Block::ProviderPayload {
             kind: "message_without_content".to_string(),
             payload: payload.clone(),
         });
@@ -1064,7 +1064,7 @@ pub(super) fn codex_response_item_event(
     if blocks.is_empty() {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Warning,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: "codex_message_without_mappable_blocks".to_string(),
             message:
                 "Codex message had no mappable content blocks and was preserved as provider payload"
@@ -1072,15 +1072,15 @@ pub(super) fn codex_response_item_event(
             path: Some(format!("response_item:{}", line_no)),
             raw: Some(payload.clone()),
         });
-        blocks.push(EventBlock::ProviderPayload {
+        blocks.push(Block::ProviderPayload {
             kind: "message_without_mappable_blocks".to_string(),
             payload: payload.clone(),
         });
     }
 
     if phase.as_deref() == Some("commentary") && blocks.len() == 1 {
-        if let EventBlock::Text { text } = &blocks[0] {
-            blocks[0] = EventBlock::Thinking {
+        if let Block::Text { text } = &blocks[0] {
+            blocks[0] = Block::Thinking {
                 text: text.clone(),
                 signature: None,
             };
@@ -1088,18 +1088,18 @@ pub(super) fn codex_response_item_event(
     }
 
     let role = match role_str {
-        Some("user") => EventRole::User,
-        Some("assistant") => EventRole::Assistant,
-        Some("developer") => EventRole::Developer,
-        Some("system") => EventRole::System,
-        Some("tool") => EventRole::Tool,
-        _ => EventRole::Unknown,
+        Some("user") => Role::User,
+        Some("assistant") => Role::Assistant,
+        Some("developer") => Role::Developer,
+        Some("system") => Role::System,
+        Some("tool") => Role::Tool,
+        _ => Role::Unknown,
     };
 
     if let Some(internal_kind) = codex_internal_message_kind(role_str, &blocks) {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Info,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: internal_kind.issue_code().to_string(),
             message: internal_kind.issue_message().to_string(),
             path: Some(format!("response_item:{}", line_no)),
@@ -1116,15 +1116,15 @@ pub(super) fn codex_response_item_event(
         );
     }
 
-    SessionEvent {
+    Event {
         id: event_id,
-        kind: SessionEventKind::Message,
+        kind: EventKind::Message,
         role,
         timestamp,
-        links: EventLinks::default(),
+        links: Links::default(),
         blocks,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.to_string(),
                 original_id: None,
                 original_role: role_str.map(str::to_string),
@@ -1132,7 +1132,7 @@ pub(super) fn codex_response_item_event(
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: {
                 let mut ext = BTreeMap::new();
                 ext.insert("codex_payload".to_string(), payload.clone());
@@ -1151,11 +1151,11 @@ pub(super) fn codex_hidden_response_item_event(
     raw_line: Value,
     phase: Option<String>,
     original_role: Option<&str>,
-) -> SessionEvent {
+) -> Event {
     let mut event = provider_payload_event(
         id,
-        SessionEventKind::Lifecycle,
-        EventRole::System,
+        EventKind::Lifecycle,
+        Role::System,
         timestamp,
         internal_kind.payload_kind(),
         ProviderPayloadData {
@@ -1164,7 +1164,7 @@ pub(super) fn codex_hidden_response_item_event(
             phase,
         },
     );
-    event.metadata.fidelity = MappingDisposition::Normalized;
+    event.metadata.fidelity = Fidelity::Normalized;
     event.metadata.source.original_role = original_role.map(str::to_string);
     event.metadata.provider_ext.insert(
         "codex_internal_message".to_string(),
@@ -1178,7 +1178,7 @@ pub(super) fn codex_hidden_response_item_event(
 
 pub(super) fn codex_internal_message_kind(
     role_str: Option<&str>,
-    blocks: &[EventBlock],
+    blocks: &[Block],
 ) -> Option<CodexInternalMessageKind> {
     if codex_is_turn_aborted_sentinel(role_str, blocks) {
         return Some(CodexInternalMessageKind::LifecycleSentinel);
@@ -1192,17 +1192,14 @@ pub(super) fn codex_internal_message_kind(
     None
 }
 
-pub(super) fn codex_text_blocks(blocks: &[EventBlock]) -> impl Iterator<Item = &str> {
+pub(super) fn codex_text_blocks(blocks: &[Block]) -> impl Iterator<Item = &str> {
     blocks.iter().filter_map(|block| match block {
-        EventBlock::Text { text } => Some(text.as_str()),
+        Block::Text { text } => Some(text.as_str()),
         _ => None,
     })
 }
 
-pub(super) fn codex_is_turn_aborted_sentinel(
-    role_str: Option<&str>,
-    blocks: &[EventBlock],
-) -> bool {
+pub(super) fn codex_is_turn_aborted_sentinel(role_str: Option<&str>, blocks: &[Block]) -> bool {
     if role_str != Some("user") {
         return false;
     }
@@ -1217,7 +1214,7 @@ pub(super) fn codex_is_turn_aborted_sentinel(
 
 pub(super) fn codex_is_internal_developer_control_message(
     role_str: Option<&str>,
-    blocks: &[EventBlock],
+    blocks: &[Block],
 ) -> bool {
     if role_str != Some("developer") {
         return false;
@@ -1237,7 +1234,7 @@ pub(super) fn codex_is_internal_developer_control_message(
 
 pub(super) fn codex_is_internal_user_context_message(
     role_str: Option<&str>,
-    blocks: &[EventBlock],
+    blocks: &[Block],
 ) -> bool {
     if role_str != Some("user") {
         return false;
@@ -1271,15 +1268,15 @@ pub(super) fn codex_event_msg_event(
     timestamp: chrono::DateTime<Utc>,
     line_no: usize,
     raw_line: Value,
-) -> SessionEvent {
+) -> Event {
     let event_type = payload
         .get("type")
         .and_then(|v| v.as_str())
         .unwrap_or("event_msg");
     let role = match event_type {
-        "user_message" => EventRole::User,
-        "agent_message" => EventRole::Assistant,
-        _ => EventRole::System,
+        "user_message" => Role::User,
+        "agent_message" => Role::Assistant,
+        _ => Role::System,
     };
 
     let mut blocks = Vec::new();
@@ -1287,25 +1284,25 @@ pub(super) fn codex_event_msg_event(
     let last_agent_text = payload.get("last_agent_message").and_then(|v| v.as_str());
 
     if let Some(text) = message_text {
-        blocks.push(EventBlock::Text {
+        blocks.push(Block::Text {
             text: text.to_string(),
         });
     }
     if let Some(text) = last_agent_text {
         if message_text != Some(text) && !text.trim().is_empty() {
-            blocks.push(EventBlock::Text {
+            blocks.push(Block::Text {
                 text: text.to_string(),
             });
         }
     }
-    blocks.push(EventBlock::ProviderPayload {
+    blocks.push(Block::ProviderPayload {
         kind: event_type.to_string(),
         payload: payload.clone(),
     });
 
     let mut event = provider_payload_event(
         format!("codex:event_msg:{}:{}", event_type, line_no),
-        SessionEventKind::Lifecycle,
+        EventKind::Lifecycle,
         role,
         timestamp,
         event_type,
@@ -1322,7 +1319,7 @@ pub(super) fn codex_event_msg_event(
     event
 }
 
-pub(super) fn codex_image_block(block: &Value) -> Option<EventBlock> {
+pub(super) fn codex_image_block(block: &Value) -> Option<Block> {
     let mime_type = block
         .get("mime_type")
         .or_else(|| block.get("mimeType"))
@@ -1335,13 +1332,13 @@ pub(super) fn codex_image_block(block: &Value) -> Option<EventBlock> {
         .or_else(|| block.get("source"))
         .and_then(|v| v.as_str())?;
     if let Some((mime, data)) = parse_data_uri(image_url) {
-        return Some(EventBlock::Image {
+        return Some(Block::Image {
             mime_type: mime.to_string(),
             data: Some(data.to_string()),
             path: None,
         });
     }
-    Some(EventBlock::Image {
+    Some(Block::Image {
         mime_type,
         data: None,
         path: Some(image_url.to_string()),
@@ -1362,29 +1359,29 @@ pub(super) struct ProviderPayloadData {
 
 pub(super) fn provider_payload_event(
     id: String,
-    kind: SessionEventKind,
-    role: EventRole,
+    kind: EventKind,
+    role: Role,
     timestamp: chrono::DateTime<Utc>,
     payload_kind: &str,
     data: ProviderPayloadData,
-) -> SessionEvent {
+) -> Event {
     let ProviderPayloadData {
         payload,
         raw_line,
         phase,
     } = data;
-    SessionEvent {
+    Event {
         id,
         kind,
         role,
         timestamp,
-        links: EventLinks::default(),
-        blocks: vec![EventBlock::ProviderPayload {
+        links: Links::default(),
+        blocks: vec![Block::ProviderPayload {
             kind: payload_kind.to_string(),
             payload: payload.clone(),
         }],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.to_string(),
                 original_id: None,
                 original_role: None,
@@ -1392,7 +1389,7 @@ pub(super) fn provider_payload_event(
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: {
                 let mut ext = BTreeMap::new();
                 ext.insert("codex_payload".to_string(), payload);

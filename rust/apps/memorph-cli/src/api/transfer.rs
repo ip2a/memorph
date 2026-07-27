@@ -19,7 +19,11 @@ pub(super) async fn export_session(Json(body): Json<ExportBody>) -> impl IntoRes
         format: body.format,
         output_dir: body.output_dir,
     };
-    match memorph::runtime::run_blocking(move || core::transfer::export_session(&params, ActivityActor::Api)).await {
+    match memorph::runtime::run_blocking(move || {
+        core::transfer::export_session(&params, ActivityActor::Api)
+    })
+    .await
+    {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -38,7 +42,11 @@ pub(super) async fn import_session(Json(body): Json<ImportBody>) -> impl IntoRes
         file_or_id: body.file_or_id,
         to_dir: body.to_dir,
     };
-    match memorph::runtime::run_blocking(move || core::transfer::import_session(&params, ActivityActor::Api)).await {
+    match memorph::runtime::run_blocking(move || {
+        core::transfer::import_session(&params, ActivityActor::Api)
+    })
+    .await
+    {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

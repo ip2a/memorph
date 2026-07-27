@@ -1,8 +1,7 @@
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingIssue,
-    MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext, SessionEvent,
-    SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
+    Schema, Session, Source, Usage,
 };
 use crate::providers::cursor::db::{load_source, CursorBubbleRecord, CursorLoadedSource};
 use anyhow::Result;
@@ -25,7 +24,7 @@ fn imported_session_from_cursor(
     if source.metadata.header.is_none() {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Warning,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: "cursor_missing_composer_header".to_string(),
             message: "Imported a Cursor data-only session without composerHeaders metadata"
                 .to_string(),
@@ -36,7 +35,7 @@ fn imported_session_from_cursor(
     if source.metadata.composer.is_none() {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Warning,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: "cursor_missing_composer_data".to_string(),
             message: "Imported a Cursor header-only session without composerData metadata"
                 .to_string(),
@@ -47,7 +46,7 @@ fn imported_session_from_cursor(
     for invalid in &source.invalid_bubbles {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Warning,
-            disposition: MappingDisposition::Dropped,
+            disposition: Fidelity::Dropped,
             code: "cursor_invalid_bubble_row".to_string(),
             message: invalid.error.clone(),
             path: Some(invalid.key.clone()),
@@ -86,7 +85,7 @@ fn imported_session_from_cursor(
     if tool_payload_count > 0 {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Info,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: "cursor_tool_payload_normalized".to_string(),
             message: format!(
                 "Mapped toolFormerData into canonical tool blocks for {tool_payload_count} Cursor bubbles"
@@ -98,7 +97,7 @@ fn imported_session_from_cursor(
     if thinking_count > 0 {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Info,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: "cursor_thinking_payload_normalized".to_string(),
             message: format!(
                 "Mapped Cursor thinking objects into canonical thinking blocks for {thinking_count} bubbles"
@@ -110,7 +109,7 @@ fn imported_session_from_cursor(
     if unmapped_structured_count > 0 {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Info,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: "cursor_structured_payload_preserved".to_string(),
             message: format!(
                 "Preserved non-empty Cursor structured fields in provider payloads for {unmapped_structured_count} bubbles"
@@ -146,23 +145,23 @@ fn imported_session_from_cursor(
     }
 
     ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: source.metadata.composer_id.clone(),
                 source_title,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id: source.metadata.composer_id,
                     source_path: Some(source_locator.to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir,
                 created_at,
                 last_active_at,
@@ -177,7 +176,7 @@ fn imported_session_from_cursor(
 }
 
 struct ImportedCursorEvent {
-    event: SessionEvent,
+    event: Event,
     has_tool_payload: bool,
     has_thinking: bool,
     has_unmapped_structured_payload: bool,
@@ -201,7 +200,7 @@ fn canonical_event_from_bubble(
     } else {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Warning,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: "cursor_bubble_identity_mismatch".to_string(),
             message: "Used the Cursor bubble key suffix as the canonical event ID".to_string(),
             path: Some(bubble.key.clone()),
@@ -212,19 +211,19 @@ fn canonical_event_from_bubble(
 
     let bubble_type = bubble.raw.get("type").and_then(Value::as_i64);
     let (role, mut fidelity) = match bubble_type {
-        Some(1) => (EventRole::User, MappingDisposition::Preserved),
-        Some(2) => (EventRole::Assistant, MappingDisposition::Preserved),
+        Some(1) => (Role::User, Fidelity::Preserved),
+        Some(2) => (Role::Assistant, Fidelity::Preserved),
         other => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "cursor_unknown_bubble_type".to_string(),
                 message: "Mapped an unknown Cursor bubble type to the canonical unknown role"
                     .to_string(),
                 path: Some(bubble.key.clone()),
                 raw: other.map(Value::from),
             });
-            (EventRole::Unknown, MappingDisposition::Normalized)
+            (Role::Unknown, Fidelity::Normalized)
         }
     };
 
@@ -234,10 +233,10 @@ fn canonical_event_from_bubble(
         .and_then(Value::as_str)
         .and_then(parse_timestamp)
         .unwrap_or_else(|| {
-            fidelity = fidelity.worst(MappingDisposition::Normalized);
+            fidelity = fidelity.worst(Fidelity::Normalized);
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "cursor_invalid_bubble_timestamp".to_string(),
                 message:
                     "Used the session creation time plus stable source order for a Cursor bubble"
@@ -256,7 +255,7 @@ fn canonical_event_from_bubble(
         .map(str::trim)
         .filter(|text| !text.is_empty())
     {
-        blocks.push(EventBlock::Text {
+        blocks.push(Block::Text {
             text: text.to_string(),
         });
     }
@@ -270,8 +269,8 @@ fn canonical_event_from_bubble(
             .filter(|text| !text.is_empty())
         {
             has_thinking = true;
-            fidelity = fidelity.worst(MappingDisposition::Normalized);
-            blocks.push(EventBlock::Thinking {
+            fidelity = fidelity.worst(Fidelity::Normalized);
+            blocks.push(Block::Thinking {
                 text: text.to_string(),
                 signature: thinking
                     .get("signature")
@@ -287,13 +286,13 @@ fn canonical_event_from_bubble(
         let tool_name = tool.get("name").and_then(Value::as_str);
         if let (Some(tool_call_id), Some(tool_name)) = (tool_call_id, tool_name) {
             has_tool_payload = true;
-            fidelity = fidelity.worst(MappingDisposition::Normalized);
+            fidelity = fidelity.worst(Fidelity::Normalized);
             let input = tool
                 .get("params")
                 .or_else(|| tool.get("rawArgs"))
                 .and_then(Value::as_str)
                 .map(json_or_string);
-            blocks.push(EventBlock::ToolCall {
+            blocks.push(Block::ToolCall {
                 tool_call_id: tool_call_id.to_string(),
                 name: tool_name.to_string(),
                 input,
@@ -309,7 +308,7 @@ fn canonical_event_from_bubble(
                         .map(|content| (content, true))
                 });
             if let Some((content, field_is_error)) = result {
-                blocks.push(EventBlock::ToolResult {
+                blocks.push(Block::ToolResult {
                     tool_call_id: tool_call_id.to_string(),
                     content: content.to_string(),
                     is_error: field_is_error || status == Some("error"),
@@ -318,19 +317,19 @@ fn canonical_event_from_bubble(
         } else {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "cursor_incomplete_tool_payload".to_string(),
                 message: "Preserved an incomplete Cursor toolFormerData object as provider payload"
                     .to_string(),
                 path: Some(bubble.key.clone()),
                 raw: Some(Value::Object(tool.clone())),
             });
-            fidelity = fidelity.worst(MappingDisposition::Normalized);
+            fidelity = fidelity.worst(Fidelity::Normalized);
         }
     }
 
     if blocks.is_empty() {
-        blocks.push(EventBlock::ProviderPayload {
+        blocks.push(Block::ProviderPayload {
             kind: "cursor_bubble".to_string(),
             payload: bubble.raw.clone(),
         });
@@ -363,18 +362,18 @@ fn canonical_event_from_bubble(
     .any(|key| value_is_nonempty(bubble.raw.get(*key)));
 
     ImportedCursorEvent {
-        event: SessionEvent {
+        event: Event {
             id: event_id.clone(),
-            kind: SessionEventKind::Message,
+            kind: EventKind::Message,
             role,
             timestamp,
-            links: EventLinks {
+            links: Links {
                 provider_turn_id: request_id,
-                ..EventLinks::default()
+                ..Links::default()
             },
             blocks,
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: PROVIDER_ID.to_string(),
                     original_id: raw_bubble_id.map(str::to_string),
                     original_role: bubble_type.map(|value| value.to_string()),
@@ -406,14 +405,14 @@ fn bubble_model_name(model_info: Option<&Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn bubble_usage(token_count: Option<&Value>) -> Option<UsageStats> {
+fn bubble_usage(token_count: Option<&Value>) -> Option<Usage> {
     let token_count = token_count?.as_object()?;
     let input_tokens = token_count.get("inputTokens").and_then(Value::as_u64);
     let output_tokens = token_count.get("outputTokens").and_then(Value::as_u64);
     if input_tokens.is_none() && output_tokens.is_none() {
         return None;
     }
-    Some(UsageStats {
+    Some(Usage {
         input_tokens,
         output_tokens,
         total_tokens: match (input_tokens, output_tokens) {
@@ -437,10 +436,10 @@ fn value_is_nonempty(value: Option<&Value>) -> bool {
     }
 }
 
-fn infer_title_from_events(events: &[SessionEvent]) -> Option<String> {
+fn infer_title_from_events(events: &[Event]) -> Option<String> {
     events.iter().find_map(|event| {
         event.blocks.iter().find_map(|block| match block {
-            EventBlock::Text { text } => {
+            Block::Text { text } => {
                 let trimmed = text.trim();
                 if trimmed.is_empty() {
                     None
@@ -461,7 +460,7 @@ fn infer_title_from_events(events: &[SessionEvent]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{EventBlock, EventRole, MappingDisposition};
+    use crate::canonical::{Block, Fidelity, Role};
     use crate::providers::cursor::db::{
         ComposerData, CursorComposerHeader, CursorComposerRecord, CursorInvalidRow,
         CursorSessionMetadata,
@@ -576,8 +575,8 @@ mod tests {
             .iter()
             .find(|event| event.id == "user-1")
             .unwrap();
-        assert_eq!(user.role, EventRole::User);
-        assert!(matches!(user.blocks[0], EventBlock::Text { .. }));
+        assert_eq!(user.role, Role::User);
+        assert!(matches!(user.blocks[0], Block::Text { .. }));
 
         let assistant = imported
             .session
@@ -585,26 +584,25 @@ mod tests {
             .iter()
             .find(|event| event.id == "assistant-1")
             .unwrap();
-        assert_eq!(assistant.role, EventRole::Assistant);
+        assert_eq!(assistant.role, Role::Assistant);
         assert_eq!(assistant.links.provider_turn_id.as_deref(), Some("turn-1"));
         assert_eq!(assistant.metadata.model.as_deref(), Some("gpt-test"));
-        assert_eq!(assistant.metadata.fidelity, MappingDisposition::Normalized);
+        assert_eq!(assistant.metadata.fidelity, Fidelity::Normalized);
         assert_eq!(
             assistant.metadata.usage.as_ref().unwrap().total_tokens,
             Some(8)
         );
-        assert!(assistant
-            .blocks
-            .iter()
-            .any(|block| matches!(block, EventBlock::Thinking { text, .. } if text == "internal reasoning")));
+        assert!(assistant.blocks.iter().any(
+            |block| matches!(block, Block::Thinking { text, .. } if text == "internal reasoning")
+        ));
         assert!(assistant.blocks.iter().any(|block| matches!(
             block,
-            EventBlock::ToolCall { tool_call_id, name, .. }
+            Block::ToolCall { tool_call_id, name, .. }
                 if tool_call_id == "call-1" && name == "shell"
         )));
         assert!(assistant.blocks.iter().any(|block| matches!(
             block,
-            EventBlock::ToolResult { tool_call_id, content, is_error }
+            Block::ToolResult { tool_call_id, content, is_error }
                 if tool_call_id == "call-1" && content == "ok" && !is_error
         )));
         assert_eq!(
@@ -696,16 +694,16 @@ mod tests {
 
         let imported = imported_session_from_cursor(source, "db#composer=composer-normalization");
         assert_eq!(imported.session.events[0].id, "key-id");
-        assert_eq!(imported.session.events[0].role, EventRole::Unknown);
+        assert_eq!(imported.session.events[0].role, Role::Unknown);
         assert_eq!(
             imported.session.events[0].timestamp,
             DateTime::from_timestamp_millis(1_700_000_000_000).unwrap()
         );
         assert!(matches!(
             imported.session.events[0].blocks[0],
-            EventBlock::ProviderPayload { .. }
+            Block::ProviderPayload { .. }
         ));
-        assert_eq!(imported.report.overall, MappingDisposition::Dropped);
+        assert_eq!(imported.report.overall, Fidelity::Dropped);
         let codes = issue_codes(&imported);
         assert!(codes.contains(&"cursor_bubble_identity_mismatch"));
         assert!(codes.contains(&"cursor_unknown_bubble_type"));

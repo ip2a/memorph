@@ -1,10 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::canonical::{CanonicalSession, MappingDisposition};
+use crate::canonical::{Fidelity, Session};
 #[cfg(test)]
 use crate::core::compression;
 use crate::provider::ProviderWriteRisk;
@@ -78,7 +78,7 @@ pub struct SyncReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncTargetAssessment {
     pub provider: String,
-    pub fidelity: MappingDisposition,
+    pub fidelity: Fidelity,
     pub write_risk: ProviderWriteRisk,
 }
 
@@ -572,7 +572,7 @@ fn apply_projected_active_times(
     }
 }
 
-fn build_canonical_session(group: &SyncGroup) -> Result<(CanonicalSession, String)> {
+fn build_canonical_session(group: &SyncGroup) -> Result<(Session, String)> {
     // For now, build from the first holding that we can load.
     // In practice, add_holding is usually called with a specific session_id
     // or when creating a new projection from the group.
@@ -585,10 +585,10 @@ fn build_canonical_session(group: &SyncGroup) -> Result<(CanonicalSession, Strin
 }
 
 fn prepare_session_for_export(
-    session: &CanonicalSession,
+    session: &Session,
     source_provider: &str,
     target_provider: &str,
-) -> Result<CanonicalSession> {
+) -> Result<Session> {
     crate::core::session_management::prepare_session_for_export(
         session,
         source_provider,
@@ -605,9 +605,8 @@ fn resolve_target_dir(provider_id: &str, input: Option<&str>) -> Result<PathBuf>
 mod tests {
     use super::*;
     use crate::canonical::{
-        CanonicalSchema, EventBlock, EventLinks, EventMetadata, EventRole, EventSource,
-        MappingDisposition, ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind,
-        SessionIdentity, SessionProvenance,
+        Block, Context, Event, EventKind, Fidelity, Identity, Links, Metadata, Provenance,
+        ProviderRef, Role, Schema, Source,
     };
     use chrono::Utc;
     use std::collections::BTreeMap;
@@ -712,28 +711,28 @@ mod tests {
 
     #[test]
     fn sync_export_preparation_preserves_source_compression() {
-        let session = CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        let session = Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: "s1".to_string(),
                 source_title: None,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("test".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: "opencode".to_string(),
                     session_id: "s1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext::default(),
+            context: Context::default(),
             events: vec![
-                text_event("old", EventRole::User, "old expanded context", false),
+                text_event("old", Role::User, "old expanded context", false),
                 compaction_event("marker"),
-                text_event("summary", EventRole::Assistant, "compressed summary", true),
-                text_event("tail", EventRole::User, "latest request", false),
+                text_event("summary", Role::Assistant, "compressed summary", true),
+                text_event("tail", Role::User, "latest request", false),
             ],
             artifacts: Vec::new(),
             extensions: BTreeMap::new(),
@@ -748,29 +747,29 @@ mod tests {
         assert_eq!(prepared.events.len(), 2);
         assert!(matches!(
             prepared.events[0].blocks.first(),
-            Some(EventBlock::Compressed { summary, .. }) if summary == "compressed summary"
+            Some(Block::Compressed { summary, .. }) if summary == "compressed summary"
         ));
         assert_eq!(prepared.events[1].id, "tail");
     }
 
-    fn text_event(id: &str, role: EventRole, text: &str, summary: bool) -> SessionEvent {
+    fn text_event(id: &str, role: Role, text: &str, summary: bool) -> Event {
         let mut provider_ext = BTreeMap::new();
         provider_ext.insert(
             "opencode_message".to_string(),
             serde_json::json!({ "summary": summary }),
         );
 
-        SessionEvent {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Message,
+            kind: EventKind::Message,
             role,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Text {
+            links: Links::default(),
+            blocks: vec![Block::Text {
                 text: text.to_string(),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "opencode".to_string(),
                     original_id: Some(id.to_string()),
                     original_role: None,
@@ -778,25 +777,25 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext,
             },
         }
     }
 
-    fn compaction_event(id: &str) -> SessionEvent {
-        SessionEvent {
+    fn compaction_event(id: &str) -> Event {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Unknown,
-            role: EventRole::User,
+            kind: EventKind::Unknown,
+            role: Role::User,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::ProviderPayload {
+            links: Links::default(),
+            blocks: vec![Block::ProviderPayload {
                 kind: "compaction".to_string(),
                 payload: serde_json::json!({ "type": "compaction" }),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "opencode".to_string(),
                     original_id: Some(id.to_string()),
                     original_role: None,
@@ -804,7 +803,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: BTreeMap::new(),
             },
         }

@@ -1,14 +1,14 @@
 #![recursion_limit = "256"]
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use clap::Parser;
 use memorph::{
+    config, core,
     provider::{ProviderCapabilities, ProviderContentFidelity},
     providers,
     storage::activity_store::ActivityActor,
     storage::artifact_store::{BackupQuery, BackupRestoreStatus},
     sync as session_sync,
-    config, core,
 };
 use memorph_cli::{
     cli::{
@@ -1596,7 +1596,7 @@ fn provider_name(provider: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memorph::canonical::{MappingDirection, MappingDisposition, SessionEvent};
+    use memorph::canonical::{Event, Fidelity, MappingDirection};
     use memorph::session_projection::{
         ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
     };
@@ -1731,7 +1731,7 @@ mod tests {
                 summary: core::SessionProjectionReportSummaryView {
                     canonical_event_count: Some(4),
                     mapping_direction: Some(MappingDirection::Import),
-                    mapping_overall: Some(MappingDisposition::Dropped),
+                    mapping_overall: Some(Fidelity::Dropped),
                     preserved_count: 3,
                     normalized_count: 1,
                     dropped_count: 1,
@@ -1747,7 +1747,7 @@ mod tests {
                 }],
             }),
             turns: Vec::new(),
-            events: Vec::<SessionEvent>::new(),
+            events: Vec::<Event>::new(),
             artifacts: Vec::new(),
             compressed_archive_refs: Vec::new(),
         };
@@ -1797,7 +1797,7 @@ mod tests {
             stale: false,
             projection_report: None,
             turns: Vec::new(),
-            events: Vec::<SessionEvent>::new(),
+            events: Vec::<Event>::new(),
             artifacts: Vec::new(),
             compressed_archive_refs: Vec::new(),
         };

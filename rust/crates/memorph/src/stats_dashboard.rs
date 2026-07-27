@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -235,7 +235,7 @@ struct MissingCountComputation {
     event_count: usize,
     message_count: usize,
     turn_count: usize,
-    events: Vec<crate::canonical::SessionEvent>,
+    events: Vec<crate::canonical::Event>,
 }
 
 fn compute_missing_count(row: &ProjectedSessionSnapshotRow) -> Result<MissingCountComputation> {

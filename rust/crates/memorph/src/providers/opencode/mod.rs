@@ -10,11 +10,9 @@ use self::management::*;
 use self::write::*;
 
 use crate::canonical::{
-    ArtifactKind, CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata,
-    EventRole, EventSource, ExportedSession, ImportedSession, MappingDirection, MappingDisposition,
-    MappingIssue, MappingIssueLevel, MappingReport, ProviderSessionRef, SessionArtifact,
-    SessionContext, SessionEvent, SessionEventKind, SessionIdentity, SessionProvenance,
-    TurnBoundary, UsageStats,
+    Artifact, ArtifactKind, Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity,
+    ImportedSession, Links, MappingDirection, MappingIssue, MappingIssueLevel, MappingReport,
+    Metadata, Provenance, ProviderRef, Role, Schema, Session, Source, TurnBoundary, Usage,
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
@@ -27,7 +25,7 @@ use crate::provider::{
     TurnQuality, WriteRiskLevel,
 };
 use crate::session_projection::project_session_turns;
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -134,26 +132,26 @@ impl Provider for OpenCodeProvider {
             storage_shape: StorageShape::Mixed,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                patch: Some(MappingDisposition::Preserved),
-                image: Some(MappingDisposition::Normalized),
-                file: Some(MappingDisposition::Normalized),
-                compressed: Some(MappingDisposition::Downgraded),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                patch: Some(Fidelity::Preserved),
+                image: Some(Fidelity::Normalized),
+                file: Some(Fidelity::Normalized),
+                compressed: Some(Fidelity::Downgraded),
+                provider_payload: Some(Fidelity::Preserved),
             },
             export_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Downgraded),
-                tool_result: Some(MappingDisposition::Downgraded),
-                patch: Some(MappingDisposition::Downgraded),
-                image: Some(MappingDisposition::Downgraded),
-                file: Some(MappingDisposition::Downgraded),
-                compressed: Some(MappingDisposition::Preserved),
-                provider_payload: Some(MappingDisposition::Dropped),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Downgraded),
+                tool_result: Some(Fidelity::Downgraded),
+                patch: Some(Fidelity::Downgraded),
+                image: Some(Fidelity::Downgraded),
+                file: Some(Fidelity::Downgraded),
+                compressed: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Dropped),
             },
             resume_quality: ResumeQuality::Native,
             write_risk: ProviderWriteRisk {
@@ -229,15 +227,11 @@ impl Provider for OpenCodeProvider {
         true
     }
 
-    fn replace_session(&self, session_id: &str, session: &CanonicalSession) -> Result<()> {
+    fn replace_session(&self, session_id: &str, session: &Session) -> Result<()> {
         replace_opencode_session(session_id, session)
     }
 
-    fn export_session(
-        &self,
-        session: &CanonicalSession,
-        target_dir: &Path,
-    ) -> Result<ExportedSession> {
+    fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
         Ok(canonical_export_result(
             PROVIDER_ID,

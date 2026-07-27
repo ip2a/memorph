@@ -1,5 +1,5 @@
 use crate::provider::ProviderSourceFingerprint;
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::types::Value as SqliteValue;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};

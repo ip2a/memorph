@@ -202,8 +202,10 @@ pub(super) async fn retrieve_compression_archive(
         query: body.query,
         max_results: body.max_results,
     };
-    match memorph::runtime::run_blocking(move || core::compression_application::retrieve_compression_archive(&params))
-        .await
+    match memorph::runtime::run_blocking(move || {
+        core::compression_application::retrieve_compression_archive(&params)
+    })
+    .await
     {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -238,8 +240,10 @@ pub(super) async fn plan_active_compression(
         file: body.file,
         policy: body.policy,
     };
-    match memorph::runtime::run_blocking(move || core::compression_application::active_compression_dry_run(&params))
-        .await
+    match memorph::runtime::run_blocking(move || {
+        core::compression_application::active_compression_dry_run(&params)
+    })
+    .await
     {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),

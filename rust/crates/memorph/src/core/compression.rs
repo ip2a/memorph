@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
@@ -14,10 +14,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::canonical::{
-    CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole, EventSource,
-    MappingDisposition, SessionEvent, SessionEventKind,
-};
+use crate::canonical::{Block, Event, EventKind, Fidelity, Links, Metadata, Role, Session, Source};
 use crate::config;
 use crate::logging;
 use crate::provider::{self, canonical_event_text};
@@ -42,9 +39,9 @@ pub struct CompressedSegment<'a> {
     pub archive_ref: Option<&'a str>,
 }
 
-pub fn compressed_segment(event: &SessionEvent) -> Option<CompressedSegment<'_>> {
+pub fn compressed_segment(event: &Event) -> Option<CompressedSegment<'_>> {
     event.blocks.iter().find_map(|block| {
-        if let EventBlock::Compressed {
+        if let Block::Compressed {
             source_provider_id,
             summary,
             source_event_ids,
@@ -113,7 +110,7 @@ pub struct CompressionArchive {
     pub workspace_dir: Option<String>,
     pub summary_event_id: String,
     pub source_event_ids: Vec<String>,
-    pub events: Vec<SessionEvent>,
+    pub events: Vec<Event>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -162,9 +159,9 @@ struct ArchiveSummaryHeader {
 }
 
 pub fn prepare_for_export(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
-) -> (CanonicalSession, CompressionReport) {
+) -> (Session, CompressionReport) {
     match policy.mode {
         CompressionMode::Preserve => preserve_compressed_segments(session, policy),
         CompressionMode::Expand => (
@@ -179,9 +176,9 @@ pub fn prepare_for_export(
 }
 
 pub fn prepare_for_export_with_archive(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
-) -> Result<(CanonicalSession, CompressionReport)> {
+) -> Result<(Session, CompressionReport)> {
     let archive_dir = archive_base_dir()?;
     prepare_for_export_with_archive_dir(session, policy, &archive_dir)
 }
@@ -212,12 +209,12 @@ pub fn list_archives_for_workspace(
 
 pub(crate) fn write_active_compression_archive_in_dir(
     archive_dir: &Path,
-    session: &CanonicalSession,
+    session: &Session,
     source_provider_id: &str,
     target_provider_id: &str,
-    summary_event: &SessionEvent,
+    summary_event: &Event,
     source_event_ids: Vec<String>,
-    events: Vec<SessionEvent>,
+    events: Vec<Event>,
 ) -> Result<String> {
     let policy = CompressionPolicy::preserve(source_provider_id, target_provider_id);
     write_archive(
@@ -232,20 +229,20 @@ pub(crate) fn write_active_compression_archive_in_dir(
 
 #[cfg(test)]
 pub(crate) fn expand_compressed_segments_in_dir(
-    session: &CanonicalSession,
+    session: &Session,
     source_provider_id: &str,
     target_provider_id: &str,
     archive_dir: &Path,
-) -> Result<(CanonicalSession, CompressionReport)> {
+) -> Result<(Session, CompressionReport)> {
     let policy = CompressionPolicy::expand(source_provider_id, target_provider_id);
     expand_compressed_segments_with_archive(session, &policy, archive_dir)
 }
 
 fn prepare_for_export_with_archive_dir(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
     archive_dir: &Path,
-) -> Result<(CanonicalSession, CompressionReport)> {
+) -> Result<(Session, CompressionReport)> {
     match policy.mode {
         CompressionMode::Preserve => {
             preserve_compressed_segments_with_archive(session, policy, Some(archive_dir))
@@ -257,18 +254,18 @@ fn prepare_for_export_with_archive_dir(
 }
 
 fn preserve_compressed_segments(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
-) -> (CanonicalSession, CompressionReport) {
+) -> (Session, CompressionReport) {
     preserve_compressed_segments_with_archive(session, policy, None)
         .unwrap_or_else(|_| unchanged_report(session, policy))
 }
 
 fn preserve_compressed_segments_with_archive(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
     archive_dir: Option<&Path>,
-) -> Result<(CanonicalSession, CompressionReport)> {
+) -> Result<(Session, CompressionReport)> {
     let (portable_session, portable_report) =
         normalize_portable_compressed_segments(session, policy);
 
@@ -276,11 +273,11 @@ fn preserve_compressed_segments_with_archive(
 }
 
 fn normalize_native_source_compression(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
     archive_dir: Option<&Path>,
     base_report: CompressionReport,
-) -> Result<(CanonicalSession, CompressionReport)> {
+) -> Result<(Session, CompressionReport)> {
     match policy.source_provider_id.as_str() {
         "opencode" => {
             normalize_opencode_source_compression(session, policy, archive_dir, base_report)
@@ -290,11 +287,11 @@ fn normalize_native_source_compression(
 }
 
 fn normalize_opencode_source_compression(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
     archive_dir: Option<&Path>,
     base_report: CompressionReport,
-) -> Result<(CanonicalSession, CompressionReport)> {
+) -> Result<(Session, CompressionReport)> {
     let Some(compaction_idx) = session.events.iter().rposition(has_opencode_compaction) else {
         return Ok((session.clone(), base_report));
     };
@@ -382,9 +379,9 @@ fn normalize_opencode_source_compression(
 }
 
 fn normalize_portable_compressed_segments(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
-) -> (CanonicalSession, CompressionReport) {
+) -> (Session, CompressionReport) {
     let mut normalized_segments = 0usize;
     let mut archive_refs = Vec::new();
     let events = session
@@ -394,7 +391,7 @@ fn normalize_portable_compressed_segments(
             if event
                 .blocks
                 .iter()
-                .any(|block| matches!(block, EventBlock::Compressed { .. }))
+                .any(|block| matches!(block, Block::Compressed { .. }))
             {
                 return event.clone();
             }
@@ -492,19 +489,16 @@ fn trim_summary_lines(lines: &[&str]) -> String {
     lines[first..last].join("\n")
 }
 
-fn compressed_event_from_portable_text(
-    event: &SessionEvent,
-    portable: PortableCompressedText,
-) -> SessionEvent {
+fn compressed_event_from_portable_text(event: &Event, portable: PortableCompressedText) -> Event {
     let mut next = event.clone();
-    next.blocks = vec![EventBlock::Compressed {
+    next.blocks = vec![Block::Compressed {
         source_provider_id: portable.source_provider_id.clone(),
         summary: portable.summary,
         source_event_ids: Vec::new(),
         source_event_count: portable.source_event_count,
         archive_ref: portable.archive_ref.clone(),
     }];
-    next.metadata.fidelity = MappingDisposition::Normalized;
+    next.metadata.fidelity = Fidelity::Normalized;
     next.metadata.source.phase = Some("compression-portable".to_string());
     next.metadata.provider_ext.insert(
         "memorph_compression".to_string(),
@@ -518,10 +512,7 @@ fn compressed_event_from_portable_text(
     next
 }
 
-fn unchanged_report(
-    session: &CanonicalSession,
-    policy: &CompressionPolicy,
-) -> (CanonicalSession, CompressionReport) {
+fn unchanged_report(session: &Session, policy: &CompressionPolicy) -> (Session, CompressionReport) {
     (
         session.clone(),
         CompressionReport {
@@ -533,10 +524,10 @@ fn unchanged_report(
 }
 
 fn expand_compressed_segments_with_archive(
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
     archive_dir: &Path,
-) -> Result<(CanonicalSession, CompressionReport)> {
+) -> Result<(Session, CompressionReport)> {
     let mut next = session.clone();
     let mut events = Vec::with_capacity(session.events.len());
     let mut expanded_segments = 0usize;
@@ -576,7 +567,7 @@ fn expand_compressed_segments_with_archive(
     ))
 }
 
-pub fn compressed_archive_refs(session: &CanonicalSession) -> Vec<String> {
+pub fn compressed_archive_refs(session: &Session) -> Vec<String> {
     session
         .events
         .iter()
@@ -588,17 +579,17 @@ pub fn compressed_archive_refs(session: &CanonicalSession) -> Vec<String> {
 }
 
 pub fn restore_compressed_segments_in_place(
-    session: &CanonicalSession,
+    session: &Session,
     archive_ref: Option<&str>,
-) -> Result<(CanonicalSession, CompressionReport)> {
+) -> Result<(Session, CompressionReport)> {
     restore_compressed_segments_in_place_from_dir(session, archive_ref, &archive_base_dir()?)
 }
 
 pub(crate) fn restore_compressed_segments_in_place_from_dir(
-    session: &CanonicalSession,
+    session: &Session,
     requested_archive_ref: Option<&str>,
     archive_dir: &Path,
-) -> Result<(CanonicalSession, CompressionReport)> {
+) -> Result<(Session, CompressionReport)> {
     let mut next = session.clone();
     let mut events = Vec::with_capacity(session.events.len());
     let mut restored_events = 0;
@@ -637,9 +628,9 @@ pub(crate) fn restore_compressed_segments_in_place_from_dir(
     ))
 }
 
-fn compressed_block_summary_and_archive(event: &SessionEvent) -> Option<(&str, Option<&str>)> {
+fn compressed_block_summary_and_archive(event: &Event) -> Option<(&str, Option<&str>)> {
     event.blocks.iter().find_map(|block| {
-        if let EventBlock::Compressed {
+        if let Block::Compressed {
             summary,
             archive_ref,
             ..
@@ -652,24 +643,24 @@ fn compressed_block_summary_and_archive(event: &SessionEvent) -> Option<(&str, O
     })
 }
 
-fn expanded_summary_event(event: &SessionEvent, summary: &str) -> SessionEvent {
+fn expanded_summary_event(event: &Event, summary: &str) -> Event {
     let mut expanded = event.clone();
-    expanded.blocks = vec![EventBlock::Text {
+    expanded.blocks = vec![Block::Text {
         text: summary.to_string(),
     }];
     expanded.metadata.source.phase = Some("compression-expanded".to_string());
-    expanded.metadata.fidelity = MappingDisposition::Normalized;
+    expanded.metadata.fidelity = Fidelity::Normalized;
     expanded
 }
 
 fn compressed_summary_event(
-    summary_event: &SessionEvent,
+    summary_event: &Event,
     source_provider_id: &str,
     summary: String,
     source_event_ids: Vec<String>,
     source_event_count: Option<usize>,
     archive_ref: Option<String>,
-) -> SessionEvent {
+) -> Event {
     let source_event_count = source_event_count
         .or_else(|| (!source_event_ids.is_empty()).then_some(source_event_ids.len()));
     let mut provider_ext = BTreeMap::new();
@@ -683,21 +674,21 @@ fn compressed_summary_event(
         }),
     );
 
-    SessionEvent {
+    Event {
         id: format!("memorph-compressed-{}", summary_event.id),
-        kind: SessionEventKind::Message,
-        role: EventRole::Assistant,
+        kind: EventKind::Message,
+        role: Role::Assistant,
         timestamp: summary_event.timestamp,
-        links: EventLinks::default(),
-        blocks: vec![EventBlock::Compressed {
+        links: Links::default(),
+        blocks: vec![Block::Compressed {
             source_provider_id: source_provider_id.to_string(),
             summary,
             source_event_count,
             source_event_ids,
             archive_ref,
         }],
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: "memorph".to_string(),
                 original_id: Some(summary_event.id.clone()),
                 original_role: Some("assistant".to_string()),
@@ -705,7 +696,7 @@ fn compressed_summary_event(
             },
             model: summary_event.metadata.model.clone(),
             usage: None,
-            fidelity: MappingDisposition::Normalized,
+            fidelity: Fidelity::Normalized,
             provider_ext,
         },
     }
@@ -713,11 +704,11 @@ fn compressed_summary_event(
 
 fn write_archive(
     archive_dir: &Path,
-    session: &CanonicalSession,
+    session: &Session,
     policy: &CompressionPolicy,
-    summary_event: &SessionEvent,
+    summary_event: &Event,
     source_event_ids: Vec<String>,
-    events: Vec<SessionEvent>,
+    events: Vec<Event>,
 ) -> Result<String> {
     let canonical_id = safe_path_segment(&session.identity.canonical_id);
     let archive_id = archive_id(session, policy, summary_event);
@@ -1164,11 +1155,7 @@ fn compression_ratio(original_size_bytes: u64, stored_size_bytes: u64) -> f64 {
     }
 }
 
-fn archive_id(
-    session: &CanonicalSession,
-    policy: &CompressionPolicy,
-    summary_event: &SessionEvent,
-) -> String {
+fn archive_id(session: &Session, policy: &CompressionPolicy, summary_event: &Event) -> String {
     let raw = format!(
         "{}:{}:{}:{}",
         session.identity.canonical_id,
@@ -1197,11 +1184,11 @@ fn safe_path_segment(value: &str) -> String {
     }
 }
 
-fn has_opencode_compaction(event: &SessionEvent) -> bool {
+fn has_opencode_compaction(event: &Event) -> bool {
     event.blocks.iter().any(|block| {
         matches!(
             block,
-            EventBlock::ProviderPayload { kind, .. } if kind == "compaction"
+            Block::ProviderPayload { kind, .. } if kind == "compaction"
         )
     })
 }
@@ -1214,9 +1201,9 @@ struct OpencodeCompactionProjection {
     archive_ref: Option<String>,
 }
 
-fn opencode_compaction_projection(event: &SessionEvent) -> Option<OpencodeCompactionProjection> {
+fn opencode_compaction_projection(event: &Event) -> Option<OpencodeCompactionProjection> {
     let projection = event.blocks.iter().find_map(|block| {
-        let EventBlock::ProviderPayload { kind, payload } = block else {
+        let Block::ProviderPayload { kind, payload } = block else {
             return None;
         };
         if kind != "compaction" {
@@ -1262,7 +1249,7 @@ fn opencode_compaction_projection(event: &SessionEvent) -> Option<OpencodeCompac
     Some(projection)
 }
 
-fn is_opencode_summary_event(event: &SessionEvent) -> bool {
+fn is_opencode_summary_event(event: &Event) -> bool {
     event
         .metadata
         .provider_ext
@@ -1276,36 +1263,34 @@ fn is_opencode_summary_event(event: &SessionEvent) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{
-        CanonicalSchema, ProviderSessionRef, SessionContext, SessionIdentity, SessionProvenance,
-    };
+    use crate::canonical::{Context, Identity, Provenance, ProviderRef, Schema};
     use chrono::{TimeZone, Utc};
 
     #[test]
     fn preserve_opencode_compaction_replaces_expanded_history_with_compressed_segment() {
         let now = Utc::now();
-        let session = CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        let session = Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: "s1".to_string(),
                 source_title: None,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: now,
                 imported_by: Some("test".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: "opencode".to_string(),
                     session_id: "s1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext::default(),
+            context: Context::default(),
             events: vec![
-                text_event("old-user", EventRole::User, "large old context", false),
+                text_event("old-user", Role::User, "large old context", false),
                 compaction_event("compact-marker"),
-                text_event("summary", EventRole::Assistant, "compressed summary", true),
-                text_event("tail", EventRole::User, "new request", false),
+                text_event("summary", Role::Assistant, "compressed summary", true),
+                text_event("tail", Role::User, "new request", false),
             ],
             artifacts: Vec::new(),
             extensions: BTreeMap::new(),
@@ -1319,7 +1304,7 @@ mod tests {
         assert_eq!(prepared.events.len(), 2);
         assert!(matches!(
             prepared.events[0].blocks.first(),
-            Some(EventBlock::Compressed { summary, .. }) if summary == "compressed summary"
+            Some(Block::Compressed { summary, .. }) if summary == "compressed summary"
         ));
         assert_eq!(prepared.events[1].id, "tail");
     }
@@ -1338,7 +1323,7 @@ mod tests {
         assert!(archive_ref.starts_with(ARCHIVE_SCHEME));
         assert!(matches!(
             prepared.events[0].blocks.first(),
-            Some(EventBlock::Compressed { archive_ref: Some(block_ref), .. }) if block_ref == archive_ref
+            Some(Block::Compressed { archive_ref: Some(block_ref), .. }) if block_ref == archive_ref
         ));
 
         assert!(archive_ref.ends_with(".json.gz"));
@@ -1484,7 +1469,7 @@ mod tests {
         assert_eq!(preserved.events.len(), 2);
         assert!(matches!(
             preserved.events[0].blocks.first(),
-            Some(EventBlock::Compressed { .. })
+            Some(Block::Compressed { .. })
         ));
 
         let (expanded, expand_report) =
@@ -1499,13 +1484,13 @@ mod tests {
         assert_eq!(expanded.events[3].id, "tail");
         assert!(matches!(
             expanded.events[2].blocks.first(),
-            Some(EventBlock::Text { text }) if text == "compressed summary"
+            Some(Block::Text { text }) if text == "compressed summary"
         ));
         assert!(!expanded.events.iter().any(|event| {
             event
                 .blocks
                 .iter()
-                .any(|block| matches!(block, EventBlock::Compressed { .. }))
+                .any(|block| matches!(block, Block::Compressed { .. }))
         }));
     }
 
@@ -1552,32 +1537,32 @@ mod tests {
 
     #[test]
     fn preserve_recovers_portable_compressed_text_from_non_native_provider() {
-        let session = CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        let session = Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: "portable-s1".to_string(),
                 source_title: None,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("test".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: "codex".to_string(),
                     session_id: "portable-s1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext::default(),
+            context: Context::default(),
             events: vec![
                 provider_text_event(
                     "codex",
                     "portable",
-                    EventRole::Assistant,
+                    Role::Assistant,
                     "[Compressed session segment from opencode]\nportable summary\nSource event count: 42\nArchive: memorph-archive://portable/a.json.gz\nRetrieve specific details with: memorph compression retrieve memorph-archive://portable/a.json.gz --query <terms> --max-results 5",
                     false,
                 ),
-                provider_text_event("codex", "tail", EventRole::User, "new request", false),
+                provider_text_event("codex", "tail", Role::User, "new request", false),
             ],
             artifacts: Vec::new(),
             extensions: BTreeMap::new(),
@@ -1594,7 +1579,7 @@ mod tests {
         );
         assert!(matches!(
             prepared.events[0].blocks.first(),
-            Some(EventBlock::Compressed {
+            Some(Block::Compressed {
                 source_provider_id,
                 summary,
                 source_event_count: Some(42),
@@ -1614,23 +1599,23 @@ mod tests {
     #[test]
     fn preserve_opencode_compaction_reuses_memorph_projection_metadata() {
         let now = Utc::now();
-        let session = CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        let session = Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: "native-roundtrip".to_string(),
                 source_title: None,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: now,
                 imported_by: Some("test".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: "opencode".to_string(),
                     session_id: "native-roundtrip".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext::default(),
+            context: Context::default(),
             events: vec![
                 compaction_event_with_memorph_projection(
                     "compact-marker",
@@ -1639,8 +1624,8 @@ mod tests {
                     Some(42),
                     Some("memorph-archive://portable/a.json.gz"),
                 ),
-                text_event("summary", EventRole::Assistant, "portable summary", true),
-                text_event("tail", EventRole::User, "new request", false),
+                text_event("summary", Role::Assistant, "portable summary", true),
+                text_event("tail", Role::User, "new request", false),
             ],
             artifacts: Vec::new(),
             extensions: BTreeMap::new(),
@@ -1659,7 +1644,7 @@ mod tests {
         );
         assert!(matches!(
             prepared.events[0].blocks.first(),
-            Some(EventBlock::Compressed {
+            Some(Block::Compressed {
                 source_provider_id,
                 summary,
                 source_event_ids,
@@ -1676,21 +1661,21 @@ mod tests {
 
     #[test]
     fn compressed_segment_exposes_canonical_compression_contract() {
-        let event = SessionEvent {
+        let event = Event {
             id: "compressed-source".to_string(),
-            kind: SessionEventKind::Message,
-            role: EventRole::Assistant,
+            kind: EventKind::Message,
+            role: Role::Assistant,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Compressed {
+            links: Links::default(),
+            blocks: vec![Block::Compressed {
                 source_provider_id: "deepseek".to_string(),
                 summary: "compressed summary".to_string(),
                 source_event_ids: vec!["old-1".to_string()],
                 source_event_count: Some(9),
                 archive_ref: Some("memorph-archive://x/archive.json.gz".to_string()),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "memorph".to_string(),
                     original_id: None,
                     original_role: None,
@@ -1698,7 +1683,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Normalized,
+                fidelity: Fidelity::Normalized,
                 provider_ext: BTreeMap::new(),
             },
         };
@@ -1794,63 +1779,63 @@ mod tests {
         write_gzip_atomic(&dir.join(filename), &content).unwrap();
     }
 
-    fn sample_opencode_compacted_session() -> CanonicalSession {
+    fn sample_opencode_compacted_session() -> Session {
         let now = Utc::now();
-        CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: "s1".to_string(),
                 source_title: None,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: now,
                 imported_by: Some("test".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: "opencode".to_string(),
                     session_id: "s1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext::default(),
+            context: Context::default(),
             events: vec![
-                text_event("old-user", EventRole::User, "large old context", false),
+                text_event("old-user", Role::User, "large old context", false),
                 compaction_event("compact-marker"),
-                text_event("summary", EventRole::Assistant, "compressed summary", true),
-                text_event("tail", EventRole::User, "new request", false),
+                text_event("summary", Role::Assistant, "compressed summary", true),
+                text_event("tail", Role::User, "new request", false),
             ],
             artifacts: Vec::new(),
             extensions: BTreeMap::new(),
         }
     }
 
-    fn text_event(id: &str, role: EventRole, text: &str, summary: bool) -> SessionEvent {
+    fn text_event(id: &str, role: Role, text: &str, summary: bool) -> Event {
         provider_text_event("opencode", id, role, text, summary)
     }
 
     fn provider_text_event(
         provider_id: &str,
         id: &str,
-        role: EventRole,
+        role: Role,
         text: &str,
         summary: bool,
-    ) -> SessionEvent {
+    ) -> Event {
         let mut provider_ext = BTreeMap::new();
         provider_ext.insert(
             "opencode_message".to_string(),
             serde_json::json!({ "summary": summary }),
         );
-        SessionEvent {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Message,
+            kind: EventKind::Message,
             role,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::Text {
+            links: Links::default(),
+            blocks: vec![Block::Text {
                 text: text.to_string(),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: provider_id.to_string(),
                     original_id: Some(id.to_string()),
                     original_role: None,
@@ -1858,25 +1843,25 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext,
             },
         }
     }
 
-    fn compaction_event(id: &str) -> SessionEvent {
-        SessionEvent {
+    fn compaction_event(id: &str) -> Event {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Unknown,
-            role: EventRole::User,
+            kind: EventKind::Unknown,
+            role: Role::User,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::ProviderPayload {
+            links: Links::default(),
+            blocks: vec![Block::ProviderPayload {
                 kind: "compaction".to_string(),
                 payload: serde_json::json!({ "type": "compaction" }),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "opencode".to_string(),
                     original_id: Some(id.to_string()),
                     original_role: None,
@@ -1884,7 +1869,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: BTreeMap::new(),
             },
         }
@@ -1896,14 +1881,14 @@ mod tests {
         source_event_ids: Vec<String>,
         source_event_count: Option<usize>,
         archive_ref: Option<&str>,
-    ) -> SessionEvent {
-        SessionEvent {
+    ) -> Event {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Unknown,
-            role: EventRole::User,
+            kind: EventKind::Unknown,
+            role: Role::User,
             timestamp: Utc::now(),
-            links: EventLinks::default(),
-            blocks: vec![EventBlock::ProviderPayload {
+            links: Links::default(),
+            blocks: vec![Block::ProviderPayload {
                 kind: "compaction".to_string(),
                 payload: serde_json::json!({
                     "type": "compaction",
@@ -1915,8 +1900,8 @@ mod tests {
                     }
                 }),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "opencode".to_string(),
                     original_id: Some(id.to_string()),
                     original_role: None,
@@ -1924,7 +1909,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: BTreeMap::new(),
             },
         }

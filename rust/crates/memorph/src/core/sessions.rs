@@ -233,7 +233,7 @@ pub fn get_session_detail_view_page_result(
 
 pub(super) fn session_length_metrics(
     provider_source_bytes: u64,
-    session: &CanonicalSession,
+    session: &Session,
     event_count: usize,
     message_count: usize,
     turn_count: usize,
@@ -269,11 +269,13 @@ fn source_mapping_report_view(
         .chain(imported.report.issues.iter().map(|issue| issue.disposition))
     {
         match disposition {
-            crate::canonical::MappingDisposition::Preserved => preserved_count += 1,
-            crate::canonical::MappingDisposition::Normalized
-            | crate::canonical::MappingDisposition::Downgraded => normalized_count += 1,
-            crate::canonical::MappingDisposition::Dropped
-            | crate::canonical::MappingDisposition::Unsupported => dropped_count += 1,
+            crate::canonical::Fidelity::Preserved => preserved_count += 1,
+            crate::canonical::Fidelity::Normalized | crate::canonical::Fidelity::Downgraded => {
+                normalized_count += 1
+            }
+            crate::canonical::Fidelity::Dropped | crate::canonical::Fidelity::Unsupported => {
+                dropped_count += 1
+            }
         }
     }
     SessionProjectionReportView {
@@ -309,15 +311,15 @@ fn source_mapping_report_view(
             .map(|(index, issue)| SessionProjectionReportItemView {
                 item_order: index as i64,
                 fidelity: match issue.disposition {
-                    crate::canonical::MappingDisposition::Preserved => {
+                    crate::canonical::Fidelity::Preserved => {
                         crate::session_projection::ProjectionFidelity::Preserved
                     }
-                    crate::canonical::MappingDisposition::Normalized
-                    | crate::canonical::MappingDisposition::Downgraded => {
+                    crate::canonical::Fidelity::Normalized
+                    | crate::canonical::Fidelity::Downgraded => {
                         crate::session_projection::ProjectionFidelity::Normalized
                     }
-                    crate::canonical::MappingDisposition::Dropped
-                    | crate::canonical::MappingDisposition::Unsupported => {
+                    crate::canonical::Fidelity::Dropped
+                    | crate::canonical::Fidelity::Unsupported => {
                         crate::session_projection::ProjectionFidelity::Dropped
                     }
                 },
@@ -558,7 +560,7 @@ pub(super) fn compute_session_activity_timeline_in_connection(
 
 fn resolve_session_created_at(
     context: Option<chrono::DateTime<chrono::Utc>>,
-    events: &[SessionEvent],
+    events: &[Event],
 ) -> Option<chrono::DateTime<chrono::Utc>> {
     let from_context = context.filter(utils::is_plausible_session_time);
     let from_events = events
@@ -574,7 +576,7 @@ fn resolve_session_created_at(
 
 #[derive(Debug)]
 struct SourceActivityEvent {
-    kind: SessionEventKind,
+    kind: EventKind,
     timestamp: chrono::DateTime<chrono::Utc>,
     visible_message: bool,
 }
@@ -796,15 +798,15 @@ pub(super) fn compute_provider_activity_timeline_in_connection(
     })
 }
 
-fn event_activity_weight(kind: &SessionEventKind, visible_message: bool) -> f64 {
+fn event_activity_weight(kind: &EventKind, visible_message: bool) -> f64 {
     match kind {
-        SessionEventKind::Lifecycle => 0.25,
-        SessionEventKind::Message if visible_message => 3.0,
-        SessionEventKind::Message => 1.5,
-        SessionEventKind::ToolCall | SessionEventKind::ToolResult => 2.0,
-        SessionEventKind::Command | SessionEventKind::CommandResult => 1.75,
-        SessionEventKind::Patch | SessionEventKind::Artifact => 1.25,
-        SessionEventKind::Unknown => 0.5,
+        EventKind::Lifecycle => 0.25,
+        EventKind::Message if visible_message => 3.0,
+        EventKind::Message => 1.5,
+        EventKind::ToolCall | EventKind::ToolResult => 2.0,
+        EventKind::Command | EventKind::CommandResult => 1.75,
+        EventKind::Patch | EventKind::Artifact => 1.25,
+        EventKind::Unknown => 0.5,
     }
 }
 
@@ -899,7 +901,7 @@ fn enrich_imported_session_from_meta(
             .session
             .provenance
             .aliases
-            .push(crate::canonical::ProviderSessionRef {
+            .push(crate::canonical::ProviderRef {
                 provider_id: provider_id.to_string(),
                 session_id: meta.session_id.clone(),
                 source_path: meta.source_path.clone(),

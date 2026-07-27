@@ -1,6 +1,6 @@
 use super::{canonical_source_path, gemini_roots, PROVIDER_ID};
 use crate::provider::{ProviderSessionBackup, ProviderSourceMutation};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context as _, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;

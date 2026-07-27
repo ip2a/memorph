@@ -2,17 +2,15 @@ pub mod adapter;
 pub mod hook;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingReport,
-    ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
-    SessionProvenance,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionSummary, ProviderSourceFingerprint, ProviderWriteRisk,
     ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -41,8 +39,8 @@ impl Provider for CopilotProvider {
             page_strategy: PageStrategy::FullImport,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },
             resume_quality: ResumeQuality::None,
@@ -140,23 +138,23 @@ impl Provider for CopilotProvider {
         let mut extensions = BTreeMap::new();
         extensions.insert("copilot_events_jsonl".into(), Value::Array(events));
         Ok(ImportedSession {
-            session: CanonicalSession {
-                schema: CanonicalSchema::default(),
-                identity: SessionIdentity {
+            session: Session {
+                schema: Schema::default(),
+                identity: Identity {
                     canonical_id: id.clone(),
                     source_title: title,
                 },
-                provenance: SessionProvenance {
+                provenance: Provenance {
                     imported_at: Utc::now(),
                     imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderSessionRef {
+                    primary_source: ProviderRef {
                         provider_id: PROVIDER_ID.into(),
                         session_id: id,
                         source_path: Some(path.to_string_lossy().into_owned()),
                     },
                     aliases: Vec::new(),
                 },
-                context: SessionContext {
+                context: Context {
                     workspace_dir: session_cwd_from_value(&extensions["copilot_events_jsonl"]),
                     created_at: Some(timestamp),
                     last_active_at: file_modified_datetime(&path),
@@ -273,36 +271,36 @@ fn session_cwd_from_value(value: &Value) -> Option<String> {
         })
     })
 }
-fn map_event(event: &Value, index: usize, report: &mut MappingReport) -> Option<SessionEvent> {
+fn map_event(event: &Value, index: usize, report: &mut MappingReport) -> Option<Event> {
     let kind = event.get("type").and_then(Value::as_str)?;
     let (role, content) = match kind {
         "user.message" => (
-            EventRole::User,
+            Role::User,
             event.get("data")?.get("content")?.as_str()?.to_string(),
         ),
         "assistant.message" => (
-            EventRole::Assistant,
+            Role::Assistant,
             event.get("data")?.get("content")?.as_str()?.to_string(),
         ),
         _ => return None,
     };
     report.push_issue(crate::canonical::MappingIssue {
         level: crate::canonical::MappingIssueLevel::Info,
-        disposition: MappingDisposition::Preserved,
+        disposition: Fidelity::Preserved,
         code: "copilot-native-message".into(),
         message: "Mapped Copilot CLI message event".into(),
         path: Some(format!("events[{index}]")),
         raw: None,
     });
-    Some(SessionEvent {
+    Some(Event {
         id: format!("copilot:event:{index}"),
-        kind: SessionEventKind::Message,
+        kind: EventKind::Message,
         role,
         timestamp: event_time(event).unwrap_or_else(Utc::now),
-        links: EventLinks::default(),
-        blocks: vec![EventBlock::Text { text: content }],
-        metadata: EventMetadata {
-            source: EventSource {
+        links: Links::default(),
+        blocks: vec![Block::Text { text: content }],
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.into(),
                 original_id: None,
                 original_role: Some(kind.into()),
@@ -314,7 +312,7 @@ fn map_event(event: &Value, index: usize, report: &mut MappingReport) -> Option<
                 .and_then(Value::as_str)
                 .map(str::to_string),
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     })
@@ -351,6 +349,6 @@ mod tests {
         let e = serde_json::json!({"type":"assistant.message","data":{"content":"hello"}});
         let mut r = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         let mapped = map_event(&e, 0, &mut r).unwrap();
-        assert!(matches!(mapped.blocks[0], EventBlock::Text { ref text } if text == "hello"));
+        assert!(matches!(mapped.blocks[0], Block::Text { ref text } if text == "hello"));
     }
 }

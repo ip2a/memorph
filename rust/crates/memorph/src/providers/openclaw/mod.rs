@@ -1,14 +1,13 @@
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingIssue,
-    MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext, SessionEvent,
-    SessionEventKind, SessionIdentity, SessionProvenance,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
+    Schema, Session, Source,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
     ProviderSourceFingerprint, ScanStrategy, StorageShape, TurnQuality,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -38,11 +37,11 @@ impl Provider for OpenClawProvider {
             page_strategy: PageStrategy::FullImport,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },
             ..ProviderCapabilities::default()
@@ -86,30 +85,30 @@ impl Provider for OpenClawProvider {
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Info,
-            disposition: MappingDisposition::Preserved,
+            disposition: Fidelity::Preserved,
             code: "openclaw-sqlite-source".into(),
             message: "Imported from OpenClaw sessions and transcript_events tables".into(),
             path: Some("source".into()),
             raw: None,
         });
         Ok(ImportedSession {
-            session: CanonicalSession {
-                schema: CanonicalSchema::default(),
-                identity: SessionIdentity {
+            session: Session {
+                schema: Schema::default(),
+                identity: Identity {
                     canonical_id: session_id.clone(),
                     source_title: title,
                 },
-                provenance: SessionProvenance {
+                provenance: Provenance {
                     imported_at: Utc::now(),
                     imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderSessionRef {
+                    primary_source: ProviderRef {
                         provider_id: PROVIDER_ID.into(),
                         session_id: session_id.clone(),
                         source_path: Some(source_path.into()),
                     },
                     aliases: Vec::new(),
                 },
-                context: SessionContext {
+                context: Context {
                     workspace_dir: None,
                     created_at: Some(datetime_from_ms(metadata.3)),
                     last_active_at: Some(datetime_from_ms(metadata.4)),
@@ -174,7 +173,7 @@ fn scan_root(root: &Path) -> Result<Vec<ProviderSessionSummary>> {
     Ok(sessions)
 }
 
-fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<SessionEvent> {
+fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<Event> {
     if value.get("type").and_then(Value::as_str) != Some("message") {
         return None;
     }
@@ -184,23 +183,23 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<SessionEv
         .and_then(Value::as_str)
         .unwrap_or("unknown");
     let role = match role_text {
-        "user" => EventRole::User,
-        "assistant" => EventRole::Assistant,
-        "tool" => EventRole::Tool,
-        "system" => EventRole::System,
-        _ => EventRole::Unknown,
+        "user" => Role::User,
+        "assistant" => Role::Assistant,
+        "tool" => Role::Tool,
+        "system" => Role::System,
+        _ => Role::Unknown,
     };
     let mut blocks = Vec::new();
     match message.get("content") {
         Some(Value::String(text)) if !text.is_empty() => {
-            blocks.push(EventBlock::Text { text: text.clone() })
+            blocks.push(Block::Text { text: text.clone() })
         }
         Some(Value::Array(items)) => {
             for item in items {
                 match item.get("type").and_then(Value::as_str) {
                     Some("text") => {
                         if let Some(text) = item.get("text").and_then(Value::as_str) {
-                            blocks.push(EventBlock::Text { text: text.into() });
+                            blocks.push(Block::Text { text: text.into() });
                         }
                     }
                     Some("thinking") => {
@@ -209,7 +208,7 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<SessionEv
                             .or_else(|| item.get("text"))
                             .and_then(Value::as_str)
                         {
-                            blocks.push(EventBlock::Thinking {
+                            blocks.push(Block::Thinking {
                                 text: text.into(),
                                 signature: item
                                     .get("signature")
@@ -218,7 +217,7 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<SessionEv
                             });
                         }
                     }
-                    Some("tool_use") => blocks.push(EventBlock::ToolCall {
+                    Some("tool_use") => blocks.push(Block::ToolCall {
                         tool_call_id: item
                             .get("id")
                             .and_then(Value::as_str)
@@ -231,7 +230,7 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<SessionEv
                             .into(),
                         input: item.get("input").cloned(),
                     }),
-                    Some("tool_result") => blocks.push(EventBlock::ToolResult {
+                    Some("tool_result") => blocks.push(Block::ToolResult {
                         tool_call_id: item
                             .get("tool_use_id")
                             .or_else(|| item.get("toolCallId"))
@@ -245,7 +244,7 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<SessionEv
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
                     }),
-                    _ => blocks.push(EventBlock::ProviderPayload {
+                    _ => blocks.push(Block::ProviderPayload {
                         kind: "openclaw-content".into(),
                         payload: item.clone(),
                     }),
@@ -255,38 +254,38 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<SessionEv
         _ => {}
     }
     if blocks.is_empty() {
-        blocks.push(EventBlock::ProviderPayload {
+        blocks.push(Block::ProviderPayload {
             kind: "openclaw-message".into(),
             payload: message.clone(),
         });
     }
     let kind = if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+        .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        SessionEventKind::ToolResult
+        EventKind::ToolResult
     } else if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+        .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        SessionEventKind::ToolCall
+        EventKind::ToolCall
     } else {
-        SessionEventKind::Message
+        EventKind::Message
     };
     let id = value
         .get("id")
         .and_then(Value::as_str)
         .map(str::to_owned)
         .unwrap_or_else(|| seq.to_string());
-    Some(SessionEvent {
+    Some(Event {
         id: id.clone(),
         kind,
         role,
         timestamp: datetime_from_ms(created_at),
-        links: EventLinks::default(),
+        links: Links::default(),
         blocks,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.into(),
                 original_id: Some(id),
                 original_role: Some(role_text.into()),
@@ -297,7 +296,7 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<SessionEv
                 .and_then(Value::as_str)
                 .map(str::to_owned),
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     })
@@ -310,13 +309,13 @@ fn text_content(value: Option<&Value>) -> String {
         None => String::new(),
     }
 }
-fn first_user_text(events: &[SessionEvent]) -> Option<String> {
+fn first_user_text(events: &[Event]) -> Option<String> {
     events
         .iter()
-        .find(|event| event.role == EventRole::User)
+        .find(|event| event.role == Role::User)
         .and_then(|event| {
             event.blocks.iter().find_map(|block| match block {
-                EventBlock::Text { text } => Some(text.chars().take(80).collect()),
+                Block::Text { text } => Some(text.chars().take(80).collect()),
                 _ => None,
             })
         })
@@ -430,7 +429,7 @@ mod tests {
             .unwrap();
         assert_eq!(imported.session.events.len(), 2);
         assert!(
-            matches!(imported.session.events[1].blocks[0], EventBlock::ToolCall { ref name, .. } if name == "exec")
+            matches!(imported.session.events[1].blocks[0], Block::ToolCall { ref name, .. } if name == "exec")
         );
         let source = sessions[0].source_path.as_deref().unwrap();
         let before = fingerprint(source).unwrap().unwrap();

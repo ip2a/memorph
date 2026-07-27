@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use super::{
-    invocation, repository,
     inspection::{inspect_bundle, read_frontmatter, SkillAgent, SkillEntry, SkillsOverview},
+    invocation, repository,
 };
 use crate::storage::local_store::LocalSqliteStore;
 

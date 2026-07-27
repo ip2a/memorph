@@ -3,10 +3,9 @@ pub mod hook;
 mod management;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingIssue,
-    MappingIssueLevel, MappingReport, ProviderSessionRef, SessionContext, SessionEvent,
-    SessionEventKind, SessionIdentity, SessionProvenance, UsageStats,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
+    Schema, Session, Source, Usage,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
@@ -15,7 +14,7 @@ use crate::provider::{
     ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
 use crate::utils::{extract_text, parse_timestamp_to_ms, truncate_summary};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Context as _, Result};
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -80,26 +79,26 @@ impl Provider for GeminiProvider {
             storage_shape: StorageShape::Jsonl,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                patch: Some(MappingDisposition::Unsupported),
-                image: Some(MappingDisposition::Unsupported),
-                file: Some(MappingDisposition::Unsupported),
-                compressed: Some(MappingDisposition::Unsupported),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                patch: Some(Fidelity::Unsupported),
+                image: Some(Fidelity::Unsupported),
+                file: Some(Fidelity::Unsupported),
+                compressed: Some(Fidelity::Unsupported),
+                provider_payload: Some(Fidelity::Preserved),
             },
             export_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Unsupported),
-                thinking: Some(MappingDisposition::Unsupported),
-                tool_call: Some(MappingDisposition::Unsupported),
-                tool_result: Some(MappingDisposition::Unsupported),
-                patch: Some(MappingDisposition::Unsupported),
-                image: Some(MappingDisposition::Unsupported),
-                file: Some(MappingDisposition::Unsupported),
-                compressed: Some(MappingDisposition::Unsupported),
-                provider_payload: Some(MappingDisposition::Unsupported),
+                text: Some(Fidelity::Unsupported),
+                thinking: Some(Fidelity::Unsupported),
+                tool_call: Some(Fidelity::Unsupported),
+                tool_result: Some(Fidelity::Unsupported),
+                patch: Some(Fidelity::Unsupported),
+                image: Some(Fidelity::Unsupported),
+                file: Some(Fidelity::Unsupported),
+                compressed: Some(Fidelity::Unsupported),
+                provider_payload: Some(Fidelity::Unsupported),
             },
             resume_quality: ResumeQuality::Native,
             write_risk: ProviderWriteRisk {
@@ -451,7 +450,7 @@ fn import_parsed_session(path: &Path, parsed: ParsedGeminiSession) -> Result<Imp
         {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Info,
-                disposition: MappingDisposition::Preserved,
+                disposition: Fidelity::Preserved,
                 code: "gemini_unknown_jsonl_record".to_string(),
                 message: "Preserved an unrecognized Gemini JSONL record in the provider extension."
                     .to_string(),
@@ -471,23 +470,23 @@ fn import_parsed_session(path: &Path, parsed: ParsedGeminiSession) -> Result<Imp
     );
 
     Ok(ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: session_id.clone(),
                 source_title: session_title(&parsed),
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id,
                     source_path: Some(path.to_string_lossy().to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: None,
                 created_at: Some(created_at),
                 last_active_at: Some(last_active_at),
@@ -506,17 +505,17 @@ fn event_from_message(
     message: &Value,
     fallback_timestamp: DateTime<Utc>,
     report: &mut MappingReport,
-) -> SessionEvent {
+) -> Event {
     let role_raw = message
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or("unknown")
         .to_string();
     let role = match role_raw.as_str() {
-        "user" => EventRole::User,
-        "gemini" => EventRole::Assistant,
-        "info" | "error" | "warning" => EventRole::System,
-        _ => EventRole::Unknown,
+        "user" => Role::User,
+        "gemini" => Role::Assistant,
+        "info" | "error" | "warning" => Role::System,
+        _ => Role::Unknown,
     };
     let original_id = message
         .get("id")
@@ -528,12 +527,12 @@ fn event_from_message(
     let blocks = message_blocks(message, report, index);
     let kind = event_kind(&blocks);
 
-    SessionEvent {
+    Event {
         id: event_id,
         kind,
         role,
         timestamp: message_datetime(message, "timestamp").unwrap_or(fallback_timestamp),
-        links: EventLinks {
+        links: Links {
             parent_event_id: None,
             provider_parent_id: None,
             provider_turn_id: None,
@@ -542,8 +541,8 @@ fn event_from_message(
             related_event_ids: Vec::new(),
         },
         blocks,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.to_string(),
                 original_id,
                 original_role: Some(role_raw),
@@ -554,7 +553,7 @@ fn event_from_message(
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
             usage: usage_from_message(message),
-            fidelity: MappingDisposition::Normalized,
+            fidelity: Fidelity::Normalized,
             provider_ext: {
                 let mut ext = std::collections::BTreeMap::new();
                 ext.insert("raw_message".to_string(), message.clone());
@@ -564,12 +563,12 @@ fn event_from_message(
     }
 }
 
-fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> Vec<EventBlock> {
+fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> Vec<Block> {
     let mut blocks = Vec::new();
     if let Some(content) = message.get("content") {
         let text = extract_text(content);
         if !text.trim().is_empty() {
-            blocks.push(EventBlock::Text { text });
+            blocks.push(Block::Text { text });
         }
     }
 
@@ -582,7 +581,7 @@ fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> 
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             if !text.trim().is_empty() {
-                blocks.push(EventBlock::Thinking {
+                blocks.push(Block::Thinking {
                     text: text.to_string(),
                     signature: None,
                 });
@@ -603,13 +602,13 @@ fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> 
                 .and_then(Value::as_str)
                 .unwrap_or("tool")
                 .to_string();
-            blocks.push(EventBlock::ToolCall {
+            blocks.push(Block::ToolCall {
                 tool_call_id: tool_call_id.clone(),
                 name,
                 input: tool_call.get("args").cloned(),
             });
             if let Some(result) = tool_call.get("result") {
-                blocks.push(EventBlock::ToolResult {
+                blocks.push(Block::ToolResult {
                     tool_call_id,
                     content: extract_text(result),
                     is_error: tool_call
@@ -625,7 +624,7 @@ fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> 
     if blocks.is_empty() {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Info,
-            disposition: MappingDisposition::Preserved,
+            disposition: Fidelity::Preserved,
             code: "gemini_message_payload_preserved".to_string(),
             message:
                 "Preserved a Gemini message whose content shape has no canonical block mapping."
@@ -633,7 +632,7 @@ fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> 
             path: Some(format!("messages:{index}")),
             raw: Some(message.clone()),
         });
-        blocks.push(EventBlock::ProviderPayload {
+        blocks.push(Block::ProviderPayload {
             kind: "gemini_message".to_string(),
             payload: message.clone(),
         });
@@ -642,30 +641,30 @@ fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> 
     blocks
 }
 
-fn event_kind(blocks: &[EventBlock]) -> SessionEventKind {
+fn event_kind(blocks: &[Block]) -> EventKind {
     if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+        .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        SessionEventKind::ToolResult
+        EventKind::ToolResult
     } else if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+        .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        SessionEventKind::ToolCall
+        EventKind::ToolCall
     } else if blocks
         .iter()
-        .all(|block| matches!(block, EventBlock::ProviderPayload { .. }))
+        .all(|block| matches!(block, Block::ProviderPayload { .. }))
     {
-        SessionEventKind::Unknown
+        EventKind::Unknown
     } else {
-        SessionEventKind::Message
+        EventKind::Message
     }
 }
 
-fn usage_from_message(message: &Value) -> Option<UsageStats> {
+fn usage_from_message(message: &Value) -> Option<Usage> {
     let tokens = message.get("tokens")?;
-    Some(UsageStats {
+    Some(Usage {
         input_tokens: tokens.get("input").and_then(Value::as_u64),
         output_tokens: tokens.get("output").and_then(Value::as_u64),
         total_tokens: tokens.get("total").and_then(Value::as_u64),
@@ -920,13 +919,15 @@ mod tests {
         assert!(event
             .blocks
             .iter()
-            .any(|block| matches!(block, EventBlock::Thinking { text, .. } if text == "reason")));
-        assert!(event.blocks.iter().any(
-            |block| matches!(block, EventBlock::ToolCall { name, .. } if name == "read_file")
-        ));
-        assert!(event.blocks.iter().any(
-            |block| matches!(block, EventBlock::ToolResult { content, .. } if content == "ok")
-        ));
+            .any(|block| matches!(block, Block::Thinking { text, .. } if text == "reason")));
+        assert!(event
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::ToolCall { name, .. } if name == "read_file")));
+        assert!(event
+            .blocks
+            .iter()
+            .any(|block| matches!(block, Block::ToolResult { content, .. } if content == "ok")));
         assert_eq!(event.metadata.usage.as_ref().unwrap().total_tokens, Some(5));
     }
 

@@ -180,18 +180,18 @@ pub(super) fn imported_session_from_data(
             .and_then(|v| v.as_str())
             .unwrap_or("user");
         let role = match role_str {
-            "user" => EventRole::User,
-            "assistant" => EventRole::Assistant,
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
             other => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Info,
-                    disposition: MappingDisposition::Normalized,
+                    disposition: Fidelity::Normalized,
                     code: "unknown_role_normalized".to_string(),
                     message: format!("Normalized unknown OpenCode role '{}'", other),
                     path: None,
                     raw: Some(msg_json.clone()),
                 });
-                EventRole::Unknown
+                Role::Unknown
             }
         };
 
@@ -220,7 +220,7 @@ pub(super) fn imported_session_from_data(
         if blocks.is_empty() {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "opencode_message_without_mappable_parts".to_string(),
                 message:
                     "OpenCode message had no mappable parts and was preserved as provider payload"
@@ -228,7 +228,7 @@ pub(super) fn imported_session_from_data(
                 path: Some(format!("message:{}", msg_id)),
                 raw: Some(msg_json.clone()),
             });
-            blocks = vec![EventBlock::ProviderPayload {
+            blocks = vec![Block::ProviderPayload {
                 kind: "message_without_mappable_parts".to_string(),
                 payload: msg_json.clone(),
             }];
@@ -246,7 +246,7 @@ pub(super) fn imported_session_from_data(
             .map(|s| s.to_string())
             .unwrap_or_else(|| PROVIDER_ID.to_string());
 
-        let usage = msg_json.get("tokens").map(|t| UsageStats {
+        let usage = msg_json.get("tokens").map(|t| Usage {
             input_tokens: t.get("input").and_then(|v| v.as_u64()),
             output_tokens: t.get("output").and_then(|v| v.as_u64()),
             total_tokens: t.get("total").and_then(|v| v.as_u64()),
@@ -283,12 +283,12 @@ pub(super) fn imported_session_from_data(
         }
 
         let kind = derive_event_kind(&blocks);
-        events.push(SessionEvent {
+        events.push(Event {
             id: msg_id.clone(),
             kind,
             role,
             timestamp,
-            links: EventLinks {
+            links: Links {
                 parent_event_id: parent_id.clone(),
                 provider_parent_id: parent_id,
                 provider_turn_id: None,
@@ -297,8 +297,8 @@ pub(super) fn imported_session_from_data(
                 related_event_ids: Vec::new(),
             },
             blocks,
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: provider,
                     original_id: Some(msg_id),
                     original_role: Some(role_str.to_string()),
@@ -306,7 +306,7 @@ pub(super) fn imported_session_from_data(
                 },
                 model,
                 usage,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext,
             },
         });
@@ -340,23 +340,23 @@ pub(super) fn imported_session_from_data(
     extensions.insert("opencode_session".to_string(), session_json.clone());
 
     Ok(ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: session_id_val.clone(),
                 source_title: title,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id: session_id_val.clone(),
                     source_path: Some(session_id.to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir: project_dir,
                 created_at: created,
                 last_active_at: updated,
@@ -385,8 +385,8 @@ pub(super) fn canonical_blocks_from_parts(
     msg_id: &str,
     msg_parts: &[Value],
     report: &mut MappingReport,
-    artifacts: &mut Vec<SessionArtifact>,
-) -> Vec<EventBlock> {
+    artifacts: &mut Vec<Artifact>,
+) -> Vec<Block> {
     let mut blocks = Vec::new();
 
     for (idx, part) in msg_parts.iter().enumerate() {
@@ -394,13 +394,13 @@ pub(super) fn canonical_blocks_from_parts(
         match part_type {
             Some("text") => {
                 if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                    blocks.push(EventBlock::Text {
+                    blocks.push(Block::Text {
                         text: text.to_string(),
                     });
                 } else {
                     report.push_issue(MappingIssue {
                         level: MappingIssueLevel::Warning,
-                        disposition: MappingDisposition::Normalized,
+                        disposition: Fidelity::Normalized,
                         code: "opencode_text_part_missing_text".to_string(),
                         message:
                             "OpenCode text part without text was preserved as provider payload"
@@ -408,7 +408,7 @@ pub(super) fn canonical_blocks_from_parts(
                         path: Some(format!("{}:part:{}", msg_id, idx)),
                         raw: Some(part.clone()),
                     });
-                    blocks.push(EventBlock::ProviderPayload {
+                    blocks.push(Block::ProviderPayload {
                         kind: "text".to_string(),
                         payload: part.clone(),
                     });
@@ -416,14 +416,14 @@ pub(super) fn canonical_blocks_from_parts(
             }
             Some("reasoning") => {
                 if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
-                    blocks.push(EventBlock::Thinking {
+                    blocks.push(Block::Thinking {
                         text: text.to_string(),
                         signature: None,
                     });
                 } else {
                     report.push_issue(MappingIssue {
                         level: MappingIssueLevel::Warning,
-                        disposition: MappingDisposition::Normalized,
+                        disposition: Fidelity::Normalized,
                         code: "opencode_reasoning_part_missing_text".to_string(),
                         message:
                             "OpenCode reasoning part without text was preserved as provider payload"
@@ -431,7 +431,7 @@ pub(super) fn canonical_blocks_from_parts(
                         path: Some(format!("{}:part:{}", msg_id, idx)),
                         raw: Some(part.clone()),
                     });
-                    blocks.push(EventBlock::ProviderPayload {
+                    blocks.push(Block::ProviderPayload {
                         kind: "reasoning".to_string(),
                         payload: part.clone(),
                     });
@@ -464,13 +464,13 @@ pub(super) fn canonical_blocks_from_parts(
                     .unwrap_or("completed");
 
                 if tool_name != "unknown" || input.is_some() {
-                    blocks.push(EventBlock::ToolCall {
+                    blocks.push(Block::ToolCall {
                         tool_call_id: call_id.clone(),
                         name: tool_name,
                         input,
                     });
                 }
-                blocks.push(EventBlock::ToolResult {
+                blocks.push(Block::ToolResult {
                     tool_call_id: call_id,
                     content: output,
                     is_error: status == "error",
@@ -488,12 +488,12 @@ pub(super) fn canonical_blocks_from_parts(
                 let url = part.get("url").and_then(|v| v.as_str()).unwrap_or("");
                 if mime.starts_with("image/") && url.starts_with("data:") {
                     if let Some((mime_type, data)) = parse_data_uri(url) {
-                        blocks.push(EventBlock::Image {
+                        blocks.push(Block::Image {
                             mime_type: mime_type.to_string(),
                             data: Some(data.to_string()),
                             path: Some(filename.to_string()),
                         });
-                        artifacts.push(SessionArtifact {
+                        artifacts.push(Artifact {
                             id: format!("{}:image:{}", msg_id, idx),
                             kind: ArtifactKind::Image,
                             path: Some(filename.to_string()),
@@ -504,25 +504,25 @@ pub(super) fn canonical_blocks_from_parts(
                     } else {
                         report.push_issue(MappingIssue {
                             level: MappingIssueLevel::Warning,
-                            disposition: MappingDisposition::Normalized,
+                            disposition: Fidelity::Normalized,
                             code: "opencode_image_part_invalid_data_uri".to_string(),
                             message: "OpenCode image part with an invalid data URI was preserved as provider payload"
                                 .to_string(),
                             path: Some(format!("{}:part:{}", msg_id, idx)),
                             raw: Some(part.clone()),
                         });
-                        blocks.push(EventBlock::ProviderPayload {
+                        blocks.push(Block::ProviderPayload {
                             kind: "file".to_string(),
                             payload: part.clone(),
                         });
                     }
                 } else if !url.is_empty() {
-                    blocks.push(EventBlock::File {
+                    blocks.push(Block::File {
                         path: filename.to_string(),
                         content: Some(url.to_string()),
                         mime_type: Some(mime.to_string()),
                     });
-                    artifacts.push(SessionArtifact {
+                    artifacts.push(Artifact {
                         id: format!("{}:file:{}", msg_id, idx),
                         kind: ArtifactKind::File,
                         path: Some(filename.to_string()),
@@ -533,7 +533,7 @@ pub(super) fn canonical_blocks_from_parts(
                 } else {
                     report.push_issue(MappingIssue {
                         level: MappingIssueLevel::Warning,
-                        disposition: MappingDisposition::Normalized,
+                        disposition: Fidelity::Normalized,
                         code: "opencode_file_part_missing_url".to_string(),
                         message:
                             "OpenCode file part without a URL was preserved as provider payload"
@@ -541,7 +541,7 @@ pub(super) fn canonical_blocks_from_parts(
                         path: Some(format!("{}:part:{}", msg_id, idx)),
                         raw: Some(part.clone()),
                     });
-                    blocks.push(EventBlock::ProviderPayload {
+                    blocks.push(Block::ProviderPayload {
                         kind: "file".to_string(),
                         payload: part.clone(),
                     });
@@ -567,13 +567,13 @@ pub(super) fn canonical_blocks_from_parts(
                     .or_else(|| part.get("diff"))
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
-                blocks.push(EventBlock::Patch {
+                blocks.push(Block::Patch {
                     summary: None,
                     diff_text: diff_text.clone(),
                     files: files.clone(),
                     hash: hash.clone(),
                 });
-                artifacts.push(SessionArtifact {
+                artifacts.push(Artifact {
                     id: format!("{}:patch:{}", msg_id, idx),
                     kind: ArtifactKind::Patch,
                     path: None,
@@ -595,7 +595,7 @@ pub(super) fn canonical_blocks_from_parts(
                 });
             }
             Some("step-start") | Some("step-finish") | Some("compaction") => {
-                blocks.push(EventBlock::ProviderPayload {
+                blocks.push(Block::ProviderPayload {
                     kind: part_type.unwrap_or("unknown").to_string(),
                     payload: part.clone(),
                 });
@@ -603,25 +603,25 @@ pub(super) fn canonical_blocks_from_parts(
             Some(other) => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Info,
-                    disposition: MappingDisposition::Normalized,
+                    disposition: Fidelity::Normalized,
                     code: "unknown_part_preserved".to_string(),
                     message: format!("Preserved unknown OpenCode part '{}'", other),
                     path: Some(format!("{}:part:{}", msg_id, idx)),
                     raw: Some(part.clone()),
                 });
-                blocks.push(EventBlock::Unknown { raw: part.clone() });
+                blocks.push(Block::Unknown { raw: part.clone() });
             }
             None => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Warning,
-                    disposition: MappingDisposition::Normalized,
+                    disposition: Fidelity::Normalized,
                     code: "missing_part_type".to_string(),
                     message: "OpenCode part without a type was preserved as unknown payload"
                         .to_string(),
                     path: Some(format!("{}:part:{}", msg_id, idx)),
                     raw: Some(part.clone()),
                 });
-                blocks.push(EventBlock::Unknown { raw: part.clone() });
+                blocks.push(Block::Unknown { raw: part.clone() });
             }
         }
     }
@@ -629,31 +629,29 @@ pub(super) fn canonical_blocks_from_parts(
     blocks
 }
 
-pub(super) fn derive_event_kind(blocks: &[EventBlock]) -> SessionEventKind {
+pub(super) fn derive_event_kind(blocks: &[Block]) -> EventKind {
     if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::Patch { .. }))
+        .any(|block| matches!(block, Block::Patch { .. }))
     {
-        SessionEventKind::Patch
+        EventKind::Patch
     } else if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolResult { .. }))
+        .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        SessionEventKind::ToolResult
+        EventKind::ToolResult
     } else if blocks
         .iter()
-        .any(|block| matches!(block, EventBlock::ToolCall { .. }))
+        .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        SessionEventKind::ToolCall
-    } else if blocks.iter().any(|block| {
-        matches!(
-            block,
-            EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
-        )
-    }) {
-        SessionEventKind::Unknown
+        EventKind::ToolCall
+    } else if blocks
+        .iter()
+        .any(|block| matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }))
+    {
+        EventKind::Unknown
     } else {
-        SessionEventKind::Message
+        EventKind::Message
     }
 }
 
@@ -1285,14 +1283,11 @@ pub(super) fn count_visible_opencode_messages(
             .and_then(|v| v.as_str())
             .unwrap_or("user");
         let role = match role_str {
-            "user" => EventRole::User,
-            "assistant" => EventRole::Assistant,
-            _ => EventRole::Unknown,
+            "user" => Role::User,
+            "assistant" => Role::Assistant,
+            _ => Role::Unknown,
         };
-        if !matches!(
-            role,
-            EventRole::User | EventRole::Assistant | EventRole::Tool
-        ) {
+        if !matches!(role, Role::User | Role::Assistant | Role::Tool) {
             continue;
         }
         let msg_id = msg_json
@@ -1304,16 +1299,13 @@ pub(super) fn count_visible_opencode_messages(
         let mut blocks =
             canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report, &mut artifacts);
         if blocks.is_empty() {
-            blocks = vec![EventBlock::ProviderPayload {
+            blocks = vec![Block::ProviderPayload {
                 kind: "message_without_mappable_parts".to_string(),
                 payload: msg_json.clone(),
             }];
         }
         let kind = derive_event_kind(&blocks);
-        if matches!(
-            kind,
-            SessionEventKind::Lifecycle | SessionEventKind::Unknown
-        ) {
+        if matches!(kind, EventKind::Lifecycle | EventKind::Unknown) {
             continue;
         }
         let visible_text: String = blocks

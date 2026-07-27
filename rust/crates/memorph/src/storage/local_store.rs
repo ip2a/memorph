@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection, TransactionBehavior};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

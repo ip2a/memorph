@@ -2,17 +2,15 @@ pub mod adapter;
 pub mod hook;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingReport,
-    ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
-    SessionProvenance,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionSummary, ProviderSourceFingerprint, ProviderWriteRisk,
     ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -40,11 +38,11 @@ impl Provider for DroidProvider {
             page_strategy: PageStrategy::FullImport,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },
             resume_quality: ResumeQuality::None,
@@ -124,23 +122,23 @@ impl Provider for DroidProvider {
             .or_else(|| modified_datetime(&path))
             .unwrap_or_else(Utc::now);
         Ok(ImportedSession {
-            session: CanonicalSession {
-                schema: CanonicalSchema::default(),
-                identity: SessionIdentity {
+            session: Session {
+                schema: Schema::default(),
+                identity: Identity {
                     canonical_id: id.clone(),
                     source_title: raw.iter().find_map(text_for),
                 },
-                provenance: SessionProvenance {
+                provenance: Provenance {
                     imported_at: Utc::now(),
                     imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderSessionRef {
+                    primary_source: ProviderRef {
                         provider_id: PROVIDER_ID.into(),
                         session_id: id,
                         source_path: Some(path.to_string_lossy().into_owned()),
                     },
                     aliases: Vec::new(),
                 },
-                context: SessionContext {
+                context: Context {
                     workspace_dir: raw.iter().find_map(workspace),
                     created_at: Some(created),
                     last_active_at: modified_datetime(&path),
@@ -244,11 +242,11 @@ fn text_for(v: &Value) -> Option<String> {
             .find_map(|b| b.get("text").and_then(Value::as_str).map(str::to_string))
     })
 }
-fn blocks(v: &Value) -> Vec<EventBlock> {
+fn blocks(v: &Value) -> Vec<Block> {
     let m = v.get("message").unwrap_or(v);
     let c = m.get("content").unwrap_or(m);
     if let Some(s) = c.as_str() {
-        return vec![EventBlock::Text { text: s.into() }];
+        return vec![Block::Text { text: s.into() }];
     };
     c.as_array()
         .into_iter()
@@ -258,16 +256,15 @@ fn blocks(v: &Value) -> Vec<EventBlock> {
                 "text" | "input_text" | "output_text" => b
                     .get("text")
                     .and_then(Value::as_str)
-                    .map(|s| EventBlock::Text { text: s.into() }),
-                "thinking" => {
-                    b.get("thinking")
-                        .and_then(Value::as_str)
-                        .map(|s| EventBlock::Thinking {
-                            text: s.into(),
-                            signature: None,
-                        })
-                }
-                "tool_use" | "toolCall" => Some(EventBlock::ToolCall {
+                    .map(|s| Block::Text { text: s.into() }),
+                "thinking" => b
+                    .get("thinking")
+                    .and_then(Value::as_str)
+                    .map(|s| Block::Thinking {
+                        text: s.into(),
+                        signature: None,
+                    }),
+                "tool_use" | "toolCall" => Some(Block::ToolCall {
                     tool_call_id: b
                         .get("id")
                         .and_then(Value::as_str)
@@ -280,7 +277,7 @@ fn blocks(v: &Value) -> Vec<EventBlock> {
                         .into(),
                     input: b.get("input").or_else(|| b.get("arguments")).cloned(),
                 }),
-                "tool_result" | "toolResult" => Some(EventBlock::ToolResult {
+                "tool_result" | "toolResult" => Some(Block::ToolResult {
                     tool_call_id: b
                         .get("tool_use_id")
                         .or_else(|| b.get("toolCallId"))
@@ -295,7 +292,7 @@ fn blocks(v: &Value) -> Vec<EventBlock> {
         )
         .collect()
 }
-fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<SessionEvent> {
+fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
     let m = v.get("message").unwrap_or(v);
     let role_raw = m
         .get("role")
@@ -303,43 +300,40 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<SessionEvent>
         .or_else(|| v.get("type"))?
         .as_str()?;
     let role = match role_raw.to_ascii_lowercase().as_str() {
-        "user" => EventRole::User,
-        "assistant" => EventRole::Assistant,
-        "tool" => EventRole::Tool,
-        "system" => EventRole::System,
-        _ => EventRole::Unknown,
+        "user" => Role::User,
+        "assistant" => Role::Assistant,
+        "tool" => Role::Tool,
+        "system" => Role::System,
+        _ => Role::Unknown,
     };
     let bs = blocks(v);
     if bs.is_empty() {
         return None;
     };
-    let kind = if bs.iter().any(|b| matches!(b, EventBlock::ToolCall { .. })) {
-        SessionEventKind::ToolCall
-    } else if bs
-        .iter()
-        .any(|b| matches!(b, EventBlock::ToolResult { .. }))
-    {
-        SessionEventKind::ToolResult
+    let kind = if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
+        EventKind::ToolCall
+    } else if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
+        EventKind::ToolResult
     } else {
-        SessionEventKind::Message
+        EventKind::Message
     };
     r.push_issue(crate::canonical::MappingIssue {
         level: crate::canonical::MappingIssueLevel::Info,
-        disposition: MappingDisposition::Preserved,
+        disposition: Fidelity::Preserved,
         code: "droid-native-event".into(),
         message: "Mapped Factory/Droid JSONL event".into(),
         path: Some(format!("events[{i}]")),
         raw: None,
     });
-    Some(SessionEvent {
+    Some(Event {
         id: format!("droid:event:{i}"),
         kind,
         role,
         timestamp: timestamp(v).unwrap_or_else(Utc::now),
-        links: EventLinks::default(),
+        links: Links::default(),
         blocks: bs,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.into(),
                 original_id: None,
                 original_role: Some(role_raw.into()),
@@ -347,7 +341,7 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<SessionEvent>
             },
             model: None,
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     })
@@ -383,6 +377,6 @@ mod tests {
         let v = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}});
         let mut r = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         let e = map_event(&v, 0, &mut r).unwrap();
-        assert!(matches!(e.blocks[0],EventBlock::Text{ref text} if text=="ok"));
+        assert!(matches!(e.blocks[0],Block::Text{ref text} if text=="ok"));
     }
 }

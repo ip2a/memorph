@@ -1,11 +1,11 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::{TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::collections::{btree_map::Entry, BTreeMap};
 
 use crate::canonical::{LocalSessionState, SessionLocator, WorkspaceSessionState};
-use crate::session_projection::{SessionIdentity, SessionIdentityInput};
+use crate::session_projection::{Identity, SessionIdentityInput};
 
 use super::local_store;
 
@@ -383,7 +383,7 @@ fn ensure_session(
     {
         return Ok(session_id);
     }
-    let identity = SessionIdentity::from_source(SessionIdentityInput {
+    let identity = Identity::from_source(SessionIdentityInput {
         provider_id,
         provider_session_id: Some(provider_session_id),
         source_path: None,

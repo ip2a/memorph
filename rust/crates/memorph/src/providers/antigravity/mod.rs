@@ -2,17 +2,15 @@ pub mod adapter;
 pub mod hook;
 
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingReport,
-    ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
-    SessionProvenance,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionSummary, ProviderSourceFingerprint, ProviderWriteRisk,
     ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -40,11 +38,11 @@ impl Provider for AntigravityProvider {
             page_strategy: PageStrategy::FullImport,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },
             resume_quality: ResumeQuality::None,
@@ -132,23 +130,23 @@ impl Provider for AntigravityProvider {
             .or_else(|| modified_datetime(&path))
             .unwrap_or_else(Utc::now);
         Ok(ImportedSession {
-            session: CanonicalSession {
-                schema: CanonicalSchema::default(),
-                identity: SessionIdentity {
+            session: Session {
+                schema: Schema::default(),
+                identity: Identity {
                     canonical_id: id.clone(),
                     source_title: messages(&doc).iter().find_map(|m| text_for(m)),
                 },
-                provenance: SessionProvenance {
+                provenance: Provenance {
                     imported_at: Utc::now(),
                     imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderSessionRef {
+                    primary_source: ProviderRef {
                         provider_id: PROVIDER_ID.into(),
                         session_id: id,
                         source_path: Some(path.to_string_lossy().into_owned()),
                     },
                     aliases: Vec::new(),
                 },
-                context: SessionContext {
+                context: Context {
                     workspace_dir: doc
                         .get("directories")
                         .and_then(Value::as_array)
@@ -254,12 +252,12 @@ fn text_for(v: &Value) -> Option<String> {
         .map(str::to_string)
         .next()
 }
-fn blocks(v: &Value) -> Vec<EventBlock> {
+fn blocks(v: &Value) -> Vec<Block> {
     let mut out = Vec::new();
     if let Some(parts) = v.get("content").and_then(Value::as_array) {
         for p in parts {
             if let Some(t) = p.get("text").and_then(Value::as_str) {
-                out.push(EventBlock::Text { text: t.into() });
+                out.push(Block::Text { text: t.into() });
             }
         }
     }
@@ -270,7 +268,7 @@ fn blocks(v: &Value) -> Vec<EventBlock> {
                 .or_else(|| p.get("summary"))
                 .and_then(Value::as_str)
             {
-                out.push(EventBlock::Thinking {
+                out.push(Block::Thinking {
                     text: t.into(),
                     signature: None,
                 });
@@ -279,7 +277,7 @@ fn blocks(v: &Value) -> Vec<EventBlock> {
     }
     if let Some(calls) = v.get("toolCalls").and_then(Value::as_array) {
         for c in calls {
-            out.push(EventBlock::ToolCall {
+            out.push(Block::ToolCall {
                 tool_call_id: c
                     .get("id")
                     .and_then(Value::as_str)
@@ -296,7 +294,7 @@ fn blocks(v: &Value) -> Vec<EventBlock> {
                     .or_else(|| c.get("arguments").cloned()),
             });
             if let Some(result) = c.get("result") {
-                out.push(EventBlock::ToolResult {
+                out.push(Block::ToolResult {
                     tool_call_id: c
                         .get("id")
                         .and_then(Value::as_str)
@@ -310,44 +308,41 @@ fn blocks(v: &Value) -> Vec<EventBlock> {
     }
     out
 }
-fn map_message(v: &Value, i: usize, r: &mut MappingReport) -> Option<SessionEvent> {
+fn map_message(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
     let role_raw = v.get("type").and_then(Value::as_str)?;
     let role = match role_raw {
-        "user" => EventRole::User,
-        "gemini" => EventRole::Assistant,
+        "user" => Role::User,
+        "gemini" => Role::Assistant,
         _ => return None,
     };
     let bs = blocks(v);
     if bs.is_empty() {
         return None;
     };
-    let kind = if bs.iter().any(|b| matches!(b, EventBlock::ToolCall { .. })) {
-        SessionEventKind::ToolCall
-    } else if bs
-        .iter()
-        .any(|b| matches!(b, EventBlock::ToolResult { .. }))
-    {
-        SessionEventKind::ToolResult
+    let kind = if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
+        EventKind::ToolCall
+    } else if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
+        EventKind::ToolResult
     } else {
-        SessionEventKind::Message
+        EventKind::Message
     };
     r.push_issue(crate::canonical::MappingIssue {
         level: crate::canonical::MappingIssueLevel::Info,
-        disposition: MappingDisposition::Preserved,
+        disposition: Fidelity::Preserved,
         code: "antigravity-native-message".into(),
         message: "Mapped Antigravity JSON message".into(),
         path: Some(format!("messages[{i}]")),
         raw: None,
     });
-    Some(SessionEvent {
+    Some(Event {
         id: format!("antigravity:event:{i}"),
         kind,
         role,
         timestamp: timestamp(v, "timestamp").unwrap_or_else(Utc::now),
-        links: EventLinks::default(),
+        links: Links::default(),
         blocks: bs,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.into(),
                 original_id: v.get("id").and_then(Value::as_str).map(str::to_string),
                 original_role: Some(role_raw.into()),
@@ -355,7 +350,7 @@ fn map_message(v: &Value, i: usize, r: &mut MappingReport) -> Option<SessionEven
             },
             model: v.get("model").and_then(Value::as_str).map(str::to_string),
             usage: None,
-            fidelity: MappingDisposition::Preserved,
+            fidelity: Fidelity::Preserved,
             provider_ext: BTreeMap::new(),
         },
     })
@@ -374,7 +369,7 @@ mod tests {
         let mut r = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         let e = map_message(&d, 0, &mut r).unwrap();
         assert_eq!(e.blocks.len(), 4);
-        assert!(matches!(e.role, EventRole::Assistant));
+        assert!(matches!(e.role, Role::Assistant));
     }
     #[test]
     fn main_gemini_sessions_are_not_antigravity() {

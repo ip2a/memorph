@@ -1,15 +1,15 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
+    Frame,
 };
 
-use memorph::canonical::{EventBlock, EventRole};
 use crate::tui::app::{App, AppResult};
 use crate::tui::theme::{self, Theme};
+use memorph::canonical::{Block, Role};
 
 /// Draw session detail page
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
@@ -31,7 +31,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     draw_messages(frame, app, chunks[1], theme);
 }
 
-fn draw_header(frame: &mut Frame, selected: &memorph::core::SessionItem, area: Rect, theme: &Theme) {
+fn draw_header(
+    frame: &mut Frame,
+    selected: &memorph::core::SessionItem,
+    area: Rect,
+    theme: &Theme,
+) {
     let title = selected.title.as_deref().unwrap_or("(untitled)");
     let provider_color = theme.provider_color(&selected.provider_id);
 
@@ -82,12 +87,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
     for event in &session.events {
         let role_color = match event.role {
-            EventRole::User => theme.accent,
-            EventRole::Assistant => theme.primary,
-            EventRole::Tool => theme.secondary,
-            EventRole::System => theme.text_dim,
-            EventRole::Developer => theme.text_dim,
-            EventRole::Unknown => theme.warning,
+            Role::User => theme.accent,
+            Role::Assistant => theme.primary,
+            Role::Tool => theme.secondary,
+            Role::System => theme.text_dim,
+            Role::Developer => theme.text_dim,
+            Role::Unknown => theme.warning,
         };
 
         let role_name = serde_json::to_string(&event.role)
@@ -122,12 +127,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 
         for block in &event.blocks {
             match block {
-                EventBlock::Text { text } => {
+                Block::Text { text } => {
                     for line in text.lines() {
                         lines.push(Line::from(Span::raw(line.to_string())));
                     }
                 }
-                EventBlock::Thinking { text, .. } => {
+                Block::Thinking { text, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("[thinking] ", Style::default().fg(theme.text_dim)),
                         Span::styled(
@@ -136,7 +141,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         ),
                     ]));
                 }
-                EventBlock::ToolCall { name, input, .. } => {
+                Block::ToolCall { name, input, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("Tool: ", Style::default().fg(theme.secondary)),
                         Span::styled(name, Style::default().fg(theme.text)),
@@ -149,7 +154,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         )]));
                     }
                 }
-                EventBlock::ToolResult {
+                Block::ToolResult {
                     content, is_error, ..
                 } => {
                     let label = if *is_error { "Error: " } else { "Result: " };
@@ -166,7 +171,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         ),
                     ]));
                 }
-                EventBlock::Patch {
+                Block::Patch {
                     files, diff_text, ..
                 } => {
                     let preview = if !files.is_empty() {
@@ -182,13 +187,13 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         Style::default().fg(theme.secondary),
                     )));
                 }
-                EventBlock::Command { command, .. } => {
+                Block::Command { command, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("Command: ", Style::default().fg(theme.secondary)),
                         Span::raw(command),
                     ]));
                 }
-                EventBlock::CommandResult {
+                Block::CommandResult {
                     exit_code, stdout, ..
                 } => {
                     let preview = stdout.as_deref().unwrap_or("(no output)");
@@ -203,25 +208,25 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         ),
                     ]));
                 }
-                EventBlock::File { path, .. } => {
+                Block::File { path, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("File: ", Style::default().fg(theme.secondary)),
                         Span::raw(path),
                     ]));
                 }
-                EventBlock::Image { .. } => {
+                Block::Image { .. } => {
                     lines.push(Line::from(Span::styled(
                         "[Image]",
                         Style::default().fg(theme.text_dim),
                     )));
                 }
-                EventBlock::ProviderPayload { kind, .. } => {
+                Block::ProviderPayload { kind, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("Payload: ", Style::default().fg(theme.text_dim)),
                         Span::raw(kind),
                     ]));
                 }
-                EventBlock::Unknown { .. } => {
+                Block::Unknown { .. } => {
                     lines.push(Line::from(Span::styled(
                         "[Unknown payload]",
                         Style::default().fg(theme.warning),

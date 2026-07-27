@@ -1,7 +1,7 @@
-use crate::canonical::SessionEvent;
+use crate::canonical::Event;
 use crate::provider;
 
-pub fn session_event_matches_query(event: &SessionEvent, query: &str) -> bool {
+pub fn session_event_matches_query(event: &Event, query: &str) -> bool {
     let query = query.trim();
     if query.is_empty() {
         return true;
@@ -9,7 +9,7 @@ pub fn session_event_matches_query(event: &SessionEvent, query: &str) -> bool {
     session_event_search_haystack(event).contains(&query.to_ascii_lowercase())
 }
 
-pub fn find_matching_event_indices(events: &[SessionEvent], query: &str) -> Vec<usize> {
+pub fn find_matching_event_indices(events: &[Event], query: &str) -> Vec<usize> {
     let query = query.trim();
     if query.is_empty() {
         return (0..events.len()).collect();
@@ -21,7 +21,7 @@ pub fn find_matching_event_indices(events: &[SessionEvent], query: &str) -> Vec<
         .collect()
 }
 
-fn session_event_search_haystack(event: &SessionEvent) -> String {
+fn session_event_search_haystack(event: &Event) -> String {
     let mut parts = vec![
         event.id.clone(),
         serde_json::to_string(&event.role).unwrap_or_default(),
@@ -40,25 +40,22 @@ fn session_event_search_haystack(event: &SessionEvent) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{
-        EventBlock, EventMetadata, EventRole, EventSource, MappingDisposition, SessionEvent,
-        SessionEventKind,
-    };
+    use crate::canonical::{Block, Event, EventKind, Fidelity, Metadata, Role, Source};
     use chrono::TimeZone;
     use std::collections::BTreeMap;
 
-    fn sample_event(id: &str, text: &str) -> SessionEvent {
-        SessionEvent {
+    fn sample_event(id: &str, text: &str) -> Event {
+        Event {
             id: id.to_string(),
-            kind: SessionEventKind::Message,
-            role: EventRole::User,
+            kind: EventKind::Message,
+            role: Role::User,
             timestamp: chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
             links: Default::default(),
-            blocks: vec![EventBlock::Text {
+            blocks: vec![Block::Text {
                 text: text.to_string(),
             }],
-            metadata: EventMetadata {
-                source: EventSource {
+            metadata: Metadata {
+                source: Source {
                     provider_id: "test".to_string(),
                     original_id: None,
                     original_role: None,
@@ -66,7 +63,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: BTreeMap::new(),
             },
         }

@@ -6,7 +6,7 @@ mod load;
 mod scan;
 mod write;
 
-use crate::canonical::{CanonicalSession, ExportedSession, ImportedSession};
+use crate::canonical::{ExportedSession, ImportedSession, Session};
 use crate::provider::{
     canonical_export_result, PageStrategy, Provider, ProviderActivitySupport,
     ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary,
@@ -78,11 +78,7 @@ impl Provider for CursorProvider {
         db::source_fingerprint(source_path)
     }
 
-    fn export_session(
-        &self,
-        session: &CanonicalSession,
-        target_dir: &Path,
-    ) -> Result<ExportedSession> {
+    fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = write::export_session(session, target_dir)?;
         Ok(canonical_export_result(
             PROVIDER_ID,

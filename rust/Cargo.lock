@@ -1243,6 +1243,7 @@ dependencies = [
  "flate2",
  "md5",
  "notify",
+ "oasf",
  "rand 0.8.7",
  "reqwest",
  "rusqlite",
@@ -1346,6 +1347,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "oasf"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

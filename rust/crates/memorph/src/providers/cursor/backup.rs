@@ -1,6 +1,6 @@
 use crate::provider::{ProviderSessionBackup, ProviderSourceMutation};
 use crate::providers::cursor::db::{global_state_db_path, key_prefix_bounds};
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use rusqlite::types::Value as SqliteValue;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};

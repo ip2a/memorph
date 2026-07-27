@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde_json::{Map, Value};
 
 use crate::storage::atomic_write;

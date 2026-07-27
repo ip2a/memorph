@@ -1,9 +1,8 @@
 use crate::canonical::{
-    CanonicalSession, EventBlock, EventRole, ExportedSession, ImportedSession, MappingDirection,
-    MappingDisposition, MappingIssue, MappingIssueLevel, MappingReport, SessionEvent,
-    SessionEventKind,
+    Block, Event, EventKind, ExportedSession, Fidelity, ImportedSession, MappingDirection,
+    MappingIssue, MappingIssueLevel, MappingReport, Role, Session,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -119,15 +118,15 @@ pub enum TurnQuality {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ProviderContentFidelity {
-    pub text: Option<MappingDisposition>,
-    pub thinking: Option<MappingDisposition>,
-    pub tool_call: Option<MappingDisposition>,
-    pub tool_result: Option<MappingDisposition>,
-    pub patch: Option<MappingDisposition>,
-    pub image: Option<MappingDisposition>,
-    pub file: Option<MappingDisposition>,
-    pub compressed: Option<MappingDisposition>,
-    pub provider_payload: Option<MappingDisposition>,
+    pub text: Option<Fidelity>,
+    pub thinking: Option<Fidelity>,
+    pub tool_call: Option<Fidelity>,
+    pub tool_result: Option<Fidelity>,
+    pub patch: Option<Fidelity>,
+    pub image: Option<Fidelity>,
+    pub file: Option<Fidelity>,
+    pub compressed: Option<Fidelity>,
+    pub provider_payload: Option<Fidelity>,
 }
 
 impl ProviderContentFidelity {
@@ -369,7 +368,7 @@ pub trait Provider: Send + Sync {
     }
 
     /// Replace an existing provider-native session with the supplied canonical session.
-    fn replace_session(&self, session_id: &str, session: &CanonicalSession) -> Result<()> {
+    fn replace_session(&self, session_id: &str, session: &Session) -> Result<()> {
         let _ = session_id;
         let _ = session;
         anyhow::bail!(
@@ -473,11 +472,7 @@ pub trait Provider: Send + Sync {
     }
 
     /// Write a canonical session into the target tool and return the mapping report.
-    fn export_session(
-        &self,
-        session: &CanonicalSession,
-        target_dir: &Path,
-    ) -> Result<ExportedSession> {
+    fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let _ = session;
         let _ = target_dir;
         anyhow::bail!(
@@ -576,7 +571,7 @@ pub trait Provider: Send + Sync {
 
 pub fn canonical_export_report(
     provider_id: &str,
-    session: &CanonicalSession,
+    session: &Session,
     capabilities: ProviderCapabilities,
 ) -> MappingReport {
     let mut report = MappingReport::new(provider_id, MappingDirection::Export);
@@ -589,9 +584,9 @@ pub fn canonical_export_report(
             continue;
         }
         match disposition {
-            Some(MappingDisposition::Preserved) => {}
+            Some(Fidelity::Preserved) => {}
             Some(disposition) => report.push_issue(MappingIssue {
-                level: if disposition == MappingDisposition::Normalized {
+                level: if disposition == Fidelity::Normalized {
                     MappingIssueLevel::Info
                 } else {
                     MappingIssueLevel::Warning
@@ -607,7 +602,7 @@ pub fn canonical_export_report(
             }),
             None => report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Unsupported,
+                disposition: Fidelity::Unsupported,
                 code: format!("{content_kind}_export_capability_unknown"),
                 message: format!(
                     "{provider_id} export fidelity for canonical {content_kind} content is not cataloged."
@@ -625,7 +620,7 @@ pub fn canonical_export_result(
     provider_id: &str,
     session_id: String,
     resume_command: Option<String>,
-    session: &CanonicalSession,
+    session: &Session,
     capabilities: ProviderCapabilities,
 ) -> ExportedSession {
     ExportedSession {
@@ -637,39 +632,37 @@ pub fn canonical_export_result(
 }
 
 fn export_block_fidelity(
-    block: &EventBlock,
+    block: &Block,
     fidelity: ProviderContentFidelity,
-) -> (&'static str, Option<MappingDisposition>) {
+) -> (&'static str, Option<Fidelity>) {
     match block {
-        EventBlock::Text { .. } => ("text", fidelity.text),
-        EventBlock::Thinking { .. } => ("thinking", fidelity.thinking),
-        EventBlock::ToolCall { .. } | EventBlock::Command { .. } => {
-            ("tool_call", fidelity.tool_call)
-        }
-        EventBlock::ToolResult { .. } | EventBlock::CommandResult { .. } => {
+        Block::Text { .. } => ("text", fidelity.text),
+        Block::Thinking { .. } => ("thinking", fidelity.thinking),
+        Block::ToolCall { .. } | Block::Command { .. } => ("tool_call", fidelity.tool_call),
+        Block::ToolResult { .. } | Block::CommandResult { .. } => {
             ("tool_result", fidelity.tool_result)
         }
-        EventBlock::Patch { .. } => ("patch", fidelity.patch),
-        EventBlock::Image { .. } => ("image", fidelity.image),
-        EventBlock::File { .. } => ("file", fidelity.file),
-        EventBlock::Compressed { .. } => ("compressed", fidelity.compressed),
-        EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. } => {
+        Block::Patch { .. } => ("patch", fidelity.patch),
+        Block::Image { .. } => ("image", fidelity.image),
+        Block::File { .. } => ("file", fidelity.file),
+        Block::Compressed { .. } => ("compressed", fidelity.compressed),
+        Block::ProviderPayload { .. } | Block::Unknown { .. } => {
             ("provider_payload", fidelity.provider_payload)
         }
     }
 }
 
-fn disposition_name(disposition: MappingDisposition) -> &'static str {
+fn disposition_name(disposition: Fidelity) -> &'static str {
     match disposition {
-        MappingDisposition::Preserved => "preserved",
-        MappingDisposition::Normalized => "normalized",
-        MappingDisposition::Downgraded => "downgraded",
-        MappingDisposition::Dropped => "dropped",
-        MappingDisposition::Unsupported => "unsupported",
+        Fidelity::Preserved => "preserved",
+        Fidelity::Normalized => "normalized",
+        Fidelity::Downgraded => "downgraded",
+        Fidelity::Dropped => "dropped",
+        Fidelity::Unsupported => "unsupported",
     }
 }
 
-pub fn canonical_session_title(session: &CanonicalSession) -> String {
+pub fn canonical_session_title(session: &Session) -> String {
     if let Some(title) = session
         .identity
         .source_title
@@ -685,7 +678,7 @@ pub fn canonical_session_title(session: &CanonicalSession) -> String {
         .find_map(|event| {
             if !matches!(
                 canonical_event_visible_message_role(event),
-                Some(EventRole::User | EventRole::Assistant)
+                Some(Role::User | Role::Assistant)
             ) {
                 return None;
             }
@@ -697,45 +690,39 @@ pub fn canonical_session_title(session: &CanonicalSession) -> String {
         .unwrap_or_else(|| "Imported session".to_string())
 }
 
-pub fn canonical_event_visible_message_role(event: &SessionEvent) -> Option<EventRole> {
-    if matches!(
-        event.kind,
-        SessionEventKind::Lifecycle | SessionEventKind::Unknown
-    ) {
+pub fn canonical_event_visible_message_role(event: &Event) -> Option<Role> {
+    if matches!(event.kind, EventKind::Lifecycle | EventKind::Unknown) {
         return None;
     }
     match event.role {
-        EventRole::User | EventRole::Assistant | EventRole::Tool => Some(event.role),
-        EventRole::System | EventRole::Developer | EventRole::Unknown => None,
+        Role::User | Role::Assistant | Role::Tool => Some(event.role),
+        Role::System | Role::Developer | Role::Unknown => None,
     }
 }
 
-pub fn canonical_event_is_visible_message(event: &SessionEvent) -> bool {
+pub fn canonical_event_is_visible_message(event: &Event) -> bool {
     canonical_event_visible_message_role(event).is_some()
         && !canonical_event_visible_text(event).trim().is_empty()
 }
 
-pub fn canonical_event_visible_message_text(event: &SessionEvent) -> Option<String> {
+pub fn canonical_event_visible_message_text(event: &Event) -> Option<String> {
     canonical_event_visible_message_role(event)?;
     let text = canonical_event_visible_text(event);
     (!text.trim().is_empty()).then_some(text)
 }
 
-pub fn canonical_event_instruction_context_text(event: &SessionEvent) -> Option<String> {
-    if matches!(
-        event.kind,
-        SessionEventKind::Lifecycle | SessionEventKind::Unknown
-    ) {
+pub fn canonical_event_instruction_context_text(event: &Event) -> Option<String> {
+    if matches!(event.kind, EventKind::Lifecycle | EventKind::Unknown) {
         return None;
     }
-    if !matches!(event.role, EventRole::System | EventRole::Developer) {
+    if !matches!(event.role, Role::System | Role::Developer) {
         return None;
     }
     let text = canonical_event_visible_text(event);
     (!text.trim().is_empty()).then_some(text)
 }
 
-pub fn canonical_session_instruction_context_text(session: &CanonicalSession) -> Option<String> {
+pub fn canonical_session_instruction_context_text(session: &Session) -> Option<String> {
     let text = session
         .events
         .iter()
@@ -745,7 +732,7 @@ pub fn canonical_session_instruction_context_text(session: &CanonicalSession) ->
     (!text.trim().is_empty()).then_some(text)
 }
 
-pub fn canonical_event_text(event: &SessionEvent) -> String {
+pub fn canonical_event_text(event: &Event) -> String {
     event
         .blocks
         .iter()
@@ -755,18 +742,15 @@ pub fn canonical_event_text(event: &SessionEvent) -> String {
         .join("\n")
 }
 
-pub fn canonical_visible_block_text(block: &EventBlock) -> Option<String> {
-    if matches!(
-        block,
-        EventBlock::ProviderPayload { .. } | EventBlock::Unknown { .. }
-    ) {
+pub fn canonical_visible_block_text(block: &Block) -> Option<String> {
+    if matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }) {
         return None;
     }
     let text = canonical_block_text(block);
     (!text.trim().is_empty()).then_some(text)
 }
 
-pub fn canonical_event_visible_text(event: &SessionEvent) -> String {
+pub fn canonical_event_visible_text(event: &Event) -> String {
     event
         .blocks
         .iter()
@@ -775,11 +759,11 @@ pub fn canonical_event_visible_text(event: &SessionEvent) -> String {
         .join("\n")
 }
 
-pub fn canonical_block_text(block: &EventBlock) -> String {
+pub fn canonical_block_text(block: &Block) -> String {
     match block {
-        EventBlock::Text { text } => text.clone(),
-        EventBlock::Thinking { text, .. } => text.clone(),
-        EventBlock::ToolCall {
+        Block::Text { text } => text.clone(),
+        Block::Thinking { text, .. } => text.clone(),
+        Block::ToolCall {
             tool_call_id,
             name,
             input,
@@ -792,7 +776,7 @@ pub fn canonical_block_text(block: &EventBlock) -> String {
                 .map(|value| value.to_string())
                 .unwrap_or_default()
         ),
-        EventBlock::ToolResult {
+        Block::ToolResult {
             tool_call_id,
             content,
             is_error,
@@ -804,7 +788,7 @@ pub fn canonical_block_text(block: &EventBlock) -> String {
             };
             format!("[{}: {}]\n{}", label, tool_call_id, content)
         }
-        EventBlock::Patch {
+        Block::Patch {
             summary,
             diff_text,
             files,
@@ -822,7 +806,7 @@ pub fn canonical_block_text(block: &EventBlock) -> String {
             }
             parts.join("\n")
         }
-        EventBlock::Command { command, argv, cwd } => {
+        Block::Command { command, argv, cwd } => {
             let mut text = command.clone();
             if !argv.is_empty() {
                 text.push('\n');
@@ -833,7 +817,7 @@ pub fn canonical_block_text(block: &EventBlock) -> String {
             }
             text
         }
-        EventBlock::CommandResult {
+        Block::CommandResult {
             command,
             exit_code,
             stdout,
@@ -854,11 +838,11 @@ pub fn canonical_block_text(block: &EventBlock) -> String {
             }
             parts.join("\n")
         }
-        EventBlock::File { path, content, .. } => content
+        Block::File { path, content, .. } => content
             .as_ref()
             .map(|content| format!("[File: {}]\n{}", path, content))
             .unwrap_or_else(|| format!("[File: {}]", path)),
-        EventBlock::Image {
+        Block::Image {
             mime_type,
             data,
             path,
@@ -867,10 +851,10 @@ pub fn canonical_block_text(block: &EventBlock) -> String {
             .or_else(|| data.clone())
             .map(|value| format!("[Image: {}]\n{}", mime_type, value))
             .unwrap_or_else(|| format!("[Image: {}]", mime_type)),
-        EventBlock::ProviderPayload { kind, payload } => {
+        Block::ProviderPayload { kind, payload } => {
             format!("[Provider payload: {}]\n{}", kind, payload)
         }
-        EventBlock::Compressed {
+        Block::Compressed {
             source_provider_id,
             summary,
             source_event_ids,
@@ -891,7 +875,7 @@ pub fn canonical_block_text(block: &EventBlock) -> String {
             }
             parts.join("\n")
         }
-        EventBlock::Unknown { raw } => format!("[Unknown]\n{}", raw),
+        Block::Unknown { raw } => format!("[Unknown]\n{}", raw),
     }
 }
 
@@ -902,14 +886,14 @@ pub fn compression_retrieval_hint(archive_ref: &str) -> String {
     )
 }
 
-pub fn canonical_event_role_label(role: EventRole) -> &'static str {
+pub fn canonical_event_role_label(role: Role) -> &'static str {
     match role {
-        EventRole::User => "user",
-        EventRole::Assistant => "assistant",
-        EventRole::Tool => "tool",
-        EventRole::System => "system",
-        EventRole::Developer => "developer",
-        EventRole::Unknown => "unknown",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+        Role::System => "system",
+        Role::Developer => "developer",
+        Role::Unknown => "unknown",
     }
 }
 
@@ -933,7 +917,7 @@ mod tests {
         let source_event_ids = (0..20)
             .map(|idx| format!("source-event-{}", idx))
             .collect::<Vec<_>>();
-        let text = canonical_block_text(&EventBlock::Compressed {
+        let text = canonical_block_text(&Block::Compressed {
             source_provider_id: "opencode".to_string(),
             summary: "compressed summary".to_string(),
             source_event_ids,
@@ -950,12 +934,12 @@ mod tests {
 
     #[test]
     fn canonical_visible_block_text_drops_provider_internal_blocks() {
-        assert!(canonical_visible_block_text(&EventBlock::ProviderPayload {
+        assert!(canonical_visible_block_text(&Block::ProviderPayload {
             kind: "token_count".to_string(),
             payload: serde_json::json!({"input_tokens": 10}),
         })
         .is_none());
-        assert!(canonical_visible_block_text(&EventBlock::Unknown {
+        assert!(canonical_visible_block_text(&Block::Unknown {
             raw: serde_json::json!({"type": "mystery"}),
         })
         .is_none());
@@ -963,26 +947,26 @@ mod tests {
 
     #[test]
     fn canonical_event_visible_text_omits_provider_internal_blocks() {
-        let event = SessionEvent {
+        let event = Event {
             id: "event-1".to_string(),
-            kind: crate::canonical::SessionEventKind::Message,
-            role: EventRole::User,
+            kind: crate::canonical::EventKind::Message,
+            role: Role::User,
             timestamp: chrono::Utc::now(),
-            links: crate::canonical::EventLinks::default(),
+            links: crate::canonical::Links::default(),
             blocks: vec![
-                EventBlock::Text {
+                Block::Text {
                     text: "hello".to_string(),
                 },
-                EventBlock::ProviderPayload {
+                Block::ProviderPayload {
                     kind: "token_count".to_string(),
                     payload: serde_json::json!({"input_tokens": 10}),
                 },
-                EventBlock::Unknown {
+                Block::Unknown {
                     raw: serde_json::json!({"type": "mystery"}),
                 },
             ],
-            metadata: crate::canonical::EventMetadata {
-                source: crate::canonical::EventSource {
+            metadata: crate::canonical::Metadata {
+                source: crate::canonical::Source {
                     provider_id: "codex".to_string(),
                     original_id: None,
                     original_role: None,
@@ -990,7 +974,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: std::collections::BTreeMap::new(),
             },
         };
@@ -1002,33 +986,33 @@ mod tests {
     fn canonical_visible_message_role_excludes_internal_events() {
         let lifecycle = test_event(
             "lifecycle",
-            crate::canonical::SessionEventKind::Lifecycle,
-            EventRole::System,
-            vec![EventBlock::Text {
+            crate::canonical::EventKind::Lifecycle,
+            Role::System,
+            vec![Block::Text {
                 text: "internal".to_string(),
             }],
         );
         let developer = test_event(
             "developer",
-            crate::canonical::SessionEventKind::Message,
-            EventRole::Developer,
-            vec![EventBlock::Text {
+            crate::canonical::EventKind::Message,
+            Role::Developer,
+            vec![Block::Text {
                 text: "developer".to_string(),
             }],
         );
         let unknown = test_event(
             "unknown",
-            crate::canonical::SessionEventKind::Unknown,
-            EventRole::User,
-            vec![EventBlock::Text {
+            crate::canonical::EventKind::Unknown,
+            Role::User,
+            vec![Block::Text {
                 text: "unknown".to_string(),
             }],
         );
         let user = test_event(
             "user",
-            crate::canonical::SessionEventKind::Message,
-            EventRole::User,
-            vec![EventBlock::Text {
+            crate::canonical::EventKind::Message,
+            Role::User,
+            vec![Block::Text {
                 text: "hello".to_string(),
             }],
         );
@@ -1038,7 +1022,7 @@ mod tests {
         assert_eq!(canonical_event_visible_message_role(&unknown), None);
         assert_eq!(
             canonical_event_visible_message_role(&user),
-            Some(EventRole::User)
+            Some(Role::User)
         );
         assert_eq!(
             canonical_event_visible_message_text(&user).as_deref(),
@@ -1048,36 +1032,36 @@ mod tests {
 
     #[test]
     fn canonical_export_report_uses_actual_block_kinds_and_target_fidelity() {
-        let session = CanonicalSession {
-            schema: crate::canonical::CanonicalSchema::default(),
-            identity: crate::canonical::SessionIdentity {
+        let session = Session {
+            schema: crate::canonical::Schema::default(),
+            identity: crate::canonical::Identity {
                 canonical_id: "canonical-1".to_string(),
                 source_title: None,
             },
-            provenance: crate::canonical::SessionProvenance {
+            provenance: crate::canonical::Provenance {
                 imported_at: chrono::Utc::now(),
                 imported_by: None,
-                primary_source: crate::canonical::ProviderSessionRef {
+                primary_source: crate::canonical::ProviderRef {
                     provider_id: "source".to_string(),
                     session_id: "session-1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: crate::canonical::SessionContext::default(),
+            context: crate::canonical::Context::default(),
             events: vec![test_event(
                 "assistant",
-                crate::canonical::SessionEventKind::Message,
-                EventRole::Assistant,
+                crate::canonical::EventKind::Message,
+                Role::Assistant,
                 vec![
-                    EventBlock::Text {
+                    Block::Text {
                         text: "answer".to_string(),
                     },
-                    EventBlock::Thinking {
+                    Block::Thinking {
                         text: "reasoning".to_string(),
                         signature: None,
                     },
-                    EventBlock::Command {
+                    Block::Command {
                         command: "cargo test".to_string(),
                         argv: Vec::new(),
                         cwd: None,
@@ -1089,9 +1073,9 @@ mod tests {
         };
         let capabilities = ProviderCapabilities {
             export_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Normalized),
-                tool_call: Some(MappingDisposition::Downgraded),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Normalized),
+                tool_call: Some(Fidelity::Downgraded),
                 tool_result: None,
                 patch: None,
                 image: None,
@@ -1104,7 +1088,7 @@ mod tests {
 
         let report = canonical_export_report("target", &session, capabilities);
 
-        assert_eq!(report.overall, MappingDisposition::Downgraded);
+        assert_eq!(report.overall, Fidelity::Downgraded);
         assert_eq!(report.issues.len(), 2);
         assert_eq!(report.issues[0].code, "thinking_export_normalized");
         assert_eq!(report.issues[1].code, "tool_call_export_downgraded");
@@ -1112,26 +1096,26 @@ mod tests {
 
     #[test]
     fn canonical_session_title_uses_visible_user_or_assistant_message() {
-        let session = CanonicalSession {
-            schema: crate::canonical::CanonicalSchema {
-                name: crate::canonical::CANONICAL_SCHEMA_NAME.to_string(),
+        let session = Session {
+            schema: crate::canonical::Schema {
+                name: crate::canonical::OASF_SCHEMA_NAME.to_string(),
                 version: 1,
             },
-            identity: crate::canonical::SessionIdentity {
+            identity: crate::canonical::Identity {
                 canonical_id: "canonical-1".to_string(),
                 source_title: None,
             },
-            provenance: crate::canonical::SessionProvenance {
+            provenance: crate::canonical::Provenance {
                 imported_at: chrono::Utc::now(),
                 imported_by: None,
-                primary_source: crate::canonical::ProviderSessionRef {
+                primary_source: crate::canonical::ProviderRef {
                     provider_id: "test".to_string(),
                     session_id: "session-1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: crate::canonical::SessionContext {
+            context: crate::canonical::Context {
                 workspace_dir: None,
                 created_at: None,
                 last_active_at: None,
@@ -1140,18 +1124,18 @@ mod tests {
             events: vec![
                 test_event(
                     "internal",
-                    crate::canonical::SessionEventKind::Lifecycle,
-                    EventRole::System,
-                    vec![EventBlock::ProviderPayload {
+                    crate::canonical::EventKind::Lifecycle,
+                    Role::System,
+                    vec![Block::ProviderPayload {
                         kind: "internal".to_string(),
                         payload: serde_json::json!({"id": "should-not-title"}),
                     }],
                 ),
                 test_event(
                     "prompt",
-                    crate::canonical::SessionEventKind::Message,
-                    EventRole::User,
-                    vec![EventBlock::Text {
+                    crate::canonical::EventKind::Message,
+                    Role::User,
+                    vec![Block::Text {
                         text: "real prompt".to_string(),
                     }],
                 ),
@@ -1165,65 +1149,65 @@ mod tests {
 
     #[test]
     fn canonical_instruction_context_uses_only_system_or_developer_messages() {
-        let session = CanonicalSession {
-            schema: crate::canonical::CanonicalSchema {
-                name: crate::canonical::CANONICAL_SCHEMA_NAME.to_string(),
+        let session = Session {
+            schema: crate::canonical::Schema {
+                name: crate::canonical::OASF_SCHEMA_NAME.to_string(),
                 version: 1,
             },
-            identity: crate::canonical::SessionIdentity {
+            identity: crate::canonical::Identity {
                 canonical_id: "canonical-1".to_string(),
                 source_title: None,
             },
-            provenance: crate::canonical::SessionProvenance {
+            provenance: crate::canonical::Provenance {
                 imported_at: chrono::Utc::now(),
                 imported_by: None,
-                primary_source: crate::canonical::ProviderSessionRef {
+                primary_source: crate::canonical::ProviderRef {
                     provider_id: "test".to_string(),
                     session_id: "session-1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: crate::canonical::SessionContext::default(),
+            context: crate::canonical::Context::default(),
             events: vec![
                 test_event(
                     "system",
-                    crate::canonical::SessionEventKind::Message,
-                    EventRole::System,
-                    vec![EventBlock::Text {
+                    crate::canonical::EventKind::Message,
+                    Role::System,
+                    vec![Block::Text {
                         text: "system instructions".to_string(),
                     }],
                 ),
                 test_event(
                     "developer",
-                    crate::canonical::SessionEventKind::Message,
-                    EventRole::Developer,
-                    vec![EventBlock::Text {
+                    crate::canonical::EventKind::Message,
+                    Role::Developer,
+                    vec![Block::Text {
                         text: "developer instructions".to_string(),
                     }],
                 ),
                 test_event(
                     "internal",
-                    crate::canonical::SessionEventKind::Lifecycle,
-                    EventRole::System,
-                    vec![EventBlock::Text {
+                    crate::canonical::EventKind::Lifecycle,
+                    Role::System,
+                    vec![Block::Text {
                         text: "runtime context".to_string(),
                     }],
                 ),
                 test_event(
                     "payload",
-                    crate::canonical::SessionEventKind::Message,
-                    EventRole::System,
-                    vec![EventBlock::ProviderPayload {
+                    crate::canonical::EventKind::Message,
+                    Role::System,
+                    vec![Block::ProviderPayload {
                         kind: "internal".to_string(),
                         payload: serde_json::json!({"text": "provider payload"}),
                     }],
                 ),
                 test_event(
                     "user",
-                    crate::canonical::SessionEventKind::Message,
-                    EventRole::User,
-                    vec![EventBlock::Text {
+                    crate::canonical::EventKind::Message,
+                    Role::User,
+                    vec![Block::Text {
                         text: "user prompt".to_string(),
                     }],
                 ),
@@ -1240,19 +1224,19 @@ mod tests {
 
     fn test_event(
         id: &str,
-        kind: crate::canonical::SessionEventKind,
-        role: EventRole,
-        blocks: Vec<EventBlock>,
-    ) -> SessionEvent {
-        SessionEvent {
+        kind: crate::canonical::EventKind,
+        role: Role,
+        blocks: Vec<Block>,
+    ) -> Event {
+        Event {
             id: id.to_string(),
             kind,
             role,
             timestamp: chrono::Utc::now(),
-            links: crate::canonical::EventLinks::default(),
+            links: crate::canonical::Links::default(),
             blocks,
-            metadata: crate::canonical::EventMetadata {
-                source: crate::canonical::EventSource {
+            metadata: crate::canonical::Metadata {
+                source: crate::canonical::Source {
                     provider_id: "test".to_string(),
                     original_id: None,
                     original_role: None,
@@ -1260,7 +1244,7 @@ mod tests {
                 },
                 model: None,
                 usage: None,
-                fidelity: MappingDisposition::Preserved,
+                fidelity: Fidelity::Preserved,
                 provider_ext: std::collections::BTreeMap::new(),
             },
         }

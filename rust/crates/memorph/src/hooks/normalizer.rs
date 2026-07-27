@@ -4,7 +4,7 @@
 //! They must not update runtime state or write storage; those responsibilities
 //! belong to `runtime` and `store`.
 
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 
 use crate::hooks::adapters::generic::GenericHookAdapter;
 use crate::hooks::contract::HookAdapter;

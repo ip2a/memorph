@@ -1,17 +1,15 @@
 pub mod adapter;
 pub mod hook;
 use crate::canonical::{
-    CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
-    EventSource, ImportedSession, MappingDirection, MappingDisposition, MappingReport,
-    ProviderSessionRef, SessionContext, SessionEvent, SessionEventKind, SessionIdentity,
-    SessionProvenance,
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionSummary, ProviderSourceFingerprint, ProviderWriteRisk,
     ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
@@ -41,11 +39,11 @@ impl Provider for HermesProvider {
             page_strategy: PageStrategy::FullImport,
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
-                text: Some(MappingDisposition::Preserved),
-                thinking: Some(MappingDisposition::Preserved),
-                tool_call: Some(MappingDisposition::Preserved),
-                tool_result: Some(MappingDisposition::Preserved),
-                provider_payload: Some(MappingDisposition::Preserved),
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },
             resume_quality: ResumeQuality::Native,
@@ -132,16 +130,16 @@ impl Provider for HermesProvider {
                 "api_content": api_content,
             });
             let event_role = match role.as_str() {
-                "user" => EventRole::User,
-                "assistant" => EventRole::Assistant,
-                "tool" => EventRole::Tool,
-                "system" => EventRole::System,
-                _ => EventRole::Unknown,
+                "user" => Role::User,
+                "assistant" => Role::Assistant,
+                "tool" => Role::Tool,
+                "system" => Role::System,
+                _ => Role::Unknown,
             };
             let mut blocks = Vec::new();
             if tool_name.is_none() {
                 if let Some(text) = content.clone().filter(|v| !v.trim().is_empty()) {
-                    blocks.push(EventBlock::Text { text });
+                    blocks.push(Block::Text { text });
                 }
             }
             if let Some(text) = reasoning
@@ -150,13 +148,13 @@ impl Provider for HermesProvider {
                 .or(reasoning_details.clone())
                 .filter(|v| !v.trim().is_empty())
             {
-                blocks.push(EventBlock::Thinking {
+                blocks.push(Block::Thinking {
                     text,
                     signature: None,
                 });
             }
             if let Some(name) = tool_name.clone() {
-                blocks.push(EventBlock::ToolResult {
+                blocks.push(Block::ToolResult {
                     tool_call_id: tool_call_id
                         .clone()
                         .unwrap_or_else(|| message_id.to_string()),
@@ -191,7 +189,7 @@ impl Provider for HermesProvider {
                                     }
                                     value => Some(value),
                                 });
-                            blocks.push(EventBlock::ToolCall {
+                            blocks.push(Block::ToolCall {
                                 tool_call_id: id,
                                 name,
                                 input,
@@ -201,23 +199,23 @@ impl Provider for HermesProvider {
                 }
             }
             let kind = if tool_name.is_some() {
-                SessionEventKind::ToolResult
+                EventKind::ToolResult
             } else if tool_calls.is_some() {
-                SessionEventKind::ToolCall
+                EventKind::ToolCall
             } else {
-                SessionEventKind::Message
+                EventKind::Message
             };
-            events.push(SessionEvent {
+            events.push(Event {
                 id: message_id.to_string(),
                 kind,
                 role: event_role,
                 timestamp: timestamp_ms(timestamp)
                     .map(datetime_from_ms)
                     .unwrap_or_else(Utc::now),
-                links: EventLinks::default(),
+                links: Links::default(),
                 blocks,
-                metadata: EventMetadata {
-                    source: EventSource {
+                metadata: Metadata {
+                    source: Source {
                         provider_id: PROVIDER_ID.to_string(),
                         original_id: Some(message_id.to_string()),
                         original_role: Some(role.clone()),
@@ -225,7 +223,7 @@ impl Provider for HermesProvider {
                     },
                     model: meta.3.clone(),
                     usage: None,
-                    fidelity: MappingDisposition::Preserved,
+                    fidelity: Fidelity::Preserved,
                     provider_ext: {
                         let mut ext = BTreeMap::new();
                         ext.insert("hermes_message".into(), raw_message);
@@ -239,30 +237,30 @@ impl Provider for HermesProvider {
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         report.push_issue(crate::canonical::MappingIssue {
             level: crate::canonical::MappingIssueLevel::Info,
-            disposition: MappingDisposition::Preserved,
+            disposition: Fidelity::Preserved,
             code: "hermes-sqlite-source".into(),
             message: "Imported from Hermes state.db sessions/messages tables".into(),
             path: Some("source".into()),
             raw: None,
         });
         Ok(ImportedSession {
-            session: CanonicalSession {
-                schema: CanonicalSchema::default(),
-                identity: SessionIdentity {
+            session: Session {
+                schema: Schema::default(),
+                identity: Identity {
                     canonical_id: meta.0.clone(),
                     source_title: meta.1,
                 },
-                provenance: SessionProvenance {
+                provenance: Provenance {
                     imported_at: Utc::now(),
                     imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderSessionRef {
+                    primary_source: ProviderRef {
                         provider_id: PROVIDER_ID.into(),
                         session_id: meta.0,
                         source_path: Some(source_path.into()),
                     },
                     aliases: Vec::new(),
                 },
-                context: SessionContext {
+                context: Context {
                     workspace_dir: meta.2,
                     created_at: created,
                     last_active_at: last,
@@ -442,13 +440,13 @@ mod tests {
         assert_eq!(imported.session.events.len(), 3);
         assert!(matches!(
             imported.session.events[1].blocks[0],
-            EventBlock::Thinking { .. }
+            Block::Thinking { .. }
         ));
         assert!(
-            matches!(imported.session.events[1].blocks[1], EventBlock::ToolCall { ref name, .. } if name == "terminal")
+            matches!(imported.session.events[1].blocks[1], Block::ToolCall { ref name, .. } if name == "terminal")
         );
         assert!(
-            matches!(imported.session.events[2].blocks[0], EventBlock::ToolResult { ref content, .. } if content == "done")
+            matches!(imported.session.events[2].blocks[0], Block::ToolResult { ref content, .. } if content == "done")
         );
         assert_eq!(
             imported.session.events[1].metadata.provider_ext["hermes_message"]["tool_calls"],

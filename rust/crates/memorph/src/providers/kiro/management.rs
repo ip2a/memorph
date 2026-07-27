@@ -3,7 +3,7 @@ use super::{
     workspace_bucket, KiroSessionMetadata, PROVIDER_ID,
 };
 use crate::provider::{ProviderSessionBackup, ProviderSourceMutation};
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Component, Path, PathBuf};

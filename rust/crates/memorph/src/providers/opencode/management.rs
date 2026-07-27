@@ -47,7 +47,7 @@ pub(super) fn delete_opencode_session(session_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn replace_opencode_session(session_id: &str, session: &CanonicalSession) -> Result<()> {
+pub(super) fn replace_opencode_session(session_id: &str, session: &Session) -> Result<()> {
     let db_path = get_db_path();
     if !db_path.exists() {
         anyhow::bail!("OpenCode database does not exist: {}", db_path.display());

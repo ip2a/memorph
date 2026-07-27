@@ -250,7 +250,7 @@ pub(super) fn source_file_modified_ms(path: &Path) -> Option<i64> {
 }
 
 pub(super) struct KiroImportedEvent {
-    event: SessionEvent,
+    event: Event,
     source_file: String,
     source_line: usize,
 }
@@ -409,7 +409,7 @@ pub(super) fn import_canonical_session_from_dir(session_dir: &Path) -> Result<Im
             } else if !sub_import.events.is_empty() {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Info,
-                    disposition: MappingDisposition::Preserved,
+                    disposition: Fidelity::Preserved,
                     code: "sub_execution_parent_unresolved".to_string(),
                     message: format!(
                         "Preserved Kiro sub-execution {sub_execution_id} by native timestamp without inventing a parent relation"
@@ -444,23 +444,23 @@ pub(super) fn import_canonical_session_from_dir(session_dir: &Path) -> Result<Im
     extensions.insert("kiro_session_metadata".to_string(), raw_metadata);
 
     Ok(ImportedSession {
-        session: CanonicalSession {
-            schema: CanonicalSchema::default(),
-            identity: SessionIdentity {
+        session: Session {
+            schema: Schema::default(),
+            identity: Identity {
                 canonical_id: metadata.id.clone(),
                 source_title,
             },
-            provenance: SessionProvenance {
+            provenance: Provenance {
                 imported_at: Utc::now(),
                 imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderSessionRef {
+                primary_source: ProviderRef {
                     provider_id: PROVIDER_ID.to_string(),
                     session_id: metadata.id,
                     source_path: Some(session_dir.to_string_lossy().to_string()),
                 },
                 aliases: Vec::new(),
             },
-            context: SessionContext {
+            context: Context {
                 workspace_dir,
                 created_at,
                 last_active_at: metadata_last_active_at.max(event_last_active_at),
@@ -536,7 +536,7 @@ pub(super) fn read_kiro_event_stream(
             Err(error) => {
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Warning,
-                    disposition: MappingDisposition::Dropped,
+                    disposition: Fidelity::Dropped,
                     code: "invalid_jsonl_line".to_string(),
                     message: format!("Failed to parse Kiro event stream line: {error}"),
                     path: Some(format!("{source_file}:line:{line_number}")),
@@ -575,7 +575,7 @@ pub(super) fn canonical_event_from_kiro_record(
     line_number: usize,
     state: &mut KiroStreamState,
     report: &mut MappingReport,
-) -> SessionEvent {
+) -> Event {
     let path = format!("{source_file}:line:{line_number}");
     let payload = record.get("payload").cloned().unwrap_or(Value::Null);
     let payload_type = payload
@@ -591,7 +591,7 @@ pub(super) fn canonical_event_from_kiro_record(
     if original_id.is_none() {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Warning,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: "missing_event_id".to_string(),
             message: "Generated a stable Kiro canonical event id from source location".to_string(),
             path: Some(path.clone()),
@@ -605,7 +605,7 @@ pub(super) fn canonical_event_from_kiro_record(
         .unwrap_or_else(|| {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "invalid_event_timestamp".to_string(),
                 message: "Used the session timestamp plus source line offset for a Kiro event"
                     .to_string(),
@@ -630,16 +630,16 @@ pub(super) fn canonical_event_from_kiro_record(
     let provider_turn_id = explicit_turn_id
         .or_else(|| state.active_turn_id.clone())
         .or_else(|| state.default_turn_id.clone());
-    let mut links = EventLinks {
+    let mut links = Links {
         provider_turn_id,
-        ..EventLinks::default()
+        ..Links::default()
     };
-    let mut fidelity = MappingDisposition::Preserved;
+    let mut fidelity = Fidelity::Preserved;
 
     let (kind, role, blocks) = match payload_type {
         "user" => (
-            SessionEventKind::Message,
-            EventRole::User,
+            EventKind::Message,
+            Role::User,
             kiro_message_blocks(&payload, false, payload_type, &path, report),
         ),
         "assistant" => {
@@ -649,10 +649,10 @@ pub(super) fn canonical_event_from_kiro_record(
                 .unwrap_or("Say");
             let reasoning = operation_type.eq_ignore_ascii_case("reasoning");
             if !reasoning && !operation_type.eq_ignore_ascii_case("say") {
-                fidelity = MappingDisposition::Normalized;
+                fidelity = Fidelity::Normalized;
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Info,
-                    disposition: MappingDisposition::Normalized,
+                    disposition: Fidelity::Normalized,
                     code: "unknown_assistant_operation".to_string(),
                     message: format!(
                         "Mapped Kiro assistant operation {operation_type} as visible text"
@@ -662,19 +662,19 @@ pub(super) fn canonical_event_from_kiro_record(
                 });
             }
             (
-                SessionEventKind::Message,
-                EventRole::Assistant,
+                EventKind::Message,
+                Role::Assistant,
                 kiro_message_blocks(&payload, reasoning, payload_type, &path, report),
             )
         }
         "system" => (
-            SessionEventKind::Message,
-            EventRole::System,
+            EventKind::Message,
+            Role::System,
             kiro_message_blocks(&payload, false, payload_type, &path, report),
         ),
         "agent_note" => (
-            SessionEventKind::Message,
-            EventRole::Assistant,
+            EventKind::Message,
+            Role::Assistant,
             kiro_message_blocks(&payload, false, payload_type, &path, report),
         ),
         "tool_call" => {
@@ -685,7 +685,7 @@ pub(super) fn canonical_event_from_kiro_record(
                 .unwrap_or_else(|| {
                     report.push_issue(MappingIssue {
                         level: MappingIssueLevel::Warning,
-                        disposition: MappingDisposition::Normalized,
+                        disposition: Fidelity::Normalized,
                         code: "missing_tool_call_id".to_string(),
                         message: "Generated a stable tool call id from the Kiro event id"
                             .to_string(),
@@ -701,7 +701,7 @@ pub(super) fn canonical_event_from_kiro_record(
                 .unwrap_or_else(|| {
                     report.push_issue(MappingIssue {
                         level: MappingIssueLevel::Warning,
-                        disposition: MappingDisposition::Normalized,
+                        disposition: Fidelity::Normalized,
                         code: "missing_tool_name".to_string(),
                         message: "Used `unknown` because the Kiro tool call had no tool name"
                             .to_string(),
@@ -714,9 +714,9 @@ pub(super) fn canonical_event_from_kiro_record(
                 .tool_call_events
                 .insert(tool_call_id.clone(), event_id.clone());
             (
-                SessionEventKind::ToolCall,
-                EventRole::Assistant,
-                vec![EventBlock::ToolCall {
+                EventKind::ToolCall,
+                Role::Assistant,
+                vec![Block::ToolCall {
                     tool_call_id,
                     name,
                     input: payload.get("args").cloned(),
@@ -731,7 +731,7 @@ pub(super) fn canonical_event_from_kiro_record(
                 .unwrap_or_else(|| {
                     report.push_issue(MappingIssue {
                         level: MappingIssueLevel::Warning,
-                        disposition: MappingDisposition::Normalized,
+                        disposition: Fidelity::Normalized,
                         code: "missing_tool_result_call_id".to_string(),
                         message: "Used `unknown` because the Kiro tool result had no tool call id"
                             .to_string(),
@@ -751,9 +751,9 @@ pub(super) fn canonical_event_from_kiro_record(
                     Some("error" | "failed")
                 );
             (
-                SessionEventKind::ToolResult,
-                EventRole::Tool,
-                vec![EventBlock::ToolResult {
+                EventKind::ToolResult,
+                Role::Tool,
+                vec![Block::ToolResult {
                     tool_call_id,
                     content,
                     is_error,
@@ -763,9 +763,9 @@ pub(super) fn canonical_event_from_kiro_record(
         "turn_start" => {
             links.turn_boundary = Some(TurnBoundary::Started);
             (
-                SessionEventKind::Lifecycle,
-                EventRole::System,
-                vec![EventBlock::ProviderPayload {
+                EventKind::Lifecycle,
+                Role::System,
+                vec![Block::ProviderPayload {
                     kind: payload_type.to_string(),
                     payload: payload.clone(),
                 }],
@@ -774,9 +774,9 @@ pub(super) fn canonical_event_from_kiro_record(
         "turn_end" => {
             links.turn_boundary = Some(kiro_turn_end_boundary(&payload));
             (
-                SessionEventKind::Lifecycle,
-                EventRole::System,
-                vec![EventBlock::ProviderPayload {
+                EventKind::Lifecycle,
+                Role::System,
+                vec![Block::ProviderPayload {
                     kind: payload_type.to_string(),
                     payload: payload.clone(),
                 }],
@@ -794,9 +794,9 @@ pub(super) fn canonical_event_from_kiro_record(
         | "ContextualHookInvoked"
         | "pending_interaction"
         | "interaction_resolved" => (
-            SessionEventKind::Lifecycle,
-            EventRole::System,
-            vec![EventBlock::ProviderPayload {
+            EventKind::Lifecycle,
+            Role::System,
+            vec![Block::ProviderPayload {
                 kind: payload_type.to_string(),
                 payload: payload.clone(),
             }],
@@ -804,16 +804,16 @@ pub(super) fn canonical_event_from_kiro_record(
         unknown => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Info,
-                disposition: MappingDisposition::Preserved,
+                disposition: Fidelity::Preserved,
                 code: "unknown_payload_preserved".to_string(),
                 message: format!("Preserved unknown Kiro payload type {unknown}"),
                 path: Some(path.clone()),
                 raw: Some(payload.clone()),
             });
             (
-                SessionEventKind::Unknown,
-                EventRole::Unknown,
-                vec![EventBlock::ProviderPayload {
+                EventKind::Unknown,
+                Role::Unknown,
+                vec![Block::ProviderPayload {
                     kind: unknown.to_string(),
                     payload: payload.clone(),
                 }],
@@ -830,15 +830,15 @@ pub(super) fn canonical_event_from_kiro_record(
         state.active_turn_id = state.default_turn_id.clone();
     }
 
-    SessionEvent {
+    Event {
         id: event_id,
         kind,
         role,
         timestamp,
         links,
         blocks,
-        metadata: EventMetadata {
-            source: EventSource {
+        metadata: Metadata {
+            source: Source {
                 provider_id: PROVIDER_ID.to_string(),
                 original_id,
                 original_role: Some(payload_type.to_string()),
@@ -867,9 +867,9 @@ pub(super) fn kiro_message_blocks(
     payload_type: &str,
     path: &str,
     report: &mut MappingReport,
-) -> Vec<EventBlock> {
+) -> Vec<Block> {
     let Some(content) = payload.get("content") else {
-        return vec![EventBlock::ProviderPayload {
+        return vec![Block::ProviderPayload {
             kind: payload_type.to_string(),
             payload: payload.clone(),
         }];
@@ -887,7 +887,7 @@ pub(super) fn kiro_message_blocks(
                         } else if let Some(thinking) =
                             object.get("thinking").and_then(Value::as_str)
                         {
-                            blocks.push(EventBlock::Thinking {
+                            blocks.push(Block::Thinking {
                                 text: thinking.to_string(),
                                 signature: object
                                     .get("signature")
@@ -895,7 +895,7 @@ pub(super) fn kiro_message_blocks(
                                     .map(str::to_string),
                             });
                         } else {
-                            blocks.push(EventBlock::ProviderPayload {
+                            blocks.push(Block::ProviderPayload {
                                 kind: object
                                     .get("type")
                                     .and_then(Value::as_str)
@@ -905,7 +905,7 @@ pub(super) fn kiro_message_blocks(
                             });
                         }
                     }
-                    _ => blocks.push(EventBlock::Unknown { raw: item.clone() }),
+                    _ => blocks.push(Block::Unknown { raw: item.clone() }),
                 }
             }
         }
@@ -913,7 +913,7 @@ pub(super) fn kiro_message_blocks(
             if let Some(text) = object.get("text").and_then(Value::as_str) {
                 push_kiro_text_block(&mut blocks, text, reasoning);
             } else {
-                blocks.push(EventBlock::ProviderPayload {
+                blocks.push(Block::ProviderPayload {
                     kind: object
                         .get("type")
                         .and_then(Value::as_str)
@@ -923,20 +923,20 @@ pub(super) fn kiro_message_blocks(
                 });
             }
         }
-        _ => blocks.push(EventBlock::Unknown {
+        _ => blocks.push(Block::Unknown {
             raw: content.clone(),
         }),
     }
     if blocks.is_empty() {
         report.push_issue(MappingIssue {
             level: MappingIssueLevel::Info,
-            disposition: MappingDisposition::Normalized,
+            disposition: Fidelity::Normalized,
             code: "empty_message_content".to_string(),
             message: "Preserved an empty Kiro message as provider payload".to_string(),
             path: Some(path.to_string()),
             raw: Some(payload.clone()),
         });
-        blocks.push(EventBlock::ProviderPayload {
+        blocks.push(Block::ProviderPayload {
             kind: payload_type.to_string(),
             payload: payload.clone(),
         });
@@ -944,17 +944,17 @@ pub(super) fn kiro_message_blocks(
     blocks
 }
 
-pub(super) fn push_kiro_text_block(blocks: &mut Vec<EventBlock>, text: &str, reasoning: bool) {
+pub(super) fn push_kiro_text_block(blocks: &mut Vec<Block>, text: &str, reasoning: bool) {
     if text.is_empty() {
         return;
     }
     if reasoning {
-        blocks.push(EventBlock::Thinking {
+        blocks.push(Block::Thinking {
             text: text.to_string(),
             signature: None,
         });
     } else {
-        blocks.push(EventBlock::Text {
+        blocks.push(Block::Text {
             text: text.to_string(),
         });
     }
@@ -971,7 +971,7 @@ pub(super) fn kiro_tool_result_content(
         Some(content) => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Info,
-                disposition: MappingDisposition::Normalized,
+                disposition: Fidelity::Normalized,
                 code: "structured_tool_result_normalized".to_string(),
                 message: "Serialized structured Kiro tool result content as JSON".to_string(),
                 path: Some(path.to_string()),

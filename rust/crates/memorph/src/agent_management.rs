@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use std::sync::{
