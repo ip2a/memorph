@@ -202,7 +202,7 @@ pub(super) async fn sync_session_groups(Json(body): Json<SyncGroupBody>) -> impl
     let blocked = blocked_sync_targets_from_snapshot(
         &group,
         &source_id,
-        &hooks::server::runtime_sessions_snapshot(),
+        &hooks::runtime_state::runtime_sessions_snapshot(),
     );
     if !blocked.is_empty() {
         return api_error(

@@ -107,7 +107,7 @@ pub fn collect(options: HookDiagnosticsOptions) -> Result<HookDiagnosticsReport>
         store: HookDiagnosticsStore {
             database: database.display().to_string(),
         },
-        server: crate::hooks::server::current_runtime_endpoint().map(redact_endpoint),
+        server: crate::hooks::runtime_state::current_runtime_endpoint().map(redact_endpoint),
         counts: HookDiagnosticsCounts {
             providers: providers.len(),
             runtime_sessions: runtime_store.sessions.len(),

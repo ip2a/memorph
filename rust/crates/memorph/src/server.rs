@@ -67,7 +67,7 @@ pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
     let app = build_router();
     let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
     let url = format!("http://127.0.0.1:{}", actual_port);
-    if let Err(err) = crate::hooks::server::publish_runtime_endpoint(&url) {
+    if let Err(err) = crate::hooks::runtime_state::publish_runtime_endpoint(&url) {
         crate::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
     println!("memorph server started: {}", url);
@@ -89,7 +89,7 @@ pub async fn run_api(port: u16, allow_fallback: bool) -> Result<()> {
     let app = build_api_router();
     let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
     let url = format!("http://127.0.0.1:{}", actual_port);
-    if let Err(err) = crate::hooks::server::publish_runtime_endpoint(&url) {
+    if let Err(err) = crate::hooks::runtime_state::publish_runtime_endpoint(&url) {
         crate::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
 

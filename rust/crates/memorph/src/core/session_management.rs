@@ -295,7 +295,7 @@ pub fn replace_native_session(
         anyhow::bail!("Provider does not support native session replacement: {provider_id}");
     }
     let provider_id = providers::canonical_provider_id(provider_id);
-    let busy = crate::hooks::server::runtime_sessions_snapshot()
+    let busy = crate::hooks::runtime_state::runtime_sessions_snapshot()
         .into_iter()
         .any(|runtime| {
             providers::canonical_provider_id(&runtime.provider) == provider_id

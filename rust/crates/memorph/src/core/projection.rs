@@ -628,7 +628,7 @@ pub(super) fn list_projected_session_snapshots(
             workspace_scopes.as_deref(),
             params.include_message_counts,
         )?;
-    let hook_runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
+    let hook_runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
     let providers_with_snapshots: Vec<String> = provider_ids
         .iter()
         .filter(|provider_id| {

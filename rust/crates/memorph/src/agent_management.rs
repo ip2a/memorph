@@ -65,7 +65,7 @@ impl Serialize for AgentManagementEntry {
 }
 
 pub fn list_agent_management_entries() -> Result<Vec<AgentManagementEntry>> {
-    let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
+    let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
     let conn = crate::storage::local_store::open_database()?;
     let projected_sessions =
         crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
@@ -80,7 +80,7 @@ pub fn list_agent_management_summaries() -> Result<Vec<AgentManagementSummaryEnt
 }
 
 pub fn get_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntry> {
-    let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
+    let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
     let conn = crate::storage::local_store::open_database()?;
     let projected_sessions =
         crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
@@ -88,7 +88,7 @@ pub fn get_agent_management_entry(provider_id: &str) -> Result<AgentManagementEn
 }
 
 pub fn detect_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntry> {
-    let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
+    let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
     let conn = crate::storage::local_store::open_database()?;
     let projected_sessions =
         crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
@@ -219,14 +219,14 @@ mod tests {
 
     #[test]
     fn agent_management_entry_exposes_hook_status() {
-        let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
+        let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
         let claude = build_agent_management_entry("claude", &runtime_snapshot, &[], false).unwrap();
         assert_eq!(claude.hook.provider, "claude");
     }
 
     #[test]
     fn agent_management_entry_exposes_settings() {
-        let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
+        let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
         let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
         assert!(codex
             .settings
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn agent_management_entry_groups_common_environment_fields() {
-        let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
+        let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
         let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
         let environment = crate::agent_environment::detect_provider_environment("codex");
         assert_eq!(codex.environment.config_path, environment.config_path);
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn agent_management_entry_serializes_environment_block_and_flat_fields() {
-        let runtime_snapshot = crate::hooks::server::runtime_sessions_snapshot();
+        let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
         let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
         let value = serde_json::to_value(&codex).unwrap();
 

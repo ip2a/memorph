@@ -102,7 +102,7 @@ pub fn augment_session(
     session_id: &str,
     workspace_dir: Option<&str>,
 ) -> SessionHookAugmentation {
-    let snapshot = crate::hooks::server::runtime_sessions_snapshot();
+    let snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
     build_augmentation(
         &snapshot,
         Some(safe_hook_status(provider)),
@@ -296,7 +296,7 @@ fn build_augmentation(
     workspace_dir: Option<&str>,
     include_diagnosis: bool,
 ) -> SessionHookAugmentation {
-    let runtime_sessions = crate::hooks::server::linked_runtime_sessions_from_snapshot(
+    let runtime_sessions = crate::hooks::runtime_state::linked_runtime_sessions_from_snapshot(
         snapshot,
         provider,
         session_id,

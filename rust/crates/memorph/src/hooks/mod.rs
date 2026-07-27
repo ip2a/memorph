@@ -27,6 +27,7 @@ pub mod profiles;
 pub mod protocol;
 pub mod registry;
 pub mod runtime;
+pub mod runtime_state;
 pub mod server;
 pub mod shared;
 pub mod store;

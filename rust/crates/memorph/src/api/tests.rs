@@ -974,14 +974,14 @@ fn sync_holding_payload_serializes_hook_runtime_sessions() {
     let _guard = crate::hooks::test_support::test_runtime_guard();
     let dir = tempfile::tempdir().unwrap();
     crate::hooks::store::set_test_store_root(dir.path().to_path_buf());
-    crate::hooks::server::reset_for_tests();
+    crate::hooks::runtime_state::reset_for_tests();
     let endpoint = HookRuntimeEndpoint {
         endpoint: "http://127.0.0.1:3737".to_string(),
         token: "test-token".to_string(),
         pid: 1,
         started_at: Utc::now(),
     };
-    crate::hooks::server::set_runtime_endpoint_for_tests(endpoint.clone());
+    crate::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
 
     let request = HookIngestRequest::new(
         "generic",

@@ -22,10 +22,9 @@ use crate::hooks::model::{HookEvent, RuntimeSession, RuntimeSessionStatus};
 use crate::hooks::normalizer;
 use crate::hooks::protocol::{HookIngestRequest, HookIngestResponse, HookRuntimeEndpoint};
 use crate::hooks::runtime::{RuntimeCleanupReport, RuntimeState};
+
 use crate::hooks::store::{self, RuntimeSessionStore};
 
-static RUNTIME_STATE: OnceLock<RwLock<RuntimeState>> = OnceLock::new();
-static RUNTIME_ENDPOINT: OnceLock<RwLock<Option<HookRuntimeEndpoint>>> = OnceLock::new();
 
 #[derive(Debug, Serialize)]
 struct HookApiResponse<T: Serialize> {
@@ -238,7 +237,7 @@ fn normalize_hook_operation(
 fn build_provider_overview(provider: &str) -> Result<HookProviderOverviewPayload> {
     let provider_entry = crate::agent_management::get_agent_management_entry(provider)
         .with_context(|| format!("Failed to collect hook overview for provider: {provider}"))?;
-    let runtime_sessions: Vec<RuntimeSession> = runtime_sessions_snapshot()
+    let runtime_sessions: Vec<RuntimeSession> = crate::hooks::runtime_state::runtime_sessions_snapshot()
         .into_iter()
         .filter(|session| session.provider == provider)
         .collect();
@@ -271,7 +270,7 @@ fn hook_error_mentions_provider(error: &store::HookErrorRecord, provider: &str) 
 fn build_overview() -> Result<HookOverviewPayload> {
     let providers = crate::agent_management::list_agent_management_entries()
         .context("Failed to collect hook provider management entries")?;
-    let runtime_sessions = runtime_sessions_snapshot();
+    let runtime_sessions = crate::hooks::runtime_state::runtime_sessions_snapshot();
     let recent_errors = store::load_recent_errors(10).unwrap_or_default();
     let recent_events = store::load_recent_events(20).unwrap_or_default();
 
@@ -352,183 +351,10 @@ fn hook_status_needs_attention(status: &crate::hooks::model::HookHealthStatus) -
     )
 }
 
-pub fn publish_runtime_endpoint(endpoint: &str) -> Result<HookRuntimeEndpoint> {
-    let endpoint = HookRuntimeEndpoint {
-        endpoint: endpoint.trim_end_matches('/').to_string(),
-        token: current_or_new_token(),
-        pid: std::process::id(),
-        started_at: Utc::now(),
-    };
-
-    {
-        let lock = runtime_endpoint_cell();
-        let mut guard = lock.write().unwrap();
-        *guard = Some(endpoint.clone());
-    }
-
-    store::save_server_runtime(&endpoint).context("Failed to save hook server runtime endpoint")?;
-    Ok(endpoint)
-}
-
-pub fn current_runtime_endpoint() -> Option<HookRuntimeEndpoint> {
-    runtime_endpoint_cell().read().unwrap().clone()
-}
-
-pub fn linked_runtime_sessions(
-    provider: &str,
-    session_id: &str,
-    workspace_dir: Option<&str>,
-) -> Vec<RuntimeSession> {
-    let snapshot = runtime_sessions_snapshot();
-    linked_runtime_sessions_from_snapshot(&snapshot, provider, session_id, workspace_dir)
-}
-
-pub fn runtime_sessions_snapshot() -> Vec<RuntimeSession> {
-    let _ = cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
-    let state = runtime_state().read().unwrap();
-    state.sessions.values().cloned().collect()
-}
-
-pub fn linked_runtime_sessions_from_snapshot(
-    snapshot: &[RuntimeSession],
-    provider: &str,
-    session_id: &str,
-    workspace_dir: Option<&str>,
-) -> Vec<RuntimeSession> {
-    let mut sessions: Vec<RuntimeSession> = snapshot
-        .iter()
-        .filter(|session| {
-            runtime_session_matches_session(session, provider, session_id, workspace_dir)
-        })
-        .cloned()
-        .collect();
-    sessions.sort_by(|left, right| right.last_event_at.cmp(&left.last_event_at));
-    sessions
-}
-
-fn current_or_new_token() -> String {
-    current_runtime_endpoint()
-        .map(|endpoint| endpoint.token)
-        .filter(|token| !token.trim().is_empty())
-        .unwrap_or_else(|| Uuid::new_v4().to_string())
-}
-
-#[cfg(test)]
-fn linked_runtime_sessions_from_state(
-    state: &RuntimeState,
-    provider: &str,
-    session_id: &str,
-    workspace_dir: Option<&str>,
-) -> Vec<RuntimeSession> {
-    let mut sessions: Vec<RuntimeSession> = state
-        .sessions
-        .values()
-        .filter(|session| {
-            runtime_session_matches_session(session, provider, session_id, workspace_dir)
-        })
-        .cloned()
-        .collect();
-    sessions.sort_by(|left, right| right.last_event_at.cmp(&left.last_event_at));
-    sessions
-}
-
-fn runtime_session_matches_session(
-    session: &RuntimeSession,
-    provider: &str,
-    session_id: &str,
-    workspace_dir: Option<&str>,
-) -> bool {
-    if session.provider != provider {
-        return false;
-    }
-
-    if runtime_session_matches_provider_session_id(session, provider, session_id) {
-        return true;
-    }
-
-    if session
-        .correlation
-        .as_ref()
-        .map(|correlation| correlation.session_id == session_id)
-        .unwrap_or(false)
-    {
-        return true;
-    }
-
-    runtime_session_matches_workspace(session, provider, workspace_dir)
-}
-
-fn runtime_session_matches_provider_session_id(
-    session: &RuntimeSession,
-    provider: &str,
-    session_id: &str,
-) -> bool {
-    let Some(provider_session_id) = session
-        .provider_session_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return false;
-    };
-
-    provider_session_id == session_id
-        || provider_session_id == format!("{provider}-{session_id}")
-        || provider_session_id.ends_with(&format!("-{session_id}"))
-}
-
-fn runtime_session_matches_workspace(
-    session: &RuntimeSession,
-    provider: &str,
-    workspace_dir: Option<&str>,
-) -> bool {
-    let Some(workspace_dir) = workspace_dir.filter(|value| !value.trim().is_empty()) else {
-        return false;
-    };
-
-    let session_workspace = session
-        .correlation
-        .as_ref()
-        .and_then(|correlation| correlation.project_dir.as_deref())
-        .or_else(|| session.cwd.as_deref().and_then(|cwd| cwd.to_str()));
-
-    crate::core::session_management::workspace_matches(
-        provider,
-        session_workspace,
-        Some(workspace_dir),
-    )
-}
-
-fn runtime_state() -> &'static RwLock<RuntimeState> {
-    RUNTIME_STATE.get_or_init(|| RwLock::new(load_runtime_state().unwrap_or_default()))
-}
-
-fn runtime_endpoint_cell() -> &'static RwLock<Option<HookRuntimeEndpoint>> {
-    RUNTIME_ENDPOINT.get_or_init(|| RwLock::new(store::load_server_runtime().unwrap_or(None)))
-}
-
-fn load_runtime_state() -> Result<RuntimeState> {
-    let stored = store::load_runtime_sessions()?;
-    Ok(RuntimeState {
-        sessions: stored
-            .sessions
-            .into_iter()
-            .map(|session| (session.runtime_id.clone(), session))
-            .collect(),
-    })
-}
-
-fn persist_runtime_state(state: &RuntimeState) -> Result<()> {
-    store::save_runtime_sessions(&RuntimeSessionStore {
-        version: 1,
-        sessions: state.sessions.values().cloned().collect(),
-    })
-}
-
 async fn get_status() -> impl IntoResponse {
     match crate::runtime::run_blocking(|| {
-        let _ = cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
-        let state = runtime_state().read().unwrap();
+        let _ = crate::hooks::runtime_state::cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
+        let state = crate::hooks::runtime_state::runtime_state().read().unwrap();
         Ok(HookStatusPayload {
             server: current_hook_server_status(),
             runtime_sessions: state.sessions.len(),
@@ -544,7 +370,7 @@ async fn get_status() -> impl IntoResponse {
 }
 
 fn current_hook_server_status() -> HookServerStatus {
-    let endpoint = current_runtime_endpoint();
+    let endpoint = crate::hooks::runtime_state::current_runtime_endpoint();
     HookServerStatus {
         running: endpoint.is_some(),
         endpoint: endpoint.as_ref().map(|value| value.endpoint.clone()),
@@ -591,7 +417,7 @@ async fn ingest_event(
             updates.push((event, correlation));
         }
         {
-            let mut state = runtime_state().write().unwrap();
+            let mut state = crate::hooks::runtime_state::runtime_state().write().unwrap();
             for (event, correlation) in updates {
                 let runtime_id = runtime_session_id_for_event(event);
                 state.apply_event(event);
@@ -599,8 +425,8 @@ async fn ingest_event(
                     state.attach_correlation(&runtime_id, correlation);
                 }
             }
-            if let Err(error) = persist_runtime_state(&state) {
-                let _ = store::append_error("persist_runtime_state", error.to_string());
+            if let Err(error) = crate::hooks::runtime_state::persist_runtime_state(&state) {
+                let _ = store::append_error("crate::hooks::runtime_state::persist_runtime_state", error.to_string());
                 return Err(error);
             }
         }
@@ -623,7 +449,7 @@ async fn list_events(Query(query): Query<EventsQuery>) -> impl IntoResponse {
 
 async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> impl IntoResponse {
     match crate::runtime::run_blocking(move || {
-        Ok(runtime_sessions_snapshot()
+        Ok(crate::hooks::runtime_state::runtime_sessions_snapshot()
             .into_iter()
             .filter(|session| {
                 query
@@ -680,27 +506,10 @@ async fn cleanup_runtime_sessions(Query(query): Query<CleanupQuery>) -> impl Int
         idle_after_seconds: query.idle_after_seconds.unwrap_or(30 * 60),
         orphan_after_seconds: query.orphan_after_seconds.unwrap_or(60 * 60),
     };
-    match crate::runtime::run_blocking(move || cleanup_runtime_state(options)).await {
+    match crate::runtime::run_blocking(move || crate::hooks::runtime_state::cleanup_runtime_state(options)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
-}
-
-fn cleanup_runtime_state(
-    options: crate::hooks::lifecycle::RuntimeCleanupOptions,
-) -> Result<RuntimeCleanupReport> {
-    let mut state = runtime_state().write().unwrap();
-    let report = state.cleanup_stale_sessions(
-        Utc::now(),
-        options.idle_after(),
-        options.orphan_after(),
-        crate::hooks::lifecycle::pid_is_alive_with_start_time,
-    );
-    if report.idle > 0 || report.orphaned > 0 {
-        persist_runtime_state(&state)?;
-    }
-    drop(state);
-    Ok(report)
 }
 
 fn enrich_event_from_environment(
@@ -728,7 +537,7 @@ fn enrich_event_from_environment(
 }
 
 fn authorize_ingest(headers: &HeaderMap) -> Result<()> {
-    let Some(endpoint) = current_runtime_endpoint() else {
+    let Some(endpoint) = crate::hooks::runtime_state::current_runtime_endpoint() else {
         anyhow::bail!("Hook runtime endpoint is not published for this process");
     };
     let header_token = headers
@@ -758,17 +567,6 @@ fn hook_error(status: StatusCode, msg: impl ToString) -> impl IntoResponse {
             error: Some(msg.to_string()),
         }),
     )
-}
-
-#[cfg(test)]
-pub(crate) fn reset_for_tests() {
-    *runtime_state().write().unwrap() = RuntimeState::default();
-    *runtime_endpoint_cell().write().unwrap() = None;
-}
-
-#[cfg(test)]
-pub(crate) fn set_runtime_endpoint_for_tests(endpoint: HookRuntimeEndpoint) {
-    *runtime_endpoint_cell().write().unwrap() = Some(endpoint);
 }
 
 #[cfg(test)]
@@ -849,7 +647,7 @@ mod tests {
             runtime_session("sample:session:s1", "sample", Some("s1")),
         );
 
-        let sessions = linked_runtime_sessions_from_state(&state, "sample", "s1", None);
+        let sessions = crate::hooks::runtime_state::linked_runtime_sessions_from_state(&state, "sample", "s1", None);
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].provider_session_id.as_deref(), Some("s1"));
     }
@@ -869,7 +667,7 @@ mod tests {
         state.sessions.insert(session.runtime_id.clone(), session);
 
         let sessions =
-            linked_runtime_sessions_from_state(&state, "sample", "session-from-correlation", None);
+            crate::hooks::runtime_state::linked_runtime_sessions_from_state(&state, "sample", "session-from-correlation", None);
         assert_eq!(sessions.len(), 1);
         assert_eq!(
             sessions[0]
@@ -887,7 +685,7 @@ mod tests {
         session.cwd = Some(PathBuf::from("/tmp/project"));
         state.sessions.insert(session.runtime_id.clone(), session);
 
-        let sessions = linked_runtime_sessions_from_state(
+        let sessions = crate::hooks::runtime_state::linked_runtime_sessions_from_state(
             &state,
             "sample",
             "missing-session-id",
@@ -905,7 +703,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -934,7 +732,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -958,7 +756,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
         let provider = crate::hooks::registry::all()
             .first()
             .copied()
@@ -1006,7 +804,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -1027,7 +825,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -1047,7 +845,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -1067,8 +865,8 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
-        set_runtime_endpoint_for_tests(HookRuntimeEndpoint {
+        crate::hooks::runtime_state::reset_for_tests();
+        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "test-token".to_string(),
             pid: 1,
@@ -1094,14 +892,14 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
         let endpoint = HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "test-token".to_string(),
             pid: 1,
             started_at: Utc::now(),
         };
-        set_runtime_endpoint_for_tests(endpoint.clone());
+        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
         let request = HookIngestRequest::new(
             "generic",
             "tool_started",
@@ -1145,8 +943,8 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
-        set_runtime_endpoint_for_tests(HookRuntimeEndpoint {
+        crate::hooks::runtime_state::reset_for_tests();
+        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "secret-token".to_string(),
             pid: 1,
@@ -1173,7 +971,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
         let provider = crate::hooks::registry::all()
             .first()
             .copied()
@@ -1204,14 +1002,14 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
         let endpoint = HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "test-token".to_string(),
             pid: 1,
             started_at: Utc::now(),
         };
-        set_runtime_endpoint_for_tests(endpoint.clone());
+        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
         let old_timestamp = (Utc::now() - chrono::Duration::seconds(10)).timestamp();
         let request = HookIngestRequest::new(
             "generic",
@@ -1249,14 +1047,14 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
         let endpoint = HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "test-token".to_string(),
             pid: 1,
             started_at: Utc::now(),
         };
-        set_runtime_endpoint_for_tests(endpoint.clone());
+        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
 
         let mut request = HookIngestRequest::new(
             "generic",
@@ -1294,7 +1092,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        reset_for_tests();
+        crate::hooks::runtime_state::reset_for_tests();
 
         for (method, uri) in [
             ("GET", "/api/v1/hooks/pending"),
