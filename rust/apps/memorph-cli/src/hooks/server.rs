@@ -14,16 +14,16 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::sync::{OnceLock, RwLock};
-use uuid::Uuid;
-
 use memorph::hooks::identity::runtime_session_id_for_event;
 use memorph::hooks::model::{HookEvent, RuntimeSession, RuntimeSessionStatus};
 use memorph::hooks::normalizer;
-use memorph::hooks::protocol::{HookIngestRequest, HookIngestResponse, HookRuntimeEndpoint};
-use memorph::hooks::runtime::{RuntimeCleanupReport, RuntimeState};
+use memorph::hooks::protocol::{HookIngestRequest, HookIngestResponse};
+use memorph::hooks::store;
 
-use memorph::hooks::store::{self, RuntimeSessionStore};
+#[cfg(test)]
+use memorph::hooks::protocol::HookRuntimeEndpoint;
+#[cfg(test)]
+use memorph::hooks::runtime::RuntimeState;
 
 
 #[derive(Debug, Serialize)]
