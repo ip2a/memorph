@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 memorph = { path = "../../rust/crates/memorph" }
+memorph-cli = { path = "../../rust/apps/memorph-cli" }
 anyhow = "1.0"
 axum = "0.8"
 dirs = "6.0"

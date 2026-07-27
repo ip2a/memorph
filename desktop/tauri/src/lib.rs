@@ -1,5 +1,5 @@
 use anyhow::Result;
-use memorph::{api, server};
+use memorph_cli::{api, server};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -55,7 +55,7 @@ fn start_local_server() -> Result<String> {
     let addr = std_listener.local_addr()?;
     std_listener.set_nonblocking(true)?;
     let url = format!("http://{}", addr);
-    let _ = memorph::hooks::server::publish_runtime_endpoint(&url);
+    let _ = memorph::hooks::runtime_state::publish_runtime_endpoint(&url);
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
