@@ -49,6 +49,10 @@
 
 # Local draft documentation.
 /docs/*
+# 规范文档作为架构验收标准,纳入版本控制
+!/docs/架构文档-重要架构设计v1.md
+!/docs/项目骨架设计v1.md
+!/docs/重构计划-v1.md
 
 # Web app source.
 !/apps/
