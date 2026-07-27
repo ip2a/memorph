@@ -36,7 +36,7 @@ pub(super) async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> imp
     let workspace = body.workspace.clone();
     let limit = body.limit;
     let filter = manager_filter_from_body(body, workspace, limit);
-    match run_blocking(move || crate::core::manager::preview(&filter)).await {
+    match crate::runtime::run_blocking(move || crate::core::manager::preview(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -115,7 +115,7 @@ pub(super) async fn manager_quick_preview(
     let selected_agent_count = provider_ids.len();
     let filter = quick_filter(provider_ids);
 
-    match run_blocking(move || crate::core::manager::preview(&filter)).await {
+    match crate::runtime::run_blocking(move || crate::core::manager::preview(&filter)).await {
         Ok(preview) => ApiResponse::success(ManagerQuickPreviewResult {
             selected_agent_count,
             total_count: preview.total_count,
@@ -145,7 +145,7 @@ pub(super) async fn manager_quick_workspaces(
     }
 
     let filter = quick_filter(provider_ids);
-    match run_blocking(move || crate::core::manager::workspaces(&filter)).await {
+    match crate::runtime::run_blocking(move || crate::core::manager::workspaces(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -154,7 +154,7 @@ pub(super) async fn manager_quick_workspaces(
 pub(super) async fn manager_stats(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
     let workspace = body.workspace.clone();
     let filter = manager_filter_from_body(body, workspace, None);
-    match run_blocking(move || crate::core::manager::stats(&filter)).await {
+    match crate::runtime::run_blocking(move || crate::core::manager::stats(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -167,7 +167,7 @@ pub(super) struct ManagerItemsBody {
 }
 
 pub(super) async fn manager_clean(Json(body): Json<ManagerItemsBody>) -> impl IntoResponse {
-    match run_blocking(move || Ok(crate::core::manager::clean(&body.items, ActivityActor::Api)))
+    match crate::runtime::run_blocking(move || Ok(crate::core::manager::clean(&body.items, ActivityActor::Api)))
         .await
     {
         Ok(result) => {
@@ -188,7 +188,7 @@ pub(super) async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl I
     let output_dir = body.output_dir.unwrap_or_else(|| "./backups".to_string());
     let resolved_output_dir = resolve_backup_output_dir(&output_dir, None);
     let logged_output_dir = resolved_output_dir.clone();
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         Ok(crate::core::manager::backup(
             &body.items,
             &resolved_output_dir,
@@ -216,7 +216,7 @@ pub(super) async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl I
 pub(super) async fn manager_workspaces(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
     let limit = body.limit;
     let filter = manager_filter_from_body(body, None, limit);
-    match run_blocking(move || crate::core::manager::workspaces(&filter)).await {
+    match crate::runtime::run_blocking(move || crate::core::manager::workspaces(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
@@ -234,7 +234,7 @@ pub(super) async fn manager_clean_workspace(
 ) -> impl IntoResponse {
     let provider_id = body.provider_id.clone();
     let workspace = body.workspace.clone();
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         Ok(crate::core::manager::clean_workspace(
             &body.provider_id,
             &body.workspace,
@@ -265,7 +265,7 @@ pub(super) async fn manager_backup_workspace(
     let provider_id = body.provider_id.clone();
     let workspace = body.workspace.clone();
     let logged_output_dir = resolved_output_dir.clone();
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         Ok(crate::core::manager::backup_workspace(
             &body.provider_id,
             &body.workspace,

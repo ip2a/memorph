@@ -184,21 +184,21 @@ async fn list_session_diagnosis(Query(query): Query<SessionDiagnosisQuery>) -> i
         hook_filter,
     };
 
-    match crate::api::run_blocking(move || crate::core::projection::list_sessions(&params)).await {
+    match crate::runtime::run_blocking(move || crate::core::projection::list_sessions(&params)).await {
         Ok(groups) => HookApiResponse::success(groups).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn get_overview() -> impl IntoResponse {
-    match crate::api::run_blocking(build_overview).await {
+    match crate::runtime::run_blocking(build_overview).await {
         Ok(payload) => HookApiResponse::success(payload).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn provider_overview(Path(provider): Path<String>) -> impl IntoResponse {
-    match crate::api::run_blocking(move || build_provider_overview(&provider)).await {
+    match crate::runtime::run_blocking(move || build_provider_overview(&provider)).await {
         Ok(payload) => HookApiResponse::success(payload).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -207,7 +207,7 @@ async fn provider_overview(Path(provider): Path<String>) -> impl IntoResponse {
 async fn run_provider_hook_operation(
     Path((provider, operation)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match crate::api::run_blocking(move || run_hook_operation(&provider, &operation)).await {
+    match crate::runtime::run_blocking(move || run_hook_operation(&provider, &operation)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
@@ -526,7 +526,7 @@ fn persist_runtime_state(state: &RuntimeState) -> Result<()> {
 }
 
 async fn get_status() -> impl IntoResponse {
-    match crate::api::run_blocking(|| {
+    match crate::runtime::run_blocking(|| {
         let _ = cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
         let state = runtime_state().read().unwrap();
         Ok(HookStatusPayload {
@@ -557,7 +557,7 @@ async fn ingest_event(
     headers: HeaderMap,
     Json(request): Json<HookIngestRequest>,
 ) -> impl IntoResponse {
-    if let Err(error) = crate::api::run_blocking(move || authorize_ingest(&headers)).await {
+    if let Err(error) = crate::runtime::run_blocking(move || authorize_ingest(&headers)).await {
         return hook_error(StatusCode::UNAUTHORIZED, error).into_response();
     }
 
@@ -566,7 +566,7 @@ async fn ingest_event(
         Err(error) => {
             let message = error.to_string();
             let stored_message = message.clone();
-            let _ = crate::api::run_blocking(move || {
+            let _ = crate::runtime::run_blocking(move || {
                 store::append_error("normalize", stored_message)?;
                 Ok(())
             })
@@ -578,7 +578,7 @@ async fn ingest_event(
         enrich_event_from_environment(event, &request.environment);
     }
 
-    match crate::api::run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         let mut event_ids = Vec::new();
         let mut updates = Vec::new();
         for event in &events {
@@ -615,14 +615,14 @@ async fn ingest_event(
 
 async fn list_events(Query(query): Query<EventsQuery>) -> impl IntoResponse {
     let limit = query.limit.unwrap_or(100).min(1000);
-    match crate::api::run_blocking(move || store::load_recent_events(limit)).await {
+    match crate::runtime::run_blocking(move || store::load_recent_events(limit)).await {
         Ok(events) => HookApiResponse::success(events).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> impl IntoResponse {
-    match crate::api::run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         Ok(runtime_sessions_snapshot()
             .into_iter()
             .filter(|session| {
@@ -649,7 +649,7 @@ async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> imp
 }
 
 async fn provider_status(Path(provider): Path<String>) -> impl IntoResponse {
-    match crate::api::run_blocking(move || crate::hooks::operations::status(&provider)).await {
+    match crate::runtime::run_blocking(move || crate::hooks::operations::status(&provider)).await {
         Ok(status) => HookApiResponse::success(status).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -660,7 +660,7 @@ async fn get_diagnostics(Query(query): Query<DiagnosticsQuery>) -> impl IntoResp
         event_limit: query.event_limit.unwrap_or(100).min(1000),
         error_limit: query.error_limit.unwrap_or(50).min(1000),
     };
-    match crate::api::run_blocking(move || crate::hooks::diagnostics::collect(options)).await {
+    match crate::runtime::run_blocking(move || crate::hooks::diagnostics::collect(options)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -669,7 +669,7 @@ async fn get_diagnostics(Query(query): Query<DiagnosticsQuery>) -> impl IntoResp
 async fn run_doctor(
     Json(request): Json<crate::hooks::doctor::HookDoctorRequest>,
 ) -> impl IntoResponse {
-    match crate::api::run_blocking(move || crate::hooks::doctor::verify(request)).await {
+    match crate::runtime::run_blocking(move || crate::hooks::doctor::verify(request)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -680,7 +680,7 @@ async fn cleanup_runtime_sessions(Query(query): Query<CleanupQuery>) -> impl Int
         idle_after_seconds: query.idle_after_seconds.unwrap_or(30 * 60),
         orphan_after_seconds: query.orphan_after_seconds.unwrap_or(60 * 60),
     };
-    match crate::api::run_blocking(move || cleanup_runtime_state(options)).await {
+    match crate::runtime::run_blocking(move || cleanup_runtime_state(options)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }

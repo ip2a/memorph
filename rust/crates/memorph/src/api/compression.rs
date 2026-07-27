@@ -64,7 +64,7 @@ pub(super) struct CompressionArchiveQuery {
 pub(super) async fn get_compression_archive(
     Query(q): Query<CompressionArchiveQuery>,
 ) -> impl IntoResponse {
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         core::compression_application::get_compression_archive(&q.archive_ref)
     })
     .await
@@ -90,7 +90,7 @@ pub(super) struct CompressionRetrievalInstructionsBody {
 pub(super) async fn get_compression_retrieval_instructions(
     Json(body): Json<CompressionRetrievalInstructionsBody>,
 ) -> impl IntoResponse {
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         core::compression_application::compression_retrieval_instructions(&body.archive_ref)
     })
     .await
@@ -163,7 +163,7 @@ pub(super) async fn restore_native_compression(
         session_id: body.session_id,
         archive_ref: body.archive_ref,
     };
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         core::compression_application::restore_native_compression(&params, ActivityActor::Api)
     })
     .await
@@ -184,7 +184,7 @@ pub(super) async fn restore_compression_archive(
         output_prefix: body.output_prefix,
         format: body.format,
     };
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         core::compression_application::restore_compression_archive(&params, ActivityActor::Api)
     })
     .await
@@ -202,7 +202,7 @@ pub(super) async fn retrieve_compression_archive(
         query: body.query,
         max_results: body.max_results,
     };
-    match run_blocking(move || core::compression_application::retrieve_compression_archive(&params))
+    match crate::runtime::run_blocking(move || core::compression_application::retrieve_compression_archive(&params))
         .await
     {
         Ok(result) => ApiResponse::success(result).into_response(),
@@ -218,7 +218,7 @@ pub(super) async fn expand_compression_session(
         output_prefix: body.output_prefix,
         format: body.format,
     };
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         core::compression_application::expand_compression_session(&params, ActivityActor::Api)
     })
     .await
@@ -238,7 +238,7 @@ pub(super) async fn plan_active_compression(
         file: body.file,
         policy: body.policy,
     };
-    match run_blocking(move || core::compression_application::active_compression_dry_run(&params))
+    match crate::runtime::run_blocking(move || core::compression_application::active_compression_dry_run(&params))
         .await
     {
         Ok(result) => ApiResponse::success(result).into_response(),
@@ -259,7 +259,7 @@ pub(super) async fn apply_active_compression(
         output_prefix: body.output_prefix,
         format: body.format,
     };
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         core::compression_application::active_compression_apply(&params, ActivityActor::Api)
     })
     .await

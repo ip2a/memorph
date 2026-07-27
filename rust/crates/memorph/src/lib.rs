@@ -15,6 +15,7 @@ pub mod logging;
 pub mod provider;
 pub mod provider_settings;
 pub mod providers;
+pub mod runtime;
 pub mod server;
 pub mod session_projection;
 pub mod skills;

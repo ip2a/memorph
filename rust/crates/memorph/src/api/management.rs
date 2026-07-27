@@ -59,7 +59,7 @@ pub(super) async fn list_management_activity(
         started_before_ms: query.started_before_ms,
         limit: query.limit,
     };
-    match run_blocking(move || core::management::list_management_activity(&query)).await {
+    match crate::runtime::run_blocking(move || core::management::list_management_activity(&query)).await {
         Ok(activities) => ApiResponse::success(activities).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -87,7 +87,7 @@ pub(super) async fn list_backups(Query(query): Query<BackupQueryParams>) -> impl
         restore_status,
         limit: query.limit,
     };
-    match run_blocking(move || core::session_management::list_registered_backups(backup_query))
+    match crate::runtime::run_blocking(move || core::session_management::list_registered_backups(backup_query))
         .await
     {
         Ok(backups) => ApiResponse::success(backups).into_response(),
@@ -97,7 +97,7 @@ pub(super) async fn list_backups(Query(query): Query<BackupQueryParams>) -> impl
 
 pub(super) async fn get_backup(Path(backup_id): Path<String>) -> impl IntoResponse {
     let requested_backup_id = backup_id.clone();
-    match run_blocking(move || core::session_management::get_registered_backup(&backup_id)).await {
+    match crate::runtime::run_blocking(move || core::session_management::get_registered_backup(&backup_id)).await {
         Ok(Some(backup)) => ApiResponse::success(backup).into_response(),
         Ok(None) => api_error(
             StatusCode::NOT_FOUND,
@@ -109,7 +109,7 @@ pub(super) async fn get_backup(Path(backup_id): Path<String>) -> impl IntoRespon
 }
 
 pub(super) async fn restore_backup(Path(backup_id): Path<String>) -> impl IntoResponse {
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         core::session_management::restore_registered_backup(&backup_id, ActivityActor::Api)
     })
     .await
@@ -131,7 +131,7 @@ pub(super) async fn create_database_backup(
     Json(request): Json<CreateDatabaseBackupRequest>,
 ) -> impl IntoResponse {
     let output_dir = request.output_dir.map(std::path::PathBuf::from);
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         core::database_management::backup_database(output_dir.as_deref(), ActivityActor::Api)
     })
     .await
@@ -157,14 +157,14 @@ pub(super) async fn verify_database_backup(
         .into_response();
     }
     let bundle = std::path::PathBuf::from(request.bundle);
-    match run_blocking(move || core::database_management::verify_database_backup(&bundle)).await {
+    match crate::runtime::run_blocking(move || core::database_management::verify_database_backup(&bundle)).await {
         Ok(report) => ApiResponse::success(report).into_response(),
         Err(error) => api_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
 }
 
 pub(super) async fn inspect_artifacts() -> impl IntoResponse {
-    match run_blocking(core::management::inspect_artifacts).await {
+    match crate::runtime::run_blocking(core::management::inspect_artifacts).await {
         Ok(report) => ApiResponse::success(report).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -192,7 +192,7 @@ pub(super) async fn cleanup_artifacts(
         )
         .into_response();
     }
-    match run_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         core::management::cleanup_artifacts(
             request.retention_hours,
             request.apply,
