@@ -17,7 +17,7 @@ pub(super) struct WorkspacesWithSessionsQuery {
 pub(super) async fn list_workspaces_with_sessions(
     Query(query): Query<WorkspacesWithSessionsQuery>,
 ) -> impl IntoResponse {
-    let options = crate::core::manager::WorkspaceWithSessionsOptions {
+    let options = memorph::core::manager::WorkspaceWithSessionsOptions {
         search: query
             .q
             .map(|value| value.trim().to_string())
@@ -26,7 +26,7 @@ pub(super) async fn list_workspaces_with_sessions(
         page_size: query.page_size.unwrap_or(5),
     };
 
-    match crate::runtime::run_blocking(move || crate::core::manager::workspaces_with_sessions(&options)).await {
+    match memorph::runtime::run_blocking(move || memorph::core::manager::workspaces_with_sessions(&options)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }

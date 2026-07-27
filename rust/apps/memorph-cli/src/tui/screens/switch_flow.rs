@@ -7,7 +7,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::providers;
+use memorph::providers;
 use crate::tui::app::{App, AppResult, Screen};
 use crate::tui::theme::Theme;
 

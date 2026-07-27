@@ -17,7 +17,7 @@ use std::{
 };
 use walkdir::WalkDir;
 
-use super::{
+use memorph::skills::{
     conflicts, context, coverage, graph, health,
     invocation::{self, StatsQuery},
     prune,
@@ -28,7 +28,7 @@ use super::{
 
 #[derive(Clone)]
 struct SkillsState {
-    agents: Arc<Vec<crate::skills::inspection::SkillAgent>>,
+    agents: Arc<Vec<memorph::skills::inspection::SkillAgent>>,
     database_path: Option<Arc<PathBuf>>,
 }
 
@@ -64,7 +64,7 @@ pub fn router() -> Router {
 }
 
 #[cfg(test)]
-fn router_for(agents: Vec<crate::skills::inspection::SkillAgent>) -> Router {
+fn router_for(agents: Vec<memorph::skills::inspection::SkillAgent>) -> Router {
     let database_path = agents
         .first()
         .and_then(|agent| agent.skills_dir.parent()?.parent())
@@ -72,7 +72,7 @@ fn router_for(agents: Vec<crate::skills::inspection::SkillAgent>) -> Router {
     router_with_state(agents, database_path)
 }
 
-fn router_with_state(agents: Vec<crate::skills::inspection::SkillAgent>, database_path: Option<PathBuf>) -> Router {
+fn router_with_state(agents: Vec<memorph::skills::inspection::SkillAgent>, database_path: Option<PathBuf>) -> Router {
     Router::new()
         .route("/api/v1/skills", get(list_skills))
         .route("/api/v1/skills/scan", post(scan_skills))
@@ -140,11 +140,11 @@ const SKILL_PROVIDERS: [(&str, &str, &str, &str); 5] = [
     ("hermes", "Hermes", ".hermes/skills", ".hermes/skills"),
 ];
 
-fn default_agents() -> Vec<crate::skills::inspection::SkillAgent> {
+fn default_agents() -> Vec<memorph::skills::inspection::SkillAgent> {
     let home = dirs::home_dir().unwrap_or_default();
     SKILL_PROVIDERS
         .iter()
-        .map(|(provider_id, name, global_root, _)| crate::skills::inspection::SkillAgent {
+        .map(|(provider_id, name, global_root, _)| memorph::skills::inspection::SkillAgent {
             provider_id: (*provider_id).into(),
             name: (*name).into(),
             skills_dir: home.join(global_root),
@@ -154,8 +154,8 @@ fn default_agents() -> Vec<crate::skills::inspection::SkillAgent> {
         .collect()
 }
 
-fn discover(agents: &[crate::skills::inspection::SkillAgent]) -> crate::skills::inspection::SkillsOverview {
-    let mut skills: BTreeMap<String, crate::skills::inspection::SkillEntry> = BTreeMap::new();
+fn discover(agents: &[memorph::skills::inspection::SkillAgent]) -> memorph::skills::inspection::SkillsOverview {
+    let mut skills: BTreeMap<String, memorph::skills::inspection::SkillEntry> = BTreeMap::new();
 
     for agent in agents {
         let Ok(children) = fs::read_dir(&agent.skills_dir) else {
@@ -179,18 +179,18 @@ fn discover(agents: &[crate::skills::inspection::SkillAgent]) -> crate::skills::
                     normalized
                 }
             };
-            let bundle = crate::skills::inspection::inspect_bundle(&path);
+            let bundle = memorph::skills::inspection::inspect_bundle(&path);
             let is_link = path
                 .symlink_metadata()
                 .is_ok_and(|metadata| metadata.file_type().is_symlink());
-            let installation = crate::skills::inspection::SkillInstallation {
+            let installation = memorph::skills::inspection::SkillInstallation {
                 provider_id: agent.provider_id.clone(),
                 fingerprint: bundle.fingerprint.clone(),
                 drifted: false,
-                managed: is_link || path.join(crate::skills::inspection::MANAGED_MARKER).is_file(),
+                managed: is_link || path.join(memorph::skills::inspection::MANAGED_MARKER).is_file(),
                 deployment_mode: if is_link {
                     "symlink"
-                } else if path.join(crate::skills::inspection::MANAGED_MARKER).is_file() {
+                } else if path.join(memorph::skills::inspection::MANAGED_MARKER).is_file() {
                     "copy"
                 } else {
                     "external"
@@ -199,7 +199,7 @@ fn discover(agents: &[crate::skills::inspection::SkillAgent]) -> crate::skills::
                 link_valid: !is_link || path.canonicalize().is_ok(),
                 path,
             };
-            let skill = skills.entry(id.clone()).or_insert_with(|| crate::skills::inspection::SkillEntry {
+            let skill = skills.entry(id.clone()).or_insert_with(|| memorph::skills::inspection::SkillEntry {
                 id,
                 name,
                 description: description.clone(),
@@ -229,7 +229,7 @@ fn discover(agents: &[crate::skills::inspection::SkillAgent]) -> crate::skills::
             skill
         })
         .collect();
-    crate::skills::inspection::SkillsOverview {
+    memorph::skills::inspection::SkillsOverview {
         agents: agents.to_vec(),
         skills,
     }
@@ -249,7 +249,7 @@ fn image_mime_type(ext: &str) -> &'static str {
     }
 }
 
-fn bundle_detail(overview: &crate::skills::inspection::SkillsOverview, id: &str) -> Result<crate::skills::inspection::SkillDetail> {
+fn bundle_detail(overview: &memorph::skills::inspection::SkillsOverview, id: &str) -> Result<memorph::skills::inspection::SkillDetail> {
     let skill = overview
         .skills
         .iter()
@@ -260,9 +260,9 @@ fn bundle_detail(overview: &crate::skills::inspection::SkillsOverview, id: &str)
         .installations
         .first()
         .ok_or_else(|| anyhow!("Skill has no installation"))?;
-    let inspection = crate::skills::inspection::inspect_bundle(&source.path);
-    Ok(crate::skills::inspection::SkillDetail {
-        frontmatter: crate::skills::inspection::read_frontmatter(&source.path.join("SKILL.md")),
+    let inspection = memorph::skills::inspection::inspect_bundle(&source.path);
+    Ok(memorph::skills::inspection::SkillDetail {
+        frontmatter: memorph::skills::inspection::read_frontmatter(&source.path.join("SKILL.md")),
         provider_metadata: inspection
             .assets
             .iter()
@@ -329,7 +329,7 @@ fn validate_directory(directory: &str) -> Result<()> {
     Ok(())
 }
 
-fn install(agents: &[crate::skills::inspection::SkillAgent], request: &SkillMutation) -> Result<crate::skills::inspection::SkillsOverview> {
+fn install(agents: &[memorph::skills::inspection::SkillAgent], request: &SkillMutation) -> Result<memorph::skills::inspection::SkillsOverview> {
     let overview = discover(agents);
     let skill = overview
         .skills
@@ -384,7 +384,7 @@ fn deploy_skill(source: &Path, destination: &Path) -> Result<()> {
     }
 
     copy_skill(&source, destination)?;
-    if let Err(error) = fs::write(destination.join(crate::skills::inspection::MANAGED_MARKER), b"managed by memorph\n") {
+    if let Err(error) = fs::write(destination.join(memorph::skills::inspection::MANAGED_MARKER), b"managed by memorph\n") {
         let _ = fs::remove_dir_all(destination);
         return Err(error).with_context(|| format!("Failed to mark {}", destination.display()));
     }
@@ -437,7 +437,7 @@ fn copy_skill(source: &Path, destination: &Path) -> Result<()> {
     result
 }
 
-fn uninstall(agents: &[crate::skills::inspection::SkillAgent], request: &SkillMutation) -> Result<crate::skills::inspection::SkillsOverview> {
+fn uninstall(agents: &[memorph::skills::inspection::SkillAgent], request: &SkillMutation) -> Result<memorph::skills::inspection::SkillsOverview> {
     let overview = discover(agents);
     let skill = overview
         .skills
@@ -469,7 +469,7 @@ fn uninstall(agents: &[crate::skills::inspection::SkillAgent], request: &SkillMu
     {
         fs::remove_file(&expected)
             .with_context(|| format!("Failed to remove symbolic link {}", expected.display()))?;
-    } else if expected.join(crate::skills::inspection::MANAGED_MARKER).is_file() {
+    } else if expected.join(memorph::skills::inspection::MANAGED_MARKER).is_file() {
         fs::remove_dir_all(&expected)
             .with_context(|| format!("Failed to remove {}", expected.display()))?;
     } else {
@@ -497,7 +497,7 @@ struct SkillFilePreview {
 }
 
 fn preview_file(
-    overview: &crate::skills::inspection::SkillsOverview,
+    overview: &memorph::skills::inspection::SkillsOverview,
     skill_id: &str,
     query: &SkillFileQuery,
 ) -> Result<SkillFilePreview> {
@@ -526,7 +526,7 @@ fn preview_file(
     {
         return Err(anyhow!("Unsafe skill file path"));
     }
-    let inspection = crate::skills::inspection::inspect_bundle(&installation.path);
+    let inspection = memorph::skills::inspection::inspect_bundle(&installation.path);
     let asset = inspection
         .assets
         .iter()
@@ -542,13 +542,13 @@ fn preview_file(
     }
     let file = fs::File::open(&target)?;
     let mut bytes = Vec::new();
-    file.take(crate::skills::inspection::MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > crate::skills::inspection::MAX_PREVIEW_BYTES {
+    file.take(memorph::skills::inspection::MAX_PREVIEW_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > memorph::skills::inspection::MAX_PREVIEW_BYTES {
         return Err(anyhow!("Skill asset exceeds preview limit"));
     }
 
     let extension = asset.extension.as_deref().unwrap_or("");
-    let (encoding, mime_type, content) = if crate::skills::inspection::is_image_extension(extension) {
+    let (encoding, mime_type, content) = if memorph::skills::inspection::is_image_extension(extension) {
         use base64::{engine::general_purpose::STANDARD, Engine as _};
         (
             "base64".to_string(),
@@ -593,8 +593,8 @@ async fn get_skill_tree(
     let Some(source) = skill.installations.first() else {
         return error_response(anyhow!("Skill has no installation"));
     };
-    let inspection = crate::skills::inspection::inspect_bundle(&source.path);
-    ApiResponse::success(crate::skills::inspection::SkillTree {
+    let inspection = memorph::skills::inspection::inspect_bundle(&source.path);
+    ApiResponse::success(memorph::skills::inspection::SkillTree {
         skill_id,
         fingerprint: inspection.fingerprint,
         assets: inspection.assets,
@@ -634,7 +634,7 @@ async fn scan_skills(
             ));
         }
         for (provider_id, name, _, relative) in SKILL_PROVIDERS {
-            agents.push(crate::skills::inspection::SkillAgent {
+            agents.push(memorph::skills::inspection::SkillAgent {
                 provider_id: provider_id.into(),
                 name: name.into(),
                 skills_dir: workspace.join(relative),
@@ -717,10 +717,10 @@ impl From<SkillStatsQuery> for StatsQuery {
     }
 }
 
-fn stats_store(state: &SkillsState) -> Result<crate::storage::local_store::LocalSqliteStore> {
+fn stats_store(state: &SkillsState) -> Result<memorph::storage::local_store::LocalSqliteStore> {
     match state.database_path.as_deref() {
-        Some(path) => crate::storage::local_store::LocalSqliteStore::open(path),
-        None => crate::storage::local_store::LocalSqliteStore::open_default(),
+        Some(path) => memorph::storage::local_store::LocalSqliteStore::open(path),
+        None => memorph::storage::local_store::LocalSqliteStore::open_default(),
     }
 }
 
@@ -1073,14 +1073,14 @@ mod tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
-    fn agents(root: &Path) -> Vec<crate::skills::inspection::SkillAgent> {
+    fn agents(root: &Path) -> Vec<memorph::skills::inspection::SkillAgent> {
         [
             ("claude", "Claude Code"),
             ("codex", "Codex"),
             ("gemini", "Gemini CLI"),
         ]
         .into_iter()
-        .map(|(provider_id, name)| crate::skills::inspection::SkillAgent {
+        .map(|(provider_id, name)| memorph::skills::inspection::SkillAgent {
             provider_id: provider_id.into(),
             name: name.into(),
             skills_dir: root.join(provider_id).join("skills"),
@@ -1301,7 +1301,7 @@ mod tests {
         let skill = create_skill(root.path(), "claude", "writer", "# Writer");
         symlink(root.path(), skill.join("outside")).unwrap();
 
-        let inspection = crate::skills::inspection::inspect_bundle(&skill);
+        let inspection = memorph::skills::inspection::inspect_bundle(&skill);
         assert!(inspection
             .issues
             .iter()

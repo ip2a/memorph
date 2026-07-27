@@ -1112,18 +1112,13 @@ name = "memorph"
 version = "0.1.32"
 dependencies = [
  "anyhow",
- "axum",
  "base64",
  "chrono",
- "clap",
- "crossterm",
  "dirs",
  "flate2",
  "md5",
  "notify",
- "open",
  "rand 0.8.7",
- "ratatui",
  "reqwest",
  "rusqlite",
  "serde",
@@ -1132,8 +1127,6 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
- "tower",
- "tower-http",
  "uuid",
  "walkdir",
 ]
@@ -1142,7 +1135,27 @@ dependencies = [
 name = "memorph-cli"
 version = "0.1.32"
 dependencies = [
+ "anyhow",
+ "axum",
+ "base64",
+ "chrono",
+ "clap",
+ "crossterm",
+ "dirs",
+ "flate2",
  "memorph",
+ "open",
+ "ratatui",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tower-http",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]

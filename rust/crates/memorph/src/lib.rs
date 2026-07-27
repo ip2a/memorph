@@ -2,10 +2,8 @@
 
 pub mod agent_environment;
 pub mod agent_management;
-pub mod api;
 pub mod cache;
 pub mod canonical;
-pub mod cli;
 pub mod config;
 pub mod core;
 pub mod format;
@@ -16,13 +14,9 @@ pub mod provider;
 pub mod provider_settings;
 pub mod providers;
 pub mod runtime;
-pub mod server;
 pub mod session_projection;
 pub mod skills;
 pub mod stats_dashboard;
 pub mod storage;
 pub mod sync;
-pub mod tui;
 pub mod utils;
-pub mod web;
-pub mod web_assets;

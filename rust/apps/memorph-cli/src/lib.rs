@@ -1,4 +1,13 @@
-//! memorph CLI crate.
+//! memorph CLI crate — 应用层(交互形态)。
 //!
-//! 应用层(cli / server / api / web / tui / hooks-server / skills-server)
-//! 将在 M2-M4 逐步从 `memorph` 核心迁入此 crate。当前为空壳。
+//! 聚集一切交付形态:clap 命令、TUI、HTTP API/Web server、hooks/skills 的
+//! HTTP handler。核心领域逻辑在 `memorph` crate。
+
+pub mod api;
+pub mod cli;
+pub mod hooks;
+pub mod server;
+pub mod skills;
+pub mod tui;
+pub mod web;
+pub mod web_assets;

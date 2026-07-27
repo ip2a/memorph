@@ -8,4 +8,3 @@ pub mod invocation;
 pub mod prune;
 pub mod repository;
 pub mod scanner;
-pub mod server;

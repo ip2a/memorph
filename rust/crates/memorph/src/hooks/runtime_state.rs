@@ -80,8 +80,7 @@ fn current_or_new_token() -> String {
         .unwrap_or_else(|| Uuid::new_v4().to_string())
 }
 
-#[cfg(test)]
-pub(crate) fn linked_runtime_sessions_from_state(
+pub fn linked_runtime_sessions_from_state(
     state: &RuntimeState,
     provider: &str,
     session_id: &str,
@@ -185,7 +184,7 @@ fn load_runtime_state() -> Result<RuntimeState> {
     })
 }
 
-pub(crate) fn persist_runtime_state(state: &RuntimeState) -> Result<()> {
+pub fn persist_runtime_state(state: &RuntimeState) -> Result<()> {
     store::save_runtime_sessions(&RuntimeSessionStore {
         version: 1,
         sessions: state.sessions.values().cloned().collect(),
@@ -207,13 +206,11 @@ pub fn cleanup_runtime_state(options: RuntimeCleanupOptions) -> Result<RuntimeCl
     Ok(report)
 }
 
-#[cfg(test)]
 pub fn reset_for_tests() {
     *runtime_state().write().unwrap() = RuntimeState::default();
     *runtime_endpoint_cell().write().unwrap() = None;
 }
 
-#[cfg(test)]
 pub fn set_runtime_endpoint_for_tests(endpoint: HookRuntimeEndpoint) {
     *runtime_endpoint_cell().write().unwrap() = Some(endpoint);
 }

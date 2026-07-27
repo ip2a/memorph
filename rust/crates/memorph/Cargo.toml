@@ -7,33 +7,24 @@ description = "Convert, import, and export AI coding sessions between Claude Cod
 license = "MIT"
 repository = "https://github.com/ip2a/memorph"
 readme = "../../../README.md"
-keywords = ["cli", "ai", "claude", "codex", "opencode"]
-categories = ["command-line-utilities"]
-default-run = "memorph"
+keywords = ["ai", "claude", "codex", "opencode", "sessions"]
+categories = ["api-bindings"]
 include = [
   "assets/i18n.json",
-  "assets/web/**",
-  "build.rs",
   "src/**",
   "Cargo.toml",
 ]
 
 [dependencies]
 anyhow = "1.0"
-axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
-clap = { version = "4.5", features = ["derive"] }
 dirs = "6.0"
-open = "5"
 rusqlite = { version = "0.39.0", features = ["backup", "bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-ratatui = "0.29"
-crossterm = "0.28"
 tempfile = "3.19"
 uuid = { version = "1.16", features = ["v4", "serde"] }
 walkdir = "2.5"
@@ -43,14 +34,3 @@ md5 = "0.7"
 notify = "7"
 flate2 = "1.0"
 sha2 = "0.10"
-
-[dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
-
-[[bin]]
-name = "memorph"
-path = "src/bin/memorph.rs"
-
-[[bin]]
-name = "memo"
-path = "src/bin/memo.rs"

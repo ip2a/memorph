@@ -2,7 +2,7 @@
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-pub(crate) fn test_runtime_guard() -> MutexGuard<'static, ()> {
+pub fn test_runtime_guard() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
         .lock()
@@ -10,13 +10,13 @@ pub(crate) fn test_runtime_guard() -> MutexGuard<'static, ()> {
 }
 
 /// Serializes tests that mutate the global hook home override and restores it on drop.
-pub(crate) struct TestHookHomeGuard {
+pub struct TestHookHomeGuard {
     _lock: MutexGuard<'static, ()>,
     _dir: tempfile::TempDir,
 }
 
 impl TestHookHomeGuard {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         let lock = LOCK
             .get_or_init(|| Mutex::new(()))

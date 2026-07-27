@@ -1,12 +1,12 @@
 use super::*;
-use crate::canonical::{
+use memorph::canonical::{
     CanonicalSchema, CanonicalSession, EventBlock, EventLinks, EventMetadata, EventRole,
     EventSource, MappingDisposition, ProviderSessionRef, SessionContext, SessionEvent,
     SessionEventKind, SessionIdentity, SessionProvenance,
 };
-use crate::hooks::model::{RuntimeSession, RuntimeSessionId, RuntimeSessionStatus};
-use crate::hooks::protocol::{HookIngestRequest, HookRuntimeEndpoint};
-use crate::storage::session_state::ResolvedLocalSessionState;
+use memorph::hooks::model::{RuntimeSession, RuntimeSessionId, RuntimeSessionStatus};
+use memorph::hooks::protocol::{HookIngestRequest, HookRuntimeEndpoint};
+use memorph::storage::session_state::ResolvedLocalSessionState;
 use axum::{
     body::{to_bytes, Body},
     http::Request,
@@ -35,14 +35,14 @@ struct ConfigTestHome {
 impl ConfigTestHome {
     fn new(path: &Path) -> Self {
         let guard = test_guard();
-        crate::config::set_test_home_dir(path.to_path_buf());
+        memorph::config::set_test_home_dir(path.to_path_buf());
         Self { _guard: guard }
     }
 }
 
 impl Drop for ConfigTestHome {
     fn drop(&mut self) {
-        crate::config::reset_test_home_dir();
+        memorph::config::reset_test_home_dir();
     }
 }
 
@@ -250,10 +250,10 @@ async fn session_reproject_stale_route_returns_report() {
 async fn management_activity_route_filters_activity_records() {
     let dir = tempfile::tempdir().unwrap();
     let _home = ConfigTestHome::new(dir.path());
-    let conn = crate::storage::local_store::open_database().unwrap();
-    let store = crate::storage::activity_store::ActivityStore::new(&conn);
+    let conn = memorph::storage::local_store::open_database().unwrap();
+    let store = memorph::storage::activity_store::ActivityStore::new(&conn);
     let activity_id = store
-        .start(crate::storage::activity_store::NewActivity {
+        .start(memorph::storage::activity_store::NewActivity {
             provider_id: Some("claude".to_string()),
             provider_session_id: Some("native-activity".to_string()),
             workspace_dir: Some("/tmp/project".to_string()),
@@ -266,7 +266,7 @@ async fn management_activity_route_filters_activity_records() {
     store
         .finish(
             &activity_id,
-            crate::storage::activity_store::ActivityCompletion::success(
+            memorph::storage::activity_store::ActivityCompletion::success(
                 "Exported session",
                 serde_json::json!({"files": ["/tmp/session.json"]}),
             ),
@@ -503,9 +503,9 @@ fn failed_sync_and_backup_operations_remain_queryable() {
     assert!(
         session_sync::push_sync("missing-group", "missing-holding", ActivityActor::Api).is_err()
     );
-    let backup = crate::core::manager::backup(
-        &[crate::core::manager::ManagerItem {
-            id: crate::core::manager::ManagerItem::action_identity(
+    let backup = memorph::core::manager::backup(
+        &[memorph::core::manager::ManagerItem {
+            id: memorph::core::manager::ManagerItem::action_identity(
                 "missing-provider",
                 "missing-session",
             ),
@@ -597,7 +597,7 @@ fn management_operations_record_terminal_activity() {
     assert!(core::session_mutation::update_session_local_state(
         missing_provider,
         missing_session,
-        &crate::storage::session_state::SessionLocalStateUpdate {
+        &memorph::storage::session_state::SessionLocalStateUpdate {
             hidden: Some(true),
             ..Default::default()
         },
@@ -607,7 +607,7 @@ fn management_operations_record_terminal_activity() {
     assert!(core::session_mutation::update_session_local_state(
         missing_provider,
         missing_session,
-        &crate::storage::session_state::SessionLocalStateUpdate {
+        &memorph::storage::session_state::SessionLocalStateUpdate {
             pinned: Some(true),
             ..Default::default()
         },
@@ -617,7 +617,7 @@ fn management_operations_record_terminal_activity() {
     assert!(core::session_mutation::update_session_local_state(
         missing_provider,
         missing_session,
-        &crate::storage::session_state::SessionLocalStateUpdate {
+        &memorph::storage::session_state::SessionLocalStateUpdate {
             notes: Some(Some("note".to_string())),
             ..Default::default()
         },
@@ -929,15 +929,15 @@ fn session_detail_payload_serializes_hook_runtime_sessions() {
             }),
             hook_runtime_sessions: vec![runtime_session_for_payload("claude:session:session-1")],
             projection_report: None,
-            turns: vec![crate::session_projection::TurnProjection {
+            turns: vec![memorph::session_projection::TurnProjection {
                 id: "turn-1".to_string(),
                 session_id: "canonical-1".to_string(),
                 provider_turn_id: None,
-                status: crate::session_projection::TurnStatus::Completed,
-                confidence: crate::session_projection::TurnConfidence::Inferred,
+                status: memorph::session_projection::TurnStatus::Completed,
+                confidence: memorph::session_projection::TurnConfidence::Inferred,
                 started_at_ms: None,
                 ended_at_ms: None,
-                source_range: crate::session_projection::SourceRange::default(),
+                source_range: memorph::session_projection::SourceRange::default(),
                 turn_order: 0,
             }],
             events: Vec::new(),
@@ -971,17 +971,17 @@ fn session_detail_payload_serializes_hook_runtime_sessions() {
 
 #[test]
 fn sync_holding_payload_serializes_hook_runtime_sessions() {
-    let _guard = crate::hooks::test_support::test_runtime_guard();
+    let _guard = memorph::hooks::test_support::test_runtime_guard();
     let dir = tempfile::tempdir().unwrap();
-    crate::hooks::store::set_test_store_root(dir.path().to_path_buf());
-    crate::hooks::runtime_state::reset_for_tests();
+    memorph::hooks::store::set_test_store_root(dir.path().to_path_buf());
+    memorph::hooks::runtime_state::reset_for_tests();
     let endpoint = HookRuntimeEndpoint {
         endpoint: "http://127.0.0.1:3737".to_string(),
         token: "test-token".to_string(),
         pid: 1,
         started_at: Utc::now(),
     };
-    crate::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
+    memorph::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
 
     let request = HookIngestRequest::new(
         "generic",
@@ -1409,7 +1409,7 @@ async fn meta_route_exposes_resolved_backup_and_log_paths() {
     let _home = ConfigTestHome::new(home_dir.path());
     let workspace_dir = workspace_root.path().join("workspace");
     std::fs::create_dir_all(&workspace_dir).unwrap();
-    crate::config::remember_workspace(&workspace_dir).unwrap();
+    memorph::config::remember_workspace(&workspace_dir).unwrap();
 
     let update_request = Request::builder()
         .method("PUT")
@@ -1500,8 +1500,8 @@ async fn catalog_route_preserves_native_provider_capabilities() {
 
     assert_eq!(status, StatusCode::OK);
     let providers = value["data"]["providers"].as_array().unwrap();
-    for provider_id in crate::providers::ProviderRegistry::ids() {
-        let provider = crate::providers::find_provider(provider_id).unwrap();
+    for provider_id in memorph::providers::ProviderRegistry::ids() {
+        let provider = memorph::providers::find_provider(provider_id).unwrap();
         let entry = providers
             .iter()
             .find(|entry| entry["provider_id"] == *provider_id)
@@ -1764,7 +1764,7 @@ async fn catalog_route_returns_classified_providers() {
 fn active_catalog_uses_projected_sessions_for_workspace_activity() {
     let ordered_ids = vec!["codex".to_string(), "claude".to_string()];
     let snapshots = vec![
-        crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
+        memorph::storage::snapshot_store::ProjectedSessionSnapshotRow {
             canonical_session_id: "codex:one".to_string(),
             provider_id: "codex".to_string(),
             provider_session_id: Some("one".to_string()),
@@ -1782,7 +1782,7 @@ fn active_catalog_uses_projected_sessions_for_workspace_activity() {
             preferred_targets: Vec::new(),
             stale: false,
         },
-        crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
+        memorph::storage::snapshot_store::ProjectedSessionSnapshotRow {
             canonical_session_id: "codex:two".to_string(),
             provider_id: "codex".to_string(),
             provider_session_id: Some("two".to_string()),
@@ -1869,7 +1869,7 @@ async fn agents_route_exposes_all_hook_profile_providers() {
 
     assert_eq!(status, StatusCode::OK);
     let providers = value["data"]["providers"].as_array().unwrap();
-    for descriptor in crate::hooks::registry::all() {
+    for descriptor in memorph::hooks::registry::all() {
         let entry = providers
             .iter()
             .find(|provider| provider["provider_id"] == descriptor.provider())

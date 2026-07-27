@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use crate::canonical::{EventBlock, EventRole};
+use memorph::canonical::{EventBlock, EventRole};
 use crate::tui::app::{App, AppResult};
 use crate::tui::theme::{self, Theme};
 
@@ -31,7 +31,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
     draw_messages(frame, app, chunks[1], theme);
 }
 
-fn draw_header(frame: &mut Frame, selected: &crate::core::SessionItem, area: Rect, theme: &Theme) {
+fn draw_header(frame: &mut Frame, selected: &memorph::core::SessionItem, area: Rect, theme: &Theme) {
     let title = selected.title.as_deref().unwrap_or("(untitled)");
     let provider_color = theme.provider_color(&selected.provider_id);
 

@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-#[cfg(test)]
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -228,21 +227,19 @@ pub struct WorkspaceEntry {
     pub hidden_state: Vec<String>,
 }
 
-#[cfg(test)]
 thread_local! {
     static TEST_HOME_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 fn home_dir() -> Result<PathBuf> {
-    #[cfg(test)]
-    if let Some(path) = TEST_HOME_DIR.with(|cell| cell.borrow().clone()) {
+        if let Some(path) = TEST_HOME_DIR.with(|cell| cell.borrow().clone()) {
         return Ok(path);
     }
 
     dirs::home_dir().context("Unable to locate user home directory")
 }
 
-pub(crate) fn effective_home_dir() -> Result<PathBuf> {
+pub fn effective_home_dir() -> Result<PathBuf> {
     home_dir()
 }
 
@@ -256,18 +253,15 @@ pub fn memorph_dir() -> Result<PathBuf> {
     Ok(home.join(".memorph"))
 }
 
-#[cfg(test)]
-pub(crate) fn test_home_dir() -> Option<PathBuf> {
+pub fn test_home_dir() -> Option<PathBuf> {
     TEST_HOME_DIR.with(|cell| cell.borrow().clone())
 }
 
-#[cfg(test)]
-pub(crate) fn set_test_home_dir(path: PathBuf) {
+pub fn set_test_home_dir(path: PathBuf) {
     TEST_HOME_DIR.with(|cell| *cell.borrow_mut() = Some(path));
 }
 
-#[cfg(test)]
-pub(crate) fn reset_test_home_dir() {
+pub fn reset_test_home_dir() {
     TEST_HOME_DIR.with(|cell| *cell.borrow_mut() = None);
 }
 
@@ -611,7 +605,7 @@ pub fn normalize_provider_ids(provider_ids: Vec<String>) -> Vec<String> {
     normalized
 }
 
-pub(crate) fn provider_preference_from_prefs<'a>(
+pub fn provider_preference_from_prefs<'a>(
     prefs: &'a WebPreferences,
     provider_id: &str,
     key: &str,

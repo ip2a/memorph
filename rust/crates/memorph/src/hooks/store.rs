@@ -8,7 +8,6 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-#[cfg(test)]
 use std::sync::{OnceLock, RwLock};
 
 use crate::hooks::model::{HookEvent, RuntimeSession};
@@ -20,7 +19,6 @@ const HOOK_RUNTIME_KIND: &str = "hook_server";
 const RAW_HOOK_EVENT_RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const RAW_HOOK_EVENT_MAX_ROWS: i64 = 50_000;
 
-#[cfg(test)]
 static TEST_STORE_ROOT: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy)]
@@ -81,8 +79,7 @@ fn open_store() -> Result<LocalSqliteStore> {
     LocalSqliteStore::open(database_path()?)
 }
 
-#[cfg(test)]
-pub(crate) fn set_test_store_root(root: PathBuf) {
+pub fn set_test_store_root(root: PathBuf) {
     let lock = TEST_STORE_ROOT.get_or_init(|| RwLock::new(None));
     *lock.write().unwrap() = Some(root);
 }

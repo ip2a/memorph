@@ -2,9 +2,9 @@ use chrono::{DateTime, Utc};
 use ratatui::style::Color;
 use std::collections::HashMap;
 
-use crate::config::UiLanguage;
-use crate::i18n;
-use crate::providers;
+use memorph::config::UiLanguage;
+use memorph::i18n;
+use memorph::providers;
 
 /// Theme color configuration
 pub struct Theme {

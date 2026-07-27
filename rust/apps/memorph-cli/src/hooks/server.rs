@@ -17,13 +17,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::{OnceLock, RwLock};
 use uuid::Uuid;
 
-use crate::hooks::identity::runtime_session_id_for_event;
-use crate::hooks::model::{HookEvent, RuntimeSession, RuntimeSessionStatus};
-use crate::hooks::normalizer;
-use crate::hooks::protocol::{HookIngestRequest, HookIngestResponse, HookRuntimeEndpoint};
-use crate::hooks::runtime::{RuntimeCleanupReport, RuntimeState};
+use memorph::hooks::identity::runtime_session_id_for_event;
+use memorph::hooks::model::{HookEvent, RuntimeSession, RuntimeSessionStatus};
+use memorph::hooks::normalizer;
+use memorph::hooks::protocol::{HookIngestRequest, HookIngestResponse, HookRuntimeEndpoint};
+use memorph::hooks::runtime::{RuntimeCleanupReport, RuntimeState};
 
-use crate::hooks::store::{self, RuntimeSessionStore};
+use memorph::hooks::store::{self, RuntimeSessionStore};
 
 
 #[derive(Debug, Serialize)]
@@ -50,7 +50,7 @@ struct HookStatusPayload {
     server: HookServerStatus,
     runtime_sessions: usize,
     active_sessions: usize,
-    providers: Vec<crate::hooks::profiles::HookProviderProfile>,
+    providers: Vec<memorph::hooks::profiles::HookProviderProfile>,
 }
 
 #[derive(Debug, Serialize)]
@@ -69,7 +69,7 @@ struct HookOverviewPayload {
     generated_at: chrono::DateTime<Utc>,
     summary: HookOverviewSummary,
     server: HookServerStatus,
-    providers: Vec<crate::agent_management::AgentManagementEntry>,
+    providers: Vec<memorph::agent_management::AgentManagementEntry>,
     runtime_sessions: Vec<RuntimeSession>,
     recent_errors: Vec<store::HookErrorRecord>,
     recent_events: Vec<HookEvent>,
@@ -92,7 +92,7 @@ struct HookOverviewSummary {
 #[derive(Debug, Serialize)]
 struct HookProviderOverviewPayload {
     generated_at: chrono::DateTime<Utc>,
-    provider: crate::agent_management::AgentManagementEntry,
+    provider: memorph::agent_management::AgentManagementEntry,
     runtime_sessions: Vec<RuntimeSession>,
     recent_events: Vec<HookEvent>,
     recent_errors: Vec<store::HookErrorRecord>,
@@ -124,7 +124,7 @@ struct CleanupQuery {
 #[derive(Debug, Deserialize)]
 struct SessionDiagnosisQuery {
     provider: Option<String>,
-    hook_filter: Option<crate::core::SessionHookFilter>,
+    hook_filter: Option<memorph::core::SessionHookFilter>,
     limit: Option<usize>,
     offset: Option<usize>,
 }
@@ -171,33 +171,33 @@ async fn list_session_diagnosis(Query(query): Query<SessionDiagnosisQuery>) -> i
         .unwrap_or_default();
     let hook_filter = query
         .hook_filter
-        .unwrap_or(crate::core::SessionHookFilter::Attention);
-    let params = crate::core::SessionListParams {
+        .unwrap_or(memorph::core::SessionHookFilter::Attention);
+    let params = memorph::core::SessionListParams {
         all: true,
         providers,
         cwd: None,
         include_message_counts: false,
         limit: Some(query.limit.unwrap_or(8).clamp(1, 100)),
         offset: query.offset,
-        sort: crate::core::SessionListSort::HookAttention,
+        sort: memorph::core::SessionListSort::HookAttention,
         hook_filter,
     };
 
-    match crate::runtime::run_blocking(move || crate::core::projection::list_sessions(&params)).await {
+    match memorph::runtime::run_blocking(move || memorph::core::projection::list_sessions(&params)).await {
         Ok(groups) => HookApiResponse::success(groups).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn get_overview() -> impl IntoResponse {
-    match crate::runtime::run_blocking(build_overview).await {
+    match memorph::runtime::run_blocking(build_overview).await {
         Ok(payload) => HookApiResponse::success(payload).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn provider_overview(Path(provider): Path<String>) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || build_provider_overview(&provider)).await {
+    match memorph::runtime::run_blocking(move || build_provider_overview(&provider)).await {
         Ok(payload) => HookApiResponse::success(payload).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -206,7 +206,7 @@ async fn provider_overview(Path(provider): Path<String>) -> impl IntoResponse {
 async fn run_provider_hook_operation(
     Path((provider, operation)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || run_hook_operation(&provider, &operation)).await {
+    match memorph::runtime::run_blocking(move || run_hook_operation(&provider, &operation)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
@@ -215,29 +215,29 @@ async fn run_provider_hook_operation(
 fn run_hook_operation(
     provider: &str,
     operation: &str,
-) -> Result<crate::hooks::model::HookOperationReport> {
+) -> Result<memorph::hooks::model::HookOperationReport> {
     let operation = normalize_hook_operation(operation)?;
-    if !crate::hooks::capabilities::supports_setting(provider, operation.setting_id()) {
+    if !memorph::hooks::capabilities::supports_setting(provider, operation.setting_id()) {
         anyhow::bail!(
             "Hook operation is not supported for provider: {}.{}",
             provider,
             operation.setting_id()
         );
     }
-    crate::hooks::operations::run_operation(provider, operation)
+    memorph::hooks::operations::run_operation(provider, operation)
 }
 
 fn normalize_hook_operation(
     operation: &str,
-) -> Result<crate::hooks::strategies::HookConfigOperation> {
-    crate::hooks::strategies::HookConfigOperation::from_setting_id(operation.trim())
+) -> Result<memorph::hooks::strategies::HookConfigOperation> {
+    memorph::hooks::strategies::HookConfigOperation::from_setting_id(operation.trim())
         .ok_or_else(|| anyhow::anyhow!("Unknown hook operation: {operation}"))
 }
 
 fn build_provider_overview(provider: &str) -> Result<HookProviderOverviewPayload> {
-    let provider_entry = crate::agent_management::get_agent_management_entry(provider)
+    let provider_entry = memorph::agent_management::get_agent_management_entry(provider)
         .with_context(|| format!("Failed to collect hook overview for provider: {provider}"))?;
-    let runtime_sessions: Vec<RuntimeSession> = crate::hooks::runtime_state::runtime_sessions_snapshot()
+    let runtime_sessions: Vec<RuntimeSession> = memorph::hooks::runtime_state::runtime_sessions_snapshot()
         .into_iter()
         .filter(|session| session.provider == provider)
         .collect();
@@ -268,9 +268,9 @@ fn hook_error_mentions_provider(error: &store::HookErrorRecord, provider: &str) 
 }
 
 fn build_overview() -> Result<HookOverviewPayload> {
-    let providers = crate::agent_management::list_agent_management_entries()
+    let providers = memorph::agent_management::list_agent_management_entries()
         .context("Failed to collect hook provider management entries")?;
-    let runtime_sessions = crate::hooks::runtime_state::runtime_sessions_snapshot();
+    let runtime_sessions = memorph::hooks::runtime_state::runtime_sessions_snapshot();
     let recent_errors = store::load_recent_errors(10).unwrap_or_default();
     let recent_events = store::load_recent_events(20).unwrap_or_default();
 
@@ -281,13 +281,13 @@ fn build_overview() -> Result<HookOverviewPayload> {
     let installed_ok = providers
         .iter()
         .filter(|provider| {
-            provider.hook.status == crate::hooks::model::HookHealthStatus::InstalledOk
+            provider.hook.status == memorph::hooks::model::HookHealthStatus::InstalledOk
         })
         .count();
     let not_installed = providers
         .iter()
         .filter(|provider| {
-            provider.hook.status == crate::hooks::model::HookHealthStatus::NotInstalled
+            provider.hook.status == memorph::hooks::model::HookHealthStatus::NotInstalled
         })
         .count();
     let needs_attention = providers
@@ -338,28 +338,28 @@ fn build_overview() -> Result<HookOverviewPayload> {
     })
 }
 
-fn hook_status_needs_attention(status: &crate::hooks::model::HookHealthStatus) -> bool {
+fn hook_status_needs_attention(status: &memorph::hooks::model::HookHealthStatus) -> bool {
     matches!(
         status,
-        crate::hooks::model::HookHealthStatus::InstalledDisabled
-            | crate::hooks::model::HookHealthStatus::InstalledStaleBinary
-            | crate::hooks::model::HookHealthStatus::InstalledStaleEndpoint
-            | crate::hooks::model::HookHealthStatus::InstalledBrokenConfig
-            | crate::hooks::model::HookHealthStatus::InstalledConflict
-            | crate::hooks::model::HookHealthStatus::Repairable
-            | crate::hooks::model::HookHealthStatus::NeedsUserAction
+        memorph::hooks::model::HookHealthStatus::InstalledDisabled
+            | memorph::hooks::model::HookHealthStatus::InstalledStaleBinary
+            | memorph::hooks::model::HookHealthStatus::InstalledStaleEndpoint
+            | memorph::hooks::model::HookHealthStatus::InstalledBrokenConfig
+            | memorph::hooks::model::HookHealthStatus::InstalledConflict
+            | memorph::hooks::model::HookHealthStatus::Repairable
+            | memorph::hooks::model::HookHealthStatus::NeedsUserAction
     )
 }
 
 async fn get_status() -> impl IntoResponse {
-    match crate::runtime::run_blocking(|| {
-        let _ = crate::hooks::runtime_state::cleanup_runtime_state(crate::hooks::lifecycle::RuntimeCleanupOptions::default());
-        let state = crate::hooks::runtime_state::runtime_state().read().unwrap();
+    match memorph::runtime::run_blocking(|| {
+        let _ = memorph::hooks::runtime_state::cleanup_runtime_state(memorph::hooks::lifecycle::RuntimeCleanupOptions::default());
+        let state = memorph::hooks::runtime_state::runtime_state().read().unwrap();
         Ok(HookStatusPayload {
             server: current_hook_server_status(),
             runtime_sessions: state.sessions.len(),
             active_sessions: state.active_sessions().len(),
-            providers: crate::hooks::registry::profiles(),
+            providers: memorph::hooks::registry::profiles(),
         })
     })
     .await
@@ -370,7 +370,7 @@ async fn get_status() -> impl IntoResponse {
 }
 
 fn current_hook_server_status() -> HookServerStatus {
-    let endpoint = crate::hooks::runtime_state::current_runtime_endpoint();
+    let endpoint = memorph::hooks::runtime_state::current_runtime_endpoint();
     HookServerStatus {
         running: endpoint.is_some(),
         endpoint: endpoint.as_ref().map(|value| value.endpoint.clone()),
@@ -383,7 +383,7 @@ async fn ingest_event(
     headers: HeaderMap,
     Json(request): Json<HookIngestRequest>,
 ) -> impl IntoResponse {
-    if let Err(error) = crate::runtime::run_blocking(move || authorize_ingest(&headers)).await {
+    if let Err(error) = memorph::runtime::run_blocking(move || authorize_ingest(&headers)).await {
         return hook_error(StatusCode::UNAUTHORIZED, error).into_response();
     }
 
@@ -392,7 +392,7 @@ async fn ingest_event(
         Err(error) => {
             let message = error.to_string();
             let stored_message = message.clone();
-            let _ = crate::runtime::run_blocking(move || {
+            let _ = memorph::runtime::run_blocking(move || {
                 store::append_error("normalize", stored_message)?;
                 Ok(())
             })
@@ -404,7 +404,7 @@ async fn ingest_event(
         enrich_event_from_environment(event, &request.environment);
     }
 
-    match crate::runtime::run_blocking(move || {
+    match memorph::runtime::run_blocking(move || {
         let mut event_ids = Vec::new();
         let mut updates = Vec::new();
         for event in &events {
@@ -413,11 +413,11 @@ async fn ingest_event(
                 let _ = store::append_error("append_event", error.to_string());
                 return Err(error);
             }
-            let correlation = crate::hooks::correlation::correlate_event(event);
+            let correlation = memorph::hooks::correlation::correlate_event(event);
             updates.push((event, correlation));
         }
         {
-            let mut state = crate::hooks::runtime_state::runtime_state().write().unwrap();
+            let mut state = memorph::hooks::runtime_state::runtime_state().write().unwrap();
             for (event, correlation) in updates {
                 let runtime_id = runtime_session_id_for_event(event);
                 state.apply_event(event);
@@ -425,8 +425,8 @@ async fn ingest_event(
                     state.attach_correlation(&runtime_id, correlation);
                 }
             }
-            if let Err(error) = crate::hooks::runtime_state::persist_runtime_state(&state) {
-                let _ = store::append_error("crate::hooks::runtime_state::persist_runtime_state", error.to_string());
+            if let Err(error) = memorph::hooks::runtime_state::persist_runtime_state(&state) {
+                let _ = store::append_error("memorph::hooks::runtime_state::persist_runtime_state", error.to_string());
                 return Err(error);
             }
         }
@@ -441,15 +441,15 @@ async fn ingest_event(
 
 async fn list_events(Query(query): Query<EventsQuery>) -> impl IntoResponse {
     let limit = query.limit.unwrap_or(100).min(1000);
-    match crate::runtime::run_blocking(move || store::load_recent_events(limit)).await {
+    match memorph::runtime::run_blocking(move || store::load_recent_events(limit)).await {
         Ok(events) => HookApiResponse::success(events).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || {
-        Ok(crate::hooks::runtime_state::runtime_sessions_snapshot()
+    match memorph::runtime::run_blocking(move || {
+        Ok(memorph::hooks::runtime_state::runtime_sessions_snapshot()
             .into_iter()
             .filter(|session| {
                 query
@@ -475,38 +475,38 @@ async fn list_runtime_sessions(Query(query): Query<RuntimeSessionsQuery>) -> imp
 }
 
 async fn provider_status(Path(provider): Path<String>) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || crate::hooks::operations::status(&provider)).await {
+    match memorph::runtime::run_blocking(move || memorph::hooks::operations::status(&provider)).await {
         Ok(status) => HookApiResponse::success(status).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn get_diagnostics(Query(query): Query<DiagnosticsQuery>) -> impl IntoResponse {
-    let options = crate::hooks::diagnostics::HookDiagnosticsOptions {
+    let options = memorph::hooks::diagnostics::HookDiagnosticsOptions {
         event_limit: query.event_limit.unwrap_or(100).min(1000),
         error_limit: query.error_limit.unwrap_or(50).min(1000),
     };
-    match crate::runtime::run_blocking(move || crate::hooks::diagnostics::collect(options)).await {
+    match memorph::runtime::run_blocking(move || memorph::hooks::diagnostics::collect(options)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn run_doctor(
-    Json(request): Json<crate::hooks::doctor::HookDoctorRequest>,
+    Json(request): Json<memorph::hooks::doctor::HookDoctorRequest>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || crate::hooks::doctor::verify(request)).await {
+    match memorph::runtime::run_blocking(move || memorph::hooks::doctor::verify(request)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 async fn cleanup_runtime_sessions(Query(query): Query<CleanupQuery>) -> impl IntoResponse {
-    let options = crate::hooks::lifecycle::RuntimeCleanupOptions {
+    let options = memorph::hooks::lifecycle::RuntimeCleanupOptions {
         idle_after_seconds: query.idle_after_seconds.unwrap_or(30 * 60),
         orphan_after_seconds: query.orphan_after_seconds.unwrap_or(60 * 60),
     };
-    match crate::runtime::run_blocking(move || crate::hooks::runtime_state::cleanup_runtime_state(options)).await {
+    match memorph::runtime::run_blocking(move || memorph::hooks::runtime_state::cleanup_runtime_state(options)).await {
         Ok(report) => HookApiResponse::success(report).into_response(),
         Err(error) => hook_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -514,7 +514,7 @@ async fn cleanup_runtime_sessions(Query(query): Query<CleanupQuery>) -> impl Int
 
 fn enrich_event_from_environment(
     event: &mut HookEvent,
-    environment: &crate::hooks::protocol::HookBridgeEnvironment,
+    environment: &memorph::hooks::protocol::HookBridgeEnvironment,
 ) {
     if event.cwd.is_none() {
         event.cwd = environment.cwd.clone();
@@ -537,7 +537,7 @@ fn enrich_event_from_environment(
 }
 
 fn authorize_ingest(headers: &HeaderMap) -> Result<()> {
-    let Some(endpoint) = crate::hooks::runtime_state::current_runtime_endpoint() else {
+    let Some(endpoint) = memorph::hooks::runtime_state::current_runtime_endpoint() else {
         anyhow::bail!("Hook runtime endpoint is not published for this process");
     };
     let header_token = headers
@@ -572,7 +572,7 @@ fn hook_error(status: StatusCode, msg: impl ToString) -> impl IntoResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::model::{RuntimeSessionCorrelation, RuntimeSessionId};
+    use memorph::hooks::model::{RuntimeSessionCorrelation, RuntimeSessionId};
     use axum::{body::to_bytes, body::Body, http::Request};
     use chrono::Utc;
     use serde_json::json;
@@ -581,7 +581,7 @@ mod tests {
     use tower::util::ServiceExt;
 
     fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-        crate::hooks::test_support::test_runtime_guard()
+        memorph::hooks::test_support::test_runtime_guard()
     }
 
     async fn read_json(app: Router, request: Request<Body>) -> (StatusCode, serde_json::Value) {
@@ -647,7 +647,7 @@ mod tests {
             runtime_session("sample:session:s1", "sample", Some("s1")),
         );
 
-        let sessions = crate::hooks::runtime_state::linked_runtime_sessions_from_state(&state, "sample", "s1", None);
+        let sessions = memorph::hooks::runtime_state::linked_runtime_sessions_from_state(&state, "sample", "s1", None);
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].provider_session_id.as_deref(), Some("s1"));
     }
@@ -667,7 +667,7 @@ mod tests {
         state.sessions.insert(session.runtime_id.clone(), session);
 
         let sessions =
-            crate::hooks::runtime_state::linked_runtime_sessions_from_state(&state, "sample", "session-from-correlation", None);
+            memorph::hooks::runtime_state::linked_runtime_sessions_from_state(&state, "sample", "session-from-correlation", None);
         assert_eq!(sessions.len(), 1);
         assert_eq!(
             sessions[0]
@@ -685,7 +685,7 @@ mod tests {
         session.cwd = Some(PathBuf::from("/tmp/project"));
         state.sessions.insert(session.runtime_id.clone(), session);
 
-        let sessions = crate::hooks::runtime_state::linked_runtime_sessions_from_state(
+        let sessions = memorph::hooks::runtime_state::linked_runtime_sessions_from_state(
             &state,
             "sample",
             "missing-session-id",
@@ -703,7 +703,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -716,7 +716,7 @@ mod tests {
 
         assert_eq!(status, StatusCode::OK);
         let providers = value["data"]["providers"].as_array().unwrap();
-        let descriptor = crate::hooks::registry::all()
+        let descriptor = memorph::hooks::registry::all()
             .first()
             .copied()
             .expect("at least one hook provider");
@@ -732,7 +732,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -756,8 +756,8 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
-        let provider = crate::hooks::registry::all()
+        memorph::hooks::runtime_state::reset_for_tests();
+        let provider = memorph::hooks::registry::all()
             .first()
             .copied()
             .expect("at least one hook provider")
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn hook_operation_normalizes_setting_and_short_names() {
-        use crate::hooks::strategies::HookConfigOperation;
+        use memorph::hooks::strategies::HookConfigOperation;
 
         assert_eq!(
             normalize_hook_operation("install").unwrap(),
@@ -804,7 +804,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -825,7 +825,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -845,7 +845,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::reset_for_tests();
 
         let (status, value) = read_json(
             router(),
@@ -865,8 +865,8 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
-        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(HookRuntimeEndpoint {
+        memorph::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::set_runtime_endpoint_for_tests(HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "test-token".to_string(),
             pid: 1,
@@ -892,14 +892,14 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::reset_for_tests();
         let endpoint = HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "test-token".to_string(),
             pid: 1,
             started_at: Utc::now(),
         };
-        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
+        memorph::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
         let request = HookIngestRequest::new(
             "generic",
             "tool_started",
@@ -943,8 +943,8 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
-        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(HookRuntimeEndpoint {
+        memorph::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::set_runtime_endpoint_for_tests(HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "secret-token".to_string(),
             pid: 1,
@@ -971,14 +971,14 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
-        let provider = crate::hooks::registry::all()
+        memorph::hooks::runtime_state::reset_for_tests();
+        let provider = memorph::hooks::registry::all()
             .first()
             .copied()
             .expect("at least one hook provider")
             .provider();
 
-        let request = crate::hooks::doctor::HookDoctorRequest {
+        let request = memorph::hooks::doctor::HookDoctorRequest {
             repair: false,
             providers: vec![provider.to_string(), "missing".to_string()],
         };
@@ -1002,14 +1002,14 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::reset_for_tests();
         let endpoint = HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "test-token".to_string(),
             pid: 1,
             started_at: Utc::now(),
         };
-        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
+        memorph::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
         let old_timestamp = (Utc::now() - chrono::Duration::seconds(10)).timestamp();
         let request = HookIngestRequest::new(
             "generic",
@@ -1047,14 +1047,14 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::reset_for_tests();
         let endpoint = HookRuntimeEndpoint {
             endpoint: "http://127.0.0.1:3737".to_string(),
             token: "test-token".to_string(),
             pid: 1,
             started_at: Utc::now(),
         };
-        crate::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
+        memorph::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
 
         let mut request = HookIngestRequest::new(
             "generic",
@@ -1092,7 +1092,7 @@ mod tests {
         let _guard = test_guard();
         let dir = tempfile::tempdir().unwrap();
         store::set_test_store_root(dir.path().to_path_buf());
-        crate::hooks::runtime_state::reset_for_tests();
+        memorph::hooks::runtime_state::reset_for_tests();
 
         for (method, uri) in [
             ("GET", "/api/v1/hooks/pending"),

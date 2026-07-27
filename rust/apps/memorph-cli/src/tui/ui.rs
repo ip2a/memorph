@@ -11,7 +11,7 @@ use super::app::{
     SETTINGS_FIELDS,
 };
 use super::theme::{self, Theme};
-use crate::config;
+use memorph::config;
 use crate::web_assets::MEMORPH_ASCII;
 
 /// Main rendering entry point
@@ -719,9 +719,9 @@ fn settings_agent_label(app: &App) -> String {
 
 fn enabled_label(language: config::UiLanguage, enabled: bool) -> String {
     if enabled {
-        crate::i18n::text(language, "enabled").to_string()
+        memorph::i18n::text(language, "enabled").to_string()
     } else {
-        crate::i18n::text(language, "disabled").to_string()
+        memorph::i18n::text(language, "disabled").to_string()
     }
 }
 

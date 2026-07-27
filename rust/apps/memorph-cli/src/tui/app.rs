@@ -10,12 +10,12 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use crate::config::UiLanguage;
-use crate::core::transfer::{ExportParams, SwitchParams};
-use crate::core::{self, SessionDetailView, SessionGroup, SessionItem};
-use crate::i18n;
-use crate::storage::activity_store::ActivityActor;
-use crate::{config, provider_settings, providers};
+use memorph::config::UiLanguage;
+use memorph::core::transfer::{ExportParams, SwitchParams};
+use memorph::core::{self, SessionDetailView, SessionGroup, SessionItem};
+use memorph::i18n;
+use memorph::storage::activity_store::ActivityActor;
+use memorph::{config, provider_settings, providers};
 
 pub const ACTION_OPTIONS: [SessionAction; 6] = [
     SessionAction::Switch,
@@ -205,7 +205,7 @@ pub struct App {
     pub provider_filters_cache: Vec<Vec<String>>,
     pub selected_provider_tab: usize,
     pub main_focus: MainFocus,
-    pub agent_management_entries: Vec<crate::agent_management::AgentManagementEntry>,
+    pub agent_management_entries: Vec<memorph::agent_management::AgentManagementEntry>,
     pub agent_management_index: usize,
     pub agent_management_focus: AgentManagementFocus,
     pub agent_management_action_index: usize,
@@ -612,7 +612,7 @@ impl App {
         self.agent_management_result = None;
         self.agent_management_focus = AgentManagementFocus::Providers;
         self.agent_management_action_index = 0;
-        match crate::agent_management::list_agent_management_entries() {
+        match memorph::agent_management::list_agent_management_entries() {
             Ok(entries) => {
                 let preferred = self
                     .get_filtered_providers()
@@ -682,7 +682,7 @@ impl App {
 
         self.agent_management_result = Some(match action.kind {
             AgentManagementActionKind::Detect => {
-                match crate::agent_management::detect_agent_management_entry(&provider_id) {
+                match memorph::agent_management::detect_agent_management_entry(&provider_id) {
                     Ok(entry) => {
                         if let Some(index) = self
                             .agent_management_entries
@@ -742,7 +742,7 @@ impl App {
                     &action.id,
                     provider_settings::ProviderSettingContext {
                         workspace: self.workspace.clone(),
-                        actor: crate::storage::activity_store::ActivityActor::Tui,
+                        actor: memorph::storage::activity_store::ActivityActor::Tui,
                     },
                 ) {
                     Ok(provider_settings::ProviderSettingOutput::HookOperation(report)) => {
@@ -762,7 +762,7 @@ impl App {
                             lines.push(format!("Backup: {}", backup_path));
                         }
                         if let Ok(entries) =
-                            crate::agent_management::list_agent_management_entries()
+                            memorph::agent_management::list_agent_management_entries()
                         {
                             self.agent_management_entries = entries;
                             self.agent_management_index = self
@@ -822,7 +822,7 @@ impl App {
                         }
                         self.start_load_sessions("failedRefreshSessions");
                         if let Ok(entries) =
-                            crate::agent_management::list_agent_management_entries()
+                            memorph::agent_management::list_agent_management_entries()
                         {
                             self.agent_management_entries = entries;
                             self.agent_management_index = self
@@ -855,7 +855,7 @@ impl App {
                         }
                         self.start_load_sessions("failedRefreshSessions");
                         if let Ok(entries) =
-                            crate::agent_management::list_agent_management_entries()
+                            memorph::agent_management::list_agent_management_entries()
                         {
                             self.agent_management_entries = entries;
                             self.agent_management_index = self
@@ -941,7 +941,7 @@ impl App {
 
     pub fn selected_agent_management_entry(
         &self,
-    ) -> Option<&crate::agent_management::AgentManagementEntry> {
+    ) -> Option<&memorph::agent_management::AgentManagementEntry> {
         self.agent_management_entries.get(
             self.agent_management_index
                 .min(self.agent_management_entries.len().saturating_sub(1)),

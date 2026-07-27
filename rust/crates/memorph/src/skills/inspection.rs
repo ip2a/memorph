@@ -10,9 +10,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-pub(crate) const MANAGED_MARKER: &str = ".memorph-managed-skill";
-pub(crate) const MAX_ASSETS: usize = 200;
-pub(crate) const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024;
+pub const MANAGED_MARKER: &str = ".memorph-managed-skill";
+pub const MAX_ASSETS: usize = 200;
+pub const MAX_TOTAL_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_PREVIEW_BYTES: u64 = 256 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
@@ -103,14 +103,14 @@ pub struct BundleInspection {
     pub issues: Vec<SkillIssue>,
 }
 
-pub(crate) fn is_image_extension(ext: &str) -> bool {
+pub fn is_image_extension(ext: &str) -> bool {
     matches!(
         ext.to_ascii_lowercase().as_str(),
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "ico" | "bmp"
     )
 }
 
-pub(crate) fn is_text_preview_extension(ext: &str) -> bool {
+pub fn is_text_preview_extension(ext: &str) -> bool {
     matches!(
         ext.to_ascii_lowercase().as_str(),
         "md" | "markdown"

@@ -1226,7 +1226,7 @@ mod tests {
     }
 
     #[test]
-    fn api_delete_registered_backup_restore_round_trip() -> Result<()> {
+    fn delete_registered_backup_restore_round_trip() -> Result<()> {
         let source_home = tempdir()?;
         let config_home = tempdir()?;
         let _gemini_guard = TestGeminiHomeGuard::new(source_home.path());
@@ -1239,52 +1239,29 @@ mod tests {
             &[metadata(session_id)],
         );
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        runtime.block_on(async {
-            use axum::{body::to_bytes, body::Body, http::Request};
-            use tower::util::ServiceExt;
+        use crate::core::session_management::{list_registered_backups, restore_registered_backup};
+        use crate::core::session_mutation::delete_session;
+        use crate::storage::activity_store::ActivityActor;
+        use crate::storage::artifact_store::BackupQuery;
 
-            let delete = crate::api::router()
-                .oneshot(
-                    Request::builder()
-                        .method("DELETE")
-                        .uri(format!("/api/v1/sessions/{PROVIDER_ID}/{session_id}"))
-                        .body(Body::empty())?,
-                )
-                .await?;
-            assert_eq!(delete.status(), axum::http::StatusCode::OK);
+        delete_session(PROVIDER_ID, session_id, ActivityActor::System)?;
 
-            let list = crate::api::router()
-                .oneshot(
-                    Request::builder()
-                        .uri("/api/v1/backups?provider=gemini")
-                        .body(Body::empty())?,
-                )
-                .await?;
-            assert_eq!(list.status(), axum::http::StatusCode::OK);
-            let list_body = to_bytes(list.into_body(), 1024 * 1024).await?;
-            let list_value: Value = serde_json::from_slice(&list_body)?;
-            let backup_id = list_value["data"][0]["entry"]["backup"]["id"]
-                .as_str()
-                .context("API backup list did not return a registered Gemini backup")?
-                .to_string();
-
-            let restore = crate::api::router()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri(format!("/api/v1/backups/{backup_id}/restore"))
-                        .body(Body::empty())?,
-                )
-                .await?;
-            assert_eq!(restore.status(), axum::http::StatusCode::OK);
-            let restore_body = to_bytes(restore.into_body(), 1024 * 1024).await?;
-            let restore_value: Value = serde_json::from_slice(&restore_body)?;
-            assert_eq!(restore_value["data"]["status"], "success");
-            Ok::<(), anyhow::Error>(())
+        let views = list_registered_backups(BackupQuery {
+            operation_id: None,
+            provider_id: Some(PROVIDER_ID.to_string()),
+            provider_session_id: Some(session_id.to_string()),
+            restore_status: None,
+            limit: None,
         })?;
+        let backup_id = views
+            .first()
+            .context("did not return a registered Gemini backup")?
+            .entry
+            .backup
+            .id
+            .clone();
+
+        restore_registered_backup(&backup_id, ActivityActor::System)?;
 
         assert!(source_path.is_file());
         Ok(())

@@ -52,7 +52,7 @@ pub struct ManagerPreviewResult {
 }
 
 impl ManagerItem {
-    pub(crate) fn action_identity(provider_id: &str, session_id: &str) -> String {
+    pub fn action_identity(provider_id: &str, session_id: &str) -> String {
         format!("{}:{provider_id}{session_id}", provider_id.len())
     }
 }

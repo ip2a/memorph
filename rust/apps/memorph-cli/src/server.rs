@@ -44,11 +44,11 @@ fn spawn_background_sync_loop() {
     std::thread::Builder::new()
         .name("memorph-background-sync".to_string())
         .spawn(|| loop {
-            if let Err(error) = crate::core::projection::bootstrap_session_projections(
+            if let Err(error) = memorph::core::projection::bootstrap_session_projections(
                 None,
-                crate::storage::activity_store::ActivityActor::System,
+                memorph::storage::activity_store::ActivityActor::System,
             ) {
-                crate::logging::error(
+                memorph::logging::error(
                     "background_sync",
                     format!("Background sync pass failed: {error:#}"),
                 );
@@ -61,14 +61,14 @@ fn spawn_background_sync_loop() {
 }
 
 pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
-    crate::cache::init_watcher();
+    memorph::cache::init_watcher();
     spawn_background_sync_loop();
 
     let app = build_router();
     let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
     let url = format!("http://127.0.0.1:{}", actual_port);
-    if let Err(err) = crate::hooks::runtime_state::publish_runtime_endpoint(&url) {
-        crate::logging::error("publish_runtime_endpoint", format!("{err}"));
+    if let Err(err) = memorph::hooks::runtime_state::publish_runtime_endpoint(&url) {
+        memorph::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
     println!("memorph server started: {}", url);
 
@@ -83,14 +83,14 @@ pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
 }
 
 pub async fn run_api(port: u16, allow_fallback: bool) -> Result<()> {
-    crate::cache::init_watcher();
+    memorph::cache::init_watcher();
     spawn_background_sync_loop();
 
     let app = build_api_router();
     let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
     let url = format!("http://127.0.0.1:{}", actual_port);
-    if let Err(err) = crate::hooks::runtime_state::publish_runtime_endpoint(&url) {
-        crate::logging::error("publish_runtime_endpoint", format!("{err}"));
+    if let Err(err) = memorph::hooks::runtime_state::publish_runtime_endpoint(&url) {
+        memorph::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
 
     println!("memorph API server started: {}", url);

@@ -216,6 +216,6 @@ pub fn router() -> Router {
             "/api/v1/manager/backup-workspace",
             post(manager::manager_backup_workspace),
         )
-        .merge(hooks::server::router())
+        .merge(crate::hooks::server::router())
         .merge(crate::skills::server::router())
 }

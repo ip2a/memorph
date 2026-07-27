@@ -6,9 +6,9 @@ pub(super) struct RenameBody {
 }
 
 pub(super) async fn get_stats_dashboard(
-    Query(query): Query<crate::stats_dashboard::StatsDashboardQuery>,
+    Query(query): Query<memorph::stats_dashboard::StatsDashboardQuery>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || crate::stats_dashboard::dashboard(&query)).await {
+    match memorph::runtime::run_blocking(move || memorph::stats_dashboard::dashboard(&query)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
@@ -53,7 +53,7 @@ pub(super) async fn list_session_page(Query(q): Query<ListQuery>) -> impl IntoRe
     let limit = q.limit.unwrap_or(25).clamp(1, 100);
     let offset = q.offset.unwrap_or(0);
     let params = session_list_params(q, Some(limit.saturating_add(1)));
-    match crate::runtime::run_blocking(move || core::projection::list_sessions(&params)).await {
+    match memorph::runtime::run_blocking(move || core::projection::list_sessions(&params)).await {
         Ok(mut groups) => {
             let has_more = groups.iter().any(|group| group.sessions.len() > limit);
             for group in &mut groups {
@@ -72,7 +72,7 @@ pub(super) async fn list_session_page(Query(q): Query<ListQuery>) -> impl IntoRe
 }
 
 pub(super) async fn refresh_session_staleness() -> impl IntoResponse {
-    match crate::runtime::run_blocking(|| core::projection::refresh_projected_session_staleness(ActivityActor::Api))
+    match memorph::runtime::run_blocking(|| core::projection::refresh_projected_session_staleness(ActivityActor::Api))
         .await
     {
         Ok(report) => ApiResponse::success(SessionStalenessRefreshPayload {
@@ -90,7 +90,7 @@ pub(super) async fn refresh_session_staleness() -> impl IntoResponse {
 pub(super) async fn bootstrap_session_projections(
     Json(request): Json<SessionProjectionBootstrapRequest>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || {
+    match memorph::runtime::run_blocking(move || {
         core::projection::bootstrap_session_projections(
             request.provider.as_deref(),
             ActivityActor::Api,
@@ -106,7 +106,7 @@ pub(super) async fn bootstrap_session_projections(
 pub(super) async fn reproject_stale_sessions(
     Json(request): Json<SessionReprojectStaleRequest>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || {
+    match memorph::runtime::run_blocking(move || {
         core::projection::reproject_stale_sessions(request.provider.as_deref(), ActivityActor::Api)
     })
     .await
@@ -135,7 +135,7 @@ pub(super) async fn get_session(
         .map(|query| query.trim().to_string())
         .filter(|query| !query.is_empty());
     let requested_search = event_search.clone();
-    match crate::runtime::run_blocking(move || {
+    match memorph::runtime::run_blocking(move || {
         core::sessions::get_session_detail_view_page_result(
             &provider,
             &session_id,
@@ -248,7 +248,7 @@ pub(super) async fn get_session_activity(
 pub(super) async fn delete_session(
     Path((provider, session_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || {
+    match memorph::runtime::run_blocking(move || {
         core::session_mutation::delete_session(&provider, &session_id, ActivityActor::Api)
     })
     .await
@@ -262,7 +262,7 @@ pub(super) async fn rename_session(
     Path((provider, session_id)): Path<(String, String)>,
     Json(body): Json<RenameBody>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || {
+    match memorph::runtime::run_blocking(move || {
         core::session_mutation::rename_session(
             &provider,
             &session_id,
@@ -279,9 +279,9 @@ pub(super) async fn rename_session(
 
 pub(super) async fn update_session_local_state(
     Path((provider, session_id)): Path<(String, String)>,
-    Json(body): Json<crate::storage::session_state::SessionLocalStateUpdate>,
+    Json(body): Json<memorph::storage::session_state::SessionLocalStateUpdate>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || {
+    match memorph::runtime::run_blocking(move || {
         core::session_mutation::update_session_local_state(
             &provider,
             &session_id,

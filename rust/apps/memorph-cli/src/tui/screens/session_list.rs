@@ -7,8 +7,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::canonical::{EventBlock, EventRole, SessionEvent};
-use crate::core::{SessionGroup, SessionItem};
+use memorph::canonical::{EventBlock, EventRole, SessionEvent};
+use memorph::core::{SessionGroup, SessionItem};
 use crate::tui::app::{
     provider_label, ActionDialog, ActionField, ActionResult, AgentManagementFocus, App, AppResult,
     MainFocus, SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
@@ -107,7 +107,7 @@ fn draw_session_table(frame: &mut Frame, app: &mut App, area: Rect, theme: &Them
 fn build_table_rows(
     groups: &[SessionGroup],
     selected_row: Option<usize>,
-    language: crate::config::UiLanguage,
+    language: memorph::config::UiLanguage,
     theme: &Theme,
 ) -> Vec<Row<'static>> {
     let mut rows = Vec::new();

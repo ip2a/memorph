@@ -14,7 +14,7 @@ use std::str::FromStr;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use crate::{
+use memorph::{
     agent_management, cache, config, core, hooks, logging, provider_settings,
     providers::catalog::{build_catalog, sort_catalog, CatalogInput, ProviderCatalog},
     storage::activity_store::{
@@ -247,11 +247,11 @@ fn resolve_backup_output_dir(output_dir: &str, workspace: Option<&str>) -> std::
 }
 
 fn display_settings_path(path: &std::path::Path) -> String {
-    let visible = crate::utils::user_visible_path(&path.to_string_lossy());
+    let visible = memorph::utils::user_visible_path(&path.to_string_lossy());
     let Ok(home_dir) = config::effective_home_dir() else {
         return visible;
     };
-    let home_visible = crate::utils::user_visible_path(&home_dir.to_string_lossy());
+    let home_visible = memorph::utils::user_visible_path(&home_dir.to_string_lossy());
     if visible == home_visible {
         return "~".to_string();
     }
@@ -393,9 +393,9 @@ struct GitHubReleasePayload {
 }
 
 fn provider_info_list() -> Vec<ProviderInfo> {
-    crate::providers::all_provider_ids()
+    memorph::providers::all_provider_ids()
         .iter()
-        .filter_map(|id| crate::providers::find_provider(id))
+        .filter_map(|id| memorph::providers::find_provider(id))
         .map(|provider| {
             let capabilities = provider.capabilities();
             ProviderInfo {
@@ -430,13 +430,13 @@ async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result
         env_handles.push(tokio::task::spawn_blocking(move || {
             (
                 id.clone(),
-                crate::agent_environment::detect_provider_environment_fast(&id),
+                memorph::agent_environment::detect_provider_environment_fast(&id),
             )
         }));
     }
     let mut env_by_provider: std::collections::HashMap<
         String,
-        crate::agent_environment::AgentEnvironmentStatus,
+        memorph::agent_environment::AgentEnvironmentStatus,
     > = std::collections::HashMap::new();
     for handle in env_handles {
         if let Ok((id, env)) = handle.await {
@@ -451,7 +451,7 @@ async fn build_provider_catalog_light(workspace: Option<&str>) -> anyhow::Result
         has_sessions: &|_| false,
         environment: &|id| {
             env_by_provider.get(id).cloned().unwrap_or_else(|| {
-                crate::agent_environment::AgentEnvironmentStatus {
+                memorph::agent_environment::AgentEnvironmentStatus {
                     installed: false,
                     executable_path: None,
                     executable_dir: None,
@@ -507,8 +507,8 @@ async fn build_provider_catalog_active(
     let ordered_ids = config::ordered_provider_ids(&config::web_preferences()?);
     let workspace_opt = workspace.filter(|value| !value.is_empty());
     let snapshots = tokio::task::spawn_blocking(|| {
-        let conn = crate::storage::local_store::open_database()?;
-        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()
+        let conn = memorph::storage::local_store::open_database()?;
+        memorph::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()
     })
     .await
     .context("Provider activity projection task failed")??;
@@ -522,12 +522,12 @@ async fn build_provider_catalog_active(
 fn provider_active_catalog_from_snapshots(
     ordered_ids: &[String],
     workspace: Option<&str>,
-    snapshots: &[crate::storage::snapshot_store::ProjectedSessionSnapshotRow],
+    snapshots: &[memorph::storage::snapshot_store::ProjectedSessionSnapshotRow],
 ) -> cache::ProviderActiveCatalog {
     let providers = ordered_ids
         .iter()
         .map(|id| {
-            let provider = crate::providers::find_provider(id);
+            let provider = memorph::providers::find_provider(id);
             let sessions: Vec<_> = snapshots
                 .iter()
                 .filter(|session| session.provider_id == *id)
@@ -549,7 +549,7 @@ fn provider_active_catalog_from_snapshots(
             cache::ProviderActiveInfo {
                 provider_id: id.clone(),
                 has_sessions: !workspace_sessions.is_empty(),
-                active_time: crate::providers::catalog::ActiveTime {
+                active_time: memorph::providers::catalog::ActiveTime {
                     global: sessions
                         .iter()
                         .filter_map(|session| session.last_active_at_ms)

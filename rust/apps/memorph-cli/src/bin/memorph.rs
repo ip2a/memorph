@@ -3,16 +3,19 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use memorph::{
+    provider::{ProviderCapabilities, ProviderContentFidelity},
+    providers,
+    storage::activity_store::ActivityActor,
+    storage::artifact_store::{BackupQuery, BackupRestoreStatus},
+    sync as session_sync,
+    config, core,
+};
+use memorph_cli::{
     cli::{
         ArtifactCommands, BackupCommands, Cli, Commands, CompressionCommands, DatabaseCommands,
         SessionCommands, SyncCommands,
     },
-    config, core,
-    provider::{ProviderCapabilities, ProviderContentFidelity},
-    providers, server,
-    storage::activity_store::ActivityActor,
-    storage::artifact_store::{BackupQuery, BackupRestoreStatus},
-    sync as session_sync, tui, web_assets,
+    server, tui, web_assets,
 };
 use std::path::Path;
 use std::process::Command;
@@ -1513,7 +1516,7 @@ fn print_web_banner() {
 fn print_session_list(
     all: bool,
     providers: Vec<String>,
-    sort: memorph::cli::ListSort,
+    sort: memorph_cli::cli::ListSort,
     limit: Option<usize>,
     offset: usize,
     json: bool,
@@ -1528,8 +1531,8 @@ fn print_session_list(
         limit,
         offset: Some(offset),
         sort: match sort {
-            memorph::cli::ListSort::Recent => core::SessionListSort::Recent,
-            memorph::cli::ListSort::Title => core::SessionListSort::Title,
+            memorph_cli::cli::ListSort::Recent => core::SessionListSort::Recent,
+            memorph_cli::cli::ListSort::Title => core::SessionListSort::Title,
         },
         hook_filter: core::SessionHookFilter::All,
     })?;

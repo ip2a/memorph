@@ -3,7 +3,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
 use std::sync::{OnceLock, RwLock};
 
 use anyhow::{Context, Result};
@@ -13,7 +12,6 @@ pub const HOOK_COMMAND_MARKER: &str = "__hook-bridge";
 pub const HOOK_MANAGED_VERSION: &str = "hook-v1";
 const SETTINGS_BACKUP_SUFFIX: &str = "memorph-hook-backup";
 
-#[cfg(test)]
 static TEST_HOME_DIR: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
 
 pub fn current_hook_managed_version() -> &'static str {
@@ -21,8 +19,7 @@ pub fn current_hook_managed_version() -> &'static str {
 }
 
 pub fn hook_home_dir() -> PathBuf {
-    #[cfg(test)]
-    if let Some(path) = TEST_HOME_DIR
+        if let Some(path) = TEST_HOME_DIR
         .get_or_init(|| RwLock::new(None))
         .read()
         .unwrap()
@@ -34,8 +31,7 @@ pub fn hook_home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-#[cfg(test)]
-pub(crate) fn set_test_home_dir(path: Option<PathBuf>) {
+pub fn set_test_home_dir(path: Option<PathBuf>) {
     *TEST_HOME_DIR
         .get_or_init(|| RwLock::new(None))
         .write()

@@ -11,14 +11,14 @@ pub(super) struct ProviderSettingRunBody {
 }
 
 pub(super) async fn list_agent_management() -> impl IntoResponse {
-    match crate::runtime::run_blocking(agent_management::list_agent_management_entries).await {
+    match memorph::runtime::run_blocking(agent_management::list_agent_management_entries).await {
         Ok(providers) => ApiResponse::success(AgentManagementPayload { providers }).into_response(),
         Err(error) => api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response(),
     }
 }
 
 pub(super) async fn list_agent_management_summary() -> impl IntoResponse {
-    match crate::runtime::run_blocking(agent_management::list_agent_management_summaries).await {
+    match memorph::runtime::run_blocking(agent_management::list_agent_management_summaries).await {
         Ok(providers) => {
             ApiResponse::success(AgentManagementSummaryPayload { providers }).into_response()
         }
@@ -29,7 +29,7 @@ pub(super) async fn list_agent_management_summary() -> impl IntoResponse {
 pub(super) async fn get_agent_management_provider(
     Path(provider): Path<String>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || agent_management::get_agent_management_entry(&provider)).await {
+    match memorph::runtime::run_blocking(move || agent_management::get_agent_management_entry(&provider)).await {
         Ok(provider) => ApiResponse::success(provider).into_response(),
         Err(error) => api_error(StatusCode::NOT_FOUND, error).into_response(),
     }
@@ -38,7 +38,7 @@ pub(super) async fn get_agent_management_provider(
 pub(super) async fn detect_agent_management_provider(
     Path(provider): Path<String>,
 ) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || agent_management::detect_agent_management_entry(&provider)).await {
+    match memorph::runtime::run_blocking(move || agent_management::detect_agent_management_entry(&provider)).await {
         Ok(provider) => {
             invalidate_catalog_cache();
             ApiResponse::success(provider).into_response()
@@ -52,7 +52,7 @@ pub(super) async fn list_providers() -> impl IntoResponse {
 }
 
 pub(super) async fn list_provider_hooks(Path(provider): Path<String>) -> impl IntoResponse {
-    match crate::runtime::run_blocking(move || hooks::discovery::list(&provider)).await {
+    match memorph::runtime::run_blocking(move || hooks::discovery::list(&provider)).await {
         Ok(hooks) => ApiResponse::success(hooks).into_response(),
         Err(error) => api_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
