@@ -226,6 +226,10 @@ def main() -> None:
     update_toml_package_version(desktop_cargo, version, args.check)
     print(f"[ok] Version aligned: {desktop_cargo.relative_to(ROOT)}")
 
+    memorph_cli_cargo = ROOT / "rust" / "apps" / "memorph-cli" / "Cargo.toml"
+    update_toml_package_version(memorph_cli_cargo, version, args.check)
+    print(f"[ok] Version aligned: {memorph_cli_cargo.relative_to(ROOT)}")
+
     tauri_config = ROOT / "desktop" / "tauri" / "tauri.conf.json"
     update_tauri_config_version(tauri_config, version, args.check)
     print(f"[ok] Version aligned: {tauri_config.relative_to(ROOT)}")

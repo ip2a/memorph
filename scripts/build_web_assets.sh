@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 WEB_DIR="${REPO_ROOT}/apps/web"
 DIST_DIR="${WEB_DIR}/dist"
-CRATE_WEB_ASSETS_DIR="${REPO_ROOT}/rust/crates/memorph/assets/web"
+CRATE_WEB_ASSETS_DIR="${REPO_ROOT}/rust/apps/memorph-cli/assets/web"
 
 if [ ! -f "${WEB_DIR}/package.json" ]; then
   echo "[error] Missing frontend package: ${WEB_DIR}/package.json"

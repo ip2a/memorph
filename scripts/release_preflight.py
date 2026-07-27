@@ -34,11 +34,20 @@ def validate_cargo_metadata(cargo_package: dict[str, object]) -> None:
 
 
 def validate_cargo_targets() -> None:
-    cargo_path = ROOT / "rust" / "crates" / "memorph" / "Cargo.toml"
-    cargo = tomllib.loads(cargo_path.read_text(encoding="utf-8"))
+    # 核心 lib 是纯库,不得含 [[bin]] targets(bin 归属 memorph-cli)
+    core_path = ROOT / "rust" / "crates" / "memorph" / "Cargo.toml"
+    core = tomllib.loads(core_path.read_text(encoding="utf-8"))
+    if core.get("bin"):
+        raise SystemExit(
+            f"[error] 核心 lib 不应含 [[bin]] targets: {core_path}; CLI 二进制归属 memorph-cli"
+        )
+
+    # CLI crate 暴露 memorph / memo 二进制
+    cli_path = ROOT / "rust" / "apps" / "memorph-cli" / "Cargo.toml"
+    cli = tomllib.loads(cli_path.read_text(encoding="utf-8"))
     bin_targets = {
         item.get("name"): item.get("path")
-        for item in cargo.get("bin", [])
+        for item in cli.get("bin", [])
         if isinstance(item, dict)
     }
     expected = {
@@ -47,14 +56,14 @@ def validate_cargo_targets() -> None:
     }
     if bin_targets != expected:
         raise SystemExit(
-            f"[error] Cargo binary targets mismatch in {cargo_path}; expected={expected} actual={bin_targets}"
+            f"[error] Cargo binary targets mismatch in {cli_path}; expected={expected} actual={bin_targets}"
         )
     for path in expected.values():
-        if not (cargo_path.parent / path).exists():
-            raise SystemExit(f"[error] Missing Cargo binary source: {cargo_path.parent / path}")
-    if cargo["package"].get("default-run") != "memorph":
-        raise SystemExit(f"[error] Cargo package.default-run must be memorph in {cargo_path}")
-    print("[ok] Crates.io package exposes library and CLI binaries")
+        if not (cli_path.parent / path).exists():
+            raise SystemExit(f"[error] Missing Cargo binary source: {cli_path.parent / path}")
+    if cli["package"].get("default-run") != "memorph":
+        raise SystemExit(f"[error] Cargo package.default-run must be memorph in {cli_path}")
+    print("[ok] memorph-cli exposes CLI binaries; core lib is pure library")
 
 
 def load_platform_config() -> tuple[dict[str, str], list[dict[str, str]], list[dict[str, object]]]:
