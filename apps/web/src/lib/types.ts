@@ -656,8 +656,6 @@ export type SessionItem = {
   provider_id: string;
   message_count: number | null;
   size_bytes: number | null;
-  hook_runtime_summary?: HookRuntimeSummary | null;
-  hook_diagnosis?: SessionHookDiagnosis | null;
 };
 
 export type SessionDetailParams = {

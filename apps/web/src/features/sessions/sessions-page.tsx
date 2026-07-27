@@ -195,7 +195,6 @@ export function SessionsPage() {
                           {session.pinned ? <Badge variant="secondary"><PinIcon />Pinned</Badge> : null}
                           {session.hidden ? <Badge variant="outline"><EyeIcon />Hidden</Badge> : null}
                           {session.stale ? <Badge variant="destructive"><TriangleAlertIcon />Stale</Badge> : null}
-                          {session.hook_runtime_summary ? <Badge variant="outline">Hook</Badge> : null}
                         </div>
                       </TableCell>
                       <TableCell><PathText value={session.project_dir} wrap="all" /></TableCell>
