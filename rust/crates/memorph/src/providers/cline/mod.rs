@@ -1,7 +1,7 @@
 pub mod adapter;
 pub mod hook;
 
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
@@ -285,8 +285,8 @@ fn history_events(
             } else {
                 EventKind::Message
             };
-            report.push_issue(crate::canonical::MappingIssue {
-                level: crate::canonical::MappingIssueLevel::Info,
+            report.push_issue(crate::session::MappingIssue {
+                level: crate::session::MappingIssueLevel::Info,
                 disposition: Fidelity::Preserved,
                 code: "cline-native-block".into(),
                 message: "Mapped current Cline API conversation history block".into(),

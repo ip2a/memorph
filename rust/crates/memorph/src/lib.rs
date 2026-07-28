@@ -3,7 +3,7 @@
 pub mod agent_environment;
 pub mod agent_management;
 pub mod cache;
-pub mod canonical;
+pub mod session;
 pub mod config;
 pub mod core;
 pub mod format;

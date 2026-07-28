@@ -1120,7 +1120,7 @@ pub(super) fn kimi_wire_event(
                         Role::Tool => "tool",
                         Role::System => "system",
                         Role::Developer => "developer",
-                        Role::Unknown => "unknown",
+                        _ => "unknown",
                     }
                     .to_string(),
                 ),

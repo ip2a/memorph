@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::canonical::{Block, Event, Role};
+use crate::session::{Block, Event, Role};
 use crate::provider::canonical_event_text;
 
 use super::adaptive::adaptive_keep_count;
@@ -890,7 +890,7 @@ fn conversation_signals(source_events: &[Event]) -> Vec<String> {
                 last_assistant = concise_event_text(event);
             }
             Role::Tool => tool_count += 1,
-            Role::System | Role::Developer | Role::Unknown => {}
+            Role::System | Role::Developer | _ => {}
         }
         collect_path_mentions(&canonical_event_text(event), &mut paths);
     }

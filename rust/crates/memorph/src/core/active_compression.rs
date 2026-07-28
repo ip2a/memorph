@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use crate::canonical::{Block, Event, EventKind, Fidelity, Links, Metadata, Role, Session, Source};
+use crate::session::{Block, Event, EventKind, Fidelity, Links, Metadata, Role, Session, Source};
 use crate::core::compression;
 use crate::provider::canonical_event_text;
 
@@ -536,7 +536,7 @@ fn default_min_savings_ratio() -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{
+    use crate::session::{
         Block, Context, Event, Fidelity, Identity, Links, Metadata, Provenance, ProviderRef, Role,
         Schema, Source,
     };

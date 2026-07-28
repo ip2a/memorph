@@ -1,6 +1,6 @@
 pub mod adapter;
 pub mod hook;
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
@@ -235,8 +235,8 @@ impl Provider for HermesProvider {
         let created = timestamp_ms(meta.4).map(datetime_from_ms);
         let last = events.last().map(|event| event.timestamp).or(created);
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-        report.push_issue(crate::canonical::MappingIssue {
-            level: crate::canonical::MappingIssueLevel::Info,
+        report.push_issue(crate::session::MappingIssue {
+            level: crate::session::MappingIssueLevel::Info,
             disposition: Fidelity::Preserved,
             code: "hermes-sqlite-source".into(),
             message: "Imported from Hermes state.db sessions/messages tables".into(),

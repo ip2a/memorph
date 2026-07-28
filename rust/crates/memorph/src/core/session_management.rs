@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::canonical::{
+use crate::session::{
     Context, Identity, ImportedSession, Provenance, ProviderRef, Schema, Session,
 };
 use crate::core::compression;
@@ -825,7 +825,7 @@ pub(crate) fn session_from_compression_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{
+    use crate::session::{
         Block, Event, EventKind, Fidelity, ImportedSession, Links, Metadata, Role, Source,
     };
     use crate::provider::{ProviderBackupSupport, ProviderCapabilities, ProviderSessionSummary};

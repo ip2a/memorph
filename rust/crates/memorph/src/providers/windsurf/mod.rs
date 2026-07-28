@@ -1,4 +1,4 @@
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
@@ -317,8 +317,8 @@ fn import_legacy_session(source: &str) -> Result<ImportedSession> {
         else {
             continue;
         };
-        report.push_issue(crate::canonical::MappingIssue {
-            level: crate::canonical::MappingIssueLevel::Info,
+        report.push_issue(crate::session::MappingIssue {
+            level: crate::session::MappingIssueLevel::Info,
             disposition: Fidelity::Preserved,
             code: "windsurf-legacy-pbtxt".into(),
             message: "Mapped Windsurf legacy chat_state user message".into(),
@@ -653,8 +653,8 @@ fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<Event> {
     } else {
         EventKind::ToolCall
     };
-    r.push_issue(crate::canonical::MappingIssue {
-        level: crate::canonical::MappingIssueLevel::Info,
+    r.push_issue(crate::session::MappingIssue {
+        level: crate::session::MappingIssueLevel::Info,
         disposition: Fidelity::Preserved,
         code: "windsurf-native-step".into(),
         message: "Mapped Windsurf trajectory step".into(),

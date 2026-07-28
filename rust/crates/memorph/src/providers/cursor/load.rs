@@ -1,4 +1,4 @@
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
     Schema, Session, Source, Usage,
@@ -460,7 +460,7 @@ fn infer_title_from_events(events: &[Event]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{Block, Fidelity, Role};
+    use crate::session::{Block, Fidelity, Role};
     use crate::providers::cursor::db::{
         ComposerData, CursorComposerHeader, CursorComposerRecord, CursorInvalidRow,
         CursorSessionMetadata,

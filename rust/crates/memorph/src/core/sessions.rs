@@ -269,11 +269,11 @@ fn source_mapping_report_view(
         .chain(imported.report.issues.iter().map(|issue| issue.disposition))
     {
         match disposition {
-            crate::canonical::Fidelity::Preserved => preserved_count += 1,
-            crate::canonical::Fidelity::Normalized | crate::canonical::Fidelity::Downgraded => {
+            crate::session::Fidelity::Preserved => preserved_count += 1,
+            crate::session::Fidelity::Normalized | crate::session::Fidelity::Downgraded => {
                 normalized_count += 1
             }
-            crate::canonical::Fidelity::Dropped | crate::canonical::Fidelity::Unsupported => {
+            crate::session::Fidelity::Dropped | crate::session::Fidelity::Unsupported => {
                 dropped_count += 1
             }
         }
@@ -311,15 +311,15 @@ fn source_mapping_report_view(
             .map(|(index, issue)| SessionProjectionReportItemView {
                 item_order: index as i64,
                 fidelity: match issue.disposition {
-                    crate::canonical::Fidelity::Preserved => {
+                    crate::session::Fidelity::Preserved => {
                         crate::session_projection::ProjectionFidelity::Preserved
                     }
-                    crate::canonical::Fidelity::Normalized
-                    | crate::canonical::Fidelity::Downgraded => {
+                    crate::session::Fidelity::Normalized
+                    | crate::session::Fidelity::Downgraded => {
                         crate::session_projection::ProjectionFidelity::Normalized
                     }
-                    crate::canonical::Fidelity::Dropped
-                    | crate::canonical::Fidelity::Unsupported => {
+                    crate::session::Fidelity::Dropped
+                    | crate::session::Fidelity::Unsupported => {
                         crate::session_projection::ProjectionFidelity::Dropped
                     }
                 },
@@ -806,7 +806,7 @@ fn event_activity_weight(kind: &EventKind, visible_message: bool) -> f64 {
         EventKind::ToolCall | EventKind::ToolResult => 2.0,
         EventKind::Command | EventKind::CommandResult => 1.75,
         EventKind::Patch | EventKind::Artifact => 1.25,
-        EventKind::Unknown => 0.5,
+        _ => 0.5,
     }
 }
 
@@ -901,7 +901,7 @@ fn enrich_imported_session_from_meta(
             .session
             .provenance
             .aliases
-            .push(crate::canonical::ProviderRef {
+            .push(crate::session::ProviderRef {
                 provider_id: provider_id.to_string(),
                 session_id: meta.session_id.clone(),
                 source_path: meta.source_path.clone(),

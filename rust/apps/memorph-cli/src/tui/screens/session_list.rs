@@ -12,7 +12,7 @@ use crate::tui::app::{
     MainFocus, SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
 };
 use crate::tui::theme::{self, Theme};
-use memorph::canonical::{Block as EventBlock, Event, Role};
+use memorph::session::{Block as EventBlock, Event, Role};
 use memorph::core::{SessionGroup, SessionItem};
 
 /// Draw session table page
@@ -1570,7 +1570,7 @@ fn role_name(role: Role) -> &'static str {
         Role::Tool => "tool",
         Role::System => "system",
         Role::Developer => "developer",
-        Role::Unknown => "unknown",
+        _ => "unknown",
     }
 }
 
@@ -1605,7 +1605,7 @@ fn content_preview(event: &Event) -> String {
             EventBlock::Compressed { summary, .. } => {
                 return format!("Compressed: {}", theme::truncate(summary, 80));
             }
-            EventBlock::Unknown { .. } => return "Unknown payload".to_string(),
+            _ => return "Unknown payload".to_string(),
         }
     }
 

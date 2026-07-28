@@ -9,7 +9,7 @@ use ratatui::{
 
 use crate::tui::app::{App, AppResult};
 use crate::tui::theme::{self, Theme};
-use memorph::canonical::{Block, Role};
+use memorph::session::{Block, Role};
 
 /// Draw session detail page
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {

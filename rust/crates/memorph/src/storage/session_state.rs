@@ -4,7 +4,7 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use serde::{Deserialize, Serialize};
 use std::collections::{btree_map::Entry, BTreeMap};
 
-use crate::canonical::{LocalSessionState, SessionLocator, WorkspaceSessionState};
+use crate::session::{LocalSessionState, SessionLocator, WorkspaceSessionState};
 use crate::session_projection::{Identity, SessionIdentityInput};
 
 use super::local_store;

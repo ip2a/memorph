@@ -1,7 +1,7 @@
 pub mod adapter;
 pub mod hook;
 
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
@@ -278,8 +278,8 @@ fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Opt
         Some("assistant") | Some("ai") => Role::Assistant,
         Some("tool") => Role::Tool,
         _ => {
-            report.push_issue(crate::canonical::MappingIssue {
-                level: crate::canonical::MappingIssueLevel::Warning,
+            report.push_issue(crate::session::MappingIssue {
+                level: crate::session::MappingIssueLevel::Warning,
                 disposition: Fidelity::Unsupported,
                 code: "trae-unknown-role".into(),
                 message: "Dropped Trae message with unknown role".into(),
@@ -307,8 +307,8 @@ fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Opt
     if blocks.is_empty() {
         return None;
     }
-    report.push_issue(crate::canonical::MappingIssue {
-        level: crate::canonical::MappingIssueLevel::Info,
+    report.push_issue(crate::session::MappingIssue {
+        level: crate::session::MappingIssueLevel::Info,
         disposition: Fidelity::Preserved,
         code: "trae-native-message".into(),
         message: "Mapped Trae workspaceStorage message".into(),

@@ -1,4 +1,4 @@
-use crate::canonical::{Event, Role, TurnBoundary};
+use crate::session::{Event, Role, TurnBoundary};
 use crate::provider::{canonical_event_visible_message_role, TurnQuality};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};

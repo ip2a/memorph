@@ -10,7 +10,7 @@ use self::load::*;
 use self::management::*;
 use self::write::*;
 
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
     MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
     ProviderRef, Role, Schema, Session, Source, TurnBoundary,

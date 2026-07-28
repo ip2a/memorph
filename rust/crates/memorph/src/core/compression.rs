@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::canonical::{Block, Event, EventKind, Fidelity, Links, Metadata, Role, Session, Source};
+use crate::session::{Block, Event, EventKind, Fidelity, Links, Metadata, Role, Session, Source};
 use crate::config;
 use crate::logging;
 use crate::provider::{self, canonical_event_text};
@@ -1263,7 +1263,7 @@ fn is_opencode_summary_event(event: &Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{Context, Identity, Provenance, ProviderRef, Schema};
+    use crate::session::{Context, Identity, Provenance, ProviderRef, Schema};
     use chrono::{TimeZone, Utc};
 
     #[test]

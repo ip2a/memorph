@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::repository::{self, SessionSourceRecord};
 use crate::{
-    canonical::{Block, Event},
+    session::{Block, Event},
     providers,
 };
 
@@ -751,7 +751,7 @@ fn hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{EventKind, Fidelity, Links, Metadata, Role, Source};
+    use crate::session::{EventKind, Fidelity, Links, Metadata, Role, Source};
     use chrono::TimeZone;
 
     fn event(blocks: Vec<Block>) -> Event {

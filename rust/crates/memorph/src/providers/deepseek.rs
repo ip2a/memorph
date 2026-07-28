@@ -1,4 +1,4 @@
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
     MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
     ProviderRef, Role, Schema, Session, Source,
@@ -578,7 +578,7 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
             Role::Assistant => "assistant",
             Role::Tool => "tool",
             Role::User => "user",
-            Role::System | Role::Developer | Role::Unknown => continue,
+            Role::System | Role::Developer | _ => continue,
         };
         let item_json = serde_json::json!({
             "source": "memorph-canonical",

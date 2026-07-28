@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::canonical::{Fidelity, Session};
+use crate::session::{Fidelity, Session};
 #[cfg(test)]
 use crate::core::compression;
 use crate::provider::ProviderWriteRisk;
@@ -604,7 +604,7 @@ fn resolve_target_dir(provider_id: &str, input: Option<&str>) -> Result<PathBuf>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{
+    use crate::session::{
         Block, Context, Event, EventKind, Fidelity, Identity, Links, Metadata, Provenance,
         ProviderRef, Role, Schema, Source,
     };

@@ -1,4 +1,4 @@
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
     Schema, Session, Source,

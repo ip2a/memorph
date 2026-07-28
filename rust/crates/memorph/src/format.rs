@@ -1,4 +1,4 @@
-use crate::canonical::{
+use crate::session::{
     Artifact, Block, Context, Event, EventKind, Identity, Provenance, Role, Schema, Session,
 };
 use anyhow::{Context as _, Result};
@@ -259,7 +259,7 @@ fn event_role_label(role: Role) -> &'static str {
         Role::Tool => "tool",
         Role::System => "system",
         Role::Developer => "developer",
-        Role::Unknown => "unknown",
+        _ => "unknown",
     }
 }
 
@@ -273,7 +273,7 @@ fn event_kind_label(kind: EventKind) -> &'static str {
         EventKind::Patch => "patch",
         EventKind::Lifecycle => "lifecycle",
         EventKind::Artifact => "artifact",
-        EventKind::Unknown => "unknown",
+        _ => "unknown",
     }
 }
 
@@ -433,6 +433,8 @@ fn event_block_markdown(block: &Block) -> String {
             out
         }
         Block::Unknown { raw } => json_block_markdown(raw),
+        // ponytail: oasf 标了 #[non_exhaustive],未来新增 Block 变体在此兜底为空串。
+        _ => String::new(),
     }
 }
 
@@ -566,6 +568,7 @@ fn event_block_html(block: &Block) -> String {
             out
         }
         Block::Unknown { raw } => json_block_html(raw),
+        _ => String::new(),
     }
 }
 
@@ -622,7 +625,7 @@ fn html_unescape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{Fidelity, ProviderRef};
+    use crate::session::{Fidelity, ProviderRef};
     use chrono::Utc;
     use tempfile::tempdir;
 
@@ -665,8 +668,8 @@ mod tests {
                         input: Some(serde_json::json!({"cmd":"ls"})),
                     },
                 ],
-                metadata: crate::canonical::Metadata {
-                    source: crate::canonical::Source {
+                metadata: crate::session::Metadata {
+                    source: crate::session::Source {
                         provider_id: "codex".to_string(),
                         original_id: Some("event-1".to_string()),
                         original_role: Some("assistant".to_string()),
@@ -680,7 +683,7 @@ mod tests {
             }],
             artifacts: vec![Artifact {
                 id: "artifact-1".to_string(),
-                kind: crate::canonical::ArtifactKind::Patch,
+                kind: crate::session::ArtifactKind::Patch,
                 path: None,
                 mime_type: None,
                 content: Some("@@ -1 +1 @@".to_string()),

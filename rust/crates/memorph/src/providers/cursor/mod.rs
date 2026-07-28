@@ -6,7 +6,7 @@ mod load;
 mod scan;
 mod write;
 
-use crate::canonical::{ExportedSession, ImportedSession, Session};
+use crate::session::{ExportedSession, ImportedSession, Session};
 use crate::provider::{
     canonical_export_result, PageStrategy, Provider, ProviderActivitySupport,
     ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary,

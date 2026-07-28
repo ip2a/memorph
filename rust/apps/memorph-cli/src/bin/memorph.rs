@@ -1596,7 +1596,7 @@ fn provider_name(provider: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memorph::canonical::{Event, Fidelity, MappingDirection};
+    use memorph::session::{Event, Fidelity, MappingDirection};
     use memorph::session_projection::{
         ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
     };

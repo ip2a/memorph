@@ -4,7 +4,7 @@ use axum::{
     http::Request,
 };
 use chrono::Utc;
-use memorph::canonical::{
+use memorph::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, Links, Metadata, Provenance, ProviderRef,
     Role, Schema, Session, Source,
 };

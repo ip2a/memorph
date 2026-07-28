@@ -1,4 +1,4 @@
-use crate::canonical::TurnBoundary;
+use crate::session::TurnBoundary;
 use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};

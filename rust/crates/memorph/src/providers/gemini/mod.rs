@@ -2,7 +2,7 @@ pub mod adapter;
 pub mod hook;
 mod management;
 
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
     Schema, Session, Source, Usage,

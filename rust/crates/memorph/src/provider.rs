@@ -1,4 +1,4 @@
-use crate::canonical::{
+use crate::session::{
     Block, Event, EventKind, ExportedSession, Fidelity, ImportedSession, MappingDirection,
     MappingIssue, MappingIssueLevel, MappingReport, Role, Session,
 };
@@ -646,7 +646,7 @@ fn export_block_fidelity(
         Block::Image { .. } => ("image", fidelity.image),
         Block::File { .. } => ("file", fidelity.file),
         Block::Compressed { .. } => ("compressed", fidelity.compressed),
-        Block::ProviderPayload { .. } | Block::Unknown { .. } => {
+        Block::ProviderPayload { .. } | _ => {
             ("provider_payload", fidelity.provider_payload)
         }
     }
@@ -696,7 +696,7 @@ pub fn canonical_event_visible_message_role(event: &Event) -> Option<Role> {
     }
     match event.role {
         Role::User | Role::Assistant | Role::Tool => Some(event.role),
-        Role::System | Role::Developer | Role::Unknown => None,
+        Role::System | Role::Developer | _ => None,
     }
 }
 
@@ -876,6 +876,7 @@ pub fn canonical_block_text(block: &Block) -> String {
             parts.join("\n")
         }
         Block::Unknown { raw } => format!("[Unknown]\n{}", raw),
+        _ => "[Unknown]".to_string(),
     }
 }
 
@@ -893,7 +894,7 @@ pub fn canonical_event_role_label(role: Role) -> &'static str {
         Role::Tool => "tool",
         Role::System => "system",
         Role::Developer => "developer",
-        Role::Unknown => "unknown",
+        _ => "unknown",
     }
 }
 
@@ -949,10 +950,10 @@ mod tests {
     fn canonical_event_visible_text_omits_provider_internal_blocks() {
         let event = Event {
             id: "event-1".to_string(),
-            kind: crate::canonical::EventKind::Message,
+            kind: crate::session::EventKind::Message,
             role: Role::User,
             timestamp: chrono::Utc::now(),
-            links: crate::canonical::Links::default(),
+            links: crate::session::Links::default(),
             blocks: vec![
                 Block::Text {
                     text: "hello".to_string(),
@@ -965,8 +966,8 @@ mod tests {
                     raw: serde_json::json!({"type": "mystery"}),
                 },
             ],
-            metadata: crate::canonical::Metadata {
-                source: crate::canonical::Source {
+            metadata: crate::session::Metadata {
+                source: crate::session::Source {
                     provider_id: "codex".to_string(),
                     original_id: None,
                     original_role: None,
@@ -986,7 +987,7 @@ mod tests {
     fn canonical_visible_message_role_excludes_internal_events() {
         let lifecycle = test_event(
             "lifecycle",
-            crate::canonical::EventKind::Lifecycle,
+            crate::session::EventKind::Lifecycle,
             Role::System,
             vec![Block::Text {
                 text: "internal".to_string(),
@@ -994,7 +995,7 @@ mod tests {
         );
         let developer = test_event(
             "developer",
-            crate::canonical::EventKind::Message,
+            crate::session::EventKind::Message,
             Role::Developer,
             vec![Block::Text {
                 text: "developer".to_string(),
@@ -1002,7 +1003,7 @@ mod tests {
         );
         let unknown = test_event(
             "unknown",
-            crate::canonical::EventKind::Unknown,
+            crate::session::EventKind::Unknown,
             Role::User,
             vec![Block::Text {
                 text: "unknown".to_string(),
@@ -1010,7 +1011,7 @@ mod tests {
         );
         let user = test_event(
             "user",
-            crate::canonical::EventKind::Message,
+            crate::session::EventKind::Message,
             Role::User,
             vec![Block::Text {
                 text: "hello".to_string(),
@@ -1033,25 +1034,25 @@ mod tests {
     #[test]
     fn canonical_export_report_uses_actual_block_kinds_and_target_fidelity() {
         let session = Session {
-            schema: crate::canonical::Schema::default(),
-            identity: crate::canonical::Identity {
+            schema: crate::session::Schema::default(),
+            identity: crate::session::Identity {
                 canonical_id: "canonical-1".to_string(),
                 source_title: None,
             },
-            provenance: crate::canonical::Provenance {
+            provenance: crate::session::Provenance {
                 imported_at: chrono::Utc::now(),
                 imported_by: None,
-                primary_source: crate::canonical::ProviderRef {
+                primary_source: crate::session::ProviderRef {
                     provider_id: "source".to_string(),
                     session_id: "session-1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: crate::canonical::Context::default(),
+            context: crate::session::Context::default(),
             events: vec![test_event(
                 "assistant",
-                crate::canonical::EventKind::Message,
+                crate::session::EventKind::Message,
                 Role::Assistant,
                 vec![
                     Block::Text {
@@ -1097,25 +1098,25 @@ mod tests {
     #[test]
     fn canonical_session_title_uses_visible_user_or_assistant_message() {
         let session = Session {
-            schema: crate::canonical::Schema {
-                name: crate::canonical::OASF_SCHEMA_NAME.to_string(),
+            schema: crate::session::Schema {
+                name: crate::session::OASF_SCHEMA_NAME.to_string(),
                 version: 1,
             },
-            identity: crate::canonical::Identity {
+            identity: crate::session::Identity {
                 canonical_id: "canonical-1".to_string(),
                 source_title: None,
             },
-            provenance: crate::canonical::Provenance {
+            provenance: crate::session::Provenance {
                 imported_at: chrono::Utc::now(),
                 imported_by: None,
-                primary_source: crate::canonical::ProviderRef {
+                primary_source: crate::session::ProviderRef {
                     provider_id: "test".to_string(),
                     session_id: "session-1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: crate::canonical::Context {
+            context: crate::session::Context {
                 workspace_dir: None,
                 created_at: None,
                 last_active_at: None,
@@ -1124,7 +1125,7 @@ mod tests {
             events: vec![
                 test_event(
                     "internal",
-                    crate::canonical::EventKind::Lifecycle,
+                    crate::session::EventKind::Lifecycle,
                     Role::System,
                     vec![Block::ProviderPayload {
                         kind: "internal".to_string(),
@@ -1133,7 +1134,7 @@ mod tests {
                 ),
                 test_event(
                     "prompt",
-                    crate::canonical::EventKind::Message,
+                    crate::session::EventKind::Message,
                     Role::User,
                     vec![Block::Text {
                         text: "real prompt".to_string(),
@@ -1150,29 +1151,29 @@ mod tests {
     #[test]
     fn canonical_instruction_context_uses_only_system_or_developer_messages() {
         let session = Session {
-            schema: crate::canonical::Schema {
-                name: crate::canonical::OASF_SCHEMA_NAME.to_string(),
+            schema: crate::session::Schema {
+                name: crate::session::OASF_SCHEMA_NAME.to_string(),
                 version: 1,
             },
-            identity: crate::canonical::Identity {
+            identity: crate::session::Identity {
                 canonical_id: "canonical-1".to_string(),
                 source_title: None,
             },
-            provenance: crate::canonical::Provenance {
+            provenance: crate::session::Provenance {
                 imported_at: chrono::Utc::now(),
                 imported_by: None,
-                primary_source: crate::canonical::ProviderRef {
+                primary_source: crate::session::ProviderRef {
                     provider_id: "test".to_string(),
                     session_id: "session-1".to_string(),
                     source_path: None,
                 },
                 aliases: Vec::new(),
             },
-            context: crate::canonical::Context::default(),
+            context: crate::session::Context::default(),
             events: vec![
                 test_event(
                     "system",
-                    crate::canonical::EventKind::Message,
+                    crate::session::EventKind::Message,
                     Role::System,
                     vec![Block::Text {
                         text: "system instructions".to_string(),
@@ -1180,7 +1181,7 @@ mod tests {
                 ),
                 test_event(
                     "developer",
-                    crate::canonical::EventKind::Message,
+                    crate::session::EventKind::Message,
                     Role::Developer,
                     vec![Block::Text {
                         text: "developer instructions".to_string(),
@@ -1188,7 +1189,7 @@ mod tests {
                 ),
                 test_event(
                     "internal",
-                    crate::canonical::EventKind::Lifecycle,
+                    crate::session::EventKind::Lifecycle,
                     Role::System,
                     vec![Block::Text {
                         text: "runtime context".to_string(),
@@ -1196,7 +1197,7 @@ mod tests {
                 ),
                 test_event(
                     "payload",
-                    crate::canonical::EventKind::Message,
+                    crate::session::EventKind::Message,
                     Role::System,
                     vec![Block::ProviderPayload {
                         kind: "internal".to_string(),
@@ -1205,7 +1206,7 @@ mod tests {
                 ),
                 test_event(
                     "user",
-                    crate::canonical::EventKind::Message,
+                    crate::session::EventKind::Message,
                     Role::User,
                     vec![Block::Text {
                         text: "user prompt".to_string(),
@@ -1224,7 +1225,7 @@ mod tests {
 
     fn test_event(
         id: &str,
-        kind: crate::canonical::EventKind,
+        kind: crate::session::EventKind,
         role: Role,
         blocks: Vec<Block>,
     ) -> Event {
@@ -1233,10 +1234,10 @@ mod tests {
             kind,
             role,
             timestamp: chrono::Utc::now(),
-            links: crate::canonical::Links::default(),
+            links: crate::session::Links::default(),
             blocks,
-            metadata: crate::canonical::Metadata {
-                source: crate::canonical::Source {
+            metadata: crate::session::Metadata {
+                source: crate::session::Source {
                     provider_id: "test".to_string(),
                     original_id: None,
                     original_role: None,

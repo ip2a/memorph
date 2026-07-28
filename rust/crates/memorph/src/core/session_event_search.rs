@@ -1,4 +1,4 @@
-use crate::canonical::Event;
+use crate::session::Event;
 use crate::provider;
 
 pub fn session_event_matches_query(event: &Event, query: &str) -> bool {
@@ -40,7 +40,7 @@ fn session_event_search_haystack(event: &Event) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{Block, Event, EventKind, Fidelity, Metadata, Role, Source};
+    use crate::session::{Block, Event, EventKind, Fidelity, Metadata, Role, Source};
     use chrono::TimeZone;
     use std::collections::BTreeMap;
 

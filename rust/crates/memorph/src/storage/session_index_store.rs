@@ -233,7 +233,7 @@ impl<'a> SessionIndexStore<'a> {
     pub fn replace_daily_stats(
         &mut self,
         canonical_session_id: &str,
-        events: &[crate::canonical::Event],
+        events: &[crate::session::Event],
     ) -> Result<()> {
         const DAY_MS: i64 = 86_400_000;
         let mut days = std::collections::BTreeMap::<i64, (usize, usize)>::new();

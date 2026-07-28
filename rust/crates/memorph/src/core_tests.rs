@@ -3,7 +3,7 @@ use super::projection::*;
 use super::session_mutation::*;
 use super::sessions::*;
 use super::*;
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, Links, MappingDirection, MappingReport,
     Metadata, Provenance, ProviderRef, Role, Schema, Source,
 };

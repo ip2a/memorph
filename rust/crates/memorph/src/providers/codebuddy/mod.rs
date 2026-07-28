@@ -1,7 +1,7 @@
 pub mod adapter;
 pub mod hook;
 
-use crate::canonical::{
+use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
 };
@@ -317,8 +317,8 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
     } else {
         EventKind::Message
     };
-    r.push_issue(crate::canonical::MappingIssue {
-        level: crate::canonical::MappingIssueLevel::Info,
+    r.push_issue(crate::session::MappingIssue {
+        level: crate::session::MappingIssueLevel::Info,
         disposition: Fidelity::Preserved,
         code: "codebuddy-native-event".into(),
         message: "Mapped Factory/CodeBuddy JSONL event".into(),

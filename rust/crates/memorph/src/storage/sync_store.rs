@@ -288,7 +288,7 @@ mod tests {
             errors: Vec::new(),
             target_assessments: vec![crate::sync::SyncTargetAssessment {
                 provider: "codex".to_string(),
-                fidelity: crate::canonical::Fidelity::Normalized,
+                fidelity: crate::session::Fidelity::Normalized,
                 write_risk: crate::providers::find_provider("codex")
                     .unwrap()
                     .capabilities()

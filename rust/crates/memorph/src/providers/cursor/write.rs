@@ -1,4 +1,4 @@
-use crate::canonical::{Event, Role, Session};
+use crate::session::{Event, Role, Session};
 use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
     canonical_session_title, ProviderSourceMutation,
@@ -609,7 +609,7 @@ fn cursor_bubble_text(event: &Event) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::canonical::{Block, EventKind, Fidelity, Links, Metadata, Source};
+    use crate::session::{Block, EventKind, Fidelity, Links, Metadata, Source};
     use chrono::Utc;
     use std::collections::BTreeMap;
 

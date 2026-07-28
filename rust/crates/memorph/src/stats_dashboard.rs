@@ -235,7 +235,7 @@ struct MissingCountComputation {
     event_count: usize,
     message_count: usize,
     turn_count: usize,
-    events: Vec<crate::canonical::Event>,
+    events: Vec<crate::session::Event>,
 }
 
 fn compute_missing_count(row: &ProjectedSessionSnapshotRow) -> Result<MissingCountComputation> {

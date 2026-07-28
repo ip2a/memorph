@@ -1,4 +1,4 @@
-use crate::canonical::{Block, Event, EventKind, Role, Session};
+use crate::session::{Block, Event, EventKind, Role, Session};
 use crate::provider::canonical_event_text;
 
 use super::content::{content_profile, DetectedContentKind};

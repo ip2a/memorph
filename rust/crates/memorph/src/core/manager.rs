@@ -537,7 +537,7 @@ pub fn backup(
     }
 }
 
-fn export_session_to_json(session: &crate::canonical::Session, path: &Path) -> Result<()> {
+fn export_session_to_json(session: &crate::session::Session, path: &Path) -> Result<()> {
     let json = serde_json::to_string_pretty(session)?;
     std::fs::write(path, json)
         .with_context(|| format!("Failed to write export file: {}", path.display()))?;
