@@ -1,7 +1,7 @@
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
-    Schema, Session, Source, Usage,
+    Schema, Session, Usage,
 };
 use crate::providers::cursor::db::{load_source, CursorBubbleRecord, CursorLoadedSource};
 use anyhow::Result;
@@ -144,33 +144,37 @@ fn imported_session_from_cursor(
         extensions.insert("cursor_composer".to_string(), composer.raw.clone());
     }
 
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: source.metadata.composer_id.clone(),
-                source_title,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id: source.metadata.composer_id,
-                    source_path: Some(source_locator.to_string()),
-                },
-                aliases: Vec::new(),
+                id: source.metadata.composer_id.clone(),
+                title: source_title,
             },
             context: Context {
-                workspace_dir,
+                workspace: workspace_dir,
                 created_at,
                 last_active_at,
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id: source.metadata.composer_id,
+                source_path: Some(source_locator.to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     }
 }
@@ -210,9 +214,9 @@ fn canonical_event_from_bubble(
     };
 
     let bubble_type = bubble.raw.get("type").and_then(Value::as_i64);
-    let (role, mut fidelity) = match bubble_type {
-        Some(1) => (Role::User, Fidelity::Preserved),
-        Some(2) => (Role::Assistant, Fidelity::Preserved),
+    let role = match bubble_type {
+        Some(1) => Role::User,
+        Some(2) => Role::Assistant,
         other => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
@@ -223,7 +227,7 @@ fn canonical_event_from_bubble(
                 path: Some(bubble.key.clone()),
                 raw: other.map(Value::from),
             });
-            (Role::Other, Fidelity::Normalized)
+            Role::Other
         }
     };
 
@@ -233,7 +237,6 @@ fn canonical_event_from_bubble(
         .and_then(Value::as_str)
         .and_then(parse_timestamp)
         .unwrap_or_else(|| {
-            fidelity = fidelity.worst(Fidelity::Normalized);
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
                 disposition: Fidelity::Normalized,
@@ -269,7 +272,6 @@ fn canonical_event_from_bubble(
             .filter(|text| !text.is_empty())
         {
             has_thinking = true;
-            fidelity = fidelity.worst(Fidelity::Normalized);
             blocks.push(Block::Thinking {
                 text: text.to_string(),
                 signature: thinking
@@ -286,7 +288,6 @@ fn canonical_event_from_bubble(
         let tool_name = tool.get("name").and_then(Value::as_str);
         if let (Some(tool_call_id), Some(tool_name)) = (tool_call_id, tool_name) {
             has_tool_payload = true;
-            fidelity = fidelity.worst(Fidelity::Normalized);
             let input = tool
                 .get("params")
                 .or_else(|| tool.get("rawArgs"))
@@ -324,14 +325,12 @@ fn canonical_event_from_bubble(
                 path: Some(bubble.key.clone()),
                 raw: Some(Value::Object(tool.clone())),
             });
-            fidelity = fidelity.worst(Fidelity::Normalized);
         }
     }
 
     if blocks.is_empty() {
-        blocks.push(Block::ProviderPayload {
-            kind: "cursor_bubble".to_string(),
-            payload: bubble.raw.clone(),
+        blocks.push(Block::Other {
+            raw: bubble.raw.clone(),
         });
     }
 
@@ -341,15 +340,6 @@ fn canonical_event_from_bubble(
         .and_then(Value::as_str)
         .map(str::to_string);
     let model_info = bubble.raw.get("modelInfo");
-    let mut provider_ext = BTreeMap::new();
-    if let Some(request_id) = request_id.as_ref() {
-        provider_ext.insert("request_id".to_string(), Value::String(request_id.clone()));
-    }
-    if let Some(model_info) = model_info {
-        provider_ext.insert("model_info".to_string(), model_info.clone());
-    }
-    provider_ext.insert("cursor_bubble".to_string(), bubble.raw.clone());
-
     let has_unmapped_structured_payload = [
         "images",
         "codeBlocks",
@@ -368,21 +358,13 @@ fn canonical_event_from_bubble(
             role,
             timestamp,
             links: Links {
-                provider_turn_id: request_id,
+                turn_id: request_id,
                 ..Links::default()
             },
             blocks,
             metadata: Metadata {
-                source: Source {
-                    provider_id: PROVIDER_ID.to_string(),
-                    original_id: raw_bubble_id.map(str::to_string),
-                    original_role: bubble_type.map(|value| value.to_string()),
-                    phase: None,
-                },
                 model: bubble_model_name(model_info),
                 usage: bubble_usage(bubble.raw.get("tokenCount")),
-                fidelity,
-                provider_ext,
             },
         },
         has_tool_payload,
@@ -415,10 +397,9 @@ fn bubble_usage(token_count: Option<&Value>) -> Option<Usage> {
     Some(Usage {
         input_tokens,
         output_tokens,
-        total_tokens: match (input_tokens, output_tokens) {
-            (Some(input), Some(output)) => Some(input.saturating_add(output)),
-            _ => None,
-        },
+        cache_read_tokens: None,
+        cache_write_tokens: None,
+        reasoning_tokens: None,
     })
 }
 
