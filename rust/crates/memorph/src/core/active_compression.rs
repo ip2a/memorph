@@ -515,12 +515,8 @@ fn default_min_savings_ratio() -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{
-        Block, Context, Event, Fidelity, Identity, Links, Metadata, Provenance, ProviderRef, Role,
-        Schema, Source,
-    };
+    use crate::session::{Block, Context, Event, Identity, Links, Metadata, Role, Schema};
     use chrono::Utc;
-    use std::collections::BTreeMap;
 
     #[test]
     fn dry_run_report_is_constructible_without_mutating_session() {
@@ -762,27 +758,25 @@ mod tests {
             .iter()
             .find(|event| event.id == "memorph-active-compressed-candidate-0001")
             .expect("compressed replacement event");
-        let Block::Compressed {
-            source_provider_id,
-            source_event_ids,
-            source_event_count,
-            archive_ref,
-            summary,
-        } = compressed_event.blocks.first().expect("compressed block")
-        else {
-            panic!("expected compressed block");
-        };
-        assert_eq!(source_provider_id, "claude");
-        assert_eq!(source_event_ids, &vec!["old-user".to_string()]);
-        assert_eq!(*source_event_count, Some(1));
+        let segment =
+            compression::compressed_segment(compressed_event).expect("portable compressed segment");
+        assert_eq!(segment.source_provider_id, "claude");
+        assert!(segment.source_event_ids.is_empty());
+        assert_eq!(segment.source_event_count, Some(1));
         assert_eq!(
-            archive_ref.as_deref(),
+            segment.archive_ref.as_deref(),
             Some(result.report.archive_refs[0].as_str())
         );
-        assert!(summary.contains("Recovery archive: memorph-archive://"));
-        assert!(summary.contains("Retained signals:"));
-        assert!(summary.contains("Rule strategy: conversation-range reducer"));
-        assert!(summary.contains("Content profile: kind=conversation_text"));
+        assert!(segment
+            .summary
+            .contains("Recovery archive: memorph-archive://"));
+        assert!(segment.summary.contains("Retained signals:"));
+        assert!(segment
+            .summary
+            .contains("Rule strategy: conversation-range reducer"));
+        assert!(segment
+            .summary
+            .contains("Content profile: kind=conversation_text"));
 
         let (expanded, expand_report) = compression::expand_compressed_segments_in_dir(
             &result.session,
@@ -961,11 +955,9 @@ mod tests {
             .iter()
             .find(|event| event.id == "memorph-active-compressed-candidate-0001")
             .expect("compressed diff replacement event");
-        let Block::Compressed { summary, .. } =
-            compressed_event.blocks.first().expect("compressed block")
-        else {
-            panic!("expected compressed block");
-        };
+        let summary = &compression::compressed_segment(compressed_event)
+            .expect("portable compressed segment")
+            .summary;
         assert!(summary.contains("Rule strategy: diff reducer"));
         assert!(summary.contains("Content profile: kind=diff"));
         assert!(summary.contains("Changed files: src/lib.rs"));
@@ -1078,22 +1070,11 @@ mod tests {
     }
 
     fn sample_session() -> Session {
-        let now = Utc::now();
         Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: "active-compression-sample".to_string(),
-                source_title: Some("Active compression sample".to_string()),
-            },
-            provenance: Provenance {
-                imported_at: now,
-                imported_by: Some("test".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: "claude".to_string(),
-                    session_id: "s1".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
+                id: "active-compression-sample".to_string(),
+                title: Some("Active compression sample".to_string()),
             },
             context: Context::default(),
             events: vec![
@@ -1101,8 +1082,7 @@ mod tests {
                 text_event("a1", Role::Assistant, "implementation notes"),
                 compressed_event("c1"),
             ],
-            artifacts: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Default::default(),
         }
     }
 
@@ -1152,12 +1132,8 @@ mod tests {
             role: Role::Assistant,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::Compressed {
-                source_provider_id: "claude".to_string(),
-                summary: "compressed summary".to_string(),
-                source_event_ids: vec!["u0".to_string()],
-                source_event_count: Some(1),
-                archive_ref: Some("memorph-archive://s1/a.json.gz".to_string()),
+            blocks: vec![Block::Text {
+                text: "[Compressed session segment from claude]\ncompressed summary\nSource event count: 1\nArchive: memorph-archive://s1/a.json.gz".to_string(),
             }],
             metadata: event_metadata("memorph", id),
         }
@@ -1166,7 +1142,7 @@ mod tests {
     fn tool_result_event(id: &str, content: &str) -> Event {
         Event {
             id: id.to_string(),
-            kind: EventKind::ToolResult,
+            kind: EventKind::Observation,
             role: Role::Tool,
             timestamp: Utc::now(),
             links: Links::default(),
@@ -1191,7 +1167,7 @@ mod tests {
     ) -> Event {
         Event {
             id: id.to_string(),
-            kind: EventKind::CommandResult,
+            kind: EventKind::Observation,
             role: Role::Tool,
             timestamp: Utc::now(),
             links: Links::default(),
@@ -1205,18 +1181,10 @@ mod tests {
         }
     }
 
-    fn event_metadata(provider_id: &str, original_id: &str) -> Metadata {
+    fn event_metadata(_provider_id: &str, _original_id: &str) -> Metadata {
         Metadata {
-            source: Source {
-                provider_id: provider_id.to_string(),
-                original_id: Some(original_id.to_string()),
-                original_role: None,
-                phase: None,
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         }
     }
 
@@ -1244,10 +1212,8 @@ mod tests {
             .iter()
             .find(|event| event.id == event_id)
             .expect("compressed replacement event");
-        let Block::Compressed { summary, .. } = event.blocks.first().expect("compressed block")
-        else {
-            panic!("expected compressed block");
-        };
-        summary.clone()
+        compression::compressed_segment(event)
+            .expect("portable compressed segment")
+            .summary
     }
 }
