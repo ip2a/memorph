@@ -3,7 +3,7 @@ pub mod hook;
 
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
@@ -97,11 +97,15 @@ impl Provider for TraeProvider {
             .find(|session| session_id(session).as_deref() == Some(id.as_str()))
             .context("Trae session was not found")?;
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-        let events = session_messages(session)
+        let events: Vec<Event> = session_messages(session)
             .iter()
             .enumerate()
             .filter_map(|(index, message)| map_message(message, index, &mut report))
             .collect();
+        let event_meta = events
+            .iter()
+            .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+            .collect::<Vec<_>>();
         let title = session_title(session);
         let now = session_updated_at(session)
             .and_then(datetime_from_ms)
@@ -112,29 +116,29 @@ impl Provider for TraeProvider {
             session: Session {
                 schema: Schema::default(),
                 identity: Identity {
-                    canonical_id: id.clone(),
-                    source_title: title,
-                },
-                provenance: Provenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderRef {
-                        provider_id: PROVIDER_ID.into(),
-                        session_id: id,
-                        source_path: Some(source_path.into()),
-                    },
-                    aliases: Vec::new(),
+                    id: id.clone(),
+                    title,
                 },
                 context: Context {
-                    workspace_dir: workspace_dir(&db),
+                    workspace: workspace_dir(&db),
                     created_at: None,
                     last_active_at: Some(now),
                     tags: Vec::new(),
                 },
                 events,
-                artifacts: Vec::new(),
                 extensions,
             },
+            provenance: Provenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: id,
+                    source_path: Some(source_path.into()),
+                },
+                aliases: Vec::new(),
+            },
+            event_meta,
             report,
         })
     }
@@ -299,9 +303,8 @@ fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Opt
         .map(|text| vec![Block::Text { text }])
         .unwrap_or_default();
     if let Some(task) = message.get("agentTaskContent") {
-        blocks.push(Block::ProviderPayload {
-            kind: "agent_task_content".into(),
-            payload: task.clone(),
+        blocks.push(Block::Other {
+            raw: task.clone(),
         });
     }
     if blocks.is_empty() {
@@ -327,19 +330,8 @@ fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Opt
         links: Links::default(),
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.into(),
-                original_id: message.get("id").and_then(Value::as_str).map(str::to_owned),
-                original_role: message
-                    .get("role")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                phase: None,
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         },
     })
 }
