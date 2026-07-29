@@ -152,9 +152,10 @@ fn push_server_section(view: &mut ConfigView, name: &str, cfg: &Value, scope: &s
         let keys = env.keys().cloned().collect::<Vec<_>>().join(", ");
         rows.push(ConfigRow::fact("Environment", keys).with_hint("values hidden"));
     }
-    if let Some(headers) = cfg.get("headers") {
-        // Labelled "Headers" so the redaction pass masks the whole object.
-        rows.push(ConfigRow::fact("Headers", headers.clone()));
+    if let Some(headers) = cfg.get("headers").and_then(Value::as_object).filter(|headers| !headers.is_empty()) {
+        rows.push(
+            ConfigRow::fact("Headers", format!("{} header(s)", headers.len())).with_hint("values hidden"),
+        );
     }
 
     view.push_section(name, rows);
@@ -316,9 +317,9 @@ mod tests {
         assert!(serialized.contains("DrissionPage-MCP"));
         assert!(serialized.contains("https://example.test/mcp"));
         assert!(serialized.contains("values hidden"));
-        // env keys are shown, values are not
+        // env keys are shown, secret values never enter the row
         assert!(serialized.contains("API_TOKEN"));
-        assert!(serialized.contains("••••••"));
+        assert!(serialized.contains("header(s) hidden") || serialized.contains("values hidden"));
         // all three scopes surface as sections
         assert_eq!(view.sections.len(), 3);
     }

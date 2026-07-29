@@ -1,19 +1,17 @@
 //! Defensive secret redaction for config views.
 //!
-//! Inspectors are written to avoid extracting secrets, but every view still passes
-//! through [`redact`] before leaving the module. The contract is label-based and
-//! deterministic on purpose — value-shape heuristics false-positive on URLs, file
-//! paths and commit SHAs that the user legitimately needs to see. So instead:
+//! Safety is primarily by construction — inspectors never place secret values into
+//! rows (MCP environment is rendered as key names, HTTP headers as a count). This
+//! pass is the backstop: any row whose label is explicitly a credential name
+//! (`token`, `secret`, `password`, `auth`, `authorization`, …) is masked wholesale,
+//! so a future inspector that accidentally drops a raw secret under such a label
+//! still cannot leak it. The hints are deliberately the unambiguous credential
+//! names only — `env`/`headers` are excluded because safe key/count displays live
+//! under those labels and would be false-positive masked.
 //!
-//! - Any row whose label contains a credential hint (`token`, `secret`, `password`,
-//!   `auth`, `headers`, …) has its whole value masked.
-//! - Inspectors that want to show secret-bearing fields place them under such a
-//!   label. MCP environment variables are rendered as **key names only** (the value
-//!   is never placed in a row), so `env` is deliberately not a mask trigger —
-//!   masking there would hide the safe key names along with the values.
-//!
-//! Model endpoints, API keys and auth tokens are never surfaced as views at all;
-//! this pass is the backstop for anything an inspector accidentally pulls in.
+//! Value-shape heuristics are avoided on purpose: they false-positive on URLs,
+//! file paths and commit SHAs that the user needs to see. Model endpoints, API
+//! keys and auth tokens are never surfaced as views at all.
 
 use serde_json::Value;
 
@@ -30,7 +28,6 @@ const SECRET_LABEL_HINTS: &[&str] = &[
     "bearer",
     "credential",
     "authorization",
-    "headers",
 ];
 
 pub fn is_secret_label(label: &str) -> bool {
@@ -86,9 +83,9 @@ mod tests {
     }
 
     #[test]
-    fn masks_nested_headers_object() {
+    fn masks_authorization_labelled_object() {
         let mut view = view_with(ConfigRow::fact(
-            "Headers",
+            "Authorization",
             json!({ "Authorization": "Bearer hush", "X-Trace-Id": "abc" }),
         ));
         redact(&mut view);
