@@ -10,9 +10,9 @@ use self::management::*;
 use self::write::*;
 
 use crate::session::{
-    Artifact, ArtifactKind, Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity,
+    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity,
     ImportedSession, Links, MappingDirection, MappingIssue, MappingIssueLevel, MappingReport,
-    Metadata, Provenance, ProviderRef, Role, Schema, Session, Source, TurnOutcome, Usage,
+    Metadata, Provenance, ProviderRef, Role, Schema, Session, TurnOutcome, Usage,
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
@@ -210,7 +210,7 @@ impl Provider for OpenCodeProvider {
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         let session_id = opencode_session_id_from_source_locator(source_path)?;
         let mut imported = import_canonical_session_from_source(&session_id, source_path)?;
-        imported.session.provenance.primary_source.source_path = Some(source_path.to_string());
+        imported.provenance.primary_source.source_path = Some(source_path.to_string());
         Ok(imported)
     }
 

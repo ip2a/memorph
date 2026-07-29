@@ -126,7 +126,7 @@ pub(super) fn import_opencode_session_page(
         imported_session_from_data(&session_id, (session_json, messages_page, parts_page))?;
 
     let turns = project_session_turns(
-        &imported.session.identity.canonical_id,
+        &imported.session.identity.id,
         &imported.session.events,
         TurnQuality::Inferred,
     );
@@ -152,7 +152,6 @@ pub(super) fn imported_session_from_data(
 ) -> Result<ImportedSession> {
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
     let mut events = Vec::new();
-    let mut artifacts = Vec::new();
 
     let mut msg_list: Vec<(Option<i64>, Value, Vec<Value>)> = messages
         .into_iter()
@@ -216,7 +215,7 @@ pub(super) fn imported_session_from_data(
             });
 
         let mut blocks =
-            canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report, &mut artifacts);
+            canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report);
         if blocks.is_empty() {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
@@ -228,9 +227,8 @@ pub(super) fn imported_session_from_data(
                 path: Some(format!("message:{}", msg_id)),
                 raw: Some(msg_json.clone()),
             });
-            blocks = vec![Block::ProviderPayload {
-                kind: "message_without_mappable_parts".to_string(),
-                payload: msg_json.clone(),
+            blocks = vec![Block::Other {
+                raw: msg_json.clone(),
             }];
         }
 
@@ -239,48 +237,19 @@ pub(super) fn imported_session_from_data(
             .or_else(|| msg_json.get("model").and_then(|m| m.get("modelID")))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let provider = msg_json
-            .get("providerID")
-            .or_else(|| msg_json.get("model").and_then(|m| m.get("providerID")))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| PROVIDER_ID.to_string());
-
         let usage = msg_json.get("tokens").map(|t| Usage {
             input_tokens: t.get("input").and_then(|v| v.as_u64()),
             output_tokens: t.get("output").and_then(|v| v.as_u64()),
-            total_tokens: t.get("total").and_then(|v| v.as_u64()),
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
         });
 
         let finish = msg_json
             .get("finish")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        let turn_boundary = opencode_turn_boundary(finish.as_deref());
-        let cost = msg_json.get("cost").and_then(|v| v.as_f64());
-        let agent = msg_json
-            .get("agent")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let mode = msg_json
-            .get("mode")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let mut provider_ext = BTreeMap::new();
-        provider_ext.insert("opencode_message".to_string(), msg_json.clone());
-        if let Some(finish) = finish {
-            provider_ext.insert("finish".to_string(), Value::String(finish));
-        }
-        if let Some(cost) = cost {
-            provider_ext.insert("cost".to_string(), Value::from(cost));
-        }
-        if let Some(agent) = agent {
-            provider_ext.insert("agent".to_string(), Value::String(agent));
-        }
-        if let Some(mode) = mode {
-            provider_ext.insert("mode".to_string(), Value::String(mode));
-        }
+        let turn_outcome = opencode_turn_boundary(finish.as_deref());
 
         let kind = derive_event_kind(&blocks);
         events.push(Event {
@@ -289,25 +258,15 @@ pub(super) fn imported_session_from_data(
             role,
             timestamp,
             links: Links {
-                parent_event_id: parent_id.clone(),
-                provider_parent_id: parent_id,
-                provider_turn_id: None,
-                turn_index: None,
-                turn_boundary,
+                parent_event_id: parent_id,
+                turn_id: None,
+                turn_outcome,
                 related_event_ids: Vec::new(),
             },
             blocks,
             metadata: Metadata {
-                source: Source {
-                    provider_id: provider,
-                    original_id: Some(msg_id),
-                    original_role: Some(role_str.to_string()),
-                    phase: None,
-                },
                 model,
                 usage,
-                fidelity: Fidelity::Preserved,
-                provider_ext,
             },
         });
     }
@@ -339,33 +298,37 @@ pub(super) fn imported_session_from_data(
     let mut extensions = BTreeMap::new();
     extensions.insert("opencode_session".to_string(), session_json.clone());
 
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: session_id_val.clone(),
-                source_title: title,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id: session_id_val.clone(),
-                    source_path: Some(session_id.to_string()),
-                },
-                aliases: Vec::new(),
+                id: session_id_val.clone(),
+                title,
             },
             context: Context {
-                workspace_dir: project_dir,
+                workspace: project_dir,
                 created_at: created,
                 last_active_at: updated,
                 tags: Vec::new(),
             },
             events,
-            artifacts,
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id: session_id_val.clone(),
+                source_path: Some(session_id.to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     })
 }
@@ -385,7 +348,6 @@ pub(super) fn canonical_blocks_from_parts(
     msg_id: &str,
     msg_parts: &[Value],
     report: &mut MappingReport,
-    artifacts: &mut Vec<Artifact>,
 ) -> Vec<Block> {
     let mut blocks = Vec::new();
 
@@ -408,10 +370,7 @@ pub(super) fn canonical_blocks_from_parts(
                         path: Some(format!("{}:part:{}", msg_id, idx)),
                         raw: Some(part.clone()),
                     });
-                    blocks.push(Block::ProviderPayload {
-                        kind: "text".to_string(),
-                        payload: part.clone(),
-                    });
+                    blocks.push(Block::Other { raw: part.clone() });
                 }
             }
             Some("reasoning") => {
@@ -431,10 +390,7 @@ pub(super) fn canonical_blocks_from_parts(
                         path: Some(format!("{}:part:{}", msg_id, idx)),
                         raw: Some(part.clone()),
                     });
-                    blocks.push(Block::ProviderPayload {
-                        kind: "reasoning".to_string(),
-                        payload: part.clone(),
-                    });
+                    blocks.push(Block::Other { raw: part.clone() });
                 }
             }
             Some("tool") => {
@@ -493,14 +449,6 @@ pub(super) fn canonical_blocks_from_parts(
                             data: Some(data.to_string()),
                             path: Some(filename.to_string()),
                         });
-                        artifacts.push(Artifact {
-                            id: format!("{}:image:{}", msg_id, idx),
-                            kind: ArtifactKind::Image,
-                            path: Some(filename.to_string()),
-                            mime_type: Some(mime_type.to_string()),
-                            content: None,
-                            metadata: BTreeMap::new(),
-                        });
                     } else {
                         report.push_issue(MappingIssue {
                             level: MappingIssueLevel::Warning,
@@ -511,24 +459,13 @@ pub(super) fn canonical_blocks_from_parts(
                             path: Some(format!("{}:part:{}", msg_id, idx)),
                             raw: Some(part.clone()),
                         });
-                        blocks.push(Block::ProviderPayload {
-                            kind: "file".to_string(),
-                            payload: part.clone(),
-                        });
+                        blocks.push(Block::Other { raw: part.clone() });
                     }
                 } else if !url.is_empty() {
                     blocks.push(Block::File {
                         path: filename.to_string(),
                         content: Some(url.to_string()),
                         mime_type: Some(mime.to_string()),
-                    });
-                    artifacts.push(Artifact {
-                        id: format!("{}:file:{}", msg_id, idx),
-                        kind: ArtifactKind::File,
-                        path: Some(filename.to_string()),
-                        mime_type: Some(mime.to_string()),
-                        content: Some(url.to_string()),
-                        metadata: BTreeMap::new(),
                     });
                 } else {
                     report.push_issue(MappingIssue {
@@ -541,10 +478,7 @@ pub(super) fn canonical_blocks_from_parts(
                         path: Some(format!("{}:part:{}", msg_id, idx)),
                         raw: Some(part.clone()),
                     });
-                    blocks.push(Block::ProviderPayload {
-                        kind: "file".to_string(),
-                        payload: part.clone(),
-                    });
+                    blocks.push(Block::Other { raw: part.clone() });
                 }
             }
             Some("patch") => {
@@ -569,36 +503,13 @@ pub(super) fn canonical_blocks_from_parts(
                     .map(str::to_string);
                 blocks.push(Block::Patch {
                     summary: None,
-                    diff_text: diff_text.clone(),
-                    files: files.clone(),
-                    hash: hash.clone(),
-                });
-                artifacts.push(Artifact {
-                    id: format!("{}:patch:{}", msg_id, idx),
-                    kind: ArtifactKind::Patch,
-                    path: None,
-                    mime_type: None,
-                    content: diff_text,
-                    metadata: {
-                        let mut metadata = BTreeMap::new();
-                        if let Some(hash) = hash {
-                            metadata.insert("hash".to_string(), Value::String(hash));
-                        }
-                        if !files.is_empty() {
-                            metadata.insert(
-                                "files".to_string(),
-                                Value::Array(files.into_iter().map(Value::String).collect()),
-                            );
-                        }
-                        metadata
-                    },
+                    diff_text,
+                    files,
+                    hash,
                 });
             }
             Some("step-start") | Some("step-finish") | Some("compaction") => {
-                blocks.push(Block::ProviderPayload {
-                    kind: part_type.unwrap_or("unknown").to_string(),
-                    payload: part.clone(),
-                });
+                blocks.push(Block::Other { raw: part.clone() });
             }
             Some(other) => {
                 report.push_issue(MappingIssue {
@@ -634,20 +545,20 @@ pub(super) fn derive_event_kind(blocks: &[Block]) -> EventKind {
         .iter()
         .any(|block| matches!(block, Block::Patch { .. }))
     {
-        EventKind::Patch
+        EventKind::Action
     } else if blocks
         .iter()
         .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        EventKind::ToolResult
+        EventKind::Observation
     } else if blocks
         .iter()
         .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        EventKind::ToolCall
+        EventKind::Action
     } else if blocks
         .iter()
-        .any(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
+        .any(|block| matches!(block, Block::Other { .. }))
     {
         EventKind::Other
     } else {
@@ -1275,7 +1186,6 @@ pub(super) fn count_visible_opencode_messages(
     parts: &HashMap<String, Vec<Value>>,
 ) -> usize {
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-    let mut artifacts = Vec::new();
     let mut count = 0usize;
     for (_, msg_json) in messages {
         let role_str = msg_json
@@ -1297,11 +1207,10 @@ pub(super) fn count_visible_opencode_messages(
             .to_string();
         let msg_parts: Vec<Value> = parts.get(&msg_id).cloned().unwrap_or_default();
         let mut blocks =
-            canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report, &mut artifacts);
+            canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report);
         if blocks.is_empty() {
-            blocks = vec![Block::ProviderPayload {
-                kind: "message_without_mappable_parts".to_string(),
-                payload: msg_json.clone(),
+            blocks = vec![Block::Other {
+                raw: msg_json.clone(),
             }];
         }
         let kind = derive_event_kind(&blocks);
