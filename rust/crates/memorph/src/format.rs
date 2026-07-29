@@ -619,4 +619,40 @@ mod tests {
             serde_json::to_value(&session).unwrap()
         );
     }
+
+    /// The `.json` export must be a pure `oasf::Session`: deserializable by a
+    /// consumer that depends only on the `oasf` crate, with no memorph-specific
+    /// top-level fields leaking into the interchange shape.
+    #[test]
+    fn json_export_is_pure_oasf_session() {
+        let dir = tempdir().unwrap();
+        let session = sample_session();
+        let export = crate::core::session_management::write_session_export_files(
+            &session,
+            "session",
+            "json",
+            Some(dir.path()),
+        )
+        .unwrap();
+        let json_path = std::path::Path::new(&export.files[0]);
+        let json = std::fs::read_to_string(json_path).unwrap();
+
+        // No memorph conversion-metadata may appear at the top level: oasf v1
+        // dropped provenance/artifacts/fidelity/source from the Session shape.
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let object = value.as_object().expect("export is a JSON object");
+        for forbidden in ["provenance", "artifacts", "fidelity", "source"] {
+            assert!(
+                !object.contains_key(forbidden),
+                "oasf-pure export must not carry `{forbidden}` at top level"
+            );
+        }
+
+        // An oasf-only consumer deserializes the export using only `oasf::Session`.
+        let pure: oasf::Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(pure.schema.name, oasf::OASF_SCHEMA_NAME);
+        assert_eq!(pure.schema.version, oasf::OASF_SCHEMA_VERSION);
+        assert_eq!(pure.identity.id, "session-1");
+        assert_eq!(pure.events.len(), session.events.len());
+    }
 }
