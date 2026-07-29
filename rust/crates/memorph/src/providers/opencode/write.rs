@@ -281,13 +281,18 @@ pub(super) fn build_opencode_message_data_from_event(
     parent_id: Option<&str>,
     target_dir: &str,
 ) -> Value {
-    let provider_id = normalize_provider_id("opencode");
-    let model_id = event
+    let model_name = event
         .metadata
         .model
         .as_deref()
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| default_model_id(&provider_id));
+        .filter(|value| !value.is_empty());
+    let provider_id = model_name
+        .map(provider_for_model)
+        .unwrap_or("openai")
+        .to_string();
+    let model_id = model_name
+        .map(ToString::to_string)
+        .unwrap_or_else(|| default_model_id(&provider_id).to_string());
     let mut msg_json = serde_json::Map::new();
     msg_json.insert("id".to_string(), Value::String(msg_id.to_string()));
     msg_json.insert(
@@ -416,13 +421,30 @@ pub(super) fn parse_data_uri(uri: &str) -> Option<(&str, &str)> {
     Some((mime, data))
 }
 
-pub(super) fn normalize_provider_id(provider: &str) -> String {
-    match provider {
-        "claude" | "anthropic" => "anthropic".to_string(),
-        "codex" | "openai" => "openai".to_string(),
-        "opencode" => "opencode".to_string(),
-        other if !other.is_empty() => other.to_string(),
-        _ => "openai".to_string(),
+/// Derive the OpenCode model provider from a canonical model name.
+fn provider_for_model(model: &str) -> &'static str {
+    let model = model.to_ascii_lowercase();
+    if model.starts_with("claude") {
+        "anthropic"
+    } else if model.starts_with("gpt")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+        || model.starts_with("o5")
+    {
+        "openai"
+    } else if model.starts_with("gemini") {
+        "google"
+    } else if model.starts_with("deepseek") {
+        "deepseek"
+    } else if model.starts_with("grok") {
+        "x-ai"
+    } else if model.starts_with("qwen") || model.starts_with("qwq") {
+        "qwen"
+    } else if model.starts_with("mistral") || model.starts_with("codestral") {
+        "mistral"
+    } else {
+        "openai"
     }
 }
 

@@ -435,11 +435,17 @@ fn import_parsed_session(path: &Path, parsed: ParsedGeminiSession) -> Result<Imp
         .or_else(|| path_mtime_datetime(path))
         .unwrap_or(created_at);
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let mut user_message_turn = 0usize;
     let events: Vec<Event> = parsed
         .messages
         .iter()
         .enumerate()
-        .map(|(index, message)| event_from_message(index, message, created_at, &mut report))
+        .map(|(index, message)| {
+            if message.get("type").and_then(Value::as_str) == Some("user") {
+                user_message_turn += 1;
+            }
+            event_from_message(index, user_message_turn, message, created_at, &mut report)
+        })
         .collect();
 
     for (index, record) in parsed.raw_records.iter().enumerate() {
@@ -506,6 +512,7 @@ fn import_parsed_session(path: &Path, parsed: ParsedGeminiSession) -> Result<Imp
 
 fn event_from_message(
     index: usize,
+    turn: usize,
     message: &Value,
     fallback_timestamp: DateTime<Utc>,
     report: &mut MappingReport,
@@ -538,7 +545,7 @@ fn event_from_message(
         timestamp: message_datetime(message, "timestamp").unwrap_or(fallback_timestamp),
         links: Links {
             parent_event_id: None,
-            turn_id: Some(index.to_string()),
+            turn_id: Some(turn.to_string()),
             turn_outcome: None,
             related_event_ids: Vec::new(),
         },

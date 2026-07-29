@@ -246,7 +246,6 @@ fn turn_boundary_name(boundary: TurnOutcome) -> &'static str {
 
 fn parse_turn_boundary(value: &str) -> rusqlite::Result<TurnOutcome> {
     match value {
-        "started" => Ok(TurnOutcome::Incomplete),
         "completed" => Ok(TurnOutcome::Completed),
         "failed" => Ok(TurnOutcome::Failed),
         "interrupted" => Ok(TurnOutcome::Interrupted),

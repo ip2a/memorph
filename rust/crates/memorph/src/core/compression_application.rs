@@ -208,9 +208,14 @@ pub fn restore_compression_archive(
     })?;
     let result = (|| {
         let archive = compression::load_archive(&params.archive_ref)?;
+        let provider_id = archive.source_provider_id.trim();
+        let provider_id = if provider_id.is_empty() {
+            "memorph".to_string()
+        } else {
+            provider_id.to_string()
+        };
         let session =
             session_management::session_from_compression_archive(&params.archive_ref, archive)?;
-        let provider_id = "memorph".to_string();
         let provider_session_id = session.identity.id.clone();
         let export = session_management::restore_compression_archive(params, &session)?;
         let artifacts = register_session_export_artifacts(

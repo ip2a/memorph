@@ -136,7 +136,10 @@ fn read_jsonl_values(path: &Path) -> Vec<Result<Value, serde_json::Error>> {
 
 fn provider_payload_kind(event: &Event) -> Option<&str> {
     event.blocks.iter().find_map(|block| match block {
-        Block::Other { raw } => raw.get("type")?.as_str(),
+        Block::Other { raw } => raw
+            .get("type")
+            .and_then(Value::as_str)
+            .or_else(|| raw.get("message").and_then(|m| m.get("type")).and_then(Value::as_str)),
         _ => None,
     })
 }

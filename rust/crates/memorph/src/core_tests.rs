@@ -958,6 +958,21 @@ fn archive_search_event(id: &str, text: &str, role: Role) -> Event {
 
 fn active_compression_source_session() -> Session {
     let now = Utc::now();
+    let mut extensions = BTreeMap::new();
+    extensions.insert(
+        "memorph_provenance".to_string(),
+        serde_json::to_value(Provenance {
+            imported_at: now,
+            imported_by: None,
+            primary_source: ProviderRef {
+                provider_id: "claude".to_string(),
+                session_id: "dry-run-file".to_string(),
+                source_path: None,
+            },
+            aliases: Vec::new(),
+        })
+        .unwrap(),
+    );
     Session {
         schema: Schema::default(),
         identity: Identity {
@@ -995,7 +1010,7 @@ fn active_compression_source_session() -> Session {
                 },
             },
         ],
-        extensions: Default::default(),
+        extensions,
     }
 }
 

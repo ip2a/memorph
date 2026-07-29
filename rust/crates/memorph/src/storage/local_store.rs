@@ -910,7 +910,7 @@ const V7_SCHEMA: &str = r#"
 ALTER TABLE session_event_index ADD COLUMN provider_turn_id TEXT;
 ALTER TABLE session_event_index ADD COLUMN turn_index INTEGER;
 ALTER TABLE session_event_index ADD COLUMN turn_boundary TEXT
-    CHECK(turn_boundary IS NULL OR turn_boundary IN ('started', 'completed', 'failed', 'interrupted'));
+    CHECK(turn_boundary IS NULL OR turn_boundary IN ('completed', 'failed', 'interrupted', 'incomplete'));
 
 CREATE INDEX idx_session_event_index_turn
     ON session_event_index(provider_id, source_path, provider_turn_id, event_index);
