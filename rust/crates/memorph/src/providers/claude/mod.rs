@@ -2315,7 +2315,6 @@ mod tests {
                     text: "Done.".to_string(),
                 },
                 Block::Other { raw: serde_json::Value::Null },
-                },
             ],
         );
 
@@ -2374,7 +2373,6 @@ mod tests {
                     text: "Build this".to_string(),
                 },
                 Block::Other { raw: serde_json::Value::Null },
-                },
             ],
         );
 
