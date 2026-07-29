@@ -4,7 +4,7 @@ pub mod hook;
 use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
     MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
-    ProviderRef, Role, Schema, Session, Source, TurnOutcome, Usage,
+    ProviderRef, Role, Schema, Session, TurnOutcome, Usage,
 };
 use crate::provider::{
     canonical_block_text, canonical_event_is_visible_message, canonical_event_visible_message_role,
@@ -790,7 +790,7 @@ fn canonical_block_to_claude_content(block: &Block) -> Option<Value> {
             "content": content,
             "is_error": is_error,
         })),
-        Block::ProviderPayload { .. } => None,
+        Block::Other { .. } => None,
         _ => {
             let text = canonical_block_text(block);
             (!text.trim().is_empty()).then(|| {
@@ -1303,28 +1303,9 @@ fn canonical_event_from_claude_line(
         },
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id: value
-                    .get("uuid")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-                original_role: message
-                    .get("role")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-                    .or_else(|| Some(line_type.to_string())),
-                phase: Some(line_type.to_string()),
-            },
             model,
             usage,
-            fidelity: Fidelity::Preserved,
-            provider_ext: {
-                let mut ext = BTreeMap::new();
-                ext.insert("claude_raw_line".to_string(), value.clone());
-                ext
             },
-        },
     })
 }
 
@@ -1492,14 +1473,7 @@ fn claude_content_block(
                 path: Some(format!("line:{}:block:{}", line_number, block_index)),
                 raw: Some(value.clone()),
             });
-            Block::ProviderPayload {
-                kind: value
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap()
-                    .to_string(),
-                payload: value.clone(),
-            }
+            Block::Other { raw: value.clone() }
         }
         Some(kind) => {
             report.push_issue(MappingIssue {
@@ -1510,10 +1484,7 @@ fn claude_content_block(
                 path: Some(format!("line:{}:block:{}", line_number, block_index)),
                 raw: Some(value.clone()),
             });
-            Block::ProviderPayload {
-                kind: kind.to_string(),
-                payload: value.clone(),
-            }
+            Block::Other { raw: value.clone() }
         }
         None => {
             report.push_issue(MappingIssue {
@@ -1534,15 +1505,15 @@ fn claude_event_kind(blocks: &[Block]) -> EventKind {
         .iter()
         .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        EventKind::ToolResult
+        EventKind::Observation
     } else if blocks
         .iter()
         .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        EventKind::ToolCall
+        EventKind::Action
     } else if blocks
         .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
+        .all(|block| matches!(block, Block::Other { .. } | Block::Other { .. }))
     {
         EventKind::Other
     } else {
@@ -1582,26 +1553,11 @@ fn provider_payload_event(
             turn_boundary: None,
             related_event_ids: Vec::new(),
         },
-        blocks: vec![Block::ProviderPayload {
-            kind: payload_kind.to_string(),
-            payload,
-        }],
+        blocks: vec![Block::Other { raw: serde_json::Value::Null }],
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id: None,
-                original_role: Some(payload_kind.to_string()),
-                phase: Some(payload_kind.to_string()),
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: {
-                let mut ext = BTreeMap::new();
-                ext.insert("claude_raw_line".to_string(), raw_line);
-                ext
             },
-        },
     }
 }
 
@@ -2075,17 +2031,9 @@ mod tests {
             links: Links::default(),
             blocks,
             metadata: Metadata {
-                source: Source {
-                    provider_id: "codex".to_string(),
-                    original_id: None,
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: BTreeMap::new(),
-            },
+                },
         }
     }
 
@@ -2235,7 +2183,7 @@ mod tests {
             event.kind == EventKind::Lifecycle
                 && matches!(
                     event.blocks.first(),
-                    Some(Block::ProviderPayload { kind, .. })
+                    Some(Block::Other { .. })
                         if kind == "file-history-snapshot"
                 )
         }));
@@ -2245,7 +2193,7 @@ mod tests {
             .iter()
             .find(|event| event.id == "assistant-1")
             .unwrap();
-        assert_eq!(assistant.kind, EventKind::ToolCall);
+        assert_eq!(assistant.kind, EventKind::Action);
         assert!(matches!(
             assistant.blocks.first(),
             Some(Block::Thinking {
@@ -2352,9 +2300,7 @@ mod tests {
 
     #[test]
     fn provider_payload_block_is_skipped_in_export() {
-        let block = Block::ProviderPayload {
-            kind: "function_call".to_string(),
-            payload: serde_json::json!({ "name": "shell" }),
+        let block = Block::Other { raw: serde_json::json!({ "name": "shell"  }),
         };
         assert!(canonical_block_to_claude_content(&block).is_none());
     }
@@ -2368,12 +2314,7 @@ mod tests {
                 Block::Text {
                     text: "Done.".to_string(),
                 },
-                Block::ProviderPayload {
-                    kind: "task_complete".to_string(),
-                    payload: serde_json::json!({
-                        "type": "task_complete",
-                        "last_agent_message": "Done."
-                    }),
+                Block::Other { raw: serde_json::Value::Null },
                 },
             ],
         );
@@ -2398,7 +2339,7 @@ mod tests {
     #[test]
     fn assistant_tool_calls_export_as_structured_tool_use() {
         let event = test_event(
-            EventKind::ToolCall,
+            EventKind::Action,
             Role::Assistant,
             vec![Block::ToolCall {
                 tool_call_id: "call_1".to_string(),
@@ -2432,12 +2373,7 @@ mod tests {
                 Block::Text {
                     text: "Build this".to_string(),
                 },
-                Block::ProviderPayload {
-                    kind: "token_count".to_string(),
-                    payload: serde_json::json!({
-                        "input_tokens": 10,
-                        "output_tokens": 20
-                    }),
+                Block::Other { raw: serde_json::Value::Null },
                 },
             ],
         );
@@ -2458,7 +2394,7 @@ mod tests {
 
         assert!(matches!(
             block,
-            Block::ProviderPayload { ref kind, ref payload }
+            Block::Other { raw: serde_json::Value::Null }
                 if kind == "tool_use" && payload == &serde_json::json!({"type": "tool_use", "name": "Read"})
         ));
         assert!(report
