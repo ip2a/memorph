@@ -3,15 +3,15 @@ use super::projection::*;
 use super::session_mutation::*;
 use super::sessions::*;
 use super::*;
-use crate::session::{
-    Block, Context, Event, EventKind, Fidelity, Identity, Links, MappingDirection, MappingReport,
-    Metadata, Provenance, ProviderRef, Role, Schema, Source,
-};
 use crate::hooks::model::{
     HookToolCall, PermissionRequest, QuestionRequest, RuntimeSession, RuntimeSessionId,
     RuntimeSessionStatus,
 };
 use crate::provider::Provider;
+use crate::session::{
+    Block, Context, Event, EventKind, Identity, Links, MappingDirection, MappingReport, Metadata,
+    Provenance, ProviderRef, Role, Schema,
+};
 use crate::storage::{local_store, snapshot_store::StaleSnapshotSourceRow};
 use chrono::Utc;
 use std::collections::BTreeMap;
@@ -311,38 +311,30 @@ fn imported_session_title_prefers_display_title_before_native_and_meta() {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: "canonical-1".to_string(),
-                source_title: Some("Native".to_string()),
+                id: "canonical-1".to_string(),
+                title: Some("Native".to_string()),
             },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: None,
-                primary_source: ProviderRef {
-                    provider_id: "codex".to_string(),
-                    session_id: "session-1".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
-            },
-            context: Context {
-                workspace_dir: None,
-                created_at: None,
-                last_active_at: None,
-                tags: Vec::new(),
-            },
+            context: Context::default(),
             events: Vec::new(),
-            artifacts: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Default::default(),
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: None,
+            primary_source: ProviderRef {
+                provider_id: "codex".to_string(),
+                session_id: "session-1".to_string(),
+                source_path: None,
+            },
+            aliases: Vec::new(),
+        },
+        event_meta: Vec::new(),
         report: MappingReport::new("codex", MappingDirection::Import),
     };
 
     apply_imported_session_title(&mut imported, &meta, Some("Display".to_string()));
 
-    assert_eq!(
-        imported.session.identity.source_title.as_deref(),
-        Some("Display")
-    );
+    assert_eq!(imported.session.identity.title.as_deref(), Some("Display"));
 }
 
 #[test]
@@ -367,16 +359,8 @@ fn session_from_compression_archive_restores_source_events() {
                 text: "restored source context".to_string(),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "opencode".to_string(),
-                    original_id: Some("old-event".to_string()),
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: BTreeMap::new(),
             },
         }],
     };
@@ -387,13 +371,8 @@ fn session_from_compression_archive_restores_source_events() {
     )
     .unwrap();
 
-    assert_eq!(session.identity.canonical_id, "canonical-archive");
+    assert_eq!(session.identity.id, "canonical-archive");
     assert_eq!(session.events.len(), 1);
-    assert_eq!(session.provenance.primary_source.provider_id, "memorph");
-    assert_eq!(
-        session.provenance.primary_source.source_path.as_deref(),
-        Some("memorph-archive://test/archive.json")
-    );
     assert_eq!(session.context.tags, vec!["compression-archive"]);
     assert!(session.extensions.contains_key("compression_archive"));
 }
@@ -556,15 +535,10 @@ fn active_compression_archive_is_expandable_and_retrievable() {
     let archive_refs = applied.report.archive_refs;
     assert_eq!(archive_refs.len(), 1);
     assert!(compressed.events.iter().any(|event| {
-        event.blocks.iter().any(|block| {
-            matches!(
-                block,
-                Block::Compressed {
-                    archive_ref: Some(archive_ref),
-                    ..
-                } if archive_ref == &archive_refs[0]
-            )
-        })
+        compression::compressed_segment(event)
+            .and_then(|segment| segment.archive_ref)
+            .as_deref()
+            == Some(archive_refs[0].as_str())
     }));
     assert!(!compressed.events.iter().any(|event| {
         event.blocks.iter().any(|block| {
@@ -976,16 +950,8 @@ fn archive_search_event(id: &str, text: &str, role: Role) -> Event {
             text: text.to_string(),
         }],
         metadata: Metadata {
-            source: Source {
-                provider_id: "claude".to_string(),
-                original_id: Some(id.to_string()),
-                original_role: None,
-                phase: None,
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         },
     }
 }
@@ -995,18 +961,8 @@ fn active_compression_source_session() -> Session {
     Session {
         schema: Schema::default(),
         identity: Identity {
-            canonical_id: "dry-run-file".to_string(),
-            source_title: Some("Dry Run File".to_string()),
-        },
-        provenance: Provenance {
-            imported_at: now,
-            imported_by: None,
-            primary_source: ProviderRef {
-                provider_id: "claude".to_string(),
-                session_id: "dry-run-file".to_string(),
-                source_path: None,
-            },
-            aliases: Vec::new(),
+            id: "dry-run-file".to_string(),
+            title: Some("Dry Run File".to_string()),
         },
         context: Context::default(),
         events: vec![
@@ -1020,16 +976,8 @@ fn active_compression_source_session() -> Session {
                     text: "historical context ".repeat(80),
                 }],
                 metadata: Metadata {
-                    source: Source {
-                        provider_id: "claude".to_string(),
-                        original_id: Some("old-user".to_string()),
-                        original_role: Some("user".to_string()),
-                        phase: None,
-                    },
                     model: None,
                     usage: None,
-                    fidelity: Fidelity::Preserved,
-                    provider_ext: BTreeMap::new(),
                 },
             },
             Event {
@@ -1042,21 +990,12 @@ fn active_compression_source_session() -> Session {
                     text: "latest active request".to_string(),
                 }],
                 metadata: Metadata {
-                    source: Source {
-                        provider_id: "claude".to_string(),
-                        original_id: Some("recent-user".to_string()),
-                        original_role: Some("user".to_string()),
-                        phase: None,
-                    },
                     model: None,
                     usage: None,
-                    fidelity: Fidelity::Preserved,
-                    provider_ext: BTreeMap::new(),
                 },
             },
         ],
-        artifacts: Vec::new(),
-        extensions: BTreeMap::new(),
+        extensions: Default::default(),
     }
 }
 
