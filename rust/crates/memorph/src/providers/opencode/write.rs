@@ -174,7 +174,7 @@ pub(super) fn build_opencode_projection(input: OpenCodeProjectionInput<'_>) -> O
 pub(super) fn append_compressed_opencode_segment(
     session_id: &str,
     event: &Event,
-    segment: CompressedSegment<'_>,
+    segment: CompressedSegment,
     target_dir: &str,
     last_user_msg_id: &mut Option<String>,
     oc_messages: &mut Vec<(String, i64, Value)>,

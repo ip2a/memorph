@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::session::{Block, Event, EventKind, Fidelity, Links, Metadata, Role, Session, Source};
+use crate::session::{Block, Event, EventKind, Links, Metadata, Role, Session};
 use crate::config;
 use crate::logging;
 use crate::provider::{self, canonical_event_text};
@@ -30,35 +30,24 @@ pub enum CompressionMode {
     Expand,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CompressedSegment<'a> {
-    pub source_provider_id: &'a str,
-    pub summary: &'a str,
-    pub source_event_ids: &'a [String],
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompressedSegment {
+    pub source_provider_id: String,
+    pub summary: String,
+    pub source_event_ids: Vec<String>,
     pub source_event_count: Option<usize>,
-    pub archive_ref: Option<&'a str>,
+    pub archive_ref: Option<String>,
 }
 
-pub fn compressed_segment(event: &Event) -> Option<CompressedSegment<'_>> {
-    event.blocks.iter().find_map(|block| {
-        if let Block::Compressed {
-            source_provider_id,
-            summary,
-            source_event_ids,
-            source_event_count,
-            archive_ref,
-        } = block
-        {
-            Some(CompressedSegment {
-                source_provider_id: source_provider_id.as_str(),
-                summary: summary.as_str(),
-                source_event_ids: source_event_ids.as_slice(),
-                source_event_count: *source_event_count,
-                archive_ref: archive_ref.as_deref(),
-            })
-        } else {
-            None
-        }
+pub fn compressed_segment(event: &Event) -> Option<CompressedSegment> {
+    let text = canonical_event_text(event);
+    let portable = parse_portable_compressed_text(&text)?;
+    Some(CompressedSegment {
+        source_provider_id: portable.source_provider_id,
+        summary: portable.summary,
+        source_event_ids: Vec::new(),
+        source_event_count: portable.source_event_count,
+        archive_ref: portable.archive_ref,
     })
 }
 
@@ -388,13 +377,6 @@ fn normalize_portable_compressed_segments(
         .events
         .iter()
         .map(|event| {
-            if event
-                .blocks
-                .iter()
-                .any(|block| matches!(block, Block::Compressed { .. }))
-            {
-                return event.clone();
-            }
             let text = canonical_event_text(event);
             let Some(portable) = parse_portable_compressed_text(&text) else {
                 return event.clone();
@@ -403,7 +385,10 @@ fn normalize_portable_compressed_segments(
             if let Some(archive_ref) = &portable.archive_ref {
                 archive_refs.push(archive_ref.clone());
             }
-            compressed_event_from_portable_text(event, portable)
+            // Decision 3: the compressed segment stays as its portable text
+            // block (no in-band Block::Compressed). The archive ref is tracked
+            // by the compression archive store.
+            event.clone()
         })
         .collect::<Vec<_>>();
 
@@ -489,27 +474,17 @@ fn trim_summary_lines(lines: &[&str]) -> String {
     lines[first..last].join("\n")
 }
 
-fn compressed_event_from_portable_text(event: &Event, portable: PortableCompressedText) -> Event {
-    let mut next = event.clone();
-    next.blocks = vec![Block::Compressed {
-        source_provider_id: portable.source_provider_id.clone(),
-        summary: portable.summary,
-        source_event_ids: Vec::new(),
-        source_event_count: portable.source_event_count,
-        archive_ref: portable.archive_ref.clone(),
+fn compressed_block_summary_and_archive(event: &Event) -> Option<(String, Option<String>)> {
+    let portable = parse_portable_compressed_text(&canonical_event_text(event))?;
+    Some((portable.summary, portable.archive_ref))
+}
+
+fn expanded_summary_event(event: &Event, summary: &str) -> Event {
+    let mut expanded = event.clone();
+    expanded.blocks = vec![Block::Text {
+        text: summary.to_string(),
     }];
-    next.metadata.fidelity = Fidelity::Normalized;
-    next.metadata.source.phase = Some("compression-portable".to_string());
-    next.metadata.provider_ext.insert(
-        "memorph_compression".to_string(),
-        serde_json::json!({
-            "source_provider_id": portable.source_provider_id,
-            "source_event_count": portable.source_event_count,
-            "archive_ref": portable.archive_ref,
-            "portable": true,
-        }),
-    );
-    next
+    expanded
 }
 
 fn unchanged_report(session: &Session, policy: &CompressionPolicy) -> (Session, CompressionReport) {
@@ -544,11 +519,11 @@ fn expand_compressed_segments_with_archive(
             continue;
         };
 
-        let archive = load_archive_from_dir(archive_dir, archive_ref)?;
+        let archive = load_archive_from_dir(archive_dir, &archive_ref)?;
         restored_events += archive.events.len();
         events.extend(archive.events);
-        events.push(expanded_summary_event(event, summary));
-        archive_refs.push(archive_ref.to_string());
+        events.push(expanded_summary_event(event, &summary));
+        archive_refs.push(archive_ref);
         expanded_segments += 1;
     }
 
@@ -621,83 +596,43 @@ pub(crate) fn restore_compressed_segments_in_place_from_dir(
             expanded_segments: archive_refs.len(),
             preserved_events: session.events.len() - archive_refs.len(),
             restored_events,
-            target_provider_id: session.provenance.primary_source.provider_id.clone(),
+            target_provider_id: String::new(),
             archive_refs,
             ..CompressionReport::default()
         },
     ))
 }
 
-fn compressed_block_summary_and_archive(event: &Event) -> Option<(&str, Option<&str>)> {
-    event.blocks.iter().find_map(|block| {
-        if let Block::Compressed {
-            summary,
-            archive_ref,
-            ..
-        } = block
-        {
-            Some((summary.as_str(), archive_ref.as_deref()))
-        } else {
-            None
-        }
-    })
-}
-
-fn expanded_summary_event(event: &Event, summary: &str) -> Event {
-    let mut expanded = event.clone();
-    expanded.blocks = vec![Block::Text {
-        text: summary.to_string(),
-    }];
-    expanded.metadata.source.phase = Some("compression-expanded".to_string());
-    expanded.metadata.fidelity = Fidelity::Normalized;
-    expanded
-}
-
 fn compressed_summary_event(
     summary_event: &Event,
     source_provider_id: &str,
     summary: String,
-    source_event_ids: Vec<String>,
+    _source_event_ids: Vec<String>,
     source_event_count: Option<usize>,
     archive_ref: Option<String>,
 ) -> Event {
     let source_event_count = source_event_count
-        .or_else(|| (!source_event_ids.is_empty()).then_some(source_event_ids.len()));
-    let mut provider_ext = BTreeMap::new();
-    provider_ext.insert(
-        "memorph_compression".to_string(),
-        serde_json::json!({
-            "source_provider_id": source_provider_id,
-            "source_event_count": source_event_count,
-            "created_from_event_id": summary_event.id,
-            "archive_ref": archive_ref,
-        }),
-    );
-
+        .or_else(|| (!_source_event_ids.is_empty()).then_some(_source_event_ids.len()));
+    // Decision 3: emit the compressed segment as a portable text block (the
+    // format parse_portable_compressed_text reads). No in-band Block::Compressed;
+    // the archive ref lives in the text + the compression archive store.
+    let mut text = format!("[Compressed session segment from {source_provider_id}]\n{summary}");
+    if let Some(count) = source_event_count {
+        text.push_str(&format!("\nSource event count: {count}"));
+    }
+    if let Some(archive_ref) = archive_ref.as_ref() {
+        text.push_str(&format!("\nArchive: {archive_ref}"));
+    }
     Event {
         id: format!("memorph-compressed-{}", summary_event.id),
         kind: EventKind::Message,
         role: Role::Assistant,
         timestamp: summary_event.timestamp,
         links: Links::default(),
-        blocks: vec![Block::Compressed {
-            source_provider_id: source_provider_id.to_string(),
-            summary,
-            source_event_count,
-            source_event_ids,
-            archive_ref,
-        }],
+        blocks: vec![Block::Text { text }],
         metadata: Metadata {
-            source: Source {
-                provider_id: "memorph".to_string(),
-                original_id: Some(summary_event.id.clone()),
-                original_role: Some("assistant".to_string()),
-                phase: Some("compression".to_string()),
-            },
             model: summary_event.metadata.model.clone(),
             usage: None,
-            fidelity: Fidelity::Normalized,
-            provider_ext,
         },
     }
 }

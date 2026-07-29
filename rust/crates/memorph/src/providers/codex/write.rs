@@ -280,7 +280,7 @@ pub(super) fn replace_codex_session(session_id: &str, session: &Session) -> Resu
 fn write_codex_compacted_rollout_item(
     file: &mut impl Write,
     event: &Event,
-    segment: CompressedSegment<'_>,
+    segment: CompressedSegment,
 ) -> Result<()> {
     let model_visible_summary = codex_compacted_history_text(segment);
     let source_event_count = segment.source_event_count.or_else(|| {
@@ -319,7 +319,7 @@ fn write_codex_compacted_rollout_item(
     Ok(())
 }
 
-fn codex_compacted_history_text(segment: CompressedSegment<'_>) -> String {
+fn codex_compacted_history_text(segment: CompressedSegment) -> String {
     let mut parts = vec![
         format!(
             "[Compressed session segment from {}]",
