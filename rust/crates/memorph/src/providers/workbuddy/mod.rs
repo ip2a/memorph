@@ -3,7 +3,7 @@ pub mod hook;
 
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
@@ -113,11 +113,15 @@ impl Provider for WorkBuddyProvider {
             .cloned()
             .unwrap_or_default();
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-        let events = spans
+        let events: Vec<Event> = spans
             .iter()
             .enumerate()
             .filter_map(|(i, e)| map_event(e, i, &mut report))
             .collect();
+        let event_meta = events
+            .iter()
+            .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+            .collect::<Vec<_>>();
         let mut extensions = BTreeMap::new();
         extensions.insert("workbuddy_trace_json".into(), doc.clone());
         let created = spans
@@ -129,29 +133,29 @@ impl Provider for WorkBuddyProvider {
             session: Session {
                 schema: Schema::default(),
                 identity: Identity {
-                    canonical_id: id.clone(),
-                    source_title: doc_title(&doc),
-                },
-                provenance: Provenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderRef {
-                        provider_id: PROVIDER_ID.into(),
-                        session_id: id,
-                        source_path: Some(path.to_string_lossy().into_owned()),
-                    },
-                    aliases: Vec::new(),
+                    id: id.clone(),
+                    title: doc_title(&doc),
                 },
                 context: Context {
-                    workspace_dir: None,
+                    workspace: None,
                     created_at: Some(created),
                     last_active_at: modified_datetime(&path),
                     tags: Vec::new(),
                 },
                 events,
-                artifacts: Vec::new(),
                 extensions,
             },
+            provenance: Provenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: id,
+                    source_path: Some(path.to_string_lossy().into_owned()),
+                },
+                aliases: Vec::new(),
+            },
+            event_meta,
             report,
         })
     }
@@ -272,7 +276,7 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         ),
         "tool" | "tool_call" | "function" => (
             Role::Tool,
-            EventKind::ToolCall,
+            EventKind::Action,
             vec![Block::ToolCall {
                 tool_call_id: format!("workbuddy:{i}"),
                 name: v
@@ -286,7 +290,7 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         ),
         "tool_result" | "tool_output" => (
             Role::Tool,
-            EventKind::ToolResult,
+            EventKind::Observation,
             vec![Block::ToolResult {
                 tool_call_id: format!("workbuddy:{i}"),
                 content: text_for(v).unwrap_or_default(),
@@ -311,16 +315,8 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         links: Links::default(),
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.into(),
-                original_id: None,
-                original_role: Some(kind_raw),
-                phase: None,
-            },
             model: v.get("model").and_then(Value::as_str).map(str::to_string),
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         },
     })
 }
