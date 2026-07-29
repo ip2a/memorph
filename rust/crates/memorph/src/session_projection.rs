@@ -198,12 +198,7 @@ pub fn project_session_turns(
         .iter()
         .enumerate()
         .map(|(index, event)| {
-            let stable_cursor = event
-                .metadata
-                .source
-                .original_id
-                .as_deref()
-                .unwrap_or(event.id.as_str());
+            let stable_cursor = event.id.as_str();
             (
                 ProjectedEventKey::new(
                     Some(event.timestamp.timestamp_millis()),
@@ -228,19 +223,12 @@ pub fn project_session_turns(
     let mut next_turn_order = 0i64;
 
     for (key, event) in ordered_events {
-        if let Some(provider_turn_id) = event.links.provider_turn_id.as_deref() {
+        if let Some(provider_turn_id) = event.links.turn_id.as_deref() {
             let turn_index = if let Some(turn_index) = exact_turns.get(provider_turn_id) {
                 *turn_index
             } else {
-                let requested_order = event.links.turn_index.map(i64::from);
-                let turn_order = requested_order
-                    .filter(|order| {
-                        !turns
-                            .iter()
-                            .any(|turn| turn.projection.turn_order == *order)
-                    })
-                    .unwrap_or(next_turn_order);
-                next_turn_order = next_turn_order.max(turn_order.saturating_add(1));
+                let turn_order = next_turn_order;
+                next_turn_order = next_turn_order.saturating_add(1);
                 let turn_index = turns.len();
                 turns.push(TurnAccumulator {
                     projection: TurnProjection {
@@ -262,7 +250,7 @@ pub fn project_session_turns(
             include_turn_event(&mut turns[turn_index], &key);
             apply_turn_boundary(
                 &mut turns[turn_index],
-                event.links.turn_boundary,
+                event.links.turn_outcome,
                 key.timestamp_ms,
             );
             continue;
@@ -299,11 +287,11 @@ pub fn project_session_turns(
             include_turn_event(&mut turns[turn_index], &key);
             apply_turn_boundary(
                 &mut turns[turn_index],
-                event.links.turn_boundary,
+                event.links.turn_outcome,
                 key.timestamp_ms,
             );
             if matches!(
-                event.links.turn_boundary,
+                event.links.turn_outcome,
                 Some(TurnOutcome::Completed | TurnOutcome::Failed | TurnOutcome::Interrupted)
             ) {
                 current_inferred = None;
@@ -329,10 +317,6 @@ fn apply_turn_boundary(
     timestamp_ms: Option<i64>,
 ) {
     match boundary {
-        Some(TurnOutcome::Started) => {
-            turn.projection.status = TurnStatus::Open;
-            turn.projection.started_at_ms = turn.projection.started_at_ms.or(timestamp_ms);
-        }
         Some(TurnOutcome::Completed) => {
             turn.projection.status = TurnStatus::Completed;
             turn.projection.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
