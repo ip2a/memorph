@@ -3,7 +3,7 @@ pub mod hook;
 
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
@@ -119,7 +119,7 @@ impl Provider for AntigravityProvider {
         }
         let id = document_id(&doc).context("Antigravity document must contain sessionId")?;
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-        let events = messages(&doc)
+        let events: Vec<Event> = messages(&doc)
             .iter()
             .enumerate()
             .filter_map(|(i, m)| map_message(m, i, &mut report))
@@ -129,25 +129,19 @@ impl Provider for AntigravityProvider {
         let created = timestamp(&doc, "startTime")
             .or_else(|| modified_datetime(&path))
             .unwrap_or_else(Utc::now);
+        let event_meta = events
+            .iter()
+            .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+            .collect::<Vec<_>>();
         Ok(ImportedSession {
             session: Session {
                 schema: Schema::default(),
                 identity: Identity {
-                    canonical_id: id.clone(),
-                    source_title: messages(&doc).iter().find_map(|m| text_for(m)),
-                },
-                provenance: Provenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderRef {
-                        provider_id: PROVIDER_ID.into(),
-                        session_id: id,
-                        source_path: Some(path.to_string_lossy().into_owned()),
-                    },
-                    aliases: Vec::new(),
+                    id: id.clone(),
+                    title: messages(&doc).iter().find_map(|m| text_for(m)),
                 },
                 context: Context {
-                    workspace_dir: doc
+                    workspace: doc
                         .get("directories")
                         .and_then(Value::as_array)
                         .and_then(|a| a.first())
@@ -159,9 +153,19 @@ impl Provider for AntigravityProvider {
                     tags: Vec::new(),
                 },
                 events,
-                artifacts: Vec::new(),
                 extensions,
             },
+            provenance: Provenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: id,
+                    source_path: Some(path.to_string_lossy().into_owned()),
+                },
+                aliases: Vec::new(),
+            },
+            event_meta,
             report,
         })
     }
@@ -320,9 +324,9 @@ fn map_message(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         return None;
     };
     let kind = if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
-        EventKind::ToolCall
+        EventKind::Action
     } else if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
-        EventKind::ToolResult
+        EventKind::Observation
     } else {
         EventKind::Message
     };
@@ -342,16 +346,8 @@ fn map_message(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         links: Links::default(),
         blocks: bs,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.into(),
-                original_id: v.get("id").and_then(Value::as_str).map(str::to_string),
-                original_role: Some(role_raw.into()),
-                phase: None,
-            },
             model: v.get("model").and_then(Value::as_str).map(str::to_string),
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         },
     })
 }

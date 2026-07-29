@@ -3,7 +3,7 @@ pub mod hook;
 
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
@@ -109,11 +109,15 @@ impl Provider for DroidProvider {
             .context("Droid source must be .factory/sessions/<project>/<session>.jsonl")?;
         let raw = read_events(&path)?;
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-        let events = raw
+        let events: Vec<Event> = raw
             .iter()
             .enumerate()
             .filter_map(|(i, e)| map_event(e, i, &mut report))
             .collect();
+        let event_meta = events
+            .iter()
+            .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+            .collect::<Vec<_>>();
         let mut extensions = BTreeMap::new();
         extensions.insert("droid_session_jsonl".into(), Value::Array(raw.clone()));
         let created = raw
@@ -125,29 +129,29 @@ impl Provider for DroidProvider {
             session: Session {
                 schema: Schema::default(),
                 identity: Identity {
-                    canonical_id: id.clone(),
-                    source_title: raw.iter().find_map(text_for),
-                },
-                provenance: Provenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderRef {
-                        provider_id: PROVIDER_ID.into(),
-                        session_id: id,
-                        source_path: Some(path.to_string_lossy().into_owned()),
-                    },
-                    aliases: Vec::new(),
+                    id: id.clone(),
+                    title: raw.iter().find_map(text_for),
                 },
                 context: Context {
-                    workspace_dir: raw.iter().find_map(workspace),
+                    workspace: raw.iter().find_map(workspace),
                     created_at: Some(created),
                     last_active_at: modified_datetime(&path),
                     tags: Vec::new(),
                 },
                 events,
-                artifacts: Vec::new(),
                 extensions,
             },
+            provenance: Provenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: id,
+                    source_path: Some(path.to_string_lossy().into_owned()),
+                },
+                aliases: Vec::new(),
+            },
+            event_meta,
             report,
         })
     }
@@ -311,9 +315,9 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         return None;
     };
     let kind = if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
-        EventKind::ToolCall
+        EventKind::Action
     } else if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
-        EventKind::ToolResult
+        EventKind::Observation
     } else {
         EventKind::Message
     };
@@ -333,16 +337,8 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         links: Links::default(),
         blocks: bs,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.into(),
-                original_id: None,
-                original_role: Some(role_raw.into()),
-                phase: None,
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         },
     })
 }
