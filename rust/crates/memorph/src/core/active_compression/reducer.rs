@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::session::{Block, Event, Role};
 use crate::provider::canonical_event_text;
+use crate::session::{Block, Event, Role};
 
 use super::adaptive::adaptive_keep_count;
 use super::content::{content_profile, detect_text_kind, parse_search_result_line};
@@ -846,9 +846,13 @@ fn provider_payload_signals(source_events: &[Event]) -> Vec<String> {
     let mut payload_bytes = 0usize;
 
     for block in source_events.iter().flat_map(|event| event.blocks.iter()) {
-        let Block::ProviderPayload { kind, payload } = block else {
+        let Block::Other { raw: payload } = block else {
             continue;
         };
+        let kind = payload
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("other");
         push_unique(&mut kinds, kind);
         payload_bytes = payload_bytes.saturating_add(payload.to_string().len());
         if let Some(object) = payload.as_object() {

@@ -14,10 +14,10 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::session::{Block, Event, EventKind, Links, Metadata, Role, Session};
 use crate::config;
 use crate::logging;
 use crate::provider::{self, canonical_event_text};
+use crate::session::{Block, Event, EventKind, Links, Metadata, Role, Session};
 
 const ARCHIVE_SCHEME: &str = "memorph-archive://";
 const ARCHIVE_VERSION: u32 = 1;
@@ -547,8 +547,7 @@ pub fn compressed_archive_refs(session: &Session) -> Vec<String> {
         .events
         .iter()
         .filter_map(|event| {
-            compressed_block_summary_and_archive(event)
-                .and_then(|(_, archive_ref)| archive_ref.map(str::to_string))
+            compressed_block_summary_and_archive(event).and_then(|(_, archive_ref)| archive_ref)
         })
         .collect()
 }
@@ -579,7 +578,7 @@ pub(crate) fn restore_compressed_segments_in_place_from_dir(
             events.push(event.clone());
             continue;
         }
-        let archive = load_archive_from_dir(archive_dir, archive_ref)?;
+        let archive = load_archive_from_dir(archive_dir, &archive_ref)?;
         restored_events += archive.events.len();
         events.extend(archive.events);
         archive_refs.push(archive_ref.to_string());
@@ -645,7 +644,7 @@ fn write_archive(
     source_event_ids: Vec<String>,
     events: Vec<Event>,
 ) -> Result<String> {
-    let canonical_id = safe_path_segment(&session.identity.canonical_id);
+    let canonical_id = safe_path_segment(&session.identity.id);
     let archive_id = archive_id(session, policy, summary_event);
     let dir = archive_dir.join(&canonical_id);
     std::fs::create_dir_all(&dir).with_context(|| {
@@ -659,10 +658,10 @@ fn write_archive(
     let record = CompressionArchive {
         version: ARCHIVE_VERSION,
         created_at: Utc::now(),
-        canonical_id: session.identity.canonical_id.clone(),
+        canonical_id: session.identity.id.clone(),
         source_provider_id: policy.source_provider_id.clone(),
         target_provider_id: policy.target_provider_id.clone(),
-        workspace_dir: session.context.workspace_dir.clone(),
+        workspace_dir: session.context.workspace.clone(),
         summary_event_id: summary_event.id.clone(),
         source_event_ids,
         events,
@@ -1093,10 +1092,7 @@ fn compression_ratio(original_size_bytes: u64, stored_size_bytes: u64) -> f64 {
 fn archive_id(session: &Session, policy: &CompressionPolicy, summary_event: &Event) -> String {
     let raw = format!(
         "{}:{}:{}:{}",
-        session.identity.canonical_id,
-        policy.source_provider_id,
-        policy.target_provider_id,
-        summary_event.id
+        session.identity.id, policy.source_provider_id, policy.target_provider_id, summary_event.id
     );
     format!("{:x}", md5::compute(raw.as_bytes()))
 }
@@ -1123,7 +1119,7 @@ fn has_opencode_compaction(event: &Event) -> bool {
     event.blocks.iter().any(|block| {
         matches!(
             block,
-            Block::ProviderPayload { kind, .. } if kind == "compaction"
+            Block::Other { raw } if raw.get("type").and_then(Value::as_str) == Some("compaction")
         )
     })
 }
@@ -1138,10 +1134,10 @@ struct OpencodeCompactionProjection {
 
 fn opencode_compaction_projection(event: &Event) -> Option<OpencodeCompactionProjection> {
     let projection = event.blocks.iter().find_map(|block| {
-        let Block::ProviderPayload { kind, payload } = block else {
+        let Block::Other { raw: payload } = block else {
             return None;
         };
-        if kind != "compaction" {
+        if payload.get("type").and_then(Value::as_str) != Some("compaction") {
             return None;
         }
         let memorph = payload.get("memorph")?.as_object()?;
@@ -1185,14 +1181,12 @@ fn opencode_compaction_projection(event: &Event) -> Option<OpencodeCompactionPro
 }
 
 fn is_opencode_summary_event(event: &Event) -> bool {
-    event
-        .metadata
-        .provider_ext
-        .get("opencode_message")
-        .and_then(Value::as_object)
-        .and_then(|message| message.get("summary"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    event.blocks.iter().any(|block| {
+        matches!(
+            block,
+            Block::Other { raw } if raw.get("summary").and_then(Value::as_bool) == Some(true)
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1326,7 +1320,7 @@ mod tests {
             .is_empty());
 
         let mut session = sample_opencode_compacted_session();
-        session.context.workspace_dir = Some(workspace.to_string());
+        session.context.workspace = Some(workspace.to_string());
         let policy = CompressionPolicy::preserve("opencode", "codex");
         let (_, report) =
             prepare_for_export_with_archive_dir(&session, &policy, temp.path()).unwrap();

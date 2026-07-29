@@ -1,5 +1,6 @@
-use crate::session::{Block, Event, EventKind, Role, Session};
+use crate::core::compression;
 use crate::provider::canonical_event_text;
+use crate::session::{Block, Event, EventKind, Role, Session};
 
 use super::content::{content_profile, DetectedContentKind};
 use super::{
@@ -164,11 +165,7 @@ fn hard_skip_reason(
         return Some(CompressionSkipReason::SystemOrDeveloperInstruction);
     }
 
-    if event
-        .blocks
-        .iter()
-        .any(|block| matches!(block, Block::Compressed { .. }))
-    {
+    if compression::compressed_segment(event).is_some() {
         return Some(CompressionSkipReason::AlreadyCompressed);
     }
 
@@ -368,7 +365,7 @@ pub(super) fn classify_candidate(
     if event
         .blocks
         .iter()
-        .any(|block| matches!(block, Block::ProviderPayload { .. }))
+        .any(|block| matches!(block, Block::Other { .. }))
     {
         return Some((
             CompressionCandidateKind::ProviderPayloadText,

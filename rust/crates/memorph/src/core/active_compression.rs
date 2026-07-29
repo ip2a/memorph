@@ -1,11 +1,11 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
-use crate::session::{Block, Event, EventKind, Fidelity, Links, Metadata, Role, Session, Source};
 use crate::core::compression;
 use crate::provider::canonical_event_text;
+use crate::session::{Block, Event, EventKind, Links, Metadata, Role, Session};
 
 mod adaptive;
 mod content;
@@ -237,7 +237,7 @@ pub fn build_dry_run_report(
                 event
                     .blocks
                     .iter()
-                    .any(|block| matches!(block, Block::Compressed { .. }))
+                    .any(|_| compression::compressed_segment(event).is_some())
             })
             .count(),
         original_estimated_bytes,
@@ -480,18 +480,11 @@ fn active_summary_event(
         .last()
         .map(|event| event.timestamp)
         .unwrap_or_else(chrono::Utc::now);
-    let mut provider_ext = BTreeMap::new();
-    provider_ext.insert(
-        "memorph_compression".to_string(),
-        serde_json::json!({
-            "active": true,
-            "candidate_id": candidate.id,
-            "candidate_kind": candidate.kind,
-            "selection_reason": candidate.reason,
-            "source_event_count": source_event_count,
-            "archive_ref": archive_ref.clone(),
-        }),
-    );
+    let mut text = format!("[Compressed session segment from {source_provider_id}]\n{summary}");
+    text.push_str(&format!("\nSource event count: {source_event_count}"));
+    if let Some(archive_ref) = archive_ref {
+        text.push_str(&format!("\nArchive: {archive_ref}"));
+    }
 
     Event {
         id: format!("memorph-active-compressed-{}", candidate.id),
@@ -499,24 +492,10 @@ fn active_summary_event(
         role: Role::Assistant,
         timestamp,
         links: Links::default(),
-        blocks: vec![Block::Compressed {
-            source_provider_id: source_provider_id.to_string(),
-            summary,
-            source_event_ids,
-            source_event_count: Some(source_event_count),
-            archive_ref,
-        }],
+        blocks: vec![Block::Text { text }],
         metadata: Metadata {
-            source: Source {
-                provider_id: "memorph".to_string(),
-                original_id: Some(candidate.id.clone()),
-                original_role: Some("assistant".to_string()),
-                phase: Some("active-compression".to_string()),
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Normalized,
-            provider_ext,
         },
     }
 }
