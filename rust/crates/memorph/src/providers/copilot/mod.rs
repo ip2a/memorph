@@ -3,7 +3,7 @@ pub mod hook;
 
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
@@ -118,7 +118,7 @@ impl Provider for CopilotProvider {
             .or_else(|| file_modified_datetime(&path))
             .unwrap_or_else(Utc::now);
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-        let canonical_events = events
+        let canonical_events: Vec<Event> = events
             .iter()
             .enumerate()
             .filter_map(|(i, e)| map_event(e, i, &mut report))
@@ -137,33 +137,37 @@ impl Provider for CopilotProvider {
             .filter(|s| !s.trim().is_empty());
         let mut extensions = BTreeMap::new();
         extensions.insert("copilot_events_jsonl".into(), Value::Array(events));
+        let event_meta = canonical_events
+            .iter()
+            .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+            .collect::<Vec<_>>();
         Ok(ImportedSession {
             session: Session {
                 schema: Schema::default(),
                 identity: Identity {
-                    canonical_id: id.clone(),
-                    source_title: title,
-                },
-                provenance: Provenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderRef {
-                        provider_id: PROVIDER_ID.into(),
-                        session_id: id,
-                        source_path: Some(path.to_string_lossy().into_owned()),
-                    },
-                    aliases: Vec::new(),
+                    id: id.clone(),
+                    title,
                 },
                 context: Context {
-                    workspace_dir: session_cwd_from_value(&extensions["copilot_events_jsonl"]),
+                    workspace: session_cwd_from_value(&extensions["copilot_events_jsonl"]),
                     created_at: Some(timestamp),
                     last_active_at: file_modified_datetime(&path),
                     tags: Vec::new(),
                 },
                 events: canonical_events,
-                artifacts: Vec::new(),
                 extensions,
             },
+            provenance: Provenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: id,
+                    source_path: Some(path.to_string_lossy().into_owned()),
+                },
+                aliases: Vec::new(),
+            },
+            event_meta,
             report,
         })
     }
@@ -300,20 +304,12 @@ fn map_event(event: &Value, index: usize, report: &mut MappingReport) -> Option<
         links: Links::default(),
         blocks: vec![Block::Text { text: content }],
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.into(),
-                original_id: None,
-                original_role: Some(kind.into()),
-                phase: None,
-            },
             model: event
                 .get("data")
                 .and_then(|d| d.get("model"))
                 .and_then(Value::as_str)
                 .map(str::to_string),
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         },
     })
 }
