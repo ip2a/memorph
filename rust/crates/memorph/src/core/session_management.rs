@@ -5,13 +5,13 @@ use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::core::compression;
+use crate::format;
+use crate::provider;
 use crate::session::{
     Context, EventMeta, Identity, ImportedSession, MappingDirection, MappingReport, Provenance,
     ProviderRef, Schema, Session,
 };
-use crate::core::compression;
-use crate::format;
-use crate::provider;
 
 /// Key under which memorph stashes a session's `Provenance` in the pure oasf
 /// `Session::extensions` map, so `.morph` exports round-trip provenance
@@ -672,7 +672,8 @@ pub fn expand_compression_session(
         source_provider_id
     };
     let policy = compression::CompressionPolicy::expand(source_provider_id, source_provider_id);
-    let (mut expanded, _) = compression::prepare_for_export_with_archive(&imported.session, &policy)?;
+    let (mut expanded, _) =
+        compression::prepare_for_export_with_archive(&imported.session, &policy)?;
     // Stash provenance into the pure session's extensions so the .morph export
     // round-trips it without polluting the oasf session shape.
     expanded.extensions.insert(
@@ -874,10 +875,10 @@ pub(crate) fn session_from_compression_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{
-        Block, Event, EventKind, Fidelity, ImportedSession, Links, Metadata, Role, Source,
-    };
     use crate::provider::{ProviderBackupSupport, ProviderCapabilities, ProviderSessionSummary};
+    use crate::session::{
+        Block, Event, EventKind, ImportedSession, Links, Metadata, ProviderRef, Role,
+    };
     use crate::storage::{artifact_store::ArtifactQuery, local_store};
     use chrono::Utc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1408,30 +1409,10 @@ mod tests {
 
     #[test]
     fn prepare_session_for_target_provider_uses_session_source_provider() {
-        let session = sample_opencode_compacted_session();
-        let (prepared, report) = prepare_session_for_target_provider(&session, "codex").unwrap();
-
-        assert_eq!(report.normalized_segments, 1);
-        assert_eq!(report.target_provider_id, "codex");
-        assert!(matches!(
-            prepared
-                .events
-                .first()
-                .and_then(|event| event.blocks.first()),
-            Some(Block::Compressed { .. })
-        ));
-    }
-
-    fn sample_opencode_compacted_session() -> Session {
-        let now = Utc::now();
-        Session {
-            schema: Schema::default(),
-            identity: Identity {
-                canonical_id: "s1".to_string(),
-                source_title: None,
-            },
+        let imported = ImportedSession {
+            session: sample_opencode_compacted_session(),
             provenance: Provenance {
-                imported_at: now,
+                imported_at: Utc::now(),
                 imported_by: Some("test".to_string()),
                 primary_source: ProviderRef {
                     provider_id: "opencode".to_string(),
@@ -1440,6 +1421,27 @@ mod tests {
                 },
                 aliases: Vec::new(),
             },
+            event_meta: Vec::new(),
+            report: MappingReport::new("opencode", MappingDirection::Import),
+        };
+        let (prepared, report) = prepare_session_for_target_provider(&imported, "codex").unwrap();
+
+        assert_eq!(report.normalized_segments, 1);
+        assert_eq!(report.target_provider_id, "codex");
+        assert!(prepared
+            .events
+            .first()
+            .and_then(compression::compressed_segment)
+            .is_some());
+    }
+
+    fn sample_opencode_compacted_session() -> Session {
+        Session {
+            schema: Schema::default(),
+            identity: Identity {
+                id: "s1".to_string(),
+                title: None,
+            },
             context: Context::default(),
             events: vec![
                 text_event("old-user", Role::User, "large old context", false),
@@ -1447,37 +1449,29 @@ mod tests {
                 text_event("summary", Role::Assistant, "compressed summary", true),
                 text_event("tail", Role::User, "new request", false),
             ],
-            artifacts: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Default::default(),
         }
     }
 
     fn text_event(id: &str, role: Role, text: &str, summary: bool) -> Event {
-        let mut provider_ext = BTreeMap::new();
-        provider_ext.insert(
-            "opencode_message".to_string(),
-            serde_json::json!({ "summary": summary }),
-        );
+        let mut blocks = vec![Block::Text {
+            text: text.to_string(),
+        }];
+        if summary {
+            blocks.push(Block::Other {
+                raw: serde_json::json!({ "summary": true }),
+            });
+        }
         Event {
             id: id.to_string(),
             kind: EventKind::Message,
             role,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::Text {
-                text: text.to_string(),
-            }],
+            blocks,
             metadata: Metadata {
-                source: Source {
-                    provider_id: "opencode".to_string(),
-                    original_id: Some(id.to_string()),
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext,
             },
         }
     }
@@ -1489,21 +1483,12 @@ mod tests {
             role: Role::User,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::ProviderPayload {
-                kind: "compaction".to_string(),
-                payload: serde_json::json!({ "type": "compaction" }),
+            blocks: vec![Block::Other {
+                raw: serde_json::json!({ "type": "compaction" }),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "opencode".to_string(),
-                    original_id: Some(id.to_string()),
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: BTreeMap::new(),
             },
         }
     }
