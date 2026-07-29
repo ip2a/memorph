@@ -10,11 +10,6 @@ use self::load::*;
 use self::management::*;
 use self::write::*;
 
-use crate::session::{
-    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
-    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
-    ProviderRef, Role, Schema, Session, Source, TurnOutcome,
-};
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
@@ -25,6 +20,11 @@ use crate::provider::{
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
     ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
     StorageShape, TurnQuality, WriteRiskLevel,
+};
+use crate::session::{
+    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
+    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
+    ProviderRef, Role, Schema, Session, TurnOutcome,
 };
 use crate::storage::{
     activity_store::{
@@ -126,24 +126,20 @@ enum CodexInternalMessageKind {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct CodexTurnLink {
-    provider_turn_id: Option<String>,
-    turn_index: Option<u32>,
-    turn_boundary: Option<TurnOutcome>,
+    turn_id: Option<String>,
+    turn_outcome: Option<TurnOutcome>,
 }
 
 impl CodexTurnLink {
     fn apply_to(self, event: &mut Event) {
-        event.links.provider_turn_id = self.provider_turn_id;
-        event.links.turn_index = self.turn_index;
-        event.links.turn_boundary = self.turn_boundary;
+        event.links.turn_id = self.turn_id;
+        event.links.turn_outcome = self.turn_outcome;
     }
 }
 
 #[derive(Debug, Default)]
 struct CodexTurnTracker {
     active_turn_id: Option<String>,
-    turn_indices: HashMap<String, u32>,
-    next_turn_index: u32,
 }
 
 impl CodexTurnTracker {
@@ -153,8 +149,7 @@ impl CodexTurnTracker {
         let payload_type = payload
             .and_then(|value| value.get("type"))
             .and_then(Value::as_str);
-        let boundary = match (line_type, payload_type) {
-            (Some("event_msg"), Some("task_started")) => Some(TurnOutcome::Started),
+        let turn_outcome = match (line_type, payload_type) {
             (Some("event_msg"), Some("task_complete")) => Some(TurnOutcome::Completed),
             (Some("event_msg"), Some("turn_aborted")) => Some(TurnOutcome::Interrupted),
             _ => None,
@@ -169,33 +164,19 @@ impl CodexTurnTracker {
         if let Some(turn_id) = explicit_turn_id.as_ref() {
             self.active_turn_id = Some(turn_id.clone());
         }
-        let provider_turn_id = explicit_turn_id.or_else(|| self.active_turn_id.clone());
-        let turn_index = provider_turn_id
-            .as_ref()
-            .map(|turn_id| self.turn_index(turn_id));
+        let turn_id = explicit_turn_id.or_else(|| self.active_turn_id.clone());
         let closes_turn = matches!(
-            boundary,
+            turn_outcome,
             Some(TurnOutcome::Completed | TurnOutcome::Failed | TurnOutcome::Interrupted)
         );
-        if closes_turn && self.active_turn_id.as_ref() == provider_turn_id.as_ref() {
+        if closes_turn && self.active_turn_id.as_ref() == turn_id.as_ref() {
             self.active_turn_id = None;
         }
 
         CodexTurnLink {
-            provider_turn_id,
-            turn_index,
-            turn_boundary: boundary,
+            turn_id,
+            turn_outcome,
         }
-    }
-
-    fn turn_index(&mut self, turn_id: &str) -> u32 {
-        if let Some(index) = self.turn_indices.get(turn_id) {
-            return *index;
-        }
-        let index = self.next_turn_index;
-        self.next_turn_index = self.next_turn_index.saturating_add(1);
-        self.turn_indices.insert(turn_id.to_string(), index);
-        index
     }
 }
 
@@ -508,10 +489,10 @@ impl Provider for CodexProvider {
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         let source_path = Path::new(source_path);
         let mut imported = import_canonical_session(source_path)?;
-        imported.session.identity.source_title = resolve_codex_projection_title(
+        imported.session.identity.title = resolve_codex_projection_title(
             source_path,
-            &imported.session.identity.canonical_id,
-            imported.session.identity.source_title.as_deref(),
+            &imported.session.identity.id,
+            imported.session.identity.title.as_deref(),
         )?;
         Ok(imported)
     }
@@ -524,10 +505,10 @@ impl Provider for CodexProvider {
     ) -> Result<ProviderSessionImportPage> {
         let source_path = Path::new(source_path);
         let mut page = import_canonical_session_page(source_path, event_offset, event_limit)?;
-        page.imported.session.identity.source_title = resolve_codex_projection_title(
+        page.imported.session.identity.title = resolve_codex_projection_title(
             source_path,
-            &page.imported.session.identity.canonical_id,
-            page.imported.session.identity.source_title.as_deref(),
+            &page.imported.session.identity.id,
+            page.imported.session.identity.title.as_deref(),
         )?;
         Ok(page)
     }

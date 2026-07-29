@@ -80,7 +80,9 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                                 Block::Text {
                                     text: text.to_string(),
                                 },
-                                Block::Other { raw: payload.clone() },
+                                Block::Other {
+                                    raw: payload.clone(),
+                                },
                             ],
                             metadata: Metadata {
                                 model: payload
@@ -88,7 +90,7 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                                     .and_then(|v| v.as_str())
                                     .map(str::to_string),
                                 usage: None,
-                                },
+                            },
                         });
                     } else {
                         events.push(provider_payload_event(
@@ -308,9 +310,8 @@ pub(super) fn import_canonical_session_page(
             &mut report,
         ) {
             CodexTurnLink {
-                provider_turn_id: location.provider_turn_id,
-                turn_index: location.turn_index,
-                turn_boundary: location.turn_boundary,
+                turn_id: location.provider_turn_id,
+                turn_outcome: location.turn_boundary,
             }
             .apply_to(&mut event);
             events.push(event);
@@ -516,9 +517,9 @@ pub(super) fn build_codex_event_index(
             byte_offset: line_offset,
             byte_length: byte_length as u64,
             line_no,
-            provider_turn_id: turn_link.provider_turn_id,
-            turn_index: turn_link.turn_index,
-            turn_boundary: turn_link.turn_boundary,
+            provider_turn_id: turn_link.turn_id,
+            turn_index: None,
+            turn_boundary: turn_link.turn_outcome,
         });
         event_count += 1;
     }
@@ -632,7 +633,9 @@ pub(super) fn codex_event_from_line(
                         Block::Text {
                             text: text.to_string(),
                         },
-                        Block::Other { raw: payload.clone() },
+                        Block::Other {
+                            raw: payload.clone(),
+                        },
                     ],
                     metadata: Metadata {
                         model: payload
@@ -640,7 +643,7 @@ pub(super) fn codex_event_from_line(
                             .and_then(Value::as_str)
                             .map(str::to_string),
                         usage: None,
-                        },
+                    },
                 }
             } else {
                 provider_payload_event(
@@ -824,7 +827,7 @@ pub(super) fn codex_response_item_event(
             metadata: Metadata {
                 model: None,
                 usage: None,
-                },
+            },
         };
     }
 
@@ -856,7 +859,7 @@ pub(super) fn codex_response_item_event(
             metadata: Metadata {
                 model: None,
                 usage: None,
-                },
+            },
         };
     }
 
@@ -976,7 +979,9 @@ pub(super) fn codex_response_item_event(
             text: text.to_string(),
         });
     } else {
-        blocks.push(Block::Other { raw: payload.clone() });
+        blocks.push(Block::Other {
+            raw: payload.clone(),
+        });
     }
 
     if blocks.is_empty() {
@@ -990,7 +995,9 @@ pub(super) fn codex_response_item_event(
             path: Some(format!("response_item:{}", line_no)),
             raw: Some(payload.clone()),
         });
-        blocks.push(Block::Other { raw: payload.clone() });
+        blocks.push(Block::Other {
+            raw: payload.clone(),
+        });
     }
 
     if phase.as_deref() == Some("commentary") && blocks.len() == 1 {
@@ -1041,7 +1048,7 @@ pub(super) fn codex_response_item_event(
         metadata: Metadata {
             model: None,
             usage: None,
-            },
+        },
     }
 }
 
@@ -1188,7 +1195,9 @@ pub(super) fn codex_event_msg_event(
             });
         }
     }
-    blocks.push(Block::Other { raw: payload.clone() });
+    blocks.push(Block::Other {
+        raw: payload.clone(),
+    });
 
     let mut event = provider_payload_event(
         format!("codex:event_msg:{}:{}", event_type, line_no),
@@ -1266,11 +1275,13 @@ pub(super) fn provider_payload_event(
         role,
         timestamp,
         links: Links::default(),
-        blocks: vec![Block::Other { raw: payload.clone() }],
+        blocks: vec![Block::Other {
+            raw: payload.clone(),
+        }],
         metadata: Metadata {
             model: None,
             usage: None,
-            },
+        },
     }
 }
 
