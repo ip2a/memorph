@@ -329,7 +329,7 @@ fn apply_turn_boundary(
             turn.projection.status = TurnStatus::Interrupted;
             turn.projection.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
         }
-        None => {}
+        Some(TurnOutcome::Incomplete) | None => {}
     }
 }
 
