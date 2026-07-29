@@ -318,7 +318,7 @@ fn current_format_scan_uses_directory_locators_and_truthful_capabilities() -> Re
             .import_session(source_path.to_str().unwrap())?
             .session
             .identity
-            .canonical_id,
+            .id,
         sessions[1].session_id
     );
     assert_eq!(KiroProvider.data_source_paths(), vec![temp.path()]);
@@ -988,19 +988,18 @@ fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifac
 
     let imported = KiroProvider.import_session(session_dir.to_str().unwrap())?;
     assert_eq!(
-        imported.session.identity.canonical_id,
+        imported.session.identity.id,
         "sess_11111111-1111-4111-8111-111111111111"
     );
     assert_eq!(
-        imported.session.identity.source_title.as_deref(),
+        imported.session.identity.title.as_deref(),
         Some("Sanitized Kiro session")
     );
     assert_eq!(
-        imported.session.context.workspace_dir.as_deref(),
+        imported.session.context.workspace.as_deref(),
         Some("/workspace/sanitized-project")
     );
     assert_eq!(imported.session.events.len(), 12);
-    assert!(imported.session.artifacts.is_empty());
     assert_eq!(imported.report.overall, Fidelity::Preserved);
     assert!(imported
         .report
@@ -1017,11 +1016,11 @@ fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifac
             .session
             .events
             .iter()
-            .find(|event| event.metadata.source.original_id.as_deref() == Some(id))
+            .find(|event| event.id == id || event.id.ends_with(&format!(":{id}")))
             .unwrap()
     };
     assert_eq!(
-        event("msg-user-1").links.provider_turn_id.as_deref(),
+        event("msg-user-1").links.turn_id.as_deref(),
         Some("exec-1")
     );
     assert!(matches!(
@@ -1050,40 +1049,36 @@ fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifac
                 && content == "[sanitized tool output]"
                 && !is_error
     ));
+    assert_eq!(event("exec-1-turn-start").links.turn_outcome, None);
     assert_eq!(
-        event("exec-1-turn-start").links.turn_boundary,
-        Some(TurnOutcome::Started)
-    );
-    assert_eq!(
-        event("exec-1-turn-end").links.turn_boundary,
+        event("exec-1-turn-end").links.turn_outcome,
         Some(TurnOutcome::Completed)
     );
     assert_eq!(
-        event("sub-msg-user-1").links.provider_turn_id.as_deref(),
+        event("sub-msg-user-1").links.turn_id.as_deref(),
         Some("subexec-1")
     );
-    assert_eq!(
-        event("sub-msg-assistant-1").metadata.provider_ext["kiro_source"]["file"],
-        "sub-executions/subexec-1.jsonl"
-    );
+    assert!(event("sub-msg-assistant-1")
+        .id
+        .contains("sub-executions/subexec-1"));
 
     let ordered_ids = imported
         .session
         .events
         .iter()
-        .map(|event| event.metadata.source.original_id.as_deref().unwrap())
+        .map(|event| event.id.as_str())
         .collect::<Vec<_>>();
     let tool_call_index = ordered_ids
         .iter()
-        .position(|id| *id == "msg-tool-call-1")
+        .position(|id| id.ends_with("msg-tool-call-1"))
         .unwrap();
     let sub_user_index = ordered_ids
         .iter()
-        .position(|id| *id == "sub-msg-user-1")
+        .position(|id| id.ends_with("sub-msg-user-1"))
         .unwrap();
     let tool_result_index = ordered_ids
         .iter()
-        .position(|id| *id == "msg-tool-result-1")
+        .position(|id| id.ends_with("msg-tool-result-1"))
         .unwrap();
     assert!(tool_call_index < sub_user_index && sub_user_index < tool_result_index);
     assert!(!serde_json::to_string(&imported.session.events)?
@@ -1112,23 +1107,20 @@ fn current_format_import_keeps_exact_multi_turn_ids_and_explicit_sub_parent() ->
             .session
             .events
             .iter()
-            .find(|event| event.metadata.source.original_id.as_deref() == Some(id))
+            .find(|event| event.id == id || event.id.ends_with(&format!(":{id}")))
             .unwrap()
     };
     assert_eq!(
-        event("msg-user-2").links.provider_turn_id.as_deref(),
+        event("msg-user-2").links.turn_id.as_deref(),
         Some("exec-2")
     );
+    assert_eq!(event("exec-2-turn-start").links.turn_outcome, None);
     assert_eq!(
-        event("exec-2-turn-start").links.turn_boundary,
-        Some(TurnOutcome::Started)
-    );
-    assert_eq!(
-        event("exec-2-turn-end").links.turn_boundary,
+        event("exec-2-turn-end").links.turn_outcome,
         Some(TurnOutcome::Completed)
     );
     assert_eq!(
-        event("sub-parent").links.provider_turn_id.as_deref(),
+        event("sub-parent").links.turn_id.as_deref(),
         Some("exec-1")
     );
     assert_eq!(
@@ -1187,9 +1179,9 @@ fn current_format_import_reports_malformed_and_preserves_unknown_payloads() -> R
     assert_eq!(unknown.session.events[0].role, Role::Other);
     assert!(matches!(
         unknown.session.events[0].blocks.as_slice(),
-        [Block::ProviderPayload { kind, payload }]
-            if kind == "future_kiro_payload"
-                && payload["futureField"]["preserve"] == true
+        [Block::Other { raw }]
+            if raw["type"] == "future_kiro_payload"
+                && raw["futureField"]["preserve"] == true
     ));
     Ok(())
 }
@@ -1265,7 +1257,7 @@ fn current_format_import_classifies_known_payload_matrix() -> Result<()> {
         .all(|event| event.kind == EventKind::Lifecycle));
     assert!(imported.session.events[2..]
         .iter()
-        .all(|event| { matches!(event.blocks.as_slice(), [Block::ProviderPayload { .. }]) }));
+        .all(|event| { matches!(event.blocks.as_slice(), [Block::Other { .. }]) }));
     Ok(())
 }
 
