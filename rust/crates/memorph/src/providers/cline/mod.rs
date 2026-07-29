@@ -3,7 +3,7 @@ pub mod hook;
 
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
@@ -114,6 +114,10 @@ impl Provider for ClineProvider {
         let timestamp = file_modified_datetime(&path).unwrap_or_else(Utc::now);
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         let events = history_events(&value, timestamp, &mut report);
+        let event_meta = events
+            .iter()
+            .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+            .collect::<Vec<_>>();
         let title = first_text(&value);
         let mut extensions = BTreeMap::new();
         extensions.insert("cline_api_conversation_history".into(), value);
@@ -121,29 +125,29 @@ impl Provider for ClineProvider {
             session: Session {
                 schema: Schema::default(),
                 identity: Identity {
-                    canonical_id: task_id.clone(),
-                    source_title: title,
-                },
-                provenance: Provenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderRef {
-                        provider_id: PROVIDER_ID.into(),
-                        session_id: task_id,
-                        source_path: Some(path.to_string_lossy().into_owned()),
-                    },
-                    aliases: Vec::new(),
+                    id: task_id.clone(),
+                    title,
                 },
                 context: Context {
-                    workspace_dir: task_workspace(&path),
+                    workspace: task_workspace(&path),
                     created_at: Some(timestamp),
                     last_active_at: Some(timestamp),
                     tags: Vec::new(),
                 },
                 events,
-                artifacts: Vec::new(),
                 extensions,
             },
+            provenance: Provenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: task_id,
+                    source_path: Some(path.to_string_lossy().into_owned()),
+                },
+                aliases: Vec::new(),
+            },
+            event_meta,
             report,
         })
     }
@@ -276,12 +280,12 @@ fn history_events(
                 .iter()
                 .any(|block| matches!(block, Block::ToolCall { .. }))
             {
-                EventKind::ToolCall
+                EventKind::Action
             } else if blocks
                 .iter()
                 .any(|block| matches!(block, Block::ToolResult { .. }))
             {
-                EventKind::ToolResult
+                EventKind::Observation
             } else {
                 EventKind::Message
             };
@@ -305,16 +309,8 @@ fn history_events(
                 links: Links::default(),
                 blocks,
                 metadata: Metadata {
-                    source: Source {
-                        provider_id: PROVIDER_ID.into(),
-                        original_id: None,
-                        original_role: Some(role_raw.into()),
-                        phase: None,
-                    },
                     model: None,
                     usage: None,
-                    fidelity: Fidelity::Preserved,
-                    provider_ext: BTreeMap::new(),
                 },
             })
         })
