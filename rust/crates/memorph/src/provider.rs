@@ -888,30 +888,20 @@ mod tests {
     }
 
     #[test]
-    fn compressed_block_text_keeps_provider_projection_concise() {
-        let source_event_ids = (0..20)
-            .map(|idx| format!("source-event-{}", idx))
-            .collect::<Vec<_>>();
-        let text = canonical_block_text(&Block::Compressed {
-            source_provider_id: "opencode".to_string(),
-            summary: "compressed summary".to_string(),
-            source_event_ids,
-            source_event_count: None,
-            archive_ref: Some("memorph-archive://session/archive.json".to_string()),
+    fn portable_compression_text_is_preserved_for_provider_projection() {
+        let text = canonical_block_text(&Block::Text {
+            text: "[Compressed session segment from opencode]\ncompressed summary\nSource event count: 20\nArchive: memorph-archive://session/archive.json".to_string(),
         });
 
         assert!(text.contains("compressed summary"));
         assert!(text.contains("Source event count: 20"));
         assert!(text.contains("memorph-archive://session/archive.json"));
-        assert!(text.contains("memorph compression retrieve memorph-archive://session/archive.json --query <terms> --max-results 5"));
-        assert!(!text.contains("source-event-19"));
     }
 
     #[test]
     fn canonical_visible_block_text_drops_provider_internal_blocks() {
-        assert!(canonical_visible_block_text(&Block::ProviderPayload {
-            kind: "token_count".to_string(),
-            payload: serde_json::json!({"input_tokens": 10}),
+        assert!(canonical_visible_block_text(&Block::Other {
+            raw: serde_json::json!({"type": "token_count", "input_tokens": 10}),
         })
         .is_none());
         assert!(canonical_visible_block_text(&Block::Other {
@@ -932,25 +922,16 @@ mod tests {
                 Block::Text {
                     text: "hello".to_string(),
                 },
-                Block::ProviderPayload {
-                    kind: "token_count".to_string(),
-                    payload: serde_json::json!({"input_tokens": 10}),
+                Block::Other {
+                    raw: serde_json::json!({"type": "token_count", "input_tokens": 10}),
                 },
                 Block::Other {
                     raw: serde_json::json!({"type": "mystery"}),
                 },
             ],
             metadata: crate::session::Metadata {
-                source: crate::session::Source {
-                    provider_id: "codex".to_string(),
-                    original_id: None,
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: std::collections::BTreeMap::new(),
             },
         };
 
@@ -1010,18 +991,8 @@ mod tests {
         let session = Session {
             schema: crate::session::Schema::default(),
             identity: crate::session::Identity {
-                canonical_id: "canonical-1".to_string(),
-                source_title: None,
-            },
-            provenance: crate::session::Provenance {
-                imported_at: chrono::Utc::now(),
-                imported_by: None,
-                primary_source: crate::session::ProviderRef {
-                    provider_id: "source".to_string(),
-                    session_id: "session-1".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
+                id: "canonical-1".to_string(),
+                title: None,
             },
             context: crate::session::Context::default(),
             events: vec![test_event(
@@ -1043,8 +1014,7 @@ mod tests {
                     },
                 ],
             )],
-            artifacts: Vec::new(),
-            extensions: std::collections::BTreeMap::new(),
+            extensions: Default::default(),
         };
         let capabilities = ProviderCapabilities {
             export_fidelity: ProviderContentFidelity {
@@ -1077,33 +1047,17 @@ mod tests {
                 version: 1,
             },
             identity: crate::session::Identity {
-                canonical_id: "canonical-1".to_string(),
-                source_title: None,
+                id: "canonical-1".to_string(),
+                title: None,
             },
-            provenance: crate::session::Provenance {
-                imported_at: chrono::Utc::now(),
-                imported_by: None,
-                primary_source: crate::session::ProviderRef {
-                    provider_id: "test".to_string(),
-                    session_id: "session-1".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
-            },
-            context: crate::session::Context {
-                workspace_dir: None,
-                created_at: None,
-                last_active_at: None,
-                tags: Vec::new(),
-            },
+            context: crate::session::Context::default(),
             events: vec![
                 test_event(
                     "internal",
                     crate::session::EventKind::Lifecycle,
                     Role::System,
-                    vec![Block::ProviderPayload {
-                        kind: "internal".to_string(),
-                        payload: serde_json::json!({"id": "should-not-title"}),
+                    vec![Block::Other {
+                        raw: serde_json::json!({"type": "internal", "id": "should-not-title"}),
                     }],
                 ),
                 test_event(
@@ -1115,8 +1069,7 @@ mod tests {
                     }],
                 ),
             ],
-            artifacts: Vec::new(),
-            extensions: std::collections::BTreeMap::new(),
+            extensions: Default::default(),
         };
 
         assert_eq!(canonical_session_title(&session), "real prompt");
@@ -1130,18 +1083,8 @@ mod tests {
                 version: 1,
             },
             identity: crate::session::Identity {
-                canonical_id: "canonical-1".to_string(),
-                source_title: None,
-            },
-            provenance: crate::session::Provenance {
-                imported_at: chrono::Utc::now(),
-                imported_by: None,
-                primary_source: crate::session::ProviderRef {
-                    provider_id: "test".to_string(),
-                    session_id: "session-1".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
+                id: "canonical-1".to_string(),
+                title: None,
             },
             context: crate::session::Context::default(),
             events: vec![
@@ -1173,9 +1116,8 @@ mod tests {
                     "payload",
                     crate::session::EventKind::Message,
                     Role::System,
-                    vec![Block::ProviderPayload {
-                        kind: "internal".to_string(),
-                        payload: serde_json::json!({"text": "provider payload"}),
+                    vec![Block::Other {
+                        raw: serde_json::json!({"type": "internal", "text": "provider payload"}),
                     }],
                 ),
                 test_event(
@@ -1187,8 +1129,7 @@ mod tests {
                     }],
                 ),
             ],
-            artifacts: Vec::new(),
-            extensions: std::collections::BTreeMap::new(),
+            extensions: Default::default(),
         };
 
         assert_eq!(
@@ -1211,16 +1152,8 @@ mod tests {
             links: crate::session::Links::default(),
             blocks,
             metadata: crate::session::Metadata {
-                source: crate::session::Source {
-                    provider_id: "test".to_string(),
-                    original_id: None,
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: std::collections::BTreeMap::new(),
             },
         }
     }
