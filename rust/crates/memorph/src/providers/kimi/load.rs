@@ -365,7 +365,7 @@ pub(super) fn import_kimi_session_page(
         .filter(|event| canonical_event_is_visible_message(event))
         .count();
     let turn_count = crate::session_projection::project_session_turns(
-        &imported.session.identity.canonical_id,
+        &imported.session.identity.id,
         &imported.session.events,
         TurnQuality::Inferred,
     )
@@ -382,7 +382,7 @@ pub(super) fn import_kimi_session_page(
         None => imported.session.events.into_iter().skip(offset).collect(),
     };
     let turns = crate::session_projection::project_session_turns(
-        &imported.session.identity.canonical_id,
+        &imported.session.identity.id,
         &imported.session.events,
         TurnQuality::Inferred,
     );
@@ -455,33 +455,37 @@ pub(super) fn import_canonical_session_from_dir(session_dir: &Path) -> Result<Im
         );
     }
 
+    let event_meta = context_events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: session_id.clone(),
-                source_title: title,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id,
-                    source_path: Some(session_dir.to_string_lossy().to_string()),
-                },
-                aliases: Vec::new(),
+                id: session_id.clone(),
+                title,
             },
             context: Context {
-                workspace_dir: project_dir,
+                workspace: project_dir,
                 created_at: wire.first_timestamp.or(Some(context_modified_at)),
                 last_active_at: Some(context_modified_at),
                 tags: Vec::new(),
             },
             events: context_events,
-            artifacts: Vec::new(),
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id,
+                source_path: Some(session_dir.to_string_lossy().to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     })
 }
@@ -632,11 +636,8 @@ pub(super) fn canonical_events_from_wire(
                     EventKind::Lifecycle,
                     Role::System,
                     timestamp,
-                    Some((&turn, Some(TurnOutcome::Started))),
-                    vec![Block::ProviderPayload {
-                        kind: "TurnBegin".to_string(),
-                        payload: value.clone(),
-                    }],
+                    Some((&turn, None)),
+                    vec![Block::Other { raw: value.clone() }],
                     vec![value.clone()],
                 ));
                 let payload = value
@@ -662,7 +663,7 @@ pub(super) fn canonical_events_from_wire(
                 if let Some(block) =
                     kimi_content_part_event_block(payload, &value, line_number, report)
                 {
-                    if matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }) {
+                    if matches!(block, Block::Other { .. }) {
                         imported.lifecycle_events.push(kimi_wire_event(
                             format!("kimi:wire:ContentPart:{line_number}"),
                             EventKind::Other,
@@ -697,10 +698,7 @@ pub(super) fn canonical_events_from_wire(
                     active_turn
                         .as_ref()
                         .map(|turn| (turn, Some(TurnOutcome::Completed))),
-                    vec![Block::ProviderPayload {
-                        kind: "TurnEnd".to_string(),
-                        payload: value.clone(),
-                    }],
+                    vec![Block::Other { raw: value.clone() }],
                     vec![value],
                 ));
                 active_turn = None;
@@ -712,10 +710,7 @@ pub(super) fn canonical_events_from_wire(
                     Role::System,
                     timestamp,
                     active_turn.as_ref().map(|turn| (turn, None)),
-                    vec![Block::ProviderPayload {
-                        kind: message_type.to_string(),
-                        payload: value.clone(),
-                    }],
+                    vec![Block::Other { raw: value.clone() }],
                     vec![value],
                 ));
             }
@@ -734,10 +729,7 @@ pub(super) fn canonical_events_from_wire(
                     Role::System,
                     timestamp,
                     active_turn.as_ref().map(|turn| (turn, None)),
-                    vec![Block::ProviderPayload {
-                        kind: other.to_string(),
-                        payload: value.clone(),
-                    }],
+                    vec![Block::Other { raw: value.clone() }],
                     vec![value],
                 ));
             }
@@ -856,13 +848,10 @@ pub(super) fn kimi_context_event(
                 kimi_context_content_blocks(value.get("content"), &value, line_number, report);
             (kimi_event_kind(&blocks), Role::Assistant, blocks)
         }
-        Some(control @ ("_checkpoint" | "_usage")) => (
+        Some("_checkpoint" | "_usage") => (
             EventKind::Lifecycle,
             Role::System,
-            vec![Block::ProviderPayload {
-                kind: control.to_string(),
-                payload: value.clone(),
-            }],
+            vec![Block::Other { raw: value.clone() }],
         ),
         Some(other) => {
             report.push_issue(MappingIssue {
@@ -876,10 +865,7 @@ pub(super) fn kimi_context_event(
             (
                 EventKind::Other,
                 Role::Other,
-                vec![Block::ProviderPayload {
-                    kind: other.to_string(),
-                    payload: value.clone(),
-                }],
+                vec![Block::Other { raw: value.clone() }],
             )
         }
         None => {
@@ -899,12 +885,6 @@ pub(super) fn kimi_context_event(
         }
     };
 
-    let mut provider_ext = BTreeMap::new();
-    provider_ext.insert("kimi_context_line".to_string(), value);
-    provider_ext.insert(
-        "kimi_context_line_number".to_string(),
-        Value::from(line_number as u64),
-    );
     Event {
         id: format!("kimi:context:{line_number}"),
         kind,
@@ -913,16 +893,8 @@ pub(super) fn kimi_context_event(
         links: Links::default(),
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id: Some(format!("context.jsonl:{line_number}")),
-                original_role: role,
-                phase: Some("context".to_string()),
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext,
         },
     }
 }
@@ -951,10 +923,7 @@ pub(super) fn kimi_context_content_blocks(
                 path: Some(format!("context.jsonl:line:{line_number}:content")),
                 raw: Some(raw_line.clone()),
             });
-            vec![Block::ProviderPayload {
-                kind: "context_content".to_string(),
-                payload: value.clone(),
-            }]
+            vec![Block::Other { raw: value.clone() }]
         }
         None => Vec::new(),
     }
@@ -1011,10 +980,7 @@ pub(super) fn kimi_context_content_block(
                 )),
                 raw: Some(raw_line.clone()),
             });
-            Block::ProviderPayload {
-                kind: kind.to_string(),
-                payload: item.clone(),
-            }
+            Block::Other { raw: item.clone() }
         }
         None => Block::Other { raw: item.clone() },
     }
@@ -1048,14 +1014,8 @@ pub(super) fn reconcile_kimi_context_with_wire(
         cursor = wire_index + 1;
         context_event.timestamp = wire_event.timestamp;
         context_event.links = wire_event.links.clone();
-        if let Some(raw_lines) = wire_event.metadata.provider_ext.get("kimi_wire_lines") {
-            context_event
-                .metadata
-                .provider_ext
-                .insert("kimi_wire_lines".to_string(), raw_lines.clone());
-        }
         for block in &wire_event.blocks {
-            if matches!(block, Block::ProviderPayload { .. } | Block::Other { .. })
+            if matches!(block, Block::Other { .. })
                 && !context_event.blocks.iter().any(|existing| {
                     serde_json::to_value(existing).ok() == serde_json::to_value(block).ok()
                 })
@@ -1076,12 +1036,8 @@ pub(super) fn reconcile_kimi_context_with_wire(
             message:
                 "Dropped Kimi wire content that was not present in authoritative context.jsonl"
                     .to_string(),
-            path: wire_event.metadata.source.original_id.clone(),
-            raw: wire_event
-                .metadata
-                .provider_ext
-                .get("kimi_wire_lines")
-                .cloned(),
+            path: Some(wire_event.id.clone()),
+            raw: None,
         });
     }
 }
@@ -1093,7 +1049,7 @@ pub(super) fn kimi_wire_event(
     timestamp: chrono::DateTime<Utc>,
     turn: Option<(&KimiWireTurn, Option<TurnOutcome>)>,
     blocks: Vec<Block>,
-    raw_parts: Vec<Value>,
+    _raw_parts: Vec<Value>,
 ) -> Event {
     Event {
         id: id.clone(),
@@ -1102,38 +1058,14 @@ pub(super) fn kimi_wire_event(
         timestamp,
         links: Links {
             parent_event_id: None,
-            provider_parent_id: None,
-            provider_turn_id: turn.map(|(turn, _)| turn.provider_turn_id.clone()),
-            turn_index: turn.map(|(turn, _)| turn.turn_index),
-            turn_boundary: turn.and_then(|(_, boundary)| boundary),
+            turn_id: turn.map(|(turn, _)| turn.provider_turn_id.clone()),
+            turn_outcome: turn.and_then(|(_, boundary)| boundary),
             related_event_ids: Vec::new(),
         },
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id: Some(id),
-                original_role: Some(
-                    match role {
-                        Role::User => "user",
-                        Role::Assistant => "assistant",
-                        Role::Tool => "tool",
-                        Role::System => "system",
-                        Role::Developer => "developer",
-                        _ => "unknown",
-                    }
-                    .to_string(),
-                ),
-                phase: Some("wire".to_string()),
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: {
-                let mut ext = BTreeMap::new();
-                ext.insert("kimi_wire_lines".to_string(), Value::Array(raw_parts));
-                ext
-            },
         },
     }
 }
@@ -1181,10 +1113,7 @@ pub(super) fn kimi_user_input_event_blocks(
                         path: Some(format!("wire.jsonl:line:{line_number}:input:{idx}")),
                         raw: Some(raw_line.clone()),
                     });
-                    Block::ProviderPayload {
-                        kind: kind.to_string(),
-                        payload: item.clone(),
-                    }
+                    Block::Other { raw: item.clone() }
                 }
                 None => Block::Other { raw: item.clone() },
             },
@@ -1227,10 +1156,7 @@ pub(super) fn kimi_content_part_event_block(
                 path: Some(format!("wire.jsonl:line:{line_number}")),
                 raw: Some(raw_line.clone()),
             });
-            Some(Block::ProviderPayload {
-                kind: kind.to_string(),
-                payload: payload.clone(),
-            })
+            Some(Block::Other { raw: payload.clone() })
         }
         None => Some(Block::Other {
             raw: payload.clone(),
@@ -1243,15 +1169,15 @@ pub(super) fn kimi_event_kind(blocks: &[Block]) -> EventKind {
         .iter()
         .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        EventKind::ToolResult
+        EventKind::Observation
     } else if blocks
         .iter()
         .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        EventKind::ToolCall
+        EventKind::Action
     } else if blocks
         .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
+        .all(|block| matches!(block, Block::Other { .. }))
     {
         EventKind::Other
     } else {

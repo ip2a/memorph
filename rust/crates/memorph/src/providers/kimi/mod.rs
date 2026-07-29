@@ -9,7 +9,7 @@ use self::write::*;
 use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
     MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
-    ProviderRef, Role, Schema, Session, Source, TurnOutcome,
+    ProviderRef, Role, Schema, Session, TurnOutcome,
 };
 use crate::provider::{
     canonical_event_is_visible_message, canonical_event_visible_message_role,
