@@ -887,33 +887,37 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let source_session_id = session_id.unwrap_or(fallback_id);
 
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: source_session_id.clone(),
-                source_title,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id: source_session_id,
-                    source_path: Some(path.to_string_lossy().to_string()),
-                },
-                aliases: Vec::new(),
+                id: source_session_id.clone(),
+                title: source_title,
             },
             context: Context {
-                workspace_dir: project_dir,
+                workspace: project_dir,
                 created_at,
                 last_active_at,
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id: source_session_id,
+                source_path: Some(path.to_string_lossy().to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     })
 }
@@ -986,38 +990,42 @@ fn import_claude_session_page(
         }
     }
 
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     let imported = ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: state.session_id.clone(),
-                source_title: state.source_title.clone(),
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id: state.session_id.clone(),
-                    source_path: Some(path.to_string_lossy().to_string()),
-                },
-                aliases: Vec::new(),
+                id: state.session_id.clone(),
+                title: state.source_title.clone(),
             },
             context: Context {
-                workspace_dir: state.workspace_dir.clone(),
+                workspace: state.workspace_dir.clone(),
                 created_at: state.created_at_ms.and_then(datetime_from_timestamp_ms),
                 last_active_at: state.last_active_at_ms.and_then(datetime_from_timestamp_ms),
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id: state.session_id.clone(),
+                source_path: Some(path.to_string_lossy().to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     };
 
     let turns = project_session_turns(
-        &imported.session.identity.canonical_id,
+        &imported.session.identity.id,
         &imported.session.events,
         TurnQuality::Inferred,
     );
@@ -1876,13 +1884,13 @@ mod tests {
         );
 
         // Identity carries the session id and title for every page.
-        assert_eq!(page1.imported.session.identity.canonical_id, "session-page");
+        assert_eq!(page1.imported.session.identity.id, "session-page");
         assert_eq!(
-            page1.imported.session.identity.source_title.as_deref(),
+            page1.imported.session.identity.title.as_deref(),
             Some("Claude Page Title")
         );
         assert_eq!(
-            page1.imported.session.context.workspace_dir.as_deref(),
+            page1.imported.session.context.workspace.as_deref(),
             Some("/tmp/project")
         );
     }
@@ -2170,13 +2178,13 @@ mod tests {
 
         let imported = import_canonical_session(file.path()).unwrap();
 
-        assert_eq!(imported.session.identity.canonical_id, "session-1");
+        assert_eq!(imported.session.identity.id, "session-1");
         assert_eq!(
-            imported.session.identity.source_title.as_deref(),
+            imported.session.identity.title.as_deref(),
             Some("Claude Title")
         );
         assert_eq!(
-            imported.session.context.workspace_dir.as_deref(),
+            imported.session.context.workspace.as_deref(),
             Some("/tmp/project")
         );
         assert!(imported.session.events.iter().any(|event| {
