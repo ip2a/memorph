@@ -157,9 +157,9 @@ fn import_session_page_paginates_messages_and_keeps_full_counts() {
     assert_eq!(page2.imported.session.events[0].id, "msg-c");
 
     // Identity and title carry across pages.
-    assert_eq!(page1.imported.session.identity.canonical_id, "ses-paged");
+    assert_eq!(page1.imported.session.identity.id, "ses-paged");
     assert_eq!(
-        page1.imported.session.identity.source_title.as_deref(),
+        page1.imported.session.identity.title.as_deref(),
         Some("Multi")
     );
 }
@@ -167,7 +167,6 @@ fn import_session_page_paginates_messages_and_keeps_full_counts() {
 #[test]
 fn opencode_malformed_parts_are_preserved_and_reported() {
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-    let mut artifacts = Vec::new();
     let blocks = canonical_blocks_from_parts(
         "message-1",
         &[
@@ -182,13 +181,12 @@ fn opencode_malformed_parts_are_preserved_and_reported() {
             serde_json::json!({"type": "file", "filename": "missing.txt"}),
         ],
         &mut report,
-        &mut artifacts,
     );
 
     assert_eq!(blocks.len(), 4);
     assert!(blocks
         .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. })));
+        .all(|block| matches!(block, Block::Other { .. })));
     assert!(report
         .issues
         .iter()
@@ -224,8 +222,8 @@ fn opencode_message_without_parts_is_preserved_as_an_event() {
 
     assert!(matches!(
         imported.session.events[0].blocks.as_slice(),
-        [Block::ProviderPayload { kind, .. }]
-            if kind == "message_without_mappable_parts"
+        [Block::Other { raw }]
+            if raw.get("id").and_then(Value::as_str) == Some("message-1")
     ));
     assert!(imported
         .report
@@ -271,8 +269,8 @@ fn maps_opencode_error_finish_to_failed_boundary() {
         .iter()
         .find(|event| event.id == "assistant-1")
         .unwrap();
-    assert_eq!(assistant.links.provider_turn_id, None);
-    assert_eq!(assistant.links.turn_boundary, Some(TurnOutcome::Failed));
+    assert_eq!(assistant.links.turn_id, None);
+    assert_eq!(assistant.links.turn_outcome, Some(TurnOutcome::Failed));
 }
 
 struct TestOpenCodeDirGuard {
@@ -533,11 +531,11 @@ fn scan_sessions_uses_fingerprintable_database_source_locator() {
         .import_session(session.source_path.as_deref().unwrap())
         .unwrap();
     assert_eq!(
-        imported.session.provenance.primary_source.session_id,
+        imported.provenance.primary_source.session_id,
         "ses_locator"
     );
     assert_eq!(
-        imported.session.provenance.primary_source.source_path,
+        imported.provenance.primary_source.source_path,
         session.source_path
     );
 }
@@ -604,11 +602,11 @@ fn import_session_reads_the_explicit_source_plane() {
         .unwrap();
 
     assert_eq!(
-        from_database.session.identity.source_title.as_deref(),
+        from_database.session.identity.title.as_deref(),
         Some("Before")
     );
     assert_eq!(
-        from_filesystem.session.identity.source_title.as_deref(),
+        from_filesystem.session.identity.title.as_deref(),
         Some("Filesystem title")
     );
 }
@@ -630,12 +628,11 @@ fn import_session_uses_database_path_from_locator() {
     let imported = OpenCodeProvider.import_session(&locator).unwrap();
 
     assert_eq!(
-        imported.session.identity.source_title.as_deref(),
+        imported.session.identity.title.as_deref(),
         Some("Before")
     );
     assert_eq!(
         imported
-            .session
             .provenance
             .primary_source
             .source_path
@@ -816,7 +813,7 @@ fn native_replace_preserves_opencode_identity_and_session_rows() {
             .unwrap()
             .session
             .identity
-            .canonical_id,
+            .id,
         session_id
     );
     assert_eq!(
@@ -1208,16 +1205,8 @@ fn opencode_message_data_preserves_model_provider_metadata() {
             .unwrap(),
         links: Links::default(),
         metadata: Metadata {
-            source: Source {
-                provider_id: "codex".to_string(),
-                original_id: None,
-                original_role: None,
-                phase: None,
-            },
             model: Some("gpt-5.4".to_string()),
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         },
     };
 
@@ -1254,9 +1243,8 @@ fn opencode_message_data_preserves_model_provider_metadata() {
 
 #[test]
 fn provider_payload_block_is_skipped_in_opencode_part_export() {
-    let block = Block::ProviderPayload {
-        kind: "internal".to_string(),
-        payload: serde_json::json!({"id": "hidden"}),
+    let block = Block::Other {
+        raw: serde_json::json!({"id": "hidden"}),
     };
 
     assert!(canonical_block_to_opencode_part(
@@ -1275,12 +1263,8 @@ fn compressed_segment_exports_as_native_opencode_compaction() {
         id: "compressed-source".to_string(),
         kind: EventKind::Message,
         role: Role::Assistant,
-        blocks: vec![Block::Compressed {
-            source_provider_id: "opencode".to_string(),
-            summary: "portable summary".to_string(),
-            source_event_ids: vec!["old-1".to_string(), "old-2".to_string()],
-            source_event_count: Some(2),
-            archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
+        blocks: vec![Block::Text {
+            text: "[Compressed session segment from opencode]\nportable summary\nSource event count: 2\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
         }],
         timestamp: Utc
             .timestamp_millis_opt(1_700_000_000_000)
@@ -1288,16 +1272,8 @@ fn compressed_segment_exports_as_native_opencode_compaction() {
             .unwrap(),
         links: Links::default(),
         metadata: Metadata {
-            source: Source {
-                provider_id: "memorph".to_string(),
-                original_id: None,
-                original_role: None,
-                phase: Some("compression".to_string()),
-            },
             model: Some("gpt-5.4".to_string()),
             usage: None,
-            fidelity: Fidelity::Normalized,
-            provider_ext: BTreeMap::new(),
         },
     };
     let mut last_user_msg_id = None;
