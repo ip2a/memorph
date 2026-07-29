@@ -20,7 +20,7 @@ use crate::provider::{
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;

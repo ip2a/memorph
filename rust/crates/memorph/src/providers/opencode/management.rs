@@ -104,7 +104,7 @@ pub(super) fn replace_opencode_session(session_id: &str, session: &Session) -> R
 
     let source = opencode_db_session_source_locator(session_id);
     let imported = import_canonical_session_from_source(session_id, &source)?;
-    if imported.session.identity.canonical_id != session_id {
+    if imported.session.identity.id != session_id {
         anyhow::bail!("OpenCode replacement validation changed session identity");
     }
     Ok(())

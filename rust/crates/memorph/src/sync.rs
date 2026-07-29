@@ -116,7 +116,7 @@ pub fn create_group(params: &SyncCreateParams) -> Result<SyncGroup> {
     let title = params
         .title
         .clone()
-        .or_else(|| source_session.session.primary_title().map(str::to_string))
+        .or_else(|| source_session.session.identity.title.as_deref().map(str::to_string))
         .unwrap_or_else(|| "Session sync".to_string());
 
     let mut holdings = Vec::new();
