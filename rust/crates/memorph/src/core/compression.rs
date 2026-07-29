@@ -1192,27 +1192,16 @@ fn is_opencode_summary_event(event: &Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{Context, Identity, Provenance, ProviderRef, Schema};
+    use crate::session::{Context, Identity, Schema};
     use chrono::{TimeZone, Utc};
 
     #[test]
     fn preserve_opencode_compaction_replaces_expanded_history_with_compressed_segment() {
-        let now = Utc::now();
         let session = Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: "s1".to_string(),
-                source_title: None,
-            },
-            provenance: Provenance {
-                imported_at: now,
-                imported_by: Some("test".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: "opencode".to_string(),
-                    session_id: "s1".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
+                id: "s1".to_string(),
+                title: None,
             },
             context: Context::default(),
             events: vec![
@@ -1221,8 +1210,7 @@ mod tests {
                 text_event("summary", Role::Assistant, "compressed summary", true),
                 text_event("tail", Role::User, "new request", false),
             ],
-            artifacts: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Default::default(),
         };
 
         let policy = CompressionPolicy::preserve("opencode", "codex");
@@ -1231,10 +1219,12 @@ mod tests {
         assert_eq!(report.normalized_segments, 1);
         assert_eq!(report.removed_expanded_events, 2);
         assert_eq!(prepared.events.len(), 2);
-        assert!(matches!(
-            prepared.events[0].blocks.first(),
-            Some(Block::Compressed { summary, .. }) if summary == "compressed summary"
-        ));
+        assert_eq!(
+            compressed_segment(&prepared.events[0])
+                .expect("portable compressed segment")
+                .summary,
+            "compressed summary"
+        );
         assert_eq!(prepared.events[1].id, "tail");
     }
 
@@ -1250,10 +1240,13 @@ mod tests {
         assert_eq!(report.archive_refs.len(), 1);
         let archive_ref = &report.archive_refs[0];
         assert!(archive_ref.starts_with(ARCHIVE_SCHEME));
-        assert!(matches!(
-            prepared.events[0].blocks.first(),
-            Some(Block::Compressed { archive_ref: Some(block_ref), .. }) if block_ref == archive_ref
-        ));
+        assert_eq!(
+            compressed_segment(&prepared.events[0])
+                .expect("portable compressed segment")
+                .archive_ref
+                .as_deref(),
+            Some(archive_ref.as_str())
+        );
 
         assert!(archive_ref.ends_with(".json.gz"));
         let archive = load_archive_from_dir(temp.path(), archive_ref).unwrap();
@@ -1396,10 +1389,7 @@ mod tests {
             prepare_for_export_with_archive_dir(&session, &preserve_policy, temp.path()).unwrap();
         assert_eq!(preserve_report.normalized_segments, 1);
         assert_eq!(preserved.events.len(), 2);
-        assert!(matches!(
-            preserved.events[0].blocks.first(),
-            Some(Block::Compressed { .. })
-        ));
+        assert!(compressed_segment(&preserved.events[0]).is_some());
 
         let (expanded, expand_report) =
             prepare_for_export_with_archive_dir(&preserved, &expand_policy, temp.path()).unwrap();
@@ -1415,12 +1405,10 @@ mod tests {
             expanded.events[2].blocks.first(),
             Some(Block::Text { text }) if text == "compressed summary"
         ));
-        assert!(!expanded.events.iter().any(|event| {
-            event
-                .blocks
-                .iter()
-                .any(|block| matches!(block, Block::Compressed { .. }))
-        }));
+        assert!(expanded
+            .events
+            .iter()
+            .all(|event| compressed_segment(event).is_none()));
     }
 
     #[test]
@@ -1431,7 +1419,7 @@ mod tests {
         let (first_compressed, first_report) =
             prepare_for_export_with_archive_dir(&first, &policy, temp.path()).unwrap();
         let mut second = sample_opencode_compacted_session();
-        second.identity.canonical_id = "s2".to_string();
+        second.identity.id = "s2".to_string();
         second.events[0].id = "old-user-2".to_string();
         second.events[1].id = "compact-marker-2".to_string();
         second.events[2].id = "summary-2".to_string();
@@ -1469,18 +1457,8 @@ mod tests {
         let session = Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: "portable-s1".to_string(),
-                source_title: None,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("test".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: "codex".to_string(),
-                    session_id: "portable-s1".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
+                id: "portable-s1".to_string(),
+                title: None,
             },
             context: Context::default(),
             events: vec![
@@ -1493,8 +1471,7 @@ mod tests {
                 ),
                 provider_text_event("codex", "tail", Role::User, "new request", false),
             ],
-            artifacts: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Default::default(),
         };
 
         let policy = CompressionPolicy::preserve("codex", "opencode");
@@ -1506,43 +1483,24 @@ mod tests {
             report.archive_refs,
             vec!["memorph-archive://portable/a.json.gz".to_string()]
         );
-        assert!(matches!(
-            prepared.events[0].blocks.first(),
-            Some(Block::Compressed {
-                source_provider_id,
-                summary,
-                source_event_count: Some(42),
-                archive_ref: Some(archive_ref),
-                ..
-            }) if source_provider_id == "opencode"
-                && summary == "portable summary"
-                && archive_ref == "memorph-archive://portable/a.json.gz"
-        ));
+        let segment = compressed_segment(&prepared.events[0]).expect("portable compressed segment");
+        assert_eq!(segment.source_provider_id, "opencode");
+        assert_eq!(segment.summary, "portable summary");
+        assert_eq!(segment.source_event_count, Some(42));
         assert_eq!(
-            prepared.events[0].metadata.source.phase.as_deref(),
-            Some("compression-portable")
+            segment.archive_ref.as_deref(),
+            Some("memorph-archive://portable/a.json.gz")
         );
         assert_eq!(prepared.events[1].id, "tail");
     }
 
     #[test]
     fn preserve_opencode_compaction_reuses_memorph_projection_metadata() {
-        let now = Utc::now();
         let session = Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: "native-roundtrip".to_string(),
-                source_title: None,
-            },
-            provenance: Provenance {
-                imported_at: now,
-                imported_by: Some("test".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: "opencode".to_string(),
-                    session_id: "native-roundtrip".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
+                id: "native-roundtrip".to_string(),
+                title: None,
             },
             context: Context::default(),
             events: vec![
@@ -1556,8 +1514,7 @@ mod tests {
                 text_event("summary", Role::Assistant, "portable summary", true),
                 text_event("tail", Role::User, "new request", false),
             ],
-            artifacts: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Default::default(),
         };
 
         let policy = CompressionPolicy::preserve("opencode", "codex");
@@ -1571,19 +1528,15 @@ mod tests {
             report.archive_refs,
             vec!["memorph-archive://portable/a.json.gz".to_string()]
         );
-        assert!(matches!(
-            prepared.events[0].blocks.first(),
-            Some(Block::Compressed {
-                source_provider_id,
-                summary,
-                source_event_ids,
-                source_event_count: Some(42),
-                archive_ref: Some(archive_ref),
-            }) if source_provider_id == "kimi"
-                && summary == "portable summary"
-                && source_event_ids.is_empty()
-                && archive_ref == "memorph-archive://portable/a.json.gz"
-        ));
+        let segment = compressed_segment(&prepared.events[0]).expect("portable compressed segment");
+        assert_eq!(segment.source_provider_id, "kimi");
+        assert_eq!(segment.summary, "portable summary");
+        assert!(segment.source_event_ids.is_empty());
+        assert_eq!(segment.source_event_count, Some(42));
+        assert_eq!(
+            segment.archive_ref.as_deref(),
+            Some("memorph-archive://portable/a.json.gz")
+        );
         assert_eq!(prepared.events[1].id, "tail");
         assert!(list_archives_in_dir(temp.path(), None).unwrap().is_empty());
     }
@@ -1596,34 +1549,22 @@ mod tests {
             role: Role::Assistant,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::Compressed {
-                source_provider_id: "deepseek".to_string(),
-                summary: "compressed summary".to_string(),
-                source_event_ids: vec!["old-1".to_string()],
-                source_event_count: Some(9),
-                archive_ref: Some("memorph-archive://x/archive.json.gz".to_string()),
+            blocks: vec![Block::Text {
+                text: "[Compressed session segment from deepseek]\ncompressed summary\nSource event count: 9\nArchive: memorph-archive://x/archive.json.gz".to_string(),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "memorph".to_string(),
-                    original_id: None,
-                    original_role: None,
-                    phase: Some("compression".to_string()),
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Normalized,
-                provider_ext: BTreeMap::new(),
             },
         };
 
         let segment = compressed_segment(&event).expect("canonical compressed segment");
         assert_eq!(segment.source_provider_id, "deepseek");
         assert_eq!(segment.summary, "compressed summary");
-        assert_eq!(segment.source_event_ids, ["old-1".to_string()]);
+        assert!(segment.source_event_ids.is_empty());
         assert_eq!(segment.source_event_count, Some(9));
         assert_eq!(
-            segment.archive_ref,
+            segment.archive_ref.as_deref(),
             Some("memorph-archive://x/archive.json.gz")
         );
     }
@@ -1709,22 +1650,11 @@ mod tests {
     }
 
     fn sample_opencode_compacted_session() -> Session {
-        let now = Utc::now();
         Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: "s1".to_string(),
-                source_title: None,
-            },
-            provenance: Provenance {
-                imported_at: now,
-                imported_by: Some("test".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: "opencode".to_string(),
-                    session_id: "s1".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
+                id: "s1".to_string(),
+                title: None,
             },
             context: Context::default(),
             events: vec![
@@ -1733,8 +1663,7 @@ mod tests {
                 text_event("summary", Role::Assistant, "compressed summary", true),
                 text_event("tail", Role::User, "new request", false),
             ],
-            artifacts: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Default::default(),
         }
     }
 
@@ -1743,37 +1672,30 @@ mod tests {
     }
 
     fn provider_text_event(
-        provider_id: &str,
+        _provider_id: &str,
         id: &str,
         role: Role,
         text: &str,
         summary: bool,
     ) -> Event {
-        let mut provider_ext = BTreeMap::new();
-        provider_ext.insert(
-            "opencode_message".to_string(),
-            serde_json::json!({ "summary": summary }),
-        );
+        let mut blocks = vec![Block::Text {
+            text: text.to_string(),
+        }];
+        if summary {
+            blocks.push(Block::Other {
+                raw: serde_json::json!({ "summary": true }),
+            });
+        }
         Event {
             id: id.to_string(),
             kind: EventKind::Message,
             role,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::Text {
-                text: text.to_string(),
-            }],
+            blocks,
             metadata: Metadata {
-                source: Source {
-                    provider_id: provider_id.to_string(),
-                    original_id: Some(id.to_string()),
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext,
             },
         }
     }
@@ -1785,21 +1707,12 @@ mod tests {
             role: Role::User,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::ProviderPayload {
-                kind: "compaction".to_string(),
-                payload: serde_json::json!({ "type": "compaction" }),
+            blocks: vec![Block::Other {
+                raw: serde_json::json!({ "type": "compaction" }),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "opencode".to_string(),
-                    original_id: Some(id.to_string()),
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: BTreeMap::new(),
             },
         }
     }
@@ -1817,9 +1730,8 @@ mod tests {
             role: Role::User,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::ProviderPayload {
-                kind: "compaction".to_string(),
-                payload: serde_json::json!({
+            blocks: vec![Block::Other {
+                raw: serde_json::json!({
                     "type": "compaction",
                     "memorph": {
                         "sourceProviderID": source_provider_id,
@@ -1830,16 +1742,8 @@ mod tests {
                 }),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "opencode".to_string(),
-                    original_id: Some(id.to_string()),
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: BTreeMap::new(),
             },
         }
     }
