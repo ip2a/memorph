@@ -5,7 +5,7 @@ mod management;
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
-    Schema, Session, Source, Usage,
+    Schema, Session, Usage,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
@@ -435,7 +435,7 @@ fn import_parsed_session(path: &Path, parsed: ParsedGeminiSession) -> Result<Imp
         .or_else(|| path_mtime_datetime(path))
         .unwrap_or(created_at);
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-    let events = parsed
+    let events: Vec<Event> = parsed
         .messages
         .iter()
         .enumerate()
@@ -469,33 +469,37 @@ fn import_parsed_session(path: &Path, parsed: ParsedGeminiSession) -> Result<Imp
         }),
     );
 
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: session_id.clone(),
-                source_title: session_title(&parsed),
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id,
-                    source_path: Some(path.to_string_lossy().to_string()),
-                },
-                aliases: Vec::new(),
+                id: session_id.clone(),
+                title: session_title(&parsed),
             },
             context: Context {
-                workspace_dir: None,
+                workspace: None,
                 created_at: Some(created_at),
                 last_active_at: Some(last_active_at),
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id,
+                source_path: Some(path.to_string_lossy().to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     })
 }
@@ -534,31 +538,17 @@ fn event_from_message(
         timestamp: message_datetime(message, "timestamp").unwrap_or(fallback_timestamp),
         links: Links {
             parent_event_id: None,
-            provider_parent_id: None,
-            provider_turn_id: None,
-            turn_index: Some(index as u32),
-            turn_boundary: None,
+            turn_id: Some(index.to_string()),
+            turn_outcome: None,
             related_event_ids: Vec::new(),
         },
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id,
-                original_role: Some(role_raw),
-                phase: None,
-            },
             model: message
                 .get("model")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
             usage: usage_from_message(message),
-            fidelity: Fidelity::Normalized,
-            provider_ext: {
-                let mut ext = std::collections::BTreeMap::new();
-                ext.insert("raw_message".to_string(), message.clone());
-                ext
-            },
         },
     }
 }
@@ -632,9 +622,8 @@ fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> 
             path: Some(format!("messages:{index}")),
             raw: Some(message.clone()),
         });
-        blocks.push(Block::ProviderPayload {
-            kind: "gemini_message".to_string(),
-            payload: message.clone(),
+        blocks.push(Block::Other {
+            raw: message.clone(),
         });
     }
 
@@ -646,16 +635,13 @@ fn event_kind(blocks: &[Block]) -> EventKind {
         .iter()
         .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        EventKind::ToolResult
+        EventKind::Observation
     } else if blocks
         .iter()
         .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        EventKind::ToolCall
-    } else if blocks
-        .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. }))
-    {
+        EventKind::Action
+    } else if blocks.iter().all(|block| matches!(block, Block::Other { .. })) {
         EventKind::Other
     } else {
         EventKind::Message
@@ -667,7 +653,9 @@ fn usage_from_message(message: &Value) -> Option<Usage> {
     Some(Usage {
         input_tokens: tokens.get("input").and_then(Value::as_u64),
         output_tokens: tokens.get("output").and_then(Value::as_u64),
-        total_tokens: tokens.get("total").and_then(Value::as_u64),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
+        reasoning_tokens: None,
     })
 }
 
