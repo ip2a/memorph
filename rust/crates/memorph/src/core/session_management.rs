@@ -334,7 +334,7 @@ pub fn replace_native_session(
     let result = (|| -> Result<NativeSessionReplaceResult> {
         prov.replace_session(session_id, session)?;
         let imported = prov.import_session(&source)?;
-        if imported.session.identity.canonical_id != session.identity.canonical_id {
+        if imported.session.identity.id != session.identity.id {
             anyhow::bail!("Native replacement changed canonical session identity");
         }
         let mut actual_refs = compression::compressed_archive_refs(&imported.session);
@@ -670,7 +670,7 @@ pub fn expand_compression_session(
         .file_stem()
         .and_then(|value| value.to_str())
         .map(|value| format!("{}_expanded", value))
-        .unwrap_or_else(|| format!("{}_expanded", session.identity.canonical_id));
+        .unwrap_or_else(|| format!("{}_expanded", session.identity.id));
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
     write_session_export_files(&expanded, prefix, &params.format, None)
 }
@@ -679,7 +679,7 @@ pub fn restore_compression_archive(
     params: &RestoreCompressionArchiveParams,
     session: &Session,
 ) -> Result<ExportResult> {
-    let default_prefix = format!("{}_compression_archive", session.identity.canonical_id);
+    let default_prefix = format!("{}_compression_archive", session.identity.id);
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
     write_session_export_files(session, prefix, &params.format, None)
 }
