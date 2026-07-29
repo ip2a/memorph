@@ -753,28 +753,20 @@ fn hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{EventKind, Fidelity, Links, Metadata, Role, Source};
+    use crate::session::{EventKind, Links, Metadata, Role};
     use chrono::TimeZone;
 
     fn event(blocks: Vec<Block>) -> Event {
         Event {
             id: "event-1".into(),
-            kind: EventKind::ToolCall,
+            kind: EventKind::Action,
             role: Role::Assistant,
             timestamp: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
             links: Links::default(),
             blocks,
             metadata: Metadata {
-                source: Source {
-                    provider_id: "codex".into(),
-                    original_id: None,
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: BTreeMap::new(),
             },
         }
     }

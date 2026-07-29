@@ -1,5 +1,5 @@
-use crate::session::Event;
 use crate::provider;
+use crate::session::Event;
 
 pub fn session_event_matches_query(event: &Event, query: &str) -> bool {
     let query = query.trim();
@@ -40,9 +40,8 @@ fn session_event_search_haystack(event: &Event) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{Block, Event, EventKind, Fidelity, Metadata, Role, Source};
+    use crate::session::{Block, Event, EventKind, Metadata, Role};
     use chrono::TimeZone;
-    use std::collections::BTreeMap;
 
     fn sample_event(id: &str, text: &str) -> Event {
         Event {
@@ -55,16 +54,8 @@ mod tests {
                 text: text.to_string(),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "test".to_string(),
-                    original_id: None,
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: BTreeMap::new(),
             },
         }
     }

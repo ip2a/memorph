@@ -295,7 +295,7 @@ mod tests {
                 line_no: 1,
                 provider_turn_id: Some("turn-1".to_string()),
                 turn_index: Some(0),
-                turn_boundary: Some(TurnOutcome::Started),
+                turn_boundary: Some(TurnOutcome::Incomplete),
             },
             IndexedEventLocation {
                 event_index: 1,

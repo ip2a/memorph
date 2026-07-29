@@ -612,11 +612,9 @@ fn resolve_target_dir(provider_id: &str, input: Option<&str>) -> Result<PathBuf>
 mod tests {
     use super::*;
     use crate::session::{
-        Block, Context, Event, EventKind, Fidelity, Identity, Links, Metadata, Provenance,
-        ProviderRef, Role, Schema, Source,
+        Block, Context, Event, EventKind, Identity, Links, Metadata, Role, Schema,
     };
     use chrono::Utc;
-    use std::collections::BTreeMap;
 
     #[test]
     fn normalized_targets_drop_source_empty_and_duplicates() {
@@ -721,18 +719,8 @@ mod tests {
         let session = Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: "s1".to_string(),
-                source_title: None,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("test".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: "opencode".to_string(),
-                    session_id: "s1".to_string(),
-                    source_path: None,
-                },
-                aliases: Vec::new(),
+                id: "s1".to_string(),
+                title: None,
             },
             context: Context::default(),
             events: vec![
@@ -741,8 +729,7 @@ mod tests {
                 text_event("summary", Role::Assistant, "compressed summary", true),
                 text_event("tail", Role::User, "latest request", false),
             ],
-            artifacts: Vec::new(),
-            extensions: BTreeMap::new(),
+            extensions: Default::default(),
         };
 
         let prepared = compression::prepare_for_export(
@@ -752,19 +739,24 @@ mod tests {
         .0;
 
         assert_eq!(prepared.events.len(), 2);
-        assert!(matches!(
-            prepared.events[0].blocks.first(),
-            Some(Block::Compressed { summary, .. }) if summary == "compressed summary"
-        ));
+        assert_eq!(
+            compression::compressed_segment(&prepared.events[0])
+                .expect("portable compressed segment")
+                .summary,
+            "compressed summary"
+        );
         assert_eq!(prepared.events[1].id, "tail");
     }
 
     fn text_event(id: &str, role: Role, text: &str, summary: bool) -> Event {
-        let mut provider_ext = BTreeMap::new();
-        provider_ext.insert(
-            "opencode_message".to_string(),
-            serde_json::json!({ "summary": summary }),
-        );
+        let mut blocks = vec![Block::Text {
+            text: text.to_string(),
+        }];
+        if summary {
+            blocks.push(Block::Other {
+                raw: serde_json::json!({ "summary": true }),
+            });
+        }
 
         Event {
             id: id.to_string(),
@@ -772,20 +764,10 @@ mod tests {
             role,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::Text {
-                text: text.to_string(),
-            }],
+            blocks,
             metadata: Metadata {
-                source: Source {
-                    provider_id: "opencode".to_string(),
-                    original_id: Some(id.to_string()),
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext,
             },
         }
     }
@@ -797,21 +779,12 @@ mod tests {
             role: Role::User,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::ProviderPayload {
-                kind: "compaction".to_string(),
-                payload: serde_json::json!({ "type": "compaction" }),
+            blocks: vec![Block::Other {
+                raw: serde_json::json!({ "type": "compaction" }),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "opencode".to_string(),
-                    original_id: Some(id.to_string()),
-                    original_role: None,
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: BTreeMap::new(),
             },
         }
     }
