@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use self::transfer::ExportResult;
-use crate::session::{Artifact, Event, EventKind, ImportedSession, Session};
+use crate::session::{Event, EventKind, ImportedSession, Session};
 use crate::core::active_compression::{
     ActiveCompressionApplyParams, ActiveCompressionParams, ActiveCompressionPolicy,
     ActiveCompressionReport,
@@ -154,14 +154,12 @@ pub struct SessionDetailView {
     pub local_state: session_state::ResolvedLocalSessionState,
     pub event_count: usize,
     pub message_count: usize,
-    pub artifact_count: usize,
     pub length_metrics: SessionLengthMetrics,
     pub stale: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection_report: Option<SessionProjectionReportView>,
     pub turns: Vec<crate::session_projection::TurnProjection>,
     pub events: Vec<Event>,
-    pub artifacts: Vec<Artifact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compressed_archive_refs: Vec<String>,
 }

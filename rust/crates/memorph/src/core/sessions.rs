@@ -197,7 +197,7 @@ pub fn get_session_detail_view_page_result(
                 .imported
                 .session
                 .context
-                .workspace_dir
+                .workspace
                 .as_deref()
                 .map(utils::user_visible_path),
             created_at,
@@ -212,7 +212,6 @@ pub fn get_session_detail_view_page_result(
             local_state: local_state.clone(),
             event_count: page.event_count,
             message_count: page.message_count,
-            artifact_count: page.imported.session.artifacts.len(),
             length_metrics,
             stale,
             projection_report: Some(source_mapping_report_view(
@@ -223,7 +222,6 @@ pub fn get_session_detail_view_page_result(
             )),
             turns: page.turns,
             events: page.imported.session.events,
-            artifacts: page.imported.session.artifacts,
             compressed_archive_refs,
         },
         returned_event_indices,
@@ -262,10 +260,9 @@ fn source_mapping_report_view(
     let mut normalized_count = 0;
     let mut dropped_count = 0;
     for disposition in imported
-        .session
-        .events
+        .event_meta
         .iter()
-        .map(|event| event.metadata.fidelity)
+        .map(|meta| meta.fidelity)
         .chain(imported.report.issues.iter().map(|issue| issue.disposition))
     {
         match disposition {
@@ -281,7 +278,7 @@ fn source_mapping_report_view(
     SessionProjectionReportView {
         id: format!(
             "source-read:{provider_id}:{}",
-            imported.session.identity.canonical_id
+            imported.session.identity.id
         ),
         provider_id: provider_id.to_string(),
         source_id: source_id.map(str::to_string),
@@ -803,10 +800,9 @@ fn event_activity_weight(kind: &EventKind, visible_message: bool) -> f64 {
         EventKind::Lifecycle => 0.25,
         EventKind::Message if visible_message => 3.0,
         EventKind::Message => 1.5,
-        EventKind::ToolCall | EventKind::ToolResult => 2.0,
-        EventKind::Command | EventKind::CommandResult => 1.75,
-        EventKind::Patch | EventKind::Artifact => 1.25,
-        _ => 0.5,
+        EventKind::Action => 2.0,
+        EventKind::Observation => 1.75,
+        EventKind::Other => 0.5,
     }
 }
 
@@ -882,8 +878,8 @@ fn enrich_imported_session_from_meta(
 ) {
     let display_title = resolved_display_title(provider_id, meta);
     apply_imported_session_title(imported, meta, display_title);
-    if imported.session.context.workspace_dir.is_none() {
-        imported.session.context.workspace_dir = meta.project_dir.clone();
+    if imported.session.context.workspace.is_none() {
+        imported.session.context.workspace = meta.project_dir.clone();
     }
     if imported.session.context.last_active_at.is_none() {
         imported.session.context.last_active_at = meta
@@ -891,14 +887,12 @@ fn enrich_imported_session_from_meta(
             .and_then(chrono::DateTime::from_timestamp_millis);
     }
     if imported
-        .session
         .provenance
         .aliases
         .iter()
         .all(|alias| alias.provider_id != provider_id || alias.session_id != meta.session_id)
     {
         imported
-            .session
             .provenance
             .aliases
             .push(crate::session::ProviderRef {
@@ -914,14 +908,8 @@ pub(super) fn apply_imported_session_title(
     meta: &ProviderSessionSummary,
     display_title: Option<String>,
 ) {
-    imported.session.identity.source_title = display_title.or_else(|| {
-        imported
-            .session
-            .identity
-            .source_title
-            .clone()
-            .or(meta.title.clone())
-    });
+    imported.session.identity.title =
+        display_title.or(imported.session.identity.title.clone()).or(meta.title.clone());
 }
 
 fn resolved_display_title(provider_id: &str, meta: &ProviderSessionSummary) -> Option<String> {
