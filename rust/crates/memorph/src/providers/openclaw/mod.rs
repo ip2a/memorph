@@ -187,7 +187,7 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<Event> {
         "assistant" => Role::Assistant,
         "tool" => Role::Tool,
         "system" => Role::System,
-        _ => Role::Unknown,
+        _ => Role::Other,
     };
     let mut blocks = Vec::new();
     match message.get("content") {

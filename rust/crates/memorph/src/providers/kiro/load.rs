@@ -761,7 +761,7 @@ pub(super) fn canonical_event_from_kiro_record(
             )
         }
         "turn_start" => {
-            links.turn_boundary = Some(TurnBoundary::Started);
+            links.turn_boundary = Some(TurnOutcome::Started);
             (
                 EventKind::Lifecycle,
                 Role::System,
@@ -812,7 +812,7 @@ pub(super) fn canonical_event_from_kiro_record(
             });
             (
                 EventKind::Unknown,
-                Role::Unknown,
+                Role::Other,
                 vec![Block::ProviderPayload {
                     kind: unknown.to_string(),
                     payload: payload.clone(),
@@ -905,7 +905,7 @@ pub(super) fn kiro_message_blocks(
                             });
                         }
                     }
-                    _ => blocks.push(Block::Unknown { raw: item.clone() }),
+                    _ => blocks.push(Block::Other { raw: item.clone() }),
                 }
             }
         }
@@ -923,7 +923,7 @@ pub(super) fn kiro_message_blocks(
                 });
             }
         }
-        _ => blocks.push(Block::Unknown {
+        _ => blocks.push(Block::Other {
             raw: content.clone(),
         }),
     }
@@ -982,16 +982,16 @@ pub(super) fn kiro_tool_result_content(
     }
 }
 
-pub(super) fn kiro_turn_end_boundary(payload: &Value) -> TurnBoundary {
+pub(super) fn kiro_turn_end_boundary(payload: &Value) -> TurnOutcome {
     match payload
         .get("stopReason")
         .or_else(|| payload.get("status"))
         .and_then(Value::as_str)
         .unwrap_or("end_turn")
     {
-        "error" | "failed" | "failure" => TurnBoundary::Failed,
-        "interrupted" | "cancelled" | "canceled" | "aborted" => TurnBoundary::Interrupted,
-        _ => TurnBoundary::Completed,
+        "error" | "failed" | "failure" => TurnOutcome::Failed,
+        "interrupted" | "cancelled" | "canceled" | "aborted" => TurnOutcome::Interrupted,
+        _ => TurnOutcome::Completed,
     }
 }
 

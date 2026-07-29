@@ -13,7 +13,7 @@ use self::write::*;
 use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
     MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
-    ProviderRef, Role, Schema, Session, Source, TurnBoundary,
+    ProviderRef, Role, Schema, Session, Source, TurnOutcome,
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
@@ -128,7 +128,7 @@ enum CodexInternalMessageKind {
 struct CodexTurnLink {
     provider_turn_id: Option<String>,
     turn_index: Option<u32>,
-    turn_boundary: Option<TurnBoundary>,
+    turn_boundary: Option<TurnOutcome>,
 }
 
 impl CodexTurnLink {
@@ -154,9 +154,9 @@ impl CodexTurnTracker {
             .and_then(|value| value.get("type"))
             .and_then(Value::as_str);
         let boundary = match (line_type, payload_type) {
-            (Some("event_msg"), Some("task_started")) => Some(TurnBoundary::Started),
-            (Some("event_msg"), Some("task_complete")) => Some(TurnBoundary::Completed),
-            (Some("event_msg"), Some("turn_aborted")) => Some(TurnBoundary::Interrupted),
+            (Some("event_msg"), Some("task_started")) => Some(TurnOutcome::Started),
+            (Some("event_msg"), Some("task_complete")) => Some(TurnOutcome::Completed),
+            (Some("event_msg"), Some("turn_aborted")) => Some(TurnOutcome::Interrupted),
             _ => None,
         };
         let explicit_turn_id = payload
@@ -175,7 +175,7 @@ impl CodexTurnTracker {
             .map(|turn_id| self.turn_index(turn_id));
         let closes_turn = matches!(
             boundary,
-            Some(TurnBoundary::Completed | TurnBoundary::Failed | TurnBoundary::Interrupted)
+            Some(TurnOutcome::Completed | TurnOutcome::Failed | TurnOutcome::Interrupted)
         );
         if closes_turn && self.active_turn_id.as_ref() == provider_turn_id.as_ref() {
             self.active_turn_id = None;

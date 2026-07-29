@@ -191,7 +191,7 @@ pub(super) fn imported_session_from_data(
                     path: None,
                     raw: Some(msg_json.clone()),
                 });
-                Role::Unknown
+                Role::Other
             }
         };
 
@@ -370,12 +370,12 @@ pub(super) fn imported_session_from_data(
     })
 }
 
-pub(super) fn opencode_turn_boundary(finish: Option<&str>) -> Option<TurnBoundary> {
+pub(super) fn opencode_turn_boundary(finish: Option<&str>) -> Option<TurnOutcome> {
     match finish {
-        Some("stop") => Some(TurnBoundary::Completed),
-        Some("error") => Some(TurnBoundary::Failed),
+        Some("stop") => Some(TurnOutcome::Completed),
+        Some("error") => Some(TurnOutcome::Failed),
         Some("abort" | "cancelled" | "canceled" | "length" | "content_filter") => {
-            Some(TurnBoundary::Interrupted)
+            Some(TurnOutcome::Interrupted)
         }
         _ => None,
     }
@@ -609,7 +609,7 @@ pub(super) fn canonical_blocks_from_parts(
                     path: Some(format!("{}:part:{}", msg_id, idx)),
                     raw: Some(part.clone()),
                 });
-                blocks.push(Block::Unknown { raw: part.clone() });
+                blocks.push(Block::Other { raw: part.clone() });
             }
             None => {
                 report.push_issue(MappingIssue {
@@ -621,7 +621,7 @@ pub(super) fn canonical_blocks_from_parts(
                     path: Some(format!("{}:part:{}", msg_id, idx)),
                     raw: Some(part.clone()),
                 });
-                blocks.push(Block::Unknown { raw: part.clone() });
+                blocks.push(Block::Other { raw: part.clone() });
             }
         }
     }
@@ -647,7 +647,7 @@ pub(super) fn derive_event_kind(blocks: &[Block]) -> EventKind {
         EventKind::ToolCall
     } else if blocks
         .iter()
-        .any(|block| matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }))
+        .any(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
     {
         EventKind::Unknown
     } else {
@@ -1285,7 +1285,7 @@ pub(super) fn count_visible_opencode_messages(
         let role = match role_str {
             "user" => Role::User,
             "assistant" => Role::Assistant,
-            _ => Role::Unknown,
+            _ => Role::Other,
         };
         if !matches!(role, Role::User | Role::Assistant | Role::Tool) {
             continue;

@@ -134,7 +134,7 @@ impl Provider for HermesProvider {
                 "assistant" => Role::Assistant,
                 "tool" => Role::Tool,
                 "system" => Role::System,
-                _ => Role::Unknown,
+                _ => Role::Other,
             };
             let mut blocks = Vec::new();
             if tool_name.is_none() {

@@ -1,4 +1,4 @@
-use crate::session::{Event, Role, TurnBoundary};
+use crate::session::{Event, Role, TurnOutcome};
 use crate::provider::{canonical_event_visible_message_role, TurnQuality};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -304,7 +304,7 @@ pub fn project_session_turns(
             );
             if matches!(
                 event.links.turn_boundary,
-                Some(TurnBoundary::Completed | TurnBoundary::Failed | TurnBoundary::Interrupted)
+                Some(TurnOutcome::Completed | TurnOutcome::Failed | TurnOutcome::Interrupted)
             ) {
                 current_inferred = None;
             }
@@ -325,23 +325,23 @@ fn include_turn_event(turn: &mut TurnAccumulator, key: &ProjectedEventKey) {
 
 fn apply_turn_boundary(
     turn: &mut TurnAccumulator,
-    boundary: Option<TurnBoundary>,
+    boundary: Option<TurnOutcome>,
     timestamp_ms: Option<i64>,
 ) {
     match boundary {
-        Some(TurnBoundary::Started) => {
+        Some(TurnOutcome::Started) => {
             turn.projection.status = TurnStatus::Open;
             turn.projection.started_at_ms = turn.projection.started_at_ms.or(timestamp_ms);
         }
-        Some(TurnBoundary::Completed) => {
+        Some(TurnOutcome::Completed) => {
             turn.projection.status = TurnStatus::Completed;
             turn.projection.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
         }
-        Some(TurnBoundary::Failed) => {
+        Some(TurnOutcome::Failed) => {
             turn.projection.status = TurnStatus::Failed;
             turn.projection.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
         }
-        Some(TurnBoundary::Interrupted) => {
+        Some(TurnOutcome::Interrupted) => {
             turn.projection.status = TurnStatus::Interrupted;
             turn.projection.ended_at_ms = timestamp_ms.or(turn.last_event_at_ms);
         }

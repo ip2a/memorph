@@ -515,7 +515,7 @@ fn event_from_message(
         "user" => Role::User,
         "gemini" => Role::Assistant,
         "info" | "error" | "warning" => Role::System,
-        _ => Role::Unknown,
+        _ => Role::Other,
     };
     let original_id = message
         .get("id")

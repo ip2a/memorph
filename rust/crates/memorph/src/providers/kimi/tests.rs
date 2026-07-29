@@ -1877,8 +1877,8 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
         .iter()
         .find(|event| provider_payload_kind(event) == Some("TurnEnd"))
         .unwrap();
-    assert_eq!(turn_begin.links.turn_boundary, Some(TurnBoundary::Started));
-    assert_eq!(turn_end.links.turn_boundary, Some(TurnBoundary::Completed));
+    assert_eq!(turn_begin.links.turn_boundary, Some(TurnOutcome::Started));
+    assert_eq!(turn_end.links.turn_boundary, Some(TurnOutcome::Completed));
     assert_eq!(
         turn_begin.links.provider_turn_id,
         turn_end.links.provider_turn_id

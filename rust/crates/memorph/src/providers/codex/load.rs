@@ -197,7 +197,7 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                 events.push(provider_payload_event(
                     format!("codex:unknown:{}", line_idx + 1),
                     EventKind::Unknown,
-                    Role::Unknown,
+                    Role::Other,
                     timestamp,
                     other,
                     ProviderPayloadData {
@@ -721,7 +721,7 @@ pub(super) fn codex_event_from_line(
             Some(provider_payload_event(
                 format!("codex:unknown:{}", line_no),
                 EventKind::Unknown,
-                Role::Unknown,
+                Role::Other,
                 timestamp,
                 other,
                 ProviderPayloadData {
@@ -849,7 +849,7 @@ pub(super) fn codex_response_item_event(
         let input = payload.get("arguments").cloned();
         let role = match role_str {
             Some("assistant") | None => Role::Assistant,
-            _ => Role::Unknown,
+            _ => Role::Other,
         };
         return Event {
             id: event_id,
@@ -931,7 +931,7 @@ pub(super) fn codex_response_item_event(
         return provider_payload_event(
             event_id,
             EventKind::Unknown,
-            Role::Unknown,
+            Role::Other,
             timestamp,
             msg_type.unwrap_or("response_item"),
             ProviderPayloadData {
@@ -955,7 +955,7 @@ pub(super) fn codex_response_item_event(
                     path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                     raw: Some(block.clone()),
                 });
-                blocks.push(Block::Unknown { raw: block.clone() });
+                blocks.push(Block::Other { raw: block.clone() });
                 continue;
             };
             match block_type {
@@ -1046,7 +1046,7 @@ pub(super) fn codex_response_item_event(
                         path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                         raw: Some(block.clone()),
                     });
-                    blocks.push(Block::Unknown { raw: block.clone() });
+                    blocks.push(Block::Other { raw: block.clone() });
                 }
             }
         }
@@ -1093,7 +1093,7 @@ pub(super) fn codex_response_item_event(
         Some("developer") => Role::Developer,
         Some("system") => Role::System,
         Some("tool") => Role::Tool,
-        _ => Role::Unknown,
+        _ => Role::Other,
     };
 
     if let Some(internal_kind) = codex_internal_message_kind(role_str, &blocks) {

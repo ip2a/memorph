@@ -1,4 +1,4 @@
-use crate::session::TurnBoundary;
+use crate::session::TurnOutcome;
 use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
@@ -32,7 +32,7 @@ pub struct IndexedEventLocation {
     pub line_no: usize,
     pub provider_turn_id: Option<String>,
     pub turn_index: Option<u32>,
-    pub turn_boundary: Option<TurnBoundary>,
+    pub turn_boundary: Option<TurnOutcome>,
 }
 
 pub fn database_path() -> Result<PathBuf> {
@@ -235,21 +235,21 @@ pub fn load_event_locations(
     Ok(locations)
 }
 
-fn turn_boundary_name(boundary: TurnBoundary) -> &'static str {
+fn turn_boundary_name(boundary: TurnOutcome) -> &'static str {
     match boundary {
-        TurnBoundary::Started => "started",
-        TurnBoundary::Completed => "completed",
-        TurnBoundary::Failed => "failed",
-        TurnBoundary::Interrupted => "interrupted",
+        TurnOutcome::Started => "started",
+        TurnOutcome::Completed => "completed",
+        TurnOutcome::Failed => "failed",
+        TurnOutcome::Interrupted => "interrupted",
     }
 }
 
-fn parse_turn_boundary(value: &str) -> rusqlite::Result<TurnBoundary> {
+fn parse_turn_boundary(value: &str) -> rusqlite::Result<TurnOutcome> {
     match value {
-        "started" => Ok(TurnBoundary::Started),
-        "completed" => Ok(TurnBoundary::Completed),
-        "failed" => Ok(TurnBoundary::Failed),
-        "interrupted" => Ok(TurnBoundary::Interrupted),
+        "started" => Ok(TurnOutcome::Started),
+        "completed" => Ok(TurnOutcome::Completed),
+        "failed" => Ok(TurnOutcome::Failed),
+        "interrupted" => Ok(TurnOutcome::Interrupted),
         _ => Err(rusqlite::Error::FromSqlConversionFailure(
             6,
             rusqlite::types::Type::Text,
@@ -294,7 +294,7 @@ mod tests {
                 line_no: 1,
                 provider_turn_id: Some("turn-1".to_string()),
                 turn_index: Some(0),
-                turn_boundary: Some(TurnBoundary::Started),
+                turn_boundary: Some(TurnOutcome::Started),
             },
             IndexedEventLocation {
                 event_index: 1,
@@ -312,7 +312,7 @@ mod tests {
                 line_no: 3,
                 provider_turn_id: Some("turn-1".to_string()),
                 turn_index: Some(0),
-                turn_boundary: Some(TurnBoundary::Completed),
+                turn_boundary: Some(TurnOutcome::Completed),
             },
         ];
 

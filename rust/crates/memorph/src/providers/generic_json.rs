@@ -577,7 +577,7 @@ fn role_from_string(role: &str) -> Role {
         "tool" | "tool_result" | "tool-call" => Role::Tool,
         "system" => Role::System,
         "developer" => Role::Developer,
-        _ => Role::Unknown,
+        _ => Role::Other,
     }
 }
 
@@ -603,7 +603,7 @@ fn event_kind(blocks: &[Block]) -> EventKind {
         EventKind::ToolCall
     } else if blocks
         .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }))
+        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
     {
         EventKind::Unknown
     } else {

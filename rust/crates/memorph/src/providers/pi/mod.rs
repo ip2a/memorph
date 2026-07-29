@@ -321,7 +321,7 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         "assistant" => Role::Assistant,
         "tool" => Role::Tool,
         "system" => Role::System,
-        _ => Role::Unknown,
+        _ => Role::Other,
     };
     let bs = blocks(v);
     if bs.is_empty() {

@@ -1553,7 +1553,7 @@ fn role_style(event: &Event, theme: &Theme) -> Style {
         Role::User => theme.accent,
         Role::Assistant => theme.primary,
         Role::Tool => theme.secondary,
-        Role::Unknown => theme.warning,
+        Role::Other => theme.warning,
         _ => theme.text_dim,
     };
 

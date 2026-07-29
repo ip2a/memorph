@@ -432,7 +432,7 @@ fn event_block_markdown(block: &Block) -> String {
             out.push_str(&escape_markdown_text(summary));
             out
         }
-        Block::Unknown { raw } => json_block_markdown(raw),
+        Block::Other { raw } => json_block_markdown(raw),
         // ponytail: oasf 标了 #[non_exhaustive],未来新增 Block 变体在此兜底为空串。
         _ => String::new(),
     }
@@ -567,7 +567,7 @@ fn event_block_html(block: &Block) -> String {
             out.push_str("</pre>");
             out
         }
-        Block::Unknown { raw } => json_block_html(raw),
+        Block::Other { raw } => json_block_html(raw),
         _ => String::new(),
     }
 }

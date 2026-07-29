@@ -266,7 +266,7 @@ fn history_events(
                 "assistant" => Role::Assistant,
                 "tool" => Role::Tool,
                 "system" => Role::System,
-                _ => Role::Unknown,
+                _ => Role::Other,
             };
             let blocks = message_blocks(item);
             if blocks.is_empty() {

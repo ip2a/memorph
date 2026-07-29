@@ -4,7 +4,7 @@ pub mod hook;
 use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
     MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
-    ProviderRef, Role, Schema, Session, Source, TurnBoundary, Usage,
+    ProviderRef, Role, Schema, Session, Source, TurnOutcome, Usage,
 };
 use crate::provider::{
     canonical_block_text, canonical_event_is_visible_message, canonical_event_visible_message_role,
@@ -1328,10 +1328,10 @@ fn canonical_event_from_claude_line(
     })
 }
 
-fn claude_turn_boundary(message: &Value) -> Option<TurnBoundary> {
+fn claude_turn_boundary(message: &Value) -> Option<TurnOutcome> {
     match message.get("stop_reason").and_then(Value::as_str) {
-        Some("end_turn" | "stop_sequence") => Some(TurnBoundary::Completed),
-        Some("max_tokens") => Some(TurnBoundary::Interrupted),
+        Some("end_turn" | "stop_sequence") => Some(TurnOutcome::Completed),
+        Some("max_tokens") => Some(TurnOutcome::Interrupted),
         _ => None,
     }
 }
@@ -1372,7 +1372,7 @@ fn claude_event_role(line_type: &str, message: &Value, raw: &Value) -> Role {
                 }
             }
             Some("system") => Role::System,
-            _ => Role::Unknown,
+            _ => Role::Other,
         },
     }
 }
@@ -1399,7 +1399,7 @@ fn claude_event_blocks(
                 path: Some(format!("line:{}:content", line_number)),
                 raw: Some(other.clone()),
             });
-            vec![Block::Unknown { raw: other.clone() }]
+            vec![Block::Other { raw: other.clone() }]
         }
         None => {
             report.push_issue(MappingIssue {
@@ -1524,7 +1524,7 @@ fn claude_content_block(
                 path: Some(format!("line:{}:block:{}", line_number, block_index)),
                 raw: Some(value.clone()),
             });
-            Block::Unknown { raw: value.clone() }
+            Block::Other { raw: value.clone() }
         }
     }
 }
@@ -1542,7 +1542,7 @@ fn claude_event_kind(blocks: &[Block]) -> EventKind {
         EventKind::ToolCall
     } else if blocks
         .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }))
+        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
     {
         EventKind::Unknown
     } else {
@@ -2106,7 +2106,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(event.links.provider_turn_id, None);
-        assert_eq!(event.links.turn_boundary, Some(TurnBoundary::Completed));
+        assert_eq!(event.links.turn_boundary, Some(TurnOutcome::Completed));
     }
 
     #[test]
@@ -2485,7 +2485,7 @@ mod tests {
 
         assert!(matches!(
             blocks.as_slice(),
-            [Block::Unknown { raw }] if raw == &serde_json::json!({"unexpected": true})
+            [Block::Other { raw }] if raw == &serde_json::json!({"unexpected": true})
         ));
         assert!(report
             .issues

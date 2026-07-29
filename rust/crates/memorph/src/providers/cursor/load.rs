@@ -223,7 +223,7 @@ fn canonical_event_from_bubble(
                 path: Some(bubble.key.clone()),
                 raw: other.map(Value::from),
             });
-            (Role::Unknown, Fidelity::Normalized)
+            (Role::Other, Fidelity::Normalized)
         }
     };
 
@@ -694,7 +694,7 @@ mod tests {
 
         let imported = imported_session_from_cursor(source, "db#composer=composer-normalization");
         assert_eq!(imported.session.events[0].id, "key-id");
-        assert_eq!(imported.session.events[0].role, Role::Unknown);
+        assert_eq!(imported.session.events[0].role, Role::Other);
         assert_eq!(
             imported.session.events[0].timestamp,
             DateTime::from_timestamp_millis(1_700_000_000_000).unwrap()

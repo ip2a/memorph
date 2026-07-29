@@ -632,7 +632,7 @@ pub(super) fn canonical_events_from_wire(
                     EventKind::Lifecycle,
                     Role::System,
                     timestamp,
-                    Some((&turn, Some(TurnBoundary::Started))),
+                    Some((&turn, Some(TurnOutcome::Started))),
                     vec![Block::ProviderPayload {
                         kind: "TurnBegin".to_string(),
                         payload: value.clone(),
@@ -662,7 +662,7 @@ pub(super) fn canonical_events_from_wire(
                 if let Some(block) =
                     kimi_content_part_event_block(payload, &value, line_number, report)
                 {
-                    if matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }) {
+                    if matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }) {
                         imported.lifecycle_events.push(kimi_wire_event(
                             format!("kimi:wire:ContentPart:{line_number}"),
                             EventKind::Unknown,
@@ -696,7 +696,7 @@ pub(super) fn canonical_events_from_wire(
                     timestamp,
                     active_turn
                         .as_ref()
-                        .map(|turn| (turn, Some(TurnBoundary::Completed))),
+                        .map(|turn| (turn, Some(TurnOutcome::Completed))),
                     vec![Block::ProviderPayload {
                         kind: "TurnEnd".to_string(),
                         payload: value.clone(),
@@ -875,7 +875,7 @@ pub(super) fn kimi_context_event(
             });
             (
                 EventKind::Unknown,
-                Role::Unknown,
+                Role::Other,
                 vec![Block::ProviderPayload {
                     kind: other.to_string(),
                     payload: value.clone(),
@@ -893,8 +893,8 @@ pub(super) fn kimi_context_event(
             });
             (
                 EventKind::Unknown,
-                Role::Unknown,
-                vec![Block::Unknown { raw: value.clone() }],
+                Role::Other,
+                vec![Block::Other { raw: value.clone() }],
             )
         }
     };
@@ -1016,7 +1016,7 @@ pub(super) fn kimi_context_content_block(
                 payload: item.clone(),
             }
         }
-        None => Block::Unknown { raw: item.clone() },
+        None => Block::Other { raw: item.clone() },
     }
 }
 
@@ -1055,7 +1055,7 @@ pub(super) fn reconcile_kimi_context_with_wire(
                 .insert("kimi_wire_lines".to_string(), raw_lines.clone());
         }
         for block in &wire_event.blocks {
-            if matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. })
+            if matches!(block, Block::ProviderPayload { .. } | Block::Other { .. })
                 && !context_event.blocks.iter().any(|existing| {
                     serde_json::to_value(existing).ok() == serde_json::to_value(block).ok()
                 })
@@ -1091,7 +1091,7 @@ pub(super) fn kimi_wire_event(
     kind: EventKind,
     role: Role,
     timestamp: chrono::DateTime<Utc>,
-    turn: Option<(&KimiWireTurn, Option<TurnBoundary>)>,
+    turn: Option<(&KimiWireTurn, Option<TurnOutcome>)>,
     blocks: Vec<Block>,
     raw_parts: Vec<Value>,
 ) -> Event {
@@ -1186,7 +1186,7 @@ pub(super) fn kimi_user_input_event_blocks(
                         payload: item.clone(),
                     }
                 }
-                None => Block::Unknown { raw: item.clone() },
+                None => Block::Other { raw: item.clone() },
             },
         )
         .collect()
@@ -1232,7 +1232,7 @@ pub(super) fn kimi_content_part_event_block(
                 payload: payload.clone(),
             })
         }
-        None => Some(Block::Unknown {
+        None => Some(Block::Other {
             raw: payload.clone(),
         }),
     }
@@ -1251,7 +1251,7 @@ pub(super) fn kimi_event_kind(blocks: &[Block]) -> EventKind {
         EventKind::ToolCall
     } else if blocks
         .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }))
+        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
     {
         EventKind::Unknown
     } else {

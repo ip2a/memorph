@@ -789,7 +789,7 @@ fn deepseek_event_role(role: &str, raw_message: &Value, report: &mut MappingRepo
                 path: None,
                 raw: Some(raw_message.clone()),
             });
-            Role::Unknown
+            Role::Other
         }
     }
 }
@@ -887,7 +887,7 @@ fn canonical_blocks_from_message(
 
     if blocks.is_empty() {
         fidelity = Fidelity::Normalized;
-        blocks.push(Block::Unknown {
+        blocks.push(Block::Other {
             raw: raw_message.clone(),
         });
     }
@@ -910,7 +910,7 @@ fn deepseek_event_kind(role: &str, blocks: &[Block]) -> EventKind {
         EventKind::ToolCall
     } else if blocks
         .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }))
+        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
     {
         EventKind::Unknown
     } else {

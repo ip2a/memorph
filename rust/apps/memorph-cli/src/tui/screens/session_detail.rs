@@ -92,7 +92,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
             Role::Tool => theme.secondary,
             Role::System => theme.text_dim,
             Role::Developer => theme.text_dim,
-            Role::Unknown => theme.warning,
+            Role::Other => theme.warning,
         };
 
         let role_name = serde_json::to_string(&event.role)
@@ -226,7 +226,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         Span::raw(kind),
                     ]));
                 }
-                Block::Unknown { .. } => {
+                Block::Other { .. } => {
                     lines.push(Line::from(Span::styled(
                         "[Unknown payload]",
                         Style::default().fg(theme.warning),

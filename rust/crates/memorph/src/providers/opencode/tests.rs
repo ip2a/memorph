@@ -272,7 +272,7 @@ fn maps_opencode_error_finish_to_failed_boundary() {
         .find(|event| event.id == "assistant-1")
         .unwrap();
     assert_eq!(assistant.links.provider_turn_id, None);
-    assert_eq!(assistant.links.turn_boundary, Some(TurnBoundary::Failed));
+    assert_eq!(assistant.links.turn_boundary, Some(TurnOutcome::Failed));
 }
 
 struct TestOpenCodeDirGuard {

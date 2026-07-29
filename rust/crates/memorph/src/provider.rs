@@ -743,7 +743,7 @@ pub fn canonical_event_text(event: &Event) -> String {
 }
 
 pub fn canonical_visible_block_text(block: &Block) -> Option<String> {
-    if matches!(block, Block::ProviderPayload { .. } | Block::Unknown { .. }) {
+    if matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }) {
         return None;
     }
     let text = canonical_block_text(block);
@@ -875,7 +875,7 @@ pub fn canonical_block_text(block: &Block) -> String {
             }
             parts.join("\n")
         }
-        Block::Unknown { raw } => format!("[Unknown]\n{}", raw),
+        Block::Other { raw } => format!("[Unknown]\n{}", raw),
         _ => "[Unknown]".to_string(),
     }
 }
@@ -940,7 +940,7 @@ mod tests {
             payload: serde_json::json!({"input_tokens": 10}),
         })
         .is_none());
-        assert!(canonical_visible_block_text(&Block::Unknown {
+        assert!(canonical_visible_block_text(&Block::Other {
             raw: serde_json::json!({"type": "mystery"}),
         })
         .is_none());
@@ -962,7 +962,7 @@ mod tests {
                     kind: "token_count".to_string(),
                     payload: serde_json::json!({"input_tokens": 10}),
                 },
-                Block::Unknown {
+                Block::Other {
                     raw: serde_json::json!({"type": "mystery"}),
                 },
             ],

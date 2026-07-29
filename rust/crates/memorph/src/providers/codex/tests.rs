@@ -1026,10 +1026,10 @@ fn import_canonical_session_preserves_codex_runtime_and_message_events() {
         .unwrap();
     assert_eq!(started.links.provider_turn_id.as_deref(), Some("turn-1"));
     assert_eq!(started.links.turn_index, Some(0));
-    assert_eq!(started.links.turn_boundary, Some(TurnBoundary::Started));
+    assert_eq!(started.links.turn_boundary, Some(TurnOutcome::Started));
     assert_eq!(completed.links.provider_turn_id.as_deref(), Some("turn-1"));
     assert_eq!(completed.links.turn_index, Some(0));
-    assert_eq!(completed.links.turn_boundary, Some(TurnBoundary::Completed));
+    assert_eq!(completed.links.turn_boundary, Some(TurnOutcome::Completed));
     assert!(events
         .iter()
         .filter(|event| event.id != "codex:base_instructions:1")
@@ -1277,7 +1277,7 @@ fn import_canonical_session_hides_turn_aborted_and_internal_developer_controls()
         .find(|event| event.id == "codex:event_msg:turn_aborted:5")
         .unwrap();
     assert_eq!(aborted.links.provider_turn_id.as_deref(), Some("turn-1"));
-    assert_eq!(aborted.links.turn_boundary, Some(TurnBoundary::Interrupted));
+    assert_eq!(aborted.links.turn_boundary, Some(TurnOutcome::Interrupted));
 }
 
 #[test]

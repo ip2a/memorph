@@ -1052,11 +1052,11 @@ fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifac
     ));
     assert_eq!(
         event("exec-1-turn-start").links.turn_boundary,
-        Some(TurnBoundary::Started)
+        Some(TurnOutcome::Started)
     );
     assert_eq!(
         event("exec-1-turn-end").links.turn_boundary,
-        Some(TurnBoundary::Completed)
+        Some(TurnOutcome::Completed)
     );
     assert_eq!(
         event("sub-msg-user-1").links.provider_turn_id.as_deref(),
@@ -1121,11 +1121,11 @@ fn current_format_import_keeps_exact_multi_turn_ids_and_explicit_sub_parent() ->
     );
     assert_eq!(
         event("exec-2-turn-start").links.turn_boundary,
-        Some(TurnBoundary::Started)
+        Some(TurnOutcome::Started)
     );
     assert_eq!(
         event("exec-2-turn-end").links.turn_boundary,
-        Some(TurnBoundary::Completed)
+        Some(TurnOutcome::Completed)
     );
     assert_eq!(
         event("sub-parent").links.provider_turn_id.as_deref(),
@@ -1184,7 +1184,7 @@ fn current_format_import_reports_malformed_and_preserves_unknown_payloads() -> R
         .iter()
         .any(|issue| issue.code == "unknown_payload_preserved"));
     assert_eq!(unknown.session.events[0].kind, EventKind::Unknown);
-    assert_eq!(unknown.session.events[0].role, Role::Unknown);
+    assert_eq!(unknown.session.events[0].role, Role::Other);
     assert!(matches!(
         unknown.session.events[0].blocks.as_slice(),
         [Block::ProviderPayload { kind, payload }]

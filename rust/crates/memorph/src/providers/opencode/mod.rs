@@ -12,7 +12,7 @@ use self::write::*;
 use crate::session::{
     Artifact, ArtifactKind, Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity,
     ImportedSession, Links, MappingDirection, MappingIssue, MappingIssueLevel, MappingReport,
-    Metadata, Provenance, ProviderRef, Role, Schema, Session, Source, TurnBoundary, Usage,
+    Metadata, Provenance, ProviderRef, Role, Schema, Session, Source, TurnOutcome, Usage,
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
