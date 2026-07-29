@@ -912,7 +912,7 @@ fn deepseek_event_kind(role: &str, blocks: &[Block]) -> EventKind {
         .iter()
         .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
     {
-        EventKind::Unknown
+        EventKind::Other
     } else {
         EventKind::Message
     }

@@ -1265,7 +1265,7 @@ fn canonical_event_from_claude_line(
     if blocks.is_empty() {
         return Some(provider_payload_event(
             event_id,
-            EventKind::Unknown,
+            EventKind::Other,
             role,
             timestamp,
             line_type,
@@ -1544,7 +1544,7 @@ fn claude_event_kind(blocks: &[Block]) -> EventKind {
         .iter()
         .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
     {
-        EventKind::Unknown
+        EventKind::Other
     } else {
         EventKind::Message
     }

@@ -196,7 +196,7 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                 });
                 events.push(provider_payload_event(
                     format!("codex:unknown:{}", line_idx + 1),
-                    EventKind::Unknown,
+                    EventKind::Other,
                     Role::Other,
                     timestamp,
                     other,
@@ -720,7 +720,7 @@ pub(super) fn codex_event_from_line(
             });
             Some(provider_payload_event(
                 format!("codex:unknown:{}", line_no),
-                EventKind::Unknown,
+                EventKind::Other,
                 Role::Other,
                 timestamp,
                 other,
@@ -930,7 +930,7 @@ pub(super) fn codex_response_item_event(
     if msg_type != Some("message") {
         return provider_payload_event(
             event_id,
-            EventKind::Unknown,
+            EventKind::Other,
             Role::Other,
             timestamp,
             msg_type.unwrap_or("response_item"),

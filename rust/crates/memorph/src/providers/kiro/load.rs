@@ -811,7 +811,7 @@ pub(super) fn canonical_event_from_kiro_record(
                 raw: Some(payload.clone()),
             });
             (
-                EventKind::Unknown,
+                EventKind::Other,
                 Role::Other,
                 vec![Block::ProviderPayload {
                     kind: unknown.to_string(),

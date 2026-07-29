@@ -665,7 +665,7 @@ pub(super) fn canonical_events_from_wire(
                     if matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }) {
                         imported.lifecycle_events.push(kimi_wire_event(
                             format!("kimi:wire:ContentPart:{line_number}"),
-                            EventKind::Unknown,
+                            EventKind::Other,
                             Role::Assistant,
                             timestamp,
                             active_turn.as_ref().map(|turn| (turn, None)),
@@ -730,7 +730,7 @@ pub(super) fn canonical_events_from_wire(
                 });
                 imported.lifecycle_events.push(kimi_wire_event(
                     format!("kimi:wire:{other}:{line_number}"),
-                    EventKind::Unknown,
+                    EventKind::Other,
                     Role::System,
                     timestamp,
                     active_turn.as_ref().map(|turn| (turn, None)),
@@ -874,7 +874,7 @@ pub(super) fn kimi_context_event(
                 raw: Some(value.clone()),
             });
             (
-                EventKind::Unknown,
+                EventKind::Other,
                 Role::Other,
                 vec![Block::ProviderPayload {
                     kind: other.to_string(),
@@ -892,7 +892,7 @@ pub(super) fn kimi_context_event(
                 raw: Some(value.clone()),
             });
             (
-                EventKind::Unknown,
+                EventKind::Other,
                 Role::Other,
                 vec![Block::Other { raw: value.clone() }],
             )
@@ -1253,7 +1253,7 @@ pub(super) fn kimi_event_kind(blocks: &[Block]) -> EventKind {
         .iter()
         .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
     {
-        EventKind::Unknown
+        EventKind::Other
     } else {
         EventKind::Message
     }

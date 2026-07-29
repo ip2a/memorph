@@ -438,7 +438,7 @@ pub trait Provider: Send + Sync {
             .filter(|event| canonical_event_is_visible_message(event))
             .count();
         let turn_count = crate::session_projection::project_session_turns(
-            &imported.session.identity.canonical_id,
+            &imported.session.identity.id,
             &imported.session.events,
             self.capabilities().turn_quality,
         )
@@ -458,7 +458,7 @@ pub trait Provider: Send + Sync {
         }
 
         let turns = crate::session_projection::project_session_turns(
-            &imported.session.identity.canonical_id,
+            &imported.session.identity.id,
             &imported.session.events,
             self.capabilities().turn_quality,
         );
@@ -645,10 +645,9 @@ fn export_block_fidelity(
         Block::Patch { .. } => ("patch", fidelity.patch),
         Block::Image { .. } => ("image", fidelity.image),
         Block::File { .. } => ("file", fidelity.file),
-        Block::Compressed { .. } => ("compressed", fidelity.compressed),
-        Block::ProviderPayload { .. } | _ => {
-            ("provider_payload", fidelity.provider_payload)
-        }
+        // oasf v1 has no Compressed/ProviderPayload; Block::Other is the only
+        // escape hatch. Compressed segments are now Text blocks (decision 3).
+        Block::Other { .. } => ("other", fidelity.provider_payload),
     }
 }
 
@@ -665,7 +664,7 @@ fn disposition_name(disposition: Fidelity) -> &'static str {
 pub fn canonical_session_title(session: &Session) -> String {
     if let Some(title) = session
         .identity
-        .source_title
+        .title
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
@@ -691,7 +690,7 @@ pub fn canonical_session_title(session: &Session) -> String {
 }
 
 pub fn canonical_event_visible_message_role(event: &Event) -> Option<Role> {
-    if matches!(event.kind, EventKind::Lifecycle | EventKind::Unknown) {
+    if matches!(event.kind, EventKind::Lifecycle | EventKind::Other) {
         return None;
     }
     match event.role {
@@ -712,7 +711,7 @@ pub fn canonical_event_visible_message_text(event: &Event) -> Option<String> {
 }
 
 pub fn canonical_event_instruction_context_text(event: &Event) -> Option<String> {
-    if matches!(event.kind, EventKind::Lifecycle | EventKind::Unknown) {
+    if matches!(event.kind, EventKind::Lifecycle | EventKind::Other) {
         return None;
     }
     if !matches!(event.role, Role::System | Role::Developer) {
@@ -743,7 +742,7 @@ pub fn canonical_event_text(event: &Event) -> String {
 }
 
 pub fn canonical_visible_block_text(block: &Block) -> Option<String> {
-    if matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }) {
+    if matches!(block, Block::Other { .. }) {
         return None;
     }
     let text = canonical_block_text(block);
@@ -851,32 +850,7 @@ pub fn canonical_block_text(block: &Block) -> String {
             .or_else(|| data.clone())
             .map(|value| format!("[Image: {}]\n{}", mime_type, value))
             .unwrap_or_else(|| format!("[Image: {}]", mime_type)),
-        Block::ProviderPayload { kind, payload } => {
-            format!("[Provider payload: {}]\n{}", kind, payload)
-        }
-        Block::Compressed {
-            source_provider_id,
-            summary,
-            source_event_ids,
-            source_event_count,
-            archive_ref,
-        } => {
-            let mut parts = vec![
-                format!("[Compressed session segment from {}]", source_provider_id),
-                summary.clone(),
-            ];
-            let source_event_count = source_event_count.unwrap_or(source_event_ids.len());
-            if source_event_count > 0 {
-                parts.push(format!("Source event count: {}", source_event_count));
-            }
-            if let Some(archive_ref) = archive_ref {
-                parts.push(format!("Archive: {}", archive_ref));
-                parts.push(compression_retrieval_hint(archive_ref));
-            }
-            parts.join("\n")
-        }
-        Block::Other { raw } => format!("[Unknown]\n{}", raw),
-        _ => "[Unknown]".to_string(),
+        Block::Other { raw } => format!("[Other]\n{}", raw),
     }
 }
 
@@ -1003,7 +977,7 @@ mod tests {
         );
         let unknown = test_event(
             "unknown",
-            crate::session::EventKind::Unknown,
+            crate::session::EventKind::Other,
             Role::User,
             vec![Block::Text {
                 text: "unknown".to_string(),

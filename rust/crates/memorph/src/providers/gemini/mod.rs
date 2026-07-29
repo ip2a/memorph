@@ -656,7 +656,7 @@ fn event_kind(blocks: &[Block]) -> EventKind {
         .iter()
         .all(|block| matches!(block, Block::ProviderPayload { .. }))
     {
-        EventKind::Unknown
+        EventKind::Other
     } else {
         EventKind::Message
     }

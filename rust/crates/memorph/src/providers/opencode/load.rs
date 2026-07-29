@@ -649,7 +649,7 @@ pub(super) fn derive_event_kind(blocks: &[Block]) -> EventKind {
         .iter()
         .any(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
     {
-        EventKind::Unknown
+        EventKind::Other
     } else {
         EventKind::Message
     }
@@ -1305,7 +1305,7 @@ pub(super) fn count_visible_opencode_messages(
             }];
         }
         let kind = derive_event_kind(&blocks);
-        if matches!(kind, EventKind::Lifecycle | EventKind::Unknown) {
+        if matches!(kind, EventKind::Lifecycle | EventKind::Other) {
             continue;
         }
         let visible_text: String = blocks

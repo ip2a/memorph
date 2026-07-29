@@ -1183,7 +1183,7 @@ fn current_format_import_reports_malformed_and_preserves_unknown_payloads() -> R
         .issues
         .iter()
         .any(|issue| issue.code == "unknown_payload_preserved"));
-    assert_eq!(unknown.session.events[0].kind, EventKind::Unknown);
+    assert_eq!(unknown.session.events[0].kind, EventKind::Other);
     assert_eq!(unknown.session.events[0].role, Role::Other);
     assert!(matches!(
         unknown.session.events[0].blocks.as_slice(),

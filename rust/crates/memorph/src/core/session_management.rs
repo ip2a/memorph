@@ -1436,7 +1436,7 @@ mod tests {
     fn compaction_event(id: &str) -> Event {
         Event {
             id: id.to_string(),
-            kind: EventKind::Unknown,
+            kind: EventKind::Other,
             role: Role::User,
             timestamp: Utc::now(),
             links: Links::default(),
