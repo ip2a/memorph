@@ -645,8 +645,7 @@ fn export_block_fidelity(
         Block::Patch { .. } => ("patch", fidelity.patch),
         Block::Image { .. } => ("image", fidelity.image),
         Block::File { .. } => ("file", fidelity.file),
-        // oasf v1 has no Compressed/ProviderPayload; Block::Other is the only
-        // escape hatch. Compressed segments are now Text blocks (decision 3).
+        Block::Compressed { .. } => ("compressed", fidelity.text),
         Block::Other { .. } => ("other", fidelity.provider_payload),
     }
 }
@@ -850,6 +849,27 @@ pub fn canonical_block_text(block: &Block) -> String {
             .or_else(|| data.clone())
             .map(|value| format!("[Image: {}]\n{}", mime_type, value))
             .unwrap_or_else(|| format!("[Image: {}]", mime_type)),
+        Block::Compressed { raw } => {
+            let Some(source_provider_id) = raw.get("source_provider_id").and_then(Value::as_str)
+            else {
+                return format!("[Compressed]\n{}", raw);
+            };
+            let Some(summary) = raw.get("summary").and_then(Value::as_str) else {
+                return format!("[Compressed]\n{}", raw);
+            };
+            let mut parts = vec![
+                format!("[Compressed session segment from {}]", source_provider_id),
+                summary.to_string(),
+            ];
+            if let Some(count) = raw.get("source_event_count").and_then(Value::as_u64) {
+                parts.push(format!("Source event count: {}", count));
+            }
+            if let Some(archive_ref) = raw.get("archive_ref").and_then(Value::as_str) {
+                parts.push(format!("Archive: {}", archive_ref));
+                parts.push(compression_retrieval_hint(archive_ref));
+            }
+            parts.join("\n")
+        }
         Block::Other { raw } => format!("[Other]\n{}", raw),
     }
 }

@@ -1266,11 +1266,7 @@ mod tests {
             .import_session(summary.source_path.as_deref().unwrap())
             .unwrap();
         assert_eq!(
-            imported
-                .provenance
-                .primary_source
-                .source_path
-                .as_deref(),
+            imported.provenance.primary_source.source_path.as_deref(),
             Some(expected_locator.as_str())
         );
         assert_eq!(imported.session.identity.id, session_id);
@@ -2224,8 +2220,15 @@ mod tests {
             role: Role::Assistant,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::Text {
-                text: "[Compressed session segment from opencode]\ncompressed summary\nSource event count: 3\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
+            blocks: vec![Block::Compressed {
+                raw: serde_json::json!({
+                    "format": "memorph.compressed.v1",
+                    "source_provider_id": "opencode",
+                    "summary": "compressed summary",
+                    "source_event_ids": ["old-event-1", "old-event-2", "old-event-3"],
+                    "source_event_count": 3,
+                    "archive_ref": "memorph-archive://s1/archive.json.gz",
+                }),
             }],
             metadata: Metadata {
                 model: None,

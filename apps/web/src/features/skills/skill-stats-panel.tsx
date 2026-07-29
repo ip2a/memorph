@@ -351,7 +351,7 @@ export function SkillStatsPanel({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Skill</TableHead>
+                <TableHead>{t("skillsColumnSkill")}</TableHead>
                 <TableHead>{t("skillsInvocationLabel")}</TableHead>
                 <TableHead>{t("skillsSessionLabel")}</TableHead>
                 <TableHead>{t("skillsRecent")}</TableHead>

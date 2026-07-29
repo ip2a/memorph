@@ -1,9 +1,9 @@
-use crate::session::{Event, Role, Session};
 use crate::provider::{
     canonical_event_visible_message_role, canonical_event_visible_message_text,
     canonical_session_title, ProviderSourceMutation,
 };
 use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
+use crate::session::{Event, Role, Session};
 use anyhow::{Context as _, Result};
 use rusqlite::types::Value as SqliteValue;
 use rusqlite::{params, OptionalExtension};
@@ -609,12 +609,12 @@ fn cursor_bubble_text(event: &Event) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{Block, EventKind, Fidelity, Links, Metadata, Source};
+    use crate::core::compression;
+    use crate::session::{Block, EventKind, Links, Metadata};
     use chrono::Utc;
-    use std::collections::BTreeMap;
 
     #[test]
-    fn compressed_segment_exports_as_portable_cursor_bubble_text() {
+    fn compressed_segment_exports_as_cursor_bubble_text() {
         let event = Event {
             id: "compressed-source".to_string(),
             kind: EventKind::Message,
@@ -622,30 +622,23 @@ mod tests {
             timestamp: Utc::now(),
             links: Links::default(),
             blocks: vec![Block::Compressed {
-                source_provider_id: "opencode".to_string(),
-                summary: "compressed summary".to_string(),
-                source_event_ids: vec![
-                    "old-event-1".to_string(),
-                    "old-event-2".to_string(),
-                    "old-event-3".to_string(),
-                ],
-                source_event_count: None,
-                archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
+                raw: serde_json::json!({
+                    "format": "memorph.compressed.v1",
+                    "source_provider_id": "opencode",
+                    "summary": "compressed summary",
+                    "source_event_ids": ["event-a", "event-b", "event-c"],
+                    "source_event_count": 3,
+                    "archive_ref": "memorph-archive://s1/archive.json.gz",
+                }),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "memorph".to_string(),
-                    original_id: None,
-                    original_role: Some("assistant".to_string()),
-                    phase: Some("compression".to_string()),
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Normalized,
-                provider_ext: BTreeMap::new(),
             },
         };
 
+        let segment = compression::compressed_segment(&event).expect("memorph compressed segment");
+        assert_eq!(segment.source_event_ids, ["event-a", "event-b", "event-c"]);
         let text = cursor_bubble_text(&event).expect("visible compressed bubble text");
 
         assert!(text.contains("[Compressed session segment from opencode]"));
@@ -670,16 +663,8 @@ mod tests {
                 text: "internal context".to_string(),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "codex".to_string(),
-                    original_id: None,
-                    original_role: Some("user".to_string()),
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Normalized,
-                provider_ext: BTreeMap::new(),
             },
         };
 

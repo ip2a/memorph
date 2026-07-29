@@ -480,19 +480,22 @@ fn active_summary_event(
         .last()
         .map(|event| event.timestamp)
         .unwrap_or_else(chrono::Utc::now);
-    let mut text = format!("[Compressed session segment from {source_provider_id}]\n{summary}");
-    text.push_str(&format!("\nSource event count: {source_event_count}"));
-    if let Some(archive_ref) = archive_ref {
-        text.push_str(&format!("\nArchive: {archive_ref}"));
-    }
-
     Event {
         id: format!("memorph-active-compressed-{}", candidate.id),
         kind: EventKind::Message,
         role: Role::Assistant,
         timestamp,
         links: Links::default(),
-        blocks: vec![Block::Text { text }],
+        blocks: vec![Block::Compressed {
+            raw: serde_json::json!({
+                "format": "memorph.compressed.v1",
+                "source_provider_id": source_provider_id,
+                "summary": summary,
+                "source_event_ids": source_event_ids,
+                "source_event_count": source_event_count,
+                "archive_ref": archive_ref,
+            }),
+        }],
         metadata: Metadata {
             model: None,
             usage: None,
@@ -759,9 +762,9 @@ mod tests {
             .find(|event| event.id == "memorph-active-compressed-candidate-0001")
             .expect("compressed replacement event");
         let segment =
-            compression::compressed_segment(compressed_event).expect("portable compressed segment");
+            compression::compressed_segment(compressed_event).expect("memorph compressed segment");
         assert_eq!(segment.source_provider_id, "claude");
-        assert!(segment.source_event_ids.is_empty());
+        assert_eq!(segment.source_event_ids, ["old-user"]);
         assert_eq!(segment.source_event_count, Some(1));
         assert_eq!(
             segment.archive_ref.as_deref(),
@@ -956,7 +959,7 @@ mod tests {
             .find(|event| event.id == "memorph-active-compressed-candidate-0001")
             .expect("compressed diff replacement event");
         let summary = &compression::compressed_segment(compressed_event)
-            .expect("portable compressed segment")
+            .expect("memorph compressed segment")
             .summary;
         assert!(summary.contains("Rule strategy: diff reducer"));
         assert!(summary.contains("Content profile: kind=diff"));
@@ -1132,8 +1135,15 @@ mod tests {
             role: Role::Assistant,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::Text {
-                text: "[Compressed session segment from claude]\ncompressed summary\nSource event count: 1\nArchive: memorph-archive://s1/a.json.gz".to_string(),
+            blocks: vec![Block::Compressed {
+                raw: serde_json::json!({
+                    "format": "memorph.compressed.v1",
+                    "source_provider_id": "claude",
+                    "summary": "compressed summary",
+                    "source_event_ids": ["old-user"],
+                    "source_event_count": 1,
+                    "archive_ref": "memorph-archive://s1/a.json.gz",
+                }),
             }],
             metadata: event_metadata("memorph", id),
         }
@@ -1213,7 +1223,7 @@ mod tests {
             .find(|event| event.id == event_id)
             .expect("compressed replacement event");
         compression::compressed_segment(event)
-            .expect("portable compressed segment")
+            .expect("memorph compressed segment")
             .summary
     }
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
 import { ScrollPane } from "@/components/shared/scroll-pane";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -15,76 +15,108 @@ import {
   useStatsDashboard,
 } from "@/features/stats/queries";
 import { formatBytes } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
+import type { I18nKey } from "@/lib/i18n-core";
 import type { StatsDashboardRange } from "@/lib/types";
 
-const rangeLabels: Record<StatsDashboardRange, string> = {
-  "7d": "近 7 天",
-  "30d": "近 30 天",
-  "90d": "近 90 天",
-  all: "全部时间",
+const RANGE_HINT_KEYS: Record<StatsDashboardRange, I18nKey> = {
+  "7d": "statsRange7d",
+  "30d": "statsRange30d",
+  "90d": "statsRange90d",
+  all: "statsRangeAll",
 };
 
 export function StatsPage() {
+  const { t } = useI18n();
   const [range, setRange] = useState<StatsDashboardRange>("30d");
   const [scope, setScope] = useState<StatsWorkspaceScope>("workspace");
   const { dashboard, meta, all } = useStatsDashboard(range, scope);
+
+  const period = t(RANGE_HINT_KEYS[range]);
+
+  const overviewMetrics = useMemo<StatsOverviewMetric[]>(() => {
+    if (!dashboard.data) return [];
+    const data = dashboard.data;
+    return [
+      {
+        label: t("statsTotalSessions"),
+        value: data.overview.total_sessions.toLocaleString(),
+        hint: t("statsCumulativeNew", {
+          count: data.overview.new_sessions.toLocaleString(),
+        }),
+      },
+      {
+        label: t("statsActiveSessions"),
+        value: data.overview.active_sessions.toLocaleString(),
+        hint: period,
+      },
+      {
+        label: t("statsTotalMessages"),
+        value: data.overview.total_messages.toLocaleString(),
+        hint: data.overview.unknown_message_counts
+          ? t("statsSessionsUncounted", {
+              count: data.overview.unknown_message_counts.toLocaleString(),
+            })
+          : t("statsActiveSessionMessagesHint", {
+              count: data.overview.active_session_messages.toLocaleString(),
+            }),
+      },
+      {
+        label: t("statsDataUsage"),
+        value: formatBytes(data.overview.total_size_bytes),
+        hint: data.overview.unknown_size_bytes
+          ? t("statsSessionsSizeUnknown", {
+              count: data.overview.unknown_size_bytes.toLocaleString(),
+            })
+          : t("statsStaleSize", {
+              size: formatBytes(data.overview.stale_size_bytes),
+            }),
+      },
+      {
+        label: t("statsInactiveOver90d"),
+        value: data.attention.inactive_over_90d.count.toLocaleString(),
+        hint: t("statsOccupies", {
+          size: formatBytes(data.attention.inactive_over_90d.size_bytes),
+        }),
+      },
+      {
+        label: t("statsLargeSessions"),
+        value: data.attention.large_sessions.count.toLocaleString(),
+        hint: t("statsOccupies", {
+          size: formatBytes(data.attention.large_sessions.size_bytes),
+        }),
+      },
+      {
+        label: t("statsShortSessions"),
+        value: data.attention.short_sessions.count.toLocaleString(),
+        hint: t("statsOccupies", {
+          size: formatBytes(data.attention.short_sessions.size_bytes),
+        }),
+      },
+    ];
+  }, [dashboard.data, period, t]);
 
   if (meta.isLoading || dashboard.isLoading) return <PageSkeleton />;
   if (meta.error || dashboard.error) {
     return (
       <PageError
-        title="统计加载失败"
-        message={(meta.error ?? dashboard.error)?.message ?? "未知错误"}
+        title={t("statsLoadFailed")}
+        message={
+          (meta.error ?? dashboard.error)?.message ?? t("statsUnknownError")
+        }
       />
     );
   }
   if (!dashboard.data) {
-    return <PageError title="暂无统计数据" message="请先选择一个工作空间。" />;
+    return (
+      <PageError
+        title={t("statsNoStatistics")}
+        message={t("statsSelectWorkspace")}
+      />
+    );
   }
 
   const data = dashboard.data;
-  const period = rangeLabels[range];
-  const overviewMetrics: StatsOverviewMetric[] = [
-    {
-      label: "总会话",
-      value: data.overview.total_sessions.toLocaleString(),
-      hint: `累计 · ${data.overview.new_sessions} 个新增`,
-    },
-    {
-      label: "活跃会话",
-      value: data.overview.active_sessions.toLocaleString(),
-      hint: period,
-    },
-    {
-      label: "消息总量",
-      value: data.overview.total_messages.toLocaleString(),
-      hint: data.overview.unknown_message_counts
-        ? `${data.overview.unknown_message_counts.toLocaleString()} 个会话未统计`
-        : `活跃会话含 ${data.overview.active_session_messages.toLocaleString()} 条`,
-    },
-    {
-      label: "数据占用",
-      value: formatBytes(data.overview.total_size_bytes),
-      hint: data.overview.unknown_size_bytes
-        ? `${data.overview.unknown_size_bytes.toLocaleString()} 个会话大小未知`
-        : `长期未活跃 ${formatBytes(data.overview.stale_size_bytes)}`,
-    },
-    {
-      label: "90 天以上未活跃",
-      value: data.attention.inactive_over_90d.count.toLocaleString(),
-      hint: `占用 ${formatBytes(data.attention.inactive_over_90d.size_bytes)}`,
-    },
-    {
-      label: "大型会话",
-      value: data.attention.large_sessions.count.toLocaleString(),
-      hint: `占用 ${formatBytes(data.attention.large_sessions.size_bytes)}`,
-    },
-    {
-      label: "内容较少",
-      value: data.attention.short_sessions.count.toLocaleString(),
-      hint: `占用 ${formatBytes(data.attention.short_sessions.size_bytes)}`,
-    },
-  ];
 
   return (
     <ScrollPane
@@ -98,8 +130,8 @@ export function StatsPage() {
             onValueChange={(value) => setScope(value as StatsWorkspaceScope)}
           >
             <TabsList>
-              <TabsTrigger value="workspace">当前工作空间</TabsTrigger>
-              <TabsTrigger value="all">全部工作空间</TabsTrigger>
+              <TabsTrigger value="workspace">{t("statsScopeWorkspace")}</TabsTrigger>
+              <TabsTrigger value="all">{t("statsScopeAll")}</TabsTrigger>
             </TabsList>
           </Tabs>
           <Tabs
@@ -107,10 +139,10 @@ export function StatsPage() {
             onValueChange={(value) => setRange(value as StatsDashboardRange)}
           >
             <TabsList>
-              <TabsTrigger value="7d">7 天</TabsTrigger>
-              <TabsTrigger value="30d">30 天</TabsTrigger>
-              <TabsTrigger value="90d">90 天</TabsTrigger>
-              <TabsTrigger value="all">全部</TabsTrigger>
+              <TabsTrigger value="7d">{t("skillsDays", { count: 7 })}</TabsTrigger>
+              <TabsTrigger value="30d">{t("skillsDays", { count: 30 })}</TabsTrigger>
+              <TabsTrigger value="90d">{t("skillsDays", { count: 90 })}</TabsTrigger>
+              <TabsTrigger value="all">{t("statsAllRange")}</TabsTrigger>
             </TabsList>
           </Tabs>
         </div>

@@ -2264,8 +2264,15 @@ mod tests {
 
     #[test]
     fn compressed_segment_exports_as_portable_claude_text_block() {
-        let block = Block::Text {
-            text: "[Compressed session segment from opencode]\ncompressed summary\nSource event count: 3\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
+        let block = Block::Compressed {
+            raw: serde_json::json!({
+                "format": "memorph.compressed.v1",
+                "source_provider_id": "opencode",
+                "summary": "compressed summary",
+                "source_event_ids": ["old-event-1", "old-event-2", "old-event-3"],
+                "source_event_count": 3,
+                "archive_ref": "memorph-archive://s1/archive.json.gz",
+            }),
         };
 
         let content = canonical_block_to_claude_content(&block).expect("claude text block");

@@ -1605,6 +1605,7 @@ fn content_preview(event: &Event) -> String {
             }
             EventBlock::File { path, .. } => return format!("File: {}", path),
             EventBlock::Image { .. } => return "Image attachment".to_string(),
+            EventBlock::Compressed { .. } => return "Compressed context".to_string(),
             EventBlock::Other { raw } => {
                 return raw
                     .get("type")

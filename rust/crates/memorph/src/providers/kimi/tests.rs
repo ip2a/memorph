@@ -398,11 +398,7 @@ fn kimi_import_accepts_only_directory_locators_and_context_only_sessions() {
         .import_session(session_dir.to_str().unwrap())
         .unwrap();
     assert_eq!(
-        imported
-            .provenance
-            .primary_source
-            .source_path
-            .as_deref(),
+        imported.provenance.primary_source.source_path.as_deref(),
         Some(session_dir.to_string_lossy().as_ref())
     );
     assert!(KimiProvider
@@ -1878,18 +1874,9 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
         .unwrap();
     assert_eq!(turn_begin.links.turn_outcome, None);
     assert_eq!(turn_end.links.turn_outcome, Some(TurnOutcome::Completed));
-    assert_eq!(
-        turn_begin.links.turn_id,
-        turn_end.links.turn_id
-    );
-    assert_eq!(
-        user.links.turn_id,
-        turn_begin.links.turn_id
-    );
-    assert_eq!(
-        assistant.links.turn_id,
-        turn_begin.links.turn_id
-    );
+    assert_eq!(turn_begin.links.turn_id, turn_end.links.turn_id);
+    assert_eq!(user.links.turn_id, turn_begin.links.turn_id);
+    assert_eq!(assistant.links.turn_id, turn_begin.links.turn_id);
     for kind in ["StepBegin", "StatusUpdate", "custom", "FutureRecord"] {
         assert!(imported
             .session
@@ -2166,8 +2153,15 @@ fn kimi_session_activity_is_computed_from_the_live_source() {
 
 #[test]
 fn compressed_segment_exports_as_portable_kimi_text_part() {
-    let block = Block::Text {
-        text: "[Compressed session segment from opencode]\ncompressed summary\nSource event count: 3\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
+    let block = Block::Compressed {
+        raw: serde_json::json!({
+            "format": "memorph.compressed.v1",
+            "source_provider_id": "opencode",
+            "summary": "compressed summary",
+            "source_event_ids": ["old-event-1", "old-event-2", "old-event-3"],
+            "source_event_count": 3,
+            "archive_ref": "memorph-archive://s1/archive.json.gz",
+        }),
     };
 
     let part = canonical_block_to_kimi_content_part(&block).expect("kimi text part");

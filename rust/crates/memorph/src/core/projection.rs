@@ -1,6 +1,7 @@
 use super::*;
 
 static PROJECTION_OPERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static PROJECTION_INITIALIZED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
 pub fn resolve_providers(filter: &[String]) -> Vec<String> {
     if filter.is_empty() {
@@ -14,6 +15,11 @@ pub fn resolve_providers(filter: &[String]) -> Vec<String> {
 }
 
 pub fn list_sessions(params: &SessionListParams) -> Result<Vec<SessionGroup>> {
+    // ponytail: 首次 list 同步跑一次 bootstrap,保证全新环境也能看到会话;
+    // 首次会同步等一次 scan。要秒回则改为 server 启动时后台预热 + 此处兜底。
+    PROJECTION_INITIALIZED.get_or_init(|| {
+        let _ = bootstrap_session_projections(None, ActivityActor::System);
+    });
     list_projected_session_snapshots(params)
 }
 

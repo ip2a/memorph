@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
 import { ProviderLogo } from "@/components/shared/provider-logo";
@@ -15,27 +15,43 @@ import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatBytes, formatDateTime } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
 import type {
   StatsBreakdownItem,
   StatsDashboard,
   StatsSessionItem,
 } from "@/lib/types";
 
-const chartConfig = {
-  active_sessions: { label: "活跃会话", color: "var(--chart-1)" },
-  new_sessions: { label: "新增会话", color: "var(--chart-2)" },
-  active_session_messages: { label: "活跃消息", color: "var(--chart-3)" },
-} satisfies ChartConfig;
-
-type TrendKey = keyof typeof chartConfig;
+type TrendKey = "active_sessions" | "new_sessions" | "active_session_messages";
 type RankKey = "by_messages" | "by_size" | "recently_active";
 type BreakdownKind = "provider" | "workspace";
 
+const CHART_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+] as const;
+
+export const STATS_BAR_MAX_ROWS = 4;
+
+const statsPanelTabListClassName =
+  "h-9 max-w-full flex-nowrap overflow-x-auto";
+const rankingTabListClassName = "max-w-full shrink-0 flex-nowrap overflow-x-auto";
+const rankingTabTriggerClassName = "flex-none px-2 text-xs";
+const statsPanelBodyClassName = "flex min-w-0 flex-col gap-3 py-1";
+const statsPanelRowsClassName = "flex flex-col divide-y divide-border";
+const statsPanelRowClassName = "flex min-w-0 flex-col gap-1.5 py-1.5";
+const statsPanelRowHeaderClassName =
+  "flex items-center justify-between gap-2 text-xs";
+
 function PanelEmpty() {
+  const { t } = useI18n();
   return (
     <Empty className="min-h-32 border-none">
       <EmptyHeader>
-        <EmptyTitle>暂无数据</EmptyTitle>
+        <EmptyTitle>{t("statsNoData")}</EmptyTitle>
       </EmptyHeader>
     </Empty>
   );
@@ -53,14 +69,31 @@ export function ActivityTrend({
   data: StatsDashboard["timeline"];
   unknownMessageTimestamps: number;
 }) {
+  const { t, language } = useI18n();
   const [metric, setMetric] = useState<TrendKey>("active_sessions");
+  const chartConfig = useMemo(
+    () =>
+      ({
+        active_sessions: {
+          label: t("statsActiveSessions"),
+          color: "var(--chart-1)",
+        },
+        new_sessions: { label: t("statsNewSessions"), color: "var(--chart-2)" },
+        active_session_messages: {
+          label: t("statsActiveMessages"),
+          color: "var(--chart-3)",
+        },
+      }) satisfies ChartConfig,
+    [t],
+  );
+  const dateLocale = language === "zh" ? "zh-CN" : "en-US";
   const spansYears =
     data.length > 1 &&
     new Date(data[0].start).getFullYear() !==
       new Date(data.at(-1)!.start).getFullYear();
   const points = data.map((point) => ({
     ...point,
-    label: new Date(point.start).toLocaleDateString("zh-CN", {
+    label: new Date(point.start).toLocaleDateString(dateLocale, {
       year: spansYears ? "numeric" : undefined,
       month: "numeric",
       day: "numeric",
@@ -74,17 +107,21 @@ export function ActivityTrend({
     <section className="flex min-w-0 flex-col gap-3">
       <SectionHeading
         variant="compact"
-        title="使用趋势"
+        title={t("statsUsageTrend")}
         actions={
           <Tabs
             value={metric}
             onValueChange={(value) => setMetric(value as TrendKey)}
           >
             <TabsList>
-              <TabsTrigger value="active_sessions">活跃会话</TabsTrigger>
-              <TabsTrigger value="new_sessions">新增会话</TabsTrigger>
+              <TabsTrigger value="active_sessions">
+                {t("statsActiveSessions")}
+              </TabsTrigger>
+              <TabsTrigger value="new_sessions">
+                {t("statsNewSessions")}
+              </TabsTrigger>
               <TabsTrigger value="active_session_messages">
-                活跃消息
+                {t("statsActiveMessages")}
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -92,8 +129,9 @@ export function ActivityTrend({
       />
       {incompleteMessages ? (
         <p className="text-xs text-muted-foreground">
-          有 {unknownMessageTimestamps.toLocaleString()}{" "}
-          条消息缺少时间戳，趋势会展示其余可定位消息。
+          {t("statsTrendIncompleteTimestamps", {
+            count: unknownMessageTimestamps.toLocaleString(),
+          })}
         </p>
       ) : null}
       {points.length && hasSeries ? (
@@ -123,35 +161,6 @@ export function ActivityTrend({
     </section>
   );
 }
-
-const inactivityChartConfig = {
-  value: { label: "会话" },
-  active_7d: { label: "7 天内", color: "var(--chart-1)" },
-  inactive_7_to_30d: { label: "7–30 天", color: "var(--chart-2)" },
-  inactive_30_to_90d: { label: "30–90 天", color: "var(--chart-3)" },
-  inactive_over_90d: { label: "90 天以上", color: "var(--chart-4)" },
-  unknown: { label: "未知", color: "var(--chart-5)" },
-} satisfies ChartConfig;
-
-const CHART_COLORS = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
-] as const;
-
-export const STATS_BAR_MAX_ROWS = 4;
-
-const statsPanelTabListClassName =
-  "h-9 max-w-full flex-nowrap overflow-x-auto";
-const rankingTabListClassName = "max-w-full shrink-0 flex-nowrap overflow-x-auto";
-const rankingTabTriggerClassName = "flex-none px-2 text-xs";
-const statsPanelBodyClassName = "flex min-w-0 flex-col gap-3 py-1";
-const statsPanelRowsClassName = "flex flex-col divide-y divide-border";
-const statsPanelRowClassName = "flex min-w-0 flex-col gap-1.5 py-1.5";
-const statsPanelRowHeaderClassName =
-  "flex items-center justify-between gap-2 text-xs";
 
 function barItemKey(id: string, index: number) {
   const safe = id.replace(/[^a-zA-Z0-9_-]/g, "_") || `item_${index}`;
@@ -185,7 +194,11 @@ function barFill(config: ChartConfig, id: string, index: number) {
   return CHART_COLORS[index % CHART_COLORS.length];
 }
 
-function trimBarRows(data: BarDatum[], max = STATS_BAR_MAX_ROWS): BarDatum[] {
+function trimBarRows(
+  data: BarDatum[],
+  otherLabel: string,
+  max = STATS_BAR_MAX_ROWS,
+): BarDatum[] {
   if (data.length <= max) return data;
   const head = data.slice(0, max - 1);
   const tail = data.slice(max - 1);
@@ -196,7 +209,7 @@ function trimBarRows(data: BarDatum[], max = STATS_BAR_MAX_ROWS): BarDatum[] {
       id: "__other__",
       value: otherValue,
       fill: CHART_COLORS[max - 1],
-      label: "其他",
+      label: otherLabel,
     },
   ];
 }
@@ -204,7 +217,7 @@ function trimBarRows(data: BarDatum[], max = STATS_BAR_MAX_ROWS): BarDatum[] {
 function StatsBarList({
   config,
   data,
-  unitLabel = "会话",
+  unitLabel,
   maxRows = STATS_BAR_MAX_ROWS,
 }: {
   config: ChartConfig;
@@ -212,18 +225,19 @@ function StatsBarList({
   unitLabel?: string;
   maxRows?: number;
 }) {
+  const { t } = useI18n();
+  const resolvedUnitLabel = unitLabel ?? t("statsSessionsUnit");
   const total = data.reduce((sum, item) => sum + item.value, 0);
   if (!data.length) return <PanelEmpty />;
-  const rows = trimBarRows(data, maxRows);
+  const rows = trimBarRows(data, t("statsOther"), maxRows);
 
   return (
     <div className={statsPanelBodyClassName}>
       <p className="text-xs leading-none text-muted-foreground">
-        共{" "}
-        <span className="font-medium text-foreground tabular-nums">
-          {total.toLocaleString()}
-        </span>{" "}
-        {unitLabel}
+        {t("statsBarTotal", {
+          count: total.toLocaleString(),
+          unit: resolvedUnitLabel,
+        })}
       </p>
       <div className={statsPanelRowsClassName}>
         {rows.map((item, index) => {
@@ -351,6 +365,29 @@ export function InactivityPanel({
   data: StatsDashboard["attention"];
   sessionSize: StatsDashboard["distributions"]["session_size"];
 }) {
+  const { t } = useI18n();
+  const sessionsUnit = t("statsSessionsUnit");
+  const inactivityChartConfig = useMemo(
+    () =>
+      ({
+        value: { label: sessionsUnit },
+        active_7d: { label: t("statsActive7d"), color: "var(--chart-1)" },
+        inactive_7_to_30d: {
+          label: t("statsInactive7to30d"),
+          color: "var(--chart-2)",
+        },
+        inactive_30_to_90d: {
+          label: t("statsInactive30to90d"),
+          color: "var(--chart-3)",
+        },
+        inactive_over_90d: {
+          label: t("statsInactiveOver90dChart"),
+          color: "var(--chart-4)",
+        },
+        unknown: { label: t("statsUnknown"), color: "var(--chart-5)" },
+      }) satisfies ChartConfig,
+    [sessionsUnit, t],
+  );
   const items = [
     { id: "active_7d" as const, value: data.active_7d.count },
     { id: "inactive_7_to_30d" as const, value: data.inactive_7_to_30d.count },
@@ -364,15 +401,20 @@ export function InactivityPanel({
       series={[
         {
           id: "activity",
-          label: "活跃状态",
-          unitLabel: "会话",
+          label: t("statsActivityStatus"),
+          unitLabel: sessionsUnit,
           config: inactivityChartConfig,
           data: items.map((item, index) => ({
             ...item,
             fill: barFill(inactivityChartConfig, item.id, index),
           })),
         },
-        distributionBarSeries("session_size", "会话大小", sessionSize, "会话"),
+        distributionBarSeries(
+          "session_size",
+          t("statsSessionSize"),
+          sessionSize,
+          sessionsUnit,
+        ),
       ]}
     />
   );
@@ -385,9 +427,11 @@ export function ProviderPiePanel({
   items: StatsBreakdownItem[];
   messageCount: StatsDashboard["distributions"]["message_count"];
 }) {
+  const { t } = useI18n();
+  const sessionsUnit = t("statsSessionsUnit");
   const top = items.filter((item) => item.session_count > 0);
   const config: ChartConfig = {
-    value: { label: "会话" },
+    value: { label: sessionsUnit },
     ...Object.fromEntries(
       top.map((item, index) => [
         barItemKey(item.id, index),
@@ -418,16 +462,16 @@ export function ProviderPiePanel({
       series={[
         {
           id: "providers",
-          label: "Agent",
-          unitLabel: "会话",
+          label: t("statsAgent"),
+          unitLabel: sessionsUnit,
           config,
           data: providerData,
         },
         distributionBarSeries(
           "message_count",
-          "消息数量",
+          t("statsMessageCount"),
           messageCount,
-          "会话",
+          sessionsUnit,
         ),
       ]}
     />
@@ -445,6 +489,7 @@ export function RankingBoard({
   workspaces: StatsBreakdownItem[];
   all: boolean;
 }) {
+  const { t } = useI18n();
   const [limit, setLimit] = useState<"5" | "10">("5");
   const [rank, setRank] = useState<RankKey>("by_messages");
   const [breakdownKind, setBreakdownKind] = useState<BreakdownKind>("provider");
@@ -483,7 +528,7 @@ export function RankingBoard({
         <SectionHeading
           variant="compact"
           className={rankingHeadingClassName}
-          title="会话排行"
+          title={t("statsSessionRanking")}
           actionsProps={{ className: rankingActionsClassName }}
           actions={
             <>
@@ -493,13 +538,13 @@ export function RankingBoard({
               >
                 <TabsList className={rankingTabListClassName}>
                   <TabsTrigger value="by_messages" className={rankingTabTriggerClassName}>
-                    消息最多
+                    {t("statsByMessages")}
                   </TabsTrigger>
                   <TabsTrigger value="by_size" className={rankingTabTriggerClassName}>
-                    占用最大
+                    {t("statsBySize")}
                   </TabsTrigger>
                   <TabsTrigger value="recently_active" className={rankingTabTriggerClassName}>
-                    最近活跃
+                    {t("statsRecentlyActive")}
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
@@ -527,10 +572,10 @@ export function RankingBoard({
             >
               <TabsList className={rankingTabListClassName}>
                 <TabsTrigger value="provider" className={rankingTabTriggerClassName}>
-                  Agent 排行
+                  {t("statsAgentRanking")}
                 </TabsTrigger>
                 <TabsTrigger value="workspace" disabled={!all} className={rankingTabTriggerClassName}>
-                  工作空间排行
+                  {t("statsWorkspaceRanking")}
                 </TabsTrigger>
               </TabsList>
             </Tabs>
@@ -557,6 +602,7 @@ function BreakdownRankingRow({
   kind: BreakdownKind;
   item: StatsBreakdownItem;
 }) {
+  const { t } = useI18n();
   const title =
     kind === "provider" ? item.id : workspaceName(item.id);
 
@@ -581,9 +627,13 @@ function BreakdownRankingRow({
               <span className="truncate">{item.id}</span>
             </Badge>
           ) : null}
-          <span className="shrink-0">{item.session_count} 会话</span>
           <span className="shrink-0">
-            {item.message_count.toLocaleString()} messages
+            {t("statsSessionCount", { count: item.session_count })}
+          </span>
+          <span className="shrink-0">
+            {t("statsMessagesCount", {
+              count: item.message_count.toLocaleString(),
+            })}
           </span>
           <span className="shrink-0">{formatBytes(item.size_bytes)}</span>
         </div>
@@ -593,6 +643,7 @@ function BreakdownRankingRow({
 }
 
 function StatsSessionRow({ item }: { item: StatsSessionItem }) {
+  const { t } = useI18n();
   const detailHref = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
 
   return (
@@ -611,7 +662,9 @@ function StatsSessionRow({ item }: { item: StatsSessionItem }) {
           </Badge>
           <span className="shrink-0">{formatDateTime(item.last_active_at)}</span>
           <span className="shrink-0">
-            {item.message_count?.toLocaleString() ?? "—"} messages
+            {t("statsMessagesCount", {
+              count: item.message_count?.toLocaleString() ?? "—",
+            })}
           </span>
           <span className="shrink-0">{formatBytes(item.size_bytes)}</span>
         </div>

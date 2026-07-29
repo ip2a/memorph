@@ -176,7 +176,10 @@ export function SkillsPage() {
                         {
                           onSuccess: (result) =>
                             toast.success(
-                              `扫描完成：${result.skills_seen} 个 Skill，${result.installations_seen} 个安装`,
+                              t("skillsScanComplete", {
+                                skills: result.skills_seen,
+                                installations: result.installations_seen,
+                              }),
                             ),
                         },
                       )
@@ -190,11 +193,7 @@ export function SkillsPage() {
                     variant="outline"
                     size="sm"
                     onClick={() => {
-                      if (
-                        window.confirm(
-                          "完整重新扫描会重新读取所有本地 Skill 和会话，但不会删除调用历史。继续吗？",
-                        )
-                      ) {
+                      if (window.confirm(t("skillsFullScanConfirm"))) {
                         scanMutation.mutate({
                           mode: "full",
                           workspace: currentWorkspace,

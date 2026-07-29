@@ -746,21 +746,22 @@ pub(super) fn codex_compacted_event(
         .filter(|value| !value.is_empty())
         .map(str::to_string);
 
-    // Decision 3: emit the compacted segment as a portable text block.
-    let mut text = format!("[Compressed session segment from {source_provider_id}]\n{summary}");
-    if let Some(count) = source_event_count {
-        text.push_str(&format!("\nSource event count: {count}"));
-    }
-    if let Some(archive_ref) = archive_ref.as_ref() {
-        text.push_str(&format!("\nArchive: {archive_ref}"));
-    }
     Event {
         id: format!("codex:compacted:{}", line_no),
         kind: EventKind::Message,
         role: Role::Assistant,
         timestamp,
         links: Links::default(),
-        blocks: vec![Block::Text { text }],
+        blocks: vec![Block::Compressed {
+            raw: serde_json::json!({
+                "format": "memorph.compressed.v1",
+                "source_provider_id": source_provider_id,
+                "summary": summary,
+                "source_event_ids": source_event_ids,
+                "source_event_count": source_event_count,
+                "archive_ref": archive_ref,
+            }),
+        }],
         metadata: Metadata {
             model: None,
             usage: None,

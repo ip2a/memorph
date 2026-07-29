@@ -1433,7 +1433,7 @@ fn import_canonical_session_maps_native_compacted_to_compressed_block() {
 
     assert_eq!(compressed.source_provider_id, "claude");
     assert_eq!(compressed.summary, "compressed summary");
-    assert!(compressed.source_event_ids.is_empty());
+    assert_eq!(compressed.source_event_ids, ["old-event-1", "old-event-2"]);
     assert_eq!(compressed.source_event_count, Some(2));
     assert_eq!(
         compressed.archive_ref.as_deref(),
@@ -1473,13 +1473,20 @@ fn compressed_segment_exports_as_native_codex_compacted_rollout() {
                 role: Role::Assistant,
                 timestamp: Utc::now(),
                 links: Links::default(),
-                blocks: vec![Block::Text {
-                    text: "[Compressed session segment from claude]\ncompressed summary\nSource event count: 3\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
+                blocks: vec![Block::Compressed {
+                    raw: json!({
+                        "format": "memorph.compressed.v1",
+                        "source_provider_id": "claude",
+                        "summary": "compressed summary",
+                        "source_event_ids": ["old-user"],
+                        "source_event_count": 3,
+                        "archive_ref": "memorph-archive://s1/archive.json.gz",
+                    }),
                 }],
                 metadata: Metadata {
                     model: None,
                     usage: None,
-        },
+                },
             },
             Event {
                 id: "tail-user".to_string(),
@@ -1493,7 +1500,7 @@ fn compressed_segment_exports_as_native_codex_compacted_rollout() {
                 metadata: Metadata {
                     model: None,
                     usage: None,
-        },
+                },
             },
         ],
         extensions: BTreeMap::new(),
@@ -1711,7 +1718,7 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
         .find_map(compression::compressed_segment)
         .expect("imported compressed segment");
     assert_eq!(imported_compressed.source_provider_id, "claude");
-    assert!(imported_compressed.source_event_ids.is_empty());
+    assert_eq!(imported_compressed.source_event_ids, ["old-user"]);
     assert_eq!(
         imported_compressed.archive_ref.as_deref(),
         Some(archive_ref.as_str())
@@ -1726,8 +1733,15 @@ fn compressed_segment_content_fallback_stays_portable_for_non_native_paths() {
         role: Role::Assistant,
         timestamp: Utc::now(),
         links: Links::default(),
-        blocks: vec![Block::Text {
-            text: "[Compressed session segment from opencode]\ncompressed summary\nSource event count: 3\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
+        blocks: vec![Block::Compressed {
+            raw: json!({
+                "format": "memorph.compressed.v1",
+                "source_provider_id": "opencode",
+                "summary": "compressed summary",
+                "source_event_ids": ["old-event-1", "old-event-2", "old-event-3"],
+                "source_event_count": 3,
+                "archive_ref": "memorph-archive://s1/archive.json.gz",
+            }),
         }],
         metadata: Metadata {
             model: None,

@@ -220,6 +220,12 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
                         Style::default().fg(theme.text_dim),
                     )));
                 }
+                Block::Compressed { raw } => {
+                    lines.push(Line::from(Span::styled(
+                        format!("[Compressed] {}", theme::truncate(&raw.to_string(), 72)),
+                        Style::default().fg(theme.text_dim),
+                    )));
+                }
                 Block::ProviderPayload { kind, .. } => {
                     lines.push(Line::from(vec![
                         Span::styled("Payload: ", Style::default().fg(theme.text_dim)),

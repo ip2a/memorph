@@ -530,10 +530,7 @@ fn scan_sessions_uses_fingerprintable_database_source_locator() {
     let imported = OpenCodeProvider
         .import_session(session.source_path.as_deref().unwrap())
         .unwrap();
-    assert_eq!(
-        imported.provenance.primary_source.session_id,
-        "ses_locator"
-    );
+    assert_eq!(imported.provenance.primary_source.session_id, "ses_locator");
     assert_eq!(
         imported.provenance.primary_source.source_path,
         session.source_path
@@ -627,16 +624,9 @@ fn import_session_uses_database_path_from_locator() {
 
     let imported = OpenCodeProvider.import_session(&locator).unwrap();
 
+    assert_eq!(imported.session.identity.title.as_deref(), Some("Before"));
     assert_eq!(
-        imported.session.identity.title.as_deref(),
-        Some("Before")
-    );
-    assert_eq!(
-        imported
-            .provenance
-            .primary_source
-            .source_path
-            .as_deref(),
+        imported.provenance.primary_source.source_path.as_deref(),
         Some(locator.as_str())
     );
 }
@@ -1263,8 +1253,15 @@ fn compressed_segment_exports_as_native_opencode_compaction() {
         id: "compressed-source".to_string(),
         kind: EventKind::Message,
         role: Role::Assistant,
-        blocks: vec![Block::Text {
-            text: "[Compressed session segment from opencode]\nportable summary\nSource event count: 2\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
+        blocks: vec![Block::Compressed {
+            raw: serde_json::json!({
+                "format": "memorph.compressed.v1",
+                "source_provider_id": "opencode",
+                "summary": "portable summary",
+                "source_event_ids": ["old-event-1", "old-event-2"],
+                "source_event_count": 2,
+                "archive_ref": "memorph-archive://s1/archive.json.gz",
+            }),
         }],
         timestamp: Utc
             .timestamp_millis_opt(1_700_000_000_000)

@@ -370,6 +370,7 @@ fn event_block_markdown(block: &Block) -> String {
                 .unwrap_or_default(),
             if data.is_some() { ", embedded" } else { "" }
         ),
+        Block::Compressed { raw } => json_block_markdown(raw),
         Block::Other { raw } => json_block_markdown(raw),
     }
 }
@@ -471,6 +472,7 @@ fn event_block_html(block: &Block) -> String {
                     .unwrap_or_default()
             ),
         },
+        Block::Compressed { raw } => json_block_html(raw),
         Block::Other { raw } => json_block_html(raw),
     }
 }

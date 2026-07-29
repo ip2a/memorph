@@ -11,13 +11,18 @@ import {
   SkillStatsFilterTabs,
 } from "@/features/skills/skill-stats-filters";
 import { SkillStatsPanel } from "@/features/skills/skill-stats-panel";
+import { useI18n } from "@/lib/i18n-context";
+import type { I18nKey } from "@/lib/i18n-core";
 
 const OVERVIEW_TABS = [
-  { value: "summary", label: "统计概览" },
-  { value: "ranking", label: "排名证据" },
-  { value: "activity", label: "活跃热力" },
-  { value: "prune", label: "安全清理" },
-] as const;
+  { value: "summary", labelKey: "skillsTabSummary" },
+  { value: "ranking", labelKey: "skillsTabRanking" },
+  { value: "activity", labelKey: "skillsTabActivity" },
+  { value: "prune", labelKey: "skillsSafePrune" },
+] as const satisfies ReadonlyArray<{
+  value: "summary" | "ranking" | "activity" | "prune";
+  labelKey: I18nKey;
+}>;
 
 type OverviewTab = (typeof OVERVIEW_TABS)[number]["value"];
 
@@ -28,6 +33,7 @@ export function SkillOverviewPanel({
   skillId: string | null;
   provider?: string;
 }) {
+  const { t } = useI18n();
   const [tab, setTab] = useState<OverviewTab>("summary");
   const [pruneDays, setPruneDays] = useState(30);
   const showStatsFilters = tab === "summary" || tab === "ranking";
@@ -43,9 +49,9 @@ export function SkillOverviewPanel({
         <div className="flex shrink-0 flex-col gap-2">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <TabsList className="max-w-full overflow-x-auto">
-              {OVERVIEW_TABS.map(({ value, label }) => (
+              {OVERVIEW_TABS.map(({ value, labelKey }) => (
                 <TabsTrigger key={value} value={value}>
-                  {label}
+                  {t(labelKey)}
                 </TabsTrigger>
               ))}
             </TabsList>

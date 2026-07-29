@@ -325,7 +325,7 @@ describe("SkillsPage", () => {
     });
     const user = userEvent.setup();
     renderRoute();
-    await user.click(screen.getByRole("tab", { name: "活跃热力" }));
+    await user.click(screen.getByRole("tab", { name: "Activity" }));
     expect(mocks.useSkillGraph).toHaveBeenLastCalledWith(
       expect.not.objectContaining({ workspace: expect.anything() }),
     );

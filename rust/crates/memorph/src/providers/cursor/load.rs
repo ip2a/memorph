@@ -1,9 +1,9 @@
-use crate::session::{
-    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
-    Schema, Session, Usage,
-};
 use crate::providers::cursor::db::{load_source, CursorBubbleRecord, CursorLoadedSource};
+use crate::session::{
+    Block, Context, Event, EventKind, EventMeta, EventSource, Fidelity, Identity, ImportedSession,
+    Links, MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
+    ProviderRef, Role, Schema, Session, Usage,
+};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
@@ -59,7 +59,7 @@ fn imported_session_from_cursor(
         .created_at_ms()
         .and_then(DateTime::from_timestamp_millis)
         .unwrap_or(DateTime::UNIX_EPOCH);
-    let mut events = Vec::new();
+    let mut imported_events = Vec::new();
     let mut tool_payload_count = 0usize;
     let mut thinking_count = 0usize;
     let mut unmapped_structured_count = 0usize;
@@ -74,13 +74,18 @@ fn imported_session_from_cursor(
         tool_payload_count += usize::from(imported.has_tool_payload);
         thinking_count += usize::from(imported.has_thinking);
         unmapped_structured_count += usize::from(imported.has_unmapped_structured_payload);
-        events.push(imported.event);
+        imported_events.push(imported);
     }
-    events.sort_by(|left, right| {
-        left.timestamp
-            .cmp(&right.timestamp)
-            .then_with(|| left.id.cmp(&right.id))
+    imported_events.sort_by(|left, right| {
+        left.event
+            .timestamp
+            .cmp(&right.event.timestamp)
+            .then_with(|| left.event.id.cmp(&right.event.id))
     });
+    let (events, event_meta): (Vec<_>, Vec<_>) = imported_events
+        .into_iter()
+        .map(|imported| (imported.event, imported.event_meta))
+        .unzip();
 
     if tool_payload_count > 0 {
         report.push_issue(MappingIssue {
@@ -144,10 +149,6 @@ fn imported_session_from_cursor(
         extensions.insert("cursor_composer".to_string(), composer.raw.clone());
     }
 
-    let event_meta = events
-        .iter()
-        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
-        .collect::<Vec<_>>();
     ImportedSession {
         session: Session {
             schema: Schema::default(),
@@ -181,6 +182,7 @@ fn imported_session_from_cursor(
 
 struct ImportedCursorEvent {
     event: Event,
+    event_meta: EventMeta,
     has_tool_payload: bool,
     has_thinking: bool,
     has_unmapped_structured_payload: bool,
@@ -214,9 +216,9 @@ fn canonical_event_from_bubble(
     };
 
     let bubble_type = bubble.raw.get("type").and_then(Value::as_i64);
-    let role = match bubble_type {
-        Some(1) => Role::User,
-        Some(2) => Role::Assistant,
+    let (role, mut fidelity) = match bubble_type {
+        Some(1) => (Role::User, Fidelity::Preserved),
+        Some(2) => (Role::Assistant, Fidelity::Preserved),
         other => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
@@ -227,7 +229,7 @@ fn canonical_event_from_bubble(
                 path: Some(bubble.key.clone()),
                 raw: other.map(Value::from),
             });
-            Role::Other
+            (Role::Other, Fidelity::Normalized)
         }
     };
 
@@ -237,6 +239,7 @@ fn canonical_event_from_bubble(
         .and_then(Value::as_str)
         .and_then(parse_timestamp)
         .unwrap_or_else(|| {
+            fidelity = fidelity.worst(Fidelity::Normalized);
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
                 disposition: Fidelity::Normalized,
@@ -272,6 +275,7 @@ fn canonical_event_from_bubble(
             .filter(|text| !text.is_empty())
         {
             has_thinking = true;
+            fidelity = fidelity.worst(Fidelity::Normalized);
             blocks.push(Block::Thinking {
                 text: text.to_string(),
                 signature: thinking
@@ -288,6 +292,7 @@ fn canonical_event_from_bubble(
         let tool_name = tool.get("name").and_then(Value::as_str);
         if let (Some(tool_call_id), Some(tool_name)) = (tool_call_id, tool_name) {
             has_tool_payload = true;
+            fidelity = fidelity.worst(Fidelity::Normalized);
             let input = tool
                 .get("params")
                 .or_else(|| tool.get("rawArgs"))
@@ -325,6 +330,7 @@ fn canonical_event_from_bubble(
                 path: Some(bubble.key.clone()),
                 raw: Some(Value::Object(tool.clone())),
             });
+            fidelity = fidelity.worst(Fidelity::Normalized);
         }
     }
 
@@ -340,6 +346,14 @@ fn canonical_event_from_bubble(
         .and_then(Value::as_str)
         .map(str::to_string);
     let model_info = bubble.raw.get("modelInfo");
+    let mut provider_ext = BTreeMap::new();
+    if let Some(request_id) = request_id.as_ref() {
+        provider_ext.insert("request_id".to_string(), Value::String(request_id.clone()));
+    }
+    if let Some(model_info) = model_info {
+        provider_ext.insert("model_info".to_string(), model_info.clone());
+    }
+    provider_ext.insert("cursor_bubble".to_string(), bubble.raw.clone());
     let has_unmapped_structured_payload = [
         "images",
         "codeBlocks",
@@ -366,6 +380,16 @@ fn canonical_event_from_bubble(
                 model: bubble_model_name(model_info),
                 usage: bubble_usage(bubble.raw.get("tokenCount")),
             },
+        },
+        event_meta: EventMeta {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id: raw_bubble_id.map(str::to_string),
+                original_role: bubble_type.map(|value| value.to_string()),
+                phase: None,
+            },
+            fidelity,
+            provider_ext,
         },
         has_tool_payload,
         has_thinking,
@@ -441,11 +465,11 @@ fn infer_title_from_events(events: &[Event]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{Block, Fidelity, Role};
     use crate::providers::cursor::db::{
         ComposerData, CursorComposerHeader, CursorComposerRecord, CursorInvalidRow,
         CursorSessionMetadata,
     };
+    use crate::session::{Block, Fidelity, Role};
     use serde_json::json;
 
     fn composer_metadata(
@@ -537,11 +561,11 @@ mod tests {
         let imported = imported_session_from_cursor(source, "db#composer=composer-full");
 
         assert_eq!(
-            imported.session.identity.source_title.as_deref(),
+            imported.session.identity.title.as_deref(),
             Some("Header title")
         );
         assert_eq!(
-            imported.session.context.workspace_dir.as_deref(),
+            imported.session.context.workspace.as_deref(),
             Some("/tmp/project")
         );
         assert_eq!(
@@ -559,19 +583,25 @@ mod tests {
         assert_eq!(user.role, Role::User);
         assert!(matches!(user.blocks[0], Block::Text { .. }));
 
-        let assistant = imported
+        let assistant_index = imported
             .session
             .events
             .iter()
-            .find(|event| event.id == "assistant-1")
+            .position(|event| event.id == "assistant-1")
             .unwrap();
+        let assistant = &imported.session.events[assistant_index];
+        let assistant_meta = &imported.event_meta[assistant_index];
         assert_eq!(assistant.role, Role::Assistant);
-        assert_eq!(assistant.links.provider_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(assistant.links.turn_id.as_deref(), Some("turn-1"));
         assert_eq!(assistant.metadata.model.as_deref(), Some("gpt-test"));
-        assert_eq!(assistant.metadata.fidelity, Fidelity::Normalized);
+        assert_eq!(assistant_meta.fidelity, Fidelity::Normalized);
         assert_eq!(
-            assistant.metadata.usage.as_ref().unwrap().total_tokens,
-            Some(8)
+            assistant.metadata.usage.as_ref().unwrap().input_tokens,
+            Some(3)
+        );
+        assert_eq!(
+            assistant.metadata.usage.as_ref().unwrap().output_tokens,
+            Some(5)
         );
         assert!(assistant.blocks.iter().any(
             |block| matches!(block, Block::Thinking { text, .. } if text == "internal reasoning")
@@ -587,7 +617,7 @@ mod tests {
                 if tool_call_id == "call-1" && content == "ok" && !is_error
         )));
         assert_eq!(
-            assistant.metadata.provider_ext["cursor_bubble"]["unknownField"],
+            assistant_meta.provider_ext["cursor_bubble"]["unknownField"],
             true
         );
 
@@ -618,7 +648,7 @@ mod tests {
             "db#composer=composer-partial",
         );
         assert_eq!(
-            header_only.session.identity.source_title.as_deref(),
+            header_only.session.identity.title.as_deref(),
             Some("Header only")
         );
         assert!(issue_codes(&header_only).contains(&"cursor_missing_composer_data"));
@@ -640,7 +670,7 @@ mod tests {
             "db#composer=composer-partial",
         );
         assert_eq!(
-            data_only.session.identity.source_title.as_deref(),
+            data_only.session.identity.title.as_deref(),
             Some("Data only")
         );
         assert!(issue_codes(&data_only).contains(&"cursor_missing_composer_header"));
@@ -682,7 +712,7 @@ mod tests {
         );
         assert!(matches!(
             imported.session.events[0].blocks[0],
-            Block::ProviderPayload { .. }
+            Block::Other { .. }
         ));
         assert_eq!(imported.report.overall, Fidelity::Dropped);
         let codes = issue_codes(&imported);
