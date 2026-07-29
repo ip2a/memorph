@@ -1,6 +1,6 @@
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
@@ -136,11 +136,15 @@ impl Provider for WindsurfProvider {
         let id = trajectory_id(&blob).context("Windsurf trajectory has no UUID")?;
         let steps = decode_steps(&blob);
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-        let events = steps
+        let events: Vec<Event> = steps
             .iter()
             .enumerate()
             .filter_map(|(i, step)| map_step(step, i, &mut report))
             .collect();
+        let event_meta = events
+            .iter()
+            .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+            .collect::<Vec<_>>();
         let mut extensions = BTreeMap::new();
         extensions.insert(
             "windsurf_trajectory_protobuf".into(),
@@ -151,31 +155,31 @@ impl Provider for WindsurfProvider {
             session: Session {
                 schema: Schema::default(),
                 identity: Identity {
-                    canonical_id: id.clone(),
-                    source_title: steps
+                    id: id.clone(),
+                    title: steps
                         .iter()
                         .find_map(|s| s.user_text.clone().or(s.visible.clone())),
                 },
-                provenance: Provenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderRef {
-                        provider_id: PROVIDER_ID.into(),
-                        session_id: id,
-                        source_path: Some(source_path.into()),
-                    },
-                    aliases: Vec::new(),
-                },
                 context: Context {
-                    workspace_dir: workspace_dir(&db, workspace),
+                    workspace: workspace_dir(&db, workspace),
                     created_at: Some(now),
                     last_active_at: Some(now),
                     tags: Vec::new(),
                 },
                 events,
-                artifacts: Vec::new(),
                 extensions,
             },
+            provenance: Provenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: id,
+                    source_path: Some(source_path.into()),
+                },
+                aliases: Vec::new(),
+            },
+            event_meta,
             report,
         })
     }
@@ -333,46 +337,42 @@ fn import_legacy_session(source: &str) -> Result<ImportedSession> {
             links: Links::default(),
             blocks: vec![Block::Text { text }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: PROVIDER_ID.into(),
-                    original_id: Some(id.into()),
-                    original_role: Some("user".into()),
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: BTreeMap::new(),
             },
         });
     }
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: id.into(),
-                source_title: None,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".into()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.into(),
-                    session_id: id.into(),
-                    source_path: Some(source.into()),
-                },
-                aliases: Vec::new(),
+                id: id.into(),
+                title: None,
             },
             context: Context {
-                workspace_dir: None,
+                workspace: None,
                 created_at: modified_datetime(&path),
                 last_active_at: modified_datetime(&path),
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions: BTreeMap::new(),
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".into()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.into(),
+                session_id: id.into(),
+                source_path: Some(source.into()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     })
 }
@@ -651,7 +651,7 @@ fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<Event> {
     let kind = if step.tools.is_empty() {
         EventKind::Message
     } else {
-        EventKind::ToolCall
+        EventKind::Action
     };
     r.push_issue(crate::session::MappingIssue {
         level: crate::session::MappingIssueLevel::Info,
@@ -669,16 +669,8 @@ fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<Event> {
         links: Links::default(),
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.into(),
-                original_id: step.id.map(|v| v.to_string()),
-                original_role: None,
-                phase: None,
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         },
     })
 }
