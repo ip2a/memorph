@@ -1,7 +1,7 @@
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
-    Schema, Session, Source,
+    Schema, Session,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
@@ -91,33 +91,37 @@ impl Provider for OpenClawProvider {
             path: Some("source".into()),
             raw: None,
         });
+        let event_meta = events
+            .iter()
+            .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+            .collect::<Vec<_>>();
         Ok(ImportedSession {
             session: Session {
                 schema: Schema::default(),
                 identity: Identity {
-                    canonical_id: session_id.clone(),
-                    source_title: title,
-                },
-                provenance: Provenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderRef {
-                        provider_id: PROVIDER_ID.into(),
-                        session_id: session_id.clone(),
-                        source_path: Some(source_path.into()),
-                    },
-                    aliases: Vec::new(),
+                    id: session_id.clone(),
+                    title,
                 },
                 context: Context {
-                    workspace_dir: None,
+                    workspace: None,
                     created_at: Some(datetime_from_ms(metadata.3)),
                     last_active_at: Some(datetime_from_ms(metadata.4)),
                     tags: vec![format!("agent:{agent_id}")],
                 },
                 events,
-                artifacts: Vec::new(),
                 extensions: BTreeMap::new(),
             },
+            provenance: Provenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: session_id.clone(),
+                    source_path: Some(source_path.into()),
+                },
+                aliases: Vec::new(),
+            },
+            event_meta,
             report,
         })
     }
@@ -244,9 +248,8 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<Event> {
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
                     }),
-                    _ => blocks.push(Block::ProviderPayload {
-                        kind: "openclaw-content".into(),
-                        payload: item.clone(),
+                    _ => blocks.push(Block::Other {
+                        raw: item.clone(),
                     }),
                 }
             }
@@ -254,21 +257,20 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<Event> {
         _ => {}
     }
     if blocks.is_empty() {
-        blocks.push(Block::ProviderPayload {
-            kind: "openclaw-message".into(),
-            payload: message.clone(),
+        blocks.push(Block::Other {
+            raw: message.clone(),
         });
     }
     let kind = if blocks
         .iter()
         .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        EventKind::ToolResult
+        EventKind::Observation
     } else if blocks
         .iter()
         .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        EventKind::ToolCall
+        EventKind::Action
     } else {
         EventKind::Message
     };
@@ -285,19 +287,11 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<Event> {
         links: Links::default(),
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.into(),
-                original_id: Some(id),
-                original_role: Some(role_text.into()),
-                phase: None,
-            },
             model: message
                 .get("model")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: BTreeMap::new(),
         },
     })
 }
