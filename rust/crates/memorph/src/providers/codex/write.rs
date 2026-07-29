@@ -333,9 +333,9 @@ fn codex_compacted_history_text(segment: &CompressedSegment) -> String {
     if source_event_count > 0 {
         parts.push(format!("Source event count: {}", source_event_count));
     }
-    if let Some(archive_ref) = segment.archive_ref {
+    if let Some(archive_ref) = &segment.archive_ref {
         parts.push(format!("Archive: {}", archive_ref));
-        parts.push(compression_retrieval_hint(&archive_ref));
+        parts.push(compression_retrieval_hint(archive_ref));
     }
     parts.join("\n")
 }
