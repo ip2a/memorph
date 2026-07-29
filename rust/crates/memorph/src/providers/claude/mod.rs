@@ -1708,7 +1708,6 @@ fn system_time_ms(time: std::time::SystemTime) -> Option<i64> {
 mod tests {
     use super::*;
     use chrono::Utc;
-    use std::collections::BTreeMap;
     use tempfile::NamedTempFile;
 
     fn write_native_claude_session(
@@ -2049,8 +2048,8 @@ mod tests {
         let event = canonical_event_from_claude_line(1, "assistant", Utc::now(), &raw, &mut report)
             .unwrap();
 
-        assert_eq!(event.links.provider_turn_id, None);
-        assert_eq!(event.links.turn_boundary, Some(TurnOutcome::Completed));
+        assert_eq!(event.links.turn_id, None);
+        assert_eq!(event.links.turn_outcome, Some(TurnOutcome::Completed));
     }
 
     #[test]
@@ -2179,8 +2178,8 @@ mod tests {
             event.kind == EventKind::Lifecycle
                 && matches!(
                     event.blocks.first(),
-                    Some(Block::Other { .. })
-                        if kind == "file-history-snapshot"
+                    Some(Block::Other { raw })
+                        if raw["type"] == "file-history-snapshot"
                 )
         }));
         let assistant = imported
@@ -2265,16 +2264,8 @@ mod tests {
 
     #[test]
     fn compressed_segment_exports_as_portable_claude_text_block() {
-        let block = Block::Compressed {
-            source_provider_id: "opencode".to_string(),
-            summary: "compressed summary".to_string(),
-            source_event_ids: vec![
-                "old-event-1".to_string(),
-                "old-event-2".to_string(),
-                "old-event-3".to_string(),
-            ],
-            source_event_count: None,
-            archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
+        let block = Block::Text {
+            text: "[Compressed session segment from opencode]\ncompressed summary\nSource event count: 3\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
         };
 
         let content = canonical_block_to_claude_content(&block).expect("claude text block");
@@ -2393,8 +2384,8 @@ mod tests {
 
         assert!(matches!(
             block,
-            Block::Other { raw: serde_json::Value::Null }
-                if kind == "tool_use" && payload == &serde_json::json!({"type": "tool_use", "name": "Read"})
+            Block::Other { raw }
+                if raw == serde_json::json!({"type": "tool_use", "name": "Read"})
         ));
         assert!(report
             .issues

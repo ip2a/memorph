@@ -864,9 +864,9 @@ mod tests {
                 .import_session(path.to_str().unwrap())
                 .unwrap()
         });
-        assert_eq!(imported.session.identity.canonical_id, "gemini-session-2");
+        assert_eq!(imported.session.identity.id, "gemini-session-2");
         assert_eq!(
-            imported.session.identity.source_title.as_deref(),
+            imported.session.identity.title.as_deref(),
             Some("updated summary")
         );
         assert_eq!(imported.session.events.len(), 2);
@@ -916,7 +916,8 @@ mod tests {
             .blocks
             .iter()
             .any(|block| matches!(block, Block::ToolResult { content, .. } if content == "ok")));
-        assert_eq!(event.metadata.usage.as_ref().unwrap().total_tokens, Some(5));
+        assert_eq!(event.metadata.usage.as_ref().unwrap().input_tokens, Some(2));
+        assert_eq!(event.metadata.usage.as_ref().unwrap().output_tokens, Some(3));
     }
 
     #[test]

@@ -392,7 +392,6 @@ mod tests {
         let imported = CursorProvider.import_session(&locator).unwrap();
         assert_eq!(
             imported
-                .session
                 .provenance
                 .primary_source
                 .source_path

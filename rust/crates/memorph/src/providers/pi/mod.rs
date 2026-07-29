@@ -377,7 +377,7 @@ mod tests {
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         let event = map_event(&v, 1, &mut report).unwrap();
         assert_eq!(event.blocks.len(), 4);
-        assert!(matches!(event.kind, EventKind::ToolCall));
+        assert!(matches!(event.kind, EventKind::Action));
     }
     #[test]
     fn branch_and_compaction_rows_are_not_messages() {

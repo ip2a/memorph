@@ -392,7 +392,7 @@ mod tests {
             .import_session(sessions[0].source_path.as_deref().unwrap())
             .unwrap();
         assert_eq!(imported.session.events.len(), 2);
-        assert_eq!(imported.session.identity.canonical_id, "trae-1");
+        assert_eq!(imported.session.identity.id, "trae-1");
         assert!(provider
             .session_source_fingerprint(sessions[0].source_path.as_deref().unwrap())
             .unwrap()

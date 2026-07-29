@@ -450,7 +450,7 @@ mod tests {
             matches!(imported.session.events[2].blocks[0], Block::ToolResult { ref content, .. } if content == "done")
         );
         assert_eq!(
-            imported.session.events[1].metadata.provider_ext["hermes_message"]["tool_calls"],
+            imported.event_meta[1].provider_ext["hermes_message"]["tool_calls"],
             serde_json::json!([{
                 "id": "call-1",
                 "type": "function",
@@ -461,7 +461,7 @@ mod tests {
             }])
         );
         assert_eq!(
-            imported.session.events[1].metadata.provider_ext["hermes_message"]["api_content"],
+            imported.event_meta[1].provider_ext["hermes_message"]["api_content"],
             "wire-content"
         );
         assert!(source_fingerprint(&source).unwrap().is_some());
