@@ -1194,8 +1194,8 @@ fn build_claude_event_index(
             byte_offset: line_offset,
             byte_length: byte_length as u64,
             line_no,
-            turn_id: None,
-            turn_outcome: None,
+            provider_turn_id: None,
+            turn_boundary: None,
         });
         event_count += 1;
     }
@@ -1554,8 +1554,8 @@ fn provider_payload_event(
         timestamp,
         links: Links {
             parent_event_id: parent_id.clone(),
-            turn_id: None,
-            turn_outcome: None,
+            provider_turn_id: None,
+            turn_boundary: None,
             related_event_ids: Vec::new(),
         },
         blocks: vec![Block::Other { raw: serde_json::Value::Null }],
