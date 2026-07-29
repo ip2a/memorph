@@ -4,12 +4,11 @@ use axum::{
     http::Request,
 };
 use chrono::Utc;
-use memorph::session::{
-    Block, Context, Event, EventKind, Fidelity, Identity, Links, Metadata, Provenance, ProviderRef,
-    Role, Schema, Session, Source,
-};
 use memorph::hooks::model::{RuntimeSession, RuntimeSessionId, RuntimeSessionStatus};
 use memorph::hooks::protocol::{HookIngestRequest, HookRuntimeEndpoint};
+use memorph::session::{
+    Block, Context, Event, EventKind, Identity, Links, Metadata, Role, Schema, Session,
+};
 use memorph::storage::session_state::ResolvedLocalSessionState;
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -693,18 +692,9 @@ fn write_api_retrieve_archive_fixture() -> ArchiveFixture {
         .join(&group);
     std::fs::create_dir_all(&archive_dir).unwrap();
 
-    let source = Source {
-        provider_id: "claude".to_string(),
-        original_id: None,
-        original_role: Some("user".to_string()),
-        phase: None,
-    };
     let metadata = Metadata {
-        source,
         model: None,
         usage: None,
-        fidelity: Fidelity::Preserved,
-        provider_ext: BTreeMap::new(),
     };
     let archive = core::compression::CompressionArchive {
         version: 1,
@@ -761,18 +751,8 @@ async fn compression_plan_route_returns_candidates_from_file() {
     let session = Session {
         schema: Schema::default(),
         identity: Identity {
-            canonical_id: "api-dry-run-file".to_string(),
-            source_title: Some("API Dry Run File".to_string()),
-        },
-        provenance: Provenance {
-            imported_at: now,
-            imported_by: None,
-            primary_source: ProviderRef {
-                provider_id: "claude".to_string(),
-                session_id: "api-dry-run-file".to_string(),
-                source_path: None,
-            },
-            aliases: Vec::new(),
+            id: "api-dry-run-file".to_string(),
+            title: Some("API Dry Run File".to_string()),
         },
         context: Context::default(),
         events: vec![
@@ -786,16 +766,8 @@ async fn compression_plan_route_returns_candidates_from_file() {
                     text: "historical context ".repeat(80),
                 }],
                 metadata: Metadata {
-                    source: Source {
-                        provider_id: "claude".to_string(),
-                        original_id: Some("old-user".to_string()),
-                        original_role: Some("user".to_string()),
-                        phase: None,
-                    },
                     model: None,
                     usage: None,
-                    fidelity: Fidelity::Preserved,
-                    provider_ext: BTreeMap::new(),
                 },
             },
             Event {
@@ -808,20 +780,11 @@ async fn compression_plan_route_returns_candidates_from_file() {
                     text: "latest active request".to_string(),
                 }],
                 metadata: Metadata {
-                    source: Source {
-                        provider_id: "claude".to_string(),
-                        original_id: Some("recent-user".to_string()),
-                        original_role: Some("user".to_string()),
-                        phase: None,
-                    },
                     model: None,
                     usage: None,
-                    fidelity: Fidelity::Preserved,
-                    provider_ext: BTreeMap::new(),
                 },
             },
         ],
-        artifacts: Vec::new(),
         extensions: BTreeMap::new(),
     };
     let mut file = Builder::new().suffix(".json").tempfile().unwrap();
@@ -892,7 +855,6 @@ fn session_detail_payload_serializes_hook_runtime_sessions() {
             local_state: ResolvedLocalSessionState::default(),
             event_count: 0,
             message_count: 0,
-            artifact_count: 0,
             length_metrics: core::SessionLengthMetrics {
                 provider_source_bytes_measured: 0,
                 model_visible_bytes_measured: 0,
@@ -917,7 +879,6 @@ fn session_detail_payload_serializes_hook_runtime_sessions() {
                 turn_order: 0,
             }],
             events: Vec::new(),
-            artifacts: Vec::new(),
         },
         events_offset: 0,
         events_limit: Some(50),

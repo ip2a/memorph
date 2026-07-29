@@ -1707,7 +1707,6 @@ mod tests {
             local_state: ResolvedLocalSessionState::default(),
             event_count: 4,
             message_count: 2,
-            artifact_count: 0,
             length_metrics: core::SessionLengthMetrics {
                 provider_source_bytes_measured: 0,
                 model_visible_bytes_measured: 0,
@@ -1748,7 +1747,6 @@ mod tests {
             }),
             turns: Vec::new(),
             events: Vec::<Event>::new(),
-            artifacts: Vec::new(),
             compressed_archive_refs: Vec::new(),
         };
 
@@ -1783,7 +1781,6 @@ mod tests {
             local_state: ResolvedLocalSessionState::default(),
             event_count: 0,
             message_count: 0,
-            artifact_count: 0,
             length_metrics: core::SessionLengthMetrics {
                 provider_source_bytes_measured: 0,
                 model_visible_bytes_measured: 0,
@@ -1798,7 +1795,6 @@ mod tests {
             projection_report: None,
             turns: Vec::new(),
             events: Vec::<Event>::new(),
-            artifacts: Vec::new(),
             compressed_archive_refs: Vec::new(),
         };
 
