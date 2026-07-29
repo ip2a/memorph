@@ -65,6 +65,8 @@ export const queryKeys = {
   compressionProviders: ["compression-providers"] as const,
   agentsSummary: ["agents", "summary"] as const,
   agent: (provider: string) => ["agents", provider] as const,
+  providerConfigView: (provider: string, viewId: string) =>
+    ["providers", provider, "config", viewId] as const,
   hooks: ["hooks"] as const,
   skillsRoot: ["skills"] as const,
   skills: (params: SkillCatalogParams = {}) =>

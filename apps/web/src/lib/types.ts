@@ -1181,6 +1181,40 @@ export type ProviderSettingOutput = {
   [key: string]: unknown;
 };
 
+export type ProviderConfigTone = "ok" | "warning" | "danger" | "muted";
+
+export type ProviderConfigSource = {
+  path: string;
+  scope: string;
+  exists: boolean;
+};
+
+export type ProviderConfigRow = {
+  label: string;
+  value: unknown;
+  hint?: string;
+  tone?: ProviderConfigTone;
+};
+
+export type ProviderConfigSection = {
+  label: string;
+  rows: ProviderConfigRow[];
+};
+
+export type ProviderConfigIssue = {
+  message: string;
+  tone: ProviderConfigTone;
+};
+
+export type ProviderConfigView = {
+  provider_id: string;
+  view_id: string;
+  title: string;
+  sources?: ProviderConfigSource[];
+  sections?: ProviderConfigSection[];
+  issues?: ProviderConfigIssue[];
+};
+
 export type CodexWorkspaceRepairItem = {
   session_id: string;
   title?: string | null;

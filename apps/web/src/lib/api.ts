@@ -44,6 +44,7 @@ import type {
   ProviderInfo,
   ProviderCatalogPayload,
   ProviderCatalogUpdatePayload,
+  ProviderConfigView,
   RenameSyncGroupPayload,
   RenameSessionPayload,
   RenameSessionResult,
@@ -339,6 +340,12 @@ export function runProviderSetting(
       method: "POST",
       body: JSON.stringify({ workspace: workspace || null }),
     },
+  );
+}
+
+export function getProviderConfigView(provider: string, viewId: string) {
+  return api<ProviderConfigView>(
+    `/api/v1/providers/${encodeURIComponent(provider)}/config/${encodeURIComponent(viewId)}`,
   );
 }
 

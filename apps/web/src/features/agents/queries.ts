@@ -1,5 +1,5 @@
 import { queryOptions, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { detectAgent, getAgent, getMeta, getProviderCatalog, listAgentsSummary, runProviderSetting, updateProviderSetting } from "@/lib/api";
+import { detectAgent, getAgent, getMeta, getProviderCatalog, getProviderConfigView, listAgentsSummary, runProviderSetting, updateProviderSetting } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useAgentsSummary() {
@@ -74,5 +74,13 @@ export function useRunProviderSetting() {
       queryClient.invalidateQueries({ queryKey: queryKeys.agent(variables.provider) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agentsSummary });
     },
+  });
+}
+
+export function useProviderConfigView(provider: string | null, viewId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.providerConfigView(provider ?? "", viewId),
+    queryFn: () => getProviderConfigView(provider!, viewId),
+    enabled: enabled && !!provider,
   });
 }

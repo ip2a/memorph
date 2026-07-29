@@ -47,6 +47,7 @@ import {
 } from "@/features/agents/queries";
 import { useManagerStats } from "@/features/manager/queries";
 import { AgentActionResultPanel } from "@/features/agents/agent-action-result";
+import { ConfigViewsBlock } from "@/features/agents/config-views-panel";
 
 const HOOK_SETTING_IDS = new Set(["install_hook", "verify_hook", "repair_hook", "uninstall_hook"]);
 
@@ -581,6 +582,7 @@ function ProviderDetail({
             onRequestRun={handleRequestRun}
             pendingKey={pendingKey}
           />
+          <ConfigViewsBlock provider={provider} />
         </div>
       </ScrollArea>
 
