@@ -12,8 +12,8 @@ use crate::tui::app::{
     MainFocus, SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
 };
 use crate::tui::theme::{self, Theme};
+use memorph::core::{compression, SessionGroup, SessionItem};
 use memorph::session::{Block as EventBlock, Event, Role};
-use memorph::core::{SessionGroup, SessionItem};
 
 /// Draw session table page
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
@@ -1575,6 +1575,10 @@ fn role_name(role: Role) -> &'static str {
 }
 
 fn content_preview(event: &Event) -> String {
+    if let Some(segment) = compression::compressed_segment(event) {
+        return format!("Compressed: {}", theme::truncate(&segment.summary, 80));
+    }
+
     if let Some(block) = event.blocks.first() {
         match block {
             EventBlock::Text { text } => return theme::truncate(text, 96),
@@ -1601,11 +1605,13 @@ fn content_preview(event: &Event) -> String {
             }
             EventBlock::File { path, .. } => return format!("File: {}", path),
             EventBlock::Image { .. } => return "Image attachment".to_string(),
-            EventBlock::ProviderPayload { kind, .. } => return format!("Payload: {}", kind),
-            EventBlock::Compressed { summary, .. } => {
-                return format!("Compressed: {}", theme::truncate(summary, 80));
+            EventBlock::Other { raw } => {
+                return raw
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|kind| format!("Payload: {kind}"))
+                    .unwrap_or_else(|| "Other payload".to_string());
             }
-            _ => return "Unknown payload".to_string(),
         }
     }
 
