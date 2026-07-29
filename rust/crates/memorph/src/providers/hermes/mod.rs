@@ -2,7 +2,7 @@ pub mod adapter;
 pub mod hook;
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session, Source,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
@@ -94,6 +94,7 @@ impl Provider for HermesProvider {
             "SELECT id, role, content, tool_call_id, tool_calls, tool_name, effect_disposition, timestamp, reasoning, reasoning_content, reasoning_details, compacted, active, api_content FROM messages WHERE session_id = ?1 ORDER BY id",
         )?;
         let mut events = Vec::new();
+        let mut event_meta: Vec<crate::session::EventMeta> = Vec::new();
         let mut rows = stmt.query([&id])?;
         while let Some(row) = rows.next()? {
             let active: i64 = row.get(12)?;
@@ -199,9 +200,9 @@ impl Provider for HermesProvider {
                 }
             }
             let kind = if tool_name.is_some() {
-                EventKind::ToolResult
+                EventKind::Observation
             } else if tool_calls.is_some() {
-                EventKind::ToolCall
+                EventKind::Action
             } else {
                 EventKind::Message
             };
@@ -215,21 +216,21 @@ impl Provider for HermesProvider {
                 links: Links::default(),
                 blocks,
                 metadata: Metadata {
-                    source: Source {
-                        provider_id: PROVIDER_ID.to_string(),
-                        original_id: Some(message_id.to_string()),
-                        original_role: Some(role.clone()),
-                        phase: None,
-                    },
                     model: meta.3.clone(),
                     usage: None,
-                    fidelity: Fidelity::Preserved,
-                    provider_ext: {
-                        let mut ext = BTreeMap::new();
-                        ext.insert("hermes_message".into(), raw_message);
-                        ext
-                    },
                 },
+            });
+            let mut provider_ext = BTreeMap::new();
+            provider_ext.insert("hermes_message".into(), raw_message);
+            event_meta.push(crate::session::EventMeta {
+                source: crate::session::EventSource {
+                    provider_id: PROVIDER_ID.to_string(),
+                    original_id: Some(message_id.to_string()),
+                    original_role: Some(role.clone()),
+                    phase: None,
+                },
+                fidelity: Fidelity::Preserved,
+                provider_ext,
             });
         }
         let created = timestamp_ms(meta.4).map(datetime_from_ms);
@@ -247,29 +248,29 @@ impl Provider for HermesProvider {
             session: Session {
                 schema: Schema::default(),
                 identity: Identity {
-                    canonical_id: meta.0.clone(),
-                    source_title: meta.1,
-                },
-                provenance: Provenance {
-                    imported_at: Utc::now(),
-                    imported_by: Some("memorph-cli".into()),
-                    primary_source: ProviderRef {
-                        provider_id: PROVIDER_ID.into(),
-                        session_id: meta.0,
-                        source_path: Some(source_path.into()),
-                    },
-                    aliases: Vec::new(),
+                    id: meta.0.clone(),
+                    title: meta.1,
                 },
                 context: Context {
-                    workspace_dir: meta.2,
+                    workspace: meta.2,
                     created_at: created,
                     last_active_at: last,
                     tags: Vec::new(),
                 },
                 events,
-                artifacts: Vec::new(),
                 extensions: BTreeMap::new(),
             },
+            provenance: Provenance {
+                imported_at: Utc::now(),
+                imported_by: Some("memorph-cli".into()),
+                primary_source: ProviderRef {
+                    provider_id: PROVIDER_ID.into(),
+                    session_id: meta.0,
+                    source_path: Some(source_path.into()),
+                },
+                aliases: Vec::new(),
+            },
+            event_meta,
             report,
         })
     }
