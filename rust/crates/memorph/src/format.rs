@@ -1,6 +1,4 @@
-use crate::session::{
-    Artifact, Block, Context, Event, EventKind, Identity, Provenance, Role, Schema, Session,
-};
+use crate::session::{Block, Context, Event, EventKind, Identity, Role, Schema, Session};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -14,11 +12,8 @@ struct MorphMetaLine {
     #[serde(default)]
     schema: Schema,
     identity: Identity,
-    provenance: Provenance,
     #[serde(default)]
     context: Context,
-    #[serde(default)]
-    artifacts: Vec<Artifact>,
     #[serde(default)]
     extensions: BTreeMap<String, Value>,
 }
@@ -79,10 +74,8 @@ pub fn read_session(path: &Path) -> Result<Session> {
     Ok(Session {
         schema: meta.schema,
         identity: meta.identity,
-        provenance: meta.provenance,
         context: meta.context,
         events,
-        artifacts: meta.artifacts,
         extensions: meta.extensions,
     })
 }
@@ -98,9 +91,7 @@ pub fn write_session(path: &Path, session: &Session) -> Result<()> {
             "type": "meta",
             "schema": session.schema,
             "identity": session.identity,
-            "provenance": session.provenance,
             "context": session.context,
-            "artifacts": session.artifacts,
             "extensions": session.extensions,
         }))?
     )?;
@@ -126,23 +117,11 @@ pub fn write_markdown(path: &Path, session: &Session) -> Result<()> {
     out.push_str(&escape_markdown_text(title));
     out.push_str("\n\n");
     out.push_str("| Field | Value |\n|---|---|\n");
-    out.push_str(&format!(
-        "| Canonical ID | `{}` |\n",
-        session.identity.canonical_id
-    ));
-    out.push_str(&format!(
-        "| Source Provider | `{}` |\n",
-        session.provenance.primary_source.provider_id
-    ));
-    out.push_str(&format!(
-        "| Source Session | `{}` |\n",
-        session.provenance.primary_source.session_id
-    ));
-    if let Some(workspace) = &session.context.workspace_dir {
+    out.push_str(&format!("| ID | `{}` |\n", session.identity.id));
+    if let Some(workspace) = &session.context.workspace {
         out.push_str(&format!("| Workspace | `{}` |\n", workspace));
     }
-    out.push_str(&format!("| Events | {} |\n", session.events.len()));
-    out.push_str(&format!("| Artifacts | {} |\n\n", session.artifacts.len()));
+    out.push_str(&format!("| Events | {} |\n\n", session.events.len()));
 
     for event in &session.events {
         out.push_str("## ");
@@ -178,22 +157,16 @@ pub fn write_html(path: &Path, session: &Session) -> Result<()> {
     out.push_str("</title><style>body{font-family:ui-sans-serif,system-ui;margin:32px;line-height:1.55;color:#111}article{max-width:960px;margin:auto}pre{white-space:pre-wrap;border:1px solid #111;padding:12px;overflow:auto}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.meta{display:grid;grid-template-columns:max-content 1fr;gap:6px 12px;border:1px solid #111;padding:12px}.event{border-top:1px solid #111;padding-top:18px;margin-top:18px}.label{text-transform:uppercase;font-weight:700}</style></head><body><article>");
     out.push_str("<h1>");
     out.push_str(&html_escape(title));
-    out.push_str("</h1><section class=\"meta\"><strong>Canonical ID</strong><code>");
-    out.push_str(&html_escape(&session.identity.canonical_id));
-    out.push_str("</code><strong>Source Provider</strong><code>");
-    out.push_str(&html_escape(&session.provenance.primary_source.provider_id));
-    out.push_str("</code><strong>Source Session</strong><code>");
-    out.push_str(&html_escape(&session.provenance.primary_source.session_id));
+    out.push_str("</h1><section class=\"meta\"><strong>ID</strong><code>");
+    out.push_str(&html_escape(&session.identity.id));
     out.push_str("</code>");
-    if let Some(workspace) = &session.context.workspace_dir {
+    if let Some(workspace) = &session.context.workspace {
         out.push_str("<strong>Workspace</strong><code>");
         out.push_str(&html_escape(workspace));
         out.push_str("</code>");
     }
     out.push_str("<strong>Events</strong><span>");
     out.push_str(&session.events.len().to_string());
-    out.push_str("</span><strong>Artifacts</strong><span>");
-    out.push_str(&session.artifacts.len().to_string());
     out.push_str("</span></section>");
 
     for event in &session.events {
@@ -247,9 +220,11 @@ pub fn read_html(path: &Path) -> Result<Session> {
 
 fn session_title(session: &Session) -> &str {
     session
-        .primary_title()
+        .identity
+        .title
+        .as_deref()
         .filter(|title| !title.trim().is_empty())
-        .unwrap_or(&session.identity.canonical_id)
+        .unwrap_or(&session.identity.id)
 }
 
 fn event_role_label(role: Role) -> &'static str {
@@ -266,14 +241,10 @@ fn event_role_label(role: Role) -> &'static str {
 fn event_kind_label(kind: EventKind) -> &'static str {
     match kind {
         EventKind::Message => "message",
-        EventKind::ToolCall => "tool_call",
-        EventKind::ToolResult => "tool_result",
-        EventKind::Command => "command",
-        EventKind::CommandResult => "command_result",
-        EventKind::Patch => "patch",
+        EventKind::Action => "action",
+        EventKind::Observation => "observation",
         EventKind::Lifecycle => "lifecycle",
-        EventKind::Artifact => "artifact",
-        _ => "unknown",
+        EventKind::Other => "other",
     }
 }
 
@@ -399,42 +370,7 @@ fn event_block_markdown(block: &Block) -> String {
                 .unwrap_or_default(),
             if data.is_some() { ", embedded" } else { "" }
         ),
-        Block::ProviderPayload { kind, payload } => json_block_markdown(&serde_json::json!({
-            "kind": kind,
-            "payload": payload,
-        })),
-        Block::Compressed {
-            source_provider_id,
-            summary,
-            source_event_ids,
-            source_event_count,
-            archive_ref,
-        } => {
-            let mut out = String::from("> Compressed session segment\n\n");
-            out.push_str(&format!(
-                "- Source provider: `{}`\n",
-                escape_markdown_text(source_provider_id)
-            ));
-            let count = source_event_count.unwrap_or(source_event_ids.len());
-            if count > 0 {
-                out.push_str(&format!(
-                    "- Source event count: `{}`\n",
-                    escape_markdown_text(&count.to_string())
-                ));
-            }
-            if let Some(archive_ref) = archive_ref {
-                out.push_str(&format!(
-                    "- Archive: `{}`\n",
-                    escape_markdown_text(archive_ref)
-                ));
-            }
-            out.push('\n');
-            out.push_str(&escape_markdown_text(summary));
-            out
-        }
         Block::Other { raw } => json_block_markdown(raw),
-        // ponytail: oasf 标了 #[non_exhaustive],未来新增 Block 变体在此兜底为空串。
-        _ => String::new(),
     }
 }
 
@@ -535,40 +471,7 @@ fn event_block_html(block: &Block) -> String {
                     .unwrap_or_default()
             ),
         },
-        Block::ProviderPayload { kind, payload } => json_block_html(&serde_json::json!({
-            "kind": kind,
-            "payload": payload,
-        })),
-        Block::Compressed {
-            source_provider_id,
-            summary,
-            source_event_ids,
-            source_event_count,
-            archive_ref,
-        } => {
-            let mut out =
-                String::from("<blockquote><p>Compressed session segment</p></blockquote>");
-            out.push_str("<p><strong>Source provider:</strong> <code>");
-            out.push_str(&html_escape(source_provider_id));
-            out.push_str("</code></p>");
-            let count = source_event_count.unwrap_or(source_event_ids.len());
-            if count > 0 {
-                out.push_str("<p><strong>Source event count:</strong> <code>");
-                out.push_str(&html_escape(&count.to_string()));
-                out.push_str("</code></p>");
-            }
-            if let Some(archive_ref) = archive_ref {
-                out.push_str("<p><strong>Archive:</strong> <code>");
-                out.push_str(&html_escape(archive_ref));
-                out.push_str("</code></p>");
-            }
-            out.push_str("<pre>");
-            out.push_str(&html_escape(summary));
-            out.push_str("</pre>");
-            out
-        }
         Block::Other { raw } => json_block_html(raw),
-        _ => String::new(),
     }
 }
 
@@ -625,7 +528,6 @@ fn html_unescape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session::{Fidelity, ProviderRef};
     use chrono::Utc;
     use tempfile::tempdir;
 
@@ -633,21 +535,11 @@ mod tests {
         Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: "session-1".to_string(),
-                source_title: Some("Session Title".to_string()),
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("test".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: "codex".to_string(),
-                    session_id: "source-1".to_string(),
-                    source_path: Some("/tmp/source.jsonl".to_string()),
-                },
-                aliases: Vec::new(),
+                id: "session-1".to_string(),
+                title: Some("Session Title".to_string()),
             },
             context: Context {
-                workspace_dir: Some("/tmp/project".to_string()),
+                workspace: Some("/tmp/project".to_string()),
                 created_at: Some(Utc::now()),
                 last_active_at: Some(Utc::now()),
                 tags: vec!["demo".to_string()],
@@ -669,25 +561,9 @@ mod tests {
                     },
                 ],
                 metadata: crate::session::Metadata {
-                    source: crate::session::Source {
-                        provider_id: "codex".to_string(),
-                        original_id: Some("event-1".to_string()),
-                        original_role: Some("assistant".to_string()),
-                        phase: Some("final_answer".to_string()),
-                    },
                     model: Some("gpt-5.3-codex".to_string()),
                     usage: None,
-                    fidelity: Fidelity::Preserved,
-                    provider_ext: BTreeMap::new(),
                 },
-            }],
-            artifacts: vec![Artifact {
-                id: "artifact-1".to_string(),
-                kind: crate::session::ArtifactKind::Patch,
-                path: None,
-                mime_type: None,
-                content: Some("@@ -1 +1 @@".to_string()),
-                metadata: BTreeMap::new(),
             }],
             extensions: {
                 let mut extensions = BTreeMap::new();
