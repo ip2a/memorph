@@ -1267,14 +1267,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             imported
-                .session
                 .provenance
                 .primary_source
                 .source_path
                 .as_deref(),
             Some(expected_locator.as_str())
         );
-        assert_eq!(imported.session.identity.canonical_id, session_id);
+        assert_eq!(imported.session.identity.id, session_id);
     }
 
     #[test]
@@ -2189,11 +2188,11 @@ mod tests {
                 .unwrap();
 
         assert_eq!(
-            imported.session.context.workspace_dir.as_deref(),
+            imported.session.context.workspace.as_deref(),
             Some("/tmp/workspace")
         );
         assert_eq!(
-            imported.session.identity.source_title.as_deref(),
+            imported.session.identity.title.as_deref(),
             Some("Named Thread")
         );
         assert_eq!(imported.session.events.len(), 3);
@@ -2225,28 +2224,12 @@ mod tests {
             role: Role::Assistant,
             timestamp: Utc::now(),
             links: Links::default(),
-            blocks: vec![Block::Compressed {
-                source_provider_id: "opencode".to_string(),
-                summary: "compressed summary".to_string(),
-                source_event_ids: vec![
-                    "old-event-1".to_string(),
-                    "old-event-2".to_string(),
-                    "old-event-3".to_string(),
-                ],
-                source_event_count: None,
-                archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
+            blocks: vec![Block::Text {
+                text: "[Compressed session segment from opencode]\ncompressed summary\nSource event count: 3\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "memorph".to_string(),
-                    original_id: None,
-                    original_role: Some("assistant".to_string()),
-                    phase: Some("compression".to_string()),
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Normalized,
-                provider_ext: BTreeMap::new(),
             },
         };
 
@@ -2274,16 +2257,8 @@ mod tests {
                 text: "internal context".to_string(),
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: "codex".to_string(),
-                    original_id: None,
-                    original_role: Some("user".to_string()),
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Normalized,
-                provider_ext: BTreeMap::new(),
             },
         };
 
