@@ -8,7 +8,7 @@ use self::load::*;
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
-    Schema, Session, Source, TurnOutcome,
+    Schema, Session, TurnOutcome,
 };
 use crate::provider::{
     canonical_event_is_visible_message, PageStrategy, Provider, ProviderActivitySupport,

@@ -282,7 +282,7 @@ pub(super) fn import_kiro_session_page(
         .filter(|event| canonical_event_is_visible_message(event))
         .count();
     let full_turns = crate::session_projection::project_session_turns(
-        &imported.session.identity.canonical_id,
+        &imported.session.identity.id,
         &full_events,
         TurnQuality::Exact,
     );
@@ -298,7 +298,7 @@ pub(super) fn import_kiro_session_page(
     };
 
     let mut turns = crate::session_projection::project_session_turns(
-        &imported.session.identity.canonical_id,
+        &imported.session.identity.id,
         &imported.session.events,
         TurnQuality::Inferred,
     );
@@ -306,7 +306,7 @@ pub(super) fn import_kiro_session_page(
         full_events
             .iter()
             .fold(BTreeMap::<String, usize>::new(), |mut counts, event| {
-                if let Some(turn_id) = event.links.provider_turn_id.as_ref() {
+                if let Some(turn_id) = event.links.turn_id.as_ref() {
                     *counts.entry(turn_id.clone()).or_default() += 1;
                 }
                 counts
@@ -314,7 +314,7 @@ pub(super) fn import_kiro_session_page(
     let page_event_counts = imported.session.events.iter().fold(
         BTreeMap::<String, usize>::new(),
         |mut counts, event| {
-            if let Some(turn_id) = event.links.provider_turn_id.as_ref() {
+            if let Some(turn_id) = event.links.turn_id.as_ref() {
                 *counts.entry(turn_id.clone()).or_default() += 1;
             }
             counts
@@ -404,7 +404,6 @@ pub(super) fn import_canonical_session_from_dir(session_dir: &Path) -> Result<Im
             if let Some(parent_event_id) = parent_event_id {
                 for event in &mut sub_import.events {
                     event.event.links.parent_event_id = Some(parent_event_id.clone());
-                    event.event.links.provider_parent_id = Some(parent_event_id.clone());
                 }
             } else if !sub_import.events.is_empty() {
                 report.push_issue(MappingIssue {
@@ -443,33 +442,37 @@ pub(super) fn import_canonical_session_from_dir(session_dir: &Path) -> Result<Im
     let mut extensions = BTreeMap::new();
     extensions.insert("kiro_session_metadata".to_string(), raw_metadata);
 
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: metadata.id.clone(),
-                source_title,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id: metadata.id,
-                    source_path: Some(session_dir.to_string_lossy().to_string()),
-                },
-                aliases: Vec::new(),
+                id: metadata.id.clone(),
+                title: source_title,
             },
             context: Context {
-                workspace_dir,
+                workspace: workspace_dir,
                 created_at,
                 last_active_at: metadata_last_active_at.max(event_last_active_at),
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id: metadata.id,
+                source_path: Some(session_dir.to_string_lossy().to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     })
 }
@@ -545,19 +548,17 @@ pub(super) fn read_kiro_event_stream(
                 continue;
             }
         };
-        let event =
-            canonical_event_from_kiro_record(record, source_file, line_number, &mut state, report);
-        if let Some(sub_execution_id) = event
-            .metadata
-            .provider_ext
-            .get("kiro_record")
-            .and_then(|record| record.get("payload"))
+        let sub_execution_id = record
+            .get("payload")
             .and_then(|payload| payload.get("subExecutionId"))
             .and_then(Value::as_str)
-        {
+            .map(str::to_string);
+        let event =
+            canonical_event_from_kiro_record(record, source_file, line_number, &mut state, report);
+        if let Some(sub_execution_id) = sub_execution_id {
             imported
                 .sub_execution_parents
-                .insert(sub_execution_id.to_string(), event.id.clone());
+                .insert(sub_execution_id, event.id.clone());
         }
         imported.events.push(KiroImportedEvent {
             event,
@@ -631,16 +632,15 @@ pub(super) fn canonical_event_from_kiro_record(
         .or_else(|| state.active_turn_id.clone())
         .or_else(|| state.default_turn_id.clone());
     let mut links = Links {
-        provider_turn_id,
+        turn_id: provider_turn_id,
         ..Links::default()
     };
-    let mut fidelity = Fidelity::Preserved;
 
     let (kind, role, blocks) = match payload_type {
         "user" => (
             EventKind::Message,
             Role::User,
-            kiro_message_blocks(&payload, false, payload_type, &path, report),
+            kiro_message_blocks(&payload, false, &path, report),
         ),
         "assistant" => {
             let operation_type = payload
@@ -649,7 +649,6 @@ pub(super) fn canonical_event_from_kiro_record(
                 .unwrap_or("Say");
             let reasoning = operation_type.eq_ignore_ascii_case("reasoning");
             if !reasoning && !operation_type.eq_ignore_ascii_case("say") {
-                fidelity = Fidelity::Normalized;
                 report.push_issue(MappingIssue {
                     level: MappingIssueLevel::Info,
                     disposition: Fidelity::Normalized,
@@ -664,18 +663,18 @@ pub(super) fn canonical_event_from_kiro_record(
             (
                 EventKind::Message,
                 Role::Assistant,
-                kiro_message_blocks(&payload, reasoning, payload_type, &path, report),
+                kiro_message_blocks(&payload, reasoning, &path, report),
             )
         }
         "system" => (
             EventKind::Message,
             Role::System,
-            kiro_message_blocks(&payload, false, payload_type, &path, report),
+            kiro_message_blocks(&payload, false, &path, report),
         ),
         "agent_note" => (
             EventKind::Message,
             Role::Assistant,
-            kiro_message_blocks(&payload, false, payload_type, &path, report),
+            kiro_message_blocks(&payload, false, &path, report),
         ),
         "tool_call" => {
             let tool_call_id = payload
@@ -714,7 +713,7 @@ pub(super) fn canonical_event_from_kiro_record(
                 .tool_call_events
                 .insert(tool_call_id.clone(), event_id.clone());
             (
-                EventKind::ToolCall,
+                EventKind::Action,
                 Role::Assistant,
                 vec![Block::ToolCall {
                     tool_call_id,
@@ -740,7 +739,6 @@ pub(super) fn canonical_event_from_kiro_record(
                     });
                     "unknown".to_string()
                 });
-            links.provider_parent_id = Some(tool_call_id.clone());
             if let Some(parent_event_id) = state.tool_call_events.get(&tool_call_id) {
                 links.parent_event_id = Some(parent_event_id.clone());
             }
@@ -751,7 +749,7 @@ pub(super) fn canonical_event_from_kiro_record(
                     Some("error" | "failed")
                 );
             (
-                EventKind::ToolResult,
+                EventKind::Observation,
                 Role::Tool,
                 vec![Block::ToolResult {
                     tool_call_id,
@@ -761,25 +759,18 @@ pub(super) fn canonical_event_from_kiro_record(
             )
         }
         "turn_start" => {
-            links.turn_boundary = Some(TurnOutcome::Started);
             (
                 EventKind::Lifecycle,
                 Role::System,
-                vec![Block::ProviderPayload {
-                    kind: payload_type.to_string(),
-                    payload: payload.clone(),
-                }],
+                vec![Block::Other { raw: payload.clone() }],
             )
         }
         "turn_end" => {
-            links.turn_boundary = Some(kiro_turn_end_boundary(&payload));
+            links.turn_outcome = Some(kiro_turn_end_boundary(&payload));
             (
                 EventKind::Lifecycle,
                 Role::System,
-                vec![Block::ProviderPayload {
-                    kind: payload_type.to_string(),
-                    payload: payload.clone(),
-                }],
+                vec![Block::Other { raw: payload.clone() }],
             )
         }
         "session_start"
@@ -796,10 +787,7 @@ pub(super) fn canonical_event_from_kiro_record(
         | "interaction_resolved" => (
             EventKind::Lifecycle,
             Role::System,
-            vec![Block::ProviderPayload {
-                kind: payload_type.to_string(),
-                payload: payload.clone(),
-            }],
+            vec![Block::Other { raw: payload.clone() }],
         ),
         unknown => {
             report.push_issue(MappingIssue {
@@ -813,10 +801,7 @@ pub(super) fn canonical_event_from_kiro_record(
             (
                 EventKind::Other,
                 Role::Other,
-                vec![Block::ProviderPayload {
-                    kind: unknown.to_string(),
-                    payload: payload.clone(),
-                }],
+                vec![Block::Other { raw: payload.clone() }],
             )
         }
     };
@@ -838,25 +823,8 @@ pub(super) fn canonical_event_from_kiro_record(
         links,
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id,
-                original_role: Some(payload_type.to_string()),
-                phase: payload
-                    .get("operationType")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            },
             model: state.model_id.clone(),
             usage: None,
-            fidelity,
-            provider_ext: BTreeMap::from([
-                ("kiro_record".to_string(), record),
-                (
-                    "kiro_source".to_string(),
-                    json!({"file": source_file, "line": line_number}),
-                ),
-            ]),
         },
     }
 }
@@ -864,15 +832,11 @@ pub(super) fn canonical_event_from_kiro_record(
 pub(super) fn kiro_message_blocks(
     payload: &Value,
     reasoning: bool,
-    payload_type: &str,
     path: &str,
     report: &mut MappingReport,
 ) -> Vec<Block> {
     let Some(content) = payload.get("content") else {
-        return vec![Block::ProviderPayload {
-            kind: payload_type.to_string(),
-            payload: payload.clone(),
-        }];
+        return vec![Block::Other { raw: payload.clone() }];
     };
     let mut blocks = Vec::new();
     match content {
@@ -895,13 +859,8 @@ pub(super) fn kiro_message_blocks(
                                     .map(str::to_string),
                             });
                         } else {
-                            blocks.push(Block::ProviderPayload {
-                                kind: object
-                                    .get("type")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("content")
-                                    .to_string(),
-                                payload: item.clone(),
+                            blocks.push(Block::Other {
+                                raw: item.clone(),
                             });
                         }
                     }
@@ -913,13 +872,8 @@ pub(super) fn kiro_message_blocks(
             if let Some(text) = object.get("text").and_then(Value::as_str) {
                 push_kiro_text_block(&mut blocks, text, reasoning);
             } else {
-                blocks.push(Block::ProviderPayload {
-                    kind: object
-                        .get("type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("content")
-                        .to_string(),
-                    payload: content.clone(),
+                blocks.push(Block::Other {
+                    raw: content.clone(),
                 });
             }
         }
@@ -936,10 +890,7 @@ pub(super) fn kiro_message_blocks(
             path: Some(path.to_string()),
             raw: Some(payload.clone()),
         });
-        blocks.push(Block::ProviderPayload {
-            kind: payload_type.to_string(),
-            payload: payload.clone(),
-        });
+        blocks.push(Block::Other { raw: payload.clone() });
     }
     blocks
 }
