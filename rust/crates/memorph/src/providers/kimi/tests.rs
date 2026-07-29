@@ -136,7 +136,7 @@ fn read_jsonl_values(path: &Path) -> Vec<Result<Value, serde_json::Error>> {
 
 fn provider_payload_kind(event: &Event) -> Option<&str> {
     event.blocks.iter().find_map(|block| match block {
-        Block::ProviderPayload { kind, .. } => Some(kind.as_str()),
+        Block::Other { raw } => raw.get("type")?.as_str(),
         _ => None,
     })
 }
@@ -399,7 +399,6 @@ fn kimi_import_accepts_only_directory_locators_and_context_only_sessions() {
         .unwrap();
     assert_eq!(
         imported
-            .session
             .provenance
             .primary_source
             .source_path
@@ -1187,11 +1186,11 @@ fn kimi_full_import_pages_keep_total_counts_and_project_only_page_turns() {
         .session
         .events
         .iter()
-        .position(|event| event.role == Role::Assistant && event.links.provider_turn_id.is_some())
+        .position(|event| event.role == Role::Assistant && event.links.turn_id.is_some())
         .unwrap();
     let expected_turn_id = full.imported.session.events[assistant_index]
         .links
-        .provider_turn_id
+        .turn_id
         .clone()
         .unwrap();
     let page = KimiProvider
@@ -1806,9 +1805,9 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
 
     let imported = import_canonical_session_from_dir(&session_dir)?;
 
-    assert_eq!(imported.session.identity.canonical_id, "kimi-session-1");
+    assert_eq!(imported.session.identity.id, "kimi-session-1");
     assert_eq!(
-        imported.session.identity.source_title.as_deref(),
+        imported.session.identity.title.as_deref(),
         Some("Kimi Title")
     );
     assert!(imported.session.extensions.contains_key("kimi_state"));
@@ -1820,7 +1819,7 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
         event
             .blocks
             .iter()
-            .any(|block| matches!(block, Block::ProviderPayload { kind, .. } if kind == "metadata"))
+            .any(|block| matches!(block, Block::Other { raw } if raw["type"] == "metadata"))
     }));
 
     let visible = imported
@@ -1863,7 +1862,7 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
     assert!(assistant
         .blocks
         .iter()
-        .any(|block| matches!(block, Block::ProviderPayload { kind, .. } if kind == "custom")));
+        .any(|block| matches!(block, Block::Other { raw } if raw["type"] == "custom")));
 
     let turn_begin = imported
         .session
@@ -1877,19 +1876,19 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
         .iter()
         .find(|event| provider_payload_kind(event) == Some("TurnEnd"))
         .unwrap();
-    assert_eq!(turn_begin.links.turn_boundary, Some(TurnOutcome::Started));
-    assert_eq!(turn_end.links.turn_boundary, Some(TurnOutcome::Completed));
+    assert_eq!(turn_begin.links.turn_outcome, None);
+    assert_eq!(turn_end.links.turn_outcome, Some(TurnOutcome::Completed));
     assert_eq!(
-        turn_begin.links.provider_turn_id,
-        turn_end.links.provider_turn_id
+        turn_begin.links.turn_id,
+        turn_end.links.turn_id
     );
     assert_eq!(
-        user.links.provider_turn_id,
-        turn_begin.links.provider_turn_id
+        user.links.turn_id,
+        turn_begin.links.turn_id
     );
     assert_eq!(
-        assistant.links.provider_turn_id,
-        turn_begin.links.provider_turn_id
+        assistant.links.turn_id,
+        turn_begin.links.turn_id
     );
     for kind in ["StepBegin", "StatusUpdate", "custom", "FutureRecord"] {
         assert!(imported
@@ -1967,7 +1966,7 @@ fn sanitized_kimi_fixture_imports_context_authoritatively_with_native_turns() {
         .events
         .iter()
         .filter(|event| matches!(event.role, Role::User | Role::Assistant))
-        .filter_map(|event| event.links.provider_turn_id.as_deref())
+        .filter_map(|event| event.links.turn_id.as_deref())
         .collect::<Vec<_>>();
     assert_eq!(turn_ids.len(), 4);
     assert_eq!(turn_ids[0], turn_ids[1]);
@@ -2167,16 +2166,8 @@ fn kimi_session_activity_is_computed_from_the_live_source() {
 
 #[test]
 fn compressed_segment_exports_as_portable_kimi_text_part() {
-    let block = Block::Compressed {
-        source_provider_id: "opencode".to_string(),
-        summary: "compressed summary".to_string(),
-        source_event_ids: vec![
-            "old-event-1".to_string(),
-            "old-event-2".to_string(),
-            "old-event-3".to_string(),
-        ],
-        source_event_count: None,
-        archive_ref: Some("memorph-archive://s1/archive.json.gz".to_string()),
+    let block = Block::Text {
+        text: "[Compressed session segment from opencode]\ncompressed summary\nSource event count: 3\nArchive: memorph-archive://s1/archive.json.gz".to_string(),
     };
 
     let part = canonical_block_to_kimi_content_part(&block).expect("kimi text part");
@@ -2198,9 +2189,8 @@ fn compressed_segment_exports_as_portable_kimi_text_part() {
 
 #[test]
 fn provider_payload_block_is_skipped_in_kimi_text_part_export() {
-    let block = Block::ProviderPayload {
-        kind: "custom".to_string(),
-        payload: serde_json::json!({"kept": true}),
+    let block = Block::Other {
+        raw: serde_json::json!({"type": "custom", "kept": true}),
     };
 
     assert!(canonical_block_to_kimi_content_part(&block).is_none());
