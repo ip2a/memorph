@@ -80,30 +80,15 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                                 Block::Text {
                                     text: text.to_string(),
                                 },
-                                Block::ProviderPayload {
-                                    kind: "session_meta".to_string(),
-                                    payload: payload.clone(),
-                                },
+                                Block::Other { raw: payload.clone() },
                             ],
                             metadata: Metadata {
-                                source: Source {
-                                    provider_id: PROVIDER_ID.to_string(),
-                                    original_id: None,
-                                    original_role: Some("developer".to_string()),
-                                    phase: None,
-                                },
                                 model: payload
                                     .get("model")
                                     .and_then(|v| v.as_str())
                                     .map(str::to_string),
                                 usage: None,
-                                fidelity: Fidelity::Preserved,
-                                provider_ext: {
-                                    let mut ext = BTreeMap::new();
-                                    ext.insert("codex_raw_line".to_string(), value.clone());
-                                    ext
                                 },
-                            },
                         });
                     } else {
                         events.push(provider_payload_event(
@@ -223,33 +208,37 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
     let source_title =
         select_codex_display_title(None, None, source_title.as_deref(), &canonical_id);
 
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: canonical_id.clone(),
-                source_title,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id: canonical_id,
-                    source_path: Some(path.to_string_lossy().to_string()),
-                },
-                aliases: Vec::new(),
+                id: canonical_id.clone(),
+                title: source_title,
             },
             context: Context {
-                workspace_dir: project_dir,
+                workspace: project_dir,
                 created_at,
                 last_active_at,
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id: canonical_id,
+                source_path: Some(path.to_string_lossy().to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     })
 }
@@ -328,25 +317,19 @@ pub(super) fn import_canonical_session_page(
         }
     }
 
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
     let imported = ImportedSession {
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: state.session_id.clone(),
-                source_title: state.source_title.clone(),
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id: state.session_id.clone(),
-                    source_path: Some(path.to_string_lossy().to_string()),
-                },
-                aliases: Vec::new(),
+                id: state.session_id.clone(),
+                title: state.source_title.clone(),
             },
             context: Context {
-                workspace_dir: state.workspace_dir.clone(),
+                workspace: state.workspace_dir.clone(),
                 created_at: state
                     .created_at_ms
                     .and_then(chrono::DateTime::from_timestamp_millis),
@@ -356,14 +339,24 @@ pub(super) fn import_canonical_session_page(
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions: BTreeMap::new(),
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id: state.session_id.clone(),
+                source_path: Some(path.to_string_lossy().to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     };
 
     let turns = crate::session_projection::project_session_turns(
-        &imported.session.identity.canonical_id,
+        &imported.session.identity.id,
         &imported.session.events,
         TurnQuality::Exact,
     );
@@ -639,30 +632,15 @@ pub(super) fn codex_event_from_line(
                         Block::Text {
                             text: text.to_string(),
                         },
-                        Block::ProviderPayload {
-                            kind: "session_meta".to_string(),
-                            payload: payload.clone(),
-                        },
+                        Block::Other { raw: payload.clone() },
                     ],
                     metadata: Metadata {
-                        source: Source {
-                            provider_id: PROVIDER_ID.to_string(),
-                            original_id: None,
-                            original_role: Some("developer".to_string()),
-                            phase: None,
-                        },
                         model: payload
                             .get("model")
                             .and_then(Value::as_str)
                             .map(str::to_string),
                         usage: None,
-                        fidelity: Fidelity::Preserved,
-                        provider_ext: {
-                            let mut ext = BTreeMap::new();
-                            ext.insert("codex_raw_line".to_string(), raw_line);
-                            ext
                         },
-                    },
                 }
             } else {
                 provider_payload_event(
@@ -777,43 +755,24 @@ pub(super) fn codex_compacted_event(
         .filter(|value| !value.is_empty())
         .map(str::to_string);
 
-    let mut provider_ext = BTreeMap::new();
-    provider_ext.insert("codex_payload".to_string(), payload.clone());
-    provider_ext.insert("codex_raw_line".to_string(), raw_line);
-    provider_ext.insert(
-        "memorph_compression".to_string(),
-        serde_json::json!({
-            "source_provider_id": source_provider_id.clone(),
-            "source_event_count": source_event_count,
-            "archive_ref": archive_ref.clone(),
-            "native": "codex",
-        }),
-    );
-
+    // Decision 3: emit the compacted segment as a portable text block.
+    let mut text = format!("[Compressed session segment from {source_provider_id}]\n{summary}");
+    if let Some(count) = source_event_count {
+        text.push_str(&format!("\nSource event count: {count}"));
+    }
+    if let Some(archive_ref) = archive_ref.as_ref() {
+        text.push_str(&format!("\nArchive: {archive_ref}"));
+    }
     Event {
         id: format!("codex:compacted:{}", line_no),
         kind: EventKind::Message,
         role: Role::Assistant,
         timestamp,
         links: Links::default(),
-        blocks: vec![Block::Compressed {
-            source_provider_id,
-            summary,
-            source_event_ids,
-            source_event_count,
-            archive_ref,
-        }],
+        blocks: vec![Block::Text { text }],
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id: None,
-                original_role: Some("assistant".to_string()),
-                phase: Some("compression".to_string()),
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Normalized,
-            provider_ext,
         },
     }
 }
@@ -853,7 +812,7 @@ pub(super) fn codex_response_item_event(
         };
         return Event {
             id: event_id,
-            kind: EventKind::ToolCall,
+            kind: EventKind::Action,
             role,
             timestamp,
             links: Links::default(),
@@ -863,22 +822,9 @@ pub(super) fn codex_response_item_event(
                 input,
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: PROVIDER_ID.to_string(),
-                    original_id: None,
-                    original_role: role_str.map(str::to_string),
-                    phase: phase.clone(),
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: {
-                    let mut ext = BTreeMap::new();
-                    ext.insert("codex_payload".to_string(), payload.clone());
-                    ext.insert("codex_raw_line".to_string(), raw_line);
-                    ext
                 },
-            },
         };
     }
 
@@ -898,7 +844,7 @@ pub(super) fn codex_response_item_event(
             .unwrap_or_default();
         return Event {
             id: event_id,
-            kind: EventKind::ToolResult,
+            kind: EventKind::Observation,
             role: Role::Tool,
             timestamp,
             links: Links::default(),
@@ -908,22 +854,9 @@ pub(super) fn codex_response_item_event(
                 is_error: false,
             }],
             metadata: Metadata {
-                source: Source {
-                    provider_id: PROVIDER_ID.to_string(),
-                    original_id: None,
-                    original_role: Some("tool".to_string()),
-                    phase: phase.clone(),
-                },
                 model: None,
                 usage: None,
-                fidelity: Fidelity::Preserved,
-                provider_ext: {
-                    let mut ext = BTreeMap::new();
-                    ext.insert("codex_payload".to_string(), payload.clone());
-                    ext.insert("codex_raw_line".to_string(), raw_line);
-                    ext
                 },
-            },
         };
     }
 
@@ -975,10 +908,7 @@ pub(super) fn codex_response_item_event(
                             path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                             raw: Some(block.clone()),
                         });
-                        blocks.push(Block::ProviderPayload {
-                            kind: block_type.to_string(),
-                            payload: block.clone(),
-                        });
+                        blocks.push(Block::Other { raw: block.clone() });
                     }
                 }
                 "refusal" => {
@@ -997,10 +927,7 @@ pub(super) fn codex_response_item_event(
                             path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                             raw: Some(block.clone()),
                         });
-                        blocks.push(Block::ProviderPayload {
-                            kind: block_type.to_string(),
-                            payload: block.clone(),
-                        });
+                        blocks.push(Block::Other { raw: block.clone() });
                     }
                 }
                 "input_image" => {
@@ -1016,10 +943,7 @@ pub(super) fn codex_response_item_event(
                             path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                             raw: Some(block.clone()),
                         });
-                        blocks.push(Block::ProviderPayload {
-                            kind: "input_image".to_string(),
-                            payload: block.clone(),
-                        });
+                        blocks.push(Block::Other { raw: block.clone() });
                     }
                 }
                 "reasoning" => {
@@ -1032,10 +956,7 @@ pub(super) fn codex_response_item_event(
                         path: Some(format!("response_item:{}:block:{}", line_no, idx)),
                         raw: Some(block.clone()),
                     });
-                    blocks.push(Block::ProviderPayload {
-                        kind: "reasoning".to_string(),
-                        payload: block.clone(),
-                    });
+                    blocks.push(Block::Other { raw: block.clone() });
                 }
                 other => {
                     report.push_issue(MappingIssue {
@@ -1055,10 +976,7 @@ pub(super) fn codex_response_item_event(
             text: text.to_string(),
         });
     } else {
-        blocks.push(Block::ProviderPayload {
-            kind: "message_without_content".to_string(),
-            payload: payload.clone(),
-        });
+        blocks.push(Block::Other { raw: payload.clone() });
     }
 
     if blocks.is_empty() {
@@ -1072,10 +990,7 @@ pub(super) fn codex_response_item_event(
             path: Some(format!("response_item:{}", line_no)),
             raw: Some(payload.clone()),
         });
-        blocks.push(Block::ProviderPayload {
-            kind: "message_without_mappable_blocks".to_string(),
-            payload: payload.clone(),
-        });
+        blocks.push(Block::Other { raw: payload.clone() });
     }
 
     if phase.as_deref() == Some("commentary") && blocks.len() == 1 {
@@ -1124,22 +1039,9 @@ pub(super) fn codex_response_item_event(
         links: Links::default(),
         blocks,
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id: None,
-                original_role: role_str.map(str::to_string),
-                phase,
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: {
-                let mut ext = BTreeMap::new();
-                ext.insert("codex_payload".to_string(), payload.clone());
-                ext.insert("codex_raw_line".to_string(), raw_line);
-                ext
             },
-        },
     }
 }
 
@@ -1163,15 +1065,6 @@ pub(super) fn codex_hidden_response_item_event(
             raw_line,
             phase,
         },
-    );
-    event.metadata.fidelity = Fidelity::Normalized;
-    event.metadata.source.original_role = original_role.map(str::to_string);
-    event.metadata.provider_ext.insert(
-        "codex_internal_message".to_string(),
-        serde_json::json!({
-            "class": internal_kind.class(),
-            "payload_kind": internal_kind.payload_kind(),
-        }),
     );
     event
 }
@@ -1295,10 +1188,7 @@ pub(super) fn codex_event_msg_event(
             });
         }
     }
-    blocks.push(Block::ProviderPayload {
-        kind: event_type.to_string(),
-        payload: payload.clone(),
-    });
+    blocks.push(Block::Other { raw: payload.clone() });
 
     let mut event = provider_payload_event(
         format!("codex:event_msg:{}:{}", event_type, line_no),
@@ -1376,27 +1266,11 @@ pub(super) fn provider_payload_event(
         role,
         timestamp,
         links: Links::default(),
-        blocks: vec![Block::ProviderPayload {
-            kind: payload_kind.to_string(),
-            payload: payload.clone(),
-        }],
+        blocks: vec![Block::Other { raw: payload.clone() }],
         metadata: Metadata {
-            source: Source {
-                provider_id: PROVIDER_ID.to_string(),
-                original_id: None,
-                original_role: None,
-                phase,
-            },
             model: None,
             usage: None,
-            fidelity: Fidelity::Preserved,
-            provider_ext: {
-                let mut ext = BTreeMap::new();
-                ext.insert("codex_payload".to_string(), payload);
-                ext.insert("codex_raw_line".to_string(), raw_line);
-                ext
             },
-        },
     }
 }
 
