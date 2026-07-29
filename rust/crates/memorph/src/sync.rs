@@ -4,11 +4,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::session::{Fidelity, Session};
 #[cfg(test)]
 use crate::core::compression;
 use crate::provider::ProviderWriteRisk;
 use crate::providers;
+use crate::session::{Fidelity, Session};
 use crate::storage::{
     activity_store::{
         ActivityActor, ActivityCompletion, ActivityOperationKind, ActivityStatus, ActivityStore,
@@ -116,7 +116,14 @@ pub fn create_group(params: &SyncCreateParams) -> Result<SyncGroup> {
     let title = params
         .title
         .clone()
-        .or_else(|| source_session.session.identity.title.as_deref().map(str::to_string))
+        .or_else(|| {
+            source_session
+                .session
+                .identity
+                .title
+                .as_deref()
+                .map(str::to_string)
+        })
         .unwrap_or_else(|| "Session sync".to_string());
 
     let mut holdings = Vec::new();
@@ -127,7 +134,7 @@ pub fn create_group(params: &SyncCreateParams) -> Result<SyncGroup> {
         id: source_holding_id,
         provider: params.provider.clone(),
         session_id: params.session_id.clone(),
-        target_dir: source_session.session.context.workspace_dir.clone(),
+        target_dir: source_session.session.context.workspace.clone(),
         created_at: now,
         last_active_at: source_session
             .session
@@ -361,7 +368,7 @@ pub fn push_sync(
                 })?;
         if let Some((_, _, workspace_dir)) = source_identity.as_mut() {
             if workspace_dir.is_none() {
-                *workspace_dir = session.session.context.workspace_dir.clone();
+                *workspace_dir = session.session.context.workspace.clone();
             }
         }
 

@@ -101,8 +101,6 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                             "session_meta",
                             ProviderPayloadData {
                                 payload: payload.clone(),
-                                raw_line: value.clone(),
-                                phase: None,
                             },
                         ));
                     }
@@ -131,8 +129,6 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                         "turn_context",
                         ProviderPayloadData {
                             payload: payload.clone(),
-                            raw_line: value.clone(),
-                            phase: None,
                         },
                     ));
                 }
@@ -189,8 +185,6 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                     other,
                     ProviderPayloadData {
                         payload: value.get("payload").cloned().unwrap_or(Value::Null),
-                        raw_line: value,
-                        phase: None,
                     },
                 ));
             }
@@ -654,8 +648,6 @@ pub(super) fn codex_event_from_line(
                     "session_meta",
                     ProviderPayloadData {
                         payload: payload.clone(),
-                        raw_line,
-                        phase: None,
                     },
                 )
             }
@@ -669,8 +661,6 @@ pub(super) fn codex_event_from_line(
                 "turn_context",
                 ProviderPayloadData {
                     payload: payload.clone(),
-                    raw_line,
-                    phase: None,
                 },
             )
         }),
@@ -707,8 +697,6 @@ pub(super) fn codex_event_from_line(
                 other,
                 ProviderPayloadData {
                     payload: raw_line.get("payload").cloned().unwrap_or(Value::Null),
-                    raw_line,
-                    phase: None,
                 },
             ))
         }
@@ -719,7 +707,7 @@ pub(super) fn codex_compacted_event(
     payload: &Value,
     timestamp: chrono::DateTime<Utc>,
     line_no: usize,
-    raw_line: Value,
+    _raw_line: Value,
 ) -> Event {
     let memorph = payload.get("memorph").and_then(Value::as_object);
     let source_provider_id = memorph
@@ -784,7 +772,7 @@ pub(super) fn codex_response_item_event(
     payload: &Value,
     timestamp: chrono::DateTime<Utc>,
     line_no: usize,
-    raw_line: Value,
+    _raw_line: Value,
     report: &mut MappingReport,
 ) -> Event {
     let role_str = payload.get("role").and_then(|v| v.as_str());
@@ -872,8 +860,6 @@ pub(super) fn codex_response_item_event(
             msg_type.unwrap_or("response_item"),
             ProviderPayloadData {
                 payload: payload.clone(),
-                raw_line,
-                phase,
             },
         );
     }
@@ -1032,8 +1018,6 @@ pub(super) fn codex_response_item_event(
             timestamp,
             internal_kind,
             payload.clone(),
-            raw_line,
-            phase,
             role_str,
         );
     }
@@ -1057,23 +1041,16 @@ pub(super) fn codex_hidden_response_item_event(
     timestamp: chrono::DateTime<Utc>,
     internal_kind: CodexInternalMessageKind,
     payload: Value,
-    raw_line: Value,
-    phase: Option<String>,
-    original_role: Option<&str>,
+    _original_role: Option<&str>,
 ) -> Event {
-    let mut event = provider_payload_event(
+    provider_payload_event(
         id,
         EventKind::Lifecycle,
         Role::System,
         timestamp,
         internal_kind.payload_kind(),
-        ProviderPayloadData {
-            payload,
-            raw_line,
-            phase,
-        },
-    );
-    event
+        ProviderPayloadData { payload },
+    )
 }
 
 pub(super) fn codex_internal_message_kind(
@@ -1167,7 +1144,7 @@ pub(super) fn codex_event_msg_event(
     payload: &Value,
     timestamp: chrono::DateTime<Utc>,
     line_no: usize,
-    raw_line: Value,
+    _raw_line: Value,
 ) -> Event {
     let event_type = payload
         .get("type")
@@ -1207,11 +1184,6 @@ pub(super) fn codex_event_msg_event(
         event_type,
         ProviderPayloadData {
             payload: payload.clone(),
-            raw_line,
-            phase: payload
-                .get("phase")
-                .and_then(|v| v.as_str())
-                .map(str::to_string),
         },
     );
     event.blocks = blocks;
@@ -1252,8 +1224,6 @@ pub(super) fn parse_data_uri(uri: &str) -> Option<(&str, &str)> {
 
 pub(super) struct ProviderPayloadData {
     payload: Value,
-    raw_line: Value,
-    phase: Option<String>,
 }
 
 pub(super) fn provider_payload_event(
@@ -1261,14 +1231,10 @@ pub(super) fn provider_payload_event(
     kind: EventKind,
     role: Role,
     timestamp: chrono::DateTime<Utc>,
-    payload_kind: &str,
+    _payload_kind: &str,
     data: ProviderPayloadData,
 ) -> Event {
-    let ProviderPayloadData {
-        payload,
-        raw_line,
-        phase,
-    } = data;
+    let ProviderPayloadData { payload } = data;
     Event {
         id,
         kind,

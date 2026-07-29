@@ -1,11 +1,6 @@
 pub mod adapter;
 pub mod hook;
 
-use crate::session::{
-    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
-    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
-    ProviderRef, Role, Schema, Session, TurnOutcome, Usage,
-};
 use crate::provider::{
     canonical_block_text, canonical_event_is_visible_message, canonical_event_visible_message_role,
     canonical_event_visible_text, canonical_export_result, canonical_session_title, PageStrategy,
@@ -13,6 +8,11 @@ use crate::provider::{
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
     ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
     StorageShape, TurnQuality, WriteRiskLevel,
+};
+use crate::session::{
+    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
+    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
+    ProviderRef, Role, Schema, Session, TurnOutcome, Usage,
 };
 use crate::session_projection::project_session_turns;
 use crate::storage::event_index;
@@ -1195,6 +1195,7 @@ fn build_claude_event_index(
             byte_length: byte_length as u64,
             line_no,
             provider_turn_id: None,
+            turn_index: None,
             turn_boundary: None,
         });
         event_count += 1;
@@ -1261,7 +1262,6 @@ fn canonical_event_from_claude_line(
             line_type,
             ClaudeProviderPayloadData {
                 payload: value.clone(),
-                raw_line: value.clone(),
                 parent_id,
             },
         ));
@@ -1278,7 +1278,6 @@ fn canonical_event_from_claude_line(
             line_type,
             ClaudeProviderPayloadData {
                 payload: value.clone(),
-                raw_line: value.clone(),
                 parent_id,
             },
         ));
@@ -1293,8 +1292,8 @@ fn canonical_event_from_claude_line(
         input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()),
         output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()),
         cache_read_tokens: None,
-            cache_write_tokens: None,
-            reasoning_tokens: None,
+        cache_write_tokens: None,
+        reasoning_tokens: None,
     });
 
     Some(Event {
@@ -1309,10 +1308,7 @@ fn canonical_event_from_claude_line(
             related_event_ids: Vec::new(),
         },
         blocks,
-        metadata: Metadata {
-            model,
-            usage,
-            },
+        metadata: Metadata { model, usage },
     })
 }
 
@@ -1520,7 +1516,7 @@ fn claude_event_kind(blocks: &[Block]) -> EventKind {
         EventKind::Action
     } else if blocks
         .iter()
-        .all(|block| matches!(block, Block::Other { .. } | Block::Other { .. }))
+        .all(|block| matches!(block, Block::Other { .. }))
     {
         EventKind::Other
     } else {
@@ -1530,7 +1526,6 @@ fn claude_event_kind(blocks: &[Block]) -> EventKind {
 
 struct ClaudeProviderPayloadData {
     payload: Value,
-    raw_line: Value,
     parent_id: Option<String>,
 }
 
@@ -1539,14 +1534,10 @@ fn provider_payload_event(
     kind: EventKind,
     role: Role,
     timestamp: chrono::DateTime<Utc>,
-    payload_kind: &str,
+    _payload_kind: &str,
     data: ClaudeProviderPayloadData,
 ) -> Event {
-    let ClaudeProviderPayloadData {
-        payload,
-        raw_line,
-        parent_id,
-    } = data;
+    let ClaudeProviderPayloadData { payload, parent_id } = data;
     Event {
         id,
         kind,
@@ -1554,15 +1545,15 @@ fn provider_payload_event(
         timestamp,
         links: Links {
             parent_event_id: parent_id.clone(),
-            provider_turn_id: None,
-            turn_boundary: None,
+            turn_id: None,
+            turn_outcome: None,
             related_event_ids: Vec::new(),
         },
-        blocks: vec![Block::Other { raw: serde_json::Value::Null }],
+        blocks: vec![Block::Other { raw: payload }],
         metadata: Metadata {
             model: None,
             usage: None,
-            },
+        },
     }
 }
 
@@ -2038,7 +2029,7 @@ mod tests {
             metadata: Metadata {
                 model: None,
                 usage: None,
-                },
+            },
         }
     }
 
@@ -2305,7 +2296,8 @@ mod tests {
 
     #[test]
     fn provider_payload_block_is_skipped_in_export() {
-        let block = Block::Other { raw: serde_json::json!({ "name": "shell"  }),
+        let block = Block::Other {
+            raw: serde_json::json!({ "name": "shell"  }),
         };
         assert!(canonical_block_to_claude_content(&block).is_none());
     }
@@ -2319,7 +2311,9 @@ mod tests {
                 Block::Text {
                     text: "Done.".to_string(),
                 },
-                Block::Other { raw: serde_json::Value::Null },
+                Block::Other {
+                    raw: serde_json::Value::Null,
+                },
             ],
         );
 
@@ -2377,7 +2371,9 @@ mod tests {
                 Block::Text {
                     text: "Build this".to_string(),
                 },
-                Block::Other { raw: serde_json::Value::Null },
+                Block::Other {
+                    raw: serde_json::Value::Null,
+                },
             ],
         );
 

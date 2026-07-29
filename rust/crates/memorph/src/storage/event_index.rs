@@ -237,19 +237,20 @@ pub fn load_event_locations(
 
 fn turn_boundary_name(boundary: TurnOutcome) -> &'static str {
     match boundary {
-        TurnOutcome::Started => "started",
         TurnOutcome::Completed => "completed",
         TurnOutcome::Failed => "failed",
         TurnOutcome::Interrupted => "interrupted",
+        TurnOutcome::Incomplete => "incomplete",
     }
 }
 
 fn parse_turn_boundary(value: &str) -> rusqlite::Result<TurnOutcome> {
     match value {
-        "started" => Ok(TurnOutcome::Started),
+        "started" => Ok(TurnOutcome::Incomplete),
         "completed" => Ok(TurnOutcome::Completed),
         "failed" => Ok(TurnOutcome::Failed),
         "interrupted" => Ok(TurnOutcome::Interrupted),
+        "incomplete" => Ok(TurnOutcome::Incomplete),
         _ => Err(rusqlite::Error::FromSqlConversionFailure(
             6,
             rusqlite::types::Type::Text,

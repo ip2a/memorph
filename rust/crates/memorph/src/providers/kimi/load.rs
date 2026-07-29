@@ -539,7 +539,6 @@ pub(super) struct KimiWireImport {
 #[derive(Clone)]
 pub(super) struct KimiWireTurn {
     provider_turn_id: String,
-    turn_index: u32,
 }
 
 pub(super) fn canonical_events_from_wire(
@@ -564,7 +563,6 @@ pub(super) fn canonical_events_from_wire(
     let mut assistant_raw_parts: Vec<Value> = Vec::new();
     let mut assistant_timestamp: Option<chrono::DateTime<Utc>> = None;
     let mut assistant_line_number: Option<usize> = None;
-    let mut next_turn_index = 0u32;
 
     for (line_idx, line) in reader.lines().enumerate() {
         let line_number = line_idx + 1;
@@ -627,9 +625,7 @@ pub(super) fn canonical_events_from_wire(
                 );
                 let turn = KimiWireTurn {
                     provider_turn_id: format!("kimi:wire-turn:{line_number}"),
-                    turn_index: next_turn_index,
                 };
-                next_turn_index = next_turn_index.saturating_add(1);
                 active_turn = Some(turn.clone());
                 imported.lifecycle_events.push(kimi_wire_event(
                     format!("kimi:wire:TurnBegin:{line_number}"),
@@ -1156,7 +1152,9 @@ pub(super) fn kimi_content_part_event_block(
                 path: Some(format!("wire.jsonl:line:{line_number}")),
                 raw: Some(raw_line.clone()),
             });
-            Some(Block::Other { raw: payload.clone() })
+            Some(Block::Other {
+                raw: payload.clone(),
+            })
         }
         None => Some(Block::Other {
             raw: payload.clone(),

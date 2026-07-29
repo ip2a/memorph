@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::repository::{self, SessionSourceRecord};
 use crate::{
-    session::{Block, Event},
     providers,
+    session::{Block, Event},
 };
 
 #[derive(Clone, Debug)]
@@ -350,11 +350,13 @@ fn invocation(
         confidence,
         evidence_text: snippet(&evidence_text),
         evidence_path,
-        token_count: event
-            .metadata
-            .usage
-            .as_ref()
-            .and_then(|usage| usage.total_tokens),
+        token_count: event.metadata.usage.as_ref().map(|usage| {
+            usage.input_tokens.unwrap_or(0)
+                + usage.output_tokens.unwrap_or(0)
+                + usage.cache_read_tokens.unwrap_or(0)
+                + usage.cache_write_tokens.unwrap_or(0)
+                + usage.reasoning_tokens.unwrap_or(0)
+        }),
     }
 }
 

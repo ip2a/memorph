@@ -181,14 +181,6 @@ impl CodexTurnTracker {
 }
 
 impl CodexInternalMessageKind {
-    fn class(self) -> &'static str {
-        match self {
-            Self::LifecycleSentinel => "lifecycle_sentinel",
-            Self::RuntimeContext => "runtime_context",
-            Self::ProviderControl => "provider_control",
-        }
-    }
-
     fn payload_kind(self) -> &'static str {
         match self {
             Self::LifecycleSentinel => "turn_aborted_sentinel",

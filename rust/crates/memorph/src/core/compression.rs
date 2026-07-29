@@ -6,7 +6,7 @@ use flate2::Compression;
 use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
