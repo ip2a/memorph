@@ -45,6 +45,10 @@ pub fn router() -> Router {
                 .post(providers::run_provider_setting),
         )
         .route(
+            "/api/v1/providers/{provider}/config/{view_id}",
+            get(providers::get_provider_config_view),
+        )
+        .route(
             "/api/v1/settings",
             get(system::get_settings).put(system::update_settings),
         )

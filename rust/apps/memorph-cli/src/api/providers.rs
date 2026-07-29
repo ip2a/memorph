@@ -162,3 +162,16 @@ pub(super) async fn run_provider_setting(
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
     }
 }
+
+pub(super) async fn get_provider_config_view(
+    Path((provider, view_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    match memorph::runtime::run_blocking(move || {
+        memorph::provider_config::inspect(&provider, &view_id)
+    })
+    .await
+    {
+        Ok(view) => ApiResponse::success(view).into_response(),
+        Err(error) => api_error(StatusCode::NOT_FOUND, error).into_response(),
+    }
+}
