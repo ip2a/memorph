@@ -36,7 +36,7 @@ pub fn expand_compression_session(
         };
         let provider_session_id = session.provenance.primary_source.session_id.trim();
         let provider_session_id = if provider_session_id.is_empty() {
-            session.identity.canonical_id.clone()
+            session.session.identity.id.clone()
         } else {
             provider_session_id.to_string()
         };
@@ -210,13 +210,8 @@ pub fn restore_compression_archive(
         let archive = compression::load_archive(&params.archive_ref)?;
         let session =
             session_management::session_from_compression_archive(&params.archive_ref, archive)?;
-        let source = session.provenance.aliases.first();
-        let provider_id = source
-            .map(|reference| reference.provider_id.clone())
-            .unwrap_or_else(|| "memorph".to_string());
-        let provider_session_id = source
-            .map(|reference| reference.session_id.clone())
-            .unwrap_or_else(|| session.identity.canonical_id.clone());
+        let provider_id = "memorph".to_string();
+        let provider_session_id = session.identity.id.clone();
         let export = session_management::restore_compression_archive(params, &session)?;
         let artifacts = register_session_export_artifacts(
             &mut conn,
@@ -894,7 +889,7 @@ pub(super) fn register_active_compression_archive_artifacts(
                     params
                         .session_id
                         .clone()
-                        .unwrap_or_else(|| session.identity.canonical_id.clone()),
+                        .unwrap_or_else(|| session.identity.id.clone()),
                 ),
                 session_id: None,
                 projection_report_id: None,
@@ -904,7 +899,7 @@ pub(super) fn register_active_compression_archive_artifacts(
                 metadata: serde_json::json!({
                     "role": "active_compression_recovery_archive",
                     "archive_ref": archive_ref,
-                    "canonical_id": session.identity.canonical_id,
+                    "canonical_id": session.identity.id,
                     "source_provider_id": params.source_provider_id,
                     "target_provider_id": params.target_provider_id,
                 }),
@@ -924,7 +919,7 @@ pub(super) fn load_active_compression_source_session(
         (Some(session_id), None) => {
             Ok(sessions::get_canonical_session(source_provider_id, session_id)?.session)
         }
-        (None, Some(file)) => session_management::read_session_export_file(file),
+        (None, Some(file)) => Ok(session_management::read_session_export_file(file)?.session),
         (None, None) => anyhow::bail!("Either session_id or file is required"),
     }
 }

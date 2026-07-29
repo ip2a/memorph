@@ -1,15 +1,22 @@
 use super::transfer::ExportResult;
 use anyhow::{Context as _, Result};
+use chrono::Utc;
 use rusqlite::Connection;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::session::{
-    Context, Identity, ImportedSession, Provenance, ProviderRef, Schema, Session,
+    Context, EventMeta, Identity, ImportedSession, MappingDirection, MappingReport, Provenance,
+    ProviderRef, Schema, Session,
 };
 use crate::core::compression;
 use crate::format;
 use crate::provider;
+
+/// Key under which memorph stashes a session's `Provenance` in the pure oasf
+/// `Session::extensions` map, so `.morph` exports round-trip provenance
+/// without polluting the oasf session shape. oasf itself stays pure.
+const MEMORPH_PROVENANCE_KEY: &str = "memorph_provenance";
 use crate::provider::{ProviderSessionBackup, ProviderSourceMutation};
 use crate::providers;
 use crate::storage::{
@@ -642,35 +649,41 @@ pub fn prepare_session_for_export(
 }
 
 pub fn prepare_session_for_target_provider(
-    session: &Session,
+    imported: &ImportedSession,
     target_provider_id: &str,
 ) -> Result<(Session, compression::CompressionReport)> {
-    let source_provider_id = session.provenance.primary_source.provider_id.trim();
+    let source_provider_id = imported.provenance.primary_source.provider_id.trim();
     let source_provider_id = if source_provider_id.is_empty() {
         target_provider_id
     } else {
         source_provider_id
     };
-    prepare_session_for_export(session, source_provider_id, target_provider_id)
+    prepare_session_for_export(&imported.session, source_provider_id, target_provider_id)
 }
 
 pub fn expand_compression_session(
     params: &ExpandCompressionSessionParams,
-    session: &Session,
+    imported: &ImportedSession,
 ) -> Result<ExportResult> {
-    let source_provider_id = session.provenance.primary_source.provider_id.trim();
+    let source_provider_id = imported.provenance.primary_source.provider_id.trim();
     let source_provider_id = if source_provider_id.is_empty() {
         "memorph"
     } else {
         source_provider_id
     };
     let policy = compression::CompressionPolicy::expand(source_provider_id, source_provider_id);
-    let (expanded, _) = compression::prepare_for_export_with_archive(session, &policy)?;
+    let (mut expanded, _) = compression::prepare_for_export_with_archive(&imported.session, &policy)?;
+    // Stash provenance into the pure session's extensions so the .morph export
+    // round-trips it without polluting the oasf session shape.
+    expanded.extensions.insert(
+        MEMORPH_PROVENANCE_KEY.to_string(),
+        serde_json::to_value(&imported.provenance)?,
+    );
     let default_prefix = Path::new(&params.file)
         .file_stem()
         .and_then(|value| value.to_str())
         .map(|value| format!("{}_expanded", value))
-        .unwrap_or_else(|| format!("{}_expanded", session.identity.id));
+        .unwrap_or_else(|| format!("{}_expanded", imported.session.identity.id));
     let prefix = params.output_prefix.as_deref().unwrap_or(&default_prefix);
     write_session_export_files(&expanded, prefix, &params.format, None)
 }
@@ -709,23 +722,57 @@ pub fn list_compression_provider_support() -> Vec<crate::provider::ProviderCompr
         .collect()
 }
 
-pub fn read_session_export_file(file: &str) -> Result<Session> {
+pub fn read_session_export_file(file: &str) -> Result<ImportedSession> {
     let path = Path::new(file);
-    if file.ends_with(".morph") {
-        format::read_session(path)
+    let session: Session = if file.ends_with(".morph") {
+        format::read_session(path)?
     } else if file.ends_with(".json") {
         let json = std::fs::read_to_string(path)?;
-        serde_json::from_str(&json).with_context(|| format!("Failed to parse JSON: {}", file))
+        serde_json::from_str(&json).with_context(|| format!("Failed to parse JSON: {}", file))?
     } else if file.ends_with(".md") {
-        format::read_markdown(path)
+        format::read_markdown(path)?
     } else if file.ends_with(".html") {
-        format::read_html(path)
+        format::read_html(path)?
     } else {
         anyhow::bail!(
             "Unsupported session file: {}. Use .json, .md, .html, or .morph",
             file
         );
-    }
+    };
+    let provider_id = session
+        .extensions
+        .get(MEMORPH_PROVENANCE_KEY)
+        .and_then(|value| value.get("primary_source"))
+        .and_then(|value| value.get("provider_id"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("memorph")
+        .to_string();
+    let provenance: Provenance = session
+        .extensions
+        .get(MEMORPH_PROVENANCE_KEY)
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_else(|| Provenance {
+            imported_at: Utc::now(),
+            imported_by: None,
+            primary_source: ProviderRef {
+                provider_id: provider_id.clone(),
+                session_id: session.identity.id.clone(),
+                source_path: Some(file.to_string()),
+            },
+            aliases: Vec::new(),
+        });
+    let event_meta = session
+        .events
+        .iter()
+        .map(|_| EventMeta::preserved(&provider_id))
+        .collect::<Vec<_>>();
+    let report = MappingReport::new(provider_id, MappingDirection::Export);
+    Ok(ImportedSession {
+        session,
+        provenance,
+        event_meta,
+        report,
+    })
 }
 
 pub fn write_session_export_files(
@@ -793,32 +840,34 @@ pub(crate) fn session_from_compression_archive(
     Ok(Session {
         schema: Schema::default(),
         identity: Identity {
-            canonical_id: archive.canonical_id.clone(),
-            source_title: Some(format!("Compression archive {}", archive.canonical_id)),
-        },
-        provenance: Provenance {
-            imported_at: chrono::Utc::now(),
-            imported_by: Some("memorph-cli".to_string()),
-            primary_source: ProviderRef {
-                provider_id: "memorph".to_string(),
-                session_id: archive.summary_event_id.clone(),
-                source_path: Some(archive_ref.to_string()),
-            },
-            aliases: vec![ProviderRef {
-                provider_id: archive.source_provider_id.clone(),
-                session_id: archive.canonical_id.clone(),
-                source_path: None,
-            }],
+            id: archive.canonical_id.clone(),
+            title: Some(format!("Compression archive {}", archive.canonical_id)),
         },
         context: Context {
-            workspace_dir: None,
+            workspace: None,
             created_at,
             last_active_at,
             tags: vec!["compression-archive".to_string()],
         },
         events: archive.events,
-        artifacts: Vec::new(),
-        extensions: BTreeMap::from([("compression_archive".to_string(), archive_value)]),
+        extensions: BTreeMap::from([
+            ("compression_archive".to_string(), archive_value),
+            (
+                MEMORPH_PROVENANCE_KEY.to_string(),
+                serde_json::json!({
+                    "imported_at": chrono::Utc::now(),
+                    "primary_source": {
+                        "provider_id": "memorph",
+                        "session_id": archive.summary_event_id,
+                        "source_path": archive_ref,
+                    },
+                    "aliases": [{
+                        "provider_id": archive.source_provider_id,
+                        "session_id": archive.canonical_id,
+                    }],
+                }),
+            ),
+        ]),
     })
 }
 

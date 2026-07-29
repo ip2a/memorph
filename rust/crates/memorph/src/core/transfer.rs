@@ -120,7 +120,7 @@ pub fn import_session(params: &ImportParams, actor: ActivityActor) -> Result<Imp
         {
             session_management::read_session_export_file(&params.file_or_id)?
         } else {
-            sessions::get_canonical_session(&params.provider, &params.file_or_id)?.session
+            sessions::get_canonical_session(&params.provider, &params.file_or_id)?
         };
 
         let target_prov = providers::find_provider(&params.provider)
@@ -297,7 +297,7 @@ pub fn switch_session(params: &SwitchParams) -> Result<SwitchResult> {
     if let Some(raw_title) = params.target_title.as_ref() {
         let trimmed = raw_title.trim();
         if !trimmed.is_empty() {
-            session.identity.source_title = Some(trimmed.to_string());
+            session.identity.title = Some(trimmed.to_string());
         }
     }
     let exported = target_prov.export_session(&session, &target_dir)?;
