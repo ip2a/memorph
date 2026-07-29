@@ -1,7 +1,7 @@
 use crate::session::{
-    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
-    Schema, Session, Source, Usage,
+    Block, Context, Event, EventKind, EventMeta, EventSource, Fidelity, Identity, ImportedSession,
+    Links, MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
+    ProviderRef, Role, Schema, Session, Usage,
 };
 use crate::provider::ProviderSessionSummary;
 use crate::utils::{extract_text, parse_timestamp_to_ms, truncate_summary};
@@ -87,11 +87,15 @@ pub fn import_session_from_value(
     .or_else(|| path_mtime_datetime(path))
     .unwrap_or(created_at);
 
-    let events = extract_message_items(&value)
+    let (events, event_meta): (Vec<Event>, Vec<EventMeta>) = extract_message_items(&value)
         .into_iter()
         .enumerate()
-        .filter_map(|(index, item)| event_from_message(spec.provider_id, index, item, &mut report))
-        .collect();
+        .filter_map(|(index, item)| {
+            event_from_message(spec.provider_id, index, item, &mut report)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .unzip();
 
     let mut extensions = BTreeMap::new();
     extensions.insert(spec.extension_key.to_string(), value);
@@ -100,29 +104,29 @@ pub fn import_session_from_value(
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: session_id.clone(),
-                source_title: title,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: spec.provider_id.to_string(),
-                    session_id,
-                    source_path: Some(path.to_string_lossy().to_string()),
-                },
-                aliases: Vec::new(),
+                id: session_id.clone(),
+                title,
             },
             context: Context {
-                workspace_dir,
+                workspace: workspace_dir,
                 created_at: Some(created_at),
                 last_active_at: Some(last_active_at),
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: spec.provider_id.to_string(),
+                session_id,
+                source_path: Some(path.to_string_lossy().to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     })
 }
@@ -416,7 +420,7 @@ fn event_from_message(
     index: usize,
     item: &Value,
     report: &mut MappingReport,
-) -> Option<Event> {
+) -> Option<(Event, EventMeta)> {
     let message = item.get("message").unwrap_or(item);
     let blocks = message_blocks(message, item, index, report);
     if blocks.is_empty() {
@@ -428,39 +432,39 @@ fn event_from_message(
         .unwrap_or_else(Utc::now);
     let original_id = message_id(message);
 
-    Some(Event {
-        id: original_id
-            .clone()
-            .unwrap_or_else(|| format!("{}:message:{}", provider_id, index)),
-        kind: event_kind(&blocks),
-        role,
-        timestamp,
-        links: Links {
-            parent_event_id: None,
-            provider_parent_id: None,
-            provider_turn_id: None,
-            turn_index: Some(index as u32),
-            turn_boundary: None,
-            related_event_ids: Vec::new(),
+    let mut provider_ext = BTreeMap::new();
+    provider_ext.insert("raw_message".to_string(), item.clone());
+    Some((
+        Event {
+            id: original_id
+                .clone()
+                .unwrap_or_else(|| format!("{}:message:{}", provider_id, index)),
+            kind: event_kind(&blocks),
+            role,
+            timestamp,
+            links: Links {
+                parent_event_id: None,
+                turn_id: Some(index.to_string()),
+                turn_outcome: None,
+                related_event_ids: Vec::new(),
+            },
+            blocks,
+            metadata: Metadata {
+                model: message.get("model").and_then(value_to_string),
+                usage: usage_from_message(message),
+            },
         },
-        blocks,
-        metadata: Metadata {
-            source: Source {
+        EventMeta {
+            source: EventSource {
                 provider_id: provider_id.to_string(),
                 original_id,
                 original_role: Some(role_raw),
                 phase: None,
             },
-            model: message.get("model").and_then(value_to_string),
-            usage: usage_from_message(message),
             fidelity: Fidelity::Normalized,
-            provider_ext: {
-                let mut ext = BTreeMap::new();
-                ext.insert("raw_message".to_string(), item.clone());
-                ext
-            },
+            provider_ext,
         },
-    })
+    ))
 }
 
 fn message_blocks(
@@ -532,9 +536,8 @@ fn message_blocks(
             path: Some(format!("messages:{}", index)),
             raw: Some(raw_item.clone()),
         });
-        blocks.push(Block::ProviderPayload {
-            kind: "message".to_string(),
-            payload: message.clone(),
+        blocks.push(Block::Other {
+            raw: message.clone(),
         });
     }
 
@@ -595,15 +598,15 @@ fn event_kind(blocks: &[Block]) -> EventKind {
         .iter()
         .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        EventKind::ToolResult
+        EventKind::Observation
     } else if blocks
         .iter()
         .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        EventKind::ToolCall
+        EventKind::Action
     } else if blocks
         .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
+        .all(|block| matches!(block, Block::Other { .. }))
     {
         EventKind::Other
     } else {
@@ -619,7 +622,9 @@ fn usage_from_message(message: &Value) -> Option<Usage> {
             .get("output")
             .or_else(|| tokens.get("candidates"))
             .and_then(Value::as_u64),
-        total_tokens: tokens.get("total").and_then(Value::as_u64),
+        cache_read_tokens: None,
+        cache_write_tokens: None,
+        reasoning_tokens: None,
     })
 }
 
@@ -696,7 +701,7 @@ mod tests {
         let imported = import_session_from_value(spec(), Path::new("session-abc.json"), value)
             .expect("import session");
 
-        assert_eq!(imported.session.identity.canonical_id, "abc");
+        assert_eq!(imported.session.identity.id, "abc");
         assert_eq!(imported.session.events.len(), 2);
         assert_eq!(imported.session.events[1].role, Role::Assistant);
         assert_eq!(
@@ -704,8 +709,8 @@ mod tests {
                 .metadata
                 .usage
                 .as_ref()
-                .and_then(|usage| usage.total_tokens),
-            Some(3)
+                .and_then(|usage| usage.output_tokens),
+            Some(2)
         );
     }
 
