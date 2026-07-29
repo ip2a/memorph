@@ -203,10 +203,10 @@ pub(super) fn append_compressed_opencode_segment(
         session_id,
         &marker_msg_id,
         &marker_part_id,
-        segment.source_provider_id,
-        segment.source_event_ids,
+        &segment.source_provider_id,
+        &segment.source_event_ids,
         segment.source_event_count,
-        segment.archive_ref,
+        segment.archive_ref.as_deref(),
     );
     oc_parts.push((
         marker_part_id,
@@ -281,7 +281,7 @@ pub(super) fn build_opencode_message_data_from_event(
     parent_id: Option<&str>,
     target_dir: &str,
 ) -> Value {
-    let provider_id = normalize_provider_id(event.metadata.source.provider_id.as_str());
+    let provider_id = normalize_provider_id("opencode");
     let model_id = event
         .metadata
         .model

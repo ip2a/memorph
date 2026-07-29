@@ -117,7 +117,7 @@ pub(super) fn write_canonical_codex_rollout(
     let mut last_agent_message = String::new();
     for event in &session.events {
         if let Some(segment) = compression::compressed_segment(event) {
-            write_codex_compacted_rollout_item(&mut file, event, segment)?;
+            write_codex_compacted_rollout_item(&mut file, event, &segment)?;
             if event.role == Role::Assistant {
                 last_agent_message = segment.summary.to_string();
             }
@@ -260,7 +260,7 @@ pub(super) fn replace_codex_session(session_id: &str, session: &Session) -> Resu
             false,
         )?;
         let imported = import_canonical_session(&temp_path)?;
-        if imported.session.identity.canonical_id != session_id {
+        if imported.session.identity.id != session_id {
             anyhow::bail!("Codex replacement validation changed session identity");
         }
         std::fs::rename(&temp_path, &rollout_path).with_context(|| {
@@ -280,7 +280,7 @@ pub(super) fn replace_codex_session(session_id: &str, session: &Session) -> Resu
 fn write_codex_compacted_rollout_item(
     file: &mut impl Write,
     event: &Event,
-    segment: CompressedSegment,
+    segment: &CompressedSegment,
 ) -> Result<()> {
     let model_visible_summary = codex_compacted_history_text(segment);
     let source_event_count = segment.source_event_count.or_else(|| {
@@ -319,7 +319,7 @@ fn write_codex_compacted_rollout_item(
     Ok(())
 }
 
-fn codex_compacted_history_text(segment: CompressedSegment) -> String {
+fn codex_compacted_history_text(segment: &CompressedSegment) -> String {
     let mut parts = vec![
         format!(
             "[Compressed session segment from {}]",
@@ -335,7 +335,7 @@ fn codex_compacted_history_text(segment: CompressedSegment) -> String {
     }
     if let Some(archive_ref) = segment.archive_ref {
         parts.push(format!("Archive: {}", archive_ref));
-        parts.push(compression_retrieval_hint(archive_ref));
+        parts.push(compression_retrieval_hint(&archive_ref));
     }
     parts.join("\n")
 }
@@ -359,7 +359,7 @@ pub(super) fn canonical_event_to_codex_content(event: &Event) -> Vec<Value> {
                     "image_url": data,
                 }))
             }
-            Block::ProviderPayload { .. } => None,
+            Block::Other { .. } => None,
             _ => {
                 let text = canonical_visible_block_text(block)?;
                 (!text.trim().is_empty()).then(|| serde_json::json!({
