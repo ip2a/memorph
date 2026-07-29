@@ -1,8 +1,3 @@
-use crate::session::{
-    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
-    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
-    ProviderRef, Role, Schema, Session, Source,
-};
 use crate::provider::{
     canonical_event_role_label, canonical_event_visible_message_role,
     canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
@@ -10,6 +5,11 @@ use crate::provider::{
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
     ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
     ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
+};
+use crate::session::{
+    Block, Context, Event, EventKind, EventMeta, EventSource, ExportedSession, Fidelity, Identity,
+    ImportedSession, Links, MappingDirection, MappingIssue, MappingIssueLevel, MappingReport,
+    Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use anyhow::{Context as _, Result};
 use chrono::Utc;
@@ -639,6 +639,7 @@ fn import_canonical_session_from_connection(
     let messages = load_message_rows(conn, thread_id)?;
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
     let mut events = Vec::new();
+    let mut event_meta = Vec::new();
 
     for message in messages {
         let raw_message = deepseek_message_value(&message);
@@ -646,6 +647,14 @@ fn import_canonical_session_from_connection(
             chrono::DateTime::from_timestamp(message.created_at, 0).unwrap_or_else(Utc::now);
         let role = deepseek_event_role(&message.role, &raw_message, &mut report);
         let (blocks, fidelity) = canonical_blocks_from_message(&message, &raw_message, &mut report);
+        let mut provider_ext = BTreeMap::new();
+        provider_ext.insert("deepseek_message".to_string(), raw_message);
+        if !thread.model_provider.trim().is_empty() {
+            provider_ext.insert(
+                "model_provider".to_string(),
+                Value::String(thread.model_provider.clone()),
+            );
+        }
 
         events.push(Event {
             id: format!("deepseek:message:{}", message.id),
@@ -655,31 +664,23 @@ fn import_canonical_session_from_connection(
             links: Links::default(),
             blocks,
             metadata: Metadata {
-                source: Source {
-                    provider_id: PROVIDER_ID.to_string(),
-                    original_id: Some(message.id.to_string()),
-                    original_role: Some(message.role.clone()),
-                    phase: None,
-                },
                 model: None,
                 usage: None,
-                fidelity,
-                provider_ext: {
-                    let mut ext = BTreeMap::new();
-                    ext.insert("deepseek_message".to_string(), raw_message);
-                    if !thread.model_provider.trim().is_empty() {
-                        ext.insert(
-                            "model_provider".to_string(),
-                            Value::String(thread.model_provider.clone()),
-                        );
-                    }
-                    ext
-                },
             },
+        });
+        event_meta.push(EventMeta {
+            source: EventSource {
+                provider_id: PROVIDER_ID.to_string(),
+                original_id: Some(message.id.to_string()),
+                original_role: Some(message.role),
+                phase: None,
+            },
+            fidelity,
+            provider_ext,
         });
     }
 
-    let source_title = deepseek_thread_title(&thread);
+    let title = deepseek_thread_title(&thread);
     let mut extensions = BTreeMap::new();
     extensions.insert(
         "deepseek_thread".to_string(),
@@ -690,29 +691,29 @@ fn import_canonical_session_from_connection(
         session: Session {
             schema: Schema::default(),
             identity: Identity {
-                canonical_id: thread.id.clone(),
-                source_title,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".to_string()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.to_string(),
-                    session_id: thread.id.clone(),
-                    source_path: Some(source_path.to_string()),
-                },
-                aliases: Vec::new(),
+                id: thread.id.clone(),
+                title,
             },
             context: Context {
-                workspace_dir: Some(thread.cwd.clone()),
+                workspace: Some(thread.cwd.clone()),
                 created_at: chrono::DateTime::from_timestamp(thread.created_at, 0),
                 last_active_at: chrono::DateTime::from_timestamp(thread.updated_at, 0),
                 tags: Vec::new(),
             },
             events,
-            artifacts: Vec::new(),
             extensions,
         },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".to_string()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.to_string(),
+                session_id: thread.id.clone(),
+                source_path: Some(source_path.to_string()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
         report,
     })
 }
@@ -851,10 +852,7 @@ fn canonical_blocks_from_message(
                     });
                 }
 
-                blocks.push(Block::ProviderPayload {
-                    kind: "message_item".to_string(),
-                    payload: item,
-                });
+                blocks.push(Block::Other { raw: item });
             }
             Err(error) => {
                 fidelity = Fidelity::Normalized;
@@ -871,9 +869,8 @@ fn canonical_blocks_from_message(
                         text: message.content.clone(),
                     });
                 }
-                blocks.push(Block::ProviderPayload {
-                    kind: "message_item_raw".to_string(),
-                    payload: Value::String(raw_item.to_string()),
+                blocks.push(Block::Other {
+                    raw: Value::String(raw_item.to_string()),
                 });
             }
         },
@@ -902,15 +899,15 @@ fn deepseek_event_kind(role: &str, blocks: &[Block]) -> EventKind {
         .iter()
         .any(|block| matches!(block, Block::ToolResult { .. }))
     {
-        EventKind::ToolResult
+        EventKind::Observation
     } else if blocks
         .iter()
         .any(|block| matches!(block, Block::ToolCall { .. }))
     {
-        EventKind::ToolCall
+        EventKind::Action
     } else if blocks
         .iter()
-        .all(|block| matches!(block, Block::ProviderPayload { .. } | Block::Other { .. }))
+        .all(|block| matches!(block, Block::Other { .. }))
     {
         EventKind::Other
     } else {
