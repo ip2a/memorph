@@ -1194,9 +1194,8 @@ fn build_claude_event_index(
             byte_offset: line_offset,
             byte_length: byte_length as u64,
             line_no,
-            provider_turn_id: None,
-            turn_index: None,
-            turn_boundary: None,
+            turn_id: None,
+            turn_outcome: None,
         });
         event_count += 1;
     }
@@ -1293,7 +1292,9 @@ fn canonical_event_from_claude_line(
     let usage = message.get("usage").map(|usage| Usage {
         input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()),
         output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()),
-        total_tokens: usage.get("total_tokens").and_then(|v| v.as_u64()),
+        cache_read_tokens: None,
+            cache_write_tokens: None,
+            reasoning_tokens: None,
     });
 
     Some(Event {
@@ -1303,10 +1304,8 @@ fn canonical_event_from_claude_line(
         timestamp,
         links: Links {
             parent_event_id: parent_id.clone(),
-            provider_parent_id: parent_id,
-            provider_turn_id: None,
-            turn_index: None,
-            turn_boundary: claude_turn_boundary(message),
+            turn_id: None,
+            turn_outcome: claude_turn_boundary(message),
             related_event_ids: Vec::new(),
         },
         blocks,
@@ -1555,10 +1554,8 @@ fn provider_payload_event(
         timestamp,
         links: Links {
             parent_event_id: parent_id.clone(),
-            provider_parent_id: parent_id,
-            provider_turn_id: None,
-            turn_index: None,
-            turn_boundary: None,
+            turn_id: None,
+            turn_outcome: None,
             related_event_ids: Vec::new(),
         },
         blocks: vec![Block::Other { raw: serde_json::Value::Null }],
