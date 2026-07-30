@@ -1,6 +1,6 @@
 use crate::provider::{
     event_visible_message_role, event_visible_message_text,
-    canonical_session_title, ProviderSourceMutation,
+    session_title, ProviderSourceMutation,
 };
 use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
 use crate::session::{Event, Role, Session};
@@ -433,7 +433,7 @@ pub fn export_session(session: &Session, target_dir: &Path) -> Result<String> {
         })
         .collect();
 
-    let title = canonical_session_title(session);
+    let title = session_title(session);
     let first_active = bubbles
         .first()
         .map(|bubble| bubble.timestamp.timestamp_millis())

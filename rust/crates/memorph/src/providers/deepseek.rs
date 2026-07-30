@@ -1,6 +1,6 @@
 use crate::provider::{
-    canonical_event_role_label, event_visible_message_role,
-    event_visible_message_text, export_result, canonical_session_title,
+    event_role_label, event_visible_message_role,
+    event_visible_message_text, export_result, session_title,
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
     ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
@@ -545,7 +545,7 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
     let thread_id = format!("thread-{}", Uuid::new_v4());
     let now = Utc::now().timestamp();
     let cwd = target_dir.to_string_lossy().to_string();
-    let title = canonical_session_title(session);
+    let title = session_title(session);
     let tx = conn.transaction()?;
 
     tx.execute(
@@ -584,7 +584,7 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
             "source": "memorph-canonical",
             "event_id": event.id,
             "event_kind": event.kind,
-            "event_role": canonical_event_role_label(event.role),
+            "event_role": event_role_label(event.role),
             "blocks": event.blocks,
         });
         let created_at = event.timestamp.timestamp();

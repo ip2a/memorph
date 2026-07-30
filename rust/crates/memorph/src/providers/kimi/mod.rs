@@ -13,7 +13,7 @@ use crate::session::{
 };
 use crate::provider::{
     event_is_visible_message, event_visible_message_role,
-    event_visible_message_text, export_result, canonical_session_title,
+    event_visible_message_text, export_result, session_title,
     visible_block_text, PageStrategy, Provider, ProviderActivitySupport,
     ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup,
     ProviderSessionImportPage, ProviderSessionSummary, ProviderSourceFingerprint,

@@ -373,7 +373,7 @@ pub fn compute_session_stats(provider_id: &str, session_id: &str) -> Result<Sess
     let mut total_visible_byte_size = 0usize;
 
     for event in &detail.events {
-        let full_text = provider::canonical_event_text(event);
+        let full_text = provider::event_text(event);
         let visible_text = provider::event_visible_text(event);
         let char_count = full_text.chars().count();
         let byte_size = full_text.len();

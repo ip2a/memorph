@@ -1,5 +1,5 @@
 use crate::core::compression;
-use crate::provider::canonical_event_text;
+use crate::provider::event_text;
 use crate::session::{Block, Event, EventKind, Role, Session};
 
 use super::content::{content_profile, DetectedContentKind};
@@ -318,7 +318,7 @@ pub(super) fn classify_candidate(
     CompressionSelectionReason,
     CompressionRisk,
 )> {
-    let text = canonical_event_text(event);
+    let text = event_text(event);
     let profile = content_profile(&text);
 
     if profile.kind == DetectedContentKind::SearchResults {

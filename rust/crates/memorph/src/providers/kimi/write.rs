@@ -225,7 +225,7 @@ pub(super) fn export_canonical_session(session: &Session, target_dir: &Path) -> 
         })
     )?;
 
-    let title = canonical_session_title(session)
+    let title = session_title(session)
         .chars()
         .take(TITLE_MAX_CHARS)
         .collect::<String>();

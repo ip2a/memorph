@@ -3,7 +3,7 @@ pub mod hook;
 
 use crate::provider::{
     block_text, event_is_visible_message, event_visible_message_role,
-    event_visible_text, export_result, canonical_session_title, PageStrategy,
+    event_visible_text, export_result, session_title, PageStrategy,
     Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
     ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
@@ -618,7 +618,7 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
     std::fs::create_dir_all(sidecar_dir.join("subagents"))?;
 
     let mut file = File::create(&file_path)?;
-    let title = canonical_session_title(session);
+    let title = session_title(session);
     let project_dir_str = target_dir.to_string_lossy().to_string();
     let version = "2.1.116";
     let git_branch = get_git_branch(target_dir).unwrap_or_else(|| "main".to_string());

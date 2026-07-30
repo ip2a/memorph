@@ -557,7 +557,7 @@ pub(super) fn search_archive_events(
         .iter()
         .enumerate()
         .filter_map(|(event_index, event)| {
-            let text = provider::canonical_event_text(event);
+            let text = provider::event_text(event);
             let text_lower = text.to_ascii_lowercase();
             let score = archive_query_score(&text_lower, &query_lower, &terms);
             if score == 0 {

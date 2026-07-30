@@ -769,7 +769,7 @@ fn project_session_title_uses_codex_native_precedence_and_prompt_fallback() {
         let imported = CodexProvider
             .import_session(source_path.to_string_lossy().as_ref())
             .unwrap();
-        canonical_session_title(&imported.session)
+        session_title(&imported.session)
     };
 
     assert_eq!(imported_title(), "Index title");

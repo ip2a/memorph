@@ -14,7 +14,7 @@ use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
     event_visible_message_role, event_visible_message_text,
     event_visible_text, export_result,
-    session_instruction_context_text, canonical_session_title,
+    session_instruction_context_text, session_title,
     visible_block_text, compression_retrieval_hint, CompressionProjection, PageStrategy,
     Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,

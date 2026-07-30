@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::provider::canonical_event_text;
+use crate::provider::event_text;
 use crate::session::{Block, Event, Role};
 
 use super::adaptive::adaptive_keep_count;
@@ -88,7 +88,7 @@ fn detected_content_profile(source_events: &[Event]) -> &'static str {
 fn joined_event_text(source_events: &[Event]) -> String {
     source_events
         .iter()
-        .map(canonical_event_text)
+        .map(event_text)
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -242,8 +242,8 @@ fn search_result_signals(source_events: &[Event]) -> Vec<String> {
 fn parse_search_matches(source_events: &[Event]) -> Vec<SearchMatch> {
     let mut matches = Vec::new();
     for event in source_events {
-        let event_text = canonical_event_text(event);
-        for line in event_text.lines() {
+        let text = event_text(event);
+        for line in text.lines() {
             let Some((path, line_number, text)) = parse_search_result_line(line) else {
                 continue;
             };
@@ -896,7 +896,7 @@ fn conversation_signals(source_events: &[Event]) -> Vec<String> {
             Role::Tool => tool_count += 1,
             Role::System | Role::Developer | _ => {}
         }
-        collect_path_mentions(&canonical_event_text(event), &mut paths);
+        collect_path_mentions(&event_text(event), &mut paths);
     }
 
     push_signal(
@@ -939,7 +939,7 @@ fn collect_highlight_lines(text: &str, out: &mut Vec<String>) {
 }
 
 fn concise_event_text(event: &Event) -> Option<String> {
-    let text = canonical_event_text(event);
+    let text = event_text(event);
     let text = text.trim();
     (!text.is_empty()).then(|| truncate_preview(text, 160))
 }

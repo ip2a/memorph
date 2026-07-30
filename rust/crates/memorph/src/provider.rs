@@ -660,7 +660,7 @@ fn disposition_name(disposition: Fidelity) -> &'static str {
     }
 }
 
-pub fn canonical_session_title(session: &Session) -> String {
+pub fn session_title(session: &Session) -> String {
     if let Some(title) = session
         .identity
         .title
@@ -730,7 +730,7 @@ pub fn session_instruction_context_text(session: &Session) -> Option<String> {
     (!text.trim().is_empty()).then_some(text)
 }
 
-pub fn canonical_event_text(event: &Event) -> String {
+pub fn event_text(event: &Event) -> String {
     event
         .blocks
         .iter()
@@ -881,7 +881,7 @@ pub fn compression_retrieval_hint(archive_ref: &str) -> String {
     )
 }
 
-pub fn canonical_event_role_label(role: Role) -> &'static str {
+pub fn event_role_label(role: Role) -> &'static str {
     match role {
         Role::User => "user",
         Role::Assistant => "assistant",
@@ -1092,7 +1092,7 @@ mod tests {
             extensions: Default::default(),
         };
 
-        assert_eq!(canonical_session_title(&session), "real prompt");
+        assert_eq!(session_title(&session), "real prompt");
     }
 
     #[test]

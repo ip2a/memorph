@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::core::compression;
-use crate::provider::canonical_event_text;
+use crate::provider::event_text;
 use crate::session::{Block, Event, EventKind, Links, Metadata, Role, Session};
 
 mod adaptive;
@@ -442,7 +442,7 @@ fn protected_recent_message_indexes(
 }
 
 fn estimate_event_bytes(event: &Event) -> usize {
-    canonical_event_text(event).len()
+    event_text(event).len()
 }
 
 fn recompute_report_estimates(report: &mut ActiveCompressionReport) {

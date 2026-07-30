@@ -33,7 +33,7 @@ fn session_event_search_haystack(event: &Event) -> String {
     if let Ok(blocks_json) = serde_json::to_string(&event.blocks) {
         parts.push(blocks_json);
     }
-    parts.push(provider::canonical_event_text(event));
+    parts.push(provider::event_text(event));
     parts.join(" ").to_ascii_lowercase()
 }
 

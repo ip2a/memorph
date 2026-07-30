@@ -30,7 +30,7 @@ pub(super) fn export_canonical_session(session: &Session, target_dir: &Path) -> 
     let project_id = find_or_create_project(target_dir)?;
     let slug = generate_slug();
     let target_dir_str = target_dir.to_string_lossy().to_string();
-    let title = canonical_session_title(session);
+    let title = session_title(session);
     let projection = build_opencode_projection(OpenCodeProjectionInput {
         session,
         session_id: &session_id,

@@ -47,7 +47,7 @@ pub(super) fn write_canonical_codex_rollout(
     let codex_version = get_codex_version_in_codex_dir(codex_dir);
     let codex_model_provider = read_codex_model_provider(codex_dir);
     let target_dir_str = target_dir.to_string_lossy().to_string();
-    let title = canonical_session_title(session);
+    let title = session_title(session);
     let first_user_message = first_user_message(session);
     let has_user_event = has_user_event(session);
     let base_instructions = session_instruction_context_text(session);

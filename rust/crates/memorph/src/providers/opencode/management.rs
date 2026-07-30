@@ -64,7 +64,7 @@ pub(super) fn replace_opencode_session(session_id: &str, session: &Session) -> R
     let old_message_ids = opencode_message_ids(&conn, session_id)?;
     let old_paths = discover_opencode_mutation_paths(session_id, &old_message_ids)?;
     let now = Utc::now().timestamp_millis();
-    let title = canonical_session_title(session);
+    let title = session_title(session);
     let projection = build_opencode_projection(OpenCodeProjectionInput {
         session,
         session_id,

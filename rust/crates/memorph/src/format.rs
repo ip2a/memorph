@@ -1,4 +1,5 @@
-use crate::session::{Block, Context, Event, EventKind, Identity, Role, Schema, Session};
+use crate::provider::{event_role_label, session_title};
+use crate::session::{Block, Context, Event, EventKind, Identity, Schema, Session};
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -114,7 +115,7 @@ pub fn write_markdown(path: &Path, session: &Session) -> Result<()> {
     let mut out = String::new();
     let title = session_title(session);
     out.push_str("# ");
-    out.push_str(&escape_markdown_text(title));
+    out.push_str(&escape_markdown_text(&title));
     out.push_str("\n\n");
     out.push_str("| Field | Value |\n|---|---|\n");
     out.push_str(&format!("| ID | `{}` |\n", session.identity.id));
@@ -153,10 +154,10 @@ pub fn write_html(path: &Path, session: &Session) -> Result<()> {
     out.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
     out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     out.push_str("<title>");
-    out.push_str(&html_escape(title));
+    out.push_str(&html_escape(&title));
     out.push_str("</title><style>body{font-family:ui-sans-serif,system-ui;margin:32px;line-height:1.55;color:#111}article{max-width:960px;margin:auto}pre{white-space:pre-wrap;border:1px solid #111;padding:12px;overflow:auto}code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.meta{display:grid;grid-template-columns:max-content 1fr;gap:6px 12px;border:1px solid #111;padding:12px}.event{border-top:1px solid #111;padding-top:18px;margin-top:18px}.label{text-transform:uppercase;font-weight:700}</style></head><body><article>");
     out.push_str("<h1>");
-    out.push_str(&html_escape(title));
+    out.push_str(&html_escape(&title));
     out.push_str("</h1><section class=\"meta\"><strong>ID</strong><code>");
     out.push_str(&html_escape(&session.identity.id));
     out.push_str("</code>");
@@ -218,25 +219,6 @@ pub fn read_html(path: &Path) -> Result<Session> {
     })
 }
 
-fn session_title(session: &Session) -> &str {
-    session
-        .identity
-        .title
-        .as_deref()
-        .filter(|title| !title.trim().is_empty())
-        .unwrap_or(&session.identity.id)
-}
-
-fn event_role_label(role: Role) -> &'static str {
-    match role {
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        Role::Tool => "tool",
-        Role::System => "system",
-        Role::Developer => "developer",
-        _ => "unknown",
-    }
-}
 
 fn event_kind_label(kind: EventKind) -> &'static str {
     match kind {
@@ -530,6 +512,7 @@ fn html_unescape(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::Role;
     use chrono::Utc;
     use tempfile::tempdir;
 
