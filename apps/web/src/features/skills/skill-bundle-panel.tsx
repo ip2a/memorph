@@ -60,7 +60,7 @@ function fileTypeLabel(asset: SkillAsset) {
 
 function categoryLabel(
   category: SkillAsset["category"],
-  t: (key: keyof import("@/lib/i18n-core").I18nKey) => string,
+  t: (key: import("@/lib/i18n-core").I18nKey) => string,
 ) {
   switch (category) {
     case "entry":

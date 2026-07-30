@@ -338,7 +338,7 @@ describe("SkillsPage", () => {
     );
   });
 
-  it("shows file coverage in the bundle list", async () => {
+  it("shows target coverage in the coverage tab", async () => {
     mocks.useSkillCoverage.mockReturnValue({
       data: {
         skill_id: "document-writer",
@@ -376,6 +376,8 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
     await user.click(screen.getByText("Document Writer"));
+    await user.click(screen.getByRole("tab", { name: "Coverage and Conflicts" }));
+    await user.click(screen.getByRole("tab", { name: "Scripts" }));
     expect(screen.getByText("2 · high")).toBeTruthy();
   });
 
@@ -420,6 +422,7 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
     await user.click(screen.getByText("Document Writer"));
+    await user.click(screen.getByRole("tab", { name: "Coverage and Conflicts" }));
     await user.click(screen.getByText("Introduction"));
     const dialog = screen.getByRole("dialog");
     expect(dialog.textContent).toContain("Coverage Evidence");
@@ -434,6 +437,7 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
     await user.click(screen.getByText("Document Writer"));
+    await user.click(screen.getByRole("tab", { name: "Installations" }));
     const codex = screen
       .getAllByText("codex")
       .map((element) => element.closest("div.rounded-lg"))
