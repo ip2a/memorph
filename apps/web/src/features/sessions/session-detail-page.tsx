@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatBytes, formatDateTime, formatDetailTitle, formatNumericDateTime } from "@/lib/format";
-import type { SessionArtifact, SessionDetailView, SessionEvent } from "@/lib/types";
+import type { SessionDetailView, SessionEvent } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useSession, useSessionActivity } from "@/features/sessions/queries";
 import { SessionActivityChart } from "@/features/sessions/session-activity-chart";
@@ -94,7 +94,6 @@ function SessionDetailsDialog({
                 label="Loaded"
                 value={hasMoreEvents ? `${returnedEventCount} (more available)` : String(returnedEventCount)}
               />
-              <MetaLine columns="wide" label="Artifacts" value={String(view.artifact_count)} />
               <MetaLine columns="wide" label="Archives" value={String(archives)} />
               <MetaLine columns="wide" label="Session ID" value={<span className="break-all font-mono text-xs">{view.session_id}</span>} />
               <MetaLine columns="wide" label="Created" value={formatDateTime(view.created_at)} />
@@ -255,45 +254,6 @@ function getBlockLabels(blocks: SessionEvent["blocks"]) {
   return (blocks ?? []).map(getBlockLabel).filter(Boolean);
 }
 
-function SessionArtifactsDialog({
-  artifacts,
-  open,
-  onOpenChange,
-}: {
-  artifacts: SessionArtifact[];
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl" data-session-artifacts-dialog>
-        <DialogHeader>
-          <DialogTitle>Artifacts</DialogTitle>
-          <DialogDescription>Files, images, patches, and attachments attached to this session.</DialogDescription>
-        </DialogHeader>
-        {artifacts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No session artifacts were found for this canonical session.</p>
-        ) : (
-          <ScrollArea className="max-h-[min(60vh,32rem)] pr-3">
-            <div className="flex flex-col gap-3">
-              {artifacts.map((artifact) => (
-                <div key={artifact.id} className="flex flex-col gap-1 border-b pb-3 last:border-b-0 last:pb-0">
-                  <span className="break-all font-mono text-xs font-medium">{artifact.id}</span>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    <Badge variant="outline">{artifact.kind}</Badge>
-                    <span>{artifact.mime_type ?? "-"}</span>
-                  </div>
-                  <PathText value={artifact.path} wrap="all" className="text-xs" />
-                </div>
-              ))}
-            </div>
-          </ScrollArea>
-        )}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
 function DetailEventItem({
   event,
   index,
@@ -378,7 +338,6 @@ export function SessionDetailPage() {
   const [switchOpen, setSwitchOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
-  const [artifactsOpen, setArtifactsOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [eventSearchDraft, setEventSearchDraft] = useState("");
   const [searchSubmitPending, setSearchSubmitPending] = useState(false);
@@ -466,7 +425,6 @@ export function SessionDetailPage() {
   const paginationTotal = matched_event_count ?? view.event_count;
   const searching = Boolean(route.eventSearch.trim());
   const eventSearchPending = searchSubmitPending && session.isFetching;
-  const artifacts = view.artifacts ?? [];
   const archives = (view.compressed_archive_refs ?? []).length || (localState.compressed_archive_refs ?? []).length;
   const actionTarget = { providerId: view.provider_id, sessionId: view.session_id, title: detailTitle(view), workspace: view.workspace_dir };
   const title = detailTitle(view);
@@ -515,7 +473,6 @@ export function SessionDetailPage() {
                 onEventSearchSubmit={handleEventSearchSubmit}
                 eventSearchPending={eventSearchPending}
                 onOpenDetails={() => setDetailsOpen(true)}
-                onOpenArtifacts={() => setArtifactsOpen(true)}
                 onOpenCompression={() => setCompressionOpen(true)}
                 onOpenSync={() => setSyncOpen(true)}
                 onOpenSwitch={() => setSwitchOpen(true)}
@@ -610,11 +567,6 @@ export function SessionDetailPage() {
         providers={providers.data ?? []}
         meta={meta.data}
         onOpenChange={setSyncOpen}
-      />
-      <SessionArtifactsDialog
-        artifacts={artifacts}
-        open={artifactsOpen}
-        onOpenChange={setArtifactsOpen}
       />
       <SessionDetailsDialog
         open={detailsOpen}

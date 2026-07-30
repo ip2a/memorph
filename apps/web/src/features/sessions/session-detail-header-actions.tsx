@@ -13,7 +13,6 @@ type SessionDetailHeaderActionsProps = {
   onEventSearchDraftChange: (value: string) => void
   onEventSearchSubmit: () => void
   eventSearchPending?: boolean
-  onOpenArtifacts: () => void
   onOpenCompression: () => void
   onOpenDelete: () => void
   onOpenDetails: () => void
@@ -28,7 +27,6 @@ export function SessionDetailHeaderActions({
   onEventSearchDraftChange,
   onEventSearchSubmit,
   eventSearchPending = false,
-  onOpenArtifacts,
   onOpenCompression,
   onOpenDelete,
   onOpenDetails,
@@ -56,16 +54,6 @@ export function SessionDetailHeaderActions({
             Details
           </DropdownMenuItem>
         ),
-      },
-      {
-        id: "artifacts",
-        collapsePriority: 11,
-        renderButton: () => (
-          <Button type="button" variant="outline" onClick={onOpenArtifacts}>
-            Artifacts
-          </Button>
-        ),
-        renderMenuItem: () => <DropdownMenuItem onSelect={onOpenArtifacts}>Artifacts</DropdownMenuItem>,
       },
       {
         id: "compression",
@@ -133,7 +121,6 @@ export function SessionDetailHeaderActions({
       },
     ],
     [
-      onOpenArtifacts,
       onOpenCompression,
       onOpenDelete,
       onOpenDetails,

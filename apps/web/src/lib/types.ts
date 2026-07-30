@@ -843,18 +843,6 @@ export type CompressionArchive = {
   events: SessionEvent[];
 };
 
-export type SessionArtifactKind =
-  "file" | "image" | "patch" | "attachment" | "unknown" | string;
-
-export type SessionArtifact = {
-  id: string;
-  kind: SessionArtifactKind;
-  path?: string | null;
-  mime_type?: string | null;
-  content?: string | null;
-  metadata?: Record<string, unknown>;
-};
-
 export type LocalSessionState = {
   display_title?: string | null;
   archived: boolean;
@@ -882,7 +870,6 @@ export type SessionDetailView = {
   local_state: LocalSessionState;
   event_count: number;
   message_count: number;
-  artifact_count: number;
   length_metrics: {
     provider_source_bytes_measured: number;
     model_visible_bytes_measured: number;
@@ -897,7 +884,6 @@ export type SessionDetailView = {
   projection_report?: SessionProjectionReport | null;
   turns: SessionTurn[];
   events: SessionEvent[];
-  artifacts: SessionArtifact[];
   compressed_archive_refs: string[];
 };
 
