@@ -809,16 +809,17 @@ export type EventBlock =
       data?: string | null;
       path?: string | null;
     }
-  | { type: "provider_payload"; kind: string; payload: unknown }
-  | {
-      type: "compressed";
-      source_provider_id: string;
-      summary: string;
-      source_event_ids?: string[];
-      source_event_count?: number | null;
-      archive_ref?: string | null;
-    }
-  | { type: "unknown"; raw: unknown };
+  | { type: "compressed"; raw: CompressedBlockRaw }
+  | { type: "other"; raw: unknown };
+
+export type CompressedBlockRaw = {
+  format?: string;
+  source_provider_id?: string;
+  summary?: string;
+  source_event_ids?: string[];
+  source_event_count?: number | null;
+  archive_ref?: string | null;
+};
 
 export type SessionEvent = {
   id: string;

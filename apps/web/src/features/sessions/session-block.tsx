@@ -97,10 +97,11 @@ export function SessionBlock({ block, embedded = false }: { block: EventBlock; e
         <SessionCodeBlock embedded={embedded} value={block} />
       );
     }
-    case "provider_payload":
-      return <SessionCodeBlock embedded={embedded} value={block.payload} />;
+    case "other":
+      return <SessionCodeBlock embedded={embedded} value={block.raw} />;
     case "compressed": {
-      const archiveRef = block.archive_ref || "";
+      const raw = block.raw;
+      const archiveRef = raw?.archive_ref || "";
       return (
         <div className="flex flex-col gap-3">
           {archiveRef ? (
@@ -109,21 +110,19 @@ export function SessionBlock({ block, embedded = false }: { block: EventBlock; e
               className="rounded-md border bg-muted/30 p-3 transition-colors hover:bg-muted"
               data-compression-detail-link
             >
-              <p className="text-sm font-medium">{block.summary}</p>
+              <p className="text-sm font-medium">{raw?.summary}</p>
               <p className="mt-2 break-all font-mono text-xs text-muted-foreground">{archiveRef}</p>
             </Link>
           ) : (
-            <p className="text-sm">{block.summary}</p>
+            <p className="text-sm">{raw?.summary}</p>
           )}
-          {block.source_event_count === null || block.source_event_count === undefined ? null : (
-            <Badge variant="secondary">{block.source_event_count} source events</Badge>
+          {raw?.source_event_count == null ? null : (
+            <Badge variant="secondary">{raw.source_event_count} source events</Badge>
           )}
-          <FileList files={block.source_event_ids} />
+          <FileList files={raw?.source_event_ids} />
         </div>
       );
-    }
-    case "unknown":
-      return <SessionContent embedded={embedded} value={block.raw} />;
+    };
     default: {
       const unknownBlock = block as { type?: string } & Record<string, unknown>;
       return <SessionCodeBlock embedded={embedded} value={unknownBlock} />;

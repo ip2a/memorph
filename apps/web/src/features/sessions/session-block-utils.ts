@@ -20,12 +20,10 @@ export function getBlockLabel(block: EventBlock): string {
       return "File";
     case "image":
       return "Image";
-    case "provider_payload":
-      return block.kind || "payload";
     case "compressed":
       return "Compressed";
-    case "unknown":
-      return "Details";
+    case "other":
+      return "Other";
     default:
       return "";
   }

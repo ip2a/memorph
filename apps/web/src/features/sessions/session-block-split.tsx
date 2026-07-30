@@ -24,11 +24,21 @@ export function getBlockSplitPayload(block: EventBlock): BlockSplitPayload | nul
         json: { tool_call_id: block.tool_call_id, name: block.name, input: block.input },
         jsonLabel: "Request",
       };
-    case "provider_payload":
-      return {
-        json: block.payload,
-        jsonLabel: block.kind || "Payload",
-      };
+    case "other": {
+      const raw = block.raw;
+      if (raw == null) return null;
+      if (typeof raw === "object") {
+        return { json: raw, jsonLabel: "Raw" };
+      }
+      if (typeof raw === "string" && looksLikeJson(raw)) {
+        try {
+          return { json: JSON.parse(raw), jsonLabel: "Raw" };
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
     case "command":
       return {
         json: { command: block.command, argv: block.argv, cwd: block.cwd },
@@ -56,20 +66,6 @@ export function getBlockSplitPayload(block: EventBlock): BlockSplitPayload | nul
       }
       return null;
     }
-    case "unknown": {
-      if (block.raw == null) return null;
-      if (typeof block.raw === "object") {
-        return { json: block.raw, jsonLabel: "Raw" };
-      }
-      if (typeof block.raw === "string" && looksLikeJson(block.raw)) {
-        try {
-          return { json: JSON.parse(block.raw), jsonLabel: "Raw" };
-        } catch {
-          return null;
-        }
-      }
-      return null;
-    }
   }
 }
 
@@ -89,10 +85,10 @@ function SessionBlockHumanMeta({ block }: { block: EventBlock }) {
           <code className="break-all font-mono text-xs text-muted-foreground">{block.tool_call_id}</code>
         </div>
       );
-    case "provider_payload":
+    case "other":
       return (
         <div className="flex flex-col gap-2">
-          <Badge variant="secondary">{block.kind || "Provider payload"}</Badge>
+          <Badge variant="secondary">Other</Badge>
         </div>
       );
     case "command":
@@ -118,12 +114,6 @@ function SessionBlockHumanMeta({ block }: { block: EventBlock }) {
         <div className="flex flex-col gap-2">
           <Badge variant="outline">{getBlockLabel(block)}</Badge>
           <code className="break-all font-mono text-xs">{block.path}</code>
-        </div>
-      );
-    case "unknown":
-      return (
-        <div className="flex flex-col gap-2">
-          <Badge variant="outline">Unknown block</Badge>
         </div>
       );
     default:

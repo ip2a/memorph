@@ -96,10 +96,9 @@ function getBlockMetaEntries(block: EventBlock): MetaEntry[] {
         { title: "Tool", value: block.name, valueClassName: "text-foreground" },
         { title: "Tool call ID", value: block.tool_call_id, valueClassName: "font-mono text-xs" },
       ];
-    case "provider_payload":
+    case "other":
       return [
         { title: "Block", value: getBlockLabel(block), valueClassName: "text-foreground" },
-        { title: "Payload kind", value: block.kind || "payload", valueClassName: "text-foreground" },
       ];
     case "command":
       return [
@@ -143,11 +142,9 @@ function getBlockMetaEntries(block: EventBlock): MetaEntry[] {
     case "compressed":
       return [
         { title: "Block", value: getBlockLabel(block), valueClassName: "text-foreground" },
-        { title: "Summary", value: block.summary, valueClassName: "text-foreground" },
-        ...(block.archive_ref ? [{ title: "Archive", value: block.archive_ref, valueClassName: "font-mono text-xs" }] : []),
+        ...(block.raw?.summary ? [{ title: "Summary", value: block.raw.summary, valueClassName: "text-foreground" }] : []),
+        ...(block.raw?.archive_ref ? [{ title: "Archive", value: block.raw.archive_ref, valueClassName: "font-mono text-xs" }] : []),
       ];
-    case "unknown":
-      return [{ title: "Block", value: "Unknown", valueClassName: "text-foreground" }];
     default:
       return [{ title: "Block", value: getBlockLabel(block as EventBlock), valueClassName: "text-foreground" }];
   }
