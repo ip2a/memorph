@@ -2,8 +2,8 @@ pub mod adapter;
 pub mod hook;
 
 use crate::provider::{
-    canonical_block_text, canonical_event_is_visible_message, canonical_event_visible_message_role,
-    canonical_event_visible_text, canonical_export_result, canonical_session_title, PageStrategy,
+    block_text, event_is_visible_message, event_visible_message_role,
+    event_visible_text, export_result, canonical_session_title, PageStrategy,
     Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
     ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
@@ -194,7 +194,7 @@ impl Provider for ClaudeProvider {
 
     fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
-        Ok(canonical_export_result(
+        Ok(export_result(
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),
@@ -647,7 +647,7 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
         let Some(message_role) = claude_message_role(event) else {
             continue;
         };
-        let Some(content) = canonical_event_to_claude_message_content(event) else {
+        let Some(content) = event_to_claude_message_content(event) else {
             continue;
         };
         let msg_uuid = Uuid::new_v4().to_string();
@@ -714,7 +714,7 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
 }
 
 fn claude_message_role(event: &Event) -> Option<&'static str> {
-    let role = canonical_event_visible_message_role(event)?;
+    let role = event_visible_message_role(event)?;
     Some(if role == Role::Assistant {
         "assistant"
     } else {
@@ -722,12 +722,12 @@ fn claude_message_role(event: &Event) -> Option<&'static str> {
     })
 }
 
-fn canonical_event_to_claude_message_content(event: &Event) -> Option<Value> {
+fn event_to_claude_message_content(event: &Event) -> Option<Value> {
     if event.role == Role::Assistant {
         let content = event
             .blocks
             .iter()
-            .filter_map(canonical_block_to_claude_content)
+            .filter_map(block_to_claude_content)
             .collect::<Vec<_>>();
         return (!content.is_empty()).then_some(Value::Array(content));
     }
@@ -740,16 +740,16 @@ fn canonical_event_to_claude_message_content(event: &Event) -> Option<Value> {
         let content = event
             .blocks
             .iter()
-            .filter_map(canonical_block_to_claude_content)
+            .filter_map(block_to_claude_content)
             .collect::<Vec<_>>();
         return (!content.is_empty()).then_some(Value::Array(content));
     }
 
-    let text = canonical_event_visible_text(event);
+    let text = event_visible_text(event);
     (!text.trim().is_empty()).then_some(Value::String(text))
 }
 
-fn canonical_block_to_claude_content(block: &Block) -> Option<Value> {
+fn block_to_claude_content(block: &Block) -> Option<Value> {
     match block {
         Block::Text { text } => Some(serde_json::json!({
             "type": "text",
@@ -792,7 +792,7 @@ fn canonical_block_to_claude_content(block: &Block) -> Option<Value> {
         })),
         Block::Other { .. } => None,
         _ => {
-            let text = canonical_block_text(block);
+            let text = block_text(block);
             (!text.trim().is_empty()).then(|| {
                 serde_json::json!({
                     "type": "text",
@@ -869,7 +869,7 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
             extensions.insert("claude_custom_title".to_string(), value.clone());
         }
 
-        if let Some(event) = canonical_event_from_claude_line(
+        if let Some(event) = event_from_claude_line(
             line_idx + 1,
             line_type,
             timestamp,
@@ -979,7 +979,7 @@ fn import_claude_session_page(
         }
 
         let timestamp = claude_line_timestamp(&value, location.line_no);
-        if let Some(event) = canonical_event_from_claude_line(
+        if let Some(event) = event_from_claude_line(
             location.line_no,
             line_type,
             timestamp,
@@ -1182,9 +1182,9 @@ fn build_claude_event_index(
         // Reuse the canonical mapper to decide visible-message membership so
         // counts stay identical to a full import.
         if let Some(event) =
-            canonical_event_from_claude_line(line_no, line_type, timestamp, &value, &mut report)
+            event_from_claude_line(line_no, line_type, timestamp, &value, &mut report)
         {
-            if canonical_event_is_visible_message(&event) {
+            if event_is_visible_message(&event) {
                 message_count += 1;
             }
         }
@@ -1236,7 +1236,7 @@ fn claude_line_timestamp(value: &Value, line_number: usize) -> chrono::DateTime<
         })
 }
 
-fn canonical_event_from_claude_line(
+fn event_from_claude_line(
     line_number: usize,
     line_type: &str,
     timestamp: chrono::DateTime<Utc>,
@@ -1843,7 +1843,7 @@ mod tests {
             .session
             .events
             .iter()
-            .filter(|event| canonical_event_is_visible_message(event))
+            .filter(|event| event_is_visible_message(event))
             .count();
         assert_eq!(full.message_count, expected_messages);
         assert!(full.message_count >= 1);
@@ -2045,7 +2045,7 @@ mod tests {
         });
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
 
-        let event = canonical_event_from_claude_line(1, "assistant", Utc::now(), &raw, &mut report)
+        let event = event_from_claude_line(1, "assistant", Utc::now(), &raw, &mut report)
             .unwrap();
 
         assert_eq!(event.links.turn_id, None);
@@ -2275,7 +2275,7 @@ mod tests {
             }),
         };
 
-        let content = canonical_block_to_claude_content(&block).expect("claude text block");
+        let content = block_to_claude_content(&block).expect("claude text block");
         let text = content
             .get("text")
             .and_then(Value::as_str)
@@ -2297,7 +2297,7 @@ mod tests {
         let block = Block::Other {
             raw: serde_json::json!({ "name": "shell"  }),
         };
-        assert!(canonical_block_to_claude_content(&block).is_none());
+        assert!(block_to_claude_content(&block).is_none());
     }
 
     #[test]
@@ -2316,7 +2316,7 @@ mod tests {
         );
 
         assert!(claude_message_role(&event).is_none());
-        assert!(canonical_event_to_claude_message_content(&event).is_some());
+        assert!(event_to_claude_message_content(&event).is_some());
     }
 
     #[test]
@@ -2346,7 +2346,7 @@ mod tests {
             }],
         );
 
-        let content = canonical_event_to_claude_message_content(&event).unwrap();
+        let content = event_to_claude_message_content(&event).unwrap();
         let items = content.as_array().expect("structured assistant content");
         assert_eq!(items.len(), 1);
         assert_eq!(
@@ -2375,7 +2375,7 @@ mod tests {
             ],
         );
 
-        let content = canonical_event_to_claude_message_content(&event).unwrap();
+        let content = event_to_claude_message_content(&event).unwrap();
         assert_eq!(content.as_str(), Some("Build this"));
     }
 

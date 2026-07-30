@@ -1,6 +1,6 @@
 use crate::provider::{
-    canonical_event_role_label, canonical_event_visible_message_role,
-    canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
+    canonical_event_role_label, event_visible_message_role,
+    event_visible_message_text, export_result, canonical_session_title,
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
     ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
@@ -206,7 +206,7 @@ impl Provider for DeepseekProvider {
 
     fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
-        Ok(canonical_export_result(
+        Ok(export_result(
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),
@@ -568,7 +568,7 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
     .context("failed to insert thread")?;
 
     for event in &session.events {
-        let Some(visible_role) = canonical_event_visible_message_role(event) else {
+        let Some(visible_role) = event_visible_message_role(event) else {
             continue;
         };
         let Some(content) = deepseek_message_content(event) else {
@@ -607,7 +607,7 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
 }
 
 fn deepseek_message_content(event: &Event) -> Option<String> {
-    canonical_event_visible_message_text(event)
+    event_visible_message_text(event)
 }
 
 #[derive(Debug)]
@@ -646,7 +646,7 @@ fn import_canonical_session_from_connection(
         let timestamp =
             chrono::DateTime::from_timestamp(message.created_at, 0).unwrap_or_else(Utc::now);
         let role = deepseek_event_role(&message.role, &raw_message, &mut report);
-        let (blocks, fidelity) = canonical_blocks_from_message(&message, &raw_message, &mut report);
+        let (blocks, fidelity) = blocks_from_message(&message, &raw_message, &mut report);
         let mut provider_ext = BTreeMap::new();
         provider_ext.insert("deepseek_message".to_string(), raw_message);
         if !thread.model_provider.trim().is_empty() {
@@ -795,7 +795,7 @@ fn deepseek_event_role(role: &str, raw_message: &Value, report: &mut MappingRepo
     }
 }
 
-fn canonical_blocks_from_message(
+fn blocks_from_message(
     message: &MessageRow,
     raw_message: &Value,
     report: &mut MappingReport,

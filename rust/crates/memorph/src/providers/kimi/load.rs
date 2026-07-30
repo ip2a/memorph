@@ -362,7 +362,7 @@ pub(super) fn import_kimi_session_page(
         .session
         .events
         .iter()
-        .filter(|event| canonical_event_is_visible_message(event))
+        .filter(|event| event_is_visible_message(event))
         .count();
     let turn_count = crate::session_projection::project_session_turns(
         &imported.session.identity.id,
@@ -433,8 +433,8 @@ pub(super) fn import_canonical_session_from_dir(session_dir: &Path) -> Result<Im
     let context_modified_at = kimi_file_modified_at(&context_path)?;
 
     let mut context_events =
-        canonical_events_from_context(&context_path, context_modified_at, &mut report)?;
-    let wire = canonical_events_from_wire(&wire_path, &mut report)?;
+        events_from_context(&context_path, context_modified_at, &mut report)?;
+    let wire = events_from_wire(&wire_path, &mut report)?;
     reconcile_kimi_context_with_wire(&mut context_events, &wire.visible_events, &mut report);
     context_events.extend(wire.lifecycle_events);
 
@@ -541,7 +541,7 @@ pub(super) struct KimiWireTurn {
     provider_turn_id: String,
 }
 
-pub(super) fn canonical_events_from_wire(
+pub(super) fn events_from_wire(
     wire_path: &Path,
     report: &mut MappingReport,
 ) -> Result<KimiWireImport> {
@@ -776,7 +776,7 @@ pub(super) fn flush_kimi_wire_assistant(
     ));
 }
 
-pub(super) fn canonical_events_from_context(
+pub(super) fn events_from_context(
     context_path: &Path,
     fallback_timestamp: chrono::DateTime<Utc>,
     report: &mut MappingReport,
@@ -990,7 +990,7 @@ pub(super) fn reconcile_kimi_context_with_wire(
     let mut used = vec![false; wire_events.len()];
     let mut cursor = 0usize;
     for context_event in context_events {
-        let Some(context_text) = canonical_event_visible_message_text(context_event) else {
+        let Some(context_text) = event_visible_message_text(context_event) else {
             continue;
         };
         let Some((wire_index, wire_event)) =
@@ -1000,7 +1000,7 @@ pub(super) fn reconcile_kimi_context_with_wire(
                 .skip(cursor)
                 .find(|(_, wire_event)| {
                     wire_event.role == context_event.role
-                        && canonical_event_visible_message_text(wire_event)
+                        && event_visible_message_text(wire_event)
                             .is_some_and(|wire_text| wire_text.trim() == context_text.trim())
                 })
         else {

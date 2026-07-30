@@ -8,7 +8,7 @@ mod write;
 
 use crate::session::{ExportedSession, ImportedSession, Session};
 use crate::provider::{
-    canonical_export_result, PageStrategy, Provider, ProviderActivitySupport,
+    export_result, PageStrategy, Provider, ProviderActivitySupport,
     ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary,
     ProviderSourceMutation, ProviderWriteRisk, ScanStrategy, StorageShape, TurnQuality,
     WriteRiskLevel,
@@ -80,7 +80,7 @@ impl Provider for CursorProvider {
 
     fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = write::export_session(session, target_dir)?;
-        Ok(canonical_export_result(
+        Ok(export_result(
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),

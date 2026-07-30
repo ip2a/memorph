@@ -279,7 +279,7 @@ pub(super) fn import_kiro_session_page(
     let event_count = full_events.len();
     let message_count = full_events
         .iter()
-        .filter(|event| canonical_event_is_visible_message(event))
+        .filter(|event| event_is_visible_message(event))
         .count();
     let full_turns = crate::session_projection::project_session_turns(
         &imported.session.identity.id,
@@ -554,7 +554,7 @@ pub(super) fn read_kiro_event_stream(
             .and_then(Value::as_str)
             .map(str::to_string);
         let event =
-            canonical_event_from_kiro_record(record, source_file, line_number, &mut state, report);
+            event_from_kiro_record(record, source_file, line_number, &mut state, report);
         if let Some(sub_execution_id) = sub_execution_id {
             imported
                 .sub_execution_parents
@@ -570,7 +570,7 @@ pub(super) fn read_kiro_event_stream(
     Ok(imported)
 }
 
-pub(super) fn canonical_event_from_kiro_record(
+pub(super) fn event_from_kiro_record(
     record: Value,
     source_file: &str,
     line_number: usize,

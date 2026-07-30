@@ -118,10 +118,10 @@ pub(super) fn build_opencode_projection(input: OpenCodeProjectionInput<'_>) -> O
             continue;
         }
 
-        let Some(visible_role) = canonical_event_visible_message_role(event) else {
+        let Some(visible_role) = event_visible_message_role(event) else {
             continue;
         };
-        if !canonical_event_is_visible_message(event) {
+        if !event_is_visible_message(event) {
             continue;
         }
         let msg_id = generate_opencode_id("msg");
@@ -151,7 +151,7 @@ pub(super) fn build_opencode_projection(input: OpenCodeProjectionInput<'_>) -> O
         for block in &event.blocks {
             let part_id = generate_opencode_id("prt");
             let part_created = msg_created + 1;
-            let Some(part_json) = canonical_block_to_opencode_part(
+            let Some(part_json) = block_to_opencode_part(
                 session_id,
                 &msg_id,
                 &part_id,
@@ -338,7 +338,7 @@ pub(super) fn build_opencode_message_data_from_event(
     Value::Object(msg_json)
 }
 
-pub(super) fn canonical_block_to_opencode_part(
+pub(super) fn block_to_opencode_part(
     session_id: &str,
     msg_id: &str,
     part_id: &str,
@@ -403,7 +403,7 @@ pub(super) fn canonical_block_to_opencode_part(
             "filename": path,
             "url": content.as_deref().unwrap_or(""),
         })),
-        _ => canonical_visible_block_text(block).map(|text| {
+        _ => visible_block_text(block).map(|text| {
             serde_json::json!({
                 "id": part_id,
                 "sessionID": session_id,

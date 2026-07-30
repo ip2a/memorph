@@ -122,7 +122,7 @@ pub(super) fn export_canonical_session(session: &Session, target_dir: &Path) -> 
     )?;
 
     for event in &session.events {
-        let Some(visible_role) = canonical_event_visible_message_role(event) else {
+        let Some(visible_role) = event_visible_message_role(event) else {
             continue;
         };
         let ts = event.timestamp.timestamp_millis() as f64 / 1000.0;
@@ -131,7 +131,7 @@ pub(super) fn export_canonical_session(session: &Session, target_dir: &Path) -> 
                 let content_parts = event
                     .blocks
                     .iter()
-                    .filter_map(canonical_block_to_kimi_content_part)
+                    .filter_map(block_to_kimi_content_part)
                     .collect::<Vec<_>>();
                 if content_parts.is_empty() {
                     continue;
@@ -159,7 +159,7 @@ pub(super) fn export_canonical_session(session: &Session, target_dir: &Path) -> 
                 )?;
             }
             _ => {
-                let Some(text) = canonical_event_visible_message_text(event) else {
+                let Some(text) = event_visible_message_text(event) else {
                     continue;
                 };
                 writeln!(
@@ -261,7 +261,7 @@ pub(super) fn export_canonical_session(session: &Session, target_dir: &Path) -> 
     Ok(session_id)
 }
 
-pub(super) fn canonical_block_to_kimi_content_part(block: &Block) -> Option<Value> {
+pub(super) fn block_to_kimi_content_part(block: &Block) -> Option<Value> {
     match block {
         Block::Text { text } => Some(serde_json::json!({
             "type": "text",
@@ -272,7 +272,7 @@ pub(super) fn canonical_block_to_kimi_content_part(block: &Block) -> Option<Valu
             "think": text,
             "encrypted": null
         })),
-        _ => canonical_visible_block_text(block).map(|text| {
+        _ => visible_block_text(block).map(|text| {
             serde_json::json!({
                 "type": "text",
                 "text": text

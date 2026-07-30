@@ -215,7 +215,7 @@ pub(super) fn imported_session_from_data(
             });
 
         let mut blocks =
-            canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report);
+            blocks_from_parts(&msg_id, &msg_parts, &mut report);
         if blocks.is_empty() {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
@@ -344,7 +344,7 @@ pub(super) fn opencode_turn_boundary(finish: Option<&str>) -> Option<TurnOutcome
     }
 }
 
-pub(super) fn canonical_blocks_from_parts(
+pub(super) fn blocks_from_parts(
     msg_id: &str,
     msg_parts: &[Value],
     report: &mut MappingReport,
@@ -1178,7 +1178,7 @@ pub(super) fn load_session_page_from_filesystem_path(
 }
 
 /// Count messages that would be visible under the same rules as
-/// [`canonical_event_is_visible_message`], reusing the canonical block mapper
+/// [`event_is_visible_message`], reusing the canonical block mapper
 /// so the result is identical to a full import. This is the single source of
 /// truth for `ProviderSessionImportPage::message_count` for OpenCode.
 pub(super) fn count_visible_opencode_messages(
@@ -1207,7 +1207,7 @@ pub(super) fn count_visible_opencode_messages(
             .to_string();
         let msg_parts: Vec<Value> = parts.get(&msg_id).cloned().unwrap_or_default();
         let mut blocks =
-            canonical_blocks_from_parts(&msg_id, &msg_parts, &mut report);
+            blocks_from_parts(&msg_id, &msg_parts, &mut report);
         if blocks.is_empty() {
             blocks = vec![Block::Other {
                 raw: msg_json.clone(),
@@ -1219,7 +1219,7 @@ pub(super) fn count_visible_opencode_messages(
         }
         let visible_text: String = blocks
             .iter()
-            .filter_map(crate::provider::canonical_visible_block_text)
+            .filter_map(crate::provider::visible_block_text)
             .collect::<Vec<_>>()
             .join("\n");
         if !visible_text.trim().is_empty() {

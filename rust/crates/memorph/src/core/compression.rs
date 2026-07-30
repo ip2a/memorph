@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::config;
 use crate::logging;
-use crate::provider::{self, canonical_event_visible_text};
+use crate::provider::{self, event_visible_text};
 use crate::session::{Block, Event, EventKind, Links, Metadata, Role, Session};
 
 const ARCHIVE_SCHEME: &str = "memorph-archive://";
@@ -322,7 +322,7 @@ fn normalize_opencode_source_compression(
         return Ok((session.clone(), base_report));
     };
 
-    let summary = canonical_event_visible_text(&session.events[summary_idx]);
+    let summary = event_visible_text(&session.events[summary_idx]);
     if summary.trim().is_empty() {
         return Ok((session.clone(), base_report));
     }

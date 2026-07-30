@@ -12,9 +12,9 @@ use crate::session::{
     ProviderRef, Role, Schema, Session, TurnOutcome,
 };
 use crate::provider::{
-    canonical_event_is_visible_message, canonical_event_visible_message_role,
-    canonical_event_visible_message_text, canonical_export_result, canonical_session_title,
-    canonical_visible_block_text, PageStrategy, Provider, ProviderActivitySupport,
+    event_is_visible_message, event_visible_message_role,
+    event_visible_message_text, export_result, canonical_session_title,
+    visible_block_text, PageStrategy, Provider, ProviderActivitySupport,
     ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup,
     ProviderSessionImportPage, ProviderSessionSummary, ProviderSourceFingerprint,
     ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
@@ -219,7 +219,7 @@ impl Provider for KimiProvider {
 
     fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
-        Ok(canonical_export_result(
+        Ok(export_result(
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),

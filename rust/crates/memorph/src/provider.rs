@@ -435,7 +435,7 @@ pub trait Provider: Send + Sync {
             .session
             .events
             .iter()
-            .filter(|event| canonical_event_is_visible_message(event))
+            .filter(|event| event_is_visible_message(event))
             .count();
         let turn_count = crate::session_projection::project_session_turns(
             &imported.session.identity.id,
@@ -569,7 +569,7 @@ pub trait Provider: Send + Sync {
     }
 }
 
-pub fn canonical_export_report(
+pub fn export_report(
     provider_id: &str,
     session: &Session,
     capabilities: ProviderCapabilities,
@@ -616,7 +616,7 @@ pub fn canonical_export_report(
     report
 }
 
-pub fn canonical_export_result(
+pub fn export_result(
     provider_id: &str,
     session_id: String,
     resume_command: Option<String>,
@@ -627,7 +627,7 @@ pub fn canonical_export_result(
         provider_id: provider_id.to_string(),
         session_id,
         resume_command,
-        report: canonical_export_report(provider_id, session, capabilities),
+        report: export_report(provider_id, session, capabilities),
     }
 }
 
@@ -675,12 +675,12 @@ pub fn canonical_session_title(session: &Session) -> String {
         .iter()
         .find_map(|event| {
             if !matches!(
-                canonical_event_visible_message_role(event),
+                event_visible_message_role(event),
                 Some(Role::User | Role::Assistant)
             ) {
                 return None;
             }
-            canonical_event_visible_message_text(event)?
+            event_visible_message_text(event)?
                 .lines()
                 .find(|line| !line.trim().is_empty())
                 .map(str::to_string)
@@ -688,7 +688,7 @@ pub fn canonical_session_title(session: &Session) -> String {
         .unwrap_or_else(|| "Imported session".to_string())
 }
 
-pub fn canonical_event_visible_message_role(event: &Event) -> Option<Role> {
+pub fn event_visible_message_role(event: &Event) -> Option<Role> {
     if matches!(event.kind, EventKind::Lifecycle | EventKind::Other) {
         return None;
     }
@@ -698,33 +698,33 @@ pub fn canonical_event_visible_message_role(event: &Event) -> Option<Role> {
     }
 }
 
-pub fn canonical_event_is_visible_message(event: &Event) -> bool {
-    canonical_event_visible_message_role(event).is_some()
-        && !canonical_event_visible_text(event).trim().is_empty()
+pub fn event_is_visible_message(event: &Event) -> bool {
+    event_visible_message_role(event).is_some()
+        && !event_visible_text(event).trim().is_empty()
 }
 
-pub fn canonical_event_visible_message_text(event: &Event) -> Option<String> {
-    canonical_event_visible_message_role(event)?;
-    let text = canonical_event_visible_text(event);
+pub fn event_visible_message_text(event: &Event) -> Option<String> {
+    event_visible_message_role(event)?;
+    let text = event_visible_text(event);
     (!text.trim().is_empty()).then_some(text)
 }
 
-pub fn canonical_event_instruction_context_text(event: &Event) -> Option<String> {
+pub fn event_instruction_context_text(event: &Event) -> Option<String> {
     if matches!(event.kind, EventKind::Lifecycle | EventKind::Other) {
         return None;
     }
     if !matches!(event.role, Role::System | Role::Developer) {
         return None;
     }
-    let text = canonical_event_visible_text(event);
+    let text = event_visible_text(event);
     (!text.trim().is_empty()).then_some(text)
 }
 
-pub fn canonical_session_instruction_context_text(session: &Session) -> Option<String> {
+pub fn session_instruction_context_text(session: &Session) -> Option<String> {
     let text = session
         .events
         .iter()
-        .filter_map(canonical_event_instruction_context_text)
+        .filter_map(event_instruction_context_text)
         .collect::<Vec<_>>()
         .join("\n\n");
     (!text.trim().is_empty()).then_some(text)
@@ -734,30 +734,30 @@ pub fn canonical_event_text(event: &Event) -> String {
     event
         .blocks
         .iter()
-        .map(canonical_block_text)
+        .map(block_text)
         .filter(|text| !text.trim().is_empty())
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-pub fn canonical_visible_block_text(block: &Block) -> Option<String> {
+pub fn visible_block_text(block: &Block) -> Option<String> {
     if matches!(block, Block::Other { .. }) {
         return None;
     }
-    let text = canonical_block_text(block);
+    let text = block_text(block);
     (!text.trim().is_empty()).then_some(text)
 }
 
-pub fn canonical_event_visible_text(event: &Event) -> String {
+pub fn event_visible_text(event: &Event) -> String {
     event
         .blocks
         .iter()
-        .filter_map(canonical_visible_block_text)
+        .filter_map(visible_block_text)
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-pub fn canonical_block_text(block: &Block) -> String {
+pub fn block_text(block: &Block) -> String {
     match block {
         Block::Text { text } => text.clone(),
         Block::Thinking { text, .. } => text.clone(),
@@ -909,7 +909,7 @@ mod tests {
 
     #[test]
     fn portable_compression_text_is_preserved_for_provider_projection() {
-        let text = canonical_block_text(&Block::Text {
+        let text = block_text(&Block::Text {
             text: "[Compressed session segment from opencode]\ncompressed summary\nSource event count: 20\nArchive: memorph-archive://session/archive.json".to_string(),
         });
 
@@ -919,19 +919,19 @@ mod tests {
     }
 
     #[test]
-    fn canonical_visible_block_text_drops_provider_internal_blocks() {
-        assert!(canonical_visible_block_text(&Block::Other {
+    fn visible_block_text_drops_provider_internal_blocks() {
+        assert!(visible_block_text(&Block::Other {
             raw: serde_json::json!({"type": "token_count", "input_tokens": 10}),
         })
         .is_none());
-        assert!(canonical_visible_block_text(&Block::Other {
+        assert!(visible_block_text(&Block::Other {
             raw: serde_json::json!({"type": "mystery"}),
         })
         .is_none());
     }
 
     #[test]
-    fn canonical_event_visible_text_omits_provider_internal_blocks() {
+    fn event_visible_text_omits_provider_internal_blocks() {
         let event = Event {
             id: "event-1".to_string(),
             kind: crate::session::EventKind::Message,
@@ -955,11 +955,11 @@ mod tests {
             },
         };
 
-        assert_eq!(canonical_event_visible_text(&event), "hello");
+        assert_eq!(event_visible_text(&event), "hello");
     }
 
     #[test]
-    fn canonical_visible_message_role_excludes_internal_events() {
+    fn visible_message_role_excludes_internal_events() {
         let lifecycle = test_event(
             "lifecycle",
             crate::session::EventKind::Lifecycle,
@@ -993,21 +993,21 @@ mod tests {
             }],
         );
 
-        assert_eq!(canonical_event_visible_message_role(&lifecycle), None);
-        assert_eq!(canonical_event_visible_message_role(&developer), None);
-        assert_eq!(canonical_event_visible_message_role(&unknown), None);
+        assert_eq!(event_visible_message_role(&lifecycle), None);
+        assert_eq!(event_visible_message_role(&developer), None);
+        assert_eq!(event_visible_message_role(&unknown), None);
         assert_eq!(
-            canonical_event_visible_message_role(&user),
+            event_visible_message_role(&user),
             Some(Role::User)
         );
         assert_eq!(
-            canonical_event_visible_message_text(&user).as_deref(),
+            event_visible_message_text(&user).as_deref(),
             Some("hello")
         );
     }
 
     #[test]
-    fn canonical_export_report_uses_actual_block_kinds_and_target_fidelity() {
+    fn export_report_uses_actual_block_kinds_and_target_fidelity() {
         let session = Session {
             schema: crate::session::Schema::default(),
             identity: crate::session::Identity {
@@ -1051,7 +1051,7 @@ mod tests {
             ..ProviderCapabilities::default()
         };
 
-        let report = canonical_export_report("target", &session, capabilities);
+        let report = export_report("target", &session, capabilities);
 
         assert_eq!(report.overall, Fidelity::Downgraded);
         assert_eq!(report.issues.len(), 2);
@@ -1096,7 +1096,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_instruction_context_uses_only_system_or_developer_messages() {
+    fn instruction_context_uses_only_system_or_developer_messages() {
         let session = Session {
             schema: crate::session::Schema {
                 name: crate::session::OASF_SCHEMA_NAME.to_string(),
@@ -1153,7 +1153,7 @@ mod tests {
         };
 
         assert_eq!(
-            canonical_session_instruction_context_text(&session).as_deref(),
+            session_instruction_context_text(&session).as_deref(),
             Some("system instructions\n\ndeveloper instructions")
         );
     }

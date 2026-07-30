@@ -64,7 +64,7 @@ fn imported_session_from_cursor(
     let mut thinking_count = 0usize;
     let mut unmapped_structured_count = 0usize;
     for (source_order, bubble) in source.bubbles.iter().enumerate() {
-        let imported = canonical_event_from_bubble(
+        let imported = event_from_bubble(
             bubble,
             &source.metadata.composer_id,
             source_order,
@@ -188,7 +188,7 @@ struct ImportedCursorEvent {
     has_unmapped_structured_payload: bool,
 }
 
-fn canonical_event_from_bubble(
+fn event_from_bubble(
     bubble: &CursorBubbleRecord,
     composer_id: &str,
     source_order: usize,

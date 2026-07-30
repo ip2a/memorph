@@ -11,7 +11,7 @@ use crate::session::{
     Schema, Session, TurnOutcome,
 };
 use crate::provider::{
-    canonical_event_is_visible_message, PageStrategy, Provider, ProviderActivitySupport,
+    event_is_visible_message, PageStrategy, Provider, ProviderActivitySupport,
     ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup,
     ProviderSessionImportPage, ProviderSessionSummary, ProviderSourceFingerprint,
     ProviderSourceMutation, ProviderWriteRisk, ScanStrategy, StorageShape, TurnQuality,

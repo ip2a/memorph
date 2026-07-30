@@ -50,7 +50,7 @@ pub(super) fn write_canonical_codex_rollout(
     let title = canonical_session_title(session);
     let first_user_message = first_user_message(session);
     let has_user_event = has_user_event(session);
-    let base_instructions = canonical_session_instruction_context_text(session);
+    let base_instructions = session_instruction_context_text(session);
 
     writeln!(
         file,
@@ -123,7 +123,7 @@ pub(super) fn write_canonical_codex_rollout(
             }
             continue;
         }
-        let Some(visible_role) = canonical_event_visible_message_role(event) else {
+        let Some(visible_role) = event_visible_message_role(event) else {
             continue;
         };
         let role = match visible_role {
@@ -131,7 +131,7 @@ pub(super) fn write_canonical_codex_rollout(
             Role::User | Role::Tool => "user",
             Role::System | Role::Developer | _ => continue,
         };
-        let content = canonical_event_to_codex_content(event);
+        let content = event_to_codex_content(event);
         if content.is_empty() {
             continue;
         }
@@ -142,7 +142,7 @@ pub(super) fn write_canonical_codex_rollout(
         });
         if event.role == Role::Assistant {
             payload["phase"] = Value::String("final_answer".to_string());
-            last_agent_message = canonical_event_visible_text(event);
+            last_agent_message = event_visible_text(event);
             writeln!(
                 file,
                 "{}",
@@ -168,7 +168,7 @@ pub(super) fn write_canonical_codex_rollout(
             }))?
         )?;
         if visible_role == Role::User && !wrote_user_event {
-            let user_text = canonical_event_visible_text(event);
+            let user_text = event_visible_text(event);
             writeln!(
                 file,
                 "{}",
@@ -340,7 +340,7 @@ fn codex_compacted_history_text(segment: &CompressedSegment) -> String {
     parts.join("\n")
 }
 
-pub(super) fn canonical_event_to_codex_content(event: &Event) -> Vec<Value> {
+pub(super) fn event_to_codex_content(event: &Event) -> Vec<Value> {
     event
         .blocks
         .iter()
@@ -361,7 +361,7 @@ pub(super) fn canonical_event_to_codex_content(event: &Event) -> Vec<Value> {
             }
             Block::Other { .. } => None,
             _ => {
-                let text = canonical_visible_block_text(block)?;
+                let text = visible_block_text(block)?;
                 (!text.trim().is_empty()).then(|| serde_json::json!({
                     "type": if event.role == Role::Assistant { "output_text" } else { "input_text" },
                     "text": text,

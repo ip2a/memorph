@@ -12,10 +12,10 @@ use self::write::*;
 
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
-    canonical_event_visible_message_role, canonical_event_visible_message_text,
-    canonical_event_visible_text, canonical_export_result,
-    canonical_session_instruction_context_text, canonical_session_title,
-    canonical_visible_block_text, compression_retrieval_hint, CompressionProjection, PageStrategy,
+    event_visible_message_role, event_visible_message_text,
+    event_visible_text, export_result,
+    session_instruction_context_text, canonical_session_title,
+    visible_block_text, compression_retrieval_hint, CompressionProjection, PageStrategy,
     Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
     ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
@@ -515,7 +515,7 @@ impl Provider for CodexProvider {
 
     fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
-        Ok(canonical_export_result(
+        Ok(export_result(
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),
@@ -671,9 +671,9 @@ fn first_user_message(session: &Session) -> Option<String> {
     session
         .events
         .iter()
-        .filter(|event| canonical_event_visible_message_role(event) == Some(Role::User))
+        .filter(|event| event_visible_message_role(event) == Some(Role::User))
         .find_map(|event| {
-            let text = canonical_event_visible_message_text(event)?;
+            let text = event_visible_message_text(event)?;
             let trimmed = text.trim();
             (!trimmed.is_empty()).then(|| trimmed.to_string())
         })
@@ -683,7 +683,7 @@ fn has_user_event(session: &Session) -> bool {
     session
         .events
         .iter()
-        .any(|event| canonical_event_visible_message_role(event) == Some(Role::User))
+        .any(|event| event_visible_message_role(event) == Some(Role::User))
 }
 
 struct CodexSqliteUpdate<'a> {

@@ -245,7 +245,7 @@ impl<'a> SessionIndexStore<'a> {
             let day = timestamp.div_euclid(DAY_MS) * DAY_MS;
             let counts = days.entry(day).or_default();
             counts.0 += 1;
-            counts.1 += usize::from(crate::provider::canonical_event_is_visible_message(event));
+            counts.1 += usize::from(crate::provider::event_is_visible_message(event));
         }
         let tx = self.conn.transaction()?;
         tx.execute(

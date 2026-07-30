@@ -134,7 +134,7 @@ fn import_session_page_paginates_messages_and_keeps_full_counts() {
         .session
         .events
         .iter()
-        .filter(|event| canonical_event_is_visible_message(event))
+        .filter(|event| event_is_visible_message(event))
         .count();
     assert_eq!(full.message_count, expected_visible);
     assert_eq!(full.message_count, 3);
@@ -167,7 +167,7 @@ fn import_session_page_paginates_messages_and_keeps_full_counts() {
 #[test]
 fn opencode_malformed_parts_are_preserved_and_reported() {
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-    let blocks = canonical_blocks_from_parts(
+    let blocks = blocks_from_parts(
         "message-1",
         &[
             serde_json::json!({"type": "text"}),
@@ -1237,7 +1237,7 @@ fn provider_payload_block_is_skipped_in_opencode_part_export() {
         raw: serde_json::json!({"id": "hidden"}),
     };
 
-    assert!(canonical_block_to_opencode_part(
+    assert!(block_to_opencode_part(
         "ses_test",
         "msg_test",
         "prt_test",

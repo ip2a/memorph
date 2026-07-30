@@ -374,7 +374,7 @@ pub fn compute_session_stats(provider_id: &str, session_id: &str) -> Result<Sess
 
     for event in &detail.events {
         let full_text = provider::canonical_event_text(event);
-        let visible_text = provider::canonical_event_visible_text(event);
+        let visible_text = provider::event_visible_text(event);
         let char_count = full_text.chars().count();
         let byte_size = full_text.len();
         let visible_char_count = visible_text.chars().count();
@@ -620,7 +620,7 @@ fn import_session_activity(
         .map(|event| SourceActivityEvent {
             kind: event.kind,
             timestamp: event.timestamp,
-            visible_message: provider::canonical_event_is_visible_message(event),
+            visible_message: provider::event_is_visible_message(event),
         })
         .collect();
     let last_active_at = imported.session.context.last_active_at.or_else(|| {

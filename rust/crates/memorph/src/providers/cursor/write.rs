@@ -1,5 +1,5 @@
 use crate::provider::{
-    canonical_event_visible_message_role, canonical_event_visible_message_text,
+    event_visible_message_role, event_visible_message_text,
     canonical_session_title, ProviderSourceMutation,
 };
 use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
@@ -412,7 +412,7 @@ pub fn export_session(session: &Session, target_dir: &Path) -> Result<String> {
         .events
         .iter()
         .filter_map(|event| {
-            let role = canonical_event_visible_message_role(event)?;
+            let role = event_visible_message_role(event)?;
             let text = cursor_bubble_text(event)?;
             Some(BubbleMeta {
                 id: Uuid::new_v4().to_string(),
@@ -603,7 +603,7 @@ pub fn export_session(session: &Session, target_dir: &Path) -> Result<String> {
 }
 
 fn cursor_bubble_text(event: &Event) -> Option<String> {
-    canonical_event_visible_message_text(event)
+    event_visible_message_text(event)
 }
 
 #[cfg(test)]

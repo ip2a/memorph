@@ -16,8 +16,8 @@ use crate::session::{
 };
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
-    canonical_event_is_visible_message, canonical_event_visible_message_role,
-    canonical_export_result, canonical_session_title, canonical_visible_block_text,
+    event_is_visible_message, event_visible_message_role,
+    export_result, canonical_session_title, visible_block_text,
     compression_retrieval_hint, CompressionProjection, PageStrategy, Provider,
     ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity,
     ProviderSessionBackup, ProviderSessionImportPage, ProviderSessionSummary,
@@ -233,7 +233,7 @@ impl Provider for OpenCodeProvider {
 
     fn export_session(&self, session: &Session, target_dir: &Path) -> Result<ExportedSession> {
         let session_id = export_canonical_session(session, target_dir)?;
-        Ok(canonical_export_result(
+        Ok(export_result(
             PROVIDER_ID,
             session_id.clone(),
             self.resume_command(&session_id),

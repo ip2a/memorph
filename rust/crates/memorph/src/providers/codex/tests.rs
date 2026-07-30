@@ -1749,7 +1749,7 @@ fn compressed_segment_content_fallback_stays_portable_for_non_native_paths() {
         },
     };
 
-    let content = canonical_event_to_codex_content(&event);
+    let content = event_to_codex_content(&event);
 
     assert_eq!(content.len(), 1);
     assert_eq!(
@@ -2667,7 +2667,7 @@ fn provider_payload_block_is_skipped_in_codex_export() {
         },
     };
 
-    let content = canonical_event_to_codex_content(&event);
+    let content = event_to_codex_content(&event);
     assert_eq!(content.len(), 1);
     assert_eq!(
         content[0].get("text").and_then(Value::as_str),

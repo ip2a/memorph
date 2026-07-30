@@ -1,5 +1,5 @@
 use crate::session::{Event, Role, TurnOutcome};
-use crate::provider::{canonical_event_visible_message_role, TurnQuality};
+use crate::provider::{event_visible_message_role, TurnQuality};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -257,7 +257,7 @@ pub fn project_session_turns(
         }
 
         if matches!(
-            canonical_event_visible_message_role(event),
+            event_visible_message_role(event),
             Some(Role::User)
         ) {
             if let Some(turn_index) = current_inferred.take() {

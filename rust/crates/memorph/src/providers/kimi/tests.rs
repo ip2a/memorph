@@ -421,7 +421,7 @@ fn kimi_import_accepts_only_directory_locators_and_context_only_sessions() {
             .session
             .events
             .iter()
-            .filter_map(canonical_event_visible_message_text)
+            .filter_map(event_visible_message_text)
             .collect::<Vec<_>>(),
         vec!["[sanitized context-only request]".to_string()]
     );
@@ -1174,7 +1174,7 @@ fn kimi_full_import_pages_keep_total_counts_and_project_only_page_turns() {
             .session
             .events
             .iter()
-            .filter(|event| canonical_event_is_visible_message(event))
+            .filter(|event| event_is_visible_message(event))
             .count()
     );
     assert_eq!(full.turns.len(), 2);
@@ -1826,7 +1826,7 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
         .events
         .iter()
         .filter_map(|event| {
-            canonical_event_visible_message_text(event).map(|text| (event.role, text))
+            event_visible_message_text(event).map(|text| (event.role, text))
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -1919,7 +1919,7 @@ fn sanitized_kimi_fixture_imports_context_authoritatively_with_native_turns() {
         .events
         .iter()
         .filter_map(|event| {
-            canonical_event_visible_message_text(event).map(|text| (event.role, text))
+            event_visible_message_text(event).map(|text| (event.role, text))
         })
         .collect::<Vec<_>>();
     assert_eq!(
@@ -1989,7 +1989,7 @@ fn malformed_wire_line_is_reported_without_losing_context_messages() {
             .session
             .events
             .iter()
-            .filter_map(canonical_event_visible_message_text)
+            .filter_map(event_visible_message_text)
             .collect::<Vec<_>>(),
         vec![
             "[sanitized user request]".to_string(),
@@ -2167,7 +2167,7 @@ fn compressed_segment_exports_as_portable_kimi_text_part() {
         }),
     };
 
-    let part = canonical_block_to_kimi_content_part(&block).expect("kimi text part");
+    let part = block_to_kimi_content_part(&block).expect("kimi text part");
     let text = part
         .get("text")
         .and_then(Value::as_str)
@@ -2190,5 +2190,5 @@ fn provider_payload_block_is_skipped_in_kimi_text_part_export() {
         raw: serde_json::json!({"type": "custom", "kept": true}),
     };
 
-    assert!(canonical_block_to_kimi_content_part(&block).is_none());
+    assert!(block_to_kimi_content_part(&block).is_none());
 }
