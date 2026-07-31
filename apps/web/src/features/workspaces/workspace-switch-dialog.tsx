@@ -407,6 +407,23 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                 <TabsTrigger value="recent">Recent</TabsTrigger>
                 <TabsTrigger value="pick">Pick</TabsTrigger>
               </TabsList>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    aria-label="Scan known workspaces"
+                    disabled={scanWorkspacesMutation.isPending}
+                    onClick={() => scanWorkspacesMutation.mutate()}
+                  >
+                    <RadarIcon className={scanWorkspacesMutation.isPending ? "animate-pulse" : undefined} />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  Scan known workspaces in the background to repopulate this list.
+                </TooltipContent>
+              </Tooltip>
               <InputGroup className="min-w-0 flex-1">
                 <InputGroupInput
                   aria-label="Search"
@@ -490,22 +507,8 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                           <EmptyDescription>
                             {search.trim()
                               ? "Try a different name or path."
-                              : "Recent workspaces will appear here after you switch, or scan the ones you've used before."}
+                              : "No known workspaces yet. Switch to one, or click scan to index places you've used before."}
                           </EmptyDescription>
-                          {!search.trim() ? (
-                            <div className="mt-3 flex justify-center">
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                disabled={scanWorkspacesMutation.isPending}
-                                onClick={() => scanWorkspacesMutation.mutate()}
-                              >
-                                <RadarIcon data-icon="inline-start" className={scanWorkspacesMutation.isPending ? "animate-pulse" : undefined} />
-                                {scanWorkspacesMutation.isPending ? "Scanning…" : "Scan Workspaces"}
-                              </Button>
-                            </div>
-                          ) : null}
                         </EmptyHeader>
                       </Empty>
                     )}
