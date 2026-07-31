@@ -136,7 +136,12 @@ pub(super) async fn get_session(
         .event_search
         .map(|query| query.trim().to_string())
         .filter(|query| !query.is_empty());
+    let event_order = core::SessionEventOrder::parse(q.event_order.as_deref());
     let requested_search = event_search.clone();
+    let requested_order = match event_order {
+        core::SessionEventOrder::Desc => Some("desc".to_string()),
+        core::SessionEventOrder::Asc => None,
+    };
     match memorph::runtime::run_blocking(move || {
         core::sessions::get_session_detail_view_page_result(
             &provider,
@@ -144,6 +149,7 @@ pub(super) async fn get_session(
             events_offset,
             events_limit,
             event_search.as_deref(),
+            event_order,
         )
     })
     .await
@@ -166,6 +172,7 @@ pub(super) async fn get_session(
                 returned_event_count,
                 has_more_events,
                 event_search: requested_search,
+                event_order: requested_order,
                 matched_event_count: result.matched_event_count,
                 returned_event_indices: result.returned_event_indices,
             })

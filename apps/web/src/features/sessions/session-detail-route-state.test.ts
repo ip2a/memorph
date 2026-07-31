@@ -25,6 +25,11 @@ describe("session detail pagination", () => {
       event_limit: 20,
       event_search: "needle",
     });
+    expect(buildSessionEventQuery(1, 20, "", "desc")).toEqual({
+      event_offset: 0,
+      event_limit: 20,
+      event_order: "desc",
+    });
   });
 
   it("computes total pages from event count", () => {
@@ -38,11 +43,13 @@ describe("session detail route state", () => {
       page: 3,
       pageSize: 50,
       eventSearch: "",
+      eventOrder: "asc",
     });
-    expect(readSessionDetailRouteState(new URLSearchParams("q=hello"))).toEqual({
+    expect(readSessionDetailRouteState(new URLSearchParams("q=hello&order=desc"))).toEqual({
       page: 1,
       pageSize: 20,
       eventSearch: "hello",
+      eventOrder: "desc",
     });
   });
 
@@ -60,5 +67,12 @@ describe("session detail route state", () => {
       page: 1,
     });
     expect(next.toString()).toBe("q=tool+call");
+  });
+
+  it("writes desc order to URL params", () => {
+    const next = writeSessionDetailRouteState(new URLSearchParams(), {
+      eventOrder: "desc",
+    });
+    expect(next.toString()).toBe("order=desc");
   });
 });

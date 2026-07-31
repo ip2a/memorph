@@ -49,7 +49,8 @@ describe("eventMinimapClassName", () => {
     expect(eventMinimapClassName("tool", "tool_result")).toContain("bg-[#d9c48a]");
   });
 
-  it("falls back to tool styling for tool-like kinds", () => {
+  it("falls back to tool styling for action-like kinds", () => {
+    expect(eventMinimapClassName("unknown", "action")).toContain("bg-[#d9c48a]");
     expect(eventMinimapClassName("unknown", "tool_call")).toContain("bg-[#d9c48a]");
   });
 });

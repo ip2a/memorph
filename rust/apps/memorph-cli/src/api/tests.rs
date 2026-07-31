@@ -885,6 +885,7 @@ fn session_detail_payload_serializes_hook_runtime_sessions() {
         returned_event_count: 0,
         has_more_events: false,
         event_search: None,
+        event_order: None,
         matched_event_count: None,
         returned_event_indices: Vec::new(),
     };

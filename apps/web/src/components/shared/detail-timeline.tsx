@@ -62,7 +62,7 @@ export function eventMinimapClassName(role: string | undefined, kind: SessionEve
     case "developer":
       return "bg-[#c8bdd9] hover:bg-[#b5a7ca] dark:bg-[#5f5470] dark:hover:bg-[#6f6480]";
     default:
-      if (kind === "tool_call" || kind === "tool_result") {
+      if (kind === "action" || kind === "observation" || kind === "tool_call" || kind === "tool_result") {
         return "bg-[#d9c48a] hover:bg-[#c9b06f] dark:bg-[#7a6838] dark:hover:bg-[#8c7842]";
       }
       return "bg-border/80 hover:bg-border";

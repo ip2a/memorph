@@ -32,16 +32,19 @@ export function buildSessionEventQuery(
   page: number,
   pageSize: SessionEventPageSize,
   eventSearch?: string,
+  eventOrder: "asc" | "desc" = "asc",
 ) {
   const query: {
     event_offset: number;
     event_limit: number;
     event_search?: string;
+    event_order?: "asc" | "desc";
   } = {
     event_offset: (page - 1) * pageSize,
     event_limit: pageSize,
   };
   const trimmed = eventSearch?.trim();
   if (trimmed) query.event_search = trimmed;
+  if (eventOrder === "desc") query.event_order = "desc";
   return query;
 }

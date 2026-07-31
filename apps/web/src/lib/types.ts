@@ -662,7 +662,10 @@ export type SessionDetailParams = {
   event_offset?: number;
   event_limit?: number;
   event_search?: string;
+  event_order?: SessionEventOrder;
 };
+
+export type SessionEventOrder = "asc" | "desc";
 
 export type SessionDetailPayload = {
   view: SessionDetailView;
@@ -671,6 +674,7 @@ export type SessionDetailPayload = {
   returned_event_count: number;
   has_more_events: boolean;
   event_search?: string | null;
+  event_order?: SessionEventOrder | null;
   matched_event_count?: number | null;
   returned_event_indices?: number[];
 };
@@ -734,14 +738,10 @@ export type EventRole =
 
 export type SessionEventKind =
   | "message"
-  | "tool_call"
-  | "tool_result"
-  | "command"
-  | "command_result"
-  | "patch"
+  | "action"
+  | "observation"
   | "lifecycle"
-  | "artifact"
-  | "unknown"
+  | "other"
   | string;
 
 export type EventLinks = {

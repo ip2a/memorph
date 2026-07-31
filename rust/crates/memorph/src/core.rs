@@ -86,6 +86,23 @@ pub enum SessionListSort {
     Title,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEventOrder {
+    #[default]
+    Asc,
+    Desc,
+}
+
+impl SessionEventOrder {
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).map(|v| v.to_ascii_lowercase()).as_deref() {
+            Some("desc") | Some("descending") | Some("reverse") | Some("newest") => Self::Desc,
+            _ => Self::Asc,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionGroup {
     pub provider_id: String,

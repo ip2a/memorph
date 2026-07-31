@@ -179,6 +179,8 @@ struct SessionDetailPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     event_search: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    event_order: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     matched_event_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     returned_event_indices: Vec<usize>,
@@ -893,6 +895,7 @@ struct SessionDetailQuery {
     event_limit: Option<usize>,
     event_offset: Option<usize>,
     event_search: Option<String>,
+    event_order: Option<String>,
 }
 
 #[cfg(test)]

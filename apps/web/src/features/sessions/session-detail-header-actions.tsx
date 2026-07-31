@@ -1,5 +1,5 @@
 import * as React from "react"
-import { InfoIcon, SearchIcon } from "lucide-react"
+import { InfoIcon, ListFilterIcon, SearchIcon } from "lucide-react"
 
 import { CollapsibleToolbar, type CollapsibleToolbarEntry } from "@/components/shared/collapsible-toolbar"
 import { Button } from "@/components/ui/button"
@@ -17,6 +17,7 @@ type SessionDetailHeaderActionsProps = {
   onOpenDelete: () => void
   onOpenDetails: () => void
   onOpenExport: () => void
+  onOpenFilter: () => void
   onOpenRename: () => void
   onOpenSync: () => void
   onOpenSwitch: () => void
@@ -31,6 +32,7 @@ export function SessionDetailHeaderActions({
   onOpenDelete,
   onOpenDetails,
   onOpenExport,
+  onOpenFilter,
   onOpenRename,
   onOpenSync,
   onOpenSwitch,
@@ -39,6 +41,22 @@ export function SessionDetailHeaderActions({
 
   const entries = React.useMemo<CollapsibleToolbarEntry[]>(
     () => [
+      {
+        id: "filter",
+        collapsePriority: 8,
+        renderButton: () => (
+          <Button type="button" variant="outline" onClick={onOpenFilter}>
+            <ListFilterIcon data-icon="inline-start" />
+            Filter
+          </Button>
+        ),
+        renderMenuItem: () => (
+          <DropdownMenuItem onSelect={onOpenFilter}>
+            <ListFilterIcon />
+            Filter
+          </DropdownMenuItem>
+        ),
+      },
       {
         id: "details",
         collapsePriority: 10,
@@ -125,6 +143,7 @@ export function SessionDetailHeaderActions({
       onOpenDelete,
       onOpenDetails,
       onOpenExport,
+      onOpenFilter,
       onOpenRename,
       onOpenSync,
       onOpenSwitch,

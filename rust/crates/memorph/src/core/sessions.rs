@@ -19,7 +19,15 @@ pub fn get_canonical_session(provider_id: &str, session_id: &str) -> Result<Impo
 }
 
 pub fn get_session_detail_view(provider_id: &str, session_id: &str) -> Result<SessionDetailView> {
-    Ok(get_session_detail_view_page_result(provider_id, session_id, 0, None, None)?.view)
+    Ok(get_session_detail_view_page_result(
+        provider_id,
+        session_id,
+        0,
+        None,
+        None,
+        SessionEventOrder::Asc,
+    )?
+    .view)
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +49,7 @@ pub fn get_session_detail_view_page(
         event_offset,
         event_limit,
         None,
+        SessionEventOrder::Asc,
     )?
     .view)
 }
@@ -51,10 +60,12 @@ pub fn get_session_detail_view_page_result(
     event_offset: usize,
     event_limit: Option<usize>,
     event_search: Option<&str>,
+    event_order: SessionEventOrder,
 ) -> Result<SessionDetailPageResult> {
     let search_query = event_search
         .map(str::trim)
         .filter(|query| !query.is_empty());
+    let reverse = matches!(event_order, SessionEventOrder::Desc);
     let mut conn = crate::storage::local_store::open_database()?;
     let identity = crate::storage::snapshot_store::SnapshotStore::new(&conn)
         .find_session_identity(provider_id, session_id)?
@@ -77,31 +88,52 @@ pub fn get_session_detail_view_page_result(
         .as_deref()
         .unwrap_or(session_id)
         .to_string();
-    let mut page = if search_query.is_some() {
-        provider.import_session_page(source_path, 0, None)?
-    } else {
-        provider.import_session_page(source_path, event_offset, event_limit)?
-    };
-    let full_events = page.imported.session.events.clone();
-    let (events, returned_event_indices, matched_event_count) = if let Some(query) = search_query {
-        let matching_indices =
-            session_event_search::find_matching_event_indices(&full_events, query);
-        let matched_count = matching_indices.len();
-        let offset = event_offset.min(matched_count);
-        let limit = event_limit.unwrap_or(matched_count);
-        let indices = matching_indices
-            .into_iter()
-            .skip(offset)
-            .take(limit)
-            .collect::<Vec<_>>();
-        let events = indices
-            .iter()
-            .map(|&index| full_events[index].clone())
-            .collect::<Vec<_>>();
-        (events, indices, Some(matched_count))
-    } else {
-        (page.imported.session.events.clone(), Vec::new(), None)
-    };
+
+    let (mut page, events, returned_event_indices, matched_event_count, full_events) =
+        if let Some(query) = search_query {
+            let page = provider.import_session_page(source_path, 0, None)?;
+            let full_events = page.imported.session.events.clone();
+            let mut matching_indices =
+                session_event_search::find_matching_event_indices(&full_events, query);
+            if reverse {
+                matching_indices.reverse();
+            }
+            let matched_count = matching_indices.len();
+            let offset = event_offset.min(matched_count);
+            let limit = event_limit.unwrap_or(matched_count);
+            let indices = matching_indices
+                .into_iter()
+                .skip(offset)
+                .take(limit)
+                .collect::<Vec<_>>();
+            let events = indices
+                .iter()
+                .map(|&index| full_events[index].clone())
+                .collect::<Vec<_>>();
+            (page, events, indices, Some(matched_count), full_events)
+        } else if reverse {
+            let count_page = provider.import_session_page(source_path, 0, Some(0))?;
+            let total = count_page.event_count;
+            let available = total.saturating_sub(event_offset);
+            let take = event_limit.unwrap_or(available).min(available);
+            let chrono_offset = total.saturating_sub(event_offset + take);
+            let mut page = provider.import_session_page(source_path, chrono_offset, Some(take))?;
+            page.event_count = count_page.event_count;
+            page.message_count = count_page.message_count;
+            if count_page.turn_count.is_some() {
+                page.turn_count = count_page.turn_count;
+            }
+            let mut events = std::mem::take(&mut page.imported.session.events);
+            events.reverse();
+            let indices = (chrono_offset..chrono_offset + events.len())
+                .rev()
+                .collect::<Vec<_>>();
+            (page, events, indices, None, Vec::new())
+        } else {
+            let page = provider.import_session_page(source_path, event_offset, event_limit)?;
+            let events = page.imported.session.events.clone();
+            (page, events.clone(), Vec::new(), None, events)
+        };
     page.imported.session.events = events;
     let meta = ProviderSessionSummary {
         session_id: provider_session_id.clone(),
@@ -175,7 +207,9 @@ pub fn get_session_detail_view_page_result(
     );
     let compressed_archive_refs = compression::compressed_archive_refs(&page.imported.session);
     let mut metrics_session = page.imported.session.clone();
-    metrics_session.events = full_events;
+    if !full_events.is_empty() {
+        metrics_session.events = full_events;
+    }
     let length_metrics = session_length_metrics(
         provider.session_size(&provider_session_id)?,
         &metrics_session,

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
-import { CopyIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronDownIcon, CopyIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DetailHeader } from "@/components/shared/detail-header";
 import { DetailTimeline, scrollToDetailMessage } from "@/components/shared/detail-timeline";
@@ -11,18 +11,26 @@ import { PathText } from "@/components/shared/path-text";
 import { ProviderLogo } from "@/components/shared/provider-logo";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatBytes, formatDateTime, formatDetailTitle, formatNumericDateTime } from "@/lib/format";
-import type { SessionDetailView, SessionEvent } from "@/lib/types";
+import type { SessionDetailView, SessionEvent, SessionEventOrder } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { useSession, useSessionActivity } from "@/features/sessions/queries";
 import { SessionActivityChart } from "@/features/sessions/session-activity-chart";
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
-import { SessionDetailBlock, collectEventJsonPayloads, SessionEventJsonColumn } from "@/features/sessions/session-block-split";
-import { SessionEventMetaPanel } from "@/features/sessions/session-event-meta-panel";
-import { SessionEventSplitRow } from "@/features/sessions/session-event-split-row";
-import { getBlockLabel } from "@/features/sessions/session-block-utils";
+import { SessionBlock } from "@/features/sessions/session-block";
+import {
+  eventBlockTagClass,
+  eventKindTagClass,
+  eventRoleTagClass,
+  getBlockTags,
+} from "@/features/sessions/session-block-utils";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
 import { SessionDetailHeaderActions } from "@/features/sessions/session-detail-header-actions";
 import { buildSessionEventQuery, sessionEventTotalPages, type SessionEventPageSize } from "@/features/sessions/session-detail-pagination";
@@ -250,8 +258,96 @@ function SessionDetailMeta({
   );
 }
 
-function getBlockLabels(blocks: SessionEvent["blocks"]) {
-  return (blocks ?? []).map(getBlockLabel).filter(Boolean);
+function eventKindKey(event: SessionEvent) {
+  return event.kind || "unknown";
+}
+
+function EventFoldDialog({
+  open,
+  onOpenChange,
+  kinds,
+  eventOrder,
+  onEventOrderChange,
+  onSetKindOpen,
+  onSetAllOpen,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  kinds: Array<{ kind: string; count: number }>;
+  eventOrder: SessionEventOrder;
+  onEventOrderChange: (order: SessionEventOrder) => void;
+  onSetKindOpen: (kind: string, open: boolean) => void;
+  onSetAllOpen: (open: boolean) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md" data-session-event-fold-dialog>
+        <DialogHeader>
+          <DialogTitle>Filter events</DialogTitle>
+          <DialogDescription>Sort events and expand or collapse them by kind on this page.</DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <div className="text-sm font-medium">Order</div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                variant={eventOrder === "asc" ? "default" : "outline"}
+                size="sm"
+                onClick={() => onEventOrderChange("asc")}
+              >
+                Oldest first
+              </Button>
+              <Button
+                type="button"
+                variant={eventOrder === "desc" ? "default" : "outline"}
+                size="sm"
+                onClick={() => onEventOrderChange("desc")}
+              >
+                Newest first
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-medium">Fold by type</div>
+              <div className="flex gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => onSetAllOpen(true)}>
+                  Expand all
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={() => onSetAllOpen(false)}>
+                  Collapse all
+                </Button>
+              </div>
+            </div>
+            {kinds.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No events on this page.</p>
+            ) : (
+              <div className="flex flex-col divide-y border-t">
+                {kinds.map(({ kind, count }) => (
+                  <div key={kind} className="flex items-center justify-between gap-3 py-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{readable(kind)}</div>
+                      <div className="text-xs text-muted-foreground">{count} event{count === 1 ? "" : "s"}</div>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <Button type="button" variant="outline" size="sm" onClick={() => onSetKindOpen(kind, true)}>
+                        Expand
+                      </Button>
+                      <Button type="button" variant="outline" size="sm" onClick={() => onSetKindOpen(kind, false)}>
+                        Collapse
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 function DetailEventItem({
@@ -259,75 +355,88 @@ function DetailEventItem({
   index,
   eventNumber,
   highlighted,
+  open,
+  onOpenChange,
 }: {
   event: SessionEvent;
   index: number;
   eventNumber: number;
   highlighted?: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
-  const role = (event.role ?? "unknown").replaceAll("_", " ");
-  const kind = (event.kind ?? "unknown").replaceAll("_", " ");
-  const blockLabels = getBlockLabels(event.blocks);
+  const role = event.role ?? "unknown";
+  const kind = event.kind ?? "unknown";
+  const blockTags = getBlockTags(event.blocks);
   const blocks = event.blocks ?? [];
-  const jsonPayloads = collectEventJsonPayloads(blocks);
-  const hasJsonColumn = jsonPayloads.length > 0;
-
-  const eventArticle = (
-    <article
-      className={cn(
-        "flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card",
-        highlighted && "outline-2 outline-foreground/35 -outline-offset-2",
-      )}
-      data-event-number={eventNumber}
-      data-role={event.role ?? "unknown"}
-    >
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b px-2.5 py-2 font-mono text-xs">
-        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2 overflow-hidden">
-          <span className="shrink-0 tabular-nums text-muted-foreground">#{eventNumber}</span>
-          <span className="font-bold uppercase">{role}</span>
-          <span>{kind}</span>
-          {blockLabels.map((label) => (
-            <span key={label} className="text-muted-foreground">{label}</span>
-          ))}
-          {event.metadata?.model ? <span className="text-muted-foreground">{event.metadata.model}</span> : null}
-          {event.metadata?.fidelity ? (
-            <Badge variant={qualityBadgeVariant(event.metadata.fidelity)}>{readable(event.metadata.fidelity)}</Badge>
-          ) : null}
-        </span>
-        <span className="shrink-0 whitespace-nowrap text-muted-foreground">{formatDateTime(event.timestamp)}</span>
-      </header>
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-        {blocks.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No details.</p>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {blocks.map((block, blockIndex) => (
-              <SessionDetailBlock key={`${event.id}-${blockIndex}`} block={block} />
-            ))}
-          </div>
-        )}
-      </div>
-    </article>
-  );
-
-  if (!hasJsonColumn) {
-    return (
-      <div className="min-w-0" data-message-index={index} data-session-event-row="single">
-        {eventArticle}
-      </div>
-    );
-  }
 
   return (
-    <SessionEventSplitRow
-      className={cn("min-w-0", highlighted && "rounded-xl outline-2 outline-foreground/35 -outline-offset-2")}
-      data-message-index={index}
-      data-session-event-row="split"
-      data-event-number={eventNumber}
-      data-role={event.role ?? "unknown"}
-      left={<SessionEventMetaPanel event={event} eventNumber={eventNumber} />}
-      right={<SessionEventJsonColumn payloads={jsonPayloads} timestamp={event.timestamp} />}
-    />
+    <div className="min-w-0" data-message-index={index} data-session-event-row="single">
+      <Collapsible open={open} onOpenChange={onOpenChange}>
+        <article
+          className={cn(
+            "flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card",
+            highlighted && "outline-2 outline-foreground/35 -outline-offset-2",
+          )}
+          data-event-number={eventNumber}
+          data-role={role}
+          data-kind={kind}
+        >
+          <CollapsibleTrigger asChild>
+            <button
+              type="button"
+              className="flex w-full shrink-0 items-center justify-between gap-2 border-b px-2.5 py-2 text-left font-mono text-xs transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            >
+              <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
+                <span className="shrink-0 tabular-nums text-muted-foreground">#{eventNumber}</span>
+                <Badge variant="outline" className={cn("uppercase", eventRoleTagClass(role))}>
+                  {readable(role)}
+                </Badge>
+                <Badge variant="outline" className={eventKindTagClass(kind)}>
+                  {readable(kind)}
+                </Badge>
+                {blockTags.map((tag) => (
+                  <Badge key={`${tag.type}-${tag.label}`} variant="outline" className={eventBlockTagClass(tag.type)}>
+                    {tag.label}
+                  </Badge>
+                ))}
+                {event.metadata?.model ? (
+                  <Badge variant="outline" className="border-border bg-background font-normal text-muted-foreground">
+                    {event.metadata.model}
+                  </Badge>
+                ) : null}
+                {event.metadata?.fidelity ? (
+                  <Badge variant={qualityBadgeVariant(event.metadata.fidelity)}>{readable(event.metadata.fidelity)}</Badge>
+                ) : null}
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="whitespace-nowrap text-muted-foreground">{formatDateTime(event.timestamp)}</span>
+                <ChevronDownIcon
+                  aria-hidden="true"
+                  className={cn(
+                    "size-3.5 text-muted-foreground transition-transform",
+                    open && "rotate-180",
+                  )}
+                />
+              </span>
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent className="overflow-hidden">
+            <div className="p-3">
+              {blocks.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No details.</p>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {blocks.map((block, blockIndex) => (
+                    <SessionBlock key={`${event.id}-${blockIndex}`} block={block} />
+                  ))}
+                </div>
+              )}
+            </div>
+          </CollapsibleContent>
+        </article>
+      </Collapsible>
+    </div>
   );
 }
 
@@ -339,6 +448,8 @@ export function SessionDetailPage() {
   const [exportOpen, setExportOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [eventOpenById, setEventOpenById] = useState<Record<string, boolean>>({});
   const [eventSearchDraft, setEventSearchDraft] = useState("");
   const [searchSubmitPending, setSearchSubmitPending] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
@@ -350,8 +461,8 @@ export function SessionDetailPage() {
     setEventSearchDraft(route.eventSearch);
   }, [route.eventSearch, provider, sessionId]);
   const sessionQuery = useMemo(
-    () => buildSessionEventQuery(route.page, route.pageSize, route.eventSearch),
-    [route.page, route.pageSize, route.eventSearch],
+    () => buildSessionEventQuery(route.page, route.pageSize, route.eventSearch, route.eventOrder),
+    [route.page, route.pageSize, route.eventSearch, route.eventOrder],
   );
   const session = useSession(provider, sessionId, sessionQuery);
   const providers = useQuery({ queryKey: queryKeys.providers, queryFn: listProviders });
@@ -367,7 +478,8 @@ export function SessionDetailPage() {
 
   useEffect(() => {
     setHighlightedIndex(null);
-  }, [provider, sessionId, route.page, route.pageSize, route.eventSearch]);
+    setEventOpenById({});
+  }, [provider, sessionId, route.page, route.pageSize, route.eventSearch, route.eventOrder]);
 
   useEffect(() => {
     if (!session.data) return;
@@ -375,9 +487,20 @@ export function SessionDetailPage() {
     const totalPages = sessionEventTotalPages(paginationTotal, route.pageSize);
     if (route.page <= totalPages) return;
     setSearchParams(writeSessionDetailRouteState(searchParams, { page: totalPages }), { replace: true });
-  }, [route.page, route.pageSize, route.eventSearch, searchParams, session.data, setSearchParams]);
+  }, [route.page, route.pageSize, route.eventSearch, route.eventOrder, searchParams, session.data, setSearchParams]);
 
-  function updateRoute(next: Partial<{ page: number; pageSize: SessionEventPageSize; eventSearch: string }>) {
+  const foldKinds = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const event of session.data?.view.events ?? []) {
+      const kind = eventKindKey(event);
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([kind, count]) => ({ kind, count }))
+      .sort((a, b) => a.kind.localeCompare(b.kind));
+  }, [session.data?.view.events]);
+
+  function updateRoute(next: Partial<{ page: number; pageSize: SessionEventPageSize; eventSearch: string; eventOrder: SessionEventOrder }>) {
     setSearchParams(writeSessionDetailRouteState(searchParams, next));
   }
 
@@ -407,6 +530,26 @@ export function SessionDetailPage() {
   function changePageSize(pageSize: SessionEventPageSize) {
     updateRoute({ page: 1, pageSize });
     scrollSessionDetailToTop();
+  }
+
+  function setOpenForKind(kind: string, open: boolean) {
+    const list = session.data?.view.events ?? [];
+    setEventOpenById((prev) => {
+      const next = { ...prev };
+      for (const event of list) {
+        if (eventKindKey(event) === kind) next[event.id] = open;
+      }
+      return next;
+    });
+  }
+
+  function setAllEventsOpen(open: boolean) {
+    const list = session.data?.view.events ?? [];
+    setEventOpenById((prev) => {
+      const next = { ...prev };
+      for (const event of list) next[event.id] = open;
+      return next;
+    });
   }
 
   if (session.isLoading && !session.data) return <PageSkeleton />;
@@ -472,6 +615,7 @@ export function SessionDetailPage() {
                 onEventSearchDraftChange={setEventSearchDraft}
                 onEventSearchSubmit={handleEventSearchSubmit}
                 eventSearchPending={eventSearchPending}
+                onOpenFilter={() => setFilterOpen(true)}
                 onOpenDetails={() => setDetailsOpen(true)}
                 onOpenCompression={() => setCompressionOpen(true)}
                 onOpenSync={() => setSyncOpen(true)}
@@ -491,7 +635,7 @@ export function SessionDetailPage() {
               onScrollToMessage={(index) => handleTimelineSelect(index)}
             />
             <div
-              className="grid min-h-0 min-w-0 [&>*+*]:mt-6 [&>*+*]:border-t [&>*+*]:border-border [&>*+*]:pt-6"
+              className="grid min-h-0 min-w-0 gap-3"
               data-session-message-list
             >
               {!searching && view.event_count === 0 ? (
@@ -509,6 +653,8 @@ export function SessionDetailPage() {
                     index={index}
                     eventNumber={eventNumber}
                     highlighted={highlightedIndex === index}
+                    open={eventOpenById[event.id] ?? true}
+                    onOpenChange={(open) => setEventOpenById((prev) => ({ ...prev, [event.id]: open }))}
                   />
                 ))
               )}
@@ -576,6 +722,15 @@ export function SessionDetailPage() {
         hasMoreEvents={has_more_events}
         archives={archives}
         localState={localState}
+      />
+      <EventFoldDialog
+        open={filterOpen}
+        onOpenChange={setFilterOpen}
+        kinds={foldKinds}
+        eventOrder={route.eventOrder}
+        onEventOrderChange={(eventOrder) => updateRoute({ eventOrder, page: 1 })}
+        onSetKindOpen={setOpenForKind}
+        onSetAllOpen={setAllEventsOpen}
       />
     </>
   );

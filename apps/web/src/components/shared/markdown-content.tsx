@@ -61,18 +61,9 @@ export function MarkdownContent({
 
 export function MarkdownContentFrame({
   value,
-  embedded = false,
 }: {
   value: string;
   embedded?: boolean;
 }): ReactNode {
-  if (embedded) {
-    return <MarkdownContent value={value} />;
-  }
-
-  return (
-    <div className="max-h-80 overflow-auto rounded-md border border-border bg-muted/20 p-3">
-      <MarkdownContent value={value} />
-    </div>
-  );
+  return <MarkdownContent value={value} />;
 }

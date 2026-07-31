@@ -1,8 +1,12 @@
-import { Button } from "@/components/ui/button";
+import { useEffect, useState } from "react";
+
+import { Input } from "@/components/ui/input";
 import {
   Pagination,
   PaginationContent,
+  PaginationFirst,
   PaginationItem,
+  PaginationLast,
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
@@ -43,6 +47,25 @@ export function SessionDetailResultPagination({
   const currentPage = Math.min(page, totalPages);
   const canGoBack = currentPage > 1;
   const canGoForward = currentPage < totalPages;
+  const [pageInput, setPageInput] = useState(String(currentPage));
+
+  useEffect(() => {
+    setPageInput(String(currentPage));
+  }, [currentPage]);
+
+  const commitPageInput = () => {
+    const parsed = Number.parseInt(pageInput, 10);
+    if (!Number.isFinite(parsed)) {
+      setPageInput(String(currentPage));
+      return;
+    }
+
+    const nextPage = Math.min(Math.max(1, parsed), totalPages);
+    setPageInput(String(nextPage));
+    if (nextPage !== currentPage) {
+      onPageChange(nextPage);
+    }
+  };
 
   return (
     <div
@@ -84,6 +107,21 @@ export function SessionDetailResultPagination({
         <Pagination className="mx-0 w-auto justify-end">
           <PaginationContent>
             <PaginationItem>
+              <PaginationFirst
+                href="#"
+                aria-disabled={!canGoBack || disabled}
+                className={cn(
+                  (!canGoBack || disabled) && "pointer-events-none opacity-50",
+                )}
+                data-session-detail-page-first
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (!canGoBack || disabled) return;
+                  onPageChange(1);
+                }}
+              />
+            </PaginationItem>
+            <PaginationItem>
               <PaginationPrevious
                 href="#"
                 text="Prev"
@@ -101,17 +139,25 @@ export function SessionDetailResultPagination({
               />
             </PaginationItem>
             <PaginationItem>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                className="min-h-10 min-w-10"
-                disabled
-                aria-current="page"
-                aria-label={`Page ${currentPage}`}
-              >
-                {currentPage}
-              </Button>
+              <Input
+                type="number"
+                min={1}
+                max={totalPages}
+                inputMode="numeric"
+                value={pageInput}
+                disabled={disabled || totalPages <= 1}
+                aria-label="Go to page"
+                data-session-detail-page-jump
+                className="h-10 w-14 px-1 text-center [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                onChange={(event) => setPageInput(event.target.value)}
+                onBlur={commitPageInput}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitPageInput();
+                  }
+                }}
+              />
             </PaginationItem>
             <PaginationItem>
               <PaginationNext
@@ -127,6 +173,21 @@ export function SessionDetailResultPagination({
                   event.preventDefault();
                   if (!canGoForward || disabled) return;
                   onPageChange(currentPage + 1);
+                }}
+              />
+            </PaginationItem>
+            <PaginationItem>
+              <PaginationLast
+                href="#"
+                aria-disabled={!canGoForward || disabled}
+                className={cn(
+                  (!canGoForward || disabled) && "pointer-events-none opacity-50",
+                )}
+                data-session-detail-page-last
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (!canGoForward || disabled) return;
+                  onPageChange(totalPages);
                 }}
               />
             </PaginationItem>

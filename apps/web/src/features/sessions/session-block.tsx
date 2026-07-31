@@ -1,7 +1,6 @@
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { SessionCodeBlock, SessionContent } from "@/features/sessions/session-content";
-import { cn } from "@/lib/utils";
 import type { EventBlock } from "@/lib/types";
 
 function FileList({ files }: { files: string[] | undefined }) {
@@ -59,7 +58,7 @@ export function SessionBlock({ block, embedded = false }: { block: EventBlock; e
       return (
         <div className="flex flex-col gap-2">
           {block.cwd ? <p className="font-mono text-xs text-muted-foreground">{block.cwd}</p> : null}
-          <div className={cn("font-mono text-xs", !embedded && "rounded-md border border-border bg-muted/30 p-3")}>
+          <div className="font-mono text-xs">
             <span className="text-muted-foreground">$ </span>
             <span className="break-words [overflow-wrap:anywhere]">{block.command}</span>
           </div>
