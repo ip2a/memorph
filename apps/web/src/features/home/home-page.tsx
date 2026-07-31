@@ -30,7 +30,6 @@ import { useHomeData } from "@/features/home/queries";
 import { homeProviderCandidates, resolveHomeProviders } from "@/features/home/model/providers";
 import { randomAsciiBannerColor } from "@/features/home/ascii-banner";
 import { HomeSessionListPanel, HomeSessionToolbar } from "@/features/home/home-session-controls";
-import { HomeSessionGroupRail } from "@/features/home/home-session-group-rail";
 import { ProviderActivitySparkline } from "@/features/home/provider-activity-sparkline";
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
 import { targetFromSession } from "@/features/sessions/session-action-target";
@@ -113,7 +112,7 @@ function HomeHero({ workspace }: { workspace: string | null | undefined }) {
 
   if (collapsed) {
     return (
-      <section className="border-y py-2">
+      <section className="-mt-3 border-b py-2">
         <button
           type="button"
           className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md px-2 py-1 text-left hover:bg-muted"
@@ -132,7 +131,7 @@ function HomeHero({ workspace }: { workspace: string | null | undefined }) {
   }
 
   return (
-    <section className="grid grid-cols-1 items-start gap-3 overflow-hidden border-y py-3 md:grid-cols-[minmax(0,7fr)_minmax(220px,3fr)]">
+    <section className="-mt-3 grid grid-cols-1 items-start gap-3 overflow-hidden border-b py-3 md:grid-cols-[minmax(0,7fr)_minmax(220px,3fr)]">
       <button
         type="button"
         className="group grid min-w-0 place-items-center overflow-hidden rounded-md text-left hover:bg-muted/30"
@@ -147,7 +146,7 @@ function HomeHero({ workspace }: { workspace: string | null | undefined }) {
           {ASCII}
         </pre>
       </button>
-      <div className="flex min-w-0 flex-col items-start justify-start gap-2 self-stretch border-l pl-4">
+      <div className="flex min-w-0 flex-col items-start justify-center gap-2 self-stretch border-l pl-4">
         <h1 className="m-0 w-full truncate text-left text-2xl font-semibold leading-none">{title}</h1>
         <button
           type="button"
@@ -598,7 +597,6 @@ export function HomePage() {
           </Button>
         </div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          <HomeSessionGroupRail groups={sessionGroups} />
           <ScrollPane
             className="min-h-0 flex-1"
             innerClassName="min-h-full"
