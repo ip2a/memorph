@@ -51,6 +51,10 @@ export function useSkills(params: SkillCatalogParams = {}) {
     queryKey: queryKeys.skills(params),
     queryFn: () => getSkills(params),
     placeholderData: (previous) => previous,
+    // While the catalog signals it needs a scan (background scan in flight),
+    // poll every 2s so the list refreshes as soon as data lands.
+    refetchInterval: (query) =>
+      query.state.data?.needs_scan ? 2000 : false,
   });
 }
 

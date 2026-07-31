@@ -1464,12 +1464,15 @@ export type SkillMutation = {
   source_provider?: string;
 };
 
-export type SkillScanSummary = {
+export type SkillScanQueued = {
+  queued: boolean;
+  mode: "incremental" | "full";
   roots_scanned: number;
   skills_seen: number;
-  installations_seen: number;
-  session_sources_seen: number;
 };
+
+/** @deprecated use SkillScanQueued — kept for alias-tolerance during migration. */
+export type SkillScanSummary = SkillScanQueued;
 
 export type SkillCatalogParams = {
   query?: string;
@@ -1517,6 +1520,8 @@ export type SkillCatalogPage = {
     status: "unknown" | "partial" | "complete" | "error";
     updated_at_ms?: number | null;
   };
+  /** True when the catalog looks unpopulated (empty + unknown completeness). */
+  needs_scan?: boolean;
 };
 
 export type SkillStatsParams = {

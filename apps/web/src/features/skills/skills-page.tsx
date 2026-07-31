@@ -90,18 +90,19 @@ export function SkillsPage() {
     selectedSource,
   );
 
+  const needsScan = skillsQuery.data?.needs_scan === true;
+
+  // Fire one background scan the first time the catalog reports it is
+  // unpopulated. The scan endpoint is non-blocking, so this just queues the
+  // work — list refetches will pick up the result.
   useEffect(() => {
-    if (
-      initialScanStarted.current ||
-      skillsQuery.data?.completeness.status !== "unknown"
-    )
-      return;
+    if (initialScanStarted.current || !needsScan) return;
     initialScanStarted.current = true;
     scanMutation.mutate({
       mode: "incremental",
       workspace: currentWorkspace,
     });
-  }, [currentWorkspace, scanMutation, skillsQuery.data?.completeness.status]);
+  }, [currentWorkspace, scanMutation, needsScan]);
 
   useEffect(() => setPage(1), [search, provider, scope, sort, order]);
   useEffect(() => {
@@ -174,43 +175,19 @@ export function SkillsPage() {
                       scanMutation.mutate(
                         { mode: "incremental", workspace: currentWorkspace },
                         {
-                          onSuccess: (result) =>
-                            toast.success(
-                              t("skillsScanComplete", {
-                                skills: result.skills_seen,
-                                installations: result.installations_seen,
-                              }),
-                            ),
+                          onSuccess: () =>
+                            toast.success(t("skillsScanQueued")),
                         },
                       )
                     }
                     disabled={scanMutation.isPending}
+                    title={t("skillsRefresh")}
                   >
                     {scanMutation.isPending ? <Spinner /> : <RefreshCwIcon />}
-                    {t("skillsIncrementalScan")}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      if (window.confirm(t("skillsFullScanConfirm"))) {
-                        scanMutation.mutate({
-                          mode: "full",
-                          workspace: currentWorkspace,
-                        });
-                      }
-                    }}
-                    disabled={scanMutation.isPending}
-                  >
-                    {t("skillsFullScan")}
+                    {t("skillsRefresh")}
                   </Button>
                 </div>
               </div>
-              {skillsQuery.data?.completeness.status !== "complete" ? (
-                <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs">
-                  {t("skillsIndexingHint")}
-                </div>
-              ) : null}
               <label className="relative block">
                 <SearchIcon className="text-muted-foreground pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2" />
                 <Input

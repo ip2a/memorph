@@ -64,7 +64,7 @@ import type {
   SkillMutation,
   SkillCatalogPage,
   SkillCatalogParams,
-  SkillScanSummary,
+  SkillScanQueued,
   SkillDailyUsage,
   SkillContext,
   SkillContextSummary,
@@ -684,7 +684,7 @@ export function getSkills(params: SkillCatalogParams = {}) {
 }
 
 export function scanSkills(mode: "incremental" | "full", workspace?: string) {
-  return api<SkillScanSummary>("/api/v1/skills/scan", {
+  return api<SkillScanQueued>("/api/v1/skills/scan", {
     method: "POST",
     body: JSON.stringify({ mode, workspace }),
   });
