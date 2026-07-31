@@ -672,16 +672,54 @@ async fn scan_skills(
             });
         }
     }
-    let overview = discover(&agents);
     let mode = request.mode.unwrap_or(ScanMode::Incremental);
-    let result = match state.database_path.as_deref() {
-        Some(path) => scanner::persist_path(path, &overview, mode),
-        None => scanner::persist_default(&overview, mode),
+    let database_path = state.database_path.as_deref().map(|p| p.as_path().to_path_buf());
+
+    // Non-blocking: build the overview synchronously (cheap — directory walk
+    // only), then hand the heavy persist off to a background thread. The
+    // request returns immediately with a queued acknowledgement so the UI can
+    // poll list_skills and watch needs_scan flip to false.
+    let overview = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| discover(&agents))) {
+        Ok(value) => value,
+        Err(_) => return error_response(anyhow!("Skill discovery failed")),
     };
-    match result {
-        Ok(summary) => ApiResponse::success(summary).into_response(),
-        Err(error) => error_response(error),
-    }
+    let roots_scanned = overview.agents.len();
+    let skills_seen = overview.skills.len();
+    std::thread::Builder::new()
+        .name("memorph-skill-scan".into())
+        .spawn(move || {
+            let result = match database_path.as_deref() {
+                Some(path) => scanner::persist_path(path, &overview, mode),
+                None => scanner::persist_default(&overview, mode),
+            };
+            if let Err(error) = result {
+                memorph::logging::error(
+                    "skill_scan_background",
+                    format!("background skill scan failed: {error:#}"),
+                );
+            }
+        })
+        .ok();
+
+    let mode_str = match mode {
+        ScanMode::Incremental => "incremental",
+        ScanMode::Full => "full",
+    };
+    ApiResponse::success(SkillScanQueued {
+        queued: true,
+        mode: mode_str,
+        roots_scanned,
+        skills_seen,
+    })
+    .into_response()
+}
+
+#[derive(Debug, Serialize)]
+struct SkillScanQueued {
+    queued: bool,
+    mode: &'static str,
+    roots_scanned: usize,
+    skills_seen: usize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1137,6 +1175,31 @@ mod tests {
         (status, serde_json::from_slice(&body).unwrap())
     }
 
+    /// Poll the skill list until `total > 0` (background scan finished) or we
+    /// run out of budget. Scan is non-blocking now, so the scan endpoint
+    /// returns before the data is necessarily visible.
+    async fn wait_for_skills(app: Router, timeout_ms: u64) -> Value {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        loop {
+            let (status, body) = json(
+                app.clone(),
+                Request::builder()
+                    .uri("/api/v1/skills")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            if body["data"]["total"].as_u64().unwrap_or(0) > 0 {
+                return body;
+            }
+            if std::time::Instant::now() >= deadline {
+                return body;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     #[test]
     fn discovery_parses_frontmatter_and_merges_installations() {
         let root = tempfile::tempdir().unwrap();
@@ -1431,15 +1494,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(scanned["data"]["roots_scanned"], 8);
 
-        let (status, listed) = json(
-            app,
-            Request::builder()
-                .uri("/api/v1/skills?scope=project")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
+        let listed = wait_for_skills(app, 2000).await;
         assert_eq!(listed["data"]["total"], 1);
         assert_eq!(
             listed["data"]["items"][0]["installations"][0]["workspace_dir"],
@@ -1490,15 +1545,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
 
-        let (status, listed) = json(
-            app.clone(),
-            Request::builder()
-                .uri("/api/v1/skills")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
+        let listed = wait_for_skills(app.clone(), 2000).await;
         assert_eq!(listed["data"]["items"].as_array().unwrap().len(), 1);
         let catalog_id = listed["data"]["items"][0]["id"].as_str().unwrap();
 
