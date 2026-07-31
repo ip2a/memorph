@@ -176,6 +176,7 @@ pub(super) async fn update_settings(Json(body): Json<SettingsBody>) -> impl Into
         body.sort_providers_by_session_count,
         Some(body.default_backup_dir),
         Some(body.logging),
+        body.show_hooks_nav,
     )
     .and_then(|_| config::update_home_button_config(body.home_buttons))
     .and_then(|_| {

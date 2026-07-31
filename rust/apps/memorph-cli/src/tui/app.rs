@@ -1090,6 +1090,7 @@ impl App {
             Some(self.settings_sort_providers_by_session_count),
             None,
             None,
+            None,
         )
         .and_then(|_| {
             config::update_agent_display_preferences(

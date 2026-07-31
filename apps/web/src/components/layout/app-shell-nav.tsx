@@ -1,11 +1,14 @@
 import * as React from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import { SettingsIcon } from "lucide-react"
+import { useQuery } from "@tanstack/react-query"
 
 import { CollapsibleToolbar, type CollapsibleToolbarEntry } from "@/components/shared/collapsible-toolbar"
 import { Button } from "@/components/ui/button"
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu"
+import { getMeta } from "@/lib/api"
 import { useI18n } from "@/lib/i18n-context"
+import { queryKeys } from "@/lib/query-keys"
 import { useUiStore } from "@/stores/ui-store"
 
 function isRoute(pathname: string, route: string) {
@@ -23,6 +26,8 @@ export function AppShellNav({
   const navigate = useNavigate()
   const { t } = useI18n()
   const setWorkspaceSwitchOpen = useUiStore((state) => state.setWorkspaceSwitchOpen)
+  const meta = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta })
+  const showHooksNav = meta.data?.settings.show_hooks_nav === true
 
   const pathname = location.pathname
   const isHome = pathname === "/"
@@ -100,7 +105,7 @@ export function AppShellNav({
       })
     }
 
-    if (!isHooks) {
+    if (!isHooks && showHooksNav) {
       next.push({
         id: "hooks",
         collapsePriority: 11,
@@ -237,6 +242,7 @@ export function AppShellNav({
     isManager,
     isStats,
     isStorage,
+    showHooksNav,
     navigate,
     onOpenImportSession,
     onOpenSettings,
