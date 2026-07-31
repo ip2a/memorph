@@ -174,6 +174,7 @@ pub fn router() -> Router {
         .route("/api/v1/switch", post(transfer::switch_session))
         .route("/api/v1/find", get(transfer::find_sessions))
         .route("/api/v1/workspaces", get(workspaces::list_workspaces))
+        .route("/api/v1/workspaces/scan", post(workspaces::scan_known_workspaces))
         .route(
             "/api/v1/workspaces/with-sessions",
             get(workspaces::list_workspaces_with_sessions),

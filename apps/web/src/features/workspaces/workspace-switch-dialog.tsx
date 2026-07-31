@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeftIcon, ChevronRightIcon, FolderOpenIcon, SearchIcon, Trash2Icon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, FolderOpenIcon, RadarIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
 import { PathText } from "@/components/shared/path-text";
@@ -31,6 +31,7 @@ import {
   listSessions,
   listWorkspaces,
   listWorkspacesWithSessions,
+  scanWorkspaces,
   selectFolder,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
@@ -317,6 +318,28 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
     },
   });
 
+  const scanWorkspacesMutation = useMutation({
+    mutationFn: scanWorkspaces,
+    onSuccess: (result) => {
+      if (result.queued === 0) {
+        toast.info("No known workspaces", {
+          description: "Browse to a directory first — scan indexes places you've used before.",
+        });
+        return;
+      }
+      toast.success("Scanning workspaces", {
+        description: `Indexing ${result.queued} workspace${result.queued === 1 ? "" : "s"} in the background.`,
+      });
+      // Poll history: background indexers write sessions to SQLite and the
+      // listWorkspaces endpoint reads config; refetch both as they warm up.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.manager("workspaces", sessionWorkspaceFilter) });
+    },
+    onError: (error: Error) => {
+      toast.error("Scan failed", { description: error.message });
+    },
+  });
+
   function submitWorkspace(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const workspace = draftWorkspace.trim();
@@ -467,8 +490,22 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                           <EmptyDescription>
                             {search.trim()
                               ? "Try a different name or path."
-                              : "Recent workspaces will appear here after you switch."}
+                              : "Recent workspaces will appear here after you switch, or scan the ones you've used before."}
                           </EmptyDescription>
+                          {!search.trim() ? (
+                            <div className="mt-3 flex justify-center">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={scanWorkspacesMutation.isPending}
+                                onClick={() => scanWorkspacesMutation.mutate()}
+                              >
+                                <RadarIcon data-icon="inline-start" className={scanWorkspacesMutation.isPending ? "animate-pulse" : undefined} />
+                                {scanWorkspacesMutation.isPending ? "Scanning…" : "Scan Workspaces"}
+                              </Button>
+                            </div>
+                          ) : null}
                         </EmptyHeader>
                       </Empty>
                     )}

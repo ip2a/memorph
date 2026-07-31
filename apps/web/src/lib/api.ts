@@ -25,6 +25,7 @@ import type {
   ImportSessionPayload,
   ImportSessionResult,
   EnsureReadyPayload,
+  ScanWorkspacesPayload,
   MetaPayload,
   ManagerFilter,
   ManagerBackupResult,
@@ -213,6 +214,12 @@ export function getMeta() {
 
 export function ensureReady() {
   return api<EnsureReadyPayload>("/api/v1/system/ensure-ready", {
+    method: "POST",
+  });
+}
+
+export function scanWorkspaces() {
+  return api<ScanWorkspacesPayload>("/api/v1/workspaces/scan", {
     method: "POST",
   });
 }

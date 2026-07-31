@@ -552,6 +552,32 @@ pub fn spawn_workspace_index_background(workspace_dir: PathBuf, actor: ActivityA
 }
 
 
+/// Spawn background workspace indexers for every workspace in the user's
+/// history (config::known_workspaces). Non-blocking: fires off one thread per
+/// workspace and returns immediately. Used by the "Scan Workspaces" button in
+/// the workspace switcher so an empty picker can repopulate without a full
+/// provider-wide bootstrap.
+// ponytail: one thread per workspace; if history grows large, debounce or
+// switch to a bounded worker pool.
+pub fn scan_known_workspaces_background(actor: ActivityActor) -> usize {
+    let workspaces = match crate::config::known_workspaces() {
+        Ok(entries) => entries.into_iter().map(|e| e.path).collect::<Vec<_>>(),
+        Err(error) => {
+            crate::logging::error(
+                "scan_known_workspaces",
+                format!("Failed to read known workspaces: {error:#}"),
+            );
+            return 0;
+        }
+    };
+    let count = workspaces.len();
+    for path in workspaces {
+        let workspace_dir = std::path::PathBuf::from(path);
+        spawn_workspace_index_background(workspace_dir, actor.clone());
+    }
+    count
+}
+
 pub fn reproject_stale_sessions(
     provider_filter: Option<&str>,
     actor: ActivityActor,

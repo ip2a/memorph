@@ -610,6 +610,10 @@ export type EnsureReadyPayload = {
   repaired: boolean;
 };
 
+export type ScanWorkspacesPayload = {
+  queued: number;
+};
+
 export type MetaPayload = {
   version: string;
   selected_workspace: string | null;
