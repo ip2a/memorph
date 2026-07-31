@@ -56,6 +56,8 @@ fn start_local_server() -> Result<String> {
     std_listener.set_nonblocking(true)?;
     let url = format!("http://{}", addr);
     let _ = memorph::hooks::runtime_state::publish_runtime_endpoint(&url);
+    memorph::cache::init_watcher();
+    memorph::core::spawn_background_sync_loop();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

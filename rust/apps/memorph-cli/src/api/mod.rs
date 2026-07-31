@@ -205,6 +205,12 @@ struct SessionProjectionBootstrapRequest {
     provider: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SessionWorkspaceIndexRequest {
+    provider: String,
+    workspace_dir: String,
+}
+
 #[derive(Debug, Serialize)]
 struct SessionReprojectionPayload {
     candidate_snapshots: usize,

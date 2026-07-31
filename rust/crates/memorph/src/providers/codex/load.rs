@@ -1422,9 +1422,21 @@ pub(super) fn discover_codex_rollouts(
 }
 
 pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRolloutSummary>> {
-    let file = File::open(path)
+    use std::io::{Read, Seek, SeekFrom};
+
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("Failed to stat Codex rollout file: {}", path.display()))?;
+    let file_len = metadata.len();
+    let mut file = File::open(path)
         .with_context(|| format!("Failed to open Codex rollout file: {}", path.display()))?;
-    let reader = BufReader::new(file);
+
+    // ponytail: session_meta lives near the top; updated_at lives on the last
+    // timestamped line. Read head (first 64 KiB) for meta + user-event + first
+    // timestamp, then seek to tail (last 8 KiB) for updated_at. Avoids parsing
+    // GiB-scale rollouts line by line. Ceiling: sessions whose meta appears
+    // past 64 KiB fall back to full scan; bump HEAD_BYTES if observed.
+    const HEAD_BYTES: u64 = 64 * 1024;
+    const TAIL_BYTES: u64 = 8 * 1024;
 
     let mut session_id = None;
     let mut title = None;
@@ -1433,29 +1445,33 @@ pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRoll
     let mut created_at = None;
     let mut updated_at = None;
     let mut has_user_event = false;
+    let mut meta_resolved = false;
 
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
+    // --- Head pass: session_meta + first user event + created_at ---
+    let head_limit = file_len.min(HEAD_BYTES);
+    let mut head_buf = String::new();
+    {
+        let reader = std::io::BufReader::new(&mut file);
+        let mut limited = reader.take(head_limit);
+        limited.read_to_string(&mut head_buf)?;
+    }
+    for line in head_buf.lines() {
+        let line = line.trim();
+        if line.is_empty() {
             continue;
         }
-        let value: Value = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(_) => continue,
+        let Ok(value) = serde_json::from_str::<Value>(line) else {
+            continue;
         };
         if !has_user_event && rollout_value_has_user_event(&value) {
             has_user_event = true;
         }
-
         if let Some(timestamp) = value.get("timestamp").and_then(|value| value.as_str()) {
             created_at.get_or_insert_with(|| timestamp.to_string());
-            updated_at = Some(timestamp.to_string());
         }
-
         if value.get("type").and_then(|value| value.as_str()) != Some("session_meta") {
             continue;
         }
-
         let Some(payload) = value.get("payload") else {
             continue;
         };
@@ -1480,6 +1496,87 @@ pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRoll
             .and_then(|value| value.as_str())
             .map(str::to_string)
             .or(model_provider);
+        if session_id.is_some() && has_user_event && created_at.is_some() {
+            meta_resolved = true;
+            break;
+        }
+    }
+
+    // If meta never appeared in head (large pre-amble), fall back to full scan.
+    if !meta_resolved && file_len > HEAD_BYTES {
+        let reader = std::io::BufReader::new(&mut file);
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if !has_user_event && rollout_value_has_user_event(&value) {
+                has_user_event = true;
+            }
+            if let Some(timestamp) = value.get("timestamp").and_then(|value| value.as_str()) {
+                created_at.get_or_insert_with(|| timestamp.to_string());
+            }
+            if value.get("type").and_then(|value| value.as_str()) != Some("session_meta") {
+                continue;
+            }
+            let Some(payload) = value.get("payload") else {
+                continue;
+            };
+            session_id = payload
+                .get("id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .or(session_id);
+            title = payload
+                .get("title")
+                .or_else(|| payload.get("thread_name"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .or(title);
+            workspace_dir = payload
+                .get("cwd")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .or(workspace_dir);
+            model_provider = payload
+                .get("model_provider")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .or(model_provider);
+            if session_id.is_some() {
+                break;
+            }
+        }
+    }
+
+    // --- Tail pass: updated_at (last timestamped line) ---
+    if file_len > HEAD_BYTES {
+        let seek_back = file_len.min(TAIL_BYTES) as i64;
+        file.seek(SeekFrom::End(-seek_back))?;
+        let mut tail = String::new();
+        file.read_to_string(&mut tail)?;
+        let mut last_ts: Option<String> = None;
+        for line in tail.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if let Some(timestamp) = value.get("timestamp").and_then(|value| value.as_str()) {
+                last_ts = Some(timestamp.to_string());
+            }
+        }
+        if let Some(ts) = last_ts {
+            updated_at = Some(ts);
+        }
+    } else {
+        // Small file: head already covered it; updated_at = last created_at seen.
+        updated_at = created_at.clone();
     }
 
     let Some(session_id) = session_id else {

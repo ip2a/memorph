@@ -404,7 +404,10 @@ impl Provider for CodexProvider {
         Ok(sessions)
     }
 
-    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderSessionSummary>> {
         let index_path = get_codex_dir().join("session_index.jsonl");
         if !index_path.exists() {
             return Ok(None);

@@ -393,6 +393,127 @@ pub(super) fn bootstrap_failure(
     }
 }
 
+/// Index a single session by id on demand.
+///
+/// Used by read paths that hit an unindexed identity: instead of triggering a
+/// full provider-wide bootstrap, this asks the provider for one session via
+/// find_session_by_id (which defaults to None for providers that cannot resolve
+/// a session without scanning) and writes just that one row into SQLite.
+/// Returns true when the session was found and indexed.
+pub fn index_single_session(provider_id: &str, session_id: &str) -> Result<bool> {
+    let provider = providers::find_provider(provider_id)
+        .with_context(|| format!("Unknown provider: {provider_id}"))?;
+    let Some(session) = provider.find_session_by_id(session_id)? else {
+        return Ok(false);
+    };
+    let mut conn = local_store::open_database()?;
+    let mut report = SessionProjectionBootstrapReport::default();
+    bootstrap_provider_session(&mut conn, provider_id, &session, &mut report);
+    Ok(report.projected_sessions > 0 || report.unchanged_sessions > 0)
+}
+
+/// Index all sessions within a workspace directory for one provider.
+///
+/// Uses scan_workspace when the provider implements it (returns non-empty);
+/// otherwise falls back to scan_sessions and filters by workspace key.
+/// Returns the projection report for the scoped set.
+pub fn index_workspace_sessions(
+    provider_id: &str,
+    workspace_dir: &std::path::Path,
+    actor: ActivityActor,
+) -> Result<SessionProjectionBootstrapReport> {
+    let _operation = PROJECTION_OPERATION_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Projection operation lock is poisoned"))?;
+    let provider = providers::find_provider(provider_id)
+        .with_context(|| format!("Unknown provider: {provider_id}"))?;
+
+    // Prefer the provider's workspace-scoped scan; fall back to full scan + filter.
+    let mut sessions = provider.scan_workspace(workspace_dir)?;
+    let used_scope = !sessions.is_empty();
+    if !used_scope {
+        let all = provider.scan_sessions()?;
+        sessions = all
+            .into_iter()
+            .filter(|summary| provider.workspace_matches(summary.project_dir.as_deref(), Some(workspace_dir.to_string_lossy().as_ref())))
+            .collect();
+    }
+
+    let activity_conn = local_store::open_database()?;
+    let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+        provider_id: Some(provider_id.to_string()),
+        provider_session_id: None,
+        workspace_dir: Some(workspace_dir.to_string_lossy().to_string()),
+        operation_kind: ActivityOperationKind::Scan,
+        actor,
+        summary: format!("Indexing sessions for provider {provider_id} in workspace {workspace_dir_display}", workspace_dir_display = workspace_dir.display()),
+        details: serde_json::json!({
+            "scan_kind": "workspace_index",
+            "provider": provider_id,
+            "workspace_dir": workspace_dir.to_string_lossy(),
+            "scoped_scan": used_scope,
+        }),
+    })?;
+
+    let result = (|| {
+        let mut conn = local_store::open_database()?;
+        let mut report = SessionProjectionBootstrapReport::default();
+        report.scanned_providers = 1;
+        report.discovered_sessions = sessions.len();
+        for session in &sessions {
+            bootstrap_provider_session(&mut conn, provider_id, session, &mut report);
+        }
+        Ok(report)
+    })();
+
+    match result {
+        Ok(report) => {
+            let status = if report.failed_sessions == 0 && report.missing_sources == 0 {
+                ActivityStatus::Success
+            } else if report.projected_sessions == 0 && report.unchanged_sessions == 0 {
+                ActivityStatus::Failed
+            } else {
+                ActivityStatus::Partial
+            };
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion {
+                    status,
+                    provider_id: Some(provider_id.to_string()),
+                    provider_session_id: None,
+                    workspace_dir: Some(workspace_dir.to_string_lossy().to_string()),
+                    summary: format!("Indexed {} sessions for provider {provider_id}", report.discovered_sessions),
+                    details: serde_json::to_value(&report)?,
+                    error: (!report.failures.is_empty()).then(|| {
+                        report
+                            .failures
+                            .iter()
+                            .map(|f| f.reason.as_str())
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    }),
+                },
+            )?;
+            Ok(report)
+        }
+        Err(error) => {
+            let message = format!("{error:#}");
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Failed to index workspace sessions",
+                    serde_json::json!({
+                        "scan_kind": "workspace_index",
+                        "provider": provider_id,
+                    }),
+                    &message,
+                ),
+            )?;
+            Err(error)
+        }
+    }
+}
+
 pub fn reproject_stale_sessions(
     provider_filter: Option<&str>,
     actor: ActivityActor,

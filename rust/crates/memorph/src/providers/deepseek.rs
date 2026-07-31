@@ -146,7 +146,10 @@ impl Provider for DeepseekProvider {
         Ok(sessions)
     }
 
-    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderSessionSummary>> {
         let db_path = get_state_db_path();
         if !db_path.exists() {
             return Ok(None);

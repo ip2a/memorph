@@ -103,6 +103,10 @@ pub fn router() -> Router {
             post(sessions::reproject_stale_sessions),
         )
         .route(
+            "/api/v1/sessions/index-workspace",
+            post(sessions::index_workspace_sessions),
+        )
+        .route(
             "/api/v1/sessions/{provider}/{session_id}",
             get(sessions::get_session),
         )

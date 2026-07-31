@@ -96,7 +96,10 @@ impl Provider for KiroProvider {
         scan_sessions_in(&sessions_root)
     }
 
-    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderSessionSummary>> {
         let Some(session_dir) = find_session_dir(session_id)? else {
             return Ok(None);
         };

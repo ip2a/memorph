@@ -67,9 +67,25 @@ pub fn get_session_detail_view_page_result(
         .filter(|query| !query.is_empty());
     let reverse = matches!(event_order, SessionEventOrder::Desc);
     let mut conn = crate::storage::local_store::open_database()?;
-    let identity = crate::storage::snapshot_store::SnapshotStore::new(&conn)
+    let identity = match crate::storage::snapshot_store::SnapshotStore::new(&conn)
         .find_session_identity(provider_id, session_id)?
-        .with_context(|| format!("Session is not indexed: {provider_id}/{session_id}"))?;
+    {
+        Some(identity) => identity,
+        None => {
+            // On-demand single-session indexing. Avoids a full provider scan on
+            // the read path. If the provider cannot resolve the session by id,
+            // index_single_session returns false and we surface the original
+            // "not indexed" error so the caller can map it to a 404.
+            if !crate::core::projection::index_single_session(provider_id, session_id)? {
+                anyhow::bail!("Session is not indexed: {provider_id}/{session_id}");
+            }
+            crate::storage::snapshot_store::SnapshotStore::new(&conn)
+                .find_session_identity(provider_id, session_id)?
+                .with_context(|| {
+                    format!("Session is not indexed: {provider_id}/{session_id}")
+                })?
+        }
+    };
     let source_path = identity
         .source_path
         .as_deref()

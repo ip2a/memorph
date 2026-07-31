@@ -126,6 +126,23 @@ pub(super) async fn reproject_stale_sessions(
     }
 }
 
+pub(super) async fn index_workspace_sessions(
+    Json(request): Json<SessionWorkspaceIndexRequest>,
+) -> impl IntoResponse {
+    match memorph::runtime::run_blocking(move || {
+        core::projection::index_workspace_sessions(
+            &request.provider,
+            std::path::Path::new(&request.workspace_dir),
+            ActivityActor::Api,
+        )
+    })
+    .await
+    {
+        Ok(report) => ApiResponse::success(report).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 pub(super) async fn get_session(
     Path((provider, session_id)): Path<(String, String)>,
     Query(q): Query<SessionDetailQuery>,

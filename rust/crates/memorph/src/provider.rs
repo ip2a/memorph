@@ -405,6 +405,28 @@ pub trait Provider: Send + Sync {
     /// Scan all session metadata
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>>;
 
+    /// Scan sessions within a workspace directory scope.
+    ///
+    /// Providers that can cheaply enumerate sessions under one workspace
+    /// override this. The default returns an empty vector to signal that the
+    /// provider does not support workspace-scoped enumeration; callers must
+    /// fall back to scan_sessions and filter.
+    fn scan_workspace(&self, _workspace_dir: &Path) -> Result<Vec<ProviderSessionSummary>> {
+        Ok(Vec::new())
+    }
+
+    /// Resolve metadata for a single session by id without a full scan.
+    ///
+    /// Providers that keep an index or can derive the source path from the
+    /// session id override this. The default returns None so callers know to
+    /// fall back to scan_sessions and filter.
+    fn find_session_by_id(
+        &self,
+        _session_id: &str,
+    ) -> Result<Option<ProviderSessionSummary>> {
+        Ok(None)
+    }
+
     /// Load a high-fidelity canonical session plus a mapping report.
     fn import_session(&self, source_path: &str) -> Result<ImportedSession>;
 
@@ -542,9 +564,14 @@ pub trait Provider: Send + Sync {
         Vec::new()
     }
 
-    /// Get metadata for a single session by ID.
-    /// Default implementation falls back to scan_sessions; providers should override.
+    /// Resolve metadata for a single session by ID.
+    ///
+    /// Tries the provider's direct lookup first, then falls back to a full
+    /// scan. Providers that implement direct lookup override find_session_by_id.
     fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
+        if let Some(meta) = self.find_session_by_id(session_id)? {
+            return Ok(Some(meta));
+        }
         self.scan_sessions()
             .map(|sessions| sessions.into_iter().find(|s| s.session_id == session_id))
     }

@@ -268,6 +268,41 @@ pub(super) fn register_session_export_artifacts(
     ArtifactStore::new(conn).register_paths(manifests)
 }
 
+/// Background maintenance interval. The loop refreshes staleness flags and
+/// reprojects stale snapshots, never running a full provider-wide bootstrap.
+/// New sessions enter SQLite through on-demand indexing on the read path
+/// (`index_single_session`) or through an explicit `bootstrap_session_projections`.
+pub const BACKGROUND_SYNC_INTERVAL_SECS: u64 = 60;
+
+/// Spawn a background thread that refreshes stale flags and reprojects stale
+/// snapshots on a fixed interval. Shared by CLI (`memorph web`/`memorph api`)
+/// and the desktop app so both surfaces stay warm without blocking read paths.
+pub fn spawn_background_sync_loop() {
+    std::thread::Builder::new()
+        .name("memorph-background-sync".to_string())
+        .spawn(|| loop {
+            if let Err(error) = projection::refresh_projected_session_staleness(
+                crate::storage::activity_store::ActivityActor::System,
+            ) {
+                crate::logging::error(
+                    "background_sync",
+                    format!("Staleness refresh failed: {error:#}"),
+                );
+            }
+            if let Err(error) = projection::reproject_stale_sessions(
+                None,
+                crate::storage::activity_store::ActivityActor::System,
+            ) {
+                crate::logging::error(
+                    "background_sync",
+                    format!("Stale reprojection failed: {error:#}"),
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_secs(BACKGROUND_SYNC_INTERVAL_SECS));
+        })
+        .ok();
+}
+
 #[cfg(test)]
 #[path = "core_tests.rs"]
 mod tests;

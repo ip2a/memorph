@@ -233,6 +233,15 @@ pub enum SessionCommands {
         #[arg(short, long, value_name = "PROVIDER")]
         provider: Option<String>,
     },
+    /// Index sessions for one provider within a workspace directory
+    IndexWorkspace {
+        /// Provider ID
+        #[arg(value_name = "PROVIDER")]
+        provider: String,
+        /// Workspace directory to scope the indexing to
+        #[arg(value_name = "WORKSPACE_DIR")]
+        workspace_dir: String,
+    },
 }
 
 #[derive(Subcommand)]

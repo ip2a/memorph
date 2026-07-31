@@ -67,6 +67,13 @@ impl Provider for CursorProvider {
         scan::scan_sessions(None)
     }
 
+    fn scan_workspace(
+        &self,
+        workspace_dir: &Path,
+    ) -> Result<Vec<ProviderSessionSummary>> {
+        scan::scan_sessions(Some(workspace_dir))
+    }
+
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         load::import_session(source_path)
     }

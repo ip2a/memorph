@@ -493,6 +493,31 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
                 );
             }
         }
+        SessionCommands::IndexWorkspace {
+            provider,
+            workspace_dir,
+        } => {
+            let report = core::projection::index_workspace_sessions(
+                &provider,
+                std::path::Path::new(&workspace_dir),
+                ActivityActor::Cli,
+            )?;
+            println!("Provider: {}", provider);
+            println!("Workspace: {}", workspace_dir);
+            println!("Discovered sessions: {}", report.discovered_sessions);
+            println!("Projected sessions: {}", report.projected_sessions);
+            println!("Unchanged sessions: {}", report.unchanged_sessions);
+            println!("Missing sources: {}", report.missing_sources);
+            println!("Failed sessions: {}", report.failed_sessions);
+            for failure in report.failures {
+                let session = failure.session_id.as_deref().unwrap_or("(provider scan)");
+                let source = failure.source_path.as_deref().unwrap_or("(no source)");
+                println!(
+                    "  {}:{} | {} | {}",
+                    failure.provider_id, session, source, failure.reason
+                );
+            }
+        }
     }
     Ok(())
 }

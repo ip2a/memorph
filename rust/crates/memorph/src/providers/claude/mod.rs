@@ -148,7 +148,10 @@ impl Provider for ClaudeProvider {
         Ok(sessions)
     }
 
-    fn get_session_meta(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ProviderSessionSummary>> {
         let root = get_claude_config_dir().join("projects");
         if !root.exists() {
             return Ok(None);
@@ -1558,12 +1561,64 @@ fn provider_payload_event(
 }
 
 fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+    let metadata = std::fs::metadata(path).ok();
+    let mut file = File::open(path).ok()?;
+    let file_len = metadata.as_ref()?.len();
 
-    let head = lines.iter().take(20).collect::<Vec<_>>();
-    let tail = lines.iter().rev().take(30).collect::<Vec<_>>();
+    // ponytail: head/tail bounded read. Head is the first N lines; tail reads
+    // the last 8 KiB (enough for ~30 lines even at generous line sizes). This
+    // avoids collecting a multi-GiB jsonl into a Vec<String> just to inspect
+    // 50 lines. Ceiling: pathological single-line payloads >8 KiB will miss
+    // the tail; upgrade by reading tail in a growing loop if observed.
+    const HEAD_LINES: usize = 20;
+    const TAIL_BYTES: u64 = 8 * 1024;
+
+    let mut head_buf = Vec::new();
+    {
+        let mut head_reader = BufReader::new(&mut file);
+        for _ in 0..HEAD_LINES {
+            let mut line = String::new();
+            match head_reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => head_buf.push(line),
+                Err(_) => break,
+            }
+        }
+    }
+
+    let mut tail_lines: Vec<String> = Vec::new();
+    if file_len > TAIL_BYTES {
+        let _ = file.seek(SeekFrom::End(-(TAIL_BYTES as i64)));
+        let mut tail = String::new();
+        if file.read_to_string(&mut tail).is_ok() {
+            let mut all: Vec<&str> = tail.lines().collect();
+            if let Some(first) = all.first_mut() {
+                if file_len > TAIL_BYTES && !tail.starts_with('\n') {
+                    *first = first.split_once('\n').map(|(_, rest)| rest).unwrap_or(first);
+                }
+            }
+            let take = all.len().saturating_sub(1).min(30);
+            tail_lines = all
+                .iter()
+                .rev()
+                .take(take)
+                .map(|line| line.to_string())
+                .collect();
+        }
+    } else {
+        let _ = file.seek(SeekFrom::Start(0));
+        let mut all = String::new();
+        if file.read_to_string(&mut all).is_ok() {
+            let lines: Vec<&str> = all.lines().collect();
+            let take = lines.len().min(30);
+            tail_lines = lines
+                .iter()
+                .rev()
+                .take(take)
+                .map(|line| line.to_string())
+                .collect();
+        }
+    }
 
     let mut session_id: Option<String> = None;
     let mut project_dir: Option<String> = None;
@@ -1571,7 +1626,7 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
     let mut first_user_message: Option<String> = None;
     let mut custom_title: Option<String> = None;
 
-    for line in &head {
+    for line in &head_buf {
         let value: Value = serde_json::from_str(line).ok()?;
         if custom_title.is_none()
             && value.get("type").and_then(|v| v.as_str()) == Some("custom-title")
@@ -1629,7 +1684,7 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
     let mut last_active_at: Option<i64> = None;
     let mut summary: Option<String> = None;
 
-    for line in &tail {
+    for line in &tail_lines {
         let value: Value = serde_json::from_str(line).ok()?;
         if last_active_at.is_none() {
             last_active_at = value.get("timestamp").and_then(parse_timestamp_to_ms);
@@ -1676,7 +1731,6 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
         });
 
     let _summary = summary.map(|text| truncate_summary(&text, 160));
-    let metadata = std::fs::metadata(path).ok();
     created_at = created_at.or_else(|| metadata.as_ref().and_then(metadata_created_ms));
     last_active_at = last_active_at.or_else(|| metadata.as_ref().and_then(metadata_modified_ms));
 
