@@ -6,10 +6,7 @@ import {
   SkillPruneDayTabs,
   SkillPrunePanel,
 } from "@/features/skills/skill-prune-panel";
-import {
-  SkillStatsCustomDateRange,
-  SkillStatsFilterTabs,
-} from "@/features/skills/skill-stats-filters";
+import { SkillStatsFilterTabs } from "@/features/skills/skill-stats-filters";
 import { SkillStatsPanel } from "@/features/skills/skill-stats-panel";
 import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
@@ -66,7 +63,6 @@ export function SkillOverviewPanel({
               />
             ) : null}
           </div>
-          {showStatsFilters ? <SkillStatsCustomDateRange /> : null}
         </div>
         <ScrollPane className="min-h-0 flex-1">
           <TabsContent value="summary" className="mt-0">

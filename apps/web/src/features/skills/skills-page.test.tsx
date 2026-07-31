@@ -224,6 +224,7 @@ describe("SkillsPage", () => {
         total: 0,
         providers: [],
         completeness: { status: "unknown" },
+        needs_scan: true,
       },
       error: null,
       isError: false,
@@ -256,7 +257,7 @@ describe("SkillsPage", () => {
     renderRoute();
 
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Incremental Scan" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
   });
 
   it("renders the SQLite catalog and sends search filters to the query", async () => {
@@ -280,7 +281,7 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
 
-    await user.click(screen.getByRole("button", { name: "Incremental Scan" }));
+    await user.click(screen.getByRole("button", { name: "Refresh" }));
 
     expect(mocks.scan).toHaveBeenCalledWith(
       { mode: "incremental", workspace: "/work/demo" },

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CopyIcon, Trash2Icon } from "lucide-react";
+import { CopyIcon, InfoIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { PageError } from "@/components/shared/page-states";
 import { ScrollPane } from "@/components/shared/scroll-pane";
@@ -102,16 +102,13 @@ export function SkillDetailPanel({
       {mutationError ? (
         <PageError title={t("skillsActionFailed")} message={mutationError.message} />
       ) : null}
-      <div className="flex shrink-0 flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="text-xl font-semibold">{selected.name}</h2>
-          <p className="text-muted-foreground mt-1 text-sm">
-            {selected.description || t("skillsNoDescription")}
-          </p>
-        </div>
-        <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+      <div className="flex shrink-0 flex-col gap-1">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="min-w-0 truncate text-xl font-semibold">{selected.name}</h2>
+          <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
             <DialogTrigger asChild>
-              <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" className="shrink-0">
+                <InfoIcon data-icon="inline-start" />
                 {t("skillsDetails")}
               </Button>
             </DialogTrigger>
@@ -181,6 +178,10 @@ export function SkillDetailPanel({
               </ScrollPane>
             </DialogContent>
           </Dialog>
+        </div>
+        <p className="text-muted-foreground line-clamp-2 h-[2lh] text-sm leading-normal">
+          {selected.description || t("skillsNoDescription")}
+        </p>
       </div>
       <Tabs
         value={tab}

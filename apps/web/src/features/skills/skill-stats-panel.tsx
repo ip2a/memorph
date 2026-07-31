@@ -11,7 +11,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -276,14 +275,6 @@ export function SkillStatsPanel({
         </strong>
         {t("skillsLastInvocation")}
       </div>
-      {summary && summary.completeness_status !== "complete" ? (
-        <Alert className="col-span-full py-2">
-          <AlertTitle>{t("skillsIndexIncomplete")}</AlertTitle>
-          <AlertDescription>
-            {t("skillsIndexIncompleteHint")}
-          </AlertDescription>
-        </Alert>
-      ) : null}
     </div>
   );
 

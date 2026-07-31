@@ -2,10 +2,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCwIcon, WrenchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { MemorphLogo } from "@/components/shared/memorph-logo";
 import { PathText } from "@/components/shared/path-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -13,13 +13,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Field, FieldContent, FieldDescription, FieldGroup, FieldTitle } from "@/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
+import { ScrollPane } from "@/components/shared/scroll-pane";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
+import { Switch } from "@/components/ui/switch";
 import {
   checkForUpdate,
   getHooksOverview,
@@ -37,6 +39,7 @@ import type { I18nKey } from "@/lib/i18n-core";
 import { queryKeys } from "@/lib/query-keys";
 import type { AgentManagementEntry, HookOverviewPayload, ProviderCatalogEntry, SettingsPayload, UiLanguage, UpdateCheckPayload, UpdateSettingsPayload } from "@/lib/types";
 import { AgentOrderList } from "@/features/settings/agent-order-list";
+import { SkillsStatsCustomRangePreferenceField } from "@/features/settings/skills-stats-custom-range-preference-field";
 
 const SECTIONS = [
   { id: "general", labelKey: "general" },
@@ -77,6 +80,7 @@ function defaultDraft(settings: SettingsPayload | undefined, catalog: ProviderCa
     show_opencode_subagents: settings?.show_opencode_subagents ?? false,
     sort_providers_by_session_count: settings?.sort_providers_by_session_count ?? false,
     default_backup_dir: settings?.default_backup_dir || "./backups",
+    show_hooks_nav: settings?.show_hooks_nav === true,
     logging: {
       max_size_bytes: Number(settings?.logging?.max_size_bytes ?? 5 * 1024 * 1024),
       retention_days: settings?.logging?.retention_days == null ? null : Number(settings.logging.retention_days),
@@ -191,6 +195,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         home_buttons: current.home_buttons,
         agent_order: current.agent_order,
         primary_agents: current.primary_agents,
+        show_hooks_nav: current.show_hooks_nav === true,
         server: {
           web_port: clampPort(current.server.web_port, 3737),
           api_port: clampPort(current.server.api_port, 3223),
@@ -300,7 +305,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="flex h-[min(760px,calc(100dvh-32px))] flex-col gap-0 p-0 sm:max-w-3xl" data-settings-dialog>
+      <DialogContent className="flex h-[min(70dvh,640px)] flex-col gap-0 p-0 sm:max-w-3xl" data-settings-dialog>
         <DialogHeader className="flex-row items-center border-b px-4 py-2.5 sm:px-5">
           <DialogTitle className="flex-1">{t("settings")}</DialogTitle>
         </DialogHeader>
@@ -320,8 +325,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             ))}
           </nav>
 
-          <ScrollArea className="min-h-0">
-            <div className="flex flex-col gap-5 p-4 sm:p-5">
+          <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-5 p-4 sm:p-5">
               {!draft || meta.isLoading ? <SettingsLoading label={t("loadingSettings")} /> : null}
 
               {draft && section === "general" ? (
@@ -380,18 +384,40 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                       <FieldContent><FieldTitle>{t("sessionsPerProvider")}</FieldTitle><FieldDescription>{t("sessionsPerProviderHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" type="number" min={1} max={200} value={draft.sessions_per_provider} onChange={(event) => patchDraft({ sessions_per_provider: Number(event.target.value || 1) })} />
                     </Field>
-                    <Field>
-                      <FieldTitle>{t("homeButtons")}</FieldTitle>
-                      <FieldDescription>{t("homeButtonsHint")}</FieldDescription>
-                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                        {HOME_BUTTONS.map(([key, labelKey]) => (
-                          <label key={key} className="flex items-center gap-2 rounded-md border p-2 text-sm">
-                            <Checkbox checked={Boolean(draft.home_buttons[key])} onCheckedChange={(checked) => setHomeButton(key, checked === true)} />
-                            <span>{t(labelKey as I18nKey)}</span>
-                          </label>
-                        ))}
-                      </div>
+                    <Field orientation="horizontal">
+                      <FieldContent>
+                        <FieldLabel htmlFor="show-hooks-nav">
+                          <FieldTitle>{t("showHooksNav")}</FieldTitle>
+                          <FieldDescription>{t("showHooksNavHint")}</FieldDescription>
+                        </FieldLabel>
+                      </FieldContent>
+                      <Switch
+                        id="show-hooks-nav"
+                        checked={draft.show_hooks_nav === true}
+                        onCheckedChange={(checked) => patchDraft({ show_hooks_nav: checked })}
+                      />
                     </Field>
+                    <FieldSet>
+                      <FieldLegend variant="label">{t("homeButtons")}</FieldLegend>
+                      <FieldDescription>{t("homeButtonsHint")}</FieldDescription>
+                      <FieldGroup data-slot="checkbox-group">
+                        {HOME_BUTTONS.map(([key, labelKey]) => (
+                          <Field key={key} orientation="horizontal">
+                            <FieldContent>
+                              <FieldLabel htmlFor={`home-button-${key}`}>
+                                <FieldTitle>{t(labelKey as I18nKey)}</FieldTitle>
+                              </FieldLabel>
+                            </FieldContent>
+                            <Switch
+                              id={`home-button-${key}`}
+                              checked={Boolean(draft.home_buttons[key])}
+                              onCheckedChange={(checked) => setHomeButton(key, checked)}
+                            />
+                          </Field>
+                        ))}
+                      </FieldGroup>
+                    </FieldSet>
+                    <SkillsStatsCustomRangePreferenceField />
                   </FieldGroup>
                 </section>
               ) : null}
@@ -438,7 +464,13 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                   <SectionHead title={t("about")} />
                   <div className="divide-y">
                     <div className="flex items-center justify-between gap-3 py-3">
-                      <div><strong>{t("version")}</strong><div className="text-muted-foreground text-sm">v{meta.data?.version || ""}</div></div>
+                      <div className="flex min-w-0 items-center gap-3">
+                        <MemorphLogo size="md" />
+                        <div className="min-w-0">
+                          <strong>{t("version")}</strong>
+                          <div className="text-muted-foreground text-sm">v{meta.data?.version || ""}</div>
+                        </div>
+                      </div>
                       <Button type="button" variant="outline" disabled={updateMutation.isPending} onClick={() => updateMutation.mutate()}><RefreshCwIcon data-icon="inline-start" />{t("checkUpdate")}</Button>
                     </div>
                     {updateResult ? <UpdateResult result={updateResult} t={t} /> : null}
@@ -454,8 +486,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                   </div>
                 </section>
               ) : null}
-            </div>
-          </ScrollArea>
+          </ScrollPane>
         </div>
 
         <DialogFooter className="-mx-0 -mb-0 gap-2 border-t px-4 py-2.5 sm:px-5">
