@@ -24,6 +24,7 @@ import type {
   DetectedHooks,
   ImportSessionPayload,
   ImportSessionResult,
+  EnsureReadyPayload,
   MetaPayload,
   ManagerFilter,
   ManagerBackupResult,
@@ -208,6 +209,12 @@ function buildQuery(
 
 export function getMeta() {
   return api<MetaPayload>("/api/v1/meta");
+}
+
+export function ensureReady() {
+  return api<EnsureReadyPayload>("/api/v1/system/ensure-ready", {
+    method: "POST",
+  });
 }
 
 export function updateSettings(payload: UpdateSettingsPayload) {

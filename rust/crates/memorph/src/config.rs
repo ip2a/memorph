@@ -369,6 +369,19 @@ pub fn selected_workspace() -> Result<Option<String>> {
         .map(|path| utils::user_visible_path(&path)))
 }
 
+/// Prime `selected_workspace` with the process cwd when unset. Called by
+/// CLI/TUI/web startup so the first launch lands in the user's current
+/// directory instead of an empty screen. Desktop skips this (its process
+/// cwd is the launcher's, not a user intent).
+pub fn prime_default_workspace_if_unset() -> Result<bool> {
+    if selected_workspace()?.is_some() {
+        return Ok(false);
+    }
+    let cwd = std::env::current_dir().context("Failed to read current directory")?;
+    remember_workspace(&cwd)?;
+    Ok(true)
+}
+
 pub fn desktop_window_state() -> Result<Option<DesktopWindowState>> {
     Ok(load_config()?.desktop.window)
 }

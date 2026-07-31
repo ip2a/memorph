@@ -260,6 +260,9 @@ impl App {
     pub fn new() -> Result<Self> {
         let cwd = std::env::current_dir()?;
         let cwd_str = cwd.to_string_lossy().to_string();
+        // Persist cwd as the default workspace so the next launch (web/desktop)
+        // lands here too, not just this TUI session.
+        let _ = config::remember_workspace(&cwd);
         let prefs = config::web_preferences().unwrap_or_default();
 
         let mut app = Self {

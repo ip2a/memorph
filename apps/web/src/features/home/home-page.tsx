@@ -21,7 +21,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { ScrollPane } from "@/components/shared/scroll-pane";
-import { updateSettings, updateWorkspaceProviders } from "@/lib/api";
+import { ensureReady, updateSettings, updateWorkspaceProviders } from "@/lib/api";
 import { formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
@@ -526,7 +526,19 @@ export function HomePage() {
   const listLoading = !providersReady || (Boolean(selectedProviders.length) && sessions.isLoading && !sessions.data);
   const listRefreshing = Boolean(selectedProviders.length) && sessions.isFetching && Boolean(sessions.data);
 
-  function refreshSessions() {
+  async function refreshSessions() {
+    // Ensure the memorph environment is usable before refetching: repairs a
+    // missing/corrupted ~/.memorph (dir, config, sqlite) and primes a default
+    // workspace if none is selected. Without this, deleting ~/.memorph leaves
+    // the home screen stuck on an empty state until the user manually switches
+    // workspaces.
+    try {
+      await ensureReady();
+    } catch {
+      // Backend may be temporarily unavailable; fall through to refetch so the
+      // user still sees the normal error state.
+    }
+    void meta.refetch();
     void sessions.refetch();
     void syncGroups.refetch();
   }

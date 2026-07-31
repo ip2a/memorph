@@ -53,6 +53,7 @@ pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
 
 pub async fn run_api(port: u16, allow_fallback: bool) -> Result<()> {
     memorph::cache::init_watcher();
+    let _ = memorph::config::prime_default_workspace_if_unset();
     memorph::core::spawn_background_sync_loop();
 
     let app = build_api_router();

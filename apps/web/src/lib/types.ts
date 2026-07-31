@@ -605,6 +605,11 @@ export type ConfigFilePayload = {
   content: string;
 };
 
+export type EnsureReadyPayload = {
+  selected_workspace: string | null;
+  repaired: boolean;
+};
+
 export type MetaPayload = {
   version: string;
   selected_workspace: string | null;

@@ -52,6 +52,7 @@ pub fn router() -> Router {
             "/api/v1/settings",
             get(system::get_settings).put(system::update_settings),
         )
+        .route("/api/v1/system/ensure-ready", post(system::ensure_ready))
         .route("/api/v1/system/select-folder", post(system::select_folder))
         .route(
             "/api/v1/filesystem/directories",

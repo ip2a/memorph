@@ -329,6 +329,16 @@ pub(super) struct SelectFolderPayload {
     path: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub(super) struct EnsureReadyPayload {
+    /// Workspace the client should land in after ensure. May be None when no
+    /// cwd and no history exist (fresh install with no terminal context).
+    selected_workspace: Option<String>,
+    /// Whether we had to repair the environment (create dir/config/db,
+    /// or prime a default workspace). Lets the UI explain a brief reindex.
+    repaired: bool,
+}
+
 #[derive(Deserialize)]
 pub(super) struct DirectoryQuery {
     path: Option<String>,

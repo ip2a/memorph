@@ -1,5 +1,61 @@
 use super::*;
 
+/// Lightweight "make the environment usable" endpoint. Triggered by the home
+/// refresh button so that a deleted/corrupted `~/.memorph` recovers with one
+/// click instead of forcing a manual workspace switch.
+///
+/// Repairs in order: config dir + file, sqlite schema, default workspace if
+/// still unset (falls back to the most recently used workspace, not cwd,
+/// because this endpoint runs in the server process whose cwd is arbitrary).
+pub(super) async fn ensure_ready() -> impl IntoResponse {
+    let mut repaired = false;
+
+    // 1. Config dir + file. `save_config` creates the dir; loading first
+    //    lets us detect corruption (treat as reset).
+    match config::load_config() {
+        Ok(existing) => {
+            // Persist back so a missing dir/file is recreated.
+            if let Err(error) = config::save_config(&existing) {
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+            }
+        }
+        Err(error) => {
+            logging::info("ensure_ready", format!("config corrupted, resetting: {error:#}"));
+            let fresh = config::MemorphConfig::default();
+            if let Err(error) = config::save_config(&fresh) {
+                return api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+            }
+            repaired = true;
+        }
+    }
+
+    // 2. SQLite schema. open_database creates the dir + runs migrations.
+    if let Err(error) = memorph::storage::local_store::open_database() {
+        return api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
+    }
+
+    // 3. Default workspace: prefer cwd, then most-recent history entry.
+    if config::selected_workspace().ok().flatten().is_none() {
+        let primed = config::prime_default_workspace_if_unset().unwrap_or(false);
+        if !primed {
+            if let Some(latest) = config::known_workspaces()
+                .ok()
+                .and_then(|mut entries| entries.drain(..).next().map(|e| e.path))
+            {
+                let _ = config::remember_workspace(std::path::Path::new(&latest));
+            }
+        }
+        repaired = true;
+    }
+
+    let selected_workspace = config::selected_workspace().ok().flatten();
+    ApiResponse::success(EnsureReadyPayload {
+        selected_workspace,
+        repaired,
+    })
+    .into_response()
+}
+
 pub(super) fn directory_listing(
     requested_path: Option<&str>,
 ) -> anyhow::Result<DirectoryListingPayload> {
