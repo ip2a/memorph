@@ -55,7 +55,7 @@ pub fn persist(
     for agent in &overview.agents {
         let entries = entries_for_agent(overview, agent);
         let (catalog, installations) = records(&entries, agent)?;
-        let fingerprint = root_fingerprint(agent, &installations);
+        let fingerprint = root_fingerprint(agent, &catalog, &installations);
         catalog_changed |= repository::persist_root(
             conn,
             &agent.provider_id,
@@ -246,11 +246,25 @@ fn trigger_terms(skill: &SkillEntry, metadata: &BTreeMap<String, String>) -> Vec
 
 fn root_fingerprint(
     agent: &SkillAgent,
+    catalog: &[repository::CatalogRecord],
     installations: &[repository::InstallationRecord],
 ) -> String {
+    // Content-aware fingerprint: includes SKILL.md entry hash and bundle hash
+    // so editing a skill's content invalidates the cached scan state. Without
+    // this, incremental mode silently skips content-only changes because the
+    // installation paths and skill ids stay the same.
+    let entry_by_id: std::collections::HashMap<&str, &repository::CatalogRecord> =
+        catalog.iter().map(|item| (item.id.as_str(), item)).collect();
     let mut value = format!("{}:{}", agent.provider_id, agent.skills_dir.display());
     for item in installations {
-        value.push_str(&format!("\n{}:{}", item.canonical_path, item.skill_id));
+        let entry_hash = entry_by_id
+            .get(item.skill_id.as_str())
+            .map(|skill| skill.entry_hash.as_str())
+            .unwrap_or("");
+        value.push_str(&format!(
+            "\n{}:{}:{}:{}",
+            item.canonical_path, item.skill_id, entry_hash, item.bundle_hash
+        ));
     }
     hash(value.as_bytes())
 }
