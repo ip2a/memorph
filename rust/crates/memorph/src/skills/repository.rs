@@ -372,6 +372,12 @@ pub struct CatalogPage {
     pub total: usize,
     pub providers: Vec<String>,
     pub completeness: CatalogCompleteness,
+    /// Hint that the caller should queue a background scan: true when the
+    /// catalog looks unpopulated (no items AND the aggregate scan state is
+    /// unknown). Frontends use this to fire-and-forget a lightweight scan
+    /// without blocking the list response.
+    #[serde(default)]
+    pub needs_scan: bool,
 }
 
 pub fn list_catalog_default(query: &CatalogQuery) -> Result<CatalogPage> {
@@ -493,6 +499,7 @@ pub fn list_catalog(conn: &Connection, query: &CatalogQuery) -> Result<CatalogPa
             status: "unknown".into(),
             updated_at_ms: None,
         });
+    let needs_scan = total == 0 && completeness.status == "unknown";
     Ok(CatalogPage {
         items,
         page,
@@ -500,6 +507,7 @@ pub fn list_catalog(conn: &Connection, query: &CatalogQuery) -> Result<CatalogPa
         total: total as usize,
         providers,
         completeness,
+        needs_scan,
     })
 }
 
