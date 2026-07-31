@@ -68,6 +68,8 @@ impl Provider for ClaudeProvider {
             delete: true,
             rename: true,
             resume: true,
+            lightweight_scan: true,
+            single_session_lookup: true,
             scan_strategy: ScanStrategy::FullScan,
             page_strategy: PageStrategy::IndexedPage,
             storage_shape: StorageShape::Jsonl,

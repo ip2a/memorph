@@ -47,15 +47,42 @@ struct SessionPagePayload {
     offset: usize,
     limit: usize,
     has_more: bool,
+    /// True when the SQLite store had no indexed sessions for the requested
+    /// workspace and a background workspace indexing pass was triggered.
+    /// Clients should re-poll shortly; this response is intentionally empty
+    /// rather than blocking on a scan (read paths never implicitly block on
+    /// full provider scans).
+    degraded: bool,
 }
 
 pub(super) async fn list_session_page(Query(q): Query<ListQuery>) -> impl IntoResponse {
     let limit = q.limit.unwrap_or(25).clamp(1, 100);
     let offset = q.offset.unwrap_or(0);
+    let cwd_for_warmup = q.workspace.clone().or(q.dir.clone());
     let params = session_list_params(q, Some(limit.saturating_add(1)));
     match memorph::runtime::run_blocking(move || core::projection::list_sessions(&params)).await {
-        Ok(mut groups) => {
+        Ok(groups) => {
             let has_more = groups.iter().any(|group| group.sessions.len() > limit);
+            let total: usize = groups.iter().map(|g| g.sessions.len()).sum();
+            // Cold path: empty result for a workspace scope means the SQLite
+            // projection has not indexed this workspace yet. Trigger a
+            // background warmup for that workspace only (per-provider, bounded
+            // by fingerprint dedup) and flag the response so clients re-poll.
+            // The read itself never blocks on a scan.
+            let degraded = total == 0
+                && cwd_for_warmup
+                    .as_deref()
+                    .map(|d| !d.trim().is_empty())
+                    .unwrap_or(false);
+            if degraded {
+                if let Some(cwd) = cwd_for_warmup.clone() {
+                    core::projection::spawn_workspace_index_background(
+                        std::path::PathBuf::from(cwd),
+                        memorph::storage::activity_store::ActivityActor::Api,
+                    );
+                }
+            }
+            let mut groups = groups;
             for group in &mut groups {
                 group.sessions.truncate(limit);
             }
@@ -64,6 +91,7 @@ pub(super) async fn list_session_page(Query(q): Query<ListQuery>) -> impl IntoRe
                 offset,
                 limit,
                 has_more,
+                degraded,
             })
             .into_response()
         }
@@ -143,6 +171,29 @@ pub(super) async fn index_workspace_sessions(
     }
 }
 
+
+/// Map a session-read anyhow error to an HTTP status per rule 10:
+/// distinguish unindexed / source-missing / unknown-provider / import-failed
+/// rather than collapsing every failure to 404.
+fn classify_session_read_error(error: anyhow::Error) -> (StatusCode, String) {
+    let message = format!("{error:#}");
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("unknown provider") {
+        (StatusCode::NOT_FOUND, message)
+    } else if lower.contains("not indexed") {
+        // Session is known to the provider but has not been projected yet.
+        // 404 with an explicit reason; clients can retry after indexing.
+        (StatusCode::NOT_FOUND, message)
+    } else if lower.contains("source is missing") || lower.contains("no source locator") {
+        // Source file was removed after the session was indexed.
+        (StatusCode::GONE, message)
+    } else if lower.contains("does not support") {
+        (StatusCode::NOT_IMPLEMENTED, message)
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, message)
+    }
+}
+
 pub(super) async fn get_session(
     Path((provider, session_id)): Path<(String, String)>,
     Query(q): Query<SessionDetailQuery>,
@@ -195,7 +246,10 @@ pub(super) async fn get_session(
             })
             .into_response()
         }
-        Err(e) => api_error(StatusCode::NOT_FOUND, e).into_response(),
+        Err(e) => {
+            let (status, message) = classify_session_read_error(e);
+            api_error(status, message).into_response()
+        }
     }
 }
 
@@ -317,5 +371,38 @@ pub(super) async fn update_session_local_state(
     {
         Ok(state) => ApiResponse::success(state).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::anyhow;
+
+    #[test]
+    fn classifies_unindexed_as_404() {
+        let (status, _) = classify_session_read_error(anyhow!("Session is not indexed: claude/abc"));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn classifies_source_missing_as_gone() {
+        let (status, _) =
+            classify_session_read_error(anyhow!("Session source is missing: /tmp/x.jsonl"));
+        assert_eq!(status, StatusCode::GONE);
+    }
+
+    #[test]
+    fn classifies_unknown_provider_as_404() {
+        let (status, _) = classify_session_read_error(anyhow!("Unknown provider: nope"));
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn classifies_unsupported_as_not_implemented() {
+        let (status, _) = classify_session_read_error(anyhow!(
+            "Provider does not support session detail reads: foo"
+        ));
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     }
 }

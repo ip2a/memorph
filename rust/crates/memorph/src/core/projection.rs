@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use super::*;
 
 static PROJECTION_OPERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -513,6 +514,43 @@ pub fn index_workspace_sessions(
         }
     }
 }
+
+/// Spawn a one-shot background thread that runs `index_workspace_sessions`
+/// for every projected provider. Used by read paths that hit an empty SQLite
+/// for a workspace: the API returns immediately with a `degraded` flag while
+/// this thread warms the index. Per-session fingerprint dedup keeps repeated
+/// triggers cheap.
+// ponytail: one thread per trigger; if trigger rate becomes a concern, gate
+// behind a debounce or a per-workspace in-flight map.
+pub fn spawn_workspace_index_background(workspace_dir: PathBuf, actor: ActivityActor) {
+    let workspace_dir = workspace_dir.canonicalize().unwrap_or(workspace_dir);
+    std::thread::Builder::new()
+        .name(format!(
+            "memorph-workspace-index-{}",
+            workspace_dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workspace")
+        ))
+        .spawn(move || {
+            for provider_id in crate::core::PROJECTED_SESSION_PROVIDER_IDS.iter() {
+                if let Err(error) = index_workspace_sessions(
+                    provider_id,
+                    &workspace_dir,
+                    actor.clone(),
+                ) {
+                    crate::logging::error(
+                        "workspace_index_background",
+                        format!(
+                            "provider {provider_id} workspace {} index failed: {error:#}",
+                            workspace_dir.display()
+                        ),
+                    );
+                }
+            }
+        })
+        .ok();
+}
+
 
 pub fn reproject_stale_sessions(
     provider_filter: Option<&str>,

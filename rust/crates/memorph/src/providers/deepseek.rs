@@ -54,6 +54,8 @@ impl Provider for DeepseekProvider {
             delete: true,
             rename: true,
             resume: true,
+            lightweight_scan: false,
+            single_session_lookup: true,
             scan_strategy: ScanStrategy::FullScan,
             page_strategy: PageStrategy::FullImport,
             storage_shape: StorageShape::Sqlite,

@@ -49,9 +49,11 @@ impl Provider for KiroProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
+            scan: true,
             import: true,
             delete: true,
             rename: true,
+            single_session_lookup: true,
             scan_strategy: ScanStrategy::FullScan,
             page_strategy: PageStrategy::FullImport,
             storage_shape: StorageShape::Directory,

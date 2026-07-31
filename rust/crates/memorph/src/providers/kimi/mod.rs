@@ -57,6 +57,9 @@ impl Provider for KimiProvider {
 
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
+            scan: true,
+            import: true,
+            single_session_lookup: true,
             scan_strategy: ScanStrategy::Hybrid,
             page_strategy: PageStrategy::FullImport,
             storage_shape: StorageShape::Directory,

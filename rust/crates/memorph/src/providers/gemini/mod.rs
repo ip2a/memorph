@@ -74,6 +74,8 @@ impl Provider for GeminiProvider {
             delete: true,
             rename: false,
             resume: true,
+            lightweight_scan: false,
+            single_session_lookup: false,
             scan_strategy: ScanStrategy::FullScan,
             page_strategy: PageStrategy::FullImport,
             storage_shape: StorageShape::Jsonl,

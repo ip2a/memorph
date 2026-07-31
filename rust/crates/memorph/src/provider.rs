@@ -67,6 +67,13 @@ pub struct ProviderCapabilities {
     pub delete: bool,
     pub rename: bool,
     pub resume: bool,
+    /// Provider implements scan_sessions_lightweight with a genuinely cheaper
+    /// path than scan_sessions (bounded read, index-only, etc.). False means
+    /// the lightweight method falls back to the full scan.
+    pub lightweight_scan: bool,
+    /// Provider implements find_session_by_id without falling back to a full
+    /// provider scan. False means single-session lookup degrades to scan+filter.
+    pub single_session_lookup: bool,
     pub scan_strategy: ScanStrategy,
     pub page_strategy: PageStrategy,
     pub storage_shape: StorageShape,
@@ -224,6 +231,8 @@ impl ProviderCapabilities {
             delete: false,
             rename: false,
             resume: false,
+            lightweight_scan: false,
+            single_session_lookup: false,
             scan_strategy: ScanStrategy::Unknown,
             page_strategy: PageStrategy::Unknown,
             storage_shape: StorageShape::Unknown,
@@ -404,6 +413,16 @@ pub trait Provider: Send + Sync {
 
     /// Scan all session metadata
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>>;
+
+    /// Scan only the metadata needed for listing, skipping heavier per-session work.
+    ///
+    /// Default falls back to scan_sessions. Providers with a genuinely cheaper
+    /// path (bounded head/tail read, index-only lookup) override this and set
+    /// capabilities().lightweight_scan = true so callers can pick the fast path
+    /// without try-and-see.
+    fn scan_sessions_lightweight(&self) -> Result<Vec<ProviderSessionSummary>> {
+        self.scan_sessions()
+    }
 
     /// Scan sessions within a workspace directory scope.
     ///

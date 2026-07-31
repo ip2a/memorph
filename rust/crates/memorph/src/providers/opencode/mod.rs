@@ -127,6 +127,8 @@ impl Provider for OpenCodeProvider {
             delete: true,
             rename: true,
             resume: true,
+            lightweight_scan: false,
+            single_session_lookup: false,
             scan_strategy: ScanStrategy::Hybrid,
             page_strategy: PageStrategy::NativePage,
             storage_shape: StorageShape::Mixed,
