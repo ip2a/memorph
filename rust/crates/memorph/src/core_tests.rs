@@ -2103,7 +2103,7 @@ fn non_default_session_list_reads_index_without_provider_source() {
         all: true,
         providers: vec!["claude".to_string()],
         cwd: None,
-        include_message_counts: true,
+        fields: crate::core::SessionListFields::WithStats,
         limit: None,
         offset: None,
         sort: SessionListSort::Title,
@@ -2814,4 +2814,35 @@ fn write_opencode_projection_sample(
     )
     .unwrap();
     session_path
+}
+
+#[cfg(test)]
+mod fields_tests {
+    use crate::core::{SessionListFields, SessionListParams};
+
+    #[test]
+    fn session_list_fields_default_is_with_stats() {
+        assert_eq!(SessionListFields::default(), SessionListFields::WithStats);
+        assert!(SessionListFields::WithStats.include_stats());
+        assert!(!SessionListFields::Minimal.include_stats());
+    }
+
+    #[test]
+    fn session_list_fields_serde_snake_case() {
+        let minimal = serde_json::from_str::<SessionListFields>("\"minimal\"").unwrap();
+        assert_eq!(minimal, SessionListFields::Minimal);
+        let with_stats =
+            serde_json::from_str::<SessionListFields>("\"with_stats\"").unwrap();
+        assert_eq!(with_stats, SessionListFields::WithStats);
+    }
+
+    #[test]
+    fn session_list_params_fields_default_when_absent() {
+        // Deserializing without `fields` falls back to the enum default.
+        let params: SessionListParams = serde_json::from_str(
+            r#"{"all": false, "providers": [], "limit": null, "offset": null}"#,
+        )
+        .unwrap();
+        assert_eq!(params.fields, SessionListFields::WithStats);
+    }
 }

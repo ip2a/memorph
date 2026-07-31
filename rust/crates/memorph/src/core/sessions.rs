@@ -79,11 +79,24 @@ pub fn get_session_detail_view_page_result(
             if !crate::core::projection::index_single_session(provider_id, session_id)? {
                 anyhow::bail!("Session is not indexed: {provider_id}/{session_id}");
             }
-            crate::storage::snapshot_store::SnapshotStore::new(&conn)
+            let fresh_identity = crate::storage::snapshot_store::SnapshotStore::new(&conn)
                 .find_session_identity(provider_id, session_id)?
                 .with_context(|| {
                     format!("Session is not indexed: {provider_id}/{session_id}")
-                })?
+                })?;
+            // Warm siblings: this session was just cold-indexed, so its
+            // workspace-mates are likely to be read next. Spawn a background
+            // pass that reuses the same per-provider workspace scan + fingerprint
+            // dedup; never blocks this read. Only fires on the cold-to-warm
+            // transition so repeated detail reads stay cheap.
+            if let Some(workspace_dir) = fresh_identity.workspace_dir.as_deref() {
+                let workspace_path = std::path::PathBuf::from(workspace_dir);
+                crate::core::projection::spawn_workspace_index_background(
+                    workspace_path,
+                    crate::storage::activity_store::ActivityActor::System,
+                );
+            }
+            fresh_identity
         }
     };
     let source_path = identity

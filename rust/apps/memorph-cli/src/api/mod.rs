@@ -882,7 +882,7 @@ struct ListQuery {
     provider: Option<String>,
     dir: Option<String>,
     workspace: Option<String>,
-    details: Option<bool>,
+    fields: Option<core::SessionListFields>,
     limit: Option<usize>,
     offset: Option<usize>,
     sort: Option<core::SessionListSort>,

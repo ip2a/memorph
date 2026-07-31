@@ -71,11 +71,37 @@ pub struct SessionListParams {
     pub all: bool,
     pub providers: Vec<String>,
     pub cwd: Option<String>,
-    pub include_message_counts: bool,
+    /// Projection tier for list results. `Minimal` skips per-session stats
+    /// (message/turn counts); `WithStats` includes them. Detail events still
+    /// come from the session-detail endpoint, never the list.
+    #[serde(default)]
+    pub fields: SessionListFields,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
     #[serde(default)]
     pub sort: SessionListSort,
+}
+
+/// Projection tier for session list reads.
+///
+/// - `Minimal`: identity + title + cwd + timestamps (D0/D1). No per-session
+///   stat computation in SQL.
+/// - `WithStats`: also surface message/turn counts (D2) when the projection
+///   has them; default for the list endpoint.
+///
+/// Detail events (D3/D4) are never pulled here; they live on the detail read.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionListFields {
+    Minimal,
+    #[default]
+    WithStats,
+}
+
+impl SessionListFields {
+    pub fn include_stats(self) -> bool {
+        matches!(self, Self::WithStats)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]

@@ -785,7 +785,7 @@ pub(super) fn list_projected_session_snapshots(
         .list_session_snapshots_filtered(
             Some(&provider_ids),
             workspace_scopes.as_deref(),
-            params.include_message_counts,
+            params.fields.include_stats(),
         )?;
     Ok(projected_snapshot_groups(snapshots, params))
 }

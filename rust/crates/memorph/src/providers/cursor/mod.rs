@@ -1733,7 +1733,7 @@ mod tests {
             all: true,
             providers: vec![PROVIDER_ID.to_string()],
             cwd: None,
-            include_message_counts: true,
+            fields: crate::core::SessionListFields::WithStats,
             limit: None,
             offset: None,
             sort: crate::core::SessionListSort::Recent,

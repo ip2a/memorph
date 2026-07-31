@@ -1552,7 +1552,7 @@ fn print_session_list(
         all,
         providers,
         cwd: Some(cwd_str.clone()),
-        include_message_counts: true,
+        fields: crate::core::SessionListFields::WithStats,
         limit,
         offset: Some(offset),
         sort: match sort {

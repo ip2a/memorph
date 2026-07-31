@@ -12,7 +12,7 @@ pub fn find_sessions(params: &FindParams) -> Result<Vec<SessionGroup>> {
         all: true,
         providers: params.providers.clone(),
         cwd: None,
-        include_message_counts: true,
+        fields: crate::core::SessionListFields::WithStats,
         limit: None,
         offset: None,
         sort: SessionListSort::Recent,

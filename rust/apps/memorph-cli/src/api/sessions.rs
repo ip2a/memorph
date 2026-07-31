@@ -34,7 +34,7 @@ fn session_list_params(q: ListQuery, limit: Option<usize>) -> core::SessionListP
         all: q.all.unwrap_or(false),
         providers,
         cwd,
-        include_message_counts: q.details.unwrap_or(true),
+        fields: q.fields.unwrap_or_default(),
         limit,
         offset: q.offset,
         sort: q.sort.unwrap_or_default(),
