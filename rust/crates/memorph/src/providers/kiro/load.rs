@@ -822,6 +822,8 @@ pub(super) fn event_from_kiro_record(
         timestamp,
         links,
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: state.model_id.clone(),
             usage: None,

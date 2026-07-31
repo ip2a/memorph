@@ -631,6 +631,8 @@ mod tests {
                     "archive_ref": "memorph-archive://s1/archive.json.gz",
                 }),
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,
@@ -662,6 +664,8 @@ mod tests {
             blocks: vec![Block::Text {
                 text: "internal context".to_string(),
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,

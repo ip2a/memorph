@@ -841,6 +841,8 @@ export type SessionEvent = {
   timestamp: string;
   links?: EventLinks;
   blocks: EventBlock[];
+  tags?: string[];
+  extensions?: Record<string, unknown>;
   metadata: EventMetadata;
 };
 

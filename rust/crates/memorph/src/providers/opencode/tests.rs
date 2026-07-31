@@ -1194,6 +1194,8 @@ fn opencode_message_data_preserves_model_provider_metadata() {
             .single()
             .unwrap(),
         links: Links::default(),
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: Some("gpt-5.4".to_string()),
             usage: None,
@@ -1268,6 +1270,8 @@ fn compressed_segment_exports_as_native_opencode_compaction() {
             .single()
             .unwrap(),
         links: Links::default(),
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: Some("gpt-5.4".to_string()),
             usage: None,

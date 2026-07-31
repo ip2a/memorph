@@ -1483,6 +1483,8 @@ fn compressed_segment_exports_as_native_codex_compacted_rollout() {
                         "archive_ref": "memorph-archive://s1/archive.json.gz",
                     }),
                 }],
+                tags: Vec::new(),
+                extensions: Default::default(),
                 metadata: Metadata {
                     model: None,
                     usage: None,
@@ -1497,6 +1499,8 @@ fn compressed_segment_exports_as_native_codex_compacted_rollout() {
                 blocks: vec![Block::Text {
                     text: "latest request".to_string(),
                 }],
+                tags: Vec::new(),
+                extensions: Default::default(),
                 metadata: Metadata {
                     model: None,
                     usage: None,
@@ -1610,6 +1614,8 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
         blocks: vec![Block::Text {
             text: "historical context that should be archived ".repeat(80),
         }],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -1624,6 +1630,8 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
         blocks: vec![Block::Text {
             text: "latest request".to_string(),
         }],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -1743,6 +1751,8 @@ fn compressed_segment_content_fallback_stays_portable_for_non_native_paths() {
                 "archive_ref": "memorph-archive://s1/archive.json.gz",
             }),
         }],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -1794,6 +1804,8 @@ fn first_user_message_skips_empty_user_events_but_has_user_event_stays_true() {
                 blocks: vec![Block::Text {
                     text: "   ".to_string(),
                 }],
+                tags: Vec::new(),
+                extensions: Default::default(),
                 metadata: Metadata {
                     model: None,
                     usage: None,
@@ -1808,6 +1820,8 @@ fn first_user_message_skips_empty_user_events_but_has_user_event_stays_true() {
                 blocks: vec![Block::Text {
                     text: "real prompt".to_string(),
                 }],
+                tags: Vec::new(),
+                extensions: Default::default(),
                 metadata: Metadata {
                     model: None,
                     usage: None,
@@ -2661,6 +2675,8 @@ fn provider_payload_block_is_skipped_in_codex_export() {
                 raw: serde_json::json!({"type": "task_complete"}),
             },
         ],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -2783,6 +2799,8 @@ fn codex_test_event(id: &str, kind: EventKind, role: Role, blocks: Vec<Block>) -
         timestamp: Utc::now(),
         links: Links::default(),
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,

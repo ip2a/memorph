@@ -1351,9 +1351,8 @@ dependencies = [
 
 [[package]]
 name = "oasf"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c42c71516f15a125b9fa3784ba6a424649a18d14872f3452074caec8a63dbcc"
+version = "0.1.3"
+source = "git+https://github.com/ip2a/oasf.git?tag=v0.1.3#9061b2ed40d6760f025545e58453354f402da05f"
 dependencies = [
  "chrono",
  "serde",

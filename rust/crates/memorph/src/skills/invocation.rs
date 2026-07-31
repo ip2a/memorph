@@ -764,6 +764,8 @@ mod tests {
             timestamp: Utc.timestamp_millis_opt(1_700_000_000_000).unwrap(),
             links: Links::default(),
             blocks,
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,

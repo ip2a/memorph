@@ -329,6 +329,8 @@ fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Opt
             .unwrap_or_else(Utc::now),
         links: Links::default(),
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,

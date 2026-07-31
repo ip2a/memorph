@@ -552,6 +552,8 @@ fn event_from_message(
             related_event_ids: Vec::new(),
         },
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: message
                 .get("model")

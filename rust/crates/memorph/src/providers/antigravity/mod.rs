@@ -345,6 +345,8 @@ fn map_message(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         timestamp: timestamp(v, "timestamp").unwrap_or_else(Utc::now),
         links: Links::default(),
         blocks: bs,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: v.get("model").and_then(Value::as_str).map(str::to_string),
             usage: None,

@@ -84,6 +84,8 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
                                     raw: payload.clone(),
                                 },
                             ],
+                            tags: Vec::new(),
+                            extensions: Default::default(),
                             metadata: Metadata {
                                 model: payload
                                     .get("model")
@@ -631,6 +633,8 @@ pub(super) fn codex_event_from_line(
                             raw: payload.clone(),
                         },
                     ],
+                    tags: Vec::new(),
+                    extensions: Default::default(),
                     metadata: Metadata {
                         model: payload
                             .get("model")
@@ -762,6 +766,8 @@ pub(super) fn codex_compacted_event(
                 "archive_ref": archive_ref,
             }),
         }],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -813,6 +819,8 @@ pub(super) fn codex_response_item_event(
                 name: name.to_string(),
                 input,
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,
@@ -845,6 +853,8 @@ pub(super) fn codex_response_item_event(
                 content,
                 is_error: false,
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,
@@ -1030,6 +1040,8 @@ pub(super) fn codex_response_item_event(
         timestamp,
         links: Links::default(),
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -1245,6 +1257,8 @@ pub(super) fn provider_payload_event(
         blocks: vec![Block::Other {
             raw: payload.clone(),
         }],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,

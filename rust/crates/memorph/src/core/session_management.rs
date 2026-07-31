@@ -1469,6 +1469,8 @@ mod tests {
             timestamp: Utc::now(),
             links: Links::default(),
             blocks,
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,
@@ -1486,6 +1488,8 @@ mod tests {
             blocks: vec![Block::Other {
                 raw: serde_json::json!({ "type": "compaction" }),
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,

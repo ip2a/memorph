@@ -888,6 +888,8 @@ pub(super) fn kimi_context_event(
         timestamp,
         links: Links::default(),
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -1059,6 +1061,8 @@ pub(super) fn kimi_wire_event(
             related_event_ids: Vec::new(),
         },
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,

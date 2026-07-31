@@ -308,6 +308,8 @@ fn history_events(
                 timestamp,
                 links: Links::default(),
                 blocks,
+                tags: Vec::new(),
+                extensions: Default::default(),
                 metadata: Metadata {
                     model: None,
                     usage: None,

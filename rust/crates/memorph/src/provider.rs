@@ -995,6 +995,8 @@ mod tests {
                     raw: serde_json::json!({"type": "mystery"}),
                 },
             ],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: crate::session::Metadata {
                 model: None,
                 usage: None,
@@ -1217,6 +1219,8 @@ mod tests {
             timestamp: chrono::Utc::now(),
             links: crate::session::Links::default(),
             blocks,
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: crate::session::Metadata {
                 model: None,
                 usage: None,

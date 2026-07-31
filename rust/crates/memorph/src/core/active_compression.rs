@@ -496,6 +496,8 @@ fn active_summary_event(
                 "archive_ref": archive_ref,
             }),
         }],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -1124,6 +1126,8 @@ mod tests {
             blocks: vec![Block::Text {
                 text: text.to_string(),
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: event_metadata("claude", id),
         }
     }
@@ -1145,6 +1149,8 @@ mod tests {
                     "archive_ref": "memorph-archive://s1/a.json.gz",
                 }),
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: event_metadata("memorph", id),
         }
     }
@@ -1161,6 +1167,8 @@ mod tests {
                 content: content.to_string(),
                 is_error: false,
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: event_metadata("claude", id),
         }
     }
@@ -1187,6 +1195,8 @@ mod tests {
                 stdout: Some(stdout.to_string()),
                 stderr: None,
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: event_metadata("claude", id),
         }
     }

@@ -2,12 +2,11 @@ pub mod adapter;
 pub mod hook;
 
 use crate::provider::{
-    block_text, event_is_visible_message, event_visible_message_role,
-    event_visible_text, export_result, session_title, PageStrategy,
-    Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
-    ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
-    ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
-    StorageShape, TurnQuality, WriteRiskLevel,
+    block_text, event_is_visible_message, event_visible_message_role, event_visible_text,
+    export_result, session_title, PageStrategy, Provider, ProviderActivitySupport,
+    ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup,
+    ProviderSessionImportPage, ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk,
+    ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
 use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
@@ -150,10 +149,7 @@ impl Provider for ClaudeProvider {
         Ok(sessions)
     }
 
-    fn find_session_by_id(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         let root = get_claude_config_dir().join("projects");
         if !root.exists() {
             return Ok(None);
@@ -814,6 +810,7 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
     let reader = BufReader::new(file);
     let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
     let mut events = Vec::new();
+    let mut event_meta = Vec::new();
     let mut session_id: Option<String> = None;
     let mut project_dir: Option<String> = None;
     let mut source_title: Option<String> = None;
@@ -874,14 +871,11 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
             extensions.insert("claude_custom_title".to_string(), value.clone());
         }
 
-        if let Some(event) = event_from_claude_line(
-            line_idx + 1,
-            line_type,
-            timestamp,
-            &value,
-            &mut report,
-        ) {
+        if let Some((event, meta)) =
+            event_from_claude_line(line_idx + 1, line_type, timestamp, &value, &mut report)
+        {
             events.push(event);
+            event_meta.push(meta);
         }
     }
 
@@ -892,10 +886,6 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
         .unwrap_or_else(|| Uuid::new_v4().to_string());
     let source_session_id = session_id.unwrap_or(fallback_id);
 
-    let event_meta = events
-        .iter()
-        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
-        .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
             schema: Schema::default(),
@@ -949,6 +939,7 @@ fn import_claude_session_page(
     let mut file = File::open(path)
         .with_context(|| format!("Failed to open Claude session: {}", path.display()))?;
     let mut extensions = BTreeMap::new();
+    let mut event_meta = Vec::new();
 
     for location in locations {
         file.seek(SeekFrom::Start(location.byte_offset))
@@ -984,21 +975,14 @@ fn import_claude_session_page(
         }
 
         let timestamp = claude_line_timestamp(&value, location.line_no);
-        if let Some(event) = event_from_claude_line(
-            location.line_no,
-            line_type,
-            timestamp,
-            &value,
-            &mut report,
-        ) {
+        if let Some((event, meta)) =
+            event_from_claude_line(location.line_no, line_type, timestamp, &value, &mut report)
+        {
             events.push(event);
+            event_meta.push(meta);
         }
     }
 
-    let event_meta = events
-        .iter()
-        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
-        .collect::<Vec<_>>();
     let imported = ImportedSession {
         session: Session {
             schema: Schema::default(),
@@ -1186,7 +1170,7 @@ fn build_claude_event_index(
 
         // Reuse the canonical mapper to decide visible-message membership so
         // counts stay identical to a full import.
-        if let Some(event) =
+        if let Some((event, _)) =
             event_from_claude_line(line_no, line_type, timestamp, &value, &mut report)
         {
             if event_is_visible_message(&event) {
@@ -1247,7 +1231,7 @@ fn event_from_claude_line(
     timestamp: chrono::DateTime<Utc>,
     value: &Value,
     report: &mut MappingReport,
-) -> Option<Event> {
+) -> Option<(Event, crate::session::EventMeta)> {
     let event_id = value
         .get("uuid")
         .and_then(|v| v.as_str())
@@ -1259,32 +1243,28 @@ fn event_from_claude_line(
         .map(str::to_string);
 
     let Some(message) = value.get("message") else {
-        return Some(provider_payload_event(
-            event_id,
-            EventKind::Lifecycle,
-            Role::System,
-            timestamp,
-            line_type,
-            ClaudeProviderPayloadData {
-                payload: value.clone(),
-                parent_id,
-            },
+        return Some((
+            claude_lifecycle_event(event_id, timestamp, line_type, value, parent_id),
+            claude_event_meta(Some(value.clone())),
         ));
     };
 
     let role = claude_event_role(line_type, message, value);
     let blocks = claude_event_blocks(message.get("content"), value, line_number, report);
     if blocks.is_empty() {
-        return Some(provider_payload_event(
-            event_id,
-            EventKind::Other,
-            role,
-            timestamp,
-            line_type,
-            ClaudeProviderPayloadData {
-                payload: value.clone(),
-                parent_id,
-            },
+        return Some((
+            provider_payload_event(
+                event_id,
+                EventKind::Other,
+                role,
+                timestamp,
+                line_type,
+                ClaudeProviderPayloadData {
+                    payload: value.clone(),
+                    parent_id,
+                },
+            ),
+            claude_event_meta(None),
         ));
     }
 
@@ -1301,20 +1281,25 @@ fn event_from_claude_line(
         reasoning_tokens: None,
     });
 
-    Some(Event {
-        id: event_id,
-        kind,
-        role,
-        timestamp,
-        links: Links {
-            parent_event_id: parent_id.clone(),
-            turn_id: None,
-            turn_outcome: claude_turn_boundary(message),
-            related_event_ids: Vec::new(),
+    Some((
+        Event {
+            id: event_id,
+            kind,
+            role,
+            timestamp,
+            links: Links {
+                parent_event_id: parent_id.clone(),
+                turn_id: None,
+                turn_outcome: claude_turn_boundary(message),
+                related_event_ids: Vec::new(),
+            },
+            blocks,
+            tags: Vec::new(),
+            extensions: Default::default(),
+            metadata: Metadata { model, usage },
         },
-        blocks,
-        metadata: Metadata { model, usage },
-    })
+        claude_event_meta(None),
+    ))
 }
 
 fn claude_turn_boundary(message: &Value) -> Option<TurnOutcome> {
@@ -1432,7 +1417,7 @@ fn claude_content_block(
                     .map(str::to_string),
             }
         }
-        Some("tool_use")
+        Some("tool_use" | "server_tool_use")
             if value.get("id").and_then(Value::as_str).is_some()
                 && value.get("name").and_then(Value::as_str).is_some()
                 && value.get("input").is_some() =>
@@ -1471,7 +1456,7 @@ fn claude_content_block(
                     .unwrap_or(false),
             }
         }
-        Some("text" | "thinking" | "tool_use" | "tool_result") => {
+        Some("text" | "thinking" | "tool_use" | "server_tool_use" | "tool_result") => {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
                 disposition: Fidelity::Normalized,
@@ -1529,6 +1514,94 @@ fn claude_event_kind(blocks: &[Block]) -> EventKind {
     }
 }
 
+fn claude_lifecycle_event(
+    id: String,
+    timestamp: chrono::DateTime<Utc>,
+    line_type: &str,
+    value: &Value,
+    parent_id: Option<String>,
+) -> Event {
+    let mut extensions = BTreeMap::new();
+    extensions.insert(
+        "claude_record_type".to_string(),
+        Value::String(line_type.to_string()),
+    );
+
+    Event {
+        id,
+        kind: EventKind::Lifecycle,
+        role: Role::System,
+        timestamp,
+        links: Links {
+            parent_event_id: parent_id,
+            turn_id: None,
+            turn_outcome: None,
+            related_event_ids: Vec::new(),
+        },
+        blocks: Vec::new(),
+        tags: claude_lifecycle_tags(line_type, value),
+        extensions,
+        metadata: Metadata {
+            model: None,
+            usage: None,
+        },
+    }
+}
+
+fn claude_lifecycle_tags(line_type: &str, value: &Value) -> Vec<String> {
+    let mut tags = vec![format!("lifecycle:{}", claude_tag_component(line_type))];
+    if line_type == "attachment" {
+        if let Some(attachment) = value.get("attachment") {
+            if let Some(kind) = attachment.get("type").and_then(Value::as_str) {
+                tags.push(format!(
+                    "hook:{}",
+                    claude_tag_component(kind.trim_start_matches("hook_"))
+                ));
+            }
+            if let Some(event) = attachment.get("hookEvent").and_then(Value::as_str) {
+                tags.push(format!("hook_event:{}", claude_tag_component(event)));
+            }
+            if let Some(name) = attachment.get("hookName").and_then(Value::as_str) {
+                let name = name.rsplit(':').next().unwrap_or(name);
+                tags.push(format!("hook_name:{}", claude_tag_component(name)));
+            }
+        }
+    }
+    tags
+}
+
+fn claude_tag_component(value: &str) -> String {
+    let mut result = String::new();
+    let mut previous_is_lower_or_digit = false;
+    for character in value.chars() {
+        if character.is_ascii_uppercase() {
+            if previous_is_lower_or_digit && !result.ends_with('_') {
+                result.push('_');
+            }
+            result.push(character.to_ascii_lowercase());
+            previous_is_lower_or_digit = false;
+        } else if character.is_ascii_alphanumeric() {
+            result.push(character.to_ascii_lowercase());
+            previous_is_lower_or_digit =
+                character.is_ascii_lowercase() || character.is_ascii_digit();
+        } else {
+            if !result.is_empty() && !result.ends_with('_') {
+                result.push('_');
+            }
+            previous_is_lower_or_digit = false;
+        }
+    }
+    result.trim_matches('_').to_string()
+}
+
+fn claude_event_meta(raw_event: Option<Value>) -> crate::session::EventMeta {
+    let mut meta = crate::session::EventMeta::preserved(PROVIDER_ID);
+    if let Some(raw_event) = raw_event {
+        meta.provider_ext.insert("raw_event".to_string(), raw_event);
+    }
+    meta
+}
+
 struct ClaudeProviderPayloadData {
     payload: Value,
     parent_id: Option<String>,
@@ -1555,6 +1628,8 @@ fn provider_payload_event(
             related_event_ids: Vec::new(),
         },
         blocks: vec![Block::Other { raw: payload }],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -1596,7 +1671,10 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
             let mut all: Vec<&str> = tail.lines().collect();
             if let Some(first) = all.first_mut() {
                 if file_len > TAIL_BYTES && !tail.starts_with('\n') {
-                    *first = first.split_once('\n').map(|(_, rest)| rest).unwrap_or(first);
+                    *first = first
+                        .split_once('\n')
+                        .map(|(_, rest)| rest)
+                        .unwrap_or(first);
                 }
             }
             let take = all.len().saturating_sub(1).min(30);
@@ -2081,6 +2159,8 @@ mod tests {
             timestamp: Utc::now(),
             links: Links::default(),
             blocks,
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,
@@ -2101,11 +2181,73 @@ mod tests {
         });
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
 
-        let event = event_from_claude_line(1, "assistant", Utc::now(), &raw, &mut report)
-            .unwrap();
+        let (event, _) =
+            event_from_claude_line(1, "assistant", Utc::now(), &raw, &mut report).unwrap();
 
         assert_eq!(event.links.turn_id, None);
         assert_eq!(event.links.turn_outcome, Some(TurnOutcome::Completed));
+    }
+
+    #[test]
+    fn maps_server_tool_use_to_tool_call() {
+        let raw = serde_json::json!({
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{
+                    "type": "server_tool_use",
+                    "id": "toolu_1",
+                    "name": "web_search",
+                    "input": {"query": "oasf"}
+                }]
+            }
+        });
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+
+        let (event, _) =
+            event_from_claude_line(1, "assistant", Utc::now(), &raw, &mut report).unwrap();
+
+        assert_eq!(event.kind, EventKind::Action);
+        assert!(matches!(
+            event.blocks.as_slice(),
+            [Block::ToolCall { tool_call_id, name, .. }]
+                if tool_call_id == "toolu_1" && name == "web_search"
+        ));
+    }
+
+    #[test]
+    fn maps_hook_attachment_to_tagged_empty_lifecycle_event() {
+        let raw = serde_json::json!({
+            "type": "attachment",
+            "uuid": "attachment-1",
+            "attachment": {
+                "type": "hook_success",
+                "hookEvent": "PostToolUse",
+                "hookName": "PostToolUse:ToolSearch"
+            }
+        });
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+
+        let (event, meta) =
+            event_from_claude_line(1, "attachment", Utc::now(), &raw, &mut report).unwrap();
+
+        assert_eq!(event.kind, EventKind::Lifecycle);
+        assert_eq!(event.role, Role::System);
+        assert!(event.blocks.is_empty());
+        assert_eq!(
+            event.tags,
+            vec![
+                "lifecycle:attachment",
+                "hook:success",
+                "hook_event:post_tool_use",
+                "hook_name:tool_search",
+            ]
+        );
+        assert_eq!(
+            event.extensions.get("claude_record_type"),
+            Some(&Value::String("attachment".to_string()))
+        );
+        assert_eq!(meta.provider_ext.get("raw_event"), Some(&raw));
     }
 
     #[test]
@@ -2232,11 +2374,10 @@ mod tests {
         );
         assert!(imported.session.events.iter().any(|event| {
             event.kind == EventKind::Lifecycle
-                && matches!(
-                    event.blocks.first(),
-                    Some(Block::Other { raw })
-                        if raw["type"] == "file-history-snapshot"
-                )
+                && event.blocks.is_empty()
+                && event.tags == ["lifecycle:file_history_snapshot"]
+                && event.extensions.get("claude_record_type")
+                    == Some(&Value::String("file-history-snapshot".to_string()))
         }));
         let assistant = imported
             .session

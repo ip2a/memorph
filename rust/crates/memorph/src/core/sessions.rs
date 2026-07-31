@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 pub fn get_canonical_session(provider_id: &str, session_id: &str) -> Result<ImportedSession> {
     let prov = providers::find_provider(provider_id)
@@ -421,6 +422,7 @@ pub struct SessionStats {
     pub provider_id: String,
     pub session_id: String,
     pub events: Vec<EventStats>,
+    pub event_tag_counts: BTreeMap<String, usize>,
     pub total_char_count: usize,
     pub total_byte_size: usize,
     pub total_visible_char_count: usize,
@@ -430,12 +432,16 @@ pub struct SessionStats {
 pub fn compute_session_stats(provider_id: &str, session_id: &str) -> Result<SessionStats> {
     let detail = get_session_detail_view(provider_id, session_id)?;
     let mut events = Vec::with_capacity(detail.events.len());
+    let mut event_tag_counts = BTreeMap::new();
     let mut total_char_count = 0usize;
     let mut total_byte_size = 0usize;
     let mut total_visible_char_count = 0usize;
     let mut total_visible_byte_size = 0usize;
 
     for event in &detail.events {
+        for tag in &event.tags {
+            *event_tag_counts.entry(tag.clone()).or_default() += 1;
+        }
         let full_text = provider::event_text(event);
         let visible_text = provider::event_visible_text(event);
         let char_count = full_text.chars().count();
@@ -461,6 +467,7 @@ pub fn compute_session_stats(provider_id: &str, session_id: &str) -> Result<Sess
         provider_id: provider_id.to_string(),
         session_id: session_id.to_string(),
         events,
+        event_tag_counts,
         total_char_count,
         total_byte_size,
         total_visible_char_count,

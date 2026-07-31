@@ -264,6 +264,8 @@ pub(super) fn imported_session_from_data(
                 related_event_ids: Vec::new(),
             },
             blocks,
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model,
                 usage,

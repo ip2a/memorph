@@ -336,6 +336,8 @@ fn import_legacy_session(source: &str) -> Result<ImportedSession> {
             timestamp: modified_datetime(&path).unwrap_or_else(Utc::now),
             links: Links::default(),
             blocks: vec![Block::Text { text }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,
@@ -668,6 +670,8 @@ fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<Event> {
         timestamp: step.timestamp.unwrap_or_else(Utc::now),
         links: Links::default(),
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,

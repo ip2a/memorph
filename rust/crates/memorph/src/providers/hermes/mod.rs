@@ -215,6 +215,8 @@ impl Provider for HermesProvider {
                     .unwrap_or_else(Utc::now),
                 links: Links::default(),
                 blocks,
+                tags: Vec::new(),
+                extensions: Default::default(),
                 metadata: Metadata {
                     model: meta.3.clone(),
                     usage: None,

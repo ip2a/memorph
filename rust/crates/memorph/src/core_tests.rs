@@ -358,6 +358,8 @@ fn session_from_compression_archive_restores_source_events() {
             blocks: vec![Block::Text {
                 text: "restored source context".to_string(),
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,
@@ -949,6 +951,8 @@ fn archive_search_event(id: &str, text: &str, role: Role) -> Event {
         blocks: vec![Block::Text {
             text: text.to_string(),
         }],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: None,
             usage: None,
@@ -990,6 +994,8 @@ fn active_compression_source_session() -> Session {
                 blocks: vec![Block::Text {
                     text: "historical context ".repeat(80),
                 }],
+                tags: Vec::new(),
+                extensions: Default::default(),
                 metadata: Metadata {
                     model: None,
                     usage: None,
@@ -1004,6 +1010,8 @@ fn active_compression_source_session() -> Session {
                 blocks: vec![Block::Text {
                     text: "latest active request".to_string(),
                 }],
+                tags: Vec::new(),
+                extensions: Default::default(),
                 metadata: Metadata {
                     model: None,
                     usage: None,

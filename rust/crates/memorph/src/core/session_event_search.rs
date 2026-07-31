@@ -53,6 +53,8 @@ mod tests {
             blocks: vec![Block::Text {
                 text: text.to_string(),
             }],
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: None,
                 usage: None,

@@ -376,6 +376,8 @@ fn event_from_bubble(
                 ..Links::default()
             },
             blocks,
+            tags: Vec::new(),
+            extensions: Default::default(),
             metadata: Metadata {
                 model: bubble_model_name(model_info),
                 usage: bubble_usage(bubble.raw.get("tokenCount")),

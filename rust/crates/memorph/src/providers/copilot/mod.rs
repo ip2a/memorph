@@ -303,6 +303,8 @@ fn map_event(event: &Value, index: usize, report: &mut MappingReport) -> Option<
         timestamp: event_time(event).unwrap_or_else(Utc::now),
         links: Links::default(),
         blocks: vec![Block::Text { text: content }],
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: event
                 .get("data")

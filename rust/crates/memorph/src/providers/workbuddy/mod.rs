@@ -314,6 +314,8 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
         timestamp: timestamp(v).unwrap_or_else(Utc::now),
         links: Links::default(),
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: v.get("model").and_then(Value::as_str).map(str::to_string),
             usage: None,

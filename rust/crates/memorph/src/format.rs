@@ -545,6 +545,8 @@ mod tests {
                         input: Some(serde_json::json!({"cmd":"ls"})),
                     },
                 ],
+                tags: Vec::new(),
+                extensions: Default::default(),
                 metadata: crate::session::Metadata {
                     model: Some("gpt-5.3-codex".to_string()),
                     usage: None,

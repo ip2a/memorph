@@ -400,6 +400,11 @@ function DetailEventItem({
                     {tag.label}
                   </Badge>
                 ))}
+                {event.tags?.map((tag) => (
+                  <Badge key={tag} variant="outline" className="border-border bg-background font-normal text-muted-foreground">
+                    {tag}
+                  </Badge>
+                ))}
                 {event.metadata?.model ? (
                   <Badge variant="outline" className="border-border bg-background font-normal text-muted-foreground">
                     {event.metadata.model}

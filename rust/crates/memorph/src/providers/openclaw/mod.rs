@@ -286,6 +286,8 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<Event> {
         timestamp: datetime_from_ms(created_at),
         links: Links::default(),
         blocks,
+        tags: Vec::new(),
+        extensions: Default::default(),
         metadata: Metadata {
             model: message
                 .get("model")
