@@ -5,6 +5,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { PageError } from "@/components/shared/page-states";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n-context";
 import type {
   AgentManagementEntry,
   ProviderConfigIssue,
@@ -30,13 +31,14 @@ function toneVariant(tone: ProviderConfigTone): BadgeVariant {
   }
 }
 
-function renderValue(value: unknown): string {
+function renderValue(value: unknown, t: ReturnType<typeof useI18n>["t"]): string {
   if (value === null || value === undefined) return "-";
-  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (typeof value === "boolean") return value ? t("yes") : t("no");
   return String(value);
 }
 
 function FactRow({ row }: { row: ProviderConfigRow }) {
+  const { t } = useI18n();
   return (
     <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
       <div className="flex min-w-0 flex-col gap-1">
@@ -45,16 +47,21 @@ function FactRow({ row }: { row: ProviderConfigRow }) {
       </div>
       <div className="text-muted-foreground flex min-w-0 items-center gap-2 break-words font-mono text-xs">
         {row.tone ? (
-          <Badge variant={toneVariant(row.tone)}>{renderValue(row.value)}</Badge>
+          <Badge variant={toneVariant(row.tone)}>{renderValue(row.value, t)}</Badge>
         ) : (
-          <span>{renderValue(row.value)}</span>
+          <span>{renderValue(row.value, t)}</span>
         )}
       </div>
     </div>
   );
 }
 
+function issueToneLabel(tone: ProviderConfigTone) {
+  return tone === "ok" ? "ok" : tone === "warning" ? "warning" : tone === "danger" ? "danger" : "muted";
+}
+
 function IssueRow({ issue }: { issue: ProviderConfigIssue }) {
+  const { t } = useI18n();
   return (
     <li className="flex items-start gap-2">
       <Badge variant={toneVariant(issue.tone)} className="mt-0.5 capitalize">
@@ -66,13 +73,14 @@ function IssueRow({ issue }: { issue: ProviderConfigIssue }) {
 }
 
 function ConfigViewContent({ view }: { view: ProviderConfigView }) {
+  const { t } = useI18n();
   const sources = view.sources?.filter((source) => source.path).map((source) =>
-    source.exists ? source.path : `${source.path} (missing)`,
+    source.exists ? source.path : `${source.path} (${t("missing")})`,
   );
   return (
     <div className="flex flex-col gap-4">
       {sources && sources.length > 0 ? (
-        <div className="text-muted-foreground text-xs">Read from {sources.join(", ")}</div>
+        <div className="text-muted-foreground text-xs">{t("readFrom")} {sources.join(", ")}</div>
       ) : null}
       {view.sections?.map((section) => (
         <div key={section.label} className="flex flex-col">
@@ -136,13 +144,14 @@ function ConfigViewPanel({ providerId, view }: { providerId: string; view: Provi
  * blocks the page render.
  */
 export function ConfigViewsBlock({ provider }: { provider: AgentManagementEntry }) {
+  const { t } = useI18n();
   const views = (provider.settings || []).filter((setting) => setting.kind === "view");
   if (views.length === 0) return null;
   return (
     <section className="flex flex-col gap-4 border-t pt-5" data-config-views>
       <SectionHeading
-        title="Configuration"
-        description="Read-only inspection of this provider's own config — MCP servers, plugins, and more."
+        title={t("configuration")}
+        description={t("configurationDescription")}
         className="border-b-0 pb-0"
       />
       {views.map((view) => (

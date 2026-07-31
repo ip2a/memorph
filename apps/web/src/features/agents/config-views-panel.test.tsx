@@ -10,6 +10,23 @@ vi.mock("@/features/agents/queries", () => ({
   useProviderConfigView: (...args: unknown[]) => useProviderConfigView(...args),
 }));
 
+vi.mock("@/lib/i18n-context", () => ({
+  useI18n: () => ({
+    t: (key: string) => ({
+      configuration: "Configuration",
+      configurationDescription: "Read-only inspection",
+      missing: "missing",
+      no: "no",
+      ok: "OK",
+      warning: "Warning",
+      danger: "Danger",
+      muted: "Muted",
+      readFrom: "Read from",
+      yes: "yes",
+    })[key] ?? key,
+  }),
+}));
+
 afterEach(() => {
   cleanup();
   useProviderConfigView.mockReset();

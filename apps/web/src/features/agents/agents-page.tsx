@@ -1,7 +1,7 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRightIcon, PlayIcon, RefreshCwIcon } from "lucide-react";
+import { ArrowRightIcon, InfoIcon, PlayIcon, RefreshCwIcon } from "lucide-react";
 import { EntityRow } from "@/components/shared/entity-row";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PanelCard } from "@/components/shared/panel-card";
@@ -20,19 +20,19 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollPane } from "@/components/shared/scroll-pane";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { formatBytes, formatExecutableVersion } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n-context";
 import type {
   AgentEnvironmentStatus,
   AgentManagementEntry,
   ProviderCapabilities,
   ProviderContentFidelity,
-  ProviderHookDiagnosisAggregate,
   ProviderSettingItem,
 } from "@/lib/types";
 import {
@@ -45,6 +45,7 @@ import {
   useRunProviderSetting,
   useUpdateProviderSetting,
 } from "@/features/agents/queries";
+import { useDetectedHooks } from "@/features/hooks/queries";
 import { useManagerStats } from "@/features/manager/queries";
 import { AgentActionResultPanel } from "@/features/agents/agent-action-result";
 import { ConfigViewsBlock } from "@/features/agents/config-views-panel";
@@ -67,50 +68,78 @@ function providerSettings(provider: AgentManagementEntry) {
   );
 }
 
-function settingLabel(setting: ProviderSettingItem) {
-  if (setting.id === "repair_workspace_sessions") return "Repair current workspace sessions";
-  if (setting.id === "show_subagents") return "Show subagents";
+function settingLabel(setting: ProviderSettingItem, t: ReturnType<typeof useI18n>["t"]) {
+  if (setting.id === "repair_workspace_sessions") return t("repairWorkspaceSessions");
+  if (setting.id === "show_subagents") return t("showSubagents");
   return setting.title || setting.id;
-}
-
-function attentionCount(diagnosis: ProviderHookDiagnosisAggregate | undefined) {
-  if (!diagnosis) return 0;
-  return (
-    Number(diagnosis.hook_needs_attention || 0) +
-    Number(diagnosis.no_session_match || 0) +
-    Number(diagnosis.no_active_runtime || 0) +
-    Number(diagnosis.no_events_yet || 0) +
-    Number(diagnosis.hook_not_installed || 0)
-  );
 }
 
 function DetailSection({
   title,
   description,
   actions,
+  actionsClassName,
+  headingClassName,
   children,
 }: {
   title: string;
   description?: string;
   actions?: ReactNode;
-  children: ReactNode;
+  actionsClassName?: string;
+  headingClassName?: string;
+  children?: ReactNode;
 }) {
   return (
-    <section className="flex flex-col gap-4 border-t pt-5">
-      <SectionHeading title={title} description={description} actions={actions} className="border-b-0 pb-0" />
+    <section className={cn("flex flex-col border-t pt-5", children ? "gap-4" : "")}>
+      <SectionHeading
+        title={title}
+        description={description}
+        actions={actions}
+        className={cn("border-b-0 pb-0", headingClassName)}
+        actionsProps={{ className: actionsClassName }}
+      />
       {children}
     </section>
   );
 }
 
+function InstalledHooksBadge({ providerId }: { providerId: string }) {
+  const [fetchEnabled, setFetchEnabled] = useState(false);
+
+  useEffect(() => {
+    setFetchEnabled(false);
+    const timer = window.setTimeout(() => setFetchEnabled(true), 0);
+    return () => window.clearTimeout(timer);
+  }, [providerId]);
+
+  const detectedHooks = useDetectedHooks(fetchEnabled ? providerId : null);
+
+  if (!fetchEnabled || detectedHooks.isLoading || detectedHooks.error || !detectedHooks.data?.scan_supported) {
+    return null;
+  }
+
+  const count = detectedHooks.data.hooks.filter((hook) => hook.managed_by_memorph).length;
+
+  return (
+    <Badge variant={count > 0 ? "secondary" : "outline"}>
+      {count}
+    </Badge>
+  );
+}
+
 function DetailRow({ label, value, hint }: { label: string; value: string | number | null | undefined; hint?: string }) {
+  const display = value || "-";
+  const title = typeof value === "string" && value ? value : undefined;
+
   return (
     <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
       <div className="flex min-w-0 flex-col gap-1">
         <strong className="text-sm font-medium">{label}</strong>
         {hint ? <span className="text-muted-foreground text-xs">{hint}</span> : null}
       </div>
-      <div className="text-muted-foreground min-w-0 break-words font-mono text-xs">{value || "-"}</div>
+      <div className="text-muted-foreground min-w-0 truncate font-mono text-xs" title={title}>
+        {display}
+      </div>
     </div>
   );
 }
@@ -134,6 +163,7 @@ function ProviderList({
   onSelect: (provider: string) => void;
   onPrefetch: (provider: string) => void;
 }) {
+  const { t } = useI18n();
   const ordered = useMemo(
     () =>
       [...providers].sort((left, right) => {
@@ -149,17 +179,16 @@ function ProviderList({
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>No providers</EmptyTitle>
-          <EmptyDescription>No agent providers were returned by the backend.</EmptyDescription>
+          <EmptyTitle>{t("agentsNoProviders")}</EmptyTitle>
+          <EmptyDescription>{t("agentsNoProvidersDescription")}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
   }
 
   return (
-    <ScrollArea className="min-h-0 flex-1 pr-3">
-      <div className="flex flex-col gap-2">
-        {ordered.map((provider) => {
+    <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-2">
+      {ordered.map((provider) => {
           const selected = provider.provider_id === selectedProvider;
           const status = providerListInstallStatus(provider, "agent");
           return (
@@ -175,20 +204,20 @@ function ProviderList({
             />
           );
         })}
-      </div>
-    </ScrollArea>
+    </ScrollPane>
   );
 }
 
 function EnvironmentBlock({ provider }: { provider: AgentManagementEntry }) {
+  const { t } = useI18n();
   const environment = environmentOf(provider);
   return (
-    <DetailSection title="Agent Management Environment">
+    <DetailSection title={t("agentsEnvironment")}>
       <div className="flex flex-col">
-        <DetailRow label="Executable path" value={environment.executable_path} />
-        <DetailRow label="Executable dir" value={environment.executable_dir} />
-        <DetailRow label="Executable version" value={formatExecutableVersion(environment.executable_version)} />
-        <DetailRow label="Config path" value={environment.config_path} />
+        <DetailRow label={t("executablePath")} value={environment.executable_path} />
+        <DetailRow label={t("executableDir")} value={environment.executable_dir} />
+        <DetailRow label={t("executableVersion")} value={formatExecutableVersion(environment.executable_version)} />
+        <DetailRow label={t("configPath")} value={environment.config_path} />
       </div>
     </DetailSection>
   );
@@ -201,6 +230,7 @@ function AgentStatsStrip({
   provider: AgentManagementEntry | undefined;
   loading: boolean;
 }) {
+  const { t } = useI18n();
   const navigate = useNavigate();
   const providerId = provider?.provider_id;
   const filter = useMemo(() => ({ providers: providerId ? [providerId] : [] }), [providerId]);
@@ -213,9 +243,9 @@ function AgentStatsStrip({
   return (
     <MetricGrid columns="four" data-agent-stats>
       <MetricTile
-        label="Sessions"
+        label={t("sessions")}
         value={provider ? sessionCount : placeholder}
-        hint="all workspaces"
+        hint={t("allWorkspaces")}
         variant="compact"
         onClick={() => {
           if (!providerId) return;
@@ -223,20 +253,20 @@ function AgentStatsStrip({
         }}
       />
       <MetricTile
-        label="Size"
+        label={t("size")}
         value={stats.data ? formatBytes(stats.data.all_workspace_size_bytes) : placeholder}
-        hint="indexed storage"
+        hint={t("indexedStorage")}
         variant="compact"
       />
       <MetricTile
-        label="Version"
+        label={t("version")}
         value={version || placeholder}
-        hint="executable"
+        hint={t("executable")}
         variant="compact"
         title={version ?? undefined}
       />
       <MetricTile
-        label="Install Method"
+        label={t("installMethod")}
         value={environment?.install_method || placeholder}
         variant="compact"
       />
@@ -245,35 +275,25 @@ function AgentStatsStrip({
 }
 
 function HooksBlock({ provider }: { provider: AgentManagementEntry }) {
-  const hook = provider.hook || {};
-  const diagnosis = provider.hook_diagnosis || {};
-  const version = hook.installed_version && hook.current_version && hook.installed_version !== hook.current_version
-    ? `${hook.installed_version} -> ${hook.current_version}`
-    : hook.installed_version || hook.current_version || "-";
+  const { t } = useI18n();
 
   return (
     <DetailSection
-      title="Hooks"
-      description="Provider hook install, runtime, and session diagnosis summary."
+      title={t("hooks")}
+      headingClassName="md:items-center"
+      actionsClassName="items-center"
       actions={(
-        <Button asChild variant="outline">
-          <Link to="/hooks">
-            Open Hooks
-            <ArrowRightIcon data-icon="inline-end" />
-          </Link>
-        </Button>
+        <>
+          <InstalledHooksBadge providerId={provider.provider_id} />
+          <Button asChild variant="outline" size="sm">
+            <Link to="/hooks">
+              {t("openHooks")}
+              <ArrowRightIcon data-icon="inline-end" />
+            </Link>
+          </Button>
+        </>
       )}
-    >
-      <SummaryGrid
-        items={[
-          { label: "Hook status", value: hook.status || "unsupported" },
-          { label: "Version", value: version },
-          { label: "Sessions", value: diagnosis.total_sessions || 0 },
-          { label: "Active runtime", value: diagnosis.active_runtime_sessions || 0 },
-          { label: "Attention", value: attentionCount(diagnosis) },
-        ]}
-      />
-    </DetailSection>
+    />
   );
 }
 
@@ -293,6 +313,7 @@ function FidelityRows({
   label: string;
   fidelity: ProviderContentFidelity;
 }) {
+  const { t } = useI18n();
   const entries = Object.entries(fidelity).filter((entry): entry is [string, string] => Boolean(entry[1]));
   return (
     <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
@@ -305,54 +326,50 @@ function FidelityRows({
           >
             {capabilityLabel(kind)}: {capabilityLabel(disposition)}
           </Badge>
-        )) : <span className="text-xs text-muted-foreground">Unknown</span>}
+        )) : <span className="text-xs text-muted-foreground">{t("unknown")}</span>}
       </div>
     </div>
   );
 }
 
-function CapabilityBlock({ capabilities }: { capabilities: ProviderCapabilities | undefined }) {
+function CapabilityContent({ capabilities }: { capabilities: ProviderCapabilities | undefined }) {
+  const { t } = useI18n();
   if (!capabilities) {
     return (
-      <DetailSection title="Session Management Capability">
-        <div className="text-sm text-muted-foreground">Capability catalog data is unavailable.</div>
-      </DetailSection>
+      <div className="text-sm text-muted-foreground">{t("capabilityUnavailable")}</div>
     );
   }
 
   const operations = [
-    ["Scan", capabilities.scan],
-    ["Import", capabilities.import],
-    ["Export", capabilities.export],
-    ["Delete", capabilities.delete],
-    ["Rename", capabilities.rename],
-    ["Resume", capabilities.resume],
+    [t("scan"), capabilities.scan],
+    [t("import"), capabilities.import],
+    [t("export"), capabilities.export],
+    [t("remove"), capabilities.delete],
+    [t("rename"), capabilities.rename],
+    [t("resume"), capabilities.resume],
   ] as const;
   const topology = [
-    ["Multiple files", capabilities.write_risk.multiple_files],
-    ["SQLite", capabilities.write_risk.sqlite],
-    ["Sidecars", capabilities.write_risk.sidecar_files],
-    ["Index repair", capabilities.write_risk.index_repair],
+    [t("multipleFiles"), capabilities.write_risk.multiple_files],
+    [t("sqlite"), capabilities.write_risk.sqlite],
+    [t("sidecars"), capabilities.write_risk.sidecar_files],
+    [t("indexRepair"), capabilities.write_risk.index_repair],
   ] as const;
 
   return (
-    <DetailSection
-      title="Session Management Capability"
-      description="Projection quality and native write risk declared by the provider implementation."
-    >
+    <>
       <SummaryGrid
         items={[
-          { label: "Storage", value: capabilityLabel(capabilities.storage_shape) },
-          { label: "Scan", value: capabilityLabel(capabilities.scan_strategy) },
-          { label: "Paging", value: capabilityLabel(capabilities.page_strategy) },
-          { label: "Turn quality", value: capabilityLabel(capabilities.turn_quality) },
-          { label: "Resume", value: capabilityLabel(capabilities.resume_quality) },
-          { label: "Write risk", value: capabilityLabel(capabilities.write_risk.level) },
+          { label: t("storage"), value: capabilityLabel(capabilities.storage_shape) },
+          { label: t("scan"), value: capabilityLabel(capabilities.scan_strategy) },
+          { label: t("paging"), value: capabilityLabel(capabilities.page_strategy) },
+          { label: t("turnQuality"), value: capabilityLabel(capabilities.turn_quality) },
+          { label: t("resume"), value: capabilityLabel(capabilities.resume_quality) },
+          { label: t("writeRisk"), value: capabilityLabel(capabilities.write_risk.level) },
         ]}
       />
       <div className="flex flex-col">
         <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
-          <strong className="text-sm font-medium">Operations</strong>
+          <strong className="text-sm font-medium">{t("operations")}</strong>
           <div className="flex flex-wrap gap-1.5">
             {operations.map(([label, supported]) => (
               <Badge key={label} variant={supported ? "secondary" : "outline"}>{label}: {supported ? "yes" : "no"}</Badge>
@@ -361,8 +378,8 @@ function CapabilityBlock({ capabilities }: { capabilities: ProviderCapabilities 
         </div>
         <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
           <div className="flex min-w-0 flex-col gap-1">
-            <strong className="text-sm font-medium">Native write risk</strong>
-            <span className="text-xs text-muted-foreground">Storage planes touched by delete, rename, import, or sync.</span>
+            <strong className="text-sm font-medium">{t("nativeWriteRisk")}</strong>
+            <span className="text-xs text-muted-foreground">{t("nativeWriteRiskDescription")}</span>
           </div>
           <div className="flex flex-wrap gap-1.5">
             <Badge variant={riskVariant(capabilities.write_risk.level)}>{capabilityLabel(capabilities.write_risk.level)}</Badge>
@@ -372,7 +389,7 @@ function CapabilityBlock({ capabilities }: { capabilities: ProviderCapabilities 
           </div>
         </div>
         <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
-          <strong className="text-sm font-medium">Backup contract</strong>
+          <strong className="text-sm font-medium">{t("backupContract")}</strong>
           <div className="flex flex-wrap gap-1.5">
             <Badge variant={capabilities.backup_support.before_write ? "secondary" : "destructive"}>
               Before write: {capabilities.backup_support.before_write ? "yes" : "no"}
@@ -383,10 +400,10 @@ function CapabilityBlock({ capabilities }: { capabilities: ProviderCapabilities 
             <Badge variant="outline">Sync only: {capabilities.backup_support.sync_only ? "yes" : "no"}</Badge>
           </div>
         </div>
-        <FidelityRows label="Import fidelity" fidelity={capabilities.import_fidelity} />
-        <FidelityRows label="Export fidelity" fidelity={capabilities.export_fidelity} />
+        <FidelityRows label={t("importFidelity")} fidelity={capabilities.import_fidelity} />
+        <FidelityRows label={t("exportFidelity")} fidelity={capabilities.export_fidelity} />
         <div className="grid gap-3 py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
-          <strong className="text-sm font-medium">Activity coverage</strong>
+          <strong className="text-sm font-medium">{t("activityCoverage")}</strong>
           <div className="flex flex-wrap gap-1.5">
             <Badge variant={capabilities.activity_support.hook_events ? "secondary" : "outline"}>
               Hook events: {capabilities.activity_support.hook_events ? "yes" : "no"}
@@ -400,7 +417,7 @@ function CapabilityBlock({ capabilities }: { capabilities: ProviderCapabilities 
           </div>
         </div>
       </div>
-    </DetailSection>
+    </>
   );
 }
 
@@ -417,12 +434,13 @@ function ProviderItemsBlock({
   onRequestRun: (setting: ProviderSettingItem) => void;
   pendingKey: string | null;
 }) {
+  const { t } = useI18n();
   const items = providerSettings(provider);
 
   return (
     <DetailSection
-      title="Agent Provider Items"
-      description="Provider-specific toggles and repair actions."
+      title={t("providerItems")}
+      description={t("providerItemsDescription")}
     >
       {items.length ? (
         <div className="flex flex-col">
@@ -437,13 +455,13 @@ function ProviderItemsBlock({
                   variant="inline"
                   actions={(
                     <div className="flex items-center gap-3">
-                      <span className="text-muted-foreground text-xs">{checked ? "Enabled" : "Disabled"}</span>
+                      <span className="text-muted-foreground text-xs">{checked ? t("enabled") : t("disabled")}</span>
                       <Switch checked={checked} disabled={pending} onCheckedChange={(next) => onToggle(setting, next)} />
                     </div>
                   )}
                 >
                   <div className="flex min-w-0 flex-col gap-1">
-                    <strong className="text-sm font-medium">{settingLabel(setting)}</strong>
+                    <strong className="text-sm font-medium">{settingLabel(setting, t)}</strong>
                     <span className="text-muted-foreground text-sm">{setting.description}</span>
                   </div>
                 </EntityRow>
@@ -456,12 +474,12 @@ function ProviderItemsBlock({
                 actions={(
                   <Button type="button" variant="outline" disabled={pending} onClick={() => onRequestRun(setting)}>
                     {pending ? <Spinner data-icon="inline-start" /> : <PlayIcon data-icon="inline-start" />}
-                    {pending ? "Running" : settingLabel(setting)}
+                    {pending ? t("running") : settingLabel(setting, t)}
                   </Button>
                 )}
               >
                 <div className="flex min-w-0 flex-col gap-1">
-                  <strong className="text-sm font-medium">{settingLabel(setting)}</strong>
+                  <strong className="text-sm font-medium">{settingLabel(setting, t)}</strong>
                   <span className="text-muted-foreground text-sm">{setting.description}</span>
                 </div>
               </EntityRow>
@@ -471,8 +489,8 @@ function ProviderItemsBlock({
       ) : (
         <Empty>
           <EmptyHeader>
-            <EmptyTitle>No provider items</EmptyTitle>
-            <EmptyDescription>This provider has no non-hook controls.</EmptyDescription>
+            <EmptyTitle>{t("noProviderItems")}</EmptyTitle>
+            <EmptyDescription>{t("noProviderItemsDescription")}</EmptyDescription>
           </EmptyHeader>
         </Empty>
       )}
@@ -492,11 +510,17 @@ function ProviderDetail({
   isLoading: boolean;
   workspace: string | null | undefined;
 }) {
+  const { t } = useI18n();
   const detectAgent = useDetectAgent();
   const updateSetting = useUpdateProviderSetting();
   const runSetting = useRunProviderSetting();
   const [confirmAction, setConfirmAction] = useState<ProviderSettingItem | null>(null);
   const [actionResult, setActionResult] = useState<{ title: string; providerId: string; result: unknown } | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+
+  useEffect(() => {
+    setDetailsOpen(false);
+  }, [provider?.provider_id]);
 
   if (isLoading && !provider) {
     return (
@@ -512,8 +536,8 @@ function ProviderDetail({
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>Select a provider</EmptyTitle>
-          <EmptyDescription>Choose an agent provider on the left to inspect its environment and controls.</EmptyDescription>
+          <EmptyTitle>{t("selectProvider")}</EmptyTitle>
+          <EmptyDescription>{t("selectProviderDescription")}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
@@ -542,7 +566,7 @@ function ProviderDetail({
       {
         onSuccess: (output) => {
           setActionResult({
-            title: settingLabel(setting),
+            title: settingLabel(setting, t),
             providerId: provider!.provider_id,
             result: output,
           });
@@ -553,8 +577,7 @@ function ProviderDetail({
 
   return (
     <>
-      <ScrollArea className="min-h-0 h-full pr-3">
-      <div className="flex flex-col gap-6 pb-2">
+      <ScrollPane className="min-h-0 h-full" innerClassName="flex flex-col gap-6 pb-2">
         <header className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-3">
               <ProviderLogo
@@ -564,16 +587,35 @@ function ProviderDetail({
               />
               <strong className="truncate text-lg font-semibold">{provider.name}</strong>
             </div>
-            <Button type="button" variant="outline" disabled={detectAgent.isPending} onClick={() => detectAgent.mutate(provider.provider_id)}>
-              {detectAgent.isPending ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
-              Detect
-            </Button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+                <Button type="button" variant="outline" size="sm" onClick={() => setDetailsOpen(true)}>
+                  <InfoIcon data-icon="inline-start" />
+                  {t("agentDetails")}
+                </Button>
+                <DialogContent
+                  className="flex h-[min(85dvh,840px)] w-[min(960px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl"
+                  data-agent-capability-details
+                >
+                  <DialogHeader className="shrink-0 border-b px-6 py-4">
+                    <DialogTitle>{t("sessionManagementCapability")}</DialogTitle>
+                    <DialogDescription>{t("capabilityDescription")}</DialogDescription>
+                  </DialogHeader>
+                  <ScrollPane className="min-h-0 flex-1" innerClassName="px-6 py-4">
+                    <CapabilityContent capabilities={capabilities} />
+                  </ScrollPane>
+                </DialogContent>
+              </Dialog>
+              <Button type="button" variant="outline" size="sm" disabled={detectAgent.isPending} onClick={() => detectAgent.mutate(provider.provider_id)}>
+                {detectAgent.isPending ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
+                Detect
+              </Button>
+            </div>
           </header>
-          {detectAgent.error ? <PageError title="Detect failed" message={detectAgent.error.message} /> : null}
-          {updateSetting.error ? <PageError title="Setting update failed" message={updateSetting.error.message} /> : null}
-          {runSetting.error ? <PageError title="Provider action failed" message={runSetting.error.message} /> : null}
+          {detectAgent.error ? <PageError title={t("detectFailed")} message={detectAgent.error.message} /> : null}
+          {updateSetting.error ? <PageError title={t("settingUpdateFailed")} message={updateSetting.error.message} /> : null}
+          {runSetting.error ? <PageError title={t("providerActionFailed")} message={runSetting.error.message} /> : null}
           <EnvironmentBlock provider={provider} />
-          <CapabilityBlock capabilities={capabilities} />
           <HooksBlock provider={provider} />
           <ProviderItemsBlock
             provider={provider}
@@ -583,13 +625,12 @@ function ProviderDetail({
             pendingKey={pendingKey}
           />
           <ConfigViewsBlock provider={provider} />
-        </div>
-      </ScrollArea>
+      </ScrollPane>
 
       <Dialog open={Boolean(confirmAction)} onOpenChange={(open) => !open && setConfirmAction(null)}>
         <DialogContent className="sm:max-w-lg" data-agent-action-confirm>
           <DialogHeader>
-            <DialogTitle>{confirmAction ? settingLabel(confirmAction) : "Confirm action"}</DialogTitle>
+            <DialogTitle>{confirmAction ? settingLabel(confirmAction, t) : t("confirmAction")}</DialogTitle>
             <DialogDescription>{confirmAction?.description}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2 rounded-md border p-3 font-mono text-xs">
@@ -612,12 +653,12 @@ function ProviderDetail({
         <DialogContent className="sm:max-w-2xl" data-agent-action-result>
           <DialogHeader>
             <DialogTitle>{actionResult?.title}</DialogTitle>
-            <DialogDescription>Workspace session repair completed.</DialogDescription>
+            <DialogDescription>{t("workspaceRepairCompleted")}</DialogDescription>
           </DialogHeader>
           {actionResult ? (
-            <ScrollArea className="max-h-[min(70vh,32rem)] pr-3">
+            <ScrollPane className="max-h-[min(70vh,32rem)]">
               <AgentActionResultPanel providerId={actionResult.providerId} result={actionResult.result} />
-            </ScrollArea>
+            </ScrollPane>
           ) : null}
           <DialogFooter>
             <Button type="button" onClick={() => setActionResult(null)}>
@@ -631,6 +672,7 @@ function ProviderDetail({
 }
 
 export function AgentsPage() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const summary = useAgentsSummary();
   const meta = useAgentsMeta();
@@ -645,9 +687,9 @@ export function AgentsPage() {
   const capabilities = catalog.data?.providers.find((provider) => provider.provider_id === selected)?.capability_set;
 
   if (summary.isLoading || meta.isLoading) return <PageSkeleton />;
-  if (summary.error) return <PageError title="Agents failed to load" message={summary.error.message} />;
-  if (meta.error) return <PageError title="Workspace metadata failed to load" message={meta.error.message} />;
-  if (catalog.error) return <PageError title="Provider capabilities failed to load" message={catalog.error.message} />;
+  if (summary.error) return <PageError title={t("agentsLoadFailed")} message={summary.error.message} />;
+  if (meta.error) return <PageError title={t("workspaceMetadataLoadFailed")} message={meta.error.message} />;
+  if (catalog.error) return <PageError title={t("providerCapabilitiesLoadFailed")} message={catalog.error.message} />;
 
   return (
     <TwoPanePage>
@@ -670,7 +712,7 @@ export function AgentsPage() {
       >
         <AgentStatsStrip provider={detail.data} loading={detail.isLoading} />
         <Separator />
-        {detail.error ? <PageError title="Agent detail failed to load" message={detail.error.message} /> : null}
+        {detail.error ? <PageError title={t("agentDetailLoadFailed")} message={detail.error.message} /> : null}
         <ProviderDetail
           provider={detail.data}
           capabilities={capabilities}
