@@ -36,7 +36,7 @@ import { SessionDetailHeaderActions } from "@/features/sessions/session-detail-h
 import { buildSessionEventQuery, sessionEventTotalPages, type SessionEventPageSize } from "@/features/sessions/session-detail-pagination";
 import { readSessionDetailRouteState, writeSessionDetailRouteState } from "@/features/sessions/session-detail-route-state";
 import { SessionDetailResultPagination } from "@/features/sessions/session-detail-result-pagination";
-import { getMeta, listProviders } from "@/lib/api";
+import { ApiError, getMeta, listProviders } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 function detailTitle(view: SessionDetailView) {
@@ -553,7 +553,13 @@ export function SessionDetailPage() {
   }
 
   if (session.isLoading && !session.data) return <PageSkeleton />;
-  if (session.error) return <PageError title="Session failed to load" message={session.error.message} />;
+  if (session.error) {
+    const status = session.error instanceof ApiError ? session.error.status : 0;
+    if (status === 410) return <PageError title="Session source removed" message={session.error.message} />;
+    if (status === 501) return <PageError title="Detail view unsupported" message={session.error.message} />;
+    if (status === 404) return <PageError title="Session not indexed" message={session.error.message} />;
+    return <PageError title="Session failed to load" message={session.error.message} />;
+  }
   if (!session.data) return <PageEmpty title="Session not found" description="Return to the session list and choose another session." />;
 
   const { view, returned_event_count, has_more_events, matched_event_count, returned_event_indices } = session.data;

@@ -8,6 +8,9 @@ export function useSessions(params: SessionListParams) {
     queryKey: queryKeys.sessionPage(params),
     queryFn: () => listSessions(params),
     placeholderData: keepPreviousData,
+    // Backend flags `degraded: true` when it returned an empty result and
+    // triggered a background workspace indexing pass. Poll until it clears.
+    refetchInterval: (query) => (query.state.data?.degraded ? 2000 : false),
   });
 }
 

@@ -10,7 +10,7 @@ export function useSwitchWorkspace(onDone?: () => void) {
 
   return useMutation({
     mutationFn: async (workspace: string) => {
-      await listSessions({ all: true, details: false, limit: 1, workspace });
+      await listSessions({ all: true, fields: "minimal", limit: 1, workspace });
       return workspace;
     },
     onSuccess: (workspace) => {

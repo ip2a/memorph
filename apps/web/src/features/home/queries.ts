@@ -29,7 +29,7 @@ export function useHomeData(
   );
   const sessionParams = {
     all: false,
-    details: true,
+    fields: "with_stats",
     limit: sessionLimit,
     workspace: selectedWorkspace,
     sort: sessionOptions.sort ?? "recent",
@@ -58,6 +58,9 @@ export function useHomeData(
     queryFn: () => listSessions(sessionParams),
     enabled: !meta.isLoading && Boolean(selectedProviders?.length),
     placeholderData: (previous) => previous,
+    // Backend flags `degraded: true` when it returned an empty result and
+    // triggered a background workspace indexing pass. Poll until it clears.
+    refetchInterval: (query) => (query.state.data?.degraded ? 2000 : false),
   });
 
   const syncGroups = useQuery({

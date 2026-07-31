@@ -45,7 +45,7 @@ export function SessionsPage() {
   const pageSize = 25;
 
   const params = useMemo(
-    () => ({ all: true, details: true, limit: pageSize, offset: page * pageSize, sort }),
+    () => ({ all: true, fields: "with_stats" as const, limit: pageSize, offset: page * pageSize, sort }),
     [page, sort],
   );
   const sessions = useSessions(params);

@@ -619,12 +619,16 @@ export type MetaPayload = {
 
 export type SessionListSort = "recent" | "title";
 
+export type SessionListFields = "minimal" | "with_stats";
+
 export type SessionListParams = {
   all?: boolean;
   provider?: string;
   dir?: string;
   workspace?: string;
-  details?: boolean;
+  /** Projection tier. "minimal" skips per-session stat counts; "with_stats"
+   *  includes them. Defaults to "with_stats" on the backend when omitted. */
+  fields?: SessionListFields;
   limit?: number;
   offset?: number;
   sort?: SessionListSort;
@@ -956,6 +960,9 @@ export type SessionPage = {
   offset: number;
   limit: number;
   has_more: boolean;
+  /** True when the store had no indexed sessions for the requested workspace
+   *  and a background indexing pass was triggered. Clients should re-poll. */
+  degraded?: boolean;
 };
 
 export type SyncHolding = {
