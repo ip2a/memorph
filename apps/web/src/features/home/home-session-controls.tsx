@@ -12,12 +12,14 @@ import {
 import { Input } from "@/components/ui/input";
 import { orderProviderPills } from "@/features/home/model/providers";
 import { ProviderPicker } from "@/features/home/provider-picker";
+import { useI18n } from "@/lib/i18n-context";
+import type { I18nKey } from "@/lib/i18n-core";
 import type { ProviderCatalogEntry, SessionListSort } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const SORT_OPTIONS: Array<{ label: string; value: SessionListSort }> = [
-  { label: "Recent", value: "recent" },
-  { label: "Title", value: "title" },
+const SORT_OPTION_KEYS: Array<{ labelKey: I18nKey; value: SessionListSort }> = [
+  { labelKey: "sortByRecent", value: "recent" },
+  { labelKey: "sortByTitle", value: "title" },
 ];
 
 type HomeSortDialogProps = {
@@ -28,15 +30,17 @@ type HomeSortDialogProps = {
 };
 
 export function HomeSortDialog({ open, sort, onOpenChange, onSortChange }: HomeSortDialogProps) {
+  const { t } = useI18n();
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md" data-home-sort-dialog>
         <DialogHeader>
-          <DialogTitle>Sort sessions</DialogTitle>
-          <DialogDescription>Choose how recent sessions are ordered in the list below.</DialogDescription>
+          <DialogTitle>{t("sortSessions")}</DialogTitle>
+          <DialogDescription>{t("sortSessionsDescription")}</DialogDescription>
         </DialogHeader>
         <div className="grid gap-2">
-          {SORT_OPTIONS.map((option) => (
+          {SORT_OPTION_KEYS.map((option) => (
             <Button
               key={option.value}
               type="button"
@@ -47,7 +51,7 @@ export function HomeSortDialog({ open, sort, onOpenChange, onSortChange }: HomeS
                 onOpenChange(false);
               }}
             >
-              {option.label}
+              {t(option.labelKey)}
             </Button>
           ))}
         </div>
@@ -77,6 +81,7 @@ export function HomeFiltersDialog({
   onOpenChange,
   onApply,
 }: HomeFiltersDialogProps) {
+  const { t } = useI18n();
   const [draftProviders, setDraftProviders] = useState(selectedProviders);
   const [draftSessionsPerProvider, setDraftSessionsPerProvider] = useState(sessionsPerProvider);
   const [providerOrder, setProviderOrder] = useState(providerCandidates);
@@ -105,19 +110,19 @@ export function HomeFiltersDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg" data-home-filters-dialog>
         <DialogHeader>
-          <DialogTitle>Filter sessions</DialogTitle>
-          <DialogDescription>Select scan providers for the recent session list.</DialogDescription>
+          <DialogTitle>{t("filterSessions")}</DialogTitle>
+          <DialogDescription>{t("filterSessionsDescription")}</DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-5">
           <section className="grid gap-2">
-            <p className="font-mono text-xs uppercase text-muted-foreground">Providers</p>
+            <p className="font-mono text-xs uppercase text-muted-foreground">{t("providers")}</p>
             <ProviderPicker candidates={providerOrder} selected={draftProviders} onToggle={toggleDraftProvider} />
           </section>
 
           <section className="grid gap-2">
-            <p className="font-mono text-xs uppercase text-muted-foreground">Sessions per agent</p>
-            <p className="text-sm text-muted-foreground">How many recent sessions to show for each agent on the home page.</p>
+            <p className="font-mono text-xs uppercase text-muted-foreground">{t("sessionsPerProvider")}</p>
+            <p className="text-sm text-muted-foreground">{t("sessionsPerProviderHint")}</p>
             <div className="flex flex-wrap items-center gap-2">
               {SESSIONS_PER_AGENT_PRESETS.map((value) => (
                 <Button
@@ -137,7 +142,7 @@ export function HomeFiltersDialog({
                 max={200}
                 value={draftSessionsPerProvider}
                 onChange={(event) => setDraftSessionsPerProvider(Math.max(1, Math.min(200, Number(event.target.value || 1))))}
-                aria-label="Sessions per agent"
+                aria-label={t("sessionsPerProvider")}
               />
             </div>
           </section>
@@ -145,11 +150,11 @@ export function HomeFiltersDialog({
 
         <DialogFooter className="gap-2 sm:justify-between">
           <Button type="button" variant="ghost" onClick={resetDraft}>
-            Reset
+            {t("reset")}
           </Button>
           <div className="flex gap-2">
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
+              {t("cancel")}
             </Button>
             <Button
               type="button"
@@ -162,7 +167,7 @@ export function HomeFiltersDialog({
                 onOpenChange(false);
               }}
             >
-              Apply
+              {t("apply")}
             </Button>
           </div>
         </DialogFooter>
@@ -211,6 +216,7 @@ export function HomeSessionToolbar({
   onFiltersApply,
   providerCandidates,
 }: HomeSessionToolbarProps) {
+  const { t } = useI18n();
   const [sortOpen, setSortOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const filtersActive = activeFilterCount(
@@ -219,7 +225,8 @@ export function HomeSessionToolbar({
     sessionsPerProvider,
     defaultSessionsPerProvider,
   );
-  const sortLabel = SORT_OPTIONS.find((option) => option.value === sort)?.label ?? "Sort";
+  const sortOption = SORT_OPTION_KEYS.find((option) => option.value === sort);
+  const sortLabel = sortOption ? t(sortOption.labelKey) : t("sort");
 
   return (
     <>
@@ -230,7 +237,7 @@ export function HomeSessionToolbar({
             className="w-full pl-8"
             value={search}
             onChange={(event) => onSearchChange(event.target.value)}
-            placeholder="Search sessions"
+            placeholder={t("searchSessions")}
           />
         </div>
 
@@ -242,7 +249,7 @@ export function HomeSessionToolbar({
           data-home-sort-trigger
         >
           <ArrowDownUpIcon data-icon="inline-start" />
-          {sort === "recent" ? "Sort" : sortLabel}
+          {sort === "recent" ? t("sort") : sortLabel}
         </Button>
 
         <Button
@@ -252,7 +259,7 @@ export function HomeSessionToolbar({
           data-home-filters-trigger
         >
           <SlidersHorizontalIcon data-icon="inline-start" />
-          Filters
+          {t("filters")}
           {filtersActive ? <span className="font-mono text-xs">({filtersActive})</span> : null}
         </Button>
         </div>
@@ -294,6 +301,8 @@ export function HomeSessionListPanel({
   errorMessage?: string | null;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
+
   if (errorMessage) {
     return (
       <div className="px-3 pb-3">
@@ -304,8 +313,8 @@ export function HomeSessionListPanel({
 
   return (
     <div className="relative flex min-h-full flex-col px-3 pb-3">
-      {loading ? <SessionListLoadingOverlay label="Loading sessions..." /> : null}
-      {!loading && refreshing ? <SessionListLoadingOverlay label="Updating sessions..." /> : null}
+      {loading ? <SessionListLoadingOverlay label={t("loadingSessions")} /> : null}
+      {!loading && refreshing ? <SessionListLoadingOverlay label={t("updatingSessions")} /> : null}
       <div className={cn("flex min-h-0 flex-1 flex-col", (loading || refreshing) && "pointer-events-none opacity-60")}>
         {children}
       </div>

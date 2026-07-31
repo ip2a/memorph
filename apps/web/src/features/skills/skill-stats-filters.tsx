@@ -11,6 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  formatSkillsStatsRangeLabel,
   readSkillsStatsCustomRange,
   writeSkillsStatsCustomRange,
 } from "@/features/skills/skills-stats-preferences";
@@ -34,15 +35,6 @@ function presetRange(range: keyof typeof RANGE_DAYS) {
 
 function defaultCustomDates() {
   return readSkillsStatsCustomRange() ?? presetRange("30d");
-}
-
-function formatCustomRangeLabel(from: string, to: string) {
-  const format = (value: string) => {
-    const [year, month, day] = value.split("-");
-    if (!year || !month || !day) return value;
-    return `${Number(month)}/${Number(day)}`;
-  };
-  return `${format(from)}–${format(to)}`;
 }
 
 export function useSkillStatsFilters(provider?: string) {
@@ -196,7 +188,7 @@ export function SkillStatsFilterTabs({ className }: { className?: string }) {
             }}
           >
             {range === "custom"
-              ? formatCustomRangeLabel(dates.from, dates.to)
+              ? formatSkillsStatsRangeLabel(dates.from, dates.to)
               : t("skillsCustomRange")}
           </TabsTrigger>
         </TabsList>

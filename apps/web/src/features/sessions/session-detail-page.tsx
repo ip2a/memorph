@@ -24,7 +24,7 @@ import { cn } from "@/lib/utils";
 import { useSession, useSessionActivity } from "@/features/sessions/queries";
 import { SessionActivityChart } from "@/features/sessions/session-activity-chart";
 import { CompressSessionDialog } from "@/features/compression/compression-actions";
-import { SessionBlock } from "@/features/sessions/session-block";
+import { SessionEventBlocks } from "@/features/sessions/session-event-blocks";
 import {
   eventBlockTagClass,
   eventKindTagClass,
@@ -426,11 +426,7 @@ function DetailEventItem({
               {blocks.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No details.</p>
               ) : (
-                <div className="flex flex-col gap-3">
-                  {blocks.map((block, blockIndex) => (
-                    <SessionBlock key={`${event.id}-${blockIndex}`} block={block} />
-                  ))}
-                </div>
+                <SessionEventBlocks blocks={blocks} eventId={event.id} />
               )}
             </div>
           </CollapsibleContent>

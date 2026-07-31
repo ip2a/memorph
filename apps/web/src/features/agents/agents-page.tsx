@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { ArrowRightIcon, InfoIcon, PlayIcon, RefreshCwIcon } from "lucide-react";
 import { EntityRow } from "@/components/shared/entity-row";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
@@ -231,7 +231,6 @@ function AgentStatsStrip({
   loading: boolean;
 }) {
   const { t } = useI18n();
-  const navigate = useNavigate();
   const providerId = provider?.provider_id;
   const filter = useMemo(() => ({ providers: providerId ? [providerId] : [] }), [providerId]);
   const stats = useManagerStats(filter, { enabled: !!providerId });
@@ -247,10 +246,6 @@ function AgentStatsStrip({
         value={provider ? sessionCount : placeholder}
         hint={t("allWorkspaces")}
         variant="compact"
-        onClick={() => {
-          if (!providerId) return;
-          navigate(`/manager?provider=${encodeURIComponent(providerId)}&view=sessions`);
-        }}
       />
       <MetricTile
         label={t("size")}

@@ -195,14 +195,14 @@ function SessionRowActions({
   if (showView) {
     primaryActions.push(
       <Button key="view" asChild variant="outline">
-        <Link to={detailHref}>View</Link>
+        <Link to={detailHref}>{t("view")}</Link>
       </Button>,
     );
   }
   if (showCompress) {
     primaryActions.push(
       <Button key="compress" type="button" variant="outline" onClick={() => onCompress(session)}>
-        Compression
+        {t("compression")}
       </Button>,
     );
   }
@@ -216,32 +216,32 @@ function SessionRowActions({
   if (showExport) {
     primaryActions.push(
       <Button key="export" type="button" variant="outline" onClick={() => onExport(session)}>
-        Export
+        {t("export")}
       </Button>,
     );
   }
   if (showSync && syncRef) {
     primaryActions.push(
       <Button key="sync-open" asChild variant="outline">
-        <Link to={`/sync/${syncRef}`}>Open Sync</Link>
+        <Link to={`/sync/${syncRef}`}>{t("openSync")}</Link>
       </Button>,
     );
   } else if (showSync) {
     primaryActions.push(
       <Button key="sync" type="button" variant="outline" onClick={() => onSync(session)}>
-        Sync
+        {t("sync")}
       </Button>,
     );
   }
   primaryActions.push(
     <Button key="rename" type="button" variant="outline" onClick={() => onRename(session)}>
-      Rename
+      {t("rename")}
     </Button>,
   );
   if (showDelete) {
     primaryActions.push(
       <Button key="remove" type="button" variant="destructive" onClick={() => onDelete(session)}>
-        Remove
+        {t("remove")}
       </Button>,
     );
   }
@@ -258,23 +258,23 @@ function SessionRowActions({
       {leadingActions}
       <TrailingMoreButtonGroup
         trailingAction={trailingAction}
-        moreLabel={`More actions for ${sessionTitle(session)}`}
+        moreLabel={t("moreActionsFor", { title: sessionTitle(session) })}
       >
         <DropdownMenuGroup>
-          <DropdownMenuItem onSelect={() => onRename(session)}>Rename</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onRename(session)}>{t("rename")}</DropdownMenuItem>
           {showSync && syncRef ? (
             <DropdownMenuItem asChild>
-              <Link to={`/sync/${syncRef}`}>Open Sync</Link>
+              <Link to={`/sync/${syncRef}`}>{t("openSync")}</Link>
             </DropdownMenuItem>
           ) : showSync ? (
-            <DropdownMenuItem onSelect={() => onSync(session)}>Sync</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onSync(session)}>{t("sync")}</DropdownMenuItem>
           ) : null}
         </DropdownMenuGroup>
         {showDelete ? (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => onDelete(session)}>
-              Remove
+              {t("remove")}
             </DropdownMenuItem>
           </>
         ) : null}
@@ -304,6 +304,7 @@ function SessionRow({
   onExport: (session: SessionItem) => void;
   onSync: (session: SessionItem) => void;
 }) {
+  const { t } = useI18n();
   const syncRef = findSyncRef(syncGroups, session.provider_id, session.session_id);
   const detailHref = `/sessions/${encodeURIComponent(session.provider_id)}/${encodeURIComponent(session.session_id)}`;
 
@@ -317,7 +318,7 @@ function SessionRow({
             </Link>
             {syncRef ? (
               <Badge asChild className="shrink-0">
-                <Link to={`/sync/${syncRef}`}>Active Sync</Link>
+                <Link to={`/sync/${syncRef}`}>{t("activeSync")}</Link>
               </Badge>
             ) : null}
           </div>

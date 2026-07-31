@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
-import { Field, FieldContent, FieldDescription, FieldGroup, FieldTitle } from "@/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldTitle } from "@/components/ui/field";
 import {
+  countSkillsStatsRangeDays,
+  formatSkillsStatsRangeLabel,
   readSkillsStatsCustomRange,
   writeSkillsStatsCustomRange,
 } from "@/features/skills/skills-stats-preferences";
@@ -33,9 +35,12 @@ export function SkillsStatsCustomRangePreferenceField() {
     });
   }
 
+  const dayCount = countSkillsStatsRangeDays(range.from, range.to);
+  const rangeLabel = formatSkillsStatsRangeLabel(range.from, range.to);
+
   return (
-    <FieldGroup>
-      <Field orientation="responsive">
+    <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+      <Field orientation="vertical">
         <FieldContent>
           <FieldTitle>{t("skillsCustomRangePreference")}</FieldTitle>
           <FieldDescription>{t("skillsCustomRangePreferenceHint")}</FieldDescription>
@@ -58,6 +63,17 @@ export function SkillsStatsCustomRangePreferenceField() {
           />
         </div>
       </Field>
-    </FieldGroup>
+
+      <div
+        className="flex min-w-[8.5rem] flex-col gap-1 rounded-md border bg-muted/30 px-3 py-2.5 text-sm sm:text-right"
+        aria-live="polite"
+      >
+        <span className="text-xs text-muted-foreground">{t("skillsCustomRangePreview")}</span>
+        <span className="font-medium tabular-nums">{rangeLabel}</span>
+        <span className="text-muted-foreground tabular-nums">
+          {dayCount > 0 ? t("skillsDays", { count: dayCount }) : t("skillsCustomRangeInvalid")}
+        </span>
+      </div>
+    </div>
   );
 }

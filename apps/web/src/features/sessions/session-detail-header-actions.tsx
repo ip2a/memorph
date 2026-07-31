@@ -78,20 +78,20 @@ export function SessionDetailHeaderActions({
         collapsePriority: 12,
         renderButton: () => (
           <Button type="button" variant="outline" onClick={onOpenCompression}>
-            Compression
+            {t("compression")}
           </Button>
         ),
-        renderMenuItem: () => <DropdownMenuItem onSelect={onOpenCompression}>Compression</DropdownMenuItem>,
+        renderMenuItem: () => <DropdownMenuItem onSelect={onOpenCompression}>{t("compression")}</DropdownMenuItem>,
       },
       {
         id: "sync",
         collapsePriority: 13,
         renderButton: () => (
           <Button type="button" variant="outline" onClick={onOpenSync}>
-            Sync
+            {t("sync")}
           </Button>
         ),
-        renderMenuItem: () => <DropdownMenuItem onSelect={onOpenSync}>Sync</DropdownMenuItem>,
+        renderMenuItem: () => <DropdownMenuItem onSelect={onOpenSync}>{t("sync")}</DropdownMenuItem>,
       },
       {
         id: "switch",
@@ -108,32 +108,32 @@ export function SessionDetailHeaderActions({
         collapsePriority: 15,
         renderButton: () => (
           <Button type="button" variant="outline" onClick={onOpenExport}>
-            Export
+            {t("export")}
           </Button>
         ),
-        renderMenuItem: () => <DropdownMenuItem onSelect={onOpenExport}>Export</DropdownMenuItem>,
+        renderMenuItem: () => <DropdownMenuItem onSelect={onOpenExport}>{t("export")}</DropdownMenuItem>,
       },
       {
         id: "rename",
         collapsePriority: 16,
         renderButton: () => (
           <Button type="button" variant="outline" onClick={onOpenRename}>
-            Rename
+            {t("rename")}
           </Button>
         ),
-        renderMenuItem: () => <DropdownMenuItem onSelect={onOpenRename}>Rename</DropdownMenuItem>,
+        renderMenuItem: () => <DropdownMenuItem onSelect={onOpenRename}>{t("rename")}</DropdownMenuItem>,
       },
       {
         id: "remove",
         collapsePriority: 55,
         renderButton: () => (
           <Button type="button" variant="destructive" onClick={onOpenDelete}>
-            Remove
+            {t("remove")}
           </Button>
         ),
         renderMenuItem: () => (
           <DropdownMenuItem variant="destructive" onSelect={onOpenDelete}>
-            Remove
+            {t("remove")}
           </DropdownMenuItem>
         ),
       },
