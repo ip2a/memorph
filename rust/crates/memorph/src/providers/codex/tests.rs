@@ -87,6 +87,92 @@ fn scan_sessions_includes_sqlite_threads_missing_from_session_index() {
     assert_eq!(sessions[0].source_path.as_deref(), rollout_path.to_str());
 }
 
+#[test]
+fn rollout_summary_tolerates_multibyte_character_at_head_window_boundary() {
+    let temp = tempdir().unwrap();
+    let rollout_path = temp.path().join("rollout.jsonl");
+    let session_meta = serde_json::to_vec(&json!({
+        "timestamp": "2026-08-01T00:00:00Z",
+        "type": "session_meta",
+        "payload": {
+            "id": "boundary-session",
+            "cwd": "/tmp/project",
+            "title": "Boundary session"
+        }
+    }))
+    .unwrap();
+    let mut bytes = Vec::new();
+    for prefix_len in 0..=3 {
+        let user_event = serde_json::to_vec(&json!({
+            "timestamp": "2026-08-01T00:01:00Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": format!("{}{}", "x".repeat(prefix_len), "界".repeat(30_000))
+            }
+        }))
+        .unwrap();
+        bytes = session_meta.clone();
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&user_event);
+        bytes.push(b'\n');
+        bytes.extend_from_slice(
+            b"{\"timestamp\":\"2026-08-01T00:02:00Z\",\"type\":\"event_msg\"}\n",
+        );
+        if std::str::from_utf8(&bytes[..64 * 1024]).is_err() {
+            break;
+        }
+    }
+    assert!(std::str::from_utf8(&bytes[..64 * 1024]).is_err());
+    std::fs::write(&rollout_path, bytes).unwrap();
+
+    let summary = read_codex_rollout_summary(&rollout_path)
+        .unwrap()
+        .expect("rollout summary");
+    assert_eq!(summary.session_id, "boundary-session");
+    assert_eq!(summary.created_at.as_deref(), Some("2026-08-01T00:00:00Z"));
+    assert_eq!(summary.updated_at.as_deref(), Some("2026-08-01T00:02:00Z"));
+}
+
+#[test]
+fn discover_codex_rollouts_skips_invalid_utf8_file() {
+    let temp = tempdir().unwrap();
+    let sessions_dir = temp.path().join("sessions/2026/08/01");
+    std::fs::create_dir_all(&sessions_dir).unwrap();
+
+    let valid_path = sessions_dir.join("valid.jsonl");
+    std::fs::write(
+        &valid_path,
+        serde_json::to_string(&json!({
+            "timestamp": "2026-08-01T00:00:00Z",
+            "type": "session_meta",
+            "payload": {"id": "valid-session", "cwd": "/tmp/project"}
+        }))
+        .unwrap()
+            + "\n"
+            + &serde_json::to_string(&json!({
+                "timestamp": "2026-08-01T00:01:00Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "hello"}
+            }))
+            .unwrap()
+            + "\n",
+    )
+    .unwrap();
+
+    let invalid_path = sessions_dir.join("invalid.jsonl");
+    std::fs::write(
+        &invalid_path,
+        b"\xff\xfe{\"timestamp\":\"2026-08-01T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"id\":\"invalid-session\"}}\n",
+    )
+    .unwrap();
+
+    let rollouts = discover_codex_rollouts(temp.path()).unwrap();
+    assert_eq!(rollouts.len(), 1);
+    assert_eq!(rollouts[0].1.session_id, "valid-session");
+    assert_eq!(rollouts[0].0, valid_path);
+}
+
 fn write_native_codex_fixture(codex_dir: &Path, session_id: &str) -> NativeCodexFixture {
     let sessions_dir = codex_dir.join("sessions/2026/07/09");
     std::fs::create_dir_all(&sessions_dir).unwrap();

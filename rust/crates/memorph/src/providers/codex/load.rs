@@ -1427,9 +1427,12 @@ pub(super) fn discover_codex_rollouts(
             if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                 continue;
             }
-            if let Some(summary) = read_codex_rollout_summary(path)? {
-                rollouts.push((path.to_path_buf(), summary));
-            }
+            // ponytail: 单个 rollout 解析失败(如含非法 UTF-8 的历史脏文件)直接跳过,
+            // 不让一个坏文件搞垮整个 scan。与 claude 的 parse_session→Option 一致。
+            let Some(summary) = read_codex_rollout_summary(path).ok().flatten() else {
+                continue;
+            };
+            rollouts.push((path.to_path_buf(), summary));
         }
     }
     Ok(rollouts)
@@ -1463,12 +1466,17 @@ pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRoll
 
     // --- Head pass: session_meta + first user event + created_at ---
     let head_limit = file_len.min(HEAD_BYTES);
-    let mut head_buf = String::new();
+    // ponytail: 读字节再 lossy 解码。take(HEAD_BYTES) 按字节截,会劈开多字节
+    // UTF-8 字符(中文/emoji),read_to_string 直接报 "stream did not contain
+    // valid UTF-8" 搞垮整个 scan。lossy 把残缺的末行变成 JSON 解析失败,
+    // 正好被下面的 continue 跳过。
+    let mut head_bytes = Vec::new();
     {
         let reader = std::io::BufReader::new(&mut file);
         let mut limited = reader.take(head_limit);
-        limited.read_to_string(&mut head_buf)?;
+        limited.read_to_end(&mut head_bytes)?;
     }
+    let head_buf = String::from_utf8_lossy(&head_bytes);
     for line in head_buf.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -1518,6 +1526,7 @@ pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRoll
 
     // If meta never appeared in head (large pre-amble), fall back to full scan.
     if !meta_resolved && file_len > HEAD_BYTES {
+        file.seek(SeekFrom::Start(0))?;
         let reader = std::io::BufReader::new(&mut file);
         for line in reader.lines() {
             let line = line?;
@@ -1570,8 +1579,10 @@ pub(super) fn read_codex_rollout_summary(path: &Path) -> Result<Option<CodexRoll
     if file_len > HEAD_BYTES {
         let seek_back = file_len.min(TAIL_BYTES) as i64;
         file.seek(SeekFrom::End(-seek_back))?;
-        let mut tail = String::new();
-        file.read_to_string(&mut tail)?;
+        let mut tail_bytes = Vec::new();
+        file.read_to_end(&mut tail_bytes)?;
+        // ponytail: 同 head,seek 落点可能劈开字符,lossy 解码避免整 scan 报 UTF-8 错。
+        let tail = String::from_utf8_lossy(&tail_bytes);
         let mut last_ts: Option<String> = None;
         for line in tail.lines() {
             let line = line.trim();
