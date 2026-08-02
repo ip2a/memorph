@@ -147,6 +147,7 @@ function renderRoute() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   useUiStore.setState({ selectedWorkspace: null });
   mocks.useSkills.mockImplementation((params: SkillCatalogParams) => {
     const filtered = params.query
@@ -299,6 +300,7 @@ describe("SkillsPage", () => {
     fireEvent.change(screen.getByLabelText("End date"), {
       target: { value: "2026-07-22" },
     });
+    await user.click(screen.getByRole("button", { name: "Apply" }));
     expect(mocks.useSkillStats).toHaveBeenLastCalledWith(
       expect.objectContaining({
         from: "2026-07-01",
