@@ -17,7 +17,6 @@ I18N_CORE_TS = SRC_ROOT / "lib" / "i18n-core.ts"
 I18N_CONTEXT_TS = SRC_ROOT / "lib" / "i18n-context.ts"
 I18N_PROVIDER_TSX = SRC_ROOT / "lib" / "i18n-provider.tsx"
 AGENTS_PAGE_TSX = SRC_ROOT / "features" / "agents" / "agents-page.tsx"
-HOOKS_PAGE_TSX = SRC_ROOT / "features" / "hooks" / "hooks-page.tsx"
 MANAGER_PAGE_TSX = SRC_ROOT / "features" / "manager" / "manager-page.tsx"
 COMPRESSION_PAGE_TSX = SRC_ROOT / "features" / "compression" / "compression-page.tsx"
 COMPRESSION_ACTIONS_TSX = SRC_ROOT / "features" / "compression" / "compression-actions.tsx"
@@ -135,9 +134,10 @@ class WebUiInvariantTest(unittest.TestCase):
             'path: "compression"',
             'path: "agents"',
             'path: "tools"',
-            'path: "hooks"',
         ]:
             self.assertIn(route, source)
+        self.assertNotIn('path: "hooks"', source)
+        self.assertNotIn('import("@/features/hooks/hooks-page")', source)
 
     def test_router_uses_lazy_route_boundaries(self) -> None:
         source = read_sources()
@@ -152,7 +152,6 @@ class WebUiInvariantTest(unittest.TestCase):
         self.assertIn("memorph", shell)
         for marker in [
             't("switchWorkspace")',
-            't("hooks")',
             't("agentManagement")',
             't("manage")',
             't("compressSessions")',
@@ -187,9 +186,9 @@ class WebUiInvariantTest(unittest.TestCase):
             '<TabsTrigger value="pick">Pick</TabsTrigger>',
             "Browse",
             "Remove",
-            "Go",
+            "Switch to this directory",
             "deleteWorkspaceHistory",
-            "listSessions({ all: true, details: true, limit: 1, workspace })",
+            'listSessions({ all: true, fields: "minimal", limit: 1, workspace })',
             "setSelectedWorkspace(workspace)",
         ]:
             self.assertIn(marker, dialog)
@@ -267,14 +266,14 @@ class WebUiInvariantTest(unittest.TestCase):
             "data-settings-sidebar",
             'data-settings-section="general"',
             'data-settings-section="display"',
+            'data-settings-section="stats-range"',
             'data-settings-section="order"',
-            'data-settings-section="hook"',
             'data-settings-section="config"',
             'data-settings-section="about"',
             't("general")',
             't("display")',
+            't("skillsStatsRange")',
             't("order")',
-            't("hooks")',
             't("configFile")',
             't("configFileLocation")',
             't("about")',
@@ -286,7 +285,6 @@ class WebUiInvariantTest(unittest.TestCase):
             't("logRetentionDays")',
             't("sessionsPerProvider")',
             't("homeButtons")',
-            't("hooks")',
             't("checkUpdate")',
             "SettingsRow",
             "SettingsPathValue",
@@ -375,8 +373,8 @@ class WebUiInvariantTest(unittest.TestCase):
         for marker in [
             "onRename(session)",
             "onDelete(session)",
-            "Rename",
-            "Remove",
+            't("rename")',
+            't("remove")',
             "RenameSessionDialog",
             "DeleteSessionDialog",
             "targetFromSession(renameTarget)",
@@ -480,12 +478,12 @@ class WebUiInvariantTest(unittest.TestCase):
             "ExportSessionDialog",
             "providers={providers.data ?? []}",
             "meta={meta.data}",
-            "Compression",
-            "Sync",
+            't("compression")',
+            't("sync")',
             't("switch")',
-            "Export",
-            "Rename",
-            "Remove",
+            't("export")',
+            't("rename")',
+            't("remove")',
         ]:
             self.assertIn(marker, detail)
 
@@ -563,54 +561,31 @@ class WebUiInvariantTest(unittest.TestCase):
         )
 
         self.assertIn('path: "agents"', router)
+        self.assertNotIn('path: "hooks"', router)
         self.assertIsNotNone(agents_route_match)
         agents_route_element = agents_route_match.group("element") if agents_route_match else ""
         self.assertIn("<AgentsPage />", agents_route_element)
         self.assertNotIn("MigrationPage", agents_route_element)
+        self.assertNotIn('import("@/features/hooks/hooks-page")', route_elements)
         self.assertIn('import("@/features/agents/agents-page")', route_elements)
 
         for marker in [
             "ProviderList",
             "ProviderDetail",
-            "Agent Management Environment",
-            "Open Hooks",
+            "EnvironmentBlock",
+            "ProviderItemsBlock",
+            "HooksBlock",
+            "Agent capabilities",
             "Detect",
-            "Agent Provider Items",
             "useDetectAgent",
             "useUpdateProviderSetting",
             "useRunProviderSetting",
+            "hook_management",
+            "useAgentDetectedHooks",
+            "useRunAgentHookOperation",
+            "Hook operation failed",
         ]:
             self.assertIn(marker, agents_page)
-
-    def test_hooks_route_uses_real_provider_diagnostics_page(self) -> None:
-        router = ROUTER_TSX.read_text(encoding="utf-8")
-        route_elements = ROUTE_ELEMENTS_TSX.read_text(encoding="utf-8")
-        hooks_page = HOOKS_PAGE_TSX.read_text(encoding="utf-8")
-        hooks_route_match = re.search(
-            r'\{\s*path: "hooks",\s*element: (?P<element>.*?)\s*\}',
-            router,
-            re.DOTALL,
-        )
-
-        self.assertIsNotNone(hooks_route_match)
-        hooks_route_element = hooks_route_match.group("element") if hooks_route_match else ""
-        self.assertIn("<HooksPage />", hooks_route_element)
-        self.assertNotIn("MigrationPage", hooks_route_element)
-        self.assertIn('import("@/features/hooks/hooks-page")', route_elements)
-
-        for marker in [
-            "HooksProviderList",
-            "ProviderDetail",
-            "Hook Summary",
-            "Hook Event Profile",
-            "Runtime Sessions",
-            "Recent Events",
-            "Recent Errors",
-            "useHooksOverview",
-            "useHookProviderOverview",
-            "useRunHookProviderOperation",
-        ]:
-            self.assertIn(marker, hooks_page)
 
     def test_manager_route_uses_single_panel_asset_management_workflow(self) -> None:
         router = ROUTER_TSX.read_text(encoding="utf-8")
