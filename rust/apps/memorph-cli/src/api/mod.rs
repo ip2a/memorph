@@ -134,8 +134,6 @@ struct SettingsPayload {
     agent_order: Vec<String>,
     primary_agents: Vec<String>,
     server: config::ServerPreferences,
-    #[serde(default)]
-    show_hooks_nav: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -283,12 +281,6 @@ struct SyncHoldingPayload {
     last_sync_at: Option<i64>,
     last_sync_from: Option<String>,
     last_error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    hook_runtime_summary: Option<hooks::augmentation::HookRuntimeSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    hook_diagnosis: Option<hooks::augmentation::SessionHookDiagnosis>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    hook_runtime_sessions: Vec<hooks::model::RuntimeSession>,
 }
 
 #[derive(Debug, Serialize)]
@@ -319,8 +311,6 @@ pub(super) struct SettingsBody {
     #[allow(dead_code)]
     primary_agents: Vec<String>,
     server: Option<config::ServerPreferences>,
-    #[serde(default)]
-    show_hooks_nav: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -839,7 +829,6 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
         agent_order: config::ordered_provider_ids(&prefs),
         primary_agents: config::primary_provider_ids(&prefs),
         server,
-        show_hooks_nav: prefs.show_hooks_nav,
     })
 }
 

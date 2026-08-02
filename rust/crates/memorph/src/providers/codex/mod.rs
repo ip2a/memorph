@@ -12,14 +12,12 @@ use self::write::*;
 
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
-    event_visible_message_role, event_visible_message_text,
-    event_visible_text, export_result,
-    session_instruction_context_text, session_title,
-    visible_block_text, compression_retrieval_hint, CompressionProjection, PageStrategy,
-    Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
-    ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
-    ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
-    StorageShape, TurnQuality, WriteRiskLevel,
+    compression_retrieval_hint, event_visible_message_role, event_visible_message_text,
+    event_visible_text, export_result, session_instruction_context_text, session_title,
+    visible_block_text, CompressionProjection, PageStrategy, Provider, ProviderActivitySupport,
+    ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup,
+    ProviderSessionImportPage, ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk,
+    ResumeQuality, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
 use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
@@ -406,10 +404,7 @@ impl Provider for CodexProvider {
         Ok(sessions)
     }
 
-    fn find_session_by_id(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         let index_path = get_codex_dir().join("session_index.jsonl");
         if !index_path.exists() {
             return Ok(None);

@@ -136,10 +136,11 @@ fn read_jsonl_values(path: &Path) -> Vec<Result<Value, serde_json::Error>> {
 
 fn provider_payload_kind(event: &Event) -> Option<&str> {
     event.blocks.iter().find_map(|block| match block {
-        Block::Other { raw } => raw
-            .get("type")
-            .and_then(Value::as_str)
-            .or_else(|| raw.get("message").and_then(|m| m.get("type")).and_then(Value::as_str)),
+        Block::Other { raw } => raw.get("type").and_then(Value::as_str).or_else(|| {
+            raw.get("message")
+                .and_then(|m| m.get("type"))
+                .and_then(Value::as_str)
+        }),
         _ => None,
     })
 }
@@ -1825,9 +1826,7 @@ fn import_canonical_session_reconciles_context_with_wire_lifecycle() -> Result<(
         .session
         .events
         .iter()
-        .filter_map(|event| {
-            event_visible_message_text(event).map(|text| (event.role, text))
-        })
+        .filter_map(|event| event_visible_message_text(event).map(|text| (event.role, text)))
         .collect::<Vec<_>>();
     assert_eq!(
         visible,
@@ -1918,9 +1917,7 @@ fn sanitized_kimi_fixture_imports_context_authoritatively_with_native_turns() {
         .session
         .events
         .iter()
-        .filter_map(|event| {
-            event_visible_message_text(event).map(|text| (event.role, text))
-        })
+        .filter_map(|event| event_visible_message_text(event).map(|text| (event.role, text)))
         .collect::<Vec<_>>();
     assert_eq!(
         visible,

@@ -20,7 +20,10 @@ pub(super) async fn ensure_ready() -> impl IntoResponse {
             }
         }
         Err(error) => {
-            logging::info("ensure_ready", format!("config corrupted, resetting: {error:#}"));
+            logging::info(
+                "ensure_ready",
+                format!("config corrupted, resetting: {error:#}"),
+            );
             let fresh = config::MemorphConfig::default();
             if let Err(error) = config::save_config(&fresh) {
                 return api_error(StatusCode::INTERNAL_SERVER_ERROR, error).into_response();
@@ -176,7 +179,6 @@ pub(super) async fn update_settings(Json(body): Json<SettingsBody>) -> impl Into
         body.sort_providers_by_session_count,
         Some(body.default_backup_dir),
         Some(body.logging),
-        body.show_hooks_nav,
     )
     .and_then(|_| config::update_home_button_config(body.home_buttons))
     .and_then(|_| {

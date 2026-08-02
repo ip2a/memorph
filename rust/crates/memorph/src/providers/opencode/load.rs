@@ -214,8 +214,7 @@ pub(super) fn imported_session_from_data(
                     .expect("OpenCode message source order is a valid timestamp")
             });
 
-        let mut blocks =
-            blocks_from_parts(&msg_id, &msg_parts, &mut report);
+        let mut blocks = blocks_from_parts(&msg_id, &msg_parts, &mut report);
         if blocks.is_empty() {
             report.push_issue(MappingIssue {
                 level: MappingIssueLevel::Warning,
@@ -266,10 +265,7 @@ pub(super) fn imported_session_from_data(
             blocks,
             tags: Vec::new(),
             extensions: Default::default(),
-            metadata: Metadata {
-                model,
-                usage,
-            },
+            metadata: Metadata { model, usage },
         });
     }
 
@@ -1208,8 +1204,7 @@ pub(super) fn count_visible_opencode_messages(
             .unwrap_or("")
             .to_string();
         let msg_parts: Vec<Value> = parts.get(&msg_id).cloned().unwrap_or_default();
-        let mut blocks =
-            blocks_from_parts(&msg_id, &msg_parts, &mut report);
+        let mut blocks = blocks_from_parts(&msg_id, &msg_parts, &mut report);
         if blocks.is_empty() {
             blocks = vec![Block::Other {
                 raw: msg_json.clone(),

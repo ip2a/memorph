@@ -126,7 +126,10 @@ fn push_server_section(view: &mut ConfigView, name: &str, cfg: &Value, scope: &s
     let transport = cfg.get("type").and_then(Value::as_str).unwrap_or("");
     let mut rows = vec![ConfigRow::fact("Scope", scope)];
 
-    match (cfg.get("command").and_then(Value::as_str), cfg.get("url").and_then(Value::as_str)) {
+    match (
+        cfg.get("command").and_then(Value::as_str),
+        cfg.get("url").and_then(Value::as_str),
+    ) {
         (Some(command), _) => {
             rows.push(ConfigRow::fact("Type", "stdio"));
             rows.push(ConfigRow::fact("Command", command));
@@ -148,13 +151,22 @@ fn push_server_section(view: &mut ConfigView, name: &str, cfg: &Value, scope: &s
             rows.push(ConfigRow::fact("Args", joined));
         }
     }
-    if let Some(env) = cfg.get("env").and_then(Value::as_object).filter(|env| !env.is_empty()) {
+    if let Some(env) = cfg
+        .get("env")
+        .and_then(Value::as_object)
+        .filter(|env| !env.is_empty())
+    {
         let keys = env.keys().cloned().collect::<Vec<_>>().join(", ");
         rows.push(ConfigRow::fact("Environment", keys).with_hint("values hidden"));
     }
-    if let Some(headers) = cfg.get("headers").and_then(Value::as_object).filter(|headers| !headers.is_empty()) {
+    if let Some(headers) = cfg
+        .get("headers")
+        .and_then(Value::as_object)
+        .filter(|headers| !headers.is_empty())
+    {
         rows.push(
-            ConfigRow::fact("Headers", format!("{} header(s)", headers.len())).with_hint("values hidden"),
+            ConfigRow::fact("Headers", format!("{} header(s)", headers.len()))
+                .with_hint("values hidden"),
         );
     }
 
@@ -195,7 +207,9 @@ fn plugins(home: &Path) -> ConfigView {
             .and_then(Value::as_str)
             .unwrap_or("-");
         let marketplace = id.split_once('@').map(|(_, market)| market).unwrap_or("-");
-        let enabled_state = enabled.and_then(|map| map.get(*id)).and_then(Value::as_bool);
+        let enabled_state = enabled
+            .and_then(|map| map.get(*id))
+            .and_then(Value::as_bool);
 
         let mut rows = vec![
             ConfigRow::fact("Marketplace", marketplace),
@@ -359,7 +373,10 @@ mod tests {
             .iter()
             .find(|section| section.label == "ponytail@ponytail")
             .unwrap();
-        assert!(ponytail.rows.iter().any(|row| row.label == "Enabled" && row.value == "yes"));
+        assert!(ponytail
+            .rows
+            .iter()
+            .any(|row| row.label == "Enabled" && row.value == "yes"));
         assert!(view
             .issues
             .iter()
@@ -371,13 +388,19 @@ mod tests {
         let dir = write_home();
         let view = statusline(dir.path());
         assert!(view.sections.is_empty());
-        assert!(view.issues.iter().any(|issue| issue.tone == ConfigTone::Muted));
+        assert!(view
+            .issues
+            .iter()
+            .any(|issue| issue.tone == ConfigTone::Muted));
     }
 
     #[test]
     fn view_settings_match_inspectable_ids() {
         let declared: Vec<&str> = VIEW_SETTINGS.iter().map(|setting| setting.id).collect();
-        assert_eq!(declared, vec!["view_mcp", "view_plugins", "view_statusline"]);
+        assert_eq!(
+            declared,
+            vec!["view_mcp", "view_plugins", "view_statusline"]
+        );
         for setting in VIEW_SETTINGS {
             assert_eq!(setting.kind, SettingKind::View);
         }

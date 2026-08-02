@@ -25,7 +25,6 @@ function isFullscreenRoute(pathname: string) {
   if (pathname.startsWith("/compression")) return true;
   if (pathname.startsWith("/storage")) return true;
   if (pathname.startsWith("/agents")) return true;
-  if (pathname.startsWith("/hooks")) return true;
   if (pathname.startsWith("/stats")) return true;
   if (pathname.startsWith("/tools")) return false;
   return true;
@@ -40,7 +39,6 @@ function routeTitleKey(pathname: string): I18nKey {
   if (pathname.startsWith("/compression")) return "compression";
   if (pathname.startsWith("/storage")) return "storage";
   if (pathname.startsWith("/agents")) return "agentManagement";
-  if (pathname.startsWith("/hooks")) return "hooks";
   if (pathname.startsWith("/stats")) return "stats";
   return "home";
 }

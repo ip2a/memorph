@@ -1019,10 +1019,7 @@ fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifac
             .find(|event| event.id == id || event.id.ends_with(&format!(":{id}")))
             .unwrap()
     };
-    assert_eq!(
-        event("msg-user-1").links.turn_id.as_deref(),
-        Some("exec-1")
-    );
+    assert_eq!(event("msg-user-1").links.turn_id.as_deref(), Some("exec-1"));
     assert!(matches!(
         event("msg-reasoning-1").blocks.as_slice(),
         [Block::Thinking { text, .. }] if text == "[sanitized reasoning]"
@@ -1110,19 +1107,13 @@ fn current_format_import_keeps_exact_multi_turn_ids_and_explicit_sub_parent() ->
             .find(|event| event.id == id || event.id.ends_with(&format!(":{id}")))
             .unwrap()
     };
-    assert_eq!(
-        event("msg-user-2").links.turn_id.as_deref(),
-        Some("exec-2")
-    );
+    assert_eq!(event("msg-user-2").links.turn_id.as_deref(), Some("exec-2"));
     assert_eq!(event("exec-2-turn-start").links.turn_outcome, None);
     assert_eq!(
         event("exec-2-turn-end").links.turn_outcome,
         Some(TurnOutcome::Completed)
     );
-    assert_eq!(
-        event("sub-parent").links.turn_id.as_deref(),
-        Some("exec-1")
-    );
+    assert_eq!(event("sub-parent").links.turn_id.as_deref(), Some("exec-1"));
     assert_eq!(
         event("sub-msg-user-1").links.parent_event_id.as_deref(),
         Some("sub-parent")

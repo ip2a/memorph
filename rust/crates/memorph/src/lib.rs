@@ -1,9 +1,9 @@
 #![recursion_limit = "256"]
 
+pub mod agent_capabilities;
 pub mod agent_environment;
 pub mod agent_management;
 pub mod cache;
-pub mod session;
 pub mod config;
 pub mod core;
 pub mod format;
@@ -15,6 +15,7 @@ pub mod provider_config;
 pub mod provider_settings;
 pub mod providers;
 pub mod runtime;
+pub mod session;
 pub mod session_projection;
 pub mod skills;
 pub mod stats_dashboard;

@@ -5,17 +5,17 @@ mod management;
 
 use self::load::*;
 
-use crate::session::{
-    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
-    Schema, Session, TurnOutcome,
-};
 use crate::provider::{
     event_is_visible_message, PageStrategy, Provider, ProviderActivitySupport,
     ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup,
     ProviderSessionImportPage, ProviderSessionSummary, ProviderSourceFingerprint,
     ProviderSourceMutation, ProviderWriteRisk, ScanStrategy, StorageShape, TurnQuality,
     WriteRiskLevel,
+};
+use crate::session::{
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
+    Schema, Session, TurnOutcome,
 };
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
@@ -98,10 +98,7 @@ impl Provider for KiroProvider {
         scan_sessions_in(&sessions_root)
     }
 
-    fn find_session_by_id(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         let Some(session_dir) = find_session_dir(session_id)? else {
             return Ok(None);
         };

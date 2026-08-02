@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 static JOURNAL_MODE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -278,7 +278,25 @@ fn apply_installation_identity_schema(conn: &mut Connection) -> Result<()> {
     if violations != 0 {
         anyhow::bail!("Memorph DB schema v12 produced {violations} foreign key violations");
     }
-    Ok(())
+    apply_hook_runtime_schema(conn)
+}
+
+fn apply_hook_runtime_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("Failed to start memorph DB schema v13 migration")?;
+    let applied = applied_migrations(&tx)?;
+    if !applied.contains(&13) {
+        tx.execute_batch(V13_SCHEMA)
+            .context("Failed to apply memorph DB schema v13")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![13, "remove_legacy_hook_runtime_observations_v13"],
+        )?;
+    }
+    tx.commit()
+        .context("Failed to commit memorph DB schema v13 migration")
 }
 
 fn create_schema_migrations_table(conn: &Connection) -> Result<()> {
@@ -630,25 +648,6 @@ CREATE TABLE IF NOT EXISTS runtime_endpoints (
 
 CREATE INDEX IF NOT EXISTS idx_runtime_endpoints_kind_seen
     ON runtime_endpoints(runtime_kind, last_seen_at_ms DESC);
-
-CREATE TABLE IF NOT EXISTS runtime_session_observations (
-    id TEXT PRIMARY KEY,
-    provider_id TEXT NOT NULL,
-    provider_session_id TEXT,
-    session_id TEXT,
-    workspace_dir TEXT,
-    status TEXT NOT NULL,
-    correlation_id TEXT,
-    observed_at_ms INTEGER NOT NULL,
-    recent_activity_at_ms INTEGER,
-    details_json TEXT NOT NULL DEFAULT '{}',
-    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE SET NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_runtime_session_observations_session
-    ON runtime_session_observations(session_id, observed_at_ms DESC);
-CREATE INDEX IF NOT EXISTS idx_runtime_session_observations_provider
-    ON runtime_session_observations(provider_id, provider_session_id, observed_at_ms DESC);
 
 CREATE TABLE IF NOT EXISTS hook_events (
     id TEXT PRIMARY KEY,
@@ -1865,3 +1864,9 @@ mod tests {
         assert!(!dir.path().join(".memorph/hooks/events.jsonl").exists());
     }
 }
+
+const V13_SCHEMA: &str = r#"
+DROP TABLE IF EXISTS runtime_session_observations;
+DROP INDEX IF EXISTS idx_runtime_session_observations_session;
+DROP INDEX IF EXISTS idx_runtime_session_observations_provider;
+"#;

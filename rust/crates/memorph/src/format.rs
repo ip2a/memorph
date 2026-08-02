@@ -219,7 +219,6 @@ pub fn read_html(path: &Path) -> Result<Session> {
     })
 }
 
-
 fn event_kind_label(kind: EventKind) -> &'static str {
     match kind {
         EventKind::Message => "message",

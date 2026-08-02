@@ -7,7 +7,6 @@ import {
   HomeIcon,
   LayersIcon,
   LineChartIcon,
-  Settings2Icon,
 } from "lucide-react";
 
 export type AppRoute = {
@@ -73,13 +72,6 @@ export const appRoutes: AppRoute[] = [
     description: "Agent management, provider detail, and settings controls.",
     href: "/agents",
     icon: BotIcon,
-    phase: "Phase 4",
-  },
-  {
-    title: "Hooks",
-    description: "Hook providers, diagnostics, and operational controls.",
-    href: "/hooks",
-    icon: Settings2Icon,
     phase: "Phase 4",
   },
 ];

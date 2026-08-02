@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use super::*;
+use std::path::PathBuf;
 
 static PROJECTION_OPERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -436,7 +436,12 @@ pub fn index_workspace_sessions(
         let all = provider.scan_sessions()?;
         sessions = all
             .into_iter()
-            .filter(|summary| provider.workspace_matches(summary.project_dir.as_deref(), Some(workspace_dir.to_string_lossy().as_ref())))
+            .filter(|summary| {
+                provider.workspace_matches(
+                    summary.project_dir.as_deref(),
+                    Some(workspace_dir.to_string_lossy().as_ref()),
+                )
+            })
             .collect();
     }
 
@@ -447,7 +452,10 @@ pub fn index_workspace_sessions(
         workspace_dir: Some(workspace_dir.to_string_lossy().to_string()),
         operation_kind: ActivityOperationKind::Scan,
         actor,
-        summary: format!("Indexing sessions for provider {provider_id} in workspace {workspace_dir_display}", workspace_dir_display = workspace_dir.display()),
+        summary: format!(
+            "Indexing sessions for provider {provider_id} in workspace {workspace_dir_display}",
+            workspace_dir_display = workspace_dir.display()
+        ),
         details: serde_json::json!({
             "scan_kind": "workspace_index",
             "provider": provider_id,
@@ -483,7 +491,10 @@ pub fn index_workspace_sessions(
                     provider_id: Some(provider_id.to_string()),
                     provider_session_id: None,
                     workspace_dir: Some(workspace_dir.to_string_lossy().to_string()),
-                    summary: format!("Indexed {} sessions for provider {provider_id}", report.discovered_sessions),
+                    summary: format!(
+                        "Indexed {} sessions for provider {provider_id}",
+                        report.discovered_sessions
+                    ),
                     details: serde_json::to_value(&report)?,
                     error: (!report.failures.is_empty()).then(|| {
                         report
@@ -527,17 +538,16 @@ pub fn spawn_workspace_index_background(workspace_dir: PathBuf, actor: ActivityA
     std::thread::Builder::new()
         .name(format!(
             "memorph-workspace-index-{}",
-            workspace_dir.file_name()
+            workspace_dir
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("workspace")
         ))
         .spawn(move || {
             for provider_id in crate::core::PROJECTED_SESSION_PROVIDER_IDS.iter() {
-                if let Err(error) = index_workspace_sessions(
-                    provider_id,
-                    &workspace_dir,
-                    actor.clone(),
-                ) {
+                if let Err(error) =
+                    index_workspace_sessions(provider_id, &workspace_dir, actor.clone())
+                {
                     crate::logging::error(
                         "workspace_index_background",
                         format!(
@@ -550,7 +560,6 @@ pub fn spawn_workspace_index_background(workspace_dir: PathBuf, actor: ActivityA
         })
         .ok();
 }
-
 
 /// Spawn background workspace indexers for every workspace in the user's
 /// history (config::known_workspaces). Non-blocking: fires off one thread per

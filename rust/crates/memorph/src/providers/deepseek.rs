@@ -1,8 +1,7 @@
 use crate::provider::{
-    event_role_label, event_visible_message_role,
-    event_visible_message_text, export_result, session_title,
-    PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
-    ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
+    event_role_label, event_visible_message_role, event_visible_message_text, export_result,
+    session_title, PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport,
+    ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
     ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
     ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
@@ -148,10 +147,7 @@ impl Provider for DeepseekProvider {
         Ok(sessions)
     }
 
-    fn find_session_by_id(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         let db_path = get_state_db_path();
         if !db_path.exists() {
             return Ok(None);

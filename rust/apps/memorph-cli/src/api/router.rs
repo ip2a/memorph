@@ -17,6 +17,10 @@ pub fn router() -> Router {
             "/api/v1/agents/{provider}/detect",
             post(providers::detect_agent_management_provider),
         )
+        .route(
+            "/api/v1/agents/{provider}/hooks/{operation}",
+            post(providers::run_agent_hook_operation),
+        )
         .route("/api/v1/providers", get(providers::list_providers))
         .route(
             "/api/v1/providers/catalog",
@@ -31,7 +35,7 @@ pub fn router() -> Router {
             get(sessions::get_provider_activity),
         )
         .route(
-            "/api/v1/providers/{provider}/hooks",
+            "/api/v1/agents/{provider}/hooks/discovered",
             get(providers::list_provider_hooks),
         )
         .route(
@@ -174,7 +178,10 @@ pub fn router() -> Router {
         .route("/api/v1/switch", post(transfer::switch_session))
         .route("/api/v1/find", get(transfer::find_sessions))
         .route("/api/v1/workspaces", get(workspaces::list_workspaces))
-        .route("/api/v1/workspaces/scan", post(workspaces::scan_known_workspaces))
+        .route(
+            "/api/v1/workspaces/scan",
+            post(workspaces::scan_known_workspaces),
+        )
         .route(
             "/api/v1/workspaces/with-sessions",
             get(workspaces::list_workspaces_with_sessions),

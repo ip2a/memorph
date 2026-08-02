@@ -253,8 +253,10 @@ fn root_fingerprint(
     // so editing a skill's content invalidates the cached scan state. Without
     // this, incremental mode silently skips content-only changes because the
     // installation paths and skill ids stay the same.
-    let entry_by_id: std::collections::HashMap<&str, &repository::CatalogRecord> =
-        catalog.iter().map(|item| (item.id.as_str(), item)).collect();
+    let entry_by_id: std::collections::HashMap<&str, &repository::CatalogRecord> = catalog
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect();
     let mut value = format!("{}:{}", agent.provider_id, agent.skills_dir.display());
     for item in installations {
         let entry_hash = entry_by_id

@@ -1,14 +1,11 @@
 import * as React from "react"
 import { Link, useLocation, useNavigate } from "react-router-dom"
 import { SettingsIcon } from "lucide-react"
-import { useQuery } from "@tanstack/react-query"
 
 import { CollapsibleToolbar, type CollapsibleToolbarEntry } from "@/components/shared/collapsible-toolbar"
 import { Button } from "@/components/ui/button"
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu"
-import { getMeta } from "@/lib/api"
 import { useI18n } from "@/lib/i18n-context"
-import { queryKeys } from "@/lib/query-keys"
 import { useUiStore } from "@/stores/ui-store"
 
 function isRoute(pathname: string, route: string) {
@@ -26,13 +23,10 @@ export function AppShellNav({
   const navigate = useNavigate()
   const { t } = useI18n()
   const setWorkspaceSwitchOpen = useUiStore((state) => state.setWorkspaceSwitchOpen)
-  const meta = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta })
-  const showHooksNav = meta.data?.settings.show_hooks_nav === true
 
   const pathname = location.pathname
   const isHome = pathname === "/"
   const isManager = isRoute(pathname, "/manager")
-  const isHooks = isRoute(pathname, "/hooks")
   const isSkills = isRoute(pathname, "/skills")
   const isAgents = isRoute(pathname, "/agents")
   const isStats = isRoute(pathname, "/stats")
@@ -100,23 +94,6 @@ export function AppShellNav({
         renderMenuItem: () => (
           <DropdownMenuItem asChild>
             <Link to="/storage">{t("storage")}</Link>
-          </DropdownMenuItem>
-        ),
-      })
-    }
-
-    if (!isHooks && showHooksNav) {
-      next.push({
-        id: "hooks",
-        collapsePriority: 11,
-        renderButton: () => (
-          <Button asChild variant="outline">
-            <Link to="/hooks">{t("hooks")}</Link>
-          </Button>
-        ),
-        renderMenuItem: () => (
-          <DropdownMenuItem asChild>
-            <Link to="/hooks">{t("hooks")}</Link>
           </DropdownMenuItem>
         ),
       })
@@ -237,12 +214,10 @@ export function AppShellNav({
   }, [
     isAgents,
     isHome,
-    isHooks,
     isSkills,
     isManager,
     isStats,
     isStorage,
-    showHooksNav,
     navigate,
     onOpenImportSession,
     onOpenSettings,

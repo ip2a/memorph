@@ -9,20 +9,19 @@ use self::load::*;
 use self::management::*;
 use self::write::*;
 
-use crate::session::{
-    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity,
-    ImportedSession, Links, MappingDirection, MappingIssue, MappingIssueLevel, MappingReport,
-    Metadata, Provenance, ProviderRef, Role, Schema, Session, TurnOutcome, Usage,
-};
 use crate::core::compression::{self, CompressedSegment};
 use crate::provider::{
-    event_is_visible_message, event_visible_message_role,
-    export_result, session_title, visible_block_text,
-    compression_retrieval_hint, CompressionProjection, PageStrategy, Provider,
-    ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity,
-    ProviderSessionBackup, ProviderSessionImportPage, ProviderSessionSummary,
-    ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
-    TurnQuality, WriteRiskLevel,
+    compression_retrieval_hint, event_is_visible_message, event_visible_message_role,
+    export_result, session_title, visible_block_text, CompressionProjection, PageStrategy,
+    Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
+    ProviderContentFidelity, ProviderSessionBackup, ProviderSessionImportPage,
+    ProviderSessionSummary, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy,
+    StorageShape, TurnQuality, WriteRiskLevel,
+};
+use crate::session::{
+    Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
+    MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
+    ProviderRef, Role, Schema, Session, TurnOutcome, Usage,
 };
 use crate::session_projection::project_session_turns;
 use anyhow::{Context as _, Result};

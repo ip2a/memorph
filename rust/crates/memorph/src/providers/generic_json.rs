@@ -1,9 +1,9 @@
+use crate::provider::ProviderSessionSummary;
 use crate::session::{
     Block, Context, Event, EventKind, EventMeta, EventSource, Fidelity, Identity, ImportedSession,
     Links, MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
     ProviderRef, Role, Schema, Session, Usage,
 };
-use crate::provider::ProviderSessionSummary;
 use crate::utils::{extract_text, parse_timestamp_to_ms, truncate_summary};
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
@@ -90,9 +90,7 @@ pub fn import_session_from_value(
     let (events, event_meta): (Vec<Event>, Vec<EventMeta>) = extract_message_items(&value)
         .into_iter()
         .enumerate()
-        .filter_map(|(index, item)| {
-            event_from_message(spec.provider_id, index, item, &mut report)
-        })
+        .filter_map(|(index, item)| event_from_message(spec.provider_id, index, item, &mut report))
         .collect::<Vec<_>>()
         .into_iter()
         .unzip();

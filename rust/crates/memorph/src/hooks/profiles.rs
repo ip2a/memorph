@@ -2,7 +2,7 @@
 //!
 //! Provider-specific profile data lives under `providers::hook_profiles`; this
 //! module exposes the common metadata types and stable lookup functions used by
-//! hooks, API, diagnostics, and UI code.
+//! hooks, API, and UI code.
 
 use serde::Serialize;
 

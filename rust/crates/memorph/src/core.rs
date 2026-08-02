@@ -3,12 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 use self::transfer::ExportResult;
-use crate::session::{Event, EventKind, ImportedSession, Session};
 use crate::core::active_compression::{
     ActiveCompressionApplyParams, ActiveCompressionParams, ActiveCompressionPolicy,
     ActiveCompressionReport,
 };
 use crate::provider::{Provider, ProviderSessionSummary};
+use crate::session::{Event, EventKind, ImportedSession, Session};
 use crate::storage::session_state;
 use crate::storage::snapshot_store::{
     ProjectedSessionIdentityRow, ProjectedSessionSnapshotRow, SnapshotStaleScanReport,
@@ -122,7 +122,11 @@ pub enum SessionEventOrder {
 
 impl SessionEventOrder {
     pub fn parse(value: Option<&str>) -> Self {
-        match value.map(str::trim).map(|v| v.to_ascii_lowercase()).as_deref() {
+        match value
+            .map(str::trim)
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref()
+        {
             Some("desc") | Some("descending") | Some("reverse") | Some("newest") => Self::Desc,
             _ => Self::Asc,
         }
@@ -324,7 +328,9 @@ pub fn spawn_background_sync_loop() {
                     format!("Stale reprojection failed: {error:#}"),
                 );
             }
-            std::thread::sleep(std::time::Duration::from_secs(BACKGROUND_SYNC_INTERVAL_SECS));
+            std::thread::sleep(std::time::Duration::from_secs(
+                BACKGROUND_SYNC_INTERVAL_SECS,
+            ));
         })
         .ok();
 }

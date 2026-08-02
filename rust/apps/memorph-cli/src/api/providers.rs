@@ -66,6 +66,30 @@ pub(super) async fn list_provider_hooks(Path(provider): Path<String>) -> impl In
     }
 }
 
+pub(super) async fn run_agent_hook_operation(
+    Path((provider, operation)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let result = memorph::runtime::run_blocking(move || {
+        let operation =
+            memorph::hooks::strategies::HookConfigOperation::from_setting_id(operation.trim())
+                .ok_or_else(|| anyhow::anyhow!("Unknown hook operation: {operation}"))?;
+        if !memorph::hooks::registry::supports_setting(&provider, operation.setting_id()) {
+            anyhow::bail!(
+                "Hook operation is not supported for provider: {}.{}",
+                provider,
+                operation.setting_id()
+            );
+        }
+        memorph::hooks::operations::run_operation(&provider, operation)
+    })
+    .await;
+
+    match result {
+        Ok(report) => ApiResponse::success(report).into_response(),
+        Err(error) => api_error(StatusCode::BAD_REQUEST, error).into_response(),
+    }
+}
+
 pub(super) async fn get_provider_catalog(Query(q): Query<CatalogQuery>) -> impl IntoResponse {
     match build_provider_catalog_light(q.workspace.as_deref()).await {
         Ok(catalog) => ApiResponse::success(catalog).into_response(),

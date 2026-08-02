@@ -84,6 +84,7 @@
 !/desktop/tauri/Cargo.lock
 !/desktop/tauri/build.rs
 !/desktop/tauri/tauri.conf.json
+!/desktop/tauri/icon-source.png
 !/desktop/tauri/capabilities/
 !/desktop/tauri/capabilities/**
 !/desktop/tauri/icons/
@@ -119,3 +120,9 @@
 !/rust/crates/memorph/src/providers/kiro/fixtures/**
 !/rust/crates/memorph/src/providers/cursor/fixtures/
 !/rust/crates/memorph/src/providers/cursor/fixtures/**
+
+# Project-wide Codex experience instructions.
+!AGENTS.md
+!.agent/
+!.agent/config.toml
+!docs/codex-experience.md

@@ -1,11 +1,11 @@
+use crate::provider::{
+    PageStrategy, Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
+    ProviderSourceFingerprint, ScanStrategy, StorageShape, TurnQuality,
+};
 use crate::session::{
     Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
     MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
     Schema, Session,
-};
-use crate::provider::{
-    PageStrategy, Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
-    ProviderSourceFingerprint, ScanStrategy, StorageShape, TurnQuality,
 };
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
@@ -248,9 +248,7 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<Event> {
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
                     }),
-                    _ => blocks.push(Block::Other {
-                        raw: item.clone(),
-                    }),
+                    _ => blocks.push(Block::Other { raw: item.clone() }),
                 }
             }
         }

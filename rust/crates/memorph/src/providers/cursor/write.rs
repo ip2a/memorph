@@ -1,6 +1,5 @@
 use crate::provider::{
-    event_visible_message_role, event_visible_message_text,
-    session_title, ProviderSourceMutation,
+    event_visible_message_role, event_visible_message_text, session_title, ProviderSourceMutation,
 };
 use crate::providers::cursor::db::{key_prefix_bounds, open_global_db};
 use crate::session::{Event, Role, Session};

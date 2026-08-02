@@ -1,18 +1,14 @@
 //! Runtime hook integration for memorph.
 //!
 //! Hook ingestion, provider event normalization, runtime session tracking, hook
-//! installation, health checks, and diagnostics live behind this boundary and
+//! installation, and health checks live behind this boundary and
 //! are wired into the existing
 //! CLI/TUI/Web/Desktop entry points.
 
 pub mod adapters;
-pub mod augmentation;
 pub mod bridge;
-pub mod capabilities;
 pub mod config_formats;
 pub mod contract;
-pub mod correlation;
-pub mod diagnostics;
 pub mod discovery;
 pub mod doctor;
 pub mod extension_file_hook;

@@ -1,5 +1,4 @@
 use anyhow::{Context as _, Result};
-use serde::ser::{SerializeStruct, Serializer};
 use serde::Serialize;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -8,17 +7,12 @@ use std::sync::{
 
 const AGENT_BUILD_PARALLELISM: usize = 6;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AgentManagementEntry {
     pub provider_id: String,
     pub name: String,
     pub environment: crate::agent_environment::AgentEnvironmentStatus,
-    pub hook: crate::hooks::model::HookInstallStatus,
-    pub hook_strategy: Option<crate::hooks::strategies::HookConfigStrategyKind>,
-    pub hook_capabilities: crate::hooks::capabilities::HookProviderCapabilities,
-    pub hook_diagnosis: crate::hooks::augmentation::ProviderHookDiagnosisAggregate,
-    pub hook_profile: Option<crate::hooks::profiles::HookProviderProfile>,
-    pub hook_required_events: Vec<&'static str>,
+    pub capabilities: crate::agent_capabilities::AgentCapabilityManifest,
     pub settings: Vec<crate::provider_settings::ProviderSettingItem>,
 }
 
@@ -27,49 +21,15 @@ pub struct AgentManagementSummaryEntry {
     pub provider_id: String,
     pub name: String,
     pub environment: crate::agent_environment::AgentEnvironmentStatus,
-    pub hook: crate::hooks::model::HookInstallStatus,
-    pub hook_strategy: Option<crate::hooks::strategies::HookConfigStrategyKind>,
-    pub hook_capabilities: crate::hooks::capabilities::HookProviderCapabilities,
-    pub hook_profile: Option<crate::hooks::profiles::HookProviderProfile>,
-    pub hook_required_events: Vec<&'static str>,
+    pub capabilities: crate::agent_capabilities::AgentCapabilityManifest,
     pub settings: Vec<crate::provider_settings::ProviderSettingItem>,
 }
 
-impl Serialize for AgentManagementEntry {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut state = serializer.serialize_struct("AgentManagementEntry", 15)?;
-        state.serialize_field("provider_id", &self.provider_id)?;
-        state.serialize_field("name", &self.name)?;
-        state.serialize_field("environment", &self.environment)?;
-        state.serialize_field("hook", &self.hook)?;
-        state.serialize_field("hook_strategy", &self.hook_strategy)?;
-        state.serialize_field("hook_capabilities", &self.hook_capabilities)?;
-        state.serialize_field("hook_diagnosis", &self.hook_diagnosis)?;
-        state.serialize_field("hook_profile", &self.hook_profile)?;
-        state.serialize_field("hook_required_events", &self.hook_required_events)?;
-        state.serialize_field("installed", &self.environment.installed)?;
-        if let Some(path) = &self.environment.executable_path {
-            state.serialize_field("executable_path", path)?;
-        }
-        if let Some(path) = &self.environment.executable_dir {
-            state.serialize_field("executable_dir", path)?;
-        }
-        state.serialize_field("config_path", &self.environment.config_path)?;
-        state.serialize_field("install_method", &self.environment.install_method)?;
-        state.serialize_field("settings", &self.settings)?;
-        state.end()
-    }
-}
-
 pub fn list_agent_management_entries() -> Result<Vec<AgentManagementEntry>> {
-    let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
-    let conn = crate::storage::local_store::open_database()?;
-    let projected_sessions =
-        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
-    build_entries_parallel(&runtime_snapshot, &projected_sessions)
+    build_provider_results_parallel(
+        |provider_id| build_agent_management_entry(provider_id, false),
+        "agent management worker did not return an entry",
+    )
 }
 
 pub fn list_agent_management_summaries() -> Result<Vec<AgentManagementSummaryEntry>> {
@@ -80,31 +40,11 @@ pub fn list_agent_management_summaries() -> Result<Vec<AgentManagementSummaryEnt
 }
 
 pub fn get_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntry> {
-    let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
-    let conn = crate::storage::local_store::open_database()?;
-    let projected_sessions =
-        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
-    build_agent_management_entry(provider_id, &runtime_snapshot, &projected_sessions, false)
+    build_agent_management_entry(provider_id, false)
 }
 
 pub fn detect_agent_management_entry(provider_id: &str) -> Result<AgentManagementEntry> {
-    let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
-    let conn = crate::storage::local_store::open_database()?;
-    let projected_sessions =
-        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
-    build_agent_management_entry(provider_id, &runtime_snapshot, &projected_sessions, true)
-}
-
-fn build_entries_parallel(
-    runtime_snapshot: &[crate::hooks::model::RuntimeSession],
-    projected_sessions: &[crate::storage::snapshot_store::ProjectedSessionSnapshotRow],
-) -> Result<Vec<AgentManagementEntry>> {
-    build_provider_results_parallel(
-        |provider_id| {
-            build_agent_management_entry(provider_id, runtime_snapshot, projected_sessions, false)
-        },
-        "agent management worker did not return an entry",
-    )
+    build_agent_management_entry(provider_id, true)
 }
 
 fn build_provider_results_parallel<T, F>(build: F, missing_context: &'static str) -> Result<Vec<T>>
@@ -151,45 +91,27 @@ where
 
 fn build_agent_management_summary(provider_id: &str) -> Result<AgentManagementSummaryEntry> {
     let provider = crate::providers::find_provider(provider_id)
-        .with_context(|| format!("Unknown provider: {}", provider_id))?;
+        .with_context(|| format!("Unknown provider: {provider_id}"))?;
     let settings = crate::provider_settings::list_provider_settings(provider_id)?;
-    let hook = crate::hooks::operations::status(provider_id)?;
-    let hook_descriptor = crate::hooks::registry::find(provider_id);
+    let capabilities = crate::agent_capabilities::build_manifest(provider_id)?;
 
     Ok(AgentManagementSummaryEntry {
         provider_id: provider_id.to_string(),
         name: provider.name().to_string(),
         environment: crate::agent_environment::detect_provider_environment_fast(provider_id),
-        hook,
-        hook_strategy: hook_descriptor.map(|descriptor| descriptor.strategy_kind),
-        hook_capabilities: hook_descriptor
-            .map(|descriptor| descriptor.capabilities)
-            .unwrap_or_else(crate::hooks::capabilities::HookProviderCapabilities::unsupported),
-        hook_profile: hook_descriptor.map(|descriptor| *descriptor.profile),
-        hook_required_events: hook_descriptor
-            .map(|descriptor| descriptor.required_events.to_vec())
-            .unwrap_or_default(),
+        capabilities,
         settings,
     })
 }
 
 fn build_agent_management_entry(
     provider_id: &str,
-    runtime_snapshot: &[crate::hooks::model::RuntimeSession],
-    projected_sessions: &[crate::storage::snapshot_store::ProjectedSessionSnapshotRow],
     refresh_environment: bool,
 ) -> Result<AgentManagementEntry> {
     let provider = crate::providers::find_provider(provider_id)
-        .with_context(|| format!("Unknown provider: {}", provider_id))?;
+        .with_context(|| format!("Unknown provider: {provider_id}"))?;
     let settings = crate::provider_settings::list_provider_settings(provider_id)?;
-    let hook = crate::hooks::operations::status(provider_id)?;
-    let hook_descriptor = crate::hooks::registry::find(provider_id);
-    let hook_diagnosis = crate::hooks::augmentation::aggregate_provider_snapshots(
-        runtime_snapshot,
-        hook.clone(),
-        provider_id,
-        projected_sessions,
-    );
+    let capabilities = crate::agent_capabilities::build_manifest(provider_id)?;
 
     Ok(AgentManagementEntry {
         provider_id: provider_id.to_string(),
@@ -199,16 +121,7 @@ fn build_agent_management_entry(
         } else {
             crate::agent_environment::detect_provider_environment(provider_id)
         },
-        hook,
-        hook_strategy: hook_descriptor.map(|descriptor| descriptor.strategy_kind),
-        hook_capabilities: hook_descriptor
-            .map(|descriptor| descriptor.capabilities)
-            .unwrap_or_else(crate::hooks::capabilities::HookProviderCapabilities::unsupported),
-        hook_diagnosis,
-        hook_profile: hook_descriptor.map(|descriptor| *descriptor.profile),
-        hook_required_events: hook_descriptor
-            .map(|descriptor| descriptor.required_events.to_vec())
-            .unwrap_or_default(),
+        capabilities,
         settings,
     })
 }
@@ -218,149 +131,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_management_entry_exposes_hook_status() {
-        let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
-        let claude = build_agent_management_entry("claude", &runtime_snapshot, &[], false).unwrap();
-        assert_eq!(claude.hook.provider, "claude");
+    fn agent_management_entry_exposes_capabilities() {
+        let claude = build_agent_management_entry("claude", false).unwrap();
+        assert_eq!(claude.capabilities.provider_id, "claude");
+        assert!(!claude
+            .capabilities
+            .hook_management
+            .as_ref()
+            .unwrap()
+            .status
+            .is_empty());
     }
 
     #[test]
     fn agent_management_entry_exposes_settings() {
-        let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
-        let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
+        let codex = build_agent_management_entry("codex", false).unwrap();
         assert!(codex
             .settings
             .iter()
             .any(|setting| setting.id == "repair_workspace_sessions"));
 
-        let opencode =
-            build_agent_management_entry("opencode", &runtime_snapshot, &[], false).unwrap();
+        let opencode = build_agent_management_entry("opencode", false).unwrap();
         assert!(opencode
             .settings
             .iter()
             .any(|setting| setting.id == "show_subagents"));
     }
+
     #[test]
-    fn agent_management_exposes_every_hook_profile_provider() {
+    fn every_hook_profile_provider_has_hook_capabilities() {
         let entries = list_agent_management_entries().unwrap();
         for descriptor in crate::hooks::registry::all() {
-            let profile = descriptor.profile;
             let entry = entries
                 .iter()
-                .find(|entry| entry.provider_id == profile.provider)
+                .find(|entry| entry.provider_id == descriptor.provider())
                 .unwrap_or_else(|| {
-                    panic!("missing agent management entry for {}", profile.provider)
+                    panic!(
+                        "missing agent management entry for {}",
+                        descriptor.provider()
+                    )
                 });
-            assert_eq!(entry.hook.provider, profile.provider);
-            assert_eq!(
-                entry.hook_profile.as_ref().map(|profile| profile.provider),
-                Some(profile.provider)
-            );
-            assert_eq!(
-                entry.hook_required_events, descriptor.required_events,
-                "required event payload drifted from profile for {}",
-                profile.provider
-            );
-            assert_eq!(
-                entry.hook_capabilities,
-                crate::hooks::capabilities::HookProviderCapabilities::managed_hook(
-                    crate::hooks::discovery::supports_provider(profile.provider),
-                ),
-                "missing hook capabilities for {}",
-                profile.provider
-            );
-            assert!(
-                entry
-                    .settings
-                    .iter()
-                    .any(|setting| setting.id == "install_hook"),
-                "missing install_hook action for {}",
-                profile.provider
-            );
-            assert!(
-                !entry.environment.config_path.trim().is_empty(),
-                "missing environment config path for {}",
-                profile.provider
-            );
+            let hook = entry.capabilities.hook_management.as_ref().unwrap();
+            assert_eq!(hook.install, descriptor.capabilities.install);
+            assert_eq!(hook.verify, descriptor.capabilities.verify);
+            assert_eq!(hook.repair, descriptor.capabilities.repair);
+            assert_eq!(hook.uninstall, descriptor.capabilities.uninstall);
+            assert_eq!(hook.discovery, descriptor.capabilities.scan_existing);
         }
     }
 
     #[test]
     fn agent_management_entry_groups_common_environment_fields() {
-        let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
-        let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
+        let codex = build_agent_management_entry("codex", false).unwrap();
         let environment = crate::agent_environment::detect_provider_environment("codex");
         assert_eq!(codex.environment.config_path, environment.config_path);
         assert!(!codex.environment.install_method.trim().is_empty());
     }
 
     #[test]
-    fn agent_management_entry_serializes_environment_block_and_flat_fields() {
-        let runtime_snapshot = crate::hooks::runtime_state::runtime_sessions_snapshot();
-        let codex = build_agent_management_entry("codex", &runtime_snapshot, &[], false).unwrap();
+    fn agent_management_entry_serializes_new_contract() {
+        let codex = build_agent_management_entry("codex", false).unwrap();
         let value = serde_json::to_value(&codex).unwrap();
 
         assert_eq!(value["provider_id"], "codex");
         assert!(value["environment"].is_object());
-        assert!(value["hook"].is_object());
-        assert!(value["hook_strategy"].is_string());
-        assert!(value["hook_capabilities"].is_object());
-        assert_eq!(value["hook_capabilities"]["install"], true);
-        assert!(value["hook_diagnosis"].is_object());
-        assert!(value["hook_profile"].is_object());
-        assert!(value["hook_required_events"].is_array());
-        assert!(!value["hook_required_events"].as_array().unwrap().is_empty());
-        assert_eq!(value["environment"]["config_path"], value["config_path"]);
-        assert_eq!(
-            value["environment"]["install_method"],
-            value["install_method"]
-        );
-        assert_eq!(value["environment"]["installed"], value["installed"]);
-    }
-
-    #[test]
-    fn agent_management_diagnosis_counts_projected_sessions() {
-        let projected_sessions = vec![
-            crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
-                canonical_session_id: "codex:projected-session".to_string(),
-                provider_id: "codex".to_string(),
-                provider_session_id: Some("projected-session".to_string()),
-                title: Some("Projected session".to_string()),
-                display_title: None,
-                workspace_dir: Some("/tmp/projected-workspace".to_string()),
-                last_active_at_ms: None,
-                source_path: Some("/missing/provider/source.jsonl".to_string()),
-                message_count: Some(1),
-                event_count: 1,
-                turn_count: 1,
-                size_bytes: Some(10),
-                hidden: false,
-                pinned: false,
-                preferred_targets: Vec::new(),
-                stale: false,
-            },
-            crate::storage::snapshot_store::ProjectedSessionSnapshotRow {
-                canonical_session_id: "claude:other-provider".to_string(),
-                provider_id: "claude".to_string(),
-                provider_session_id: Some("other-provider".to_string()),
-                title: None,
-                display_title: None,
-                workspace_dir: None,
-                last_active_at_ms: None,
-                source_path: None,
-                message_count: Some(0),
-                event_count: 0,
-                turn_count: 0,
-                size_bytes: None,
-                hidden: false,
-                pinned: false,
-                preferred_targets: Vec::new(),
-                stale: false,
-            },
-        ];
-
-        let codex = build_agent_management_entry("codex", &[], &projected_sessions, false).unwrap();
-
-        assert_eq!(codex.hook_diagnosis.total_sessions, 1);
+        assert!(value["capabilities"].is_object());
+        assert!(value["capabilities"]["session_management"].is_object());
+        assert!(value["capabilities"]["hook_management"].is_object());
+        assert!(value["settings"].is_array());
+        assert!(value.get("hook").is_none());
     }
 }

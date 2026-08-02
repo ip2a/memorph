@@ -279,6 +279,7 @@ class WebUiInvariantTest(unittest.TestCase):
             't("configFileLocation")',
             't("about")',
             't("backupDir")',
+            't("exportDir")',
             't("logDir")',
             't("logFileName")',
             't("logMaxSizeMb")',
@@ -287,8 +288,10 @@ class WebUiInvariantTest(unittest.TestCase):
             't("homeButtons")',
             't("hooks")',
             't("checkUpdate")',
-            "PathText",
-            "backup_dir_base",
+            "SettingsRow",
+            "SettingsPathValue",
+            "SETTINGS_EXPORT_DIR_VALUE",
+            "SETTINGS_WORKSPACE_TOKEN",
             "updateSettings",
             "updateProviderCatalog",
             "getProviderCatalog",
@@ -355,8 +358,8 @@ class WebUiInvariantTest(unittest.TestCase):
         self.assertNotIn("disabled>Browse", import_dialog)
 
         self.assertIn('t("backupDir")', settings_dialog)
-        self.assertIn("backup_dir_base", settings_dialog)
-        self.assertIn("PathText", settings_dialog)
+        self.assertIn("backup_dir_input", settings_dialog)
+        self.assertIn("SettingsValueText", settings_dialog)
         self.assertNotIn("selectFolder({ start_path", settings_dialog)
         self.assertIn("mutationFn: checkForUpdate", settings_dialog)
         self.assertIn("await openExternal({ url })", settings_dialog)

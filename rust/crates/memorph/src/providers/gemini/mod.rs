@@ -2,16 +2,16 @@ pub mod adapter;
 pub mod hook;
 mod management;
 
-use crate::session::{
-    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
-    Schema, Session, Usage,
-};
 use crate::provider::{
     PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities,
     ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
     ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
     ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
+};
+use crate::session::{
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance, ProviderRef, Role,
+    Schema, Session, Usage,
 };
 use crate::utils::{extract_text, parse_timestamp_to_ms, truncate_summary};
 use anyhow::{bail, Context as _, Result};
@@ -652,7 +652,10 @@ fn event_kind(blocks: &[Block]) -> EventKind {
         .any(|block| matches!(block, Block::ToolCall { .. }))
     {
         EventKind::Action
-    } else if blocks.iter().all(|block| matches!(block, Block::Other { .. })) {
+    } else if blocks
+        .iter()
+        .all(|block| matches!(block, Block::Other { .. }))
+    {
         EventKind::Other
     } else {
         EventKind::Message
@@ -928,7 +931,10 @@ mod tests {
             .iter()
             .any(|block| matches!(block, Block::ToolResult { content, .. } if content == "ok")));
         assert_eq!(event.metadata.usage.as_ref().unwrap().input_tokens, Some(2));
-        assert_eq!(event.metadata.usage.as_ref().unwrap().output_tokens, Some(3));
+        assert_eq!(
+            event.metadata.usage.as_ref().unwrap().output_tokens,
+            Some(3)
+        );
     }
 
     #[test]

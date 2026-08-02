@@ -151,13 +151,9 @@ pub(super) fn build_opencode_projection(input: OpenCodeProjectionInput<'_>) -> O
         for block in &event.blocks {
             let part_id = generate_opencode_id("prt");
             let part_created = msg_created + 1;
-            let Some(part_json) = block_to_opencode_part(
-                session_id,
-                &msg_id,
-                &part_id,
-                block,
-                part_created,
-            ) else {
+            let Some(part_json) =
+                block_to_opencode_part(session_id, &msg_id, &part_id, block, part_created)
+            else {
                 continue;
             };
             oc_parts.push((part_id, msg_id.clone(), part_created, part_json));

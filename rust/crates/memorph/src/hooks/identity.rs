@@ -1,4 +1,4 @@
-//! Runtime session identity and correlation.
+//! Runtime session identity.
 //!
 //! Runtime identity must be stronger than workspace path alone. The resolver
 //! prefers provider-native identifiers, then run identifiers, then process and

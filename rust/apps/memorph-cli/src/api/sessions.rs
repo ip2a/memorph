@@ -171,7 +171,6 @@ pub(super) async fn index_workspace_sessions(
     }
 }
 
-
 /// Map a session-read anyhow error to an HTTP status per rule 10:
 /// distinguish unindexed / source-missing / unknown-provider / import-failed
 /// rather than collapsing every failure to 404.
@@ -381,7 +380,8 @@ mod tests {
 
     #[test]
     fn classifies_unindexed_as_404() {
-        let (status, _) = classify_session_read_error(anyhow!("Session is not indexed: claude/abc"));
+        let (status, _) =
+            classify_session_read_error(anyhow!("Session is not indexed: claude/abc"));
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 

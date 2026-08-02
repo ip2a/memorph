@@ -439,10 +439,7 @@ pub trait Provider: Send + Sync {
     /// Providers that keep an index or can derive the source path from the
     /// session id override this. The default returns None so callers know to
     /// fall back to scan_sessions and filter.
-    fn find_session_by_id(
-        &self,
-        _session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(&self, _session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         Ok(None)
     }
 
@@ -745,8 +742,7 @@ pub fn event_visible_message_role(event: &Event) -> Option<Role> {
 }
 
 pub fn event_is_visible_message(event: &Event) -> bool {
-    event_visible_message_role(event).is_some()
-        && !event_visible_text(event).trim().is_empty()
+    event_visible_message_role(event).is_some() && !event_visible_text(event).trim().is_empty()
 }
 
 pub fn event_visible_message_text(event: &Event) -> Option<String> {
@@ -1044,14 +1040,8 @@ mod tests {
         assert_eq!(event_visible_message_role(&lifecycle), None);
         assert_eq!(event_visible_message_role(&developer), None);
         assert_eq!(event_visible_message_role(&unknown), None);
-        assert_eq!(
-            event_visible_message_role(&user),
-            Some(Role::User)
-        );
-        assert_eq!(
-            event_visible_message_text(&user).as_deref(),
-            Some("hello")
-        );
+        assert_eq!(event_visible_message_role(&user), Some(Role::User));
+        assert_eq!(event_visible_message_text(&user).as_deref(), Some("hello"));
     }
 
     #[test]

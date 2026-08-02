@@ -6,19 +6,18 @@ pub mod write;
 use self::load::*;
 use self::write::*;
 
+use crate::provider::{
+    event_is_visible_message, event_visible_message_role, event_visible_message_text,
+    export_result, session_title, visible_block_text, PageStrategy, Provider,
+    ProviderActivitySupport, ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity,
+    ProviderSessionBackup, ProviderSessionImportPage, ProviderSessionSummary,
+    ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
+    ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
+};
 use crate::session::{
     Block, Context, Event, EventKind, ExportedSession, Fidelity, Identity, ImportedSession, Links,
     MappingDirection, MappingIssue, MappingIssueLevel, MappingReport, Metadata, Provenance,
     ProviderRef, Role, Schema, Session, TurnOutcome,
-};
-use crate::provider::{
-    event_is_visible_message, event_visible_message_role,
-    event_visible_message_text, export_result, session_title,
-    visible_block_text, PageStrategy, Provider, ProviderActivitySupport,
-    ProviderBackupSupport, ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup,
-    ProviderSessionImportPage, ProviderSessionSummary, ProviderSourceFingerprint,
-    ProviderSourceMutation, ProviderWriteRisk, ResumeQuality, ScanStrategy, StorageShape,
-    TurnQuality, WriteRiskLevel,
 };
 use anyhow::{Context as _, Result};
 use chrono::Utc;
@@ -181,10 +180,7 @@ impl Provider for KimiProvider {
         Ok(sessions)
     }
 
-    fn find_session_by_id(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<ProviderSessionSummary>> {
+    fn find_session_by_id(&self, session_id: &str) -> Result<Option<ProviderSessionSummary>> {
         let Some(session_dir) = find_session_dir(session_id)? else {
             return Ok(None);
         };

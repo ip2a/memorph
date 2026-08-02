@@ -1,8 +1,8 @@
 //! Canonical hook event and runtime data models.
 //!
 //! These types are provider-neutral. Provider-specific adapters should preserve
-//! raw payloads while mapping the stable fields memorph needs for runtime
-//! session correlation, diagnostics, and runtime observation.
+//! raw payloads while mapping the stable fields memorph needs for ingestion
+//! and lightweight runtime state.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -215,79 +215,6 @@ pub enum RuntimeSessionStatus {
     Idle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeSessionCorrelation {
-    pub provider: String,
-    pub session_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_dir: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub matched_by: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeActivityKind {
-    SessionStarted,
-    UserPromptSubmitted,
-    MessageCreated,
-    ToolStarted,
-    ToolFinished,
-    PermissionRequested,
-    QuestionRequested,
-    SubagentStarted,
-    SubagentStopped,
-    Compaction,
-    Notification,
-    SessionCompleted,
-    SessionFailed,
-    Heartbeat,
-    ProviderEvent,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeActivity {
-    pub id: String,
-    pub kind: RuntimeActivityKind,
-    pub event_type: HookEventType,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_event_name: Option<String>,
-    pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message_preview: Option<String>,
-    pub timestamp: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeSubagentStatus {
-    Processing,
-    Running,
-    Completed,
-    Failed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RuntimeSubagent {
-    pub id: String,
-    pub agent_type: String,
-    pub status: RuntimeSubagentStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub current_tool: Option<HookToolCall>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_event_name: Option<String>,
-    pub started_at: DateTime<Utc>,
-    pub last_event_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completed_at: Option<DateTime<Utc>>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuntimeSession {
     pub runtime_id: RuntimeSessionId,
@@ -295,68 +222,10 @@ pub struct RuntimeSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pid: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_pid: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pid_start_time: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tty: Option<String>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub terminal_vars: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub process_ancestry: Vec<HookProcessInfo>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub correlation: Option<RuntimeSessionCorrelation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transcript_path: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub workspace_roots: Vec<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_user_prompt: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_assistant_message: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_tool_result: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stop_reason: Option<String>,
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
-    pub compact_count: u32,
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
-    pub tool_call_count: u32,
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
-    pub failed_tool_count: u32,
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
-    pub permission_request_count: u32,
-    #[serde(default, skip_serializing_if = "is_zero_u32")]
-    pub question_count: u32,
     pub status: RuntimeSessionStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current_tool: Option<HookToolCall>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_permission: Option<PermissionRequest>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_question: Option<QuestionRequest>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recent_activity: Vec<RuntimeActivity>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub subagents: BTreeMap<String, RuntimeSubagent>,
+    pub started_at: DateTime<Utc>,
     pub last_event_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-fn is_zero_u32(value: &u32) -> bool {
-    *value == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

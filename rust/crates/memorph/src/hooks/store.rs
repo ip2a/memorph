@@ -1,8 +1,8 @@
-//! Hook event and runtime session persistence.
+//! Hook event, error, and endpoint persistence.
 //!
-//! Provider-native session files remain provider-owned. Hook events, runtime
-//! observations, errors, and the local hook endpoint are memorph management
-//! data and are stored in the local SQLite database.
+//! Provider-native session files remain provider-owned. Hook events, errors,
+//! and the local hook endpoint are memorph management data stored in SQLite;
+//! lightweight runtime sessions remain in memory.
 
 use anyhow::{Context as _, Result};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::{OnceLock, RwLock};
 
-use crate::hooks::model::{HookEvent, RuntimeSession};
+use crate::hooks::model::HookEvent;
 use crate::hooks::protocol::HookRuntimeEndpoint;
 use crate::storage::local_store::LocalSqliteStore;
 
@@ -41,31 +41,10 @@ const RAW_HOOK_EVENT_RETENTION: HookEventRetentionPolicy = HookEventRetentionPol
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct RuntimeSessionStore {
-    #[serde(default = "current_version")]
-    pub version: u32,
-    #[serde(default)]
-    pub sessions: Vec<RuntimeSession>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HookErrorRecord {
     pub timestamp: chrono::DateTime<chrono::Utc>,
     pub scope: String,
     pub message: String,
-}
-
-fn current_version() -> u32 {
-    1
-}
-
-impl Default for RuntimeSessionStore {
-    fn default() -> Self {
-        Self {
-            version: current_version(),
-            sessions: Vec::new(),
-        }
-    }
 }
 
 pub fn database_path() -> Result<PathBuf> {
@@ -131,18 +110,15 @@ fn append_event_with_retention_in(
             [cutoff_ms],
         )
         .context("Failed to prune expired hook events")?;
-    let session_id =
-        resolve_session_id(&tx, &event.provider, event.provider_session_id.as_deref())?;
     tx.execute(
         "INSERT INTO hook_events
          (id, provider_id, provider_session_id, session_id, event_name, observed_at_ms,
           correlation_id, payload_json)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7)",
         params![
             event.event_id,
             event.provider,
             event.provider_session_id,
-            session_id,
             event_name,
             event.timestamp.timestamp_millis(),
             event.run_id,
@@ -307,134 +283,6 @@ fn load_recent_errors_in(conn: &Connection, limit: usize) -> Result<Vec<HookErro
     Ok(errors)
 }
 
-pub fn save_runtime_sessions(runtime_store: &RuntimeSessionStore) -> Result<()> {
-    let mut store = open_store()?;
-    save_runtime_sessions_in(store.connection_mut(), runtime_store)
-}
-
-fn save_runtime_sessions_in(
-    conn: &mut Connection,
-    runtime_store: &RuntimeSessionStore,
-) -> Result<()> {
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .context("Failed to start runtime session snapshot transaction")?;
-    let current_ids = runtime_store
-        .sessions
-        .iter()
-        .map(|session| session.runtime_id.0.as_str())
-        .collect::<std::collections::HashSet<_>>();
-
-    for session in &runtime_store.sessions {
-        let details_json =
-            serde_json::to_string(session).context("Failed to encode runtime session")?;
-        let status =
-            serde_json::to_string(&session.status).context("Failed to encode runtime status")?;
-        let status = status.trim_matches('"');
-        let correlation_provider = session
-            .correlation
-            .as_ref()
-            .map(|correlation| correlation.provider.as_str())
-            .unwrap_or(session.provider.as_str());
-        let provider_session_id = session.provider_session_id.as_deref().or_else(|| {
-            session
-                .correlation
-                .as_ref()
-                .map(|correlation| correlation.session_id.as_str())
-        });
-        let session_id = resolve_session_id(&tx, correlation_provider, provider_session_id)?;
-        let workspace_dir = session
-            .cwd
-            .as_deref()
-            .map(|path| path.to_string_lossy().into_owned());
-        tx.execute(
-            "INSERT INTO runtime_session_observations
-             (id, provider_id, provider_session_id, session_id, workspace_dir, status,
-              correlation_id, observed_at_ms, recent_activity_at_ms, details_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(id) DO UPDATE SET
-              provider_id = excluded.provider_id,
-              provider_session_id = excluded.provider_session_id,
-              session_id = excluded.session_id,
-              workspace_dir = excluded.workspace_dir,
-              status = excluded.status,
-              correlation_id = excluded.correlation_id,
-              observed_at_ms = excluded.observed_at_ms,
-              recent_activity_at_ms = excluded.recent_activity_at_ms,
-              details_json = excluded.details_json",
-            params![
-                session.runtime_id.0,
-                session.provider,
-                provider_session_id,
-                session_id,
-                workspace_dir,
-                status,
-                session.run_id,
-                session.updated_at.timestamp_millis(),
-                session.last_event_at.timestamp_millis(),
-                details_json,
-            ],
-        )
-        .context("Failed to upsert runtime session observation")?;
-    }
-
-    let existing_ids = {
-        let mut stmt = tx
-            .prepare("SELECT id FROM runtime_session_observations")
-            .context("Failed to prepare runtime session observation lookup")?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .context("Failed to query runtime session observation ids")?;
-        let mut ids = Vec::new();
-        for row in rows {
-            ids.push(row.context("Failed to decode runtime session observation id")?);
-        }
-        ids
-    };
-    for existing_id in existing_ids {
-        if current_ids.contains(existing_id.as_str()) {
-            continue;
-        }
-        tx.execute(
-            "DELETE FROM runtime_session_observations WHERE id = ?1",
-            [existing_id],
-        )
-        .context("Failed to delete removed runtime session observation")?;
-    }
-
-    tx.commit()
-        .context("Failed to commit runtime session snapshot")
-}
-
-pub fn load_runtime_sessions() -> Result<RuntimeSessionStore> {
-    let store = open_store()?;
-    load_runtime_sessions_in(store.connection())
-}
-
-fn load_runtime_sessions_in(conn: &Connection) -> Result<RuntimeSessionStore> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT details_json
-             FROM runtime_session_observations
-             ORDER BY observed_at_ms, id",
-        )
-        .context("Failed to prepare runtime session observations query")?;
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .context("Failed to query runtime session observations")?;
-    let mut sessions = Vec::new();
-    for row in rows {
-        let details = row.context("Failed to decode runtime session observation row")?;
-        sessions.push(
-            serde_json::from_str(&details).context("Failed to decode stored runtime session")?,
-        );
-    }
-    Ok(RuntimeSessionStore {
-        version: current_version(),
-        sessions,
-    })
-}
-
 pub fn save_server_runtime(endpoint: &HookRuntimeEndpoint) -> Result<()> {
     let store = open_store()?;
     save_server_runtime_in(store.connection(), endpoint)
@@ -510,46 +358,10 @@ fn load_server_runtime_in(conn: &Connection) -> Result<Option<HookRuntimeEndpoin
         .transpose()
 }
 
-fn resolve_session_id(
-    conn: &Connection,
-    provider_id: &str,
-    provider_session_id: Option<&str>,
-) -> Result<Option<String>> {
-    let Some(provider_session_id) = provider_session_id else {
-        return Ok(None);
-    };
-    conn.query_row(
-        "SELECT s.id
-         FROM sessions s
-         WHERE s.deleted_at_ms IS NULL
-           AND s.provider_id = ?1
-           AND (
-                s.provider_session_id = ?2
-                OR s.id = ?2
-                OR EXISTS (
-                    SELECT 1
-                    FROM session_aliases alias
-                    WHERE alias.session_id = s.id
-                      AND alias.provider_id = ?1
-                      AND alias.alias_kind = 'provider_session_id'
-                      AND alias.alias_value = ?2
-                )
-           )
-         ORDER BY COALESCE(s.last_active_at_ms, s.updated_at_ms, s.created_at_ms) DESC
-         LIMIT 1",
-        params![provider_id, provider_session_id],
-        |row| row.get(0),
-    )
-    .optional()
-    .context("Failed to resolve canonical session for hook observation")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hooks::model::{
-        HookEventType, RuntimeSessionCorrelation, RuntimeSessionId, RuntimeSessionStatus,
-    };
+    use crate::hooks::model::HookEventType;
     use crate::storage::local_store;
     use serde_json::{json, Value};
 
@@ -557,54 +369,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.keep().join("memorph.db");
         LocalSqliteStore::open(path).unwrap()
-    }
-
-    fn runtime_session(id: &str, updated_at: chrono::DateTime<chrono::Utc>) -> RuntimeSession {
-        RuntimeSession {
-            runtime_id: RuntimeSessionId::new(id),
-            provider: "generic".to_string(),
-            provider_session_id: Some(format!("provider-{id}")),
-            run_id: Some(format!("run-{id}")),
-            cwd: Some(PathBuf::from("/tmp/project")),
-            pid: Some(42),
-            parent_pid: Some(1),
-            pid_start_time: Some("100".to_string()),
-            tty: Some("ttys001".to_string()),
-            terminal_vars: [("TERM".to_string(), "xterm".to_string())]
-                .into_iter()
-                .collect(),
-            process_ancestry: Vec::new(),
-            correlation: Some(RuntimeSessionCorrelation {
-                provider: "generic".to_string(),
-                session_id: format!("provider-{id}"),
-                title: Some("Session".to_string()),
-                project_dir: Some("/tmp/project".to_string()),
-                source_path: Some("/tmp/session.jsonl".to_string()),
-                matched_by: Some("provider_session_id".to_string()),
-            }),
-            model: Some("model".to_string()),
-            session_title: Some("Session".to_string()),
-            transcript_path: Some(PathBuf::from("/tmp/session.jsonl")),
-            workspace_roots: vec![PathBuf::from("/tmp/project")],
-            last_user_prompt: Some("prompt".to_string()),
-            last_assistant_message: Some("response".to_string()),
-            last_tool_result: Some("result".to_string()),
-            last_error: None,
-            stop_reason: None,
-            compact_count: 1,
-            tool_call_count: 2,
-            failed_tool_count: 0,
-            permission_request_count: 1,
-            question_count: 1,
-            status: RuntimeSessionStatus::Running,
-            current_tool: None,
-            pending_permission: None,
-            pending_question: None,
-            recent_activity: Vec::new(),
-            subagents: Default::default(),
-            last_event_at: updated_at,
-            updated_at,
-        }
     }
 
     #[test]
@@ -686,15 +450,6 @@ mod tests {
         store
             .connection()
             .execute(
-                "INSERT INTO runtime_session_observations
-                 (id, provider_id, status, observed_at_ms, details_json)
-                 VALUES ('runtime-keep', 'generic', 'running', ?1, '{}')",
-                [expired.timestamp.timestamp_millis()],
-            )
-            .unwrap();
-        store
-            .connection()
-            .execute(
                 "INSERT INTO session_activity
                  (id, operation_kind, status, started_at_ms)
                  VALUES ('activity-keep', 'scan', 'success', ?1)",
@@ -728,11 +483,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["current"]
         );
-        for table in [
-            "hook_errors",
-            "runtime_session_observations",
-            "session_activity",
-        ] {
+        for table in ["hook_errors", "session_activity"] {
             let count: i64 = store
                 .connection()
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -876,124 +627,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_snapshot_roundtrips_and_removes_absent_sessions() {
-        let mut store = test_store();
-        let now = chrono::Utc::now();
-        let first = runtime_session("runtime-1", now);
-        let second = runtime_session("runtime-2", now + chrono::Duration::seconds(1));
-        save_runtime_sessions_in(
-            store.connection_mut(),
-            &RuntimeSessionStore {
-                version: 1,
-                sessions: vec![first.clone(), second],
-            },
-        )
-        .unwrap();
-
-        let loaded = load_runtime_sessions_in(store.connection()).unwrap();
-        assert_eq!(loaded.sessions.len(), 2);
-        assert_eq!(loaded.sessions[0], first);
-
-        save_runtime_sessions_in(
-            store.connection_mut(),
-            &RuntimeSessionStore {
-                version: 1,
-                sessions: vec![first.clone()],
-            },
-        )
-        .unwrap();
-        let loaded = load_runtime_sessions_in(store.connection()).unwrap();
-        assert_eq!(loaded.sessions, vec![first]);
-    }
-
-    #[test]
-    fn runtime_snapshot_waits_for_concurrent_writer_before_reading() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("memorph.db");
-        let mut blocker = LocalSqliteStore::open(&path).unwrap();
-        let mut writer = LocalSqliteStore::open(&path).unwrap();
-        let blocker_tx = blocker
-            .connection_mut()
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .unwrap();
-        blocker_tx
-            .execute(
-                "INSERT INTO hook_errors
-                 (id, scope, message, observed_at_ms, details_json)
-                 VALUES ('blocker', 'test', 'blocking write', 0, '{}')",
-                [],
-            )
-            .unwrap();
-
-        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let writer_barrier = barrier.clone();
-        let handle = std::thread::spawn(move || {
-            writer_barrier.wait();
-            save_runtime_sessions_in(
-                writer.connection_mut(),
-                &RuntimeSessionStore {
-                    version: 1,
-                    sessions: vec![runtime_session("runtime-concurrent", chrono::Utc::now())],
-                },
-            )
-        });
-
-        barrier.wait();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        blocker_tx.commit().unwrap();
-
-        handle.join().unwrap().unwrap();
-    }
-
-    #[test]
-    fn runtime_observation_links_only_to_resolved_canonical_session() {
-        let mut store = test_store();
-        store
-            .connection()
-            .execute(
-                "INSERT INTO sessions
-                 (id, provider_id, provider_session_id, status)
-                 VALUES ('canonical-1', 'generic', 'provider-runtime-1', 'active')",
-                [],
-            )
-            .unwrap();
-        let now = chrono::Utc::now();
-        save_runtime_sessions_in(
-            store.connection_mut(),
-            &RuntimeSessionStore {
-                version: 1,
-                sessions: vec![
-                    runtime_session("runtime-1", now),
-                    runtime_session("runtime-unresolved", now),
-                ],
-            },
-        )
-        .unwrap();
-
-        let resolved: Option<String> = store
-            .connection()
-            .query_row(
-                "SELECT session_id FROM runtime_session_observations WHERE id = 'runtime-1'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let unresolved: Option<String> = store
-            .connection()
-            .query_row(
-                "SELECT session_id
-                 FROM runtime_session_observations
-                 WHERE id = 'runtime-unresolved'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-
-        assert_eq!(resolved.as_deref(), Some("canonical-1"));
-        assert_eq!(unresolved, None);
-    }
-
-    #[test]
     fn server_runtime_roundtrips_token_and_index_fields() {
         let store = test_store();
         let endpoint = HookRuntimeEndpoint {
@@ -1027,19 +660,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let database = dir.path().join("memorph.db");
         let mut store = LocalSqliteStore::open(&database).unwrap();
-        let now = chrono::Utc::now();
         let event = HookEvent::new("generic", HookEventType::Heartbeat, json!(null));
 
         append_event_in(store.connection_mut(), &event).unwrap();
         append_error_in(store.connection(), "test".to_string(), "error".to_string()).unwrap();
-        save_runtime_sessions_in(
-            store.connection_mut(),
-            &RuntimeSessionStore {
-                version: 1,
-                sessions: vec![runtime_session("runtime-1", now)],
-            },
-        )
-        .unwrap();
 
         assert!(database.exists());
         assert!(!dir.path().join("hooks").exists());
@@ -1050,12 +674,7 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         local_store::configure_connection(&conn).unwrap();
         local_store::apply_schema(&mut conn).unwrap();
-        for table in [
-            "runtime_endpoints",
-            "runtime_session_observations",
-            "hook_events",
-            "hook_errors",
-        ] {
+        for table in ["runtime_endpoints", "hook_events", "hook_errors"] {
             let exists: bool = conn
                 .query_row(
                     "SELECT EXISTS(
@@ -1067,5 +686,18 @@ mod tests {
                 .unwrap();
             assert!(exists, "missing table {table}");
         }
+        let legacy_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_session_observations'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            !legacy_exists,
+            "legacy runtime observation table should be removed"
+        );
     }
 }

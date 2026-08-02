@@ -553,8 +553,7 @@ pub(super) fn read_kiro_event_stream(
             .and_then(|payload| payload.get("subExecutionId"))
             .and_then(Value::as_str)
             .map(str::to_string);
-        let event =
-            event_from_kiro_record(record, source_file, line_number, &mut state, report);
+        let event = event_from_kiro_record(record, source_file, line_number, &mut state, report);
         if let Some(sub_execution_id) = sub_execution_id {
             imported
                 .sub_execution_parents
@@ -758,19 +757,21 @@ pub(super) fn event_from_kiro_record(
                 }],
             )
         }
-        "turn_start" => {
-            (
-                EventKind::Lifecycle,
-                Role::System,
-                vec![Block::Other { raw: payload.clone() }],
-            )
-        }
+        "turn_start" => (
+            EventKind::Lifecycle,
+            Role::System,
+            vec![Block::Other {
+                raw: payload.clone(),
+            }],
+        ),
         "turn_end" => {
             links.turn_outcome = Some(kiro_turn_end_boundary(&payload));
             (
                 EventKind::Lifecycle,
                 Role::System,
-                vec![Block::Other { raw: payload.clone() }],
+                vec![Block::Other {
+                    raw: payload.clone(),
+                }],
             )
         }
         "session_start"
@@ -787,7 +788,9 @@ pub(super) fn event_from_kiro_record(
         | "interaction_resolved" => (
             EventKind::Lifecycle,
             Role::System,
-            vec![Block::Other { raw: payload.clone() }],
+            vec![Block::Other {
+                raw: payload.clone(),
+            }],
         ),
         unknown => {
             report.push_issue(MappingIssue {
@@ -801,7 +804,9 @@ pub(super) fn event_from_kiro_record(
             (
                 EventKind::Other,
                 Role::Other,
-                vec![Block::Other { raw: payload.clone() }],
+                vec![Block::Other {
+                    raw: payload.clone(),
+                }],
             )
         }
     };
@@ -838,7 +843,9 @@ pub(super) fn kiro_message_blocks(
     report: &mut MappingReport,
 ) -> Vec<Block> {
     let Some(content) = payload.get("content") else {
-        return vec![Block::Other { raw: payload.clone() }];
+        return vec![Block::Other {
+            raw: payload.clone(),
+        }];
     };
     let mut blocks = Vec::new();
     match content {
@@ -861,9 +868,7 @@ pub(super) fn kiro_message_blocks(
                                     .map(str::to_string),
                             });
                         } else {
-                            blocks.push(Block::Other {
-                                raw: item.clone(),
-                            });
+                            blocks.push(Block::Other { raw: item.clone() });
                         }
                     }
                     _ => blocks.push(Block::Other { raw: item.clone() }),
@@ -892,7 +897,9 @@ pub(super) fn kiro_message_blocks(
             path: Some(path.to_string()),
             raw: Some(payload.clone()),
         });
-        blocks.push(Block::Other { raw: payload.clone() });
+        blocks.push(Block::Other {
+            raw: payload.clone(),
+        });
     }
     blocks
 }

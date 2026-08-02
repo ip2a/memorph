@@ -1,5 +1,5 @@
 import { queryOptions, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { detectAgent, getAgent, getMeta, getProviderCatalog, getProviderConfigView, listAgentsSummary, runProviderSetting, updateProviderSetting } from "@/lib/api";
+import { detectAgent, getAgent, getMeta, getProviderCatalog, getProviderConfigView, listAgentsSummary, listDetectedHooks, runHookProviderOperation, runProviderSetting, updateProviderSetting } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useAgentsSummary() {
@@ -81,6 +81,27 @@ export function useProviderConfigView(provider: string | null, viewId: string, e
   return useQuery({
     queryKey: queryKeys.providerConfigView(provider ?? "", viewId),
     queryFn: () => getProviderConfigView(provider!, viewId),
+    enabled: enabled && !!provider,
+  });
+}
+
+export function useRunAgentHookOperation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ provider, operation }: { provider: string; operation: string }) =>
+      runHookProviderOperation(provider, operation),
+    onSuccess: (_report, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agent(variables.provider) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agentHooks(variables.provider) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agentsSummary });
+    },
+  });
+}
+
+export function useAgentDetectedHooks(provider: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.agentHooks(provider || ""),
+    queryFn: () => listDetectedHooks(provider || ""),
     enabled: enabled && !!provider,
   });
 }

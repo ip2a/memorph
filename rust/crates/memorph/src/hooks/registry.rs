@@ -4,15 +4,55 @@
 //! It derives descriptors from provider profiles and common capability metadata;
 //! provider-specific install/status logic remains owned by provider modules.
 
-use crate::hooks::capabilities::HookProviderCapabilities;
 use crate::hooks::profiles::HookProviderProfile;
 use crate::hooks::strategies::HookConfigStrategyKind;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookOperationCapabilities {
+    pub scan_existing: bool,
+    pub verify: bool,
+    pub install: bool,
+    pub repair: bool,
+    pub uninstall: bool,
+}
+
+impl HookOperationCapabilities {
+    const fn unsupported() -> Self {
+        Self {
+            scan_existing: false,
+            verify: false,
+            install: false,
+            repair: false,
+            uninstall: false,
+        }
+    }
+
+    const fn managed_hook(scan_existing: bool) -> Self {
+        Self {
+            scan_existing,
+            verify: true,
+            install: true,
+            repair: true,
+            uninstall: true,
+        }
+    }
+
+    pub fn supports_setting(self, setting_id: &str) -> bool {
+        match setting_id {
+            "install_hook" => self.install,
+            "verify_hook" => self.verify,
+            "repair_hook" => self.repair,
+            "uninstall_hook" => self.uninstall,
+            _ => true,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HookProviderDescriptor {
     pub profile: &'static HookProviderProfile,
     pub strategy_kind: HookConfigStrategyKind,
-    pub capabilities: HookProviderCapabilities,
+    pub capabilities: HookOperationCapabilities,
     pub required_events: &'static [&'static str],
 }
 
@@ -61,11 +101,26 @@ pub fn required_events(provider: &str) -> Option<&'static [&'static str]> {
     find(provider).map(|descriptor| descriptor.required_events)
 }
 
+pub fn supports_setting(provider: &str, setting_id: &str) -> bool {
+    find(provider)
+        .map(|descriptor| descriptor.capabilities.supports_setting(setting_id))
+        .unwrap_or(false)
+}
+
 fn from_profile(profile: &'static HookProviderProfile) -> Option<HookProviderDescriptor> {
     Some(HookProviderDescriptor {
         profile,
         strategy_kind: profile.strategy_kind,
-        capabilities: crate::hooks::capabilities::for_provider(profile.provider),
+        capabilities: if crate::hooks::operations::find_provider_hook(profile.provider).is_some() {
+            HookOperationCapabilities::managed_hook(crate::hooks::discovery::supports_provider(
+                profile.provider,
+            ))
+        } else {
+            HookOperationCapabilities {
+                scan_existing: crate::hooks::discovery::supports_provider(profile.provider),
+                ..HookOperationCapabilities::unsupported()
+            }
+        },
         required_events: required_events_for_profile(profile),
     })
 }
@@ -106,6 +161,36 @@ mod tests {
             assert_eq!(descriptor.profile, profile);
             assert_eq!(descriptor.strategy_kind, profile.strategy_kind);
         }
+    }
+
+    #[test]
+    fn every_profiled_provider_has_full_managed_hook_capabilities() {
+        for descriptor in all() {
+            assert_eq!(
+                descriptor.capabilities,
+                HookOperationCapabilities::managed_hook(
+                    crate::hooks::discovery::supports_provider(descriptor.provider())
+                ),
+                "missing capability coverage for {}",
+                descriptor.provider()
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_provider_has_no_hook_capabilities() {
+        assert!(!supports_setting("unknown-provider", "install_hook"));
+        assert!(!supports_setting("unknown-provider", "verify_hook"));
+    }
+
+    #[test]
+    fn capabilities_gate_hook_settings_only() {
+        let unsupported = HookOperationCapabilities::unsupported();
+        assert!(!unsupported.supports_setting("install_hook"));
+        assert!(!unsupported.supports_setting("verify_hook"));
+        assert!(!unsupported.supports_setting("repair_hook"));
+        assert!(!unsupported.supports_setting("uninstall_hook"));
+        assert!(unsupported.supports_setting("repair_workspace_sessions"));
     }
 
     #[test]

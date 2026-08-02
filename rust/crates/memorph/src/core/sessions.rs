@@ -82,9 +82,7 @@ pub fn get_session_detail_view_page_result(
             }
             let fresh_identity = crate::storage::snapshot_store::SnapshotStore::new(&conn)
                 .find_session_identity(provider_id, session_id)?
-                .with_context(|| {
-                    format!("Session is not indexed: {provider_id}/{session_id}")
-                })?;
+                .with_context(|| format!("Session is not indexed: {provider_id}/{session_id}"))?;
             // Warm siblings: this session was just cold-indexed, so its
             // workspace-mates are likely to be read next. Spawn a background
             // pass that reuses the same per-provider workspace scan + fingerprint
@@ -340,10 +338,7 @@ fn source_mapping_report_view(
         }
     }
     SessionProjectionReportView {
-        id: format!(
-            "source-read:{provider_id}:{}",
-            imported.session.identity.id
-        ),
+        id: format!("source-read:{provider_id}:{}", imported.session.identity.id),
         provider_id: provider_id.to_string(),
         source_id: source_id.map(str::to_string),
         operation_kind: crate::session_projection::ProjectionOperationKind::Import,
@@ -375,12 +370,10 @@ fn source_mapping_report_view(
                     crate::session::Fidelity::Preserved => {
                         crate::session_projection::ProjectionFidelity::Preserved
                     }
-                    crate::session::Fidelity::Normalized
-                    | crate::session::Fidelity::Downgraded => {
+                    crate::session::Fidelity::Normalized | crate::session::Fidelity::Downgraded => {
                         crate::session_projection::ProjectionFidelity::Normalized
                     }
-                    crate::session::Fidelity::Dropped
-                    | crate::session::Fidelity::Unsupported => {
+                    crate::session::Fidelity::Dropped | crate::session::Fidelity::Unsupported => {
                         crate::session_projection::ProjectionFidelity::Dropped
                     }
                 },
@@ -978,8 +971,9 @@ pub(super) fn apply_imported_session_title(
     meta: &ProviderSessionSummary,
     display_title: Option<String>,
 ) {
-    imported.session.identity.title =
-        display_title.or(imported.session.identity.title.clone()).or(meta.title.clone());
+    imported.session.identity.title = display_title
+        .or(imported.session.identity.title.clone())
+        .or(meta.title.clone());
 }
 
 fn resolved_display_title(provider_id: &str, meta: &ProviderSessionSummary) -> Option<String> {

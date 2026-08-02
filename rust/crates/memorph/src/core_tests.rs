@@ -3,10 +3,6 @@ use super::projection::*;
 use super::session_mutation::*;
 use super::sessions::*;
 use super::*;
-use crate::hooks::model::{
-    HookToolCall, PermissionRequest, QuestionRequest, RuntimeSession, RuntimeSessionId,
-    RuntimeSessionStatus,
-};
 use crate::provider::Provider;
 use crate::session::{
     Block, Context, Event, EventKind, Identity, Links, MappingDirection, MappingReport, Metadata,
@@ -212,89 +208,6 @@ fn session_length_metrics_distinguish_measured_bytes_and_estimated_tokens() {
     );
     assert_eq!(metrics.compressed_segment_count, 0);
     assert_eq!(metrics.archive_count, 0);
-}
-
-#[test]
-fn hook_runtime_summary_prefers_pending_states_and_latest_status() {
-    let mut latest = runtime_session_fixture("runtime-1", RuntimeSessionStatus::WaitingPermission);
-    latest.current_tool = Some(HookToolCall {
-        id: None,
-        name: "Bash".to_string(),
-        input: serde_json::json!({"command": "cargo check"}),
-    });
-    latest.pending_permission = Some(PermissionRequest {
-        request_id: Some("perm-1".to_string()),
-        tool: None,
-        prompt: Some("Allow Bash?".to_string()),
-    });
-
-    let mut older = runtime_session_fixture("runtime-2", RuntimeSessionStatus::WaitingUser);
-    older.pending_question = Some(QuestionRequest {
-        request_id: Some("question-1".to_string()),
-        prompt: "Continue?".to_string(),
-    });
-    older.last_event_at = Utc::now() - chrono::TimeDelta::seconds(30);
-
-    let summary = crate::hooks::augmentation::summarize_runtime_sessions(
-        &[latest.clone(), older.clone()],
-        "claude",
-        "session-1",
-        Some("/tmp/project"),
-    )
-    .unwrap();
-
-    assert_eq!(summary.linked_sessions, 2);
-    assert_eq!(summary.waiting_sessions, 2);
-    assert_eq!(summary.status, RuntimeSessionStatus::WaitingPermission);
-    assert_eq!(summary.current_tool_name.as_deref(), Some("Bash"));
-    assert!(summary.has_pending_permission);
-    assert!(summary.has_pending_question);
-    assert_eq!(summary.last_event_at, Some(latest.last_event_at));
-    assert_eq!(summary.matched_by.as_deref(), Some("provider_session_id"));
-    assert_eq!(
-        summary.confidence,
-        Some(crate::hooks::augmentation::HookLinkConfidence::High)
-    );
-}
-
-fn runtime_session_fixture(id: &str, status: RuntimeSessionStatus) -> RuntimeSession {
-    let now = Utc::now();
-    RuntimeSession {
-        runtime_id: RuntimeSessionId::new(id),
-        provider: "claude".to_string(),
-        provider_session_id: Some("session-1".to_string()),
-        run_id: None,
-        cwd: None,
-        pid: None,
-        parent_pid: None,
-        pid_start_time: None,
-        tty: None,
-        terminal_vars: BTreeMap::new(),
-        process_ancestry: Vec::new(),
-        correlation: None,
-        model: None,
-        session_title: None,
-        transcript_path: None,
-        workspace_roots: Vec::new(),
-        last_user_prompt: None,
-        last_assistant_message: None,
-        last_tool_result: None,
-        last_error: None,
-        stop_reason: None,
-        compact_count: 0,
-        tool_call_count: 0,
-        failed_tool_count: 0,
-        permission_request_count: 0,
-        question_count: 0,
-        status,
-        current_tool: None,
-        pending_permission: None,
-        pending_question: None,
-        recent_activity: Vec::new(),
-        subagents: BTreeMap::new(),
-        last_event_at: now,
-        updated_at: now,
-    }
 }
 
 #[test]
@@ -2839,8 +2752,7 @@ mod fields_tests {
     fn session_list_fields_serde_snake_case() {
         let minimal = serde_json::from_str::<SessionListFields>("\"minimal\"").unwrap();
         assert_eq!(minimal, SessionListFields::Minimal);
-        let with_stats =
-            serde_json::from_str::<SessionListFields>("\"with_stats\"").unwrap();
+        let with_stats = serde_json::from_str::<SessionListFields>("\"with_stats\"").unwrap();
         assert_eq!(with_stats, SessionListFields::WithStats);
     }
 

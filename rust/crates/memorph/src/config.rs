@@ -40,8 +40,6 @@ pub struct WebPreferences {
     pub home_buttons: HomeButtonConfig,
     #[serde(default)]
     pub agent_display: AgentDisplayPreferences,
-    #[serde(default = "default_false")]
-    pub show_hooks_nav: bool,
 }
 
 impl Default for WebPreferences {
@@ -55,7 +53,6 @@ impl Default for WebPreferences {
             logging: LogPreferences::default(),
             home_buttons: HomeButtonConfig::default(),
             agent_display: AgentDisplayPreferences::default(),
-            show_hooks_nav: false,
         }
     }
 }
@@ -412,7 +409,6 @@ pub fn update_web_preferences(
     sort_providers_by_session_count: Option<bool>,
     backup_dir: Option<String>,
     logging: Option<LogPreferences>,
-    show_hooks_nav: Option<bool>,
 ) -> Result<()> {
     let mut config = load_config()?;
 
@@ -444,10 +440,6 @@ pub fn update_web_preferences(
     if let Some(value) = logging {
         config.web.logging = value;
     }
-    if let Some(value) = show_hooks_nav {
-        config.web.show_hooks_nav = value;
-    }
-
     save_config(&config)
 }
 

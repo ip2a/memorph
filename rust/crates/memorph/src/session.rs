@@ -15,8 +15,8 @@
 //! [`ImportedSession`] and in memorph's own projection store.
 
 pub use oasf::{
-    OASF_SCHEMA_NAME, OASF_SCHEMA_VERSION, Block, Context, Event, EventKind, Identity, Links,
-    Metadata, Role, Schema, Session, TurnOutcome, Usage,
+    Block, Context, Event, EventKind, Identity, Links, Metadata, Role, Schema, Session,
+    TurnOutcome, Usage, OASF_SCHEMA_NAME, OASF_SCHEMA_VERSION,
 };
 
 use chrono::{DateTime, Utc};

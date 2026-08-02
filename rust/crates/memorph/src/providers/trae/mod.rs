@@ -1,13 +1,13 @@
 pub mod adapter;
 pub mod hook;
 
-use crate::session::{
-    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
-    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
-};
 use crate::provider::{
     PageStrategy, Provider, ProviderCapabilities, ProviderContentFidelity, ProviderSessionSummary,
     ProviderSourceFingerprint, ResumeQuality, ScanStrategy, StorageShape, TurnQuality,
+};
+use crate::session::{
+    Block, Context, Event, EventKind, Fidelity, Identity, ImportedSession, Links, MappingDirection,
+    MappingReport, Metadata, Provenance, ProviderRef, Role, Schema, Session,
 };
 use anyhow::{bail, Context as _, Result};
 use chrono::{DateTime, Utc};
@@ -303,9 +303,7 @@ fn map_message(message: &Value, index: usize, report: &mut MappingReport) -> Opt
         .map(|text| vec![Block::Text { text }])
         .unwrap_or_default();
     if let Some(task) = message.get("agentTaskContent") {
-        blocks.push(Block::Other {
-            raw: task.clone(),
-        });
+        blocks.push(Block::Other { raw: task.clone() });
     }
     if blocks.is_empty() {
         return None;

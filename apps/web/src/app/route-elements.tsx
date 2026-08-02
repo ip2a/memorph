@@ -24,7 +24,6 @@ export const ArtifactsPage = lazy(() =>
 export const AgentsPage = lazy(() =>
   import("@/features/agents/agents-page").then((module) => ({ default: module.AgentsPage })),
 );
-export const HooksPage = lazy(() => import("@/features/hooks/hooks-page").then((module) => ({ default: module.HooksPage })));
 export const SkillsPage = lazy(() => import("@/features/skills/skills-page").then((module) => ({ default: module.SkillsPage })));
 export const StatsPage = lazy(() => import("@/features/stats/stats-page").then((module) => ({ default: module.StatsPage })));
 export const MigrationPage = lazy(() =>

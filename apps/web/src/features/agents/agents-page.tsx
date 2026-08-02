@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
-import { ArrowRightIcon, InfoIcon, PlayIcon, RefreshCwIcon } from "lucide-react";
+import { InfoIcon, PlayIcon, RefreshCwIcon } from "lucide-react";
 import { EntityRow } from "@/components/shared/entity-row";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { PanelCard } from "@/components/shared/panel-card";
@@ -38,28 +37,24 @@ import type {
 import {
   prefetchAgent,
   useAgent,
+  useAgentDetectedHooks,
   useAgentProviderCatalog,
   useAgentsMeta,
   useAgentsSummary,
   useDetectAgent,
+  useRunAgentHookOperation,
   useRunProviderSetting,
   useUpdateProviderSetting,
 } from "@/features/agents/queries";
-import { useDetectedHooks } from "@/features/hooks/queries";
 import { useManagerStats } from "@/features/manager/queries";
 import { AgentActionResultPanel } from "@/features/agents/agent-action-result";
 import { ConfigViewsBlock } from "@/features/agents/config-views-panel";
 
 const HOOK_SETTING_IDS = new Set(["install_hook", "verify_hook", "repair_hook", "uninstall_hook"]);
+type DetailTab = "overview" | "hooks" | "mcp" | "plugins" | "config";
 
 function environmentOf(provider: AgentManagementEntry): AgentEnvironmentStatus {
-  return provider.environment || {
-    installed: !!provider.installed,
-    executable_path: provider.executable_path || null,
-    executable_dir: provider.executable_dir || null,
-    config_path: provider.config_path || "",
-    install_method: provider.install_method || "unknown",
-  };
+  return provider.environment;
 }
 
 function providerSettings(provider: AgentManagementEntry) {
@@ -100,30 +95,6 @@ function DetailSection({
       />
       {children}
     </section>
-  );
-}
-
-function InstalledHooksBadge({ providerId }: { providerId: string }) {
-  const [fetchEnabled, setFetchEnabled] = useState(false);
-
-  useEffect(() => {
-    setFetchEnabled(false);
-    const timer = window.setTimeout(() => setFetchEnabled(true), 0);
-    return () => window.clearTimeout(timer);
-  }, [providerId]);
-
-  const detectedHooks = useDetectedHooks(fetchEnabled ? providerId : null);
-
-  if (!fetchEnabled || detectedHooks.isLoading || detectedHooks.error || !detectedHooks.data?.scan_supported) {
-    return null;
-  }
-
-  const count = detectedHooks.data.hooks.filter((hook) => hook.managed_by_memorph).length;
-
-  return (
-    <Badge variant={count > 0 ? "secondary" : "outline"}>
-      {count}
-    </Badge>
   );
 }
 
@@ -235,7 +206,7 @@ function AgentStatsStrip({
   const filter = useMemo(() => ({ providers: providerId ? [providerId] : [] }), [providerId]);
   const stats = useManagerStats(filter, { enabled: !!providerId });
   const environment = provider ? environmentOf(provider) : null;
-  const sessionCount = provider?.hook_diagnosis?.total_sessions ?? 0;
+  const sessionCount = stats.data?.all_workspace_session_count ?? 0;
   const version = formatExecutableVersion(environment?.executable_version);
   const placeholder = loading || stats.isLoading ? <Skeleton className="h-5 w-20" /> : "-";
 
@@ -271,24 +242,56 @@ function AgentStatsStrip({
 
 function HooksBlock({ provider }: { provider: AgentManagementEntry }) {
   const { t } = useI18n();
+  const capability = provider.capabilities.hook_management;
+  const detectedHooks = useAgentDetectedHooks(provider.provider_id, capability?.discovery === true);
+  const operation = useRunAgentHookOperation();
+
+  if (!capability) return null;
+
+  const operations = [
+    ["install_hook", capability.install, "Install"],
+    ["verify_hook", capability.verify, "Verify"],
+    ["repair_hook", capability.repair, "Repair"],
+    ["uninstall_hook", capability.uninstall, "Uninstall"],
+  ] as const;
 
   return (
     <DetailSection
       title={t("hooks")}
+      description={`Status: ${capability.status}`}
       headingClassName="md:items-center"
       actionsClassName="items-center"
-      actions={(
-        <>
-          <InstalledHooksBadge providerId={provider.provider_id} />
-          <Button asChild variant="outline" size="sm">
-            <Link to="/hooks">
-              {t("openHooks")}
-              <ArrowRightIcon data-icon="inline-end" />
-            </Link>
+      actions={<Badge variant={capability.status === "installed_ok" ? "secondary" : "outline"}>{capability.status}</Badge>}
+    >
+      <div className="flex flex-wrap gap-2">
+        {operations.map(([id, supported, label]) => supported ? (
+          <Button
+            key={id}
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={operation.isPending}
+            onClick={() => operation.mutate({ provider: provider.provider_id, operation: id })}
+          >
+            {operation.isPending && operation.variables?.operation === id ? <Spinner data-icon="inline-start" /> : null}
+            {label}
           </Button>
-        </>
-      )}
-    />
+        ) : null)}
+      </div>
+      {detectedHooks.isLoading ? <Skeleton className="h-10 w-full" /> : null}
+      {detectedHooks.data?.hooks.length ? (
+        <div className="flex flex-col gap-2">
+          {detectedHooks.data.hooks.map((hook) => (
+            <DetailRow
+              key={`${hook.event}:${hook.index}:${hook.fingerprint}`}
+              label={`${hook.event} #${hook.index + 1}`}
+              value={hook.command || hook.hook_type || hook.fingerprint}
+            />
+          ))}
+        </div>
+      ) : null}
+      {operation.error ? <PageError title="Hook operation failed" message={operation.error.message} /> : null}
+    </DetailSection>
   );
 }
 
@@ -512,10 +515,7 @@ function ProviderDetail({
   const [confirmAction, setConfirmAction] = useState<ProviderSettingItem | null>(null);
   const [actionResult, setActionResult] = useState<{ title: string; providerId: string; result: unknown } | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
-
-  useEffect(() => {
-    setDetailsOpen(false);
-  }, [provider?.provider_id]);
+  const [activeTab, setActiveTab] = useState<DetailTab>("overview");
 
   if (isLoading && !provider) {
     return (
@@ -610,16 +610,50 @@ function ProviderDetail({
           {detectAgent.error ? <PageError title={t("detectFailed")} message={detectAgent.error.message} /> : null}
           {updateSetting.error ? <PageError title={t("settingUpdateFailed")} message={updateSetting.error.message} /> : null}
           {runSetting.error ? <PageError title={t("providerActionFailed")} message={runSetting.error.message} /> : null}
-          <EnvironmentBlock provider={provider} />
-          <HooksBlock provider={provider} />
-          <ProviderItemsBlock
-            provider={provider}
-            workspace={workspace}
-            onToggle={handleToggle}
-            onRequestRun={handleRequestRun}
-            pendingKey={pendingKey}
-          />
-          <ConfigViewsBlock provider={provider} />
+          <div className="flex flex-wrap gap-1 border-b" role="tablist" aria-label="Agent capabilities">
+            {([
+              ["overview", "Overview"],
+              ...(provider.capabilities.hook_management ? [["hooks", "Hooks"]] : []),
+              ...(provider.capabilities.mcp_management ? [["mcp", "MCP"]] : []),
+              ...(provider.capabilities.plugin_management ? [["plugins", "Plugins"]] : []),
+              ...(provider.capabilities.config_views.length > 0 ? [["config", "Config"]] : []),
+            ] as Array<[DetailTab, string]>).map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab}
+                onClick={() => setActiveTab(tab)}
+                className={cn(
+                  "border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                  activeTab === tab ? "border-primary text-foreground" : "border-transparent text-muted-foreground",
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {activeTab === "overview" ? (
+            <>
+              <EnvironmentBlock provider={provider} />
+              <ProviderItemsBlock
+                provider={provider}
+                workspace={workspace}
+                onToggle={handleToggle}
+                onRequestRun={handleRequestRun}
+                pendingKey={pendingKey}
+              />
+            </>
+          ) : null}
+          {activeTab === "hooks" ? <HooksBlock provider={provider} /> : null}
+          {activeTab === "mcp" ? <ConfigViewsBlock provider={provider} viewFilter={(view) => view.id === "view_mcp"} /> : null}
+          {activeTab === "plugins" ? <ConfigViewsBlock provider={provider} viewFilter={(view) => view.id === "view_plugins"} /> : null}
+          {activeTab === "config" ? (
+            <ConfigViewsBlock
+              provider={provider}
+              viewFilter={(view) => view.id !== "view_mcp" && view.id !== "view_plugins"}
+            />
+          ) : null}
       </ScrollPane>
 
       <Dialog open={Boolean(confirmAction)} onOpenChange={(open) => !open && setConfirmAction(null)}>
@@ -709,6 +743,7 @@ export function AgentsPage() {
         <Separator />
         {detail.error ? <PageError title={t("agentDetailLoadFailed")} message={detail.error.message} /> : null}
         <ProviderDetail
+          key={detail.data?.provider_id ?? "empty"}
           provider={detail.data}
           capabilities={capabilities}
           isLoading={detail.isLoading || catalog.isLoading}

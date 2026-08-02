@@ -6,13 +6,12 @@ mod load;
 mod scan;
 mod write;
 
-use crate::session::{ExportedSession, ImportedSession, Session};
 use crate::provider::{
-    export_result, PageStrategy, Provider, ProviderActivitySupport,
-    ProviderBackupSupport, ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary,
-    ProviderSourceMutation, ProviderWriteRisk, ScanStrategy, StorageShape, TurnQuality,
-    WriteRiskLevel,
+    export_result, PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport,
+    ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation,
+    ProviderWriteRisk, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
+use crate::session::{ExportedSession, ImportedSession, Session};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -67,10 +66,7 @@ impl Provider for CursorProvider {
         scan::scan_sessions(None)
     }
 
-    fn scan_workspace(
-        &self,
-        workspace_dir: &Path,
-    ) -> Result<Vec<ProviderSessionSummary>> {
+    fn scan_workspace(&self, workspace_dir: &Path) -> Result<Vec<ProviderSessionSummary>> {
         scan::scan_sessions(Some(workspace_dir))
     }
 
@@ -398,11 +394,7 @@ mod tests {
         assert!(first.value.starts_with("sqlite-rows-v1:"));
         let imported = CursorProvider.import_session(&locator).unwrap();
         assert_eq!(
-            imported
-                .provenance
-                .primary_source
-                .source_path
-                .as_deref(),
+            imported.provenance.primary_source.source_path.as_deref(),
             Some(locator.as_str())
         );
 

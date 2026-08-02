@@ -40,7 +40,7 @@ pub(super) fn definitions_for(provider_id: &str) -> Vec<&'static SettingDefiniti
 
     COMMON_HOOK_SETTINGS
         .iter()
-        .filter(|setting| crate::hooks::capabilities::supports_setting(provider_id, setting.id))
+        .filter(|setting| crate::hooks::registry::supports_setting(provider_id, setting.id))
         .collect()
 }
 
@@ -51,7 +51,7 @@ pub(super) fn is_common_hook_setting(setting_id: &str) -> bool {
 }
 
 pub(super) fn run(provider_id: &str, setting_id: &str) -> Result<ProviderSettingOutput> {
-    if !crate::hooks::capabilities::supports_setting(provider_id, setting_id) {
+    if !crate::hooks::registry::supports_setting(provider_id, setting_id) {
         anyhow::bail!(
             "Hook setting is not supported for provider: {}.{}",
             provider_id,
@@ -72,7 +72,7 @@ mod tests {
         for descriptor in crate::hooks::registry::all() {
             let settings = definitions_for(descriptor.provider());
             for setting in &settings {
-                assert!(crate::hooks::capabilities::supports_setting(
+                assert!(crate::hooks::registry::supports_setting(
                     descriptor.provider(),
                     setting.id
                 ));

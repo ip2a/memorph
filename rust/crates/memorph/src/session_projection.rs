@@ -1,5 +1,5 @@
-use crate::session::{Event, Role, TurnOutcome};
 use crate::provider::{event_visible_message_role, TurnQuality};
+use crate::session::{Event, Role, TurnOutcome};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -256,10 +256,7 @@ pub fn project_session_turns(
             continue;
         }
 
-        if matches!(
-            event_visible_message_role(event),
-            Some(Role::User)
-        ) {
+        if matches!(event_visible_message_role(event), Some(Role::User)) {
             if let Some(turn_index) = current_inferred.take() {
                 complete_open_turn(&mut turns[turn_index]);
             }

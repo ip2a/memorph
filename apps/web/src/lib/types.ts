@@ -643,17 +643,6 @@ export type SessionListParams = {
   sort?: SessionListSort;
 };
 
-export type HookRuntimeSummary = Record<string, unknown>;
-
-export type SessionHookDiagnosis = {
-  kind?: string;
-  message?: string;
-  provider_status?: string;
-  provider_runtime_sessions?: number;
-  actions?: Array<Record<string, unknown>>;
-  [key: string]: unknown;
-};
-
 export type SessionItem = {
   session_id: string;
   title: string | null;
@@ -986,9 +975,6 @@ export type SyncHolding = {
   last_sync_at: number | null;
   last_sync_from: string | null;
   last_error: string | null;
-  hook_runtime_summary?: HookRuntimeSummary | null;
-  hook_diagnosis?: SessionHookDiagnosis | null;
-  hook_runtime_sessions?: unknown[];
 };
 
 export type SyncGroup = {
@@ -1007,143 +993,6 @@ export type AgentEnvironmentStatus = {
   config_path: string;
   install_method: string;
   executable_version?: string | null;
-};
-
-export type HookInstallStatus = {
-  provider?: string;
-  status?: string;
-  message?: string | null;
-  installed_version?: string | null;
-  current_version?: string | null;
-  config_path?: string | null;
-  last_event_at?: string | null;
-  [key: string]: unknown;
-};
-
-export type HookCapabilities = {
-  detect?: boolean;
-  verify?: boolean;
-  install?: boolean;
-  repair?: boolean;
-  uninstall?: boolean;
-  [key: string]: unknown;
-};
-
-export type HookProfileEvent = {
-  name: string;
-  blocking?: boolean;
-  [key: string]: unknown;
-};
-
-export type HookProviderProfile = {
-  events?: HookProfileEvent[];
-  [key: string]: unknown;
-};
-
-export type ProviderHookDiagnosisAggregate = {
-  total_sessions?: number;
-  linked?: number;
-  weakly_linked?: number;
-  hook_needs_attention?: number;
-  no_session_match?: number;
-  no_active_runtime?: number;
-  no_events_yet?: number;
-  hook_not_installed?: number;
-  active_runtime_sessions?: number;
-  recommended_actions?: Array<{
-    setting_id: string;
-    label: string;
-    reason?: string;
-  }>;
-  [key: string]: unknown;
-};
-
-export type HookServerStatus = {
-  running: boolean;
-  endpoint?: string | null;
-  pid?: number | null;
-  started_at?: string | null;
-};
-
-export type HookOverviewSummary = {
-  providers: number;
-  supported_providers: number;
-  installed_ok: number;
-  not_installed: number;
-  needs_attention: number;
-  active_runtime_sessions: number;
-  linked_sessions: number;
-  weakly_linked_sessions: number;
-  no_session_match: number;
-  recent_errors: number;
-};
-
-export type HookToolCall = {
-  id?: string | null;
-  name?: string | null;
-  input?: unknown;
-  [key: string]: unknown;
-};
-
-export type HookMessage = {
-  role?: string | null;
-  content?: string | null;
-  [key: string]: unknown;
-};
-
-export type HookEventRecord = {
-  event_id: string;
-  provider: string;
-  event_type: string;
-  provider_session_id?: string | null;
-  run_id?: string | null;
-  cwd?: string | null;
-  tool?: HookToolCall | null;
-  message?: HookMessage | null;
-  timestamp: string;
-  [key: string]: unknown;
-};
-
-export type HookRuntimeSession = {
-  runtime_id: string;
-  provider: string;
-  provider_session_id?: string | null;
-  run_id?: string | null;
-  cwd?: string | null;
-  pid?: number | null;
-  correlation?: Record<string, unknown> | null;
-  model?: string | null;
-  session_title?: string | null;
-  status: string;
-  current_tool?: HookToolCall | null;
-  last_error?: string | null;
-  last_event_at: string;
-  updated_at: string;
-  [key: string]: unknown;
-};
-
-export type HookErrorRecord = {
-  timestamp: string;
-  scope: string;
-  message: string;
-};
-
-export type HookOverviewPayload = {
-  generated_at: string;
-  summary: HookOverviewSummary;
-  server: HookServerStatus;
-  providers: AgentManagementEntry[];
-  runtime_sessions: HookRuntimeSession[];
-  recent_errors: HookErrorRecord[];
-  recent_events: HookEventRecord[];
-};
-
-export type HookProviderOverviewPayload = {
-  generated_at: string;
-  provider: AgentManagementEntry;
-  runtime_sessions: HookRuntimeSession[];
-  recent_events: HookEventRecord[];
-  recent_errors: HookErrorRecord[];
 };
 
 export type DetectedHook = {
@@ -1167,7 +1016,7 @@ export type DetectedHooks = {
 export type HookOperationReport = {
   changed?: boolean;
   message?: string | null;
-  status?: HookInstallStatus;
+  status?: Record<string, unknown> | null;
   [key: string]: unknown;
 };
 
@@ -1251,22 +1100,55 @@ export type CodexWorkspaceRepairReport = {
   touched_sessions: CodexWorkspaceRepairItem[];
 };
 
+export type AgentSessionManagementCapability = {
+  scan: boolean;
+  import: boolean;
+  export: boolean;
+  delete: boolean;
+  rename: boolean;
+  resume: boolean;
+};
+
+export type AgentHookManagementCapability = {
+  install: boolean;
+  verify: boolean;
+  repair: boolean;
+  uninstall: boolean;
+  discovery: boolean;
+  status: string;
+};
+
+export type AgentMcpManagementCapability = {
+  list: boolean;
+  inspect: boolean;
+};
+
+export type AgentPluginManagementCapability = {
+  list: boolean;
+  inspect: boolean;
+};
+
+export type AgentConfigViewCapability = {
+  id: string;
+  title: string;
+  description: string;
+};
+
+export type AgentCapabilityManifest = {
+  provider_id: string;
+  session_management: AgentSessionManagementCapability;
+  hook_management?: AgentHookManagementCapability | null;
+  mcp_management?: AgentMcpManagementCapability | null;
+  plugin_management?: AgentPluginManagementCapability | null;
+  config_views: AgentConfigViewCapability[];
+};
+
 export type AgentManagementEntry = {
   provider_id: string;
   name: string;
   environment: AgentEnvironmentStatus;
-  hook: HookInstallStatus;
-  hook_strategy?: string | null;
-  hook_capabilities: HookCapabilities;
-  hook_diagnosis: ProviderHookDiagnosisAggregate;
-  hook_profile?: HookProviderProfile | null;
-  hook_required_events: string[];
+  capabilities: AgentCapabilityManifest;
   settings: ProviderSettingItem[];
-  installed?: boolean;
-  executable_path?: string;
-  executable_dir?: string;
-  config_path?: string;
-  install_method?: string;
 };
 
 export type AgentManagementPayload = {

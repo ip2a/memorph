@@ -432,8 +432,7 @@ pub(super) fn import_canonical_session_from_dir(session_dir: &Path) -> Result<Im
     let project_dir = kimi_project_dir_for_session_dir(session_dir);
     let context_modified_at = kimi_file_modified_at(&context_path)?;
 
-    let mut context_events =
-        events_from_context(&context_path, context_modified_at, &mut report)?;
+    let mut context_events = events_from_context(&context_path, context_modified_at, &mut report)?;
     let wire = events_from_wire(&wire_path, &mut report)?;
     reconcile_kimi_context_with_wire(&mut context_events, &wire.visible_events, &mut report);
     context_events.extend(wire.lifecycle_events);

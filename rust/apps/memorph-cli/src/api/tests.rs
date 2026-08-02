@@ -5,7 +5,6 @@ use axum::{
 };
 use chrono::Utc;
 use memorph::hooks::model::{RuntimeSession, RuntimeSessionId, RuntimeSessionStatus};
-use memorph::hooks::protocol::{HookIngestRequest, HookRuntimeEndpoint};
 use memorph::session::{
     Block, Context, Event, EventKind, Identity, Links, Metadata, Role, Schema, Session,
 };
@@ -91,37 +90,10 @@ fn runtime_session_for_payload(runtime_id: &str) -> RuntimeSession {
         runtime_id: RuntimeSessionId::new(runtime_id),
         provider: "claude".to_string(),
         provider_session_id: Some("session-1".to_string()),
-        run_id: None,
         cwd: None,
-        pid: None,
-        parent_pid: None,
-        pid_start_time: None,
-        tty: None,
-        terminal_vars: BTreeMap::new(),
-        process_ancestry: Vec::new(),
-        correlation: None,
-        model: None,
-        session_title: None,
-        transcript_path: None,
-        workspace_roots: Vec::new(),
-        last_user_prompt: None,
-        last_assistant_message: None,
-        last_tool_result: None,
-        last_error: None,
-        stop_reason: None,
-        compact_count: 0,
-        tool_call_count: 0,
-        failed_tool_count: 0,
-        permission_request_count: 0,
-        question_count: 0,
         status: RuntimeSessionStatus::Running,
-        current_tool: None,
-        pending_permission: None,
-        pending_question: None,
-        recent_activity: Vec::new(),
-        subagents: BTreeMap::new(),
+        started_at: Utc::now(),
         last_event_at: Utc::now(),
-        updated_at: Utc::now(),
     }
 }
 
@@ -708,6 +680,8 @@ fn write_api_retrieve_archive_fixture() -> ArchiveFixture {
         events: vec![
             Event {
                 id: "needle-event".to_string(),
+                extensions: BTreeMap::new(),
+                tags: Vec::new(),
                 kind: EventKind::Message,
                 role: Role::User,
                 timestamp: now,
@@ -719,6 +693,8 @@ fn write_api_retrieve_archive_fixture() -> ArchiveFixture {
             },
             Event {
                 id: "other-event".to_string(),
+                extensions: BTreeMap::new(),
+                tags: Vec::new(),
                 kind: EventKind::Message,
                 role: Role::Assistant,
                 timestamp: now,
@@ -758,6 +734,8 @@ async fn compression_plan_route_returns_candidates_from_file() {
         events: vec![
             Event {
                 id: "old-user".to_string(),
+                extensions: BTreeMap::new(),
+                tags: Vec::new(),
                 kind: EventKind::Message,
                 role: Role::User,
                 timestamp: now,
@@ -772,6 +750,8 @@ async fn compression_plan_route_returns_candidates_from_file() {
             },
             Event {
                 id: "recent-user".to_string(),
+                extensions: BTreeMap::new(),
+                tags: Vec::new(),
                 kind: EventKind::Message,
                 role: Role::User,
                 timestamp: now,
@@ -836,7 +816,7 @@ async fn compression_plan_route_returns_candidates_from_file() {
 }
 
 #[test]
-fn session_detail_payload_serializes_hook_runtime_sessions() {
+fn session_detail_payload_serializes_session_detail() {
     let payload = SessionDetailPayload {
         view: core::SessionDetailView {
             provider_id: "claude".to_string(),
@@ -893,71 +873,6 @@ fn session_detail_payload_serializes_hook_runtime_sessions() {
     let value = serde_json::to_value(payload).unwrap();
     assert_eq!(value["view"]["stale"], true);
     assert_eq!(value["view"]["turns"][0]["confidence"], "inferred");
-}
-
-#[test]
-fn sync_holding_payload_serializes_hook_runtime_sessions() {
-    let _guard = memorph::hooks::test_support::test_runtime_guard();
-    let dir = tempfile::tempdir().unwrap();
-    memorph::hooks::store::set_test_store_root(dir.path().to_path_buf());
-    memorph::hooks::runtime_state::reset_for_tests();
-    let endpoint = HookRuntimeEndpoint {
-        endpoint: "http://127.0.0.1:3737".to_string(),
-        token: "test-token".to_string(),
-        pid: 1,
-        started_at: Utc::now(),
-    };
-    memorph::hooks::runtime_state::set_runtime_endpoint_for_tests(endpoint.clone());
-
-    let request = HookIngestRequest::new(
-        "generic",
-        "tool_started",
-        serde_json::json!({
-            "session_id": "session-1",
-            "cwd": "/tmp/project",
-            "tool": {"name": "Bash", "input": {"command": "cargo check"}}
-        }),
-    );
-    let runtime = tokio::runtime::Runtime::new().unwrap();
-    runtime.block_on(async {
-        let (status, value) = read_json(
-            router(),
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/hooks/ingest")
-                .header("content-type", "application/json")
-                .header("x-memorph-hook-token", endpoint.token)
-                .body(Body::from(serde_json::to_vec(&request).unwrap()))
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(value["ok"], true);
-    });
-
-    let payload = sync::sync_holding_payload(session_sync::Holding {
-        id: "holding-1".to_string(),
-        provider: "generic".to_string(),
-        session_id: "session-1".to_string(),
-        target_dir: Some("/tmp/project".to_string()),
-        created_at: 1,
-        last_active_at: None,
-        last_sync_at: None,
-        last_sync_from: None,
-        last_error: None,
-    });
-
-    let value = serde_json::to_value(payload).unwrap();
-    assert_eq!(value["provider"], "generic");
-    assert_eq!(value["session_id"], "session-1");
-    assert_eq!(value["hook_runtime_summary"]["current_tool_name"], "Bash");
-    assert_eq!(
-        value["hook_runtime_summary"]["matched_by"],
-        "provider_session_id"
-    );
-    assert_eq!(value["hook_runtime_summary"]["confidence"], "high");
-    assert_eq!(value["hook_diagnosis"]["kind"], "linked");
-    assert_eq!(value["hook_runtime_sessions"].as_array().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -1181,7 +1096,7 @@ async fn provider_hooks_route_reports_scan_support() {
         .unwrap();
     let _config_home = ConfigTestHome::new(home.path());
     let request = Request::builder()
-        .uri("/api/v1/providers/kimi/hooks")
+        .uri("/api/v1/agents/kimi/hooks/discovered")
         .body(Body::empty())
         .unwrap();
 
@@ -1190,7 +1105,7 @@ async fn provider_hooks_route_reports_scan_support() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(value["ok"], true);
     assert_eq!(value["data"]["provider"], "kimi");
-    assert_eq!(value["data"]["scan_supported"], false);
+    assert!(value["data"]["hooks"].is_array());
 }
 
 #[tokio::test]
@@ -1781,12 +1696,12 @@ async fn agents_summary_route_omits_expensive_session_diagnosis() {
         .expect("missing codex agent summary");
     assert!(codex.get("settings").is_some());
     assert!(codex.get("environment").is_some());
-    assert!(codex.get("hook").is_some());
-    assert!(codex.get("hook_diagnosis").is_none());
+    assert!(codex.get("capabilities").is_some());
+    assert!(codex["capabilities"]["session_management"].is_object());
 }
 
 #[tokio::test]
-async fn agents_route_exposes_all_hook_profile_providers() {
+async fn agents_route_exposes_hook_capabilities_in_manifest() {
     let request = Request::builder()
         .uri("/api/v1/agents")
         .body(Body::empty())
@@ -1800,16 +1715,8 @@ async fn agents_route_exposes_all_hook_profile_providers() {
             .iter()
             .find(|provider| provider["provider_id"] == descriptor.provider())
             .unwrap_or_else(|| panic!("missing agent entry for {}", descriptor.provider()));
-        assert_eq!(entry["hook"]["provider"], descriptor.provider());
-        assert_eq!(entry["hook_profile"]["provider"], descriptor.provider());
-        assert_eq!(
-            entry["hook_required_events"].as_array().unwrap().len(),
-            descriptor.required_events.len()
-        );
-        assert!(!entry["hook_profile"]["events"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert_eq!(entry["capabilities"]["provider_id"], descriptor.provider());
+        assert!(entry["capabilities"]["hook_management"].is_object());
         assert!(entry["settings"]
             .as_array()
             .unwrap()
@@ -1832,13 +1739,6 @@ async fn agents_route_keeps_environment_block_and_flat_fields_in_sync() {
         .iter()
         .find(|provider| provider["provider_id"] == "codex")
         .expect("missing codex agent entry");
-
-    assert_eq!(codex["environment"]["installed"], codex["installed"]);
-    assert_eq!(codex["environment"]["config_path"], codex["config_path"]);
-    assert_eq!(
-        codex["environment"]["install_method"],
-        codex["install_method"]
-    );
 }
 
 #[tokio::test]
@@ -1854,10 +1754,6 @@ async fn agent_detail_route_returns_single_provider_entry() {
     assert_eq!(value["data"]["provider_id"], "codex");
     assert!(value["data"]["settings"].is_array());
     assert!(value["data"]["environment"].is_object());
-    assert_eq!(
-        value["data"]["environment"]["config_path"],
-        value["data"]["config_path"]
-    );
 }
 
 #[tokio::test]

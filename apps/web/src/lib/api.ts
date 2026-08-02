@@ -19,8 +19,6 @@ import type {
   ExportSessionPayload,
   ExportSessionResult,
   HookOperationReport,
-  HookOverviewPayload,
-  HookProviderOverviewPayload,
   DetectedHooks,
   ImportSessionPayload,
   ImportSessionResult,
@@ -363,25 +361,15 @@ export function getProviderConfigView(provider: string, viewId: string) {
   );
 }
 
-export function getHooksOverview() {
-  return api<HookOverviewPayload>("/api/v1/hooks/overview");
-}
-
-export function getHookProviderOverview(provider: string) {
-  return api<HookProviderOverviewPayload>(
-    `/api/v1/hooks/providers/${encodeURIComponent(provider)}/overview`,
-  );
-}
-
 export function listDetectedHooks(provider: string) {
   return api<DetectedHooks>(
-    `/api/v1/providers/${encodeURIComponent(provider)}/hooks`,
+    `/api/v1/agents/${encodeURIComponent(provider)}/hooks/discovered`,
   );
 }
 
 export function runHookProviderOperation(provider: string, operation: string) {
   return api<HookOperationReport>(
-    `/api/v1/hooks/providers/${encodeURIComponent(provider)}/operations/${encodeURIComponent(operation)}`,
+    `/api/v1/agents/${encodeURIComponent(provider)}/hooks/${encodeURIComponent(operation)}`,
     { method: "POST" },
   );
 }

@@ -101,10 +101,7 @@ mod tests {
             "section",
             vec![
                 ConfigRow::fact("URL", "https://127.0.0.1:2923/mcp"),
-                ConfigRow::fact(
-                    "Commit",
-                    "b8ad3cc6c1e40b2d2a944f900a4ae0904a54dd7f",
-                ),
+                ConfigRow::fact("Commit", "b8ad3cc6c1e40b2d2a944f900a4ae0904a54dd7f"),
                 ConfigRow::fact("Command", "/usr/local/bin/uvx"),
             ],
         );

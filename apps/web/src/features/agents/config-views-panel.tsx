@@ -56,12 +56,7 @@ function FactRow({ row }: { row: ProviderConfigRow }) {
   );
 }
 
-function issueToneLabel(tone: ProviderConfigTone) {
-  return tone === "ok" ? "ok" : tone === "warning" ? "warning" : tone === "danger" ? "danger" : "muted";
-}
-
 function IssueRow({ issue }: { issue: ProviderConfigIssue }) {
-  const { t } = useI18n();
   return (
     <li className="flex items-start gap-2">
       <Badge variant={toneVariant(issue.tone)} className="mt-0.5 capitalize">
@@ -143,9 +138,17 @@ function ConfigViewPanel({ providerId, view }: { providerId: string; view: Provi
  * panel's content is fetched on demand through a gated query, so this block never
  * blocks the page render.
  */
-export function ConfigViewsBlock({ provider }: { provider: AgentManagementEntry }) {
+export function ConfigViewsBlock({
+  provider,
+  viewFilter,
+}: {
+  provider: AgentManagementEntry;
+  viewFilter?: (view: ProviderSettingItem) => boolean;
+}) {
   const { t } = useI18n();
-  const views = (provider.settings || []).filter((setting) => setting.kind === "view");
+  const views = (provider.settings || []).filter(
+    (setting) => setting.kind === "view" && (viewFilter ? viewFilter(setting) : true),
+  );
   if (views.length === 0) return null;
   return (
     <section className="flex flex-col gap-4 border-t pt-5" data-config-views>

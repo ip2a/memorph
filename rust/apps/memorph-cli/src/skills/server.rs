@@ -673,16 +673,20 @@ async fn scan_skills(
         }
     }
     let mode = request.mode.unwrap_or(ScanMode::Incremental);
-    let database_path = state.database_path.as_deref().map(|p| p.as_path().to_path_buf());
+    let database_path = state
+        .database_path
+        .as_deref()
+        .map(|p| p.as_path().to_path_buf());
 
     // Non-blocking: build the overview synchronously (cheap — directory walk
     // only), then hand the heavy persist off to a background thread. The
     // request returns immediately with a queued acknowledgement so the UI can
     // poll list_skills and watch needs_scan flip to false.
-    let overview = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| discover(&agents))) {
-        Ok(value) => value,
-        Err(_) => return error_response(anyhow!("Skill discovery failed")),
-    };
+    let overview =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| discover(&agents))) {
+            Ok(value) => value,
+            Err(_) => return error_response(anyhow!("Skill discovery failed")),
+        };
     let roots_scanned = overview.agents.len();
     let skills_seen = overview.skills.len();
     std::thread::Builder::new()

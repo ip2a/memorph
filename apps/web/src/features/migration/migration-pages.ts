@@ -31,8 +31,8 @@ export const migrationPages = {
   },
   hooks: {
     title: "Hooks",
-    description: "Hook provider overview, diagnostics, and provider operations.",
+    description: "Hook provider overview and provider operations.",
     legacySource: "归档/web-legacy/app/hooks_center.js",
-    workflows: ["Overview", "Provider detail", "Diagnostics", "Operations"],
+    workflows: ["Overview", "Provider detail", "Operations"],
   },
 };

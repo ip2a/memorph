@@ -105,11 +105,6 @@ fn sync_group_payload(group: session_sync::SyncGroup) -> SyncGroupPayload {
 }
 
 pub(super) fn sync_holding_payload(holding: session_sync::Holding) -> SyncHoldingPayload {
-    let hook_augmentation = hooks::augmentation::augment_session(
-        &holding.provider,
-        &holding.session_id,
-        holding.target_dir.as_deref(),
-    );
     SyncHoldingPayload {
         id: holding.id,
         provider: holding.provider,
@@ -120,9 +115,6 @@ pub(super) fn sync_holding_payload(holding: session_sync::Holding) -> SyncHoldin
         last_sync_at: holding.last_sync_at,
         last_sync_from: holding.last_sync_from,
         last_error: holding.last_error,
-        hook_runtime_summary: hook_augmentation.runtime_summary,
-        hook_diagnosis: hook_augmentation.diagnosis,
-        hook_runtime_sessions: hook_augmentation.runtime_sessions,
     }
 }
 
@@ -166,19 +158,21 @@ pub(super) fn blocked_sync_targets_from_snapshot(
         .iter()
         .filter(|holding| holding.id != source_holding_id)
         .filter_map(|holding| {
-            let augmentation = hooks::augmentation::augment_session_from_snapshot(
-                snapshot,
-                &holding.provider,
-                &holding.session_id,
-                holding.target_dir.as_deref(),
-            );
-            let summary = augmentation.runtime_summary?;
-            if !hook_status_blocks_sync(&summary.status) {
+            let session = snapshot
+                .iter()
+                .filter(|session| {
+                    session.provider == holding.provider
+                        && session.provider_session_id.as_deref()
+                            == Some(holding.session_id.as_str())
+                })
+                .max_by_key(|session| session.last_event_at);
+            let status = session?.status.clone();
+            if !hook_status_blocks_sync(&status) {
                 return None;
             }
             Some(format!(
                 "{}:{} is {:?}",
-                holding.provider, holding.session_id, summary.status
+                holding.provider, holding.session_id, status
             ))
         })
         .collect()

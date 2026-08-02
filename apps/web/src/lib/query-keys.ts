@@ -68,6 +68,7 @@ export const queryKeys = {
   providerConfigView: (provider: string, viewId: string) =>
     ["providers", provider, "config", viewId] as const,
   hooks: ["hooks"] as const,
+  agentHooks: (provider: string) => ["agents", provider, "hooks"] as const,
   skillsRoot: ["skills"] as const,
   skills: (params: SkillCatalogParams = {}) =>
     ["skills", "catalog", params] as const,
