@@ -29,10 +29,4 @@ export const migrationPages = {
     legacySource: "归档/web-legacy/app/agents_settings.js",
     workflows: ["Providers", "Agents", "Settings", "Provider controls"],
   },
-  hooks: {
-    title: "Hooks",
-    description: "Hook provider overview and provider operations.",
-    legacySource: "归档/web-legacy/app/hooks_center.js",
-    workflows: ["Overview", "Provider detail", "Operations"],
-  },
 };

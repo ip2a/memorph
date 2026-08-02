@@ -205,7 +205,7 @@ manager::invalidate_stats_cache()
 |---|---|
 | `storage` | `activity_store`(活动流水 + `ActivityActor`/`ActivityQuery`/`ActivityStatus`)、`artifact_store`(`BackupQuery`/`BackupRestoreStatus` + artifact 登记)、`session_state`(`ResolvedLocalSessionState` 等本地状态)、`session_index_store`、`local_store`(`LocalSqliteStore` SQLite 句柄)、`database_backup` |
 | `cache` | 进程本地缓存(`store` / `provider_sessions` / `catalog` / `compression_archives` / `manager_stats` / `agent_environment`)+ 文件系统 watcher(`init_watcher`),磁盘变更自动失效 |
-| `hooks` | hook 全套:**协议**(`protocol`)、**契约**(`contract`)、**生命周期**(`lifecycle`:pid 存活检测、清理)、**运行时状态**(`runtime_state`:进程内会话快照 / endpoint 发布,**供核心与 HTTP handler 共享**)、**发现 / 安装 / 配置格式 / 桥接**(`discovery`/`operations`/`config_formats`/`bridge`)、**身份 / 规范化 / 注册表 / 存储 / 策略 / 健康 / 共享** 等。`augmentation` / `correlation` / `diagnostics` 已移出。`test_support` 在 `test-support` feature 下 |
+| `hooks` | hook 基建：**协议**(`protocol`)、**契约**(`contract`)、**生命周期**(`lifecycle`:pid 存活检测、清理)、**运行时状态**(`runtime_state`:进程内会话快照 / endpoint 发布,供核心与 HTTP handler 共享)、**发现 / 安装 / 配置格式 / 桥接**(`discovery`/`operations`/`config_formats`/`bridge`)、**身份 / 规范化 / 注册表 / 存储 / 策略 / 健康 / 共享** 等；`augmentation` / `correlation` / `diagnostics` 已移出，UI 已收敛到 `/agents`。`test_support` 在 `test-support` feature 下 |
 | `skills` | skills 扫描与检视:**类型层**(`inspection`:`SkillEntry`/`SkillStatistics`/`SkillInstallation`/`SkillAsset`/`SkillDetail`/`SkillsOverview` + `inspect_bundle`/`read_frontmatter`)、**扫描**(`scanner`)、**冲突 / 覆盖 / 图 / 健康 / 调用 / 清理 / 仓储 / 上下文**(`conflicts`/`coverage`/`graph`/`health`/`invocation`/`prune`/`repository`/`context`) |
 | `agent_management` / `agent_environment` | AI agent 绑定 / 状态 / push / pull、运行时环境探测 |
 | `stats_dashboard` | 统计看板数据聚合(`dashboard(&query)`) |
@@ -237,7 +237,7 @@ let groups = list_sessions(&SessionListParams {
 })?;
 ```
 
-> **hook 状态不混入 list**:`list_sessions` 只负责返回会话本身,**不计算 hook 安装状态** —— 避免每次 list 都对每个 provider 读 hook 配置文件(`hooks::operations::status`)的磁盘 IO。需要 hook 状态时由 agent capability / hook 管理入口单独展示,而不是混入 session 列表。因此 `SessionListParams` 不含 hook 过滤参数,`SessionItem` 不含 hook 字段。
+> **hook 状态不混入 list**:`list_sessions` 只负责返回会话本身,**不计算 hook 安装状态** —— 避免每次 list 都对每个 provider 读 hook 配置文件(`hooks::operations::status`)的磁盘 IO。需要 hook 状态时由 agent capability 的 `hook_management` 和 `/agents` 里的 hook 管理入口单独展示,而不是混入 session 列表。因此 `SessionListParams` 不含 hook 过滤参数,`SessionItem` 不含 hook 字段。
 
 ### 6.2 把一个 Claude Code 会话切换到 Codex
 
@@ -307,7 +307,7 @@ let group = create_group(&SyncCreateParams {
 | `sync` | 跨 provider 同步组 |
 | `storage` | SQLite 状态层(activity / artifact / session_state / index / local_store / database_backup) |
 | `cache` | 进程缓存 + fs watcher |
-| `hooks` | hook 协议 / 生命周期 / 运行时状态 / 增强 / 诊断 … |
+| `hooks` | hook 协议 / 生命周期 / 运行时状态 / 发现 / 安装 / 桥接；UI 已并入 `/agents`，augmentation / correlation / diagnostics 已移出 |
 | `skills` | skills 扫描 / 检视 / 冲突 / 覆盖 / 图 / 健康 |
 | `agent_management` / `agent_environment` | agent 绑定与运行时环境 |
 | `session_projection` | 投影报告类型 |
