@@ -1045,9 +1045,9 @@ export type FeedState = {
 };
 
 export type ProviderFeedStateKind =
-  | "cached"
   | "scanning"
   | "scanned"
+  | "empty"
   | "error";
 
 export type ProviderFeedState = {

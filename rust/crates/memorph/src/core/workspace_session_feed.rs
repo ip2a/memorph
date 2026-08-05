@@ -3,6 +3,10 @@ use crate::core::{projection, session_management};
 use crate::providers;
 use crate::storage::{
     activity_store::ActivityActor, local_store, snapshot_store::SnapshotStore,
+    workspace_scan_state::{
+        self, decide_scan, ScanDecision, ScanStatus, WorkspaceProviderScanState,
+        WorkspaceScanStateStore,
+    },
 };
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
@@ -15,8 +19,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 ///
 /// The feed is designed for the home/refresh path: return whatever is already
 /// projected for the workspace immediately, then trigger (or join) a
-/// background per-provider scan for providers that are missing or explicitly
-/// being refreshed.
+/// background per-provider scan for providers that are unindexed, stale, or
+/// explicitly being refreshed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkspaceSessionFeedParams {
     pub workspace_dir: PathBuf,
@@ -74,16 +78,22 @@ pub struct FeedState {
     pub message: Option<String>,
 }
 
+/// Per-provider feed state, derived from persisted scan state.
+///
+/// `scanned` and `error` are produced by real persistent scan results (a
+/// completed scan with data, and a failed scan respectively). `empty` is the
+/// stable converged result for a provider that has zero sessions in the
+/// workspace.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderFeedStateKind {
-    /// Data came from the local SQLite projection without a scan.
-    Cached,
     /// A scan for this provider is currently in flight.
     Scanning,
-    /// A scan completed and produced a projected result.
+    /// A scan completed and produced projected sessions.
     Scanned,
-    /// The scan failed.
+    /// A scan completed and discovered zero sessions (stable).
+    Empty,
+    /// The scan failed and is backing off.
     Error,
 }
 
@@ -107,62 +117,73 @@ pub struct WorkspaceSessionFeed {
     pub has_more: bool,
 }
 
+/// In-process record of scans this process has spawned. Persisted scan state
+/// (`workspace_scan_state`) is the source of truth; this map only dedupes
+/// spawns within one process so two concurrent feed reads do not launch two
+/// scans for the same (workspace, provider). On restart the persisted row —
+/// not this map — drives recovery via `decide_scan`'s stuck-scanning check.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 struct InFlightScan {
     started_at: Instant,
-    workspace: String,
+    workspace_key: String,
     provider_id: String,
 }
 
 static IN_FLIGHT_SCANS: OnceLock<Mutex<HashMap<String, InFlightScan>>> = OnceLock::new();
-const IN_FLIGHT_MAX_AGE_SECS: u64 = 300;
 
 fn in_flight_scans() -> &'static Mutex<HashMap<String, InFlightScan>> {
     IN_FLIGHT_SCANS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn in_flight_key(workspace: &str, provider_id: &str) -> String {
-    format!("{provider_id}@{workspace}")
+fn in_flight_key(workspace_key: &str, provider_id: &str) -> String {
+    format!("{provider_id}@{workspace_key}")
 }
 
-fn is_scanning(workspace: &str, provider_id: &str) -> bool {
+fn is_scanning(workspace_key: &str, provider_id: &str) -> bool {
     prune_stale_in_flight();
     in_flight_scans()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains_key(&in_flight_key(workspace, provider_id))
+        .contains_key(&in_flight_key(workspace_key, provider_id))
 }
 
-fn mark_scanning(workspace: String, provider_id: String) {
+fn mark_scanning_inflight(workspace_key: String, provider_id: String) {
     prune_stale_in_flight();
     in_flight_scans()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(
-            in_flight_key(&workspace, &provider_id),
+            in_flight_key(&workspace_key, &provider_id),
             InFlightScan {
                 started_at: Instant::now(),
-                workspace,
+                workspace_key,
                 provider_id,
             },
         );
 }
 
-fn mark_scan_complete(workspace: &str, provider_id: &str) {
+fn mark_scan_complete(workspace_key: &str, provider_id: &str) {
     prune_stale_in_flight();
     in_flight_scans()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&in_flight_key(workspace, provider_id));
+        .remove(&in_flight_key(workspace_key, provider_id));
 }
 
+/// Defensive prune: a scan thread that panicked or was killed without running
+/// its completion path would otherwise live here until process exit. Persisted
+/// scan state has its own (longer) timeout; this only keeps this map from
+/// growing without bound in a long-running process.
 fn prune_stale_in_flight() {
     let Ok(mut map) = in_flight_scans().try_lock() else {
         return;
     };
     let now = Instant::now();
-    map.retain(|_, scan| now.duration_since(scan.started_at).as_secs() < IN_FLIGHT_MAX_AGE_SECS);
+    map.retain(|_, scan| {
+        now.duration_since(scan.started_at).as_secs()
+            < workspace_scan_state::SCAN_TIMEOUT_SECS as u64
+    });
 }
 
 fn now_ms() -> i64 {
@@ -176,13 +197,12 @@ fn now_ms() -> i64 {
 ///
 /// Behavior:
 /// * Resolve the workspace directory and the relevant provider set.
-/// * For each provider, read already-projected sessions for the workspace.
-/// * If `refresh` is true, or no cached sessions exist for a provider, start
-///   (or join) a background per-provider workspace scan. The scan uses the
-///   provider's native workspace scan when available and falls back to a full
-///   provider scan filtered by workspace.
-/// * Return the cached/limited sessions immediately along with `feed_state`
-///   so callers know whether to poll.
+/// * For each provider, read its persisted scan state and decide (via
+///   [`decide_scan`]) whether to serve cached projection, start/join a scan,
+///   or wait out a backoff. The decision never blocks on the provider scan;
+///   cached sessions are returned immediately.
+/// * Settled scans converge: a provider with zero sessions reaches `empty`
+///   and is no longer rescanned every request.
 pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<WorkspaceSessionFeed> {
     let workspace_dir = params
         .workspace_dir
@@ -201,14 +221,15 @@ pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<Wor
 
     let conn = local_store::open_database()?;
     let store = SnapshotStore::new(&conn);
+    let scan_state_store = WorkspaceScanStateStore::new(&conn);
 
+    let now = now_ms();
     let per_provider_limit = params.per_provider_limit.max(1);
     let mut groups = Vec::with_capacity(provider_ids.len());
     let mut provider_states = Vec::with_capacity(provider_ids.len());
     let mut any_scanning = false;
-    let mut any_missing = false;
+    let mut any_unindexed = false;
     let mut any_error = false;
-    let mut all_cached = true;
     let mut refreshed_at: Option<i64> = None;
 
     for provider_id in &provider_ids {
@@ -217,23 +238,19 @@ pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<Wor
             .unwrap_or_else(|| provider_id.clone());
 
         let workspace_key =
-            session_management::normalized_workspace_key(provider_id, Some(&workspace));
-        let workspace_scopes = workspace_key
-            .as_deref()
-            .map(|key| vec![(provider_id.clone(), key.to_string())]);
+            session_management::normalized_workspace_key(provider_id, Some(&workspace))
+                .unwrap_or_else(|| workspace.clone());
+        let workspace_scopes = vec![(provider_id.clone(), workspace_key.clone())];
 
         let snapshots = store
             .list_session_snapshots_filtered(
                 Some(&[provider_id.clone()]),
-                workspace_scopes.as_deref(),
+                Some(workspace_scopes.as_slice()),
                 params.fields.include_stats(),
             )
             .with_context(|| {
                 format!("Failed to list projected snapshots for provider {provider_id}")
             })?;
-
-        let has_cache = !snapshots.is_empty();
-        all_cached = all_cached && has_cache;
 
         let mut sessions: Vec<SessionItem> = snapshots
             .into_iter()
@@ -242,46 +259,46 @@ pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<Wor
         projection::sort_session_items(&mut sessions, &params.sort);
         sessions.truncate(per_provider_limit);
 
-        let need_scan = params.refresh || !has_cache;
-        let state = if need_scan {
-            if is_scanning(&workspace, provider_id) {
-                any_scanning = true;
-                ProviderFeedState {
-                    provider_id: provider_id.clone(),
-                    kind: ProviderFeedStateKind::Scanning,
-                    message: Some("Scanning provider sessions for workspace".to_string()),
-                    discovered_count: sessions.len(),
-                }
-            } else {
-                any_scanning = true;
-                if !has_cache {
-                    any_missing = true;
-                }
-                spawn_provider_workspace_scan(
-                    workspace_dir.clone(),
-                    provider_id.clone(),
-                    ActivityActor::Api,
-                );
-                ProviderFeedState {
-                    provider_id: provider_id.clone(),
-                    kind: ProviderFeedStateKind::Scanning,
-                    message: Some("Started scanning provider sessions for workspace".to_string()),
-                    discovered_count: sessions.len(),
-                }
-            }
-        } else {
-            ProviderFeedState {
-                provider_id: provider_id.clone(),
-                kind: ProviderFeedStateKind::Cached,
-                message: None,
-                discovered_count: sessions.len(),
-            }
-        };
+        let state = scan_state_store
+            .read(&workspace_key, provider_id)
+            .with_context(|| format!("Failed to read scan state for provider {provider_id}"))?;
+        let decision = decide_scan(state.as_ref(), params.refresh, now);
 
-        if state.kind == ProviderFeedStateKind::Error {
+        if matches!(state.as_ref().map(|s| s.status), None | Some(ScanStatus::Unindexed)) {
+            any_unindexed = true;
+        }
+
+        let (kind, needs_scan) = provider_kind_for_decision(&decision, state.as_ref());
+
+        if needs_scan && !is_scanning(&workspace_key, provider_id) {
+            // Persist the start so a crash between here and completion still
+            // leaves a recoverable row, then launch the background scan.
+            scan_state_store
+                .mark_scanning(&workspace_key, provider_id, now)
+                .with_context(|| {
+                    format!("Failed to record scanning state for provider {provider_id}")
+                })?;
+            mark_scanning_inflight(workspace_key.clone(), provider_id.clone());
+            spawn_provider_workspace_scan(
+                workspace_dir.clone(),
+                workspace_key.clone(),
+                provider_id.clone(),
+                ActivityActor::Api,
+            );
+        }
+
+        if kind == ProviderFeedStateKind::Scanning {
+            any_scanning = true;
+        } else if kind == ProviderFeedStateKind::Error {
             any_error = true;
         }
-        provider_states.push(state);
+
+        provider_states.push(ProviderFeedState {
+            provider_id: provider_id.clone(),
+            kind,
+            message: provider_message(state.as_ref(), decision),
+            discovered_count: sessions.len(),
+        });
 
         if !sessions.is_empty() {
             groups.push(SessionGroup {
@@ -292,12 +309,7 @@ pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<Wor
         }
     }
 
-    let feed_state = if any_error {
-        FeedState {
-            kind: FeedStateKind::Error,
-            message: Some("One or more providers failed to scan".to_string()),
-        }
-    } else if any_scanning && any_missing {
+    let feed_state = if any_scanning && any_unindexed {
         FeedState {
             kind: FeedStateKind::ColdScanning,
             message: Some("Scanning providers for workspace sessions".to_string()),
@@ -307,15 +319,13 @@ pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<Wor
             kind: FeedStateKind::Warming,
             message: Some("Refreshing provider sessions in background".to_string()),
         }
-    } else if !all_cached {
+    } else if any_error {
         FeedState {
-            kind: FeedStateKind::ColdScanning,
-            message: Some("No sessions indexed for this workspace yet".to_string()),
+            kind: FeedStateKind::Error,
+            message: Some("One or more providers failed to scan".to_string()),
         }
     } else if params.refresh {
-        // Refresh requested but no scans are in flight: they finished before we
-        // assembled the response.
-        refreshed_at = Some(now_ms());
+        refreshed_at = Some(now);
         FeedState {
             kind: FeedStateKind::Complete,
             message: Some("Workspace session feed is up to date".to_string()),
@@ -341,10 +351,50 @@ pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<Wor
     })
 }
 
-fn spawn_provider_workspace_scan(workspace_dir: PathBuf, provider_id: String, actor: ActivityActor) {
-    let workspace_text = workspace_dir.to_string_lossy().to_string();
-    mark_scanning(workspace_text.clone(), provider_id.clone());
+/// Map a scan decision (plus the persisted state it was made from) to the
+/// provider-visible feed kind. Returns whether a scan needs to be running.
+fn provider_kind_for_decision(
+    decision: &ScanDecision,
+    state: Option<&WorkspaceProviderScanState>,
+) -> (ProviderFeedStateKind, bool) {
+    match decision {
+        ScanDecision::StartScan | ScanDecision::JoinScan => (ProviderFeedStateKind::Scanning, true),
+        ScanDecision::UseCache => {
+            let kind = match state.map(|s| s.status) {
+                Some(ScanStatus::Empty) => ProviderFeedStateKind::Empty,
+                // Ready, or anything unexpected: a prior scan produced data.
+                _ => ProviderFeedStateKind::Scanned,
+            };
+            (kind, false)
+        }
+        ScanDecision::RetryLater => (ProviderFeedStateKind::Error, false),
+    }
+}
 
+fn provider_message(
+    state: Option<&WorkspaceProviderScanState>,
+    decision: ScanDecision,
+) -> Option<String> {
+    match decision {
+        ScanDecision::RetryLater => state
+            .and_then(|s| s.last_error.clone())
+            .or_else(|| Some("Provider scan failed and is backing off".to_string())),
+        ScanDecision::StartScan => Some("Started scanning provider sessions for workspace".to_string()),
+        ScanDecision::JoinScan => Some("Scanning provider sessions for workspace".to_string()),
+        ScanDecision::UseCache => None,
+    }
+}
+
+/// Spawn a background per-provider workspace scan. On completion, persist the
+/// settled result (ready/empty/error) through `complete_workspace_provider_scan`
+/// so the next feed read converges instead of rescanning forever.
+fn spawn_provider_workspace_scan(
+    workspace_dir: PathBuf,
+    workspace_key: String,
+    provider_id: String,
+    actor: ActivityActor,
+) {
+    let workspace_text = workspace_dir.to_string_lossy().to_string();
     std::thread::Builder::new()
         .name(format!(
             "memorph-feed-{}-{}",
@@ -378,7 +428,97 @@ fn spawn_provider_workspace_scan(workspace_dir: PathBuf, provider_id: String, ac
                     );
                 }
             }
-            mark_scan_complete(&workspace_text, &provider_id);
+            complete_workspace_provider_scan(&workspace_key, &provider_id, &result);
+            mark_scan_complete(&workspace_key, &provider_id);
+            // Suppress unused-warning while the canonicalized path stays useful
+            // for diagnostics above.
+            let _ = &workspace_text;
         })
         .ok();
+}
+
+/// Single settlement point for a workspace/provider scan. Writes the session
+/// snapshots (done by `index_workspace_sessions`), then records the scan
+/// outcome and its freshness deadline. Keeping this in one place means the
+/// success, empty, and failure paths can't diverge on which bookkeeping they
+/// skip — the bug that made empty providers scan forever.
+fn complete_workspace_provider_scan(
+    workspace_key: &str,
+    provider_id: &str,
+    result: &Result<projection::SessionProjectionBootstrapReport>,
+) {
+    let Ok(conn) = local_store::open_database() else {
+        crate::logging::error(
+            "workspace_session_feed",
+            format!("Failed to open DB to settle scan for {provider_id}@{workspace_key}"),
+        );
+        return;
+    };
+    let store = WorkspaceScanStateStore::new(&conn);
+    let now = now_ms();
+    let prev = store.read(workspace_key, provider_id).ok().flatten();
+    let settle_result = match result {
+        Ok(report) => store.settle(
+            workspace_key,
+            provider_id,
+            report.discovered_sessions as i64,
+            now,
+        ),
+        Err(error) => store.fail(workspace_key, provider_id, &format!("{error:#}"), prev.as_ref(), now),
+    };
+    if let Err(error) = settle_result {
+        crate::logging::error(
+            "workspace_session_feed",
+            format!("Failed to persist scan state for {provider_id}@{workspace_key}: {error:#}"),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settled(status: ScanStatus) -> WorkspaceProviderScanState {
+        WorkspaceProviderScanState {
+            workspace_key: "/ws".into(),
+            provider_id: "claude".into(),
+            status,
+            discovered_count: 0,
+            last_scan_started_at_ms: None,
+            last_scan_completed_at_ms: Some(1),
+            next_scan_at_ms: Some(i64::MAX),
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn ready_and_empty_serve_from_cache_without_scanning() {
+        let (kind, needs) =
+            provider_kind_for_decision(&ScanDecision::UseCache, Some(&settled(ScanStatus::Ready)));
+        assert_eq!(kind, ProviderFeedStateKind::Scanned);
+        assert!(!needs);
+
+        let (kind, needs) = provider_kind_for_decision(
+            &ScanDecision::UseCache,
+            Some(&settled(ScanStatus::Empty)),
+        );
+        assert_eq!(kind, ProviderFeedStateKind::Empty);
+        assert!(!needs);
+    }
+
+    #[test]
+    fn start_and_join_both_need_a_scan_running() {
+        for decision in [ScanDecision::StartScan, ScanDecision::JoinScan] {
+            let (kind, needs) = provider_kind_for_decision(&decision, None);
+            assert_eq!(kind, ProviderFeedStateKind::Scanning);
+            assert!(needs);
+        }
+    }
+
+    #[test]
+    fn retry_later_reports_error_without_scanning() {
+        let (kind, needs) = provider_kind_for_decision(&ScanDecision::RetryLater, None);
+        assert_eq!(kind, ProviderFeedStateKind::Error);
+        assert!(!needs);
+    }
 }
