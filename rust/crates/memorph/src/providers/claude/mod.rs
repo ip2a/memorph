@@ -67,7 +67,7 @@ impl Provider for ClaudeProvider {
             delete: true,
             rename: true,
             resume: true,
-            lightweight_scan: true,
+            lightweight_scan: false,
             single_session_lookup: true,
             scan_strategy: ScanStrategy::FullScan,
             page_strategy: PageStrategy::IndexedPage,
@@ -1538,7 +1538,7 @@ fn claude_lifecycle_event(
             turn_outcome: None,
             related_event_ids: Vec::new(),
         },
-        blocks: Vec::new(),
+        blocks: vec![Block::Other { raw: value.clone() }],
         tags: claude_lifecycle_tags(line_type, value),
         extensions,
         metadata: Metadata {
@@ -2216,8 +2216,8 @@ mod tests {
     }
 
     #[test]
-    fn maps_hook_attachment_to_tagged_empty_lifecycle_event() {
-        let raw = serde_json::json!({
+    fn maps_hook_attachment_to_tagged_lifecycle_event_with_raw_payload() {
+        let payload = serde_json::json!({
             "type": "attachment",
             "uuid": "attachment-1",
             "attachment": {
@@ -2229,11 +2229,14 @@ mod tests {
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
 
         let (event, meta) =
-            event_from_claude_line(1, "attachment", Utc::now(), &raw, &mut report).unwrap();
+            event_from_claude_line(1, "attachment", Utc::now(), &payload, &mut report).unwrap();
 
         assert_eq!(event.kind, EventKind::Lifecycle);
         assert_eq!(event.role, Role::System);
-        assert!(event.blocks.is_empty());
+        assert!(matches!(
+            event.blocks.as_slice(),
+            [Block::Other { raw }] if raw == &payload
+        ));
         assert_eq!(
             event.tags,
             vec![
@@ -2247,7 +2250,7 @@ mod tests {
             event.extensions.get("claude_record_type"),
             Some(&Value::String("attachment".to_string()))
         );
-        assert_eq!(meta.provider_ext.get("raw_event"), Some(&raw));
+        assert_eq!(meta.provider_ext.get("raw_event"), Some(&payload));
     }
 
     #[test]
@@ -2374,7 +2377,10 @@ mod tests {
         );
         assert!(imported.session.events.iter().any(|event| {
             event.kind == EventKind::Lifecycle
-                && event.blocks.is_empty()
+                && matches!(
+                    event.blocks.as_slice(),
+                    [Block::Other { raw }] if raw.get("type") == Some(&Value::String("file-history-snapshot".to_string()))
+                )
                 && event.tags == ["lifecycle:file_history_snapshot"]
                 && event.extensions.get("claude_record_type")
                     == Some(&Value::String("file-history-snapshot".to_string()))

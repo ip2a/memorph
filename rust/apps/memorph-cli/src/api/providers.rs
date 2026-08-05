@@ -10,6 +10,12 @@ pub(super) struct ProviderSettingRunBody {
     workspace: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub(super) struct ProviderConfigRemovalBody {
+    confirm: bool,
+    expected_fingerprint: String,
+}
+
 pub(super) async fn list_agent_management() -> impl IntoResponse {
     match memorph::runtime::run_blocking(agent_management::list_agent_management_entries).await {
         Ok(providers) => ApiResponse::success(AgentManagementPayload { providers }).into_response(),
@@ -62,6 +68,19 @@ pub(super) async fn list_providers() -> impl IntoResponse {
 pub(super) async fn list_provider_hooks(Path(provider): Path<String>) -> impl IntoResponse {
     match memorph::runtime::run_blocking(move || hooks::discovery::list(&provider)).await {
         Ok(hooks) => ApiResponse::success(hooks).into_response(),
+        Err(error) => api_error(StatusCode::BAD_REQUEST, error).into_response(),
+    }
+}
+
+pub(super) async fn delete_provider_hook(
+    Path((provider, event, index, fingerprint)): Path<(String, String, usize, String)>,
+) -> impl IntoResponse {
+    match memorph::runtime::run_blocking(move || {
+        hooks::discovery::delete(&provider, &event, index, &fingerprint)
+    })
+    .await
+    {
+        Ok(report) => ApiResponse::success(report).into_response(),
         Err(error) => api_error(StatusCode::BAD_REQUEST, error).into_response(),
     }
 }
@@ -197,5 +216,40 @@ pub(super) async fn get_provider_config_view(
     {
         Ok(view) => ApiResponse::success(view).into_response(),
         Err(error) => api_error(StatusCode::NOT_FOUND, error).into_response(),
+    }
+}
+
+pub(super) async fn delete_provider_config_entry(
+    Path((provider, view_id, entry_id)): Path<(String, String, String)>,
+    Json(body): Json<ProviderConfigRemovalBody>,
+) -> impl IntoResponse {
+    if !body.confirm {
+        return api_error(StatusCode::BAD_REQUEST, "confirm must be true").into_response();
+    }
+    let result = memorph::runtime::run_blocking(move || {
+        memorph::provider_config::remove_mcp(
+            &provider,
+            &view_id,
+            &entry_id,
+            &body.expected_fingerprint,
+        )
+    })
+    .await;
+    match result {
+        Ok(report) => ApiResponse::success(report).into_response(),
+        Err(error) => {
+            let status = if error.downcast_ref::<memorph::provider_config::RemovalError>()
+                == Some(&memorph::provider_config::RemovalError::Conflict)
+            {
+                StatusCode::CONFLICT
+            } else if error.downcast_ref::<memorph::provider_config::RemovalError>()
+                == Some(&memorph::provider_config::RemovalError::Unsupported)
+            {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            api_error(status, error).into_response()
+        }
     }
 }

@@ -25,7 +25,7 @@ pub struct SkillAsset {
     pub entry: bool,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct SkillStatistics {
     pub files: usize,
     pub bytes: u64,
@@ -43,7 +43,7 @@ pub struct SkillIssue {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SkillAgent {
-    pub provider_id: String,
+    pub agent_id: String,
     pub name: String,
     pub skills_dir: PathBuf,
     pub scope_kind: String,
@@ -52,7 +52,7 @@ pub struct SkillAgent {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SkillInstallation {
-    pub provider_id: String,
+    pub used_by: String,
     pub path: PathBuf,
     pub managed: bool,
     pub deployment_mode: String,
@@ -80,6 +80,8 @@ pub struct SkillDetail {
     pub skill: SkillEntry,
     pub frontmatter: BTreeMap<String, String>,
     pub provider_metadata: Vec<SkillAsset>,
+    pub tags: Vec<String>,
+    pub used_by: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -94,6 +96,8 @@ pub struct SkillTree {
 pub struct SkillsOverview {
     pub agents: Vec<SkillAgent>,
     pub skills: Vec<SkillEntry>,
+    #[serde(skip)]
+    pub catalog_only: bool,
 }
 
 pub struct BundleInspection {

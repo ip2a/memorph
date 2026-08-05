@@ -7,11 +7,10 @@ use ratatui::{
 };
 
 use super::app::{
-    provider_label, AgentManagementActionKind, AgentManagementFocus, App, MainFocus, SettingsField,
+    provider_label, AgentManagementActionKind, AgentManagementFocus, App, SettingsField,
     SETTINGS_FIELDS,
 };
-use super::theme::{self, Theme};
-use crate::web_assets::MEMORPH_ASCII;
+use super::theme::Theme;
 use memorph::config;
 
 /// Main rendering entry point
@@ -26,7 +25,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10),
+            Constraint::Length(3),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
@@ -36,15 +35,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_main(frame, app, chunks[1], &theme);
     draw_footer(frame, app, chunks[2], &theme);
 
-    if app.show_help {
-        draw_help_overlay(frame, app, &theme);
-    }
-    if app.workspace_modal_open {
-        draw_workspace_modal(frame, app, &theme);
-    } else if app.agents_modal_open {
-        draw_agents_modal(frame, app, &theme);
-    } else if app.settings_modal_open {
-        draw_settings_modal(frame, app, &theme);
+    match &app.overlay {
+        super::overlays::Overlay::Help => draw_help_overlay(frame, app, &theme),
+        super::overlays::Overlay::Workspace => draw_workspace_modal(frame, app, &theme),
+        super::overlays::Overlay::Agents => draw_agents_modal(frame, app, &theme),
+        super::overlays::Overlay::Settings => draw_settings_modal(frame, app, &theme),
+        super::overlays::Overlay::Input(state) => {
+            super::overlays::input::draw(frame, state, app.language(), area, &theme)
+        }
+        super::overlays::Overlay::Confirm(state) => {
+            super::overlays::confirm::draw(frame, state, app.language(), area, &theme)
+        }
+        super::overlays::Overlay::Picker(state) => {
+            super::overlays::picker::draw(frame, state, app.language(), area, &theme)
+        }
+        _ => {}
     }
     if app.is_loading() {
         draw_loading_overlay(frame, app, &theme);
@@ -52,72 +57,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let workspace = app.workspace.as_deref().unwrap_or(app.t("workspaceEmpty"));
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(5),
-            Constraint::Length(3),
-        ])
-        .split(area);
-
-    let rule = Paragraph::new("─".repeat(area.width as usize))
-        .style(Style::default().fg(theme.border).bg(theme.background));
-    frame.render_widget(rule, chunks[0]);
-
-    let ascii = Paragraph::new(MEMORPH_ASCII)
-        .style(
-            Style::default()
-                .fg(theme.primary)
-                .bg(theme.background)
-                .add_modifier(Modifier::BOLD),
-        )
-        .alignment(Alignment::Center);
-    frame.render_widget(ascii, chunks[2]);
-
-    let controls = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(24),
-            Constraint::Length(12),
-            Constraint::Length(16),
-        ])
-        .split(chunks[3]);
-
-    let workspace_block = Paragraph::new(theme::truncate(
-        workspace,
-        (controls[0].width.saturating_sub(4) as usize).max(8),
-    ))
-    .style(Style::default().fg(theme.text).bg(theme.background))
-    .alignment(Alignment::Left)
-    .block(top_block(
-        app.t("workspace"),
-        app.main_focus == MainFocus::Workspace,
+    super::widgets::header::draw(
+        frame,
+        app.workspace.as_deref(),
+        app.session_count(),
+        &app.provider_tabs(),
+        app.selected_provider_tab,
+        app.language(),
+        area,
         theme,
-    ));
-    frame.render_widget(workspace_block, controls[0]);
-
-    let tools_block = Paragraph::new(format!(" {} ", app.t("agents")))
-        .style(Style::default().fg(theme.text).bg(theme.background))
-        .alignment(Alignment::Center)
-        .block(top_block(
-            app.t("agents"),
-            app.main_focus == MainFocus::Agents,
-            theme,
-        ));
-    frame.render_widget(tools_block, controls[1]);
-
-    let settings_block = Paragraph::new(format!(" {} ", app.t("settings")))
-        .style(Style::default().fg(theme.text).bg(theme.background))
-        .alignment(Alignment::Center)
-        .block(top_block(
-            app.t("settings"),
-            app.main_focus == MainFocus::Settings,
-            theme,
-        ));
-    frame.render_widget(settings_block, controls[2]);
+    );
 }
 
 fn draw_main(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
@@ -125,49 +74,21 @@ fn draw_main(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let hints = if let Some(message) = app.error_message.as_deref() {
-        message
-    } else if app.action_modal_open {
-        if app.action_dialog.is_some() {
-            app.t("tuiFooterDialogSelectSave")
-        } else {
-            app.t("tuiFooterActionFocus")
-        }
-    } else if app.workspace_modal_open {
-        app.t("tuiFooterWorkspaceModal")
-    } else if app.agents_modal_open {
-        app.t("tuiFooterAgentsModal")
-    } else if app.settings_modal_open {
-        app.t("tuiFooterClose")
-    } else if app.search_modal_open {
-        app.t("tuiFooterSearch")
-    } else if app.main_focus == MainFocus::Workspace {
-        app.t("tuiFooterTopWorkspace")
-    } else if app.main_focus == MainFocus::Agents {
-        app.t("tuiFooterTopAgents")
-    } else if app.main_focus == MainFocus::Settings {
-        app.t("tuiFooterTopSettings")
+    if let Some(message) = app.error_message.as_deref() {
+        frame.render_widget(
+            Paragraph::new(message)
+                .style(Style::default().fg(theme.error).bg(theme.background))
+                .alignment(Alignment::Center),
+            area,
+        );
     } else {
-        app.t("tuiFooterMain")
-    };
-    let footer = Paragraph::new(hints)
-        .style(
-            Style::default()
-                .fg(if app.error_message.is_some() {
-                    theme.error
-                } else {
-                    theme.text_dim
-                })
-                .bg(theme.background),
-        )
-        .alignment(Alignment::Center);
-
-    frame.render_widget(footer, area);
+        super::widgets::hint_bar::draw(frame, app, area, theme);
+    }
 }
 
 fn draw_help_overlay(frame: &mut Frame, app: &App, theme: &Theme) {
     let area = frame.area();
-    let popup_area = centered_rect(60, 70, area);
+    let popup_area = centered_rect(64, 72, area);
 
     frame.render_widget(Clear, popup_area);
 
@@ -185,32 +106,35 @@ fn draw_help_overlay(frame: &mut Frame, app: &App, theme: &Theme) {
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(app.t("shortcutSelectSession")),
-        Line::from(app.t("shortcutSwitchProvider")),
-        Line::from(app.t("shortcutOpenAction")),
-        Line::from(app.t("shortcutOpenSearch")),
-        Line::from(app.t("shortcutQuit")),
-        Line::from(app.t("shortcutClose")),
+        Line::from(app.t("tuiHelpSelectSession")),
+        Line::from(app.t("tuiHelpSwitchProvider")),
+        Line::from(app.t("tuiHelpOpenDetails")),
+        Line::from(app.t("tuiHelpFilterSessions")),
         Line::from(""),
         Line::from(vec![Span::styled(
-            app.t("providers"),
+            app.t("sessionMoreActions"),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(app.t("shortcutSwitch")),
-        Line::from(app.t("shortcutExport")),
-        Line::from(app.t("shortcutRename")),
-        Line::from(app.t("shortcutDelete")),
-        Line::from(app.t("shortcutDetails")),
+        Line::from(app.t("tuiHelpSwitchAgent")),
+        Line::from(app.t("tuiHelpCompressSession")),
+        Line::from(app.t("tuiHelpExportJson")),
+        Line::from(app.t("tuiHelpRenameSession")),
+        Line::from(app.t("tuiHelpDeleteSession")),
         Line::from(""),
         Line::from(vec![Span::styled(
-            app.t("general"),
+            app.t("manage"),
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from(app.t("shortcutShowHelp")),
+        Line::from(app.t("tuiHelpWorkspace")),
+        Line::from(app.t("tuiHelpAgents")),
+        Line::from(app.t("tuiHelpSettings")),
+        Line::from(app.t("tuiHelpToggleHelp")),
+        Line::from(app.t("tuiHelpQuit")),
+        Line::from(app.t("tuiHelpBackCancel")),
     ]);
 
     let help = Paragraph::new(help_text)
@@ -449,7 +373,8 @@ fn draw_agents_modal(frame: &mut Frame, app: &App, theme: &Theme) {
                 entry.environment.executable_path.as_deref().unwrap_or("—")
             )),
             Line::from(format!(
-                "Hook status: {}",
+                "{}: {}",
+                app.t("hookStatusLabel"),
                 entry
                     .capabilities
                     .hook_management
@@ -707,18 +632,6 @@ fn highlighted_value_style(theme: &Theme) -> Style {
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
-fn top_block(title: &str, focused: bool, theme: &Theme) -> Block<'static> {
-    Block::default()
-        .title(format!(" {} ", title))
-        .borders(Borders::ALL)
-        .style(Style::default().fg(theme.text).bg(theme.background))
-        .border_style(if focused {
-            theme.border_focused
-        } else {
-            theme.border
-        })
-}
-
 fn modal_block(title: &str, theme: &Theme) -> Block<'static> {
     Block::default()
         .title(format!(" {} ", title))
@@ -758,4 +671,31 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(popup_layout[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    use super::*;
+
+    #[test]
+    fn renders_compact_main_view_at_standard_terminal_size() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new().unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
+
+    #[test]
+    fn renders_main_view_and_overlay_at_narrow_terminal_size() {
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new().unwrap();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        app.open_settings_modal();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+    }
 }

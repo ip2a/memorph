@@ -310,7 +310,7 @@ mod tests {
 
     fn insert(conn: &Connection, id: &str, path: &Path, kind: &str, marker: bool) {
         conn.execute("INSERT OR IGNORE INTO skill_catalog (id, canonical_name, normalized_name, entry_content_hash, bundle_content_hash, metadata_json, file_count, total_bytes, first_seen_at_ms, last_scanned_at_ms, created_at_ms, updated_at_ms) VALUES (?1, ?1, ?1, 'entry', 'bundle', '{}', 1, 10, 1, 1, 1, 1)", [id]).unwrap();
-        conn.execute("INSERT INTO skill_installations (id, skill_id, provider_id, scope_kind, install_path, canonical_install_path, install_kind, managed_marker_present, bundle_content_hash, discovered_at_ms, last_verified_at_ms) VALUES (?1, ?2, 'codex', 'global', ?3, ?3, ?4, ?5, 'bundle', 1, 1)", params![format!("install-{id}"), id, path.to_string_lossy(), kind, marker]).unwrap();
+        conn.execute("INSERT INTO skill_installations (id, skill_id, used_by, scope_kind, install_path, canonical_install_path, install_kind, managed_marker_present, bundle_content_hash, discovered_at_ms, last_verified_at_ms) VALUES (?1, ?2, 'codex', 'global', ?3, ?3, ?4, ?5, 'bundle', 1, 1)", params![format!("install-{id}"), id, path.to_string_lossy(), kind, marker]).unwrap();
     }
 
     #[test]

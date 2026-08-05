@@ -15,6 +15,7 @@ use crate::{
 #[derive(Clone, Debug)]
 struct SkillIdentity {
     id: String,
+    fingerprint: String,
     names: BTreeSet<String>,
     installations: Vec<(String, String)>,
     files: Vec<String>,
@@ -123,18 +124,45 @@ pub struct InvocationPage {
 }
 
 pub fn index(conn: &mut Connection, force: bool) -> Result<IndexSummary> {
+    index_impl(conn, force, false)
+}
+
+pub fn index_sources_incrementally(conn: &mut Connection) -> Result<IndexSummary> {
+    index_impl(conn, false, true)
+}
+
+fn index_impl(
+    conn: &mut Connection,
+    force: bool,
+    invalidate_catalog: bool,
+) -> Result<IndexSummary> {
     let now_ms = Utc::now().timestamp_millis();
     let identities = load_identities(conn)?;
+    let catalog_generation = catalog_generation_from_identities(&identities);
     let sources = repository::session_sources(conn)?;
     let aggregate_key = "skill-sessions:all";
+    if invalidate_catalog {
+        conn.execute(
+            "UPDATE skill_scan_state SET completeness_status = 'partial', updated_at_ms = ?2
+             WHERE state_kind = 'session-source'
+               AND COALESCE(json_extract(details_json, '$.catalog_generation'), '') <> ?1",
+            params![catalog_generation, now_ms],
+        )?;
+    }
     repository::begin_scan(conn, aggregate_key, "aggregate", None, None, now_ms)?;
     let mut summary = IndexSummary::default();
 
     for source in &sources {
         let state_key = format!("session-source:{}", source.id);
-        let unchanged = repository::scan_fingerprint(conn, &state_key)?.as_deref()
-            == Some(source.fingerprint.as_str());
-        if !force && unchanged && scan_complete(conn, &state_key)? {
+        if !force
+            && repository::session_source_scan_is_current(
+                conn,
+                &state_key,
+                &source.fingerprint,
+                source.source_cursor.as_deref(),
+                &catalog_generation,
+            )?
+        {
             summary.sources_skipped += 1;
             continue;
         }
@@ -163,6 +191,7 @@ pub fn index(conn: &mut Connection, force: bool) -> Result<IndexSummary> {
                     source.latest_at_ms,
                     now_ms,
                 )?;
+                repository::set_scan_catalog_generation(conn, &state_key, &catalog_generation)?;
             }
             Err(error) => {
                 summary.sources_failed += 1;
@@ -200,6 +229,7 @@ pub fn index(conn: &mut Connection, force: bool) -> Result<IndexSummary> {
         latest,
         now_ms,
     )?;
+    repository::set_scan_catalog_generation(conn, aggregate_key, &catalog_generation)?;
     Ok(summary)
 }
 
@@ -436,7 +466,7 @@ fn event_text(event: &Event) -> String {
 }
 
 fn load_identities(conn: &Connection) -> Result<Vec<SkillIdentity>> {
-    let mut statement = conn.prepare("SELECT c.id, c.normalized_name, c.canonical_name, i.id, i.install_path, c.file_manifest_json FROM skill_catalog c JOIN skill_installations i ON i.skill_id = c.id WHERE i.status = 'active' ORDER BY c.id")?;
+    let mut statement = conn.prepare("SELECT c.id, c.bundle_content_hash, c.normalized_name, c.canonical_name, i.id, i.install_path, c.file_manifest_json FROM skill_catalog c JOIN skill_installations i ON i.skill_id = c.id WHERE i.status = 'active' ORDER BY c.id")?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -445,13 +475,16 @@ fn load_identities(conn: &Connection) -> Result<Vec<SkillIdentity>> {
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
             row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
         ))
     })?;
     let mut result = BTreeMap::<String, SkillIdentity>::new();
     for row in rows {
-        let (id, normalized_name, canonical_name, installation_id, path, manifest) = row?;
+        let (id, fingerprint, normalized_name, canonical_name, installation_id, path, manifest) =
+            row?;
         let item = result.entry(id.clone()).or_insert_with(|| SkillIdentity {
             id,
+            fingerprint,
             names: BTreeSet::new(),
             installations: Vec::new(),
             files: Vec::new(),
@@ -470,6 +503,21 @@ fn load_identities(conn: &Connection) -> Result<Vec<SkillIdentity>> {
         }
     }
     Ok(result.into_values().collect())
+}
+
+pub fn catalog_generation(conn: &Connection) -> Result<String> {
+    Ok(catalog_generation_from_identities(&load_identities(conn)?))
+}
+
+fn catalog_generation_from_identities(identities: &[SkillIdentity]) -> String {
+    let mut hasher = Sha256::new();
+    for identity in identities {
+        hasher.update(identity.id.as_bytes());
+        hasher.update([0]);
+        hasher.update(identity.fingerprint.as_bytes());
+        hasher.update([0]);
+    }
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 fn rebuild_daily(conn: &Connection, now_ms: i64) -> Result<()> {
@@ -727,15 +775,6 @@ pub fn invocations(
     })
 }
 
-fn scan_complete(conn: &Connection, state_key: &str) -> Result<bool> {
-    Ok(conn
-        .query_row(
-            "SELECT completeness_status = 'complete' FROM skill_scan_state WHERE state_key = ?1",
-            [state_key],
-            |row| row.get(0),
-        )
-        .unwrap_or(false))
-}
 fn normalize(value: &str) -> String {
     value
         .trim()
@@ -815,6 +854,7 @@ mod tests {
     fn keeps_only_highest_priority_evidence_per_event_and_skill() {
         let skill = SkillIdentity {
             id: "skill-1".into(),
+            fingerprint: "bundle-1".into(),
             names: BTreeSet::from(["demo".into()]),
             installations: vec![("install-1".into(), "/tmp/demo".into())],
             files: vec!["scripts/run.sh".into()],
@@ -830,5 +870,111 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].detection_kind, "explicit-tool");
         assert_eq!(found[0].confidence, "high");
+    }
+
+    #[test]
+    fn cursor_only_source_change_is_reindexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::storage::local_store::LocalSqliteStore::open(dir.path().join("memorph.db"))
+                .unwrap();
+        store
+            .connection()
+            .execute(
+                "INSERT INTO session_sources
+                 (id, provider_id, source_path, file_mtime_ms, file_size_bytes,
+                  source_cursor, first_seen_at_ms, last_seen_at_ms)
+                 VALUES ('source', 'cursor', '/tmp/source', 1, 2, 'cursor-1', 1, 1)",
+                [],
+            )
+            .unwrap();
+
+        let first = index(store.connection_mut(), false).unwrap();
+        let unchanged = index(store.connection_mut(), false).unwrap();
+        store
+            .connection()
+            .execute(
+                "UPDATE session_sources SET source_cursor = 'cursor-2' WHERE id = 'source'",
+                [],
+            )
+            .unwrap();
+        let cursor_changed = index(store.connection_mut(), false).unwrap();
+
+        assert_eq!(first.sources_scanned, 1);
+        assert_eq!(unchanged.sources_skipped, 1);
+        assert_eq!(cursor_changed.sources_scanned, 1);
+        assert_eq!(cursor_changed.sources_skipped, 0);
+    }
+
+    #[test]
+    fn catalog_generation_change_marks_complete_source_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store =
+            crate::storage::local_store::LocalSqliteStore::open(dir.path().join("memorph.db"))
+                .unwrap();
+        let conn = store.connection_mut();
+        conn.execute(
+            "INSERT INTO skill_catalog
+             (id, canonical_name, normalized_name, entry_content_hash, bundle_content_hash,
+              file_count, total_bytes, first_seen_at_ms, last_scanned_at_ms, created_at_ms, updated_at_ms)
+             VALUES ('skill-1', 'Skill 1', 'skill-1', 'entry-1', 'bundle-1', 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO skill_installations
+             (id, skill_id, used_by, scope_kind, install_path, canonical_install_path,
+              install_kind, bundle_content_hash, discovered_at_ms, last_verified_at_ms)
+             VALUES ('install-1', 'skill-1', 'codex', 'global', '/tmp/skill-1', '/tmp/skill-1',
+                     'directory', 'bundle-1', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let generation = catalog_generation(conn).unwrap();
+        conn.execute(
+            "INSERT INTO skill_scan_state
+             (state_key, state_kind, source_fingerprint, source_cursor, completeness_status,
+              details_json, updated_at_ms)
+             VALUES ('session-source:source', 'session-source', 'fingerprint', 'cursor',
+                     'complete', ?1, 1)",
+            [serde_json::json!({"catalog_generation": generation}).to_string()],
+        )
+        .unwrap();
+        assert!(repository::session_source_scan_is_current(
+            conn,
+            "session-source:source",
+            "fingerprint",
+            Some("cursor"),
+            &generation
+        )
+        .unwrap());
+
+        conn.execute(
+            "INSERT INTO skill_catalog
+             (id, canonical_name, normalized_name, entry_content_hash, bundle_content_hash,
+              file_count, total_bytes, first_seen_at_ms, last_scanned_at_ms, created_at_ms, updated_at_ms)
+             VALUES ('skill-2', 'Skill 2', 'skill-2', 'entry-2', 'bundle-2', 1, 1, 1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO skill_installations
+             (id, skill_id, used_by, scope_kind, install_path, canonical_install_path,
+              install_kind, bundle_content_hash, discovered_at_ms, last_verified_at_ms)
+             VALUES ('install-2', 'skill-2', 'codex', 'global', '/tmp/skill-2', '/tmp/skill-2',
+                     'directory', 'bundle-2', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let changed = catalog_generation(conn).unwrap();
+        assert_ne!(generation, changed);
+        assert!(!repository::session_source_scan_is_current(
+            conn,
+            "session-source:source",
+            "fingerprint",
+            Some("cursor"),
+            &changed
+        )
+        .unwrap());
     }
 }

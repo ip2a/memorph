@@ -50,20 +50,15 @@ fn handle_key_event(key: KeyEvent, app: &mut App) -> AppResult {
         return AppResult::Quit;
     }
 
-    if key.code == KeyCode::Char('?')
-        && !app.action_modal_open
-        && !app.workspace_modal_open
-        && !app.settings_modal_open
-        && key.modifiers.is_empty()
-    {
+    if key.code == KeyCode::Char('?') && app.overlay.is_none() && key.modifiers.is_empty() {
         app.toggle_help();
         return AppResult::Continue;
     }
 
-    if app.show_help {
+    if matches!(&app.overlay, super::overlays::Overlay::Help) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('?') => {
-                app.show_help = false;
+                app.overlay = super::overlays::Overlay::None;
             }
             _ => {}
         }

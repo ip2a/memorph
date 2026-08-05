@@ -17,6 +17,11 @@ use memorph::i18n;
 use memorph::storage::activity_store::ActivityActor;
 use memorph::{config, provider_settings, providers};
 
+use super::overlays::confirm::ConfirmState;
+use super::overlays::input::{InputKind, InputState};
+use super::overlays::picker::{PickerItem, PickerKind, PickerState};
+use super::overlays::Overlay;
+
 pub const ACTION_OPTIONS: [SessionAction; 6] = [
     SessionAction::Switch,
     SessionAction::Compress,
@@ -70,14 +75,6 @@ pub enum ActionField {
 pub enum ActionDialog {
     TargetAgent,
     TargetWorkspace,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MainFocus {
-    Workspace,
-    Agents,
-    Settings,
-    Sessions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,25 +192,21 @@ pub struct App {
     pub loaded_session: Option<SessionDetailView>,
     pub workspace: Option<String>,
     pub show_all: bool,
-    pub show_help: bool,
     pub error_message: Option<String>,
     pub error_timeout: Option<std::time::Instant>,
     pub ui_language: UiLanguage,
+    pub overlay: Overlay,
 
     // List navigation
     pub table_state: TableState,
     pub provider_filters_cache: Vec<Vec<String>>,
     pub selected_provider_tab: usize,
-    pub main_focus: MainFocus,
     pub agent_management_entries: Vec<memorph::agent_management::AgentManagementEntry>,
     pub agent_management_index: usize,
     pub agent_management_focus: AgentManagementFocus,
     pub agent_management_action_index: usize,
 
     // Top-level modal state
-    pub workspace_modal_open: bool,
-    pub agents_modal_open: bool,
-    pub settings_modal_open: bool,
     pub workspace_input: String,
     pub workspace_modal_index: usize,
     pub settings_selection: usize,
@@ -226,7 +219,6 @@ pub struct App {
     pub settings_agent_index: usize,
 
     // Action modal state
-    pub action_modal_open: bool,
     pub action_selection: usize,
     pub action_field: ActionField,
     pub action_dialog: Option<ActionDialog>,
@@ -244,13 +236,11 @@ pub struct App {
     pub agent_management_result: Option<ActionResult>,
 
     // Search modal state
-    pub search_modal_open: bool,
     pub search_query: String,
     pub search_scope_index: usize,
     pub search_match_index: usize,
 
     // Detail modal state
-    pub detail_modal_open: bool,
     pub detail_scroll: usize,
     pending_session_load: Option<PendingSessionLoad>,
     loading_frame: usize,
@@ -272,21 +262,17 @@ impl App {
             loaded_session: None,
             workspace: Some(cwd_str.clone()),
             show_all: false,
-            show_help: false,
             error_message: None,
             error_timeout: None,
             ui_language: prefs.language,
+            overlay: Overlay::None,
             table_state: TableState::default(),
             provider_filters_cache: Vec::new(),
             selected_provider_tab: 0,
-            main_focus: MainFocus::Sessions,
             agent_management_entries: Vec::new(),
             agent_management_index: 0,
             agent_management_focus: AgentManagementFocus::Providers,
             agent_management_action_index: 0,
-            workspace_modal_open: false,
-            agents_modal_open: false,
-            settings_modal_open: false,
             workspace_input: cwd_str.clone(),
             workspace_modal_index: 0,
             settings_selection: 0,
@@ -303,7 +289,6 @@ impl App {
             settings_agent_order: config::ordered_provider_ids(&prefs),
             settings_primary_agents: config::primary_provider_ids(&prefs),
             settings_agent_index: 0,
-            action_modal_open: false,
             action_selection: 0,
             action_field: ActionField::Action,
             action_dialog: None,
@@ -319,11 +304,9 @@ impl App {
             compression_selected_candidate_ids: Vec::new(),
             action_result: None,
             agent_management_result: None,
-            search_modal_open: false,
             search_query: String::new(),
             search_scope_index: 0,
             search_match_index: 0,
-            detail_modal_open: false,
             detail_scroll: 0,
             pending_session_load: None,
             loading_frame: 0,
@@ -443,11 +426,6 @@ impl App {
     }
 
     pub fn select_next(&mut self) {
-        if self.main_focus != MainFocus::Sessions {
-            self.main_focus = MainFocus::Sessions;
-            return;
-        }
-
         let flat_len = self.session_count();
 
         let current = self.table_state.selected().unwrap_or(0);
@@ -457,11 +435,6 @@ impl App {
     }
 
     pub fn select_previous(&mut self) {
-        if self.table_state.selected().unwrap_or(0) == 0 {
-            self.main_focus = MainFocus::Workspace;
-            return;
-        }
-
         let current = self.table_state.selected().unwrap_or(0);
         if current > 0 {
             self.table_state.select(Some(current - 1));
@@ -515,26 +488,13 @@ impl App {
     }
 
     pub fn open_action_modal(&mut self) {
-        if self.main_focus == MainFocus::Workspace {
-            self.open_workspace_modal();
-            return;
-        }
-        if self.main_focus == MainFocus::Agents {
-            self.open_agents_modal();
-            return;
-        }
-        if self.main_focus == MainFocus::Settings {
-            self.open_settings_modal();
-            return;
-        }
-
         let Some(selected) = self.get_selected_session().cloned() else {
             return;
         };
 
         self.selected_session = Some(selected.clone());
         self.loaded_session = None;
-        self.action_modal_open = true;
+        self.overlay = Overlay::Action;
         self.action_selection = 0;
         self.action_field = ActionField::TargetAgent;
         self.action_dialog = None;
@@ -555,42 +515,184 @@ impl App {
         self.sync_workspace_picker();
     }
 
+    pub fn open_session_action(&mut self, action: SessionAction) {
+        self.open_action_modal();
+        if !matches!(&self.overlay, Overlay::Action) {
+            return;
+        }
+
+        self.action_selection = ACTION_OPTIONS
+            .iter()
+            .position(|candidate| *candidate == action)
+            .unwrap_or(0);
+        self.action_field = match action {
+            SessionAction::Switch | SessionAction::Compress => ActionField::TargetAgent,
+            SessionAction::Export => ActionField::ExportPath,
+            SessionAction::Rename => ActionField::RenameTitle,
+            SessionAction::Delete | SessionAction::Details => ActionField::Execute,
+        };
+    }
+
+    pub fn open_delete_confirmation(&mut self) {
+        let Some(selected) = self.get_selected_session().cloned() else {
+            return;
+        };
+        let detail = selected
+            .title
+            .clone()
+            .unwrap_or_else(|| selected.session_id.clone());
+        self.selected_session = Some(selected.clone());
+        self.overlay = Overlay::Confirm(ConfirmState::delete_session(
+            self.t("remove"),
+            self.t("tuiDeleteConfirmHint"),
+            detail,
+            self.t("remove"),
+            selected.provider_id,
+            selected.session_id,
+        ));
+    }
+
+    pub fn open_rename_input_overlay(&mut self) {
+        let Some(selected) = self.get_selected_session().cloned() else {
+            return;
+        };
+        self.selected_session = Some(selected.clone());
+        self.overlay = Overlay::Input(InputState::new(
+            InputKind::Rename,
+            self.t("rename"),
+            self.t("tuiNewSessionTitle"),
+            selected.title.unwrap_or_default(),
+        ));
+    }
+
+    pub fn open_export_input_overlay(&mut self) {
+        let Some(selected) = self.get_selected_session().cloned() else {
+            return;
+        };
+        self.selected_session = Some(selected.clone());
+        self.overlay = Overlay::Input(InputState::new(
+            InputKind::ExportPath,
+            self.t("export"),
+            self.t("tuiExportPathPrompt"),
+            default_export_prefix(&selected, self.workspace.as_deref()),
+        ));
+    }
+
+    pub fn submit_input_overlay(&mut self, kind: InputKind, value: String) {
+        self.overlay = Overlay::None;
+        match kind {
+            InputKind::Rename => {
+                self.open_session_action(SessionAction::Rename);
+                self.rename_input = value;
+                self.execute_modal_action();
+            }
+            InputKind::ExportPath => {
+                self.open_session_action(SessionAction::Export);
+                self.export_output_prefix = value;
+                self.execute_modal_action();
+            }
+            InputKind::WorkspacePath => {}
+        }
+    }
+
+    pub fn confirm_delete_overlay(&mut self) {
+        self.overlay = Overlay::None;
+        self.open_session_action(SessionAction::Delete);
+        self.execute_modal_action();
+    }
+
+    pub fn open_transfer_target_picker(&mut self, action: SessionAction) {
+        self.open_session_action(action);
+        if !matches!(&self.overlay, Overlay::Action) {
+            return;
+        }
+
+        let kind = if action == SessionAction::Compress {
+            PickerKind::CompressTarget
+        } else {
+            PickerKind::SwitchTarget
+        };
+        let title = if action == SessionAction::Compress {
+            self.t("tuiCompressForAgent")
+        } else {
+            self.t("tuiSwitchToAgent")
+        };
+        let items = self
+            .target_provider_options()
+            .into_iter()
+            .map(|provider_id| PickerItem {
+                id: provider_id.to_string(),
+                label: provider_label(provider_id).to_string(),
+                description: String::new(),
+                enabled: None,
+            })
+            .collect();
+        self.overlay = Overlay::Picker(PickerState::new(kind, title, items));
+    }
+
+    pub fn submit_picker_overlay(&mut self, kind: PickerKind, id: String) {
+        match kind {
+            PickerKind::SwitchTarget | PickerKind::CompressTarget => {
+                if let Some(index) = self
+                    .target_provider_options()
+                    .iter()
+                    .position(|provider_id| *provider_id == id)
+                {
+                    self.switch_target_index = index;
+                }
+
+                if matches!(kind, PickerKind::CompressTarget) {
+                    self.overlay = Overlay::None;
+                    self.overlay = Overlay::Action;
+                    self.action_field = ActionField::CompressionCandidates;
+                    self.refresh_compression_plan();
+                } else {
+                    let items = self
+                        .workspace_options
+                        .iter()
+                        .map(|workspace| PickerItem {
+                            id: workspace.clone(),
+                            label: workspace.clone(),
+                            description: String::new(),
+                            enabled: None,
+                        })
+                        .collect();
+                    self.overlay = Overlay::Picker(PickerState::new(
+                        PickerKind::SwitchWorkspace,
+                        self.t("targetWorkspace"),
+                        items,
+                    ));
+                }
+            }
+            PickerKind::SwitchWorkspace => {
+                self.target_workspace = id;
+                self.overlay = Overlay::None;
+                self.overlay = Overlay::Action;
+                self.action_field = ActionField::Execute;
+                self.execute_modal_action();
+            }
+            PickerKind::Workspace | PickerKind::AgentManagement | PickerKind::Settings => {
+                self.overlay = Overlay::None;
+            }
+        }
+    }
+
     pub fn close_action_modal(&mut self) {
-        self.action_modal_open = false;
+        self.overlay = Overlay::None;
         self.action_dialog = None;
         self.action_result = None;
         self.loaded_session = None;
-    }
-
-    pub fn focus_previous_top_control(&mut self) {
-        self.main_focus = match self.main_focus {
-            MainFocus::Workspace => MainFocus::Settings,
-            MainFocus::Agents => MainFocus::Workspace,
-            MainFocus::Settings => MainFocus::Agents,
-            MainFocus::Sessions => MainFocus::Sessions,
-        };
-    }
-
-    pub fn focus_next_top_control(&mut self) {
-        self.main_focus = match self.main_focus {
-            MainFocus::Workspace => MainFocus::Agents,
-            MainFocus::Agents => MainFocus::Settings,
-            MainFocus::Settings => MainFocus::Workspace,
-            MainFocus::Sessions => MainFocus::Sessions,
-        };
     }
 
     pub fn open_workspace_modal(&mut self) {
         self.refresh_workspace_options(None);
         self.workspace_input = self.workspace.clone().unwrap_or_else(|| ".".to_string());
         self.sync_main_workspace_picker();
-        self.workspace_modal_open = true;
-        self.settings_modal_open = false;
-        self.agents_modal_open = false;
+        self.overlay = Overlay::Workspace;
     }
 
     pub fn close_workspace_modal(&mut self) {
-        self.workspace_modal_open = false;
+        self.overlay = Overlay::None;
     }
 
     pub fn open_settings_modal(&mut self) {
@@ -599,13 +701,11 @@ impl App {
             Err(e) => self.show_error(e.to_string()),
         }
         self.settings_selection = 0;
-        self.settings_modal_open = true;
-        self.workspace_modal_open = false;
-        self.agents_modal_open = false;
+        self.overlay = Overlay::Settings;
     }
 
     pub fn close_settings_modal(&mut self) {
-        self.settings_modal_open = false;
+        self.overlay = Overlay::None;
     }
 
     pub fn open_agents_modal(&mut self) {
@@ -651,13 +751,11 @@ impl App {
                 });
             }
         }
-        self.agents_modal_open = true;
-        self.workspace_modal_open = false;
-        self.settings_modal_open = false;
+        self.overlay = Overlay::Agents;
     }
 
     pub fn close_agents_modal(&mut self) {
-        self.agents_modal_open = false;
+        self.overlay = Overlay::None;
         self.agent_management_result = None;
     }
 
@@ -750,19 +848,23 @@ impl App {
                 ) {
                     Ok(provider_settings::ProviderSettingOutput::HookOperation(report)) => {
                         let mut lines = vec![
-                            format!("Provider: {}", report.provider),
-                            format!("Operation: {}", report.operation),
-                            format!("Changed: {}", report.changed),
-                            format!("Status: {:?}", report.status.status),
+                            format!("{}: {}", self.t("provider"), report.provider),
+                            format!("{}: {}", self.t("operation"), report.operation),
+                            format!(
+                                "{}: {}",
+                                self.t("changed"),
+                                enabled_label(self.language(), report.changed)
+                            ),
+                            format!("{}: {:?}", self.t("status"), report.status.status),
                         ];
                         if let Some(message) = report.message {
-                            lines.push(format!("Message: {}", message));
+                            lines.push(format!("{}: {}", self.t("messages"), message));
                         }
                         if let Some(config_path) = report.status.config_path {
-                            lines.push(format!("Config: {}", config_path));
+                            lines.push(format!("{}: {}", self.t("configPath"), config_path));
                         }
                         if let Some(backup_path) = report.backup_path {
-                            lines.push(format!("Backup: {}", backup_path));
+                            lines.push(format!("{}: {}", self.t("backup"), backup_path));
                         }
                         if let Ok(entries) =
                             memorph::agent_management::list_agent_management_entries()
@@ -780,38 +882,67 @@ impl App {
                     }
                     Ok(provider_settings::ProviderSettingOutput::CodexWorkspaceRepair(report)) => {
                         let mut lines = vec![
-                            format!("Workspace: {}", report.workspace_dir),
-                            format!("Current provider: {}", report.current_model_provider),
-                            format!("Scanned rollout files: {}", report.scanned_rollouts),
-                            format!("Workspace sessions: {}", report.workspace_session_count),
-                            format!("Hidden sessions: {}", report.hidden_session_count),
-                            format!("Repaired sessions: {}", report.repaired_session_count),
-                            format!("Reindexed sessions: {}", report.reindexed_session_count),
-                            format!("Updated SQLite rows: {}", report.sqlite_rows_updated),
+                            format!("{}: {}", self.t("workspace"), report.workspace_dir),
+                            format!(
+                                "{}: {}",
+                                self.t("currentProvider"),
+                                report.current_model_provider
+                            ),
+                            format!("{}: {}", self.t("scanned"), report.scanned_rollouts),
+                            format!(
+                                "{}: {}",
+                                self.t("workspaceSessions"),
+                                report.workspace_session_count
+                            ),
+                            format!(
+                                "{}: {}",
+                                self.t("hiddenSessions"),
+                                report.hidden_session_count
+                            ),
+                            format!(
+                                "{}: {}",
+                                self.t("repairedSessions"),
+                                report.repaired_session_count
+                            ),
+                            format!(
+                                "{}: {}",
+                                self.t("reindexedSessions"),
+                                report.reindexed_session_count
+                            ),
+                            format!(
+                                "{}: {}",
+                                self.t("updatedSqliteRows"),
+                                report.sqlite_rows_updated
+                            ),
                         ];
                         if let Some(backup_dir) = &report.backup_dir {
-                            lines.push(format!("Backup: {}", backup_dir));
+                            lines.push(format!("{}: {}", self.t("backup"), backup_dir));
                         }
                         if report.pruned_backup_count > 0 {
-                            lines.push(format!("Pruned backups: {}", report.pruned_backup_count));
+                            lines.push(format!(
+                                "{}: {}",
+                                self.t("prunedBackups"),
+                                report.pruned_backup_count
+                            ));
                         }
                         if !report.skipped_rollout_files.is_empty() {
                             lines.push(format!(
-                                "Skipped rollout files: {}",
+                                "{}: {}",
+                                self.t("skippedRollouts"),
                                 report.skipped_rollout_files.len()
                             ));
                         }
                         if report.touched_sessions.is_empty() {
-                            lines.push("No Codex sessions needed sync.".to_string());
+                            lines.push(self.t("noRepairNeeded").to_string());
                         } else {
                             lines.push(String::new());
                             for item in report.touched_sessions {
                                 lines.push(format!(
                                     "{} | {} | {} -> {} | index_added={}",
                                     item.session_id,
-                                    item.title.unwrap_or_else(|| "(untitled)".to_string()),
+                                    item.title.unwrap_or_else(|| self.t("untitled").to_string()),
                                     item.previous_model_provider
-                                        .unwrap_or_else(|| "(none)".to_string()),
+                                        .unwrap_or_else(|| self.t("empty").to_string()),
                                     item.current_model_provider,
                                     item.added_to_index
                                 ));
@@ -820,7 +951,7 @@ impl App {
                         if !report.skipped_rollout_files.is_empty() {
                             lines.push(String::new());
                             for path in report.skipped_rollout_files {
-                                lines.push(format!("skipped rollout: {}", path));
+                                lines.push(format!("{}: {}", self.t("skippedRollouts"), path));
                             }
                         }
                         self.start_load_sessions("failedRefreshSessions");
@@ -924,7 +1055,11 @@ impl App {
                     &setting.id,
                     &setting.title,
                 ),
-                description: setting.description.clone(),
+                description: agent_management_setting_description(
+                    self.ui_language,
+                    &setting.id,
+                    &setting.description,
+                ),
                 kind,
                 enabled: setting.value.as_ref().and_then(Value::as_bool),
             });
@@ -1090,6 +1225,8 @@ impl App {
             Some(self.settings_sort_providers_by_session_count),
             None,
             None,
+            None,
+            None,
         )
         .and_then(|_| {
             config::update_agent_display_preferences(
@@ -1215,9 +1352,9 @@ impl App {
         match core::sessions::get_session_detail_view(&selected.provider_id, &selected.session_id) {
             Ok(session) => {
                 self.loaded_session = Some(session);
-                self.detail_modal_open = true;
+                self.overlay = Overlay::Detail;
                 self.detail_scroll = 0;
-                self.action_modal_open = false;
+                self.overlay = Overlay::Detail;
                 self.action_dialog = None;
                 self.action_result = None;
             }
@@ -1226,7 +1363,7 @@ impl App {
     }
 
     pub fn close_detail_modal(&mut self) {
-        self.detail_modal_open = false;
+        self.overlay = Overlay::None;
         self.loaded_session = None;
         self.detail_scroll = 0;
     }
@@ -1245,7 +1382,7 @@ impl App {
     }
 
     pub fn open_search_modal(&mut self) {
-        self.search_modal_open = true;
+        self.overlay = Overlay::Search;
         self.search_query.clear();
         self.search_scope_index = 0;
         self.search_match_index = self.table_state.selected().unwrap_or(0);
@@ -1253,7 +1390,7 @@ impl App {
     }
 
     pub fn close_search_modal(&mut self) {
-        self.search_modal_open = false;
+        self.overlay = Overlay::None;
         self.search_query.clear();
         self.search_match_index = 0;
     }
@@ -1758,7 +1895,7 @@ impl App {
         if self.compression_selected_candidate_ids.is_empty() {
             self.set_action_error(
                 self.t("compressionTitle"),
-                vec!["No compression candidates selected.".to_string()],
+                vec![self.t("tuiNoCompressionCandidatesSelected").to_string()],
             );
             return;
         }
@@ -1782,21 +1919,27 @@ impl App {
         match core::compression_application::active_compression_apply(&params, ActivityActor::Tui) {
             Ok(result) => {
                 let mut lines = vec![
-                    format!("Applied candidates: {}", result.report.candidates.len()),
                     format!(
-                        "Estimated bytes saved: {}",
+                        "{}: {}",
+                        self.t("tuiCompressionAppliedCandidates"),
+                        result.report.candidates.len()
+                    ),
+                    format!(
+                        "{}: {}",
+                        self.t("tuiCompressionEstimatedBytesSaved"),
                         result.report.estimated_bytes_saved
                     ),
                     format!(
-                        "Estimated tokens saved: {}",
+                        "{}: {}",
+                        self.t("tuiCompressionEstimatedTokensSaved"),
                         result.report.estimated_tokens_saved
                     ),
                 ];
                 for file in result.files {
-                    lines.push(format!("File: {}", file));
+                    lines.push(format!("{}: {}", self.t("file"), file));
                 }
                 for archive_ref in result.archive_refs {
-                    lines.push(format!("Archive: {}", archive_ref));
+                    lines.push(format!("{}: {}", self.t("archiveRef"), archive_ref));
                 }
                 self.set_action_success(self.t("compressionTitle"), lines);
                 self.reload_after_action();
@@ -1864,11 +2007,15 @@ impl App {
         ) {
             Ok(result) => {
                 let mut lines = vec![
-                    format!("Display title: {}", result.display_title),
-                    format!("Native title updated: {}", result.native_updated),
+                    format!("{}: {}", self.t("tuiDisplayTitle"), result.display_title),
+                    format!(
+                        "{}: {}",
+                        self.t("tuiNativeTitleUpdated"),
+                        enabled_label(self.language(), result.native_updated)
+                    ),
                 ];
                 if let Some(warning) = result.warning {
-                    lines.push(format!("Warning: {}", warning));
+                    lines.push(format!("{}: {}", self.t("warning"), warning));
                 }
                 self.set_action_success(self.t("renameComplete"), lines);
                 self.reload_after_action();
@@ -2019,7 +2166,11 @@ impl App {
     }
 
     pub fn toggle_help(&mut self) {
-        self.show_help = !self.show_help;
+        self.overlay = if matches!(self.overlay, Overlay::Help) {
+            Overlay::None
+        } else {
+            Overlay::Help
+        };
     }
 
     pub fn on_tick(&mut self) {
@@ -2042,7 +2193,14 @@ impl App {
             self.pending_session_load = None;
             match result {
                 Ok(payload) => self.apply_session_load_payload(payload),
-                Err(error) => self.show_error(self.tf(error_key, &[("error", &error)])),
+                Err(error) => {
+                    let error = if error == "session loader disconnected" {
+                        self.t("sessionLoaderDisconnected")
+                    } else {
+                        &error
+                    };
+                    self.show_error(self.tf(error_key, &[("error", error)]));
+                }
             }
         } else if self.pending_session_load.is_some() {
             self.loading_frame = self.loading_frame.wrapping_add(1);
@@ -2079,6 +2237,10 @@ fn provider_tabs_from_filters(language: UiLanguage, filters: &[Vec<String>]) -> 
         }
     }
     tabs
+}
+
+fn enabled_label(language: UiLanguage, enabled: bool) -> &'static str {
+    i18n::text(language, if enabled { "enabled" } else { "disabled" })
 }
 
 fn build_session_load_payload(
@@ -2323,10 +2485,32 @@ fn agent_management_setting_label(language: UiLanguage, setting_id: &str, title:
     match setting_id {
         "repair_workspace_sessions" => i18n::text(language, "repairCurrentWorkspaceSessions"),
         "show_subagents" => i18n::text(language, "showSubagents"),
+        "install_hook" => i18n::text(language, "hookInstall"),
+        "verify_hook" => i18n::text(language, "hookVerify"),
+        "repair_hook" => i18n::text(language, "hookRepair"),
+        "uninstall_hook" => i18n::text(language, "hookUninstall"),
         _ if !title.trim().is_empty() => title,
         _ => setting_id,
     }
     .to_string()
+}
+
+fn agent_management_setting_description(
+    language: UiLanguage,
+    setting_id: &str,
+    description: &str,
+) -> String {
+    let key = match setting_id {
+        "repair_workspace_sessions" => Some("repairCurrentWorkspaceSessionsHint"),
+        "show_subagents" => Some("settingsSubagentsHint"),
+        "install_hook" => Some("hookInstallHint"),
+        "verify_hook" => Some("hookVerifyHint"),
+        "repair_hook" => Some("hookRepairHint"),
+        "uninstall_hook" => Some("hookUninstallHint"),
+        _ => None,
+    };
+    key.map(|key| i18n::text(language, key).to_string())
+        .unwrap_or_else(|| description.to_string())
 }
 
 fn is_opencode_subagent_title(title: Option<&str>) -> bool {
@@ -2471,9 +2655,38 @@ mod tests {
     }
 
     #[test]
+    fn top_level_overlays_replace_each_other() {
+        let mut app = App::new().unwrap();
+
+        app.open_workspace_modal();
+        assert!(matches!(app.overlay, Overlay::Workspace));
+
+        app.open_settings_modal();
+        assert!(matches!(app.overlay, Overlay::Settings));
+
+        app.open_search_modal();
+        assert!(matches!(app.overlay, Overlay::Search));
+
+        app.toggle_help();
+        assert!(matches!(app.overlay, Overlay::Help));
+        app.toggle_help();
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn moving_above_first_session_keeps_the_first_selection() {
+        let mut app = App::new().unwrap();
+        app.table_state.select(Some(0));
+
+        app.select_previous();
+
+        assert_eq!(app.table_state.selected(), Some(0));
+    }
+
+    #[test]
     fn compression_action_uses_target_candidates_and_execute_fields() {
         let mut app = App::new().unwrap();
-        app.action_modal_open = true;
+        app.overlay = Overlay::Action;
         app.action_selection = ACTION_OPTIONS
             .iter()
             .position(|action| *action == SessionAction::Compress)

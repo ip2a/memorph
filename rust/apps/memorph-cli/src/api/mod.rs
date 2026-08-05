@@ -28,6 +28,7 @@ mod management;
 mod manager;
 mod meta;
 mod providers;
+mod readiness;
 mod router;
 mod sessions;
 mod sync;
@@ -124,6 +125,7 @@ struct AgentManagementSummaryPayload {
 #[derive(Debug, Serialize)]
 struct SettingsPayload {
     sessions_per_provider: usize,
+    skills_catalog_page_size: usize,
     language: config::UiLanguage,
     show_opencode_subagents: bool,
     sort_providers_by_session_count: bool,
@@ -131,6 +133,7 @@ struct SettingsPayload {
     default_backup_dir: String,
     logging: config::LogPreferences,
     home_buttons: config::HomeButtonConfig,
+    home_session_layout: config::HomeSessionLayout,
     agent_order: Vec<String>,
     primary_agents: Vec<String>,
     server: config::ServerPreferences,
@@ -294,9 +297,15 @@ struct SyncGroupPayload {
     holdings: Vec<SyncHoldingPayload>,
 }
 
+fn default_skills_catalog_page_size_body() -> usize {
+    config::DEFAULT_SKILLS_CATALOG_PAGE_SIZE
+}
+
 #[derive(Deserialize)]
 pub(super) struct SettingsBody {
     sessions_per_provider: usize,
+    #[serde(default = "default_skills_catalog_page_size_body")]
+    skills_catalog_page_size: usize,
     language: config::UiLanguage,
     show_opencode_subagents: bool,
     #[serde(default)]
@@ -305,6 +314,8 @@ pub(super) struct SettingsBody {
     #[serde(default)]
     logging: config::LogPreferences,
     home_buttons: config::HomeButtonConfig,
+    #[serde(default)]
+    home_session_layout: Option<config::HomeSessionLayout>,
     #[serde(default)]
     agent_order: Vec<String>,
     #[serde(default)]
@@ -814,6 +825,7 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
     let server = config::server_preferences()?;
     Ok(SettingsPayload {
         sessions_per_provider: prefs.sessions_per_provider,
+        skills_catalog_page_size: prefs.skills_catalog_page_size,
         language: prefs.language,
         show_opencode_subagents: config::provider_preference_from_prefs(
             &prefs,
@@ -826,6 +838,7 @@ fn settings_payload() -> anyhow::Result<SettingsPayload> {
         default_backup_dir: prefs.default_backup_dir.clone(),
         logging: prefs.logging.clone(),
         home_buttons: prefs.home_buttons.clone(),
+        home_session_layout: prefs.home_session_layout,
         agent_order: config::ordered_provider_ids(&prefs),
         primary_agents: config::primary_provider_ids(&prefs),
         server,
@@ -890,6 +903,7 @@ struct ListQuery {
     limit: Option<usize>,
     offset: Option<usize>,
     sort: Option<core::SessionListSort>,
+    refresh: Option<bool>,
 }
 
 #[derive(Deserialize)]

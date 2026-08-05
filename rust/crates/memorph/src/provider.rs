@@ -434,6 +434,13 @@ pub trait Provider: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Whether `scan_workspace` is a true provider-native scoped scan. This is
+    /// separate from an empty result so a successful zero-session scan remains
+    /// distinguishable from an unsupported scope.
+    fn supports_workspace_scan(&self) -> bool {
+        false
+    }
+
     /// Resolve metadata for a single session by id without a full scan.
     ///
     /// Providers that keep an index or can derive the source path from the

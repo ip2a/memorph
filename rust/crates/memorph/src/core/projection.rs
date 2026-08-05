@@ -526,6 +526,263 @@ pub fn index_workspace_sessions(
     }
 }
 
+/// Readiness-only workspace projection. Unlike the explicit workspace index
+/// endpoint, this never falls back to a provider-wide full scan.
+pub fn reconcile_workspace_session_projections(
+    workspace_dir: &std::path::Path,
+    actor: ActivityActor,
+) -> Result<SessionProjectionBootstrapReport> {
+    let _operation = PROJECTION_OPERATION_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Projection operation lock is poisoned"))?;
+    let workspace_dir = workspace_dir
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve workspace: {}", workspace_dir.display()))?;
+    reconcile_workspace_session_projections_for(
+        &workspace_dir,
+        actor,
+        &readiness_workspace_provider_ids(),
+    )
+}
+
+pub(super) fn reconcile_workspace_session_projections_for(
+    workspace_dir: &std::path::Path,
+    actor: ActivityActor,
+    provider_ids: &[&str],
+) -> Result<SessionProjectionBootstrapReport> {
+    let workspace = workspace_dir.to_string_lossy().into_owned();
+    let mut report = SessionProjectionBootstrapReport::default();
+
+    for provider_id in provider_ids.iter().copied() {
+        let activity_conn = local_store::open_database()?;
+        let activity_id = ActivityStore::new(&activity_conn).start(NewActivity {
+            provider_id: Some(provider_id.to_string()),
+            provider_session_id: None,
+            workspace_dir: Some(workspace.clone()),
+            operation_kind: ActivityOperationKind::Scan,
+            actor,
+            summary: format!("Projecting {provider_id} workspace session metadata"),
+            details: serde_json::json!({
+                "scan_kind": "readiness_workspace_projection",
+                "workspace_dir": workspace,
+            }),
+        })?;
+        let Some(provider) = providers::find_provider(provider_id) else {
+            report.unsupported_providers += 1;
+            let reason = format!("provider is not registered: {provider_id}");
+            report.failures.push(SessionProjectionBootstrapFailure {
+                provider_id: provider_id.to_string(),
+                session_id: None,
+                source_path: None,
+                reason: reason.clone(),
+            });
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Workspace metadata projection is unsupported",
+                    serde_json::json!({"scan_kind": "readiness_workspace_projection"}),
+                    reason,
+                ),
+            )?;
+            continue;
+        };
+        let Some(scan) = scoped_safe_workspace_scan(provider.as_ref(), &workspace_dir) else {
+            report.unsupported_providers += 1;
+            let reason = format!(
+                "provider has no safe workspace or lightweight readiness scan: {provider_id}"
+            );
+            report.failures.push(SessionProjectionBootstrapFailure {
+                provider_id: provider_id.to_string(),
+                session_id: None,
+                source_path: None,
+                reason: reason.clone(),
+            });
+            ActivityStore::new(&activity_conn).finish(
+                &activity_id,
+                ActivityCompletion::failed(
+                    "Workspace metadata projection is unsupported",
+                    serde_json::json!({"scan_kind": "readiness_workspace_projection"}),
+                    reason,
+                ),
+            )?;
+            continue;
+        };
+
+        let sessions = match scan {
+            Ok(sessions) => sessions,
+            Err(error) => {
+                report.failed_providers += 1;
+                let reason = format!("failed to scan workspace session metadata: {error:#}");
+                report.failures.push(SessionProjectionBootstrapFailure {
+                    provider_id: provider_id.to_string(),
+                    session_id: None,
+                    source_path: None,
+                    reason: reason.clone(),
+                });
+                ActivityStore::new(&activity_conn).finish(
+                    &activity_id,
+                    ActivityCompletion::failed(
+                        "Workspace metadata projection failed",
+                        serde_json::json!({"scan_kind": "readiness_workspace_projection"}),
+                        reason,
+                    ),
+                )?;
+                continue;
+            }
+        };
+        report.scanned_providers += 1;
+        report.discovered_sessions += sessions.len();
+        let before_failures = report.failed_sessions + report.missing_sources;
+        let mut conn = local_store::open_database()?;
+        for session in &sessions {
+            bootstrap_provider_session(&mut conn, provider_id, session, &mut report);
+        }
+        let provider_failed = report.failed_sessions + report.missing_sources > before_failures;
+        let status = if provider_failed {
+            ActivityStatus::Partial
+        } else {
+            ActivityStatus::Success
+        };
+        ActivityStore::new(&activity_conn).finish(
+            &activity_id,
+            ActivityCompletion {
+                status,
+                provider_id: Some(provider_id.to_string()),
+                provider_session_id: None,
+                workspace_dir: Some(workspace.clone()),
+                summary: format!("Projected {} workspace sessions", sessions.len()),
+                details: serde_json::json!({
+                    "scan_kind": "readiness_workspace_projection",
+                    "discovered_sessions": sessions.len(),
+                    "scoped_scan": provider.supports_workspace_scan(),
+                    "lightweight_scan": !provider.supports_workspace_scan(),
+                }),
+                error: provider_failed
+                    .then(|| "One or more session summaries could not be projected".to_string()),
+            },
+        )?;
+    }
+    Ok(report)
+}
+
+pub(super) fn readiness_workspace_provider_ids() -> Vec<&'static str> {
+    readiness_workspace_provider_ids_with(|provider_id| {
+        let environment = crate::agent_environment::detect_provider_environment_fast(provider_id);
+        provider_is_relevant(
+            environment.installed,
+            crate::agent_environment::provider_config_path(provider_id).exists(),
+        )
+    })
+}
+
+fn readiness_workspace_provider_ids_with(
+    mut relevant: impl FnMut(&str) -> bool,
+) -> Vec<&'static str> {
+    PROJECTED_SESSION_PROVIDER_IDS
+        .iter()
+        .copied()
+        .filter(|provider_id| relevant(provider_id))
+        .collect()
+}
+
+fn provider_is_relevant(environment_installed: bool, config_path_exists: bool) -> bool {
+    environment_installed || config_path_exists
+}
+
+fn scoped_safe_workspace_scan(
+    provider: &dyn Provider,
+    workspace_dir: &std::path::Path,
+) -> Option<Result<Vec<ProviderSessionSummary>>> {
+    if provider.supports_workspace_scan() {
+        return Some(provider.scan_workspace(workspace_dir));
+    }
+    if !provider.capabilities().lightweight_scan {
+        return None;
+    }
+    Some(provider.scan_sessions_lightweight().map(|sessions| {
+        sessions
+            .into_iter()
+            .filter(|session| {
+                provider.workspace_matches(
+                    session.project_dir.as_deref(),
+                    Some(workspace_dir.to_string_lossy().as_ref()),
+                )
+            })
+            .collect()
+    }))
+}
+
+#[cfg(test)]
+mod readiness_projection_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct LightweightProvider<'a> {
+        lightweight_called: &'a AtomicBool,
+    }
+
+    impl Provider for LightweightProvider<'_> {
+        fn id(&self) -> &'static str {
+            "test-lightweight"
+        }
+
+        fn name(&self) -> &'static str {
+            "test-lightweight"
+        }
+
+        fn capabilities(&self) -> crate::provider::ProviderCapabilities {
+            crate::provider::ProviderCapabilities {
+                lightweight_scan: true,
+                ..Default::default()
+            }
+        }
+
+        fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
+            panic!("readiness must not invoke the full scan fallback")
+        }
+
+        fn scan_sessions_lightweight(&self) -> Result<Vec<ProviderSessionSummary>> {
+            self.lightweight_called.store(true, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+
+        fn import_session(&self, _source_path: &str) -> Result<ImportedSession> {
+            anyhow::bail!("not used")
+        }
+    }
+
+    #[test]
+    fn readiness_projection_uses_lightweight_scan_without_full_fallback() {
+        let called = AtomicBool::new(false);
+        let provider = LightweightProvider {
+            lightweight_called: &called,
+        };
+        let workspace = tempfile::tempdir().unwrap();
+
+        let sessions = scoped_safe_workspace_scan(&provider, workspace.path())
+            .expect("supported lightweight scan")
+            .unwrap();
+
+        assert!(sessions.is_empty());
+        assert!(called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn irrelevant_unsupported_provider_is_not_expected() {
+        let expected = readiness_workspace_provider_ids_with(|provider_id| provider_id == "cursor");
+
+        assert_eq!(expected, vec!["cursor"]);
+        assert!(!expected.contains(&"claude"));
+        assert!(!provider_is_relevant(false, false));
+    }
+
+    #[test]
+    fn provider_config_or_installation_makes_provider_relevant() {
+        assert!(provider_is_relevant(true, false));
+        assert!(provider_is_relevant(false, true));
+    }
+}
+
 /// Spawn a one-shot background thread that runs `index_workspace_sessions`
 /// for every projected provider. Used by read paths that hit an empty SQLite
 /// for a workspace: the API returns immediately with a `degraded` flag while
@@ -888,7 +1145,7 @@ pub(super) fn projected_snapshot_groups(
         .collect()
 }
 
-pub(super) fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) -> SessionItem {
+pub(crate) fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) -> SessionItem {
     let provider_session_id = snapshot
         .provider_session_id
         .as_deref()
@@ -917,7 +1174,7 @@ pub(super) fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) ->
     }
 }
 
-pub(super) fn compare_session_items(
+pub(crate) fn compare_session_items(
     left: &SessionItem,
     right: &SessionItem,
     sort: &SessionListSort,
@@ -933,11 +1190,11 @@ pub(super) fn compare_session_items(
     }
 }
 
-pub(super) fn sort_session_items(items: &mut [SessionItem], sort: &SessionListSort) {
+pub(crate) fn sort_session_items(items: &mut [SessionItem], sort: &SessionListSort) {
     items.sort_by(|left, right| compare_session_items(left, right, sort));
 }
 
-pub(super) fn compare_recent_then_title(
+pub(crate) fn compare_recent_then_title(
     left: &SessionItem,
     right: &SessionItem,
 ) -> std::cmp::Ordering {
@@ -947,7 +1204,7 @@ pub(super) fn compare_recent_then_title(
         .then_with(|| session_display_key(left).cmp(&session_display_key(right)))
 }
 
-pub(super) fn compare_title_then_recent(
+pub(crate) fn compare_title_then_recent(
     left: &SessionItem,
     right: &SessionItem,
 ) -> std::cmp::Ordering {
@@ -956,7 +1213,7 @@ pub(super) fn compare_title_then_recent(
         .then_with(|| right.last_active_at.cmp(&left.last_active_at))
 }
 
-pub(super) fn session_display_key(item: &SessionItem) -> String {
+pub(crate) fn session_display_key(item: &SessionItem) -> String {
     item.display_title
         .as_deref()
         .or(item.title.as_deref())

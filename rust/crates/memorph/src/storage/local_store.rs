@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 15;
 
 static JOURNAL_MODE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -296,7 +296,59 @@ fn apply_hook_runtime_schema(conn: &mut Connection) -> Result<()> {
         )?;
     }
     tx.commit()
-        .context("Failed to commit memorph DB schema v13 migration")
+        .context("Failed to commit memorph DB schema v13 migration")?;
+    apply_skill_tags_schema(conn)
+}
+
+fn apply_skill_tags_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("Failed to start memorph DB schema v14 migration")?;
+    let applied = applied_migrations(&tx)?;
+    if !applied.contains(&14) {
+        tx.execute_batch(V14_SCHEMA)
+            .context("Failed to apply memorph DB schema v14")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![14, "skill_catalog_tags_v14"],
+        )?;
+    }
+    tx.commit()
+        .context("Failed to commit memorph DB schema v14 migration")?;
+    apply_skill_agent_naming_schema(conn)
+}
+
+fn apply_skill_agent_naming_schema(conn: &mut Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let migration = (|| -> Result<()> {
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("Failed to start memorph DB schema v15 migration")?;
+        let applied = applied_migrations(&tx)?;
+        if !applied.contains(&15) {
+            tx.execute_batch(V15_SCHEMA)
+                .context("Failed to apply memorph DB schema v15")?;
+            tx.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at_ms)
+                 VALUES (?1, ?2, strftime('%s','now') * 1000)",
+                params![15, "skill_agent_and_used_by_naming_v15"],
+            )?;
+        }
+        tx.commit()
+            .context("Failed to commit memorph DB schema v15 migration")
+    })();
+    let restore = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    migration?;
+    restore?;
+    let violations: i64 =
+        conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+            row.get(0)
+        })?;
+    if violations != 0 {
+        anyhow::bail!("Memorph DB schema v15 produced {violations} foreign key violations");
+    }
+    Ok(())
 }
 
 fn create_schema_migrations_table(conn: &Connection) -> Result<()> {
@@ -1200,6 +1252,81 @@ CREATE INDEX idx_skill_installations_provider_scope
 CREATE INDEX idx_skill_installations_link_status ON skill_installations(link_status, status);
 "#;
 
+const V14_SCHEMA: &str = r#"
+ALTER TABLE skill_catalog ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';
+"#;
+
+const V15_SCHEMA: &str = r#"
+CREATE TABLE skill_installations_v15 (
+    id TEXT PRIMARY KEY,
+    skill_id TEXT NOT NULL,
+    used_by TEXT NOT NULL,
+    scope_kind TEXT NOT NULL CHECK(scope_kind IN ('global', 'project')),
+    workspace_dir TEXT,
+    install_path TEXT NOT NULL,
+    canonical_install_path TEXT NOT NULL,
+    install_kind TEXT NOT NULL CHECK(install_kind IN ('directory', 'symlink', 'managed-copy')),
+    symlink_target TEXT,
+    source_path TEXT,
+    managed_marker_present INTEGER NOT NULL DEFAULT 0 CHECK(managed_marker_present IN (0, 1)),
+    link_status TEXT NOT NULL DEFAULT 'not-applicable'
+        CHECK(link_status IN ('not-applicable', 'valid', 'broken', 'outside-allowed-root', 'loop')),
+    status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active', 'missing', 'removed', 'error')),
+    bundle_content_hash TEXT NOT NULL,
+    discovered_at_ms INTEGER NOT NULL,
+    last_verified_at_ms INTEGER NOT NULL,
+    removed_at_ms INTEGER,
+    error_text TEXT,
+    FOREIGN KEY(skill_id) REFERENCES skill_catalog(id) ON DELETE RESTRICT,
+    UNIQUE(used_by, install_path)
+);
+INSERT INTO skill_installations_v15
+SELECT id, skill_id, CASE WHEN provider_id = 'agents-shared' THEN 'all' ELSE provider_id END,
+       scope_kind, workspace_dir, install_path, canonical_install_path, install_kind,
+       symlink_target, source_path, managed_marker_present, link_status, status,
+       bundle_content_hash, discovered_at_ms, last_verified_at_ms, removed_at_ms, error_text
+FROM skill_installations;
+DROP TABLE skill_installations;
+ALTER TABLE skill_installations_v15 RENAME TO skill_installations;
+CREATE INDEX idx_skill_installations_skill ON skill_installations(skill_id, status);
+CREATE INDEX idx_skill_installations_used_by_scope
+    ON skill_installations(used_by, scope_kind, workspace_dir, status);
+CREATE INDEX idx_skill_installations_link_status ON skill_installations(link_status, status);
+
+CREATE TABLE skill_scan_state_v15 (
+    state_key TEXT PRIMARY KEY,
+    state_kind TEXT NOT NULL CHECK(state_kind IN ('skill-root', 'session-source', 'aggregate')),
+    agent_id TEXT,
+    source_path TEXT,
+    source_fingerprint TEXT,
+    source_cursor TEXT,
+    last_started_at_ms INTEGER,
+    last_completed_at_ms INTEGER,
+    last_full_scan_at_ms INTEGER,
+    scan_generation INTEGER NOT NULL DEFAULT 0,
+    completeness_status TEXT NOT NULL DEFAULT 'unknown'
+        CHECK(completeness_status IN ('unknown', 'partial', 'complete', 'error')),
+    earliest_indexed_at_ms INTEGER,
+    latest_indexed_at_ms INTEGER,
+    items_seen INTEGER NOT NULL DEFAULT 0,
+    error_text TEXT,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    updated_at_ms INTEGER NOT NULL
+);
+INSERT INTO skill_scan_state_v15
+SELECT state_key, state_kind, provider_id, source_path, source_fingerprint, source_cursor,
+       last_started_at_ms, last_completed_at_ms, last_full_scan_at_ms, scan_generation,
+       completeness_status, earliest_indexed_at_ms, latest_indexed_at_ms, items_seen,
+       error_text, details_json, updated_at_ms
+FROM skill_scan_state;
+DROP TABLE skill_scan_state;
+ALTER TABLE skill_scan_state_v15 RENAME TO skill_scan_state;
+CREATE INDEX idx_skill_scan_state_kind_agent ON skill_scan_state(state_kind, agent_id);
+CREATE INDEX idx_skill_scan_state_completeness
+    ON skill_scan_state(completeness_status, updated_at_ms DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1211,6 +1338,80 @@ mod tests {
             |_| Ok(()),
         )
         .is_ok()
+    }
+
+    #[test]
+    fn migrates_skill_provider_columns_to_agent_and_used_by() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        create_schema_migrations_table(&conn).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE skill_catalog (id TEXT PRIMARY KEY);
+             CREATE TABLE skill_installations (
+                 id TEXT PRIMARY KEY, skill_id TEXT NOT NULL, provider_id TEXT NOT NULL,
+                 scope_kind TEXT NOT NULL, workspace_dir TEXT, install_path TEXT NOT NULL,
+                 canonical_install_path TEXT NOT NULL, install_kind TEXT NOT NULL,
+                 symlink_target TEXT, source_path TEXT, managed_marker_present INTEGER NOT NULL,
+                 link_status TEXT NOT NULL, status TEXT NOT NULL, bundle_content_hash TEXT NOT NULL,
+                 discovered_at_ms INTEGER NOT NULL, last_verified_at_ms INTEGER NOT NULL,
+                 removed_at_ms INTEGER, error_text TEXT
+             );
+             CREATE TABLE skill_scan_state (
+                 state_key TEXT PRIMARY KEY, state_kind TEXT NOT NULL, provider_id TEXT,
+                 source_path TEXT, source_fingerprint TEXT, source_cursor TEXT,
+                 last_started_at_ms INTEGER, last_completed_at_ms INTEGER,
+                 last_full_scan_at_ms INTEGER, scan_generation INTEGER NOT NULL,
+                 completeness_status TEXT NOT NULL, earliest_indexed_at_ms INTEGER,
+                 latest_indexed_at_ms INTEGER, items_seen INTEGER NOT NULL, error_text TEXT,
+                 details_json TEXT NOT NULL, updated_at_ms INTEGER NOT NULL
+             );
+             INSERT INTO skill_catalog VALUES ('skill-1');
+             INSERT INTO skill_installations VALUES
+                 ('installation-1', 'skill-1', 'agents-shared', 'global', NULL,
+                  '/skills/demo', '/skills/demo', 'directory', NULL, NULL, 0,
+                  'not-applicable', 'active', 'hash', 1, 1, NULL, NULL);
+             INSERT INTO skill_scan_state VALUES
+                 ('skill-root:agents-shared:/skills', 'skill-root', 'agents-shared', '/skills',
+                  'fingerprint', NULL, 1, 1, NULL, 1, 'complete', NULL, NULL, 1, NULL, '{}', 1);
+             WITH RECURSIVE versions(version) AS (
+                 VALUES(1) UNION ALL SELECT version + 1 FROM versions WHERE version < 14
+             )
+             INSERT INTO schema_migrations(version, name, applied_at_ms)
+             SELECT version, 'existing', 0 FROM versions;",
+        )
+        .unwrap();
+
+        apply_schema(&mut conn).unwrap();
+
+        let used_by: String = conn
+            .query_row("SELECT used_by FROM skill_installations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let agent_id: String = conn
+            .query_row("SELECT agent_id FROM skill_scan_state", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let legacy_installation_column: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('skill_installations') WHERE name = 'provider_id')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let legacy_scan_column: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('skill_scan_state') WHERE name = 'provider_id')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(used_by, "all");
+        assert_eq!(agent_id, "agents-shared");
+        assert!(!legacy_installation_column);
+        assert!(!legacy_scan_column);
     }
 
     #[test]
@@ -1269,7 +1470,7 @@ mod tests {
         .unwrap();
         conn.execute(
             "INSERT INTO skill_installations (
-                id, skill_id, provider_id, scope_kind, install_path,
+                id, skill_id, used_by, scope_kind, install_path,
                 canonical_install_path, install_kind, bundle_content_hash,
                 discovered_at_ms, last_verified_at_ms
              ) VALUES ('install:test', 'skill:test', 'codex', 'global', '/tmp/test',
@@ -1280,7 +1481,7 @@ mod tests {
 
         let duplicate = conn.execute(
             "INSERT INTO skill_installations (
-                id, skill_id, provider_id, scope_kind, install_path,
+                id, skill_id, used_by, scope_kind, install_path,
                 canonical_install_path, install_kind, bundle_content_hash,
                 discovered_at_ms, last_verified_at_ms
              ) VALUES ('install:duplicate', 'skill:test', 'codex', 'global', '/tmp/test',
@@ -1291,7 +1492,7 @@ mod tests {
 
         conn.execute(
             "INSERT INTO skill_installations (
-                id, skill_id, provider_id, scope_kind, install_path,
+                id, skill_id, used_by, scope_kind, install_path,
                 canonical_install_path, install_kind, bundle_content_hash,
                 discovered_at_ms, last_verified_at_ms
              ) VALUES ('install:project', 'skill:test', 'codex', 'project', '/project/.codex/skills/test',

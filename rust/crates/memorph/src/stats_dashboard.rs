@@ -48,6 +48,7 @@ pub struct StatsDashboardQuery {
 pub struct StatsDashboard {
     pub generated_at: DateTime<Utc>,
     pub range_start: Option<DateTime<Utc>>,
+    pub completeness: DashboardCompleteness,
     pub overview: StatsOverview,
     pub attention: StatsAttention,
     pub timeline: Vec<StatsTimelinePoint>,
@@ -55,6 +56,12 @@ pub struct StatsDashboard {
     pub workspaces: Vec<StatsBreakdownItem>,
     pub top_sessions: StatsTopSessions,
     pub distributions: StatsDistributions,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DashboardCompleteness {
+    pub status: &'static str,
+    pub incomplete_session_count: usize,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -189,36 +196,27 @@ pub fn dashboard(query: &StatsDashboardQuery) -> Result<StatsDashboard> {
 }
 
 fn dashboard_at(query: &StatsDashboardQuery, now: DateTime<Utc>) -> Result<StatsDashboard> {
-    let mut conn = local_store::open_database()?;
-    let filter_rows = |rows: Vec<ProjectedSessionSnapshotRow>| {
-        rows.into_iter()
-            .filter(|row| {
-                query.all
-                    || crate::core::session_management::normalized_workspace_key(
-                        &row.provider_id,
-                        query.workspace.as_deref(),
-                    )
-                    .as_deref()
-                        == row.workspace_dir.as_deref()
-            })
-            .collect::<Vec<_>>()
-    };
-    let rows = filter_rows(
-        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?,
-    );
-    complete_missing_counts(&mut conn, &rows)?;
-    let rows = filter_rows(
-        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?,
-    );
+    let conn = local_store::open_database()?;
+    let rows = load_scoped_snapshots(&conn, query)?;
+    let incomplete_count = rows.iter().filter(|r| r.message_count.is_none()).count();
     let created_at = load_created_at(&conn, &rows)?;
     let event_facts = load_event_facts(&conn, &rows)?;
     let range_start = query.range.days().map(|days| now - Duration::days(days));
+    let completeness = DashboardCompleteness {
+        status: if incomplete_count == 0 {
+            "complete"
+        } else {
+            "partial"
+        },
+        incomplete_session_count: incomplete_count,
+    };
     Ok(build_dashboard(
         &rows,
         &created_at,
         &event_facts,
         range_start,
         now,
+        completeness,
     ))
 }
 
@@ -294,7 +292,7 @@ fn compute_missing_count(row: &ProjectedSessionSnapshotRow) -> Result<MissingCou
     })
 }
 
-fn complete_missing_counts(
+pub(crate) fn complete_missing_counts(
     conn: &mut rusqlite::Connection,
     rows: &[ProjectedSessionSnapshotRow],
 ) -> Result<()> {
@@ -304,6 +302,7 @@ fn complete_missing_counts(
         .collect();
     let worker_count = std::thread::available_parallelism()
         .map_or(1, usize::from)
+        .min(4)
         .min(missing.len().max(1));
     let chunk_size = missing.len().div_ceil(worker_count).max(1);
     let computations = std::thread::scope(|scope| {
@@ -313,8 +312,16 @@ fn complete_missing_counts(
                 scope.spawn(move || {
                     chunk
                         .iter()
-                        .map(|row| compute_missing_count(row))
-                        .collect::<Result<Vec<_>>>()
+                        .map(|row| {
+                            compute_missing_count(row).map_err(|error| {
+                                anyhow::anyhow!(
+                                    "{}/{}: {error}",
+                                    row.provider_id,
+                                    row.canonical_session_id
+                                )
+                            })
+                        })
+                        .collect::<Vec<_>>()
                 })
             })
             .collect::<Vec<_>>()
@@ -322,14 +329,23 @@ fn complete_missing_counts(
             .map(|handle| {
                 handle
                     .join()
-                    .map_err(|_| anyhow::anyhow!("message count worker panicked"))?
+                    .map_err(|_| anyhow::anyhow!("message count worker panicked"))
             })
             .collect::<Result<Vec<_>>>()
             .map(|chunks| chunks.into_iter().flatten().collect::<Vec<_>>())
     })?;
 
-    let mut store = crate::storage::session_index_store::SessionIndexStore::new(conn);
+    let mut successful_computations = Vec::new();
+    let mut failures = Vec::new();
     for computation in computations {
+        match computation {
+            Ok(computation) => successful_computations.push(computation),
+            Err(error) => failures.push(format!("{error}")),
+        }
+    }
+
+    let mut store = crate::storage::session_index_store::SessionIndexStore::new(conn);
+    for computation in successful_computations {
         let mut canonical_session_id = computation.canonical_session_id.clone();
         if !store.record_complete_counts(
             &canonical_session_id,
@@ -371,7 +387,37 @@ fn complete_missing_counts(
         }
         store.replace_daily_stats(&canonical_session_id, &computation.events)?;
     }
+    if !failures.is_empty() {
+        let preview = failures.iter().take(3).cloned().collect::<Vec<_>>().join("; ");
+        anyhow::bail!(
+            "Failed to complete {} missing message counts: {}",
+            failures.len(),
+            preview
+        );
+    }
     Ok(())
+}
+
+fn load_scoped_snapshots(
+    conn: &rusqlite::Connection,
+    query: &StatsDashboardQuery,
+) -> Result<Vec<ProjectedSessionSnapshotRow>> {
+    let store = crate::storage::snapshot_store::SnapshotStore::new(conn);
+    if query.all {
+        return store.list_session_snapshots();
+    }
+    let rows = store.list_session_snapshots()?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            crate::core::session_management::normalized_workspace_key(
+                &row.provider_id,
+                query.workspace.as_deref(),
+            )
+            .as_deref()
+                == row.workspace_dir.as_deref()
+        })
+        .collect())
 }
 
 fn load_event_facts(
@@ -382,32 +428,38 @@ fn load_event_facts(
     if rows.is_empty() {
         return Ok(facts);
     }
-    let ids: HashSet<_> = rows
+    let ids: Vec<_> = rows
         .iter()
         .map(|row| row.canonical_session_id.as_str())
         .collect();
-    let mut stmt = conn.prepare(
-        "SELECT session_id, day_start_ms, event_count, message_count FROM session_daily_stats",
-    )?;
-    for row in stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, i64>(2)?.max(0) as usize,
-            row.get::<_, i64>(3)?.max(0) as usize,
-        ))
-    })? {
-        let (session_id, day, event_count, message_count) = row?;
-        if !ids.contains(session_id.as_str()) {
-            continue;
-        }
-        if let Some(item) = facts.get_mut(&session_id) {
-            item.daily.push(DailyEventFacts {
-                day_start_ms: day,
-                event_count,
-                message_count,
-            });
-            item.timestamped_messages += message_count;
+    if !ids.is_empty() {
+        let placeholders = vec!["?"; ids.len()].join(", ");
+        let sql = format!(
+            "SELECT session_id, day_start_ms, event_count, message_count
+             FROM session_daily_stats WHERE session_id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let params: Vec<&dyn rusqlite::ToSql> = ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        for row in stmt.query_map(rusqlite::params_from_iter(params.iter().copied()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?.max(0) as usize,
+                row.get::<_, i64>(3)?.max(0) as usize,
+            ))
+        })? {
+            let (session_id, day, event_count, message_count) = row?;
+            if let Some(item) = facts.get_mut(&session_id) {
+                item.daily.push(DailyEventFacts {
+                    day_start_ms: day,
+                    event_count,
+                    message_count,
+                });
+                item.timestamped_messages += message_count;
+            }
         }
     }
     Ok(facts)
@@ -420,19 +472,26 @@ fn load_created_at(
     if rows.is_empty() {
         return Ok(HashMap::new());
     }
-    let ids: HashSet<_> = rows
+    let ids: Vec<_> = rows
         .iter()
         .map(|row| row.canonical_session_id.as_str())
         .collect();
-    let mut stmt =
-        conn.prepare("SELECT id, created_at_ms FROM sessions WHERE deleted_at_ms IS NULL")?;
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    let sql = format!(
+        "SELECT id, created_at_ms FROM sessions
+         WHERE deleted_at_ms IS NULL AND id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::ToSql> = ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::ToSql)
+        .collect();
     let values = stmt
-        .query_map([], |row| {
+        .query_map(rusqlite::params_from_iter(params.iter().copied()), |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
         })?
         .filter_map(|row| row.ok())
         .filter_map(|(id, value)| value.map(|value| (id, value)))
-        .filter(|(id, _)| ids.contains(id.as_str()))
         .collect();
     Ok(values)
 }
@@ -471,6 +530,7 @@ fn build_dashboard(
     event_facts: &HashMap<String, EventFacts>,
     range_start: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
+    completeness: DashboardCompleteness,
 ) -> StatsDashboard {
     let active: Vec<_> = rows
         .iter()
@@ -631,6 +691,7 @@ fn build_dashboard(
     StatsDashboard {
         generated_at: now,
         range_start,
+        completeness,
         overview,
         attention,
         timeline: timeline(rows, created, event_facts, range_start, now),
@@ -942,6 +1003,10 @@ mod tests {
             &events,
             Some(now - Duration::days(7)),
             now,
+            DashboardCompleteness {
+                status: "complete",
+                incomplete_session_count: 0,
+            },
         );
 
         assert_eq!(result.timeline.len(), 8);
@@ -993,6 +1058,10 @@ mod tests {
             &events,
             Some(now - Duration::days(7)),
             now,
+            DashboardCompleteness {
+                status: "complete",
+                incomplete_session_count: 0,
+            },
         );
 
         assert_eq!(result.overview.total_messages, 3);
@@ -1074,6 +1143,10 @@ mod tests {
             &event_facts,
             Some(now - Duration::days(30)),
             now,
+            DashboardCompleteness {
+                status: "complete",
+                incomplete_session_count: 0,
+            },
         );
 
         assert_eq!(result.overview.total_sessions, 4);

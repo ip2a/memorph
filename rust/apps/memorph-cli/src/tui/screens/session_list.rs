@@ -3,173 +3,69 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
 use crate::tui::app::{
     provider_label, ActionDialog, ActionField, ActionResult, AgentManagementFocus, App, AppResult,
-    MainFocus, SessionAction, ACTION_OPTIONS, SEARCH_SCOPE_OPTIONS,
+    SearchScope, SessionAction, ACTION_OPTIONS,
+};
+use crate::tui::overlays::filter::{self, FilterScope, FilterState};
+use crate::tui::overlays::{
+    confirm::ConfirmAction, input::InputAction, picker::PickerAction, Overlay,
 };
 use crate::tui::theme::{self, Theme};
-use memorph::core::{compression, SessionGroup, SessionItem};
+use memorph::core::{compression, SessionItem};
 use memorph::session::{Block as EventBlock, Event, Role};
 
 /// Draw session table page
 pub fn draw(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
-    draw_provider_tabs(frame, app, chunks[0], theme);
-    draw_session_table(frame, app, chunks[1], theme);
-
-    if app.detail_modal_open {
+    if matches!(&app.overlay, Overlay::Detail) {
         draw_detail_modal(frame, app, area, theme);
-    } else if app.action_modal_open {
-        draw_action_modal(frame, app, area, theme);
-    } else if app.search_modal_open {
-        draw_search_modal(frame, app, area, theme);
-    }
-}
-
-fn draw_provider_tabs(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let tabs = app.provider_tabs();
-    draw_chip_row(
-        frame,
-        "Providers",
-        &tabs,
-        app.selected_provider_tab,
-        app.main_focus == MainFocus::Sessions,
-        area,
-        theme,
-    );
-}
-
-fn draw_session_table(frame: &mut Frame, app: &mut App, area: Rect, theme: &Theme) {
-    let total_items = app.session_count();
-    if total_items == 0 {
-        app.table_state.select(None);
-        let empty = Paragraph::new("No sessions found in this workspace.")
-            .style(Style::default().fg(theme.text_dim).bg(theme.background))
-            .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::NONE));
-        frame.render_widget(empty, area);
         return;
     }
 
-    if app.table_state.selected().is_none() {
-        app.table_state.select(Some(0));
-    }
+    let table_area = if matches!(&app.overlay, Overlay::Search) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(area);
+        draw_inline_search(frame, app, chunks[0], theme);
+        chunks[1]
+    } else {
+        area
+    };
 
-    let rows = build_table_rows(
+    let language = app.language();
+    crate::tui::widgets::session_table::draw(
+        frame,
         &app.session_groups,
-        app.table_state.selected(),
-        app.language(),
+        &mut app.table_state,
+        language,
+        table_area,
         theme,
     );
-    let widths = [
-        Constraint::Length(11),
-        Constraint::Percentage(26),
-        Constraint::Length(14),
-        Constraint::Percentage(37),
-        Constraint::Length(12),
-    ];
 
-    let header = Row::new(vec![
-        Cell::from("AI"),
-        Cell::from("Title"),
-        Cell::from("Session"),
-        Cell::from("Workspace"),
-        Cell::from("Active"),
-    ])
-    .style(
-        Style::default()
-            .fg(theme.secondary)
-            .add_modifier(Modifier::BOLD),
-    )
-    .bottom_margin(1);
-
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::NONE)
-                .style(Style::default().bg(theme.background)),
-        )
-        .style(Style::default().fg(theme.text).bg(theme.background))
-        .highlight_spacing(HighlightSpacing::Never);
-
-    frame.render_stateful_widget(table, area, &mut app.table_state);
-}
-
-fn build_table_rows(
-    groups: &[SessionGroup],
-    selected_row: Option<usize>,
-    language: memorph::config::UiLanguage,
-    theme: &Theme,
-) -> Vec<Row<'static>> {
-    let mut rows = Vec::new();
-    let mut row_index = 0;
-
-    for group in groups {
-        for session in &group.sessions {
-            let title = session.title.as_deref().unwrap_or("(untitled)");
-            let dir = session.project_dir.as_deref().unwrap_or("(no dir)");
-            let time_str = theme::format_relative_time(session.last_active_at, language);
-            let provider = provider_label(&session.provider_id);
-            let selected = selected_row == Some(row_index);
-            let value_style = if selected {
-                selected_row_style(theme)
-            } else {
-                Style::default().fg(theme.text).bg(theme.background)
-            };
-            let muted_style = if selected {
-                selected_row_style(theme)
-            } else {
-                Style::default().fg(theme.text_dim).bg(theme.background)
-            };
-            let provider_style = if selected {
-                selected_row_style(theme)
-            } else {
-                Style::default()
-                    .fg(theme.provider_color(&group.provider_id))
-                    .bg(theme.background)
-            };
-
-            rows.push(Row::new(vec![
-                table_cell(provider.to_string(), provider_style, 10, theme),
-                table_cell(theme::truncate(title, 42), value_style, 24, theme),
-                table_cell(
-                    theme::truncate(&session.session_id, 12),
-                    muted_style,
-                    12,
-                    theme,
-                ),
-                table_cell(theme::truncate(dir, 56), muted_style, 32, theme),
-                table_cell(time_str, muted_style, 10, theme),
-            ]));
-            row_index += 1;
-        }
+    if matches!(&app.overlay, Overlay::Action) {
+        draw_action_modal(frame, app, area, theme);
     }
-
-    rows
 }
 
-fn table_cell(
-    value: String,
-    value_style: Style,
-    rule_width: usize,
-    theme: &Theme,
-) -> Cell<'static> {
-    Cell::from(Text::from(vec![
-        Line::from(Span::styled(value, value_style)),
-        Line::from(Span::styled(
-            "─".repeat(rule_width),
-            Style::default().fg(theme.border).bg(theme.background),
-        )),
-    ]))
+fn draw_inline_search(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
+    let matches = app.search_matches();
+    let state = FilterState {
+        query: app.search_query.clone(),
+        scope: match app.current_search_scope() {
+            SearchScope::All => FilterScope::All,
+            SearchScope::Title => FilterScope::Title,
+            SearchScope::SessionId => FilterScope::SessionId,
+            SearchScope::Workspace => FilterScope::Workspace,
+        },
+        match_count: matches.len(),
+        current_match: app.search_match_index.min(matches.len().saturating_sub(1)),
+    };
+    filter::draw(frame, &state, app.language(), area, theme);
 }
 
 fn draw_chip_row<T: AsRef<str>>(
@@ -211,7 +107,7 @@ fn draw_chip_row<T: AsRef<str>>(
 fn draw_action_modal(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let popup_area = centered_rect(84, 82, area);
     frame.render_widget(Clear, popup_area);
-    frame.render_widget(modal_block("Session Actions", theme), popup_area);
+    frame.render_widget(modal_block(app.t("sessionMoreActions"), theme), popup_area);
 
     let inner = popup_area.inner(Margin {
         horizontal: 2,
@@ -235,7 +131,7 @@ fn draw_action_modal(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     draw_action_tabs(frame, app, chunks[1], theme);
 
     if let Some(result) = &app.action_result {
-        draw_action_result(frame, result, chunks[2], theme);
+        draw_action_result(frame, app, result, chunks[2], theme);
     } else {
         draw_action_body(frame, app, chunks[2], theme);
     }
@@ -256,7 +152,7 @@ fn draw_action_tabs(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         .collect();
     draw_chip_row(
         frame,
-        "Actions",
+        app.t("actions"),
         &labels,
         app.action_selection,
         app.action_field == ActionField::Action,
@@ -289,40 +185,38 @@ fn draw_switch_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     draw_picker_block(
         frame,
-        "Target Agent",
+        app.t("targetAgent"),
         app.selected_target_provider()
             .map(provider_label)
             .unwrap_or("-"),
-        "Press Enter to choose the agent to switch into.",
+        app.t("pressEnterChooseTargetAgent"),
         app.action_field == ActionField::TargetAgent,
         chunks[0],
         theme,
     );
     draw_picker_block(
         frame,
-        "Workspace",
+        app.t("workspace"),
         app.selected_target_workspace()
             .as_deref()
-            .unwrap_or("(no workspace)"),
-        "Press Enter to choose or edit the target workspace.",
+            .unwrap_or(app.t("workspaceEmpty")),
+        app.t("pressEnterChooseWorkspace"),
         app.action_field == ActionField::TargetWorkspace,
         chunks[1],
         theme,
     );
     draw_execute_block(
         frame,
-        "Run Switch",
+        app.t("runSwitch"),
         app.action_field == ActionField::Execute,
         chunks[2],
         theme,
     );
 
-    let note = Paragraph::new(
-        "Memorph writes a new session for the selected agent in the chosen workspace.",
-    )
-    .block(section_block("What Happens", false, theme))
-    .style(Style::default().fg(theme.text).bg(theme.surface))
-    .wrap(Wrap { trim: true });
+    let note = Paragraph::new(app.t("switchPanelHint"))
+        .block(section_block(app.t("whatHappens"), false, theme))
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .wrap(Wrap { trim: true });
     frame.render_widget(note, chunks[3]);
 }
 
@@ -339,11 +233,11 @@ fn draw_compress_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) 
 
     draw_picker_block(
         frame,
-        "Target Agent",
+        app.t("targetAgent"),
         app.selected_target_provider()
             .map(provider_label)
             .unwrap_or("-"),
-        "Press Enter to choose the target agent profile for compression.",
+        app.t("tuiCompressionChooseTargetHint"),
         app.action_field == ActionField::TargetAgent,
         chunks[0],
         theme,
@@ -353,18 +247,16 @@ fn draw_compress_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) 
 
     draw_execute_block(
         frame,
-        "Run Compression",
+        app.t("tuiRunCompression"),
         app.action_field == ActionField::Execute,
         chunks[2],
         theme,
     );
 
-    let note = Paragraph::new(
-        "Compression writes a smaller canonical export and archives original events. It does not mutate provider storage directly.",
-    )
-    .block(section_block("What Happens", false, theme))
-    .style(Style::default().fg(theme.text).bg(theme.surface))
-    .wrap(Wrap { trim: true });
+    let note = Paragraph::new(app.t("tuiCompressionPanelHint"))
+        .block(section_block(app.t("whatHappens"), false, theme))
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .wrap(Wrap { trim: true });
     frame.render_widget(note, chunks[3]);
 }
 
@@ -372,7 +264,7 @@ fn draw_compression_candidates(frame: &mut Frame, app: &App, area: Rect, theme: 
     if let Some(error) = &app.compression_plan_error {
         let body = Paragraph::new(error.clone())
             .block(section_block(
-                "Compression Candidates",
+                app.t("tuiCompressionCandidates"),
                 app.action_field == ActionField::CompressionCandidates,
                 theme,
             ))
@@ -383,9 +275,9 @@ fn draw_compression_candidates(frame: &mut Frame, app: &App, area: Rect, theme: 
     }
 
     let Some(report) = &app.compression_plan else {
-        let body = Paragraph::new("Choose a target agent to generate a compression plan.")
+        let body = Paragraph::new(app.t("tuiCompressionChooseTargetPlan"))
             .block(section_block(
-                "Compression Candidates",
+                app.t("tuiCompressionCandidates"),
                 app.action_field == ActionField::CompressionCandidates,
                 theme,
             ))
@@ -397,20 +289,29 @@ fn draw_compression_candidates(frame: &mut Frame, app: &App, area: Rect, theme: 
 
     let mut lines = vec![
         Line::from(vec![
-            Span::styled("Candidates", Style::default().fg(theme.text_dim)),
+            Span::styled(
+                app.t("tuiCompressionCandidates"),
+                Style::default().fg(theme.text_dim),
+            ),
             Span::raw(format!("  {}", report.candidates.len())),
             Span::raw("    "),
-            Span::styled("Selected", Style::default().fg(theme.text_dim)),
+            Span::styled(app.t("selected"), Style::default().fg(theme.text_dim)),
             Span::raw(format!(
                 "  {}",
                 app.compression_selected_candidate_ids.len()
             )),
         ]),
         Line::from(vec![
-            Span::styled("Estimated saved", Style::default().fg(theme.text_dim)),
+            Span::styled(
+                app.t("tuiCompressionEstimatedSaved"),
+                Style::default().fg(theme.text_dim),
+            ),
             Span::raw(format!(
-                "  {} bytes / {} tokens",
-                report.estimated_bytes_saved, report.estimated_tokens_saved
+                "  {} {} / {} {}",
+                report.estimated_bytes_saved,
+                app.t("bytes"),
+                report.estimated_tokens_saved,
+                app.t("tokens")
             )),
         ]),
     ];
@@ -418,7 +319,7 @@ fn draw_compression_candidates(frame: &mut Frame, app: &App, area: Rect, theme: 
     if report.candidates.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "No compression candidates. Recent context and small/unsafe events are protected.",
+            app.t("tuiNoCompressionCandidates"),
             Style::default().fg(theme.warning),
         )));
     } else {
@@ -442,17 +343,19 @@ fn draw_compression_candidates(frame: &mut Frame, app: &App, area: Rect, theme: 
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 format!(
-                    "{} {} {:?} saved={}B risk={:?}",
+                    "{} {} {:?} {}={}B {}={:?}",
                     checked,
                     candidate.id,
                     candidate.kind,
+                    app.t("saved"),
                     candidate.estimated_bytes_saved,
+                    app.t("risk"),
                     candidate.risk
                 ),
                 style,
             )));
             lines.push(Line::from(Span::styled(
-                format!("events: {}", candidate.event_ids.join(", ")),
+                format!("{}: {}", app.t("events"), candidate.event_ids.join(", ")),
                 Style::default().fg(theme.text_dim),
             )));
         }
@@ -461,9 +364,9 @@ fn draw_compression_candidates(frame: &mut Frame, app: &App, area: Rect, theme: 
     if !report.skipped.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!(
-                "Skipped: {} protected/already-small/unsupported events",
-                report.skipped.len()
+            app.tf(
+                "tuiCompressionSkipped",
+                &[("count", &report.skipped.len().to_string())],
             ),
             Style::default().fg(theme.text_dim),
         )));
@@ -471,7 +374,7 @@ fn draw_compression_candidates(frame: &mut Frame, app: &App, area: Rect, theme: 
 
     let body = Paragraph::new(Text::from(lines))
         .block(section_block(
-            "Compression Candidates",
+            app.t("tuiCompressionCandidates"),
             app.action_field == ActionField::CompressionCandidates,
             theme,
         ))
@@ -492,27 +395,27 @@ fn draw_rename_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     draw_picker_block(
         frame,
-        "New Title",
+        app.t("newTitle"),
         if app.rename_input.is_empty() {
-            "(empty)"
+            app.t("empty")
         } else {
             &app.rename_input
         },
-        "Type directly in this field.",
+        app.t("typeDirectlyInField"),
         app.action_field == ActionField::RenameTitle,
         chunks[0],
         theme,
     );
     draw_execute_block(
         frame,
-        "Run Rename",
+        app.t("runRename"),
         app.action_field == ActionField::Execute,
         chunks[1],
         theme,
     );
 
-    let note = Paragraph::new("Type the new title, then move to Execute and press Enter.")
-        .block(section_block("How To", false, theme))
+    let note = Paragraph::new(app.t("renamePanelHint"))
+        .block(section_block(app.t("howTo"), false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(note, chunks[2]);
@@ -524,17 +427,15 @@ fn draw_delete_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         .constraints([Constraint::Min(4), Constraint::Length(4)])
         .split(area);
 
-    let warning = Paragraph::new(
-        "Delete removes the provider session selected in the table. This action cannot be undone.",
-    )
-    .block(section_block("Warning", false, theme))
-    .style(Style::default().fg(theme.warning).bg(theme.surface))
-    .wrap(Wrap { trim: true });
+    let warning = Paragraph::new(app.t("deletePanelHint"))
+        .block(section_block(app.t("warning"), false, theme))
+        .style(Style::default().fg(theme.warning).bg(theme.surface))
+        .wrap(Wrap { trim: true });
     frame.render_widget(warning, chunks[0]);
 
     draw_execute_block(
         frame,
-        "Run Delete",
+        app.t("runDelete"),
         app.action_field == ActionField::Execute,
         chunks[1],
         theme,
@@ -553,13 +454,13 @@ fn draw_export_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     draw_picker_block(
         frame,
-        "Output Prefix",
+        app.t("outputPrefix"),
         if app.export_output_prefix.is_empty() {
-            "(empty)"
+            app.t("empty")
         } else {
             &app.export_output_prefix
         },
-        "Type the full output path without the .json suffix.",
+        app.t("tuiExportPathHint"),
         app.action_field == ActionField::ExportPath,
         chunks[0],
         theme,
@@ -567,18 +468,16 @@ fn draw_export_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
 
     draw_execute_block(
         frame,
-        "Run Export",
+        app.t("runExport"),
         app.action_field == ActionField::Execute,
         chunks[1],
         theme,
     );
 
-    let info = Paragraph::new(
-        "Export writes a JSON file to the selected local path and appends the .json suffix automatically.",
-    )
-    .block(section_block("Export", false, theme))
-    .style(Style::default().fg(theme.text).bg(theme.surface))
-    .wrap(Wrap { trim: true });
+    let info = Paragraph::new(app.t("exportPanelHint"))
+        .block(section_block(app.t("export"), false, theme))
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .wrap(Wrap { trim: true });
     frame.render_widget(info, chunks[2]);
 }
 
@@ -588,59 +487,25 @@ fn draw_details_panel(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
         .constraints([Constraint::Min(4), Constraint::Length(4)])
         .split(area);
 
-    let info = Paragraph::new(
-        "Open a dedicated session detail popup with metadata and a scrollable message preview.",
-    )
-    .block(section_block("Details", false, theme))
-    .style(Style::default().fg(theme.text).bg(theme.surface))
-    .wrap(Wrap { trim: true });
+    let info = Paragraph::new(app.t("detailsPanelHint"))
+        .block(section_block(app.t("details"), false, theme))
+        .style(Style::default().fg(theme.text).bg(theme.surface))
+        .wrap(Wrap { trim: true });
     frame.render_widget(info, chunks[0]);
 
     draw_execute_block(
         frame,
-        "Open Details",
+        app.t("openDetail"),
         app.action_field == ActionField::Execute,
         chunks[1],
         theme,
     );
 }
 
-fn draw_search_modal(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let popup_area = centered_rect(78, 62, area);
-    frame.render_widget(Clear, popup_area);
-    frame.render_widget(modal_block("Search Sessions", theme), popup_area);
-
-    let inner = popup_area.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4),
-            Constraint::Length(3),
-            Constraint::Length(8),
-            Constraint::Min(0),
-            Constraint::Length(2),
-        ])
-        .split(inner);
-
-    draw_search_query(frame, app, chunks[0], theme);
-    draw_search_scope_tabs(frame, app, chunks[1], theme);
-
-    let matches = app.search_matches();
-    draw_search_results(frame, app, &matches, chunks[2], theme);
-    draw_search_preview(frame, app, &matches, chunks[3], theme);
-
-    let footer = Paragraph::new("Type query  ←→ Scope  ↑↓ Results  Enter Jump  Esc Close")
-        .style(Style::default().fg(theme.text).bg(theme.surface));
-    frame.render_widget(footer, chunks[4]);
-}
-
 fn draw_detail_modal(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let popup_area = centered_rect(86, 84, area);
+    let popup_area = area;
     frame.render_widget(Clear, popup_area);
-    frame.render_widget(modal_block("Session Details", theme), popup_area);
+    frame.render_widget(modal_block(app.t("sessionDetails"), theme), popup_area);
 
     let inner = popup_area.inner(Margin {
         horizontal: 2,
@@ -661,7 +526,7 @@ fn draw_detail_modal(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     draw_detail_metadata(frame, app, chunks[1], theme);
     draw_detail_messages(frame, app, chunks[2], theme);
 
-    let footer = Paragraph::new("↑↓ Scroll  Esc Close")
+    let footer = Paragraph::new(app.t("tuiFooterDetailModal"))
         .style(Style::default().fg(theme.text).bg(theme.surface));
     frame.render_widget(footer, chunks[3]);
 }
@@ -682,7 +547,7 @@ fn draw_action_dialog(
 fn draw_target_agent_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let popup_area = centered_rect(42, 58, area);
     frame.render_widget(Clear, popup_area);
-    frame.render_widget(modal_block("Target Agent", theme), popup_area);
+    frame.render_widget(modal_block(app.t("targetAgent"), theme), popup_area);
 
     let inner = popup_area.inner(Margin {
         horizontal: 2,
@@ -701,7 +566,7 @@ fn draw_target_agent_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &Th
 
     if providers.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No agent is available for switching.",
+            app.t("noAgentAvailableForSwitching"),
             Style::default().fg(theme.warning),
         )));
     } else {
@@ -719,12 +584,12 @@ fn draw_target_agent_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &Th
     }
 
     let body = Paragraph::new(Text::from(lines))
-        .block(section_block("Agents", false, theme))
+        .block(section_block(app.t("agents"), false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(body, chunks[0]);
 
-    let footer = Paragraph::new("↑↓ Select target  Enter Save  Esc Cancel")
+    let footer = Paragraph::new(app.t("tuiFooterDialogSelectSave"))
         .style(Style::default().fg(theme.text).bg(theme.surface));
     frame.render_widget(footer, chunks[1]);
 }
@@ -732,7 +597,7 @@ fn draw_target_agent_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &Th
 fn draw_workspace_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let popup_area = centered_rect(80, 68, area);
     frame.render_widget(Clear, popup_area);
-    frame.render_widget(modal_block("Workspace", theme), popup_area);
+    frame.render_widget(modal_block(app.t("workspace"), theme), popup_area);
 
     let inner = popup_area.inner(Margin {
         horizontal: 2,
@@ -753,11 +618,11 @@ fn draw_workspace_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &Theme
             highlighted_value_style(theme),
         )),
         Line::from(Span::styled(
-            "Type to edit the path directly.",
+            app.t("typeEditPathDirectly"),
             Style::default().fg(theme.text),
         )),
     ]))
-    .block(section_block("Workspace Path", false, theme))
+    .block(section_block(app.t("workspacePath"), false, theme))
     .style(Style::default().fg(theme.text).bg(theme.surface))
     .wrap(Wrap { trim: true });
     frame.render_widget(input, chunks[0]);
@@ -770,7 +635,7 @@ fn draw_workspace_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &Theme
 
     if matches.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No matching saved workspace. Enter saves the typed path.",
+            app.t("noMatchingSavedWorkspace"),
             Style::default().fg(theme.warning),
         )));
     } else {
@@ -788,19 +653,19 @@ fn draw_workspace_dialog(frame: &mut Frame, app: &App, area: Rect, theme: &Theme
     }
 
     let suggestions = Paragraph::new(Text::from(lines))
-        .block(section_block("Suggestions", false, theme))
+        .block(section_block(app.t("suggestions"), false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(suggestions, chunks[1]);
 
-    let footer = Paragraph::new("Type path  ↑↓ Suggestions  Enter Save  Esc Cancel")
+    let footer = Paragraph::new(app.t("tuiFooterWorkspaceDialog"))
         .style(Style::default().fg(theme.text).bg(theme.surface));
     frame.render_widget(footer, chunks[2]);
 }
 
 fn draw_session_summary(
     frame: &mut Frame,
-    _app: &App,
+    app: &App,
     selected: Option<&SessionItem>,
     area: Rect,
     theme: &Theme,
@@ -816,30 +681,30 @@ fn draw_session_summary(
                 ),
                 Span::raw("  "),
                 Span::styled(
-                    session.title.as_deref().unwrap_or("(untitled)"),
+                    session.title.as_deref().unwrap_or(app.t("untitled")),
                     Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                 ),
             ]),
             Line::from(vec![
-                Span::styled("Session", Style::default().fg(theme.text_dim)),
+                Span::styled(app.t("session"), Style::default().fg(theme.text_dim)),
                 Span::raw(format!("  {}", session.session_id)),
             ]),
             Line::from(vec![
-                Span::styled("Workspace", Style::default().fg(theme.text_dim)),
+                Span::styled(app.t("workspace"), Style::default().fg(theme.text_dim)),
                 Span::raw(format!(
                     "  {}",
-                    session.project_dir.as_deref().unwrap_or("(no dir)")
+                    session.project_dir.as_deref().unwrap_or(app.t("noDir"))
                 )),
             ]),
         ];
 
         Text::from(lines)
     } else {
-        Text::from(Line::from("No session selected."))
+        Text::from(Line::from(app.t("noSessionSelected")))
     };
 
     let summary = Paragraph::new(text)
-        .block(section_block("Session", false, theme))
+        .block(section_block(app.t("session"), false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(summary, area);
@@ -847,8 +712,8 @@ fn draw_session_summary(
 
 fn draw_detail_metadata(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let Some(session) = &app.loaded_session else {
-        let placeholder = Paragraph::new("Session metadata is unavailable.")
-            .block(section_block("Metadata", false, theme))
+        let placeholder = Paragraph::new(app.t("sessionMetadataUnavailable"))
+            .block(section_block(app.t("metadata"), false, theme))
             .style(Style::default().fg(theme.text_dim).bg(theme.surface));
         frame.render_widget(placeholder, area);
         return;
@@ -865,17 +730,17 @@ fn draw_detail_metadata(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
 
     let lines = vec![
         Line::from(vec![
-            Span::styled("Created", Style::default().fg(theme.text_dim)),
+            Span::styled(app.t("createdAt"), Style::default().fg(theme.text_dim)),
             Span::raw(format!("  {}", created)),
             Span::raw("    "),
-            Span::styled("Last Active", Style::default().fg(theme.text_dim)),
+            Span::styled(app.t("lastActiveAt"), Style::default().fg(theme.text_dim)),
             Span::raw(format!("  {}", active)),
         ]),
         Line::from(vec![
-            Span::styled("Messages", Style::default().fg(theme.text_dim)),
+            Span::styled(app.t("messages"), Style::default().fg(theme.text_dim)),
             Span::raw(format!("  {}", session.message_count)),
             Span::raw("    "),
-            Span::styled("Source", Style::default().fg(theme.text_dim)),
+            Span::styled(app.t("source"), Style::default().fg(theme.text_dim)),
             Span::raw(format!("  {}", session.provider_name)),
         ]),
     ];
@@ -883,7 +748,7 @@ fn draw_detail_metadata(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
     let text = Text::from(lines);
 
     let block = Paragraph::new(text)
-        .block(section_block("Metadata", false, theme))
+        .block(section_block(app.t("metadata"), false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(block, area);
@@ -891,8 +756,8 @@ fn draw_detail_metadata(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
 
 fn draw_detail_messages(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
     let Some(session) = &app.loaded_session else {
-        let placeholder = Paragraph::new("Session messages are unavailable.")
-            .block(section_block("Message Preview", false, theme))
+        let placeholder = Paragraph::new(app.t("sessionMessagesUnavailable"))
+            .block(section_block(app.t("messagePreview"), false, theme))
             .style(Style::default().fg(theme.text_dim).bg(theme.surface));
         frame.render_widget(placeholder, area);
         return;
@@ -900,8 +765,8 @@ fn draw_detail_messages(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
 
     let total = session.events.len();
     if total == 0 {
-        let empty = Paragraph::new("This session has no messages.")
-            .block(section_block("Message Preview", false, theme))
+        let empty = Paragraph::new(app.t("thisSessionHasNoMessages"))
+            .block(section_block(app.t("messagePreview"), false, theme))
             .style(Style::default().fg(theme.text_dim).bg(theme.surface));
         frame.render_widget(empty, area);
         return;
@@ -909,10 +774,17 @@ fn draw_detail_messages(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
 
     let start = app.detail_scroll.min(total.saturating_sub(1));
     let end = (start + 5).min(total);
-    let mut lines = vec![Line::from(vec![
-        Span::styled("Showing", Style::default().fg(theme.text_dim)),
-        Span::raw(format!("  {}-{} of {}", start + 1, end, total)),
-    ])];
+    let mut lines = vec![Line::from(Span::styled(
+        app.tf(
+            "showingRange",
+            &[
+                ("start", &(start + 1).to_string()),
+                ("end", &end.to_string()),
+                ("total", &total.to_string()),
+            ],
+        ),
+        Style::default().fg(theme.text_dim),
+    ))];
 
     for event in session.events.iter().skip(start).take(5) {
         lines.push(Line::from(""));
@@ -926,11 +798,14 @@ fn draw_detail_messages(frame: &mut Frame, app: &App, area: Rect, theme: &Theme)
                 Style::default().fg(theme.text_dim),
             ),
         ]));
-        lines.push(Line::from(Span::raw(content_preview(event))));
+        lines.push(Line::from(Span::raw(content_preview(
+            event,
+            app.language(),
+        ))));
     }
 
     let block = Paragraph::new(Text::from(lines))
-        .block(section_block("Message Preview", false, theme))
+        .block(section_block(app.t("messagePreview"), false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(block, area);
@@ -1007,7 +882,13 @@ fn draw_execute_block(frame: &mut Frame, label: &str, focused: bool, area: Rect,
     frame.render_widget(button, area);
 }
 
-fn draw_action_result(frame: &mut Frame, result: &ActionResult, area: Rect, theme: &Theme) {
+fn draw_action_result(
+    frame: &mut Frame,
+    app: &App,
+    result: &ActionResult,
+    area: Rect,
+    theme: &Theme,
+) {
     let color = if result.is_error {
         theme.error
     } else {
@@ -1026,207 +907,46 @@ fn draw_action_result(frame: &mut Frame, result: &ActionResult, area: Rect, them
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Enter or Esc closes this result.",
+        app.t("enterOrEscClosesResult"),
         Style::default().fg(theme.text),
     )));
 
     let result = Paragraph::new(Text::from(lines))
-        .block(section_block("Result", false, theme))
+        .block(section_block(app.t("result"), false, theme))
         .style(Style::default().fg(theme.text).bg(theme.surface))
         .wrap(Wrap { trim: true });
     frame.render_widget(result, area);
 }
 
-fn draw_search_query(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let query = if app.search_query.is_empty() {
-        " ".to_string()
-    } else {
-        app.search_query.clone()
-    };
-
-    let query_line = Paragraph::new(Text::from(vec![Line::from(vec![
-        Span::styled("Type", Style::default().fg(theme.text_dim)),
-        Span::raw("  "),
-        Span::styled(
-            format!(" {} ", query),
-            Style::default()
-                .fg(theme.text)
-                .bg(theme.highlight)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        ),
-    ])]))
-    .block(section_block("Query", true, theme))
-    .style(Style::default().fg(theme.text).bg(theme.surface));
-    frame.render_widget(query_line, area);
-}
-
-fn draw_search_scope_tabs(frame: &mut Frame, app: &App, area: Rect, theme: &Theme) {
-    let labels: Vec<&str> = SEARCH_SCOPE_OPTIONS
-        .iter()
-        .map(|scope| scope.label(app.language()))
-        .collect();
-    draw_chip_row(
-        frame,
-        "Scope",
-        &labels,
-        app.search_scope_index,
-        false,
-        area,
-        theme,
-    );
-}
-
-fn draw_search_results(frame: &mut Frame, app: &App, matches: &[usize], area: Rect, theme: &Theme) {
-    let lines = search_match_lines(app, matches, theme);
-    let results = Paragraph::new(Text::from(lines))
-        .block(section_block("Matches", false, theme))
-        .style(Style::default().fg(theme.text).bg(theme.surface))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(results, area);
-}
-
-fn draw_search_preview(frame: &mut Frame, app: &App, matches: &[usize], area: Rect, theme: &Theme) {
-    let lines = search_preview_lines(app, matches, theme);
-    let preview = Paragraph::new(Text::from(lines))
-        .block(section_block("Preview", false, theme))
-        .style(Style::default().fg(theme.text).bg(theme.surface))
-        .wrap(Wrap { trim: true });
-    frame.render_widget(preview, area);
-}
-
-fn search_match_lines(app: &App, matches: &[usize], theme: &Theme) -> Vec<Line<'static>> {
-    if matches.is_empty() {
-        return vec![Line::from(Span::styled(
-            "No matching sessions.",
-            Style::default().fg(theme.warning),
-        ))];
-    }
-
-    let active = app.search_match_index.min(matches.len() - 1);
-    let sessions = app.flattened_sessions();
-    let start = active.saturating_sub(2);
-    let end = (start + 5).min(matches.len());
-    let mut lines = vec![Line::from(vec![
-        Span::styled("Matches", Style::default().fg(theme.text_dim)),
-        Span::raw(format!("  {} total", matches.len())),
-    ])];
-
-    for (offset, match_pos) in (start..end).enumerate() {
-        let session = sessions[matches[match_pos]];
-        let style = if match_pos == active {
-            Style::default()
-                .fg(theme.primary)
-                .bg(theme.highlight)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-        } else {
-            Style::default().fg(theme.text).bg(theme.surface)
-        };
-        let title = session.title.as_deref().unwrap_or("(untitled)");
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            format!(" {}. {}", start + offset + 1, theme::truncate(title, 44)),
-            style,
-        )));
-    }
-
-    lines
-}
-
-fn search_preview_lines(app: &App, matches: &[usize], theme: &Theme) -> Vec<Line<'static>> {
-    if matches.is_empty() {
-        return vec![Line::from(
-            "Search works inside the sessions currently shown in the table.",
-        )];
-    }
-
-    let active = app.search_match_index.min(matches.len() - 1);
-    let sessions = app.flattened_sessions();
-    let session = sessions[matches[active]];
-
-    vec![
-        Line::from(vec![
-            Span::styled("Title", Style::default().fg(theme.text_dim)),
-            Span::raw(format!(
-                "  {}",
-                session.title.as_deref().unwrap_or("(untitled)")
-            )),
-        ]),
-        Line::from(vec![
-            Span::styled("AI", Style::default().fg(theme.text_dim)),
-            Span::raw(format!("  {}", provider_label(&session.provider_id))),
-            Span::raw("    "),
-            Span::styled("Active", Style::default().fg(theme.text_dim)),
-            Span::raw(format!(
-                "  {}",
-                theme::format_relative_time(session.last_active_at, app.language())
-            )),
-        ]),
-        Line::from(vec![
-            Span::styled("Session", Style::default().fg(theme.text_dim)),
-            Span::raw(format!("  {}", theme::truncate(&session.session_id, 34))),
-        ]),
-        Line::from(vec![
-            Span::styled("Workspace", Style::default().fg(theme.text_dim)),
-            Span::raw(format!(
-                "  {}",
-                session.project_dir.as_deref().unwrap_or("(no dir)")
-            )),
-        ]),
-    ]
-}
-
 /// Handle session table page key events
 pub fn handle_key(app: &mut App, key: KeyEvent) -> AppResult {
-    if app.workspace_modal_open {
-        return handle_workspace_modal_key(app, key);
+    if app.overlay.is_some() {
+        return handle_overlay_key(app, key);
     }
-    if app.agents_modal_open {
-        return handle_agents_modal_key(app, key);
-    }
-    if app.settings_modal_open {
-        return handle_settings_modal_key(app, key);
-    }
-    if app.detail_modal_open {
-        return handle_detail_key(app, key);
-    }
-    if app.action_modal_open {
-        return handle_modal_key(app, key);
-    }
-    if app.search_modal_open {
-        return handle_search_key(app, key);
-    }
-
     match key.code {
-        KeyCode::Up => {
+        KeyCode::Up | KeyCode::Char('k') => {
             app.select_previous();
             AppResult::Continue
         }
-        KeyCode::Down => {
+        KeyCode::Down | KeyCode::Char('j') => {
             app.select_next();
             AppResult::Continue
         }
-        KeyCode::Left => {
-            if app.main_focus == MainFocus::Sessions {
-                app.previous_provider_tab();
-            } else {
-                app.focus_previous_top_control();
-            }
+        KeyCode::Left | KeyCode::Char('h') => {
+            app.previous_provider_tab();
             AppResult::Continue
         }
-        KeyCode::Right => {
-            if app.main_focus == MainFocus::Sessions {
-                app.next_provider_tab();
-            } else {
-                app.focus_next_top_control();
-            }
+        KeyCode::Right | KeyCode::Char('l') => {
+            app.next_provider_tab();
             AppResult::Continue
         }
         KeyCode::Enter => {
-            app.open_action_modal();
+            app.open_session_action(SessionAction::Details);
+            app.execute_modal_action();
             AppResult::Continue
         }
-        KeyCode::Esc if app.main_focus != MainFocus::Sessions => {
-            app.main_focus = MainFocus::Sessions;
+        KeyCode::Char('/') => {
+            app.open_search_modal();
             AppResult::Continue
         }
         KeyCode::Char('f')
@@ -1235,9 +955,82 @@ pub fn handle_key(app: &mut App, key: KeyEvent) -> AppResult {
             app.open_search_modal();
             AppResult::Continue
         }
+        KeyCode::Char('d') if key.modifiers.is_empty() => {
+            app.open_delete_confirmation();
+            AppResult::Continue
+        }
+        KeyCode::Char('r') if key.modifiers.is_empty() => {
+            app.open_rename_input_overlay();
+            AppResult::Continue
+        }
+        KeyCode::Char('e') if key.modifiers.is_empty() => {
+            app.open_export_input_overlay();
+            AppResult::Continue
+        }
+        KeyCode::Char('s') if key.modifiers.is_empty() => {
+            app.open_transfer_target_picker(SessionAction::Switch);
+            AppResult::Continue
+        }
+        KeyCode::Char('c') if key.modifiers.is_empty() => {
+            app.open_transfer_target_picker(SessionAction::Compress);
+            AppResult::Continue
+        }
+        KeyCode::Char('w') if key.modifiers.is_empty() => {
+            app.open_workspace_modal();
+            AppResult::Continue
+        }
+        KeyCode::Char('a') if key.modifiers.is_empty() => {
+            app.open_agents_modal();
+            AppResult::Continue
+        }
+        KeyCode::Char(',') if key.modifiers.is_empty() => {
+            app.open_settings_modal();
+            AppResult::Continue
+        }
         KeyCode::Char('q') if key.modifiers.is_empty() => AppResult::Quit,
         _ => AppResult::Continue,
     }
+}
+
+fn handle_overlay_key(app: &mut App, key: KeyEvent) -> AppResult {
+    match &mut app.overlay {
+        Overlay::Input(state) => match state.handle_key(key) {
+            InputAction::Continue => {}
+            InputAction::Cancel => app.overlay = Overlay::None,
+            InputAction::Confirm => {
+                let kind = state.kind;
+                let value = state.value.clone();
+                app.submit_input_overlay(kind, value);
+            }
+        },
+        Overlay::Confirm(state) => match state.handle_key(key) {
+            ConfirmAction::Continue => {}
+            ConfirmAction::Cancel => app.overlay = Overlay::None,
+            ConfirmAction::Confirm => app.confirm_delete_overlay(),
+        },
+        Overlay::Picker(state) => match state.handle_key(key) {
+            PickerAction::Continue => {}
+            PickerAction::Cancel => {
+                app.overlay = Overlay::None;
+                app.close_action_modal();
+            }
+            PickerAction::Confirm => {
+                let kind = state.kind.clone();
+                if let Some(item) = state.selected_item() {
+                    let id = item.id.clone();
+                    app.submit_picker_overlay(kind, id);
+                }
+            }
+        },
+        Overlay::Workspace => return handle_workspace_modal_key(app, key),
+        Overlay::Agents => return handle_agents_modal_key(app, key),
+        Overlay::Settings => return handle_settings_modal_key(app, key),
+        Overlay::Search => return handle_search_key(app, key),
+        Overlay::Detail => return handle_detail_key(app, key),
+        Overlay::Action => return handle_modal_key(app, key),
+        Overlay::Help | Overlay::None => app.overlay = Overlay::None,
+    }
+    AppResult::Continue
 }
 
 fn handle_workspace_modal_key(app: &mut App, key: KeyEvent) -> AppResult {
@@ -1469,11 +1262,11 @@ fn handle_search_key(app: &mut App, key: KeyEvent) -> AppResult {
 
 fn handle_detail_key(app: &mut App, key: KeyEvent) -> AppResult {
     match key.code {
-        KeyCode::Up => {
+        KeyCode::Up | KeyCode::Char('k') => {
             app.detail_scroll_up();
             AppResult::Continue
         }
-        KeyCode::Down => {
+        KeyCode::Down | KeyCode::Char('j') => {
             app.detail_scroll_down();
             AppResult::Continue
         }
@@ -1492,22 +1285,15 @@ fn highlighted_value_style(theme: &Theme) -> Style {
         .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
 }
 
-fn selected_row_style(theme: &Theme) -> Style {
-    Style::default()
-        .fg(theme.primary)
-        .bg(theme.background)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-}
-
 fn action_footer_text(app: &App) -> &'static str {
     match app.action_field {
-        ActionField::Action => "↑↓ Focus  ←→ Action  Enter Next  Esc Close",
-        ActionField::TargetAgent => "↑↓ Focus  Enter Choose Target  Esc Close",
-        ActionField::TargetWorkspace => "↑↓ Focus  Enter Choose Workspace  Esc Close",
-        ActionField::CompressionCandidates => "←→ Candidate  Enter Toggle  ↑↓ Focus  Esc Close",
-        ActionField::ExportPath => "Type path  ↑↓ Focus  Enter Run  Esc Close",
-        ActionField::RenameTitle => "Type title  ↑↓ Focus  Enter Run  Esc Close",
-        ActionField::Execute => "↑↓ Focus  Enter Run  Esc Close",
+        ActionField::Action => app.t("tuiFooterActionSelect"),
+        ActionField::TargetAgent => app.t("tuiFooterChooseTarget"),
+        ActionField::TargetWorkspace => app.t("tuiFooterChooseWorkspace"),
+        ActionField::CompressionCandidates => app.t("tuiFooterCompressionCandidates"),
+        ActionField::ExportPath => app.t("tuiFooterTypePathRun"),
+        ActionField::RenameTitle => app.t("tuiFooterTypeTitleRun"),
+        ActionField::Execute => app.t("tuiFooterExecute"),
     }
 }
 
@@ -1574,49 +1360,81 @@ fn role_name(role: Role) -> &'static str {
     }
 }
 
-fn content_preview(event: &Event) -> String {
+fn content_preview(event: &Event, language: memorph::config::UiLanguage) -> String {
     if let Some(segment) = compression::compressed_segment(event) {
-        return format!("Compressed: {}", theme::truncate(&segment.summary, 80));
+        return format!(
+            "{}: {}",
+            memorph::i18n::text(language, "compressed"),
+            theme::truncate(&segment.summary, 80)
+        );
     }
 
     if let Some(block) = event.blocks.first() {
         match block {
             EventBlock::Text { text } => return theme::truncate(text, 96),
             EventBlock::Thinking { text, .. } => {
-                return format!("Thinking: {}", theme::truncate(text, 84));
+                return format!(
+                    "{}: {}",
+                    memorph::i18n::text(language, "thinking"),
+                    theme::truncate(text, 84)
+                );
             }
-            EventBlock::ToolCall { name, .. } => return format!("Tool call: {}", name),
+            EventBlock::ToolCall { name, .. } => {
+                return format!("{}: {}", memorph::i18n::text(language, "toolCall"), name)
+            }
             EventBlock::ToolResult { content, .. } => {
-                return format!("Tool result: {}", theme::truncate(content, 80));
+                return format!(
+                    "{}: {}",
+                    memorph::i18n::text(language, "toolResultLabel"),
+                    theme::truncate(content, 80)
+                );
             }
             EventBlock::Patch { files, .. } => {
                 return if files.is_empty() {
-                    "Patch".to_string()
+                    memorph::i18n::text(language, "patch").to_string()
                 } else {
-                    format!("Patch: {}", theme::truncate(&files.join(", "), 80))
+                    format!(
+                        "{}: {}",
+                        memorph::i18n::text(language, "patch"),
+                        theme::truncate(&files.join(", "), 80)
+                    )
                 };
             }
-            EventBlock::Command { command, .. } => return format!("Command: {}", command),
+            EventBlock::Command { command, .. } => {
+                return format!("{}: {}", memorph::i18n::text(language, "command"), command)
+            }
             EventBlock::CommandResult { stdout, .. } => {
                 return format!(
-                    "Command result: {}",
-                    theme::truncate(stdout.as_deref().unwrap_or("(no output)"), 76)
+                    "{}: {}",
+                    memorph::i18n::text(language, "commandResult"),
+                    theme::truncate(
+                        stdout
+                            .as_deref()
+                            .unwrap_or(memorph::i18n::text(language, "noOutput")),
+                        76
+                    )
                 );
             }
-            EventBlock::File { path, .. } => return format!("File: {}", path),
-            EventBlock::Image { .. } => return "Image attachment".to_string(),
-            EventBlock::Compressed { .. } => return "Compressed context".to_string(),
+            EventBlock::File { path, .. } => {
+                return format!("{}: {}", memorph::i18n::text(language, "file"), path)
+            }
+            EventBlock::Image { .. } => {
+                return memorph::i18n::text(language, "imageAttachment").to_string()
+            }
+            EventBlock::Compressed { .. } => {
+                return memorph::i18n::text(language, "compressedContext").to_string()
+            }
             EventBlock::Other { raw } => {
                 return raw
                     .get("type")
                     .and_then(serde_json::Value::as_str)
-                    .map(|kind| format!("Payload: {kind}"))
-                    .unwrap_or_else(|| "Other payload".to_string());
+                    .map(|kind| format!("{}: {kind}", memorph::i18n::text(language, "payload")))
+                    .unwrap_or_else(|| memorph::i18n::text(language, "otherPayload").to_string());
             }
         }
     }
 
-    "(empty event)".to_string()
+    memorph::i18n::text(language, "emptyEvent").to_string()
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {

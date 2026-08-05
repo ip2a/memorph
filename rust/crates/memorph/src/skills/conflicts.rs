@@ -14,7 +14,7 @@ struct Skill {
     description: String,
     bundle_hash: String,
     triggers: Vec<String>,
-    providers: BTreeSet<String>,
+    used_by: BTreeSet<String>,
     scopes: BTreeSet<String>,
     install_hashes: BTreeSet<String>,
 }
@@ -46,18 +46,18 @@ pub fn list(conn: &Connection, skill_id: Option<&str>) -> Result<Vec<Conflict>> 
                 result.push(conflict);
             }
         }
-        if left.providers.len() > 1 && left.install_hashes.len() == 1 {
+        if left.used_by.len() > 1 && left.install_hashes.len() == 1 {
             result.push(Conflict {
-                id: format!("{}:provider-duplicate", left.id),
+                id: format!("{}:used-by-duplicate", left.id),
                 left_skill_id: left.id.clone(),
                 left_name: left.name.clone(),
                 right_skill_id: left.id.clone(),
                 right_name: left.name.clone(),
-                conflict_kind: "provider-duplicate".into(),
+                conflict_kind: "used-by-duplicate".into(),
                 severity: "info".into(),
                 similarity: 1.0,
-                overlapping_tokens: left.providers.iter().cloned().collect(),
-                evidence: "多个 Provider 安装相同 Bundle 内容".into(),
+                overlapping_tokens: left.used_by.iter().cloned().collect(),
+                evidence: "多个 Agent 安装相同 Bundle 内容".into(),
                 recommendation: "无需处理；仅在不再需要时移除重复链接".into(),
             });
         }
@@ -68,7 +68,7 @@ pub fn list(conn: &Connection, skill_id: Option<&str>) -> Result<Vec<Conflict>> 
 fn skills(conn: &Connection) -> Result<Vec<Skill>> {
     let mut statement = conn.prepare(
         "SELECT c.id, c.canonical_name, COALESCE(c.description, ''), c.bundle_content_hash,
-                c.trigger_terms_json, i.provider_id, i.scope_kind, i.bundle_content_hash
+                c.trigger_terms_json, i.used_by, i.scope_kind, i.bundle_content_hash
          FROM skill_catalog c JOIN skill_installations i ON i.skill_id = c.id AND i.status = 'active'
          WHERE c.missing_since_ms IS NULL ORDER BY c.id, i.id",
     )?;
@@ -86,7 +86,7 @@ fn skills(conn: &Connection) -> Result<Vec<Skill>> {
     })?;
     let mut result = Vec::<Skill>::new();
     for row in rows {
-        let (id, name, description, bundle_hash, triggers, provider, scope, install_hash) = row?;
+        let (id, name, description, bundle_hash, triggers, used_by, scope, install_hash) = row?;
         let current = if result.last().is_some_and(|item| item.id == id) {
             result.last_mut().unwrap()
         } else {
@@ -96,13 +96,13 @@ fn skills(conn: &Connection) -> Result<Vec<Skill>> {
                 description,
                 bundle_hash,
                 triggers: serde_json::from_str(&triggers).unwrap_or_default(),
-                providers: BTreeSet::new(),
+                used_by: BTreeSet::new(),
                 scopes: BTreeSet::new(),
                 install_hashes: BTreeSet::new(),
             });
             result.last_mut().unwrap()
         };
-        current.providers.insert(provider);
+        current.used_by.insert(used_by);
         current.scopes.insert(scope);
         current.install_hashes.insert(install_hash);
     }
@@ -258,7 +258,7 @@ mod tests {
             description: description.into(),
             bundle_hash: id.into(),
             triggers: triggers.iter().map(|v| v.to_string()).collect(),
-            providers: BTreeSet::new(),
+            used_by: BTreeSet::new(),
             scopes: BTreeSet::new(),
             install_hashes: BTreeSet::new(),
         }

@@ -75,6 +75,20 @@ pub fn delete_top_level_key(contents: &str, key: &str) -> Result<String> {
     Ok(output)
 }
 
+/// Delete one property from a top-level object-valued property while leaving
+/// comments and formatting outside that nested object untouched.
+pub fn delete_nested_object_key(contents: &str, parent: &str, key: &str) -> Result<String> {
+    let property = find_jsonc_top_level_property(contents, parent)
+        .with_context(|| format!("Missing top-level JSONC property: {parent}"))?;
+    let nested = &contents[property.value_start..property.value_end];
+    let updated = delete_top_level_key(nested, key)?;
+    let mut output = String::with_capacity(contents.len());
+    output.push_str(&contents[..property.value_start]);
+    output.push_str(&updated);
+    output.push_str(&contents[property.value_end..]);
+    Ok(output)
+}
+
 fn find_jsonc_top_level_property(contents: &str, key: &str) -> Option<JsonTopLevelProperty> {
     let mut idx = 0;
     let mut depth = 0i32;

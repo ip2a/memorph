@@ -1,11 +1,17 @@
 use std::env;
 use std::process::{exit, Command};
 
+fn language() -> memorph::config::UiLanguage {
+    memorph::config::web_preferences()
+        .map(|preferences| preferences.language)
+        .unwrap_or_default()
+}
+
 fn main() {
     let mut memorph_path = match env::current_exe() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("Failed to locate memo executable: {}", error);
+            eprintln!("{}", memorph::i18n::format(language(), "cliMemoLocateFailed", &[("error", &error.to_string())]));
             exit(1);
         }
     };
@@ -23,11 +29,7 @@ fn main() {
     match status {
         Ok(status) => exit(status.code().unwrap_or(1)),
         Err(error) => {
-            eprintln!(
-                "Failed to run memorph from memo alias at {}: {}",
-                memorph_path.display(),
-                error
-            );
+            eprintln!("{}", memorph::i18n::format(language(), "cliMemoRunFailed", &[("path", &memorph_path.display().to_string()), ("error", &error.to_string())]));
             exit(1);
         }
     }

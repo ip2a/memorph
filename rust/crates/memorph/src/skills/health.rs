@@ -69,7 +69,7 @@ pub fn detail(conn: &Connection, skill_id: &str) -> Result<SkillHealth> {
         "SELECT c.canonical_name, c.description, c.metadata_json, c.file_manifest_json, c.file_count, c.total_bytes,
                 i.install_path, i.install_kind, i.link_status, i.managed_marker_present
          FROM skill_catalog c JOIN skill_installations i ON i.id = (
-           SELECT id FROM skill_installations WHERE skill_id = c.id AND status = 'active' ORDER BY provider_id, id LIMIT 1)
+           SELECT id FROM skill_installations WHERE skill_id = c.id AND status = 'active' ORDER BY used_by, id LIMIT 1)
          WHERE c.id = ?1", [skill_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?)),
     ).context("Skill not found")?;

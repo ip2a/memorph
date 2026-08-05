@@ -7,24 +7,22 @@ pub(super) async fn list_workspaces() -> impl IntoResponse {
     }
 }
 
-/// Non-blocking trigger that fans out background indexers for every workspace
-/// in the user's history. Used by the "Scan Workspaces" button in the switcher
-/// when the picker is empty. Returns immediately with the number of workspaces
-/// queued; clients re-poll listWorkspaces to see results.
-#[derive(Serialize)]
-pub(super) struct ScanWorkspacesPayload {
-    queued: usize,
-}
-
-pub(super) async fn scan_known_workspaces() -> impl IntoResponse {
-    let queued = memorph::runtime::run_blocking(|| {
-        Ok(memorph::core::projection::scan_known_workspaces_background(
+/// Scan all supported provider session stores and build the SQLite projections
+/// used by the Pick workspace view. The shared blocking runtime keeps the API
+/// executor responsive while the projection bootstrap records the activity and
+/// returns its completion report.
+pub(super) async fn discover_workspaces() -> impl IntoResponse {
+    match memorph::runtime::run_blocking(|| {
+        memorph::core::projection::bootstrap_session_projections(
+            None,
             memorph::storage::activity_store::ActivityActor::Api,
-        ))
+        )
     })
     .await
-    .unwrap_or(0);
-    ApiResponse::success(ScanWorkspacesPayload { queued }).into_response()
+    {
+        Ok(report) => ApiResponse::success(report).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
 }
 
 #[derive(Deserialize)]

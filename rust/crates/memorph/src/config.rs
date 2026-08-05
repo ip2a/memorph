@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::{storage::atomic_write, utils};
 
 pub const DEFAULT_SESSIONS_PER_PROVIDER: usize = 12;
+pub const DEFAULT_SKILLS_CATALOG_PAGE_SIZE: usize = 50;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -19,10 +20,20 @@ pub enum UiLanguage {
     En,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum HomeSessionLayout {
+    Stack,
+    #[default]
+    Tabs,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebPreferences {
     #[serde(default = "default_sessions_per_provider")]
     pub sessions_per_provider: usize,
+    #[serde(default = "default_skills_catalog_page_size")]
+    pub skills_catalog_page_size: usize,
     #[serde(default)]
     pub language: UiLanguage,
     #[serde(
@@ -39,6 +50,8 @@ pub struct WebPreferences {
     #[serde(default)]
     pub home_buttons: HomeButtonConfig,
     #[serde(default)]
+    pub home_session_layout: HomeSessionLayout,
+    #[serde(default)]
     pub agent_display: AgentDisplayPreferences,
 }
 
@@ -46,12 +59,14 @@ impl Default for WebPreferences {
     fn default() -> Self {
         Self {
             sessions_per_provider: DEFAULT_SESSIONS_PER_PROVIDER,
+            skills_catalog_page_size: DEFAULT_SKILLS_CATALOG_PAGE_SIZE,
             language: UiLanguage::default(),
             provider_prefs: default_provider_prefs(),
             sort_providers_by_session_count: default_sort_providers_by_session_count(),
             default_backup_dir: default_backup_dir(),
             logging: LogPreferences::default(),
             home_buttons: HomeButtonConfig::default(),
+            home_session_layout: HomeSessionLayout::default(),
             agent_display: AgentDisplayPreferences::default(),
         }
     }
@@ -59,6 +74,10 @@ impl Default for WebPreferences {
 
 fn default_sessions_per_provider() -> usize {
     DEFAULT_SESSIONS_PER_PROVIDER
+}
+
+fn default_skills_catalog_page_size() -> usize {
+    DEFAULT_SKILLS_CATALOG_PAGE_SIZE
 }
 
 fn default_provider_prefs() -> BTreeMap<String, Value> {
@@ -409,11 +428,16 @@ pub fn update_web_preferences(
     sort_providers_by_session_count: Option<bool>,
     backup_dir: Option<String>,
     logging: Option<LogPreferences>,
+    skills_catalog_page_size: Option<usize>,
+    home_session_layout: Option<HomeSessionLayout>,
 ) -> Result<()> {
     let mut config = load_config()?;
 
     if let Some(value) = sessions_per_provider {
         config.web.sessions_per_provider = value.clamp(1, 200);
+    }
+    if let Some(value) = skills_catalog_page_size {
+        config.web.skills_catalog_page_size = value.clamp(1, 200);
     }
     if let Some(value) = language {
         config.web.language = value;
@@ -439,6 +463,9 @@ pub fn update_web_preferences(
     }
     if let Some(value) = logging {
         config.web.logging = value;
+    }
+    if let Some(value) = home_session_layout {
+        config.web.home_session_layout = value;
     }
     save_config(&config)
 }
@@ -799,6 +826,28 @@ mod tests {
         set_provider_preference_in_prefs(&mut prefs, "codex", "sample_toggle", None).unwrap();
 
         assert!(!prefs.provider_prefs.contains_key("codex"));
+    }
+
+    #[test]
+    fn web_preferences_default_skills_catalog_page_size() {
+        assert_eq!(
+            WebPreferences::default().skills_catalog_page_size,
+            DEFAULT_SKILLS_CATALOG_PAGE_SIZE
+        );
+    }
+
+    #[test]
+    fn update_web_preferences_clamps_skills_catalog_page_size() {
+        let dir = tempfile::tempdir().unwrap();
+        set_test_home_dir(dir.path().to_path_buf());
+
+        update_web_preferences(None, None, None, None, None, None, Some(999), None).unwrap();
+        assert_eq!(web_preferences().unwrap().skills_catalog_page_size, 200);
+
+        update_web_preferences(None, None, None, None, None, None, Some(0), None).unwrap();
+        assert_eq!(web_preferences().unwrap().skills_catalog_page_size, 1);
+
+        reset_test_home_dir();
     }
 
     #[test]

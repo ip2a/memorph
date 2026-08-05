@@ -3,7 +3,7 @@
 use anyhow::{Context as _, Result};
 use clap::Parser;
 use memorph::{
-    config, core,
+    config, core, i18n,
     provider::{ProviderCapabilities, ProviderContentFidelity},
     providers,
     storage::activity_store::ActivityActor,
@@ -20,9 +20,23 @@ use memorph_cli::{
 use std::path::Path;
 use std::process::Command;
 
+fn cli_language() -> config::UiLanguage {
+    config::web_preferences()
+        .map(|preferences| preferences.language)
+        .unwrap_or_default()
+}
+
+fn print_stat(key: &'static str, value: usize) {
+    println!("{}", i18n::format(cli_language(), key, &[("count", &value.to_string())]));
+}
+
+fn cli_format(key: &'static str, replacements: &[(&str, &str)]) -> String {
+    i18n::format(cli_language(), key, replacements)
+}
+
 fn main() {
     if let Err(e) = run() {
-        eprintln!("Error: {:#}", e);
+        eprintln!("{}: {:#}", i18n::text(cli_language(), "cliError"), e);
         std::process::exit(1);
     }
 }
@@ -74,7 +88,7 @@ fn run_command(command: Commands) -> Result<()> {
             )?;
 
             for file in result.files {
-                println!("Exported: {}", file);
+                println!("{}", i18n::format(cli_language(), "cliExportedFile", &[("file", &file.to_string())]));
             }
         }
 
@@ -91,12 +105,9 @@ fn run_command(command: Commands) -> Result<()> {
                 },
                 ActivityActor::Cli,
             )?;
-            println!(
-                "Imported session into {}: {}",
-                result.provider_name, result.new_session_id
-            );
+            println!("{}", i18n::format(cli_language(), "cliImportedSession", &[("provider", &result.provider_name), ("session_id", &result.new_session_id)]));
             if let Some(cmd) = result.resume_command {
-                println!("Resume with: {}", cmd);
+                println!("{}", i18n::format(cli_language(), "cliResumeWith", &[("command", &cmd)]));
             }
         }
 
@@ -106,7 +117,7 @@ fn run_command(command: Commands) -> Result<()> {
         } => {
             let provider_name = provider_name(&provider)?;
             core::session_mutation::delete_session(&provider, &session_id, ActivityActor::Cli)?;
-            println!("Removed session from {}: {}", provider_name, session_id);
+            println!("{}", i18n::format(cli_language(), "cliRemovedSession", &[("provider", &provider_name), ("session_id", &session_id)]));
         }
 
         Commands::Rename {
@@ -120,15 +131,12 @@ fn run_command(command: Commands) -> Result<()> {
                 &new_title,
                 ActivityActor::Cli,
             )?;
-            println!(
-                "Renamed session in {}: {} -> {}",
-                result.provider_name, result.session_id, result.display_title
-            );
+            println!("{}", i18n::format(cli_language(), "cliRenamedSession", &[("provider", &result.provider_name), ("session_id", &result.session_id), ("title", &result.display_title)]));
             if !result.native_updated {
-                println!("Native title was not updated.");
+                println!("{}", i18n::text(cli_language(), "cliNativeTitleNotUpdated"));
             }
             if let Some(warning) = result.warning {
-                println!("Warning: {}", warning);
+                println!("{}", i18n::format(cli_language(), "cliWarning", &[("message", &warning)]));
             }
         }
 
@@ -147,11 +155,11 @@ fn run_command(command: Commands) -> Result<()> {
                 move_original: false,
             })?;
 
-            println!("Switched from {} to {}", result.from_name, result.to_name);
-            println!("  Source: {}", result.source_session_id);
-            println!("  Target: {}", result.target_session_id);
+            println!("{}", i18n::format(cli_language(), "cliSwitchedSession", &[("from", &result.from_name), ("to", &result.to_name)]));
+            println!("{}", i18n::format(cli_language(), "cliSource", &[("value", &result.source_session_id)]));
+            println!("{}", i18n::format(cli_language(), "cliTarget", &[("value", &result.target_session_id)]));
             if let Some(cmd) = result.resume_command {
-                println!("  Resume: {}", cmd);
+                println!("{}", i18n::format(cli_language(), "cliResume", &[("command", &cmd)]));
             }
         }
 
@@ -162,7 +170,7 @@ fn run_command(command: Commands) -> Result<()> {
             json,
         } => {
             if dir.is_none() && session.is_none() && provider.is_empty() {
-                anyhow::bail!("At least one filter is required: --dir, --session, or --provider");
+                anyhow::bail!("{}", i18n::text(cli_language(), "cliAtLeastOneFilter"));
             }
 
             let groups = core::query::find_sessions(&core::query::FindParams {
@@ -178,11 +186,7 @@ fn run_command(command: Commands) -> Result<()> {
             }
 
             for group in &groups {
-                println!(
-                    "\n{} ({} matches):",
-                    group.provider_name,
-                    group.sessions.len()
-                );
+                println!("\n{}", i18n::format(cli_language(), "cliMatchesHeader", &[("provider", &group.provider_name), ("count", &group.sessions.len().to_string())]));
                 for s in group.sessions.iter().take(20) {
                     let id = &s.session_id;
                     let title = truncate(s.title.as_deref().unwrap_or("(untitled)"), 40);
@@ -190,14 +194,14 @@ fn run_command(command: Commands) -> Result<()> {
                     println!("  {} | {} | {}", id, title, dir);
                 }
                 if group.sessions.len() > 20 {
-                    println!("  ... and {} more", group.sessions.len() - 20);
+                    println!("  {}", i18n::format(cli_language(), "cliAndMore", &[("count", &(group.sessions.len() - 20).to_string())]));
                 }
             }
 
             if total_found == 0 {
-                println!("No sessions found matching the criteria.");
+                println!("{}", i18n::text(cli_language(), "cliNoSessionsMatchingCriteria"));
             } else {
-                println!("\nTotal: {} sessions found", total_found);
+                println!("\n{}", i18n::format(cli_language(), "cliTotalSessionsFound", &[("count", &total_found.to_string())]));
             }
         }
 
@@ -336,15 +340,19 @@ fn provider_capability_summary(
     display_name: &str,
     capabilities: ProviderCapabilities,
 ) -> String {
-    format!(
-        "{display_name} ({provider_id}) | scan={} | page={} | storage={} | turn={} | resume={} | risk={} | ops={}",
-        serialized_enum_label(capabilities.scan_strategy),
-        serialized_enum_label(capabilities.page_strategy),
-        serialized_enum_label(capabilities.storage_shape),
-        serialized_enum_label(capabilities.turn_quality),
-        serialized_enum_label(capabilities.resume_quality),
-        serialized_enum_label(capabilities.write_risk.level),
-        provider_operations(capabilities),
+    cli_format(
+        "cliProviderCapabilitySummary",
+        &[
+            ("name", display_name),
+            ("id", provider_id),
+            ("scan", &serialized_enum_label(capabilities.scan_strategy)),
+            ("page", &serialized_enum_label(capabilities.page_strategy)),
+            ("storage", &serialized_enum_label(capabilities.storage_shape)),
+            ("turn", &serialized_enum_label(capabilities.turn_quality)),
+            ("resume", &serialized_enum_label(capabilities.resume_quality)),
+            ("risk", &serialized_enum_label(capabilities.write_risk.level)),
+            ("operations", &provider_operations(capabilities)),
+        ],
     )
 }
 
@@ -354,46 +362,36 @@ fn provider_capability_detail(
     capabilities: ProviderCapabilities,
 ) -> String {
     let mut lines = vec![
-        format!("Provider: {display_name} ({provider_id})"),
-        format!("Operations: {}", provider_operations(capabilities)),
-        format!(
-            "Discovery: scan={} page={} storage={}",
-            serialized_enum_label(capabilities.scan_strategy),
-            serialized_enum_label(capabilities.page_strategy),
-            serialized_enum_label(capabilities.storage_shape),
-        ),
-        format!(
-            "Turn quality: {}",
-            serialized_enum_label(capabilities.turn_quality)
-        ),
-        format!(
-            "Resume quality: {}",
-            serialized_enum_label(capabilities.resume_quality)
-        ),
-        format!(
-            "Write risk: level={} multiple_files={} sqlite={} sidecar_files={} index_repair={}",
-            serialized_enum_label(capabilities.write_risk.level),
-            capabilities.write_risk.multiple_files,
-            capabilities.write_risk.sqlite,
-            capabilities.write_risk.sidecar_files,
-            capabilities.write_risk.index_repair,
-        ),
-        format!(
-            "Backup: before_write={} restore={} sync_only={}",
-            capabilities.backup_support.before_write,
-            capabilities.backup_support.restore,
-            capabilities.backup_support.sync_only,
-        ),
-        format!(
-            "Activity: hook_events={} runtime_endpoint={} session_activity={}",
-            capabilities.activity_support.hook_events,
-            capabilities.activity_support.runtime_endpoint,
-            capabilities.activity_support.session_activity,
-        ),
-        "Import fidelity:".to_string(),
+        cli_format("cliProviderDetail", &[("name", display_name), ("id", provider_id)]),
+        cli_format("cliOperations", &[("value", &provider_operations(capabilities))]),
+        cli_format("cliDiscovery", &[
+            ("scan", &serialized_enum_label(capabilities.scan_strategy)),
+            ("page", &serialized_enum_label(capabilities.page_strategy)),
+            ("storage", &serialized_enum_label(capabilities.storage_shape)),
+        ]),
+        cli_format("cliTurnQuality", &[("value", &serialized_enum_label(capabilities.turn_quality))]),
+        cli_format("cliResumeQuality", &[("value", &serialized_enum_label(capabilities.resume_quality))]),
+        cli_format("cliWriteRisk", &[
+            ("level", &serialized_enum_label(capabilities.write_risk.level)),
+            ("multiple_files", &capabilities.write_risk.multiple_files.to_string()),
+            ("sqlite", &capabilities.write_risk.sqlite.to_string()),
+            ("sidecar_files", &capabilities.write_risk.sidecar_files.to_string()),
+            ("index_repair", &capabilities.write_risk.index_repair.to_string()),
+        ]),
+        cli_format("cliBackupSupport", &[
+            ("before_write", &capabilities.backup_support.before_write.to_string()),
+            ("restore", &capabilities.backup_support.restore.to_string()),
+            ("sync_only", &capabilities.backup_support.sync_only.to_string()),
+        ]),
+        cli_format("cliActivitySupport", &[
+            ("hook_events", &capabilities.activity_support.hook_events.to_string()),
+            ("runtime_endpoint", &capabilities.activity_support.runtime_endpoint.to_string()),
+            ("session_activity", &capabilities.activity_support.session_activity.to_string()),
+        ]),
+        i18n::text(cli_language(), "cliImportFidelity").to_string(),
     ];
     lines.extend(provider_fidelity_lines(capabilities.import_fidelity));
-    lines.push("Export fidelity:".to_string());
+    lines.push(i18n::text(cli_language(), "cliExportFidelity").to_string());
     lines.extend(provider_fidelity_lines(capabilities.export_fidelity));
     lines.join("\n")
 }
@@ -442,17 +440,17 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
                 provider.as_deref(),
                 ActivityActor::Cli,
             )?;
-            println!("Scanned providers: {}", report.scanned_providers);
-            println!("Failed providers: {}", report.failed_providers);
-            println!("Discovered sessions: {}", report.discovered_sessions);
-            println!("Projected sessions: {}", report.projected_sessions);
-            println!("Unchanged sessions: {}", report.unchanged_sessions);
-            println!("Missing sources: {}", report.missing_sources);
-            println!("Unsupported providers: {}", report.unsupported_providers);
-            println!("Failed sessions: {}", report.failed_sessions);
+            print_stat("cliScannedProviders", report.scanned_providers);
+            print_stat("cliFailedProviders", report.failed_providers);
+            print_stat("cliDiscoveredSessions", report.discovered_sessions);
+            print_stat("cliProjectedSessions", report.projected_sessions);
+            print_stat("cliUnchangedSessions", report.unchanged_sessions);
+            print_stat("cliMissingSources", report.missing_sources);
+            print_stat("cliUnsupportedProviders", report.unsupported_providers);
+            print_stat("cliFailedSessions", report.failed_sessions);
             for failure in report.failures {
-                let session = failure.session_id.as_deref().unwrap_or("(provider scan)");
-                let source = failure.source_path.as_deref().unwrap_or("(no source)");
+                let session = failure.session_id.as_deref().unwrap_or(i18n::text(cli_language(), "cliProviderScan"));
+                let source = failure.source_path.as_deref().unwrap_or(i18n::text(cli_language(), "cliNoSource"));
                 println!(
                     "  {}:{} | {} | {}",
                     failure.provider_id, session, source, failure.reason
@@ -469,24 +467,24 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
         }
         SessionCommands::RefreshStale => {
             let report = core::projection::refresh_projected_session_staleness(ActivityActor::Cli)?;
-            println!("Checked sources: {}", report.checked_sources);
-            println!("Fresh snapshots: {}", report.fresh_snapshots);
-            println!("Stale snapshots: {}", report.stale_snapshots);
-            println!("Missing sources: {}", report.missing_sources);
-            println!("Unknown sources: {}", report.unknown_sources);
+            print_stat("cliCheckedSources", report.checked_sources);
+            print_stat("cliFreshSnapshots", report.fresh_snapshots);
+            print_stat("cliStaleSnapshots", report.stale_snapshots);
+            print_stat("cliMissingSources", report.missing_sources);
+            print_stat("cliUnknownSources", report.unknown_sources);
         }
         SessionCommands::ReprojectStale { provider } => {
             let report = core::projection::reproject_stale_sessions(
                 provider.as_deref(),
                 ActivityActor::Cli,
             )?;
-            println!("Candidate snapshots: {}", report.candidate_snapshots);
-            println!("Reprojected snapshots: {}", report.reprojected_snapshots);
-            println!("Missing sources: {}", report.missing_sources);
-            println!("Unsupported providers: {}", report.unsupported_providers);
-            println!("Failed snapshots: {}", report.failed_snapshots);
+            print_stat("cliCandidateSnapshots", report.candidate_snapshots);
+            print_stat("cliReprojectedSnapshots", report.reprojected_snapshots);
+            print_stat("cliMissingSources", report.missing_sources);
+            print_stat("cliUnsupportedProviders", report.unsupported_providers);
+            print_stat("cliFailedSnapshots", report.failed_snapshots);
             for failure in report.failures {
-                let source = failure.source_path.as_deref().unwrap_or("(no source)");
+                let source = failure.source_path.as_deref().unwrap_or(i18n::text(cli_language(), "cliNoSource"));
                 println!(
                     "  {}:{} | {} | {}",
                     failure.provider_id, failure.session_id, source, failure.reason
@@ -502,16 +500,16 @@ fn run_session_command(command: SessionCommands) -> Result<()> {
                 std::path::Path::new(&workspace_dir),
                 ActivityActor::Cli,
             )?;
-            println!("Provider: {}", provider);
-            println!("Workspace: {}", workspace_dir);
-            println!("Discovered sessions: {}", report.discovered_sessions);
-            println!("Projected sessions: {}", report.projected_sessions);
-            println!("Unchanged sessions: {}", report.unchanged_sessions);
-            println!("Missing sources: {}", report.missing_sources);
-            println!("Failed sessions: {}", report.failed_sessions);
+            println!("{}", i18n::format(cli_language(), "cliProvider", &[("value", &provider)]));
+            println!("{}", i18n::format(cli_language(), "cliWorkspace", &[("value", &workspace_dir)]));
+            print_stat("cliDiscoveredSessions", report.discovered_sessions);
+            print_stat("cliProjectedSessions", report.projected_sessions);
+            print_stat("cliUnchangedSessions", report.unchanged_sessions);
+            print_stat("cliMissingSources", report.missing_sources);
+            print_stat("cliFailedSessions", report.failed_sessions);
             for failure in report.failures {
-                let session = failure.session_id.as_deref().unwrap_or("(provider scan)");
-                let source = failure.source_path.as_deref().unwrap_or("(no source)");
+                let session = failure.session_id.as_deref().unwrap_or(i18n::text(cli_language(), "cliProviderScan"));
+                let source = failure.source_path.as_deref().unwrap_or(i18n::text(cli_language(), "cliNoSource"));
                 println!(
                     "  {}:{} | {} | {}",
                     failure.provider_id, session, source, failure.reason
@@ -553,15 +551,15 @@ fn run_backup_command(command: BackupCommands) -> Result<()> {
                         .latest_restore
                         .as_ref()
                         .map(|record| record.status.to_string())
-                        .unwrap_or_else(|| "never".to_string());
+                        .unwrap_or_else(|| i18n::text(cli_language(), "cliNever").to_string());
                     println!(
                         "{} | {} | {} | {} | {}",
                         backup.id,
-                        backup.provider_id.as_deref().unwrap_or("(no provider)"),
+                        backup.provider_id.as_deref().unwrap_or(i18n::text(cli_language(), "cliNoProvider")),
                         backup
                             .provider_session_id
                             .as_deref()
-                            .unwrap_or("(no session)"),
+                            .unwrap_or(i18n::text(cli_language(), "cliNoSession")),
                         view.verification.status,
                         restore_status
                     );
@@ -575,31 +573,19 @@ fn run_backup_command(command: BackupCommands) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&view)?);
             } else {
                 let backup = &view.entry.backup;
-                println!("Backup: {}", backup.id);
-                println!(
-                    "Provider: {}",
-                    backup.provider_id.as_deref().unwrap_or("(none)")
-                );
-                println!(
-                    "Session: {}",
-                    backup.provider_session_id.as_deref().unwrap_or("(none)")
-                );
-                println!(
-                    "Operation: {}",
-                    backup.operation_id.as_deref().unwrap_or("(none)")
-                );
-                println!("Artifact: {}", backup.artifact.path.display());
-                println!("Integrity: {}", view.verification.status);
-                println!(
-                    "Latest restore: {}",
-                    view.entry
-                        .latest_restore
-                        .as_ref()
-                        .map(|record| record.status.to_string())
-                        .unwrap_or_else(|| "never".to_string())
-                );
+                let none = i18n::text(cli_language(), "cliNone");
+                println!("{}", cli_format("cliBackup", &[("value", &backup.id)]));
+                println!("{}", cli_format("cliProvider", &[("value", backup.provider_id.as_deref().unwrap_or(none))]));
+                println!("{}", cli_format("cliSession", &[("value", backup.provider_session_id.as_deref().unwrap_or(none))]));
+                println!("{}", cli_format("cliOperation", &[("value", backup.operation_id.as_deref().unwrap_or(none))]));
+                println!("{}", cli_format("cliArtifact", &[("value", &backup.artifact.path.display().to_string())]));
+                println!("{}", cli_format("cliIntegrity", &[("value", &view.verification.status.to_string())]));
+                let latest_restore = view.entry.latest_restore.as_ref()
+                    .map(|record| record.status.to_string())
+                    .unwrap_or_else(|| i18n::text(cli_language(), "cliNever").to_string());
+                println!("{}", cli_format("cliLatestRestore", &[("value", &latest_restore)]));
                 if let Some(hint) = backup.restore_hint.as_deref() {
-                    println!("Restore hint: {hint}");
+                    println!("{}", cli_format("cliRestoreHint", &[("value", hint)]));
                 }
             }
         }
@@ -608,10 +594,7 @@ fn run_backup_command(command: BackupCommands) -> Result<()> {
                 &backup_id,
                 ActivityActor::Cli,
             )?;
-            println!(
-                "Restored backup {} successfully (restore {})",
-                record.backup_id, record.id
-            );
+            println!("{}", cli_format("cliBackupRestored", &[("backup_id", &record.backup_id), ("restore_id", &record.id)]));
         }
     }
     Ok(())
@@ -627,11 +610,11 @@ fn run_database_command(command: DatabaseCommands) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
-                println!("Database backup: {}", report.backup.bundle_path.display());
-                println!("Backup ID: {}", report.backup.manifest.backup_id);
-                println!("Artifact: {}", report.artifact.id);
-                println!("Schema: {}", report.backup.manifest.schema_version);
-                println!("Bytes: {}", report.backup.manifest.database_bytes);
+                println!("{}", cli_format("cliDatabaseBackup", &[("value", &report.backup.bundle_path.display().to_string())]));
+                println!("{}", cli_format("cliBackupId", &[("value", &report.backup.manifest.backup_id)]));
+                println!("{}", cli_format("cliArtifact", &[("value", &report.artifact.id)]));
+                println!("{}", cli_format("cliSchema", &[("value", &report.backup.manifest.schema_version.to_string())]));
+                println!("{}", cli_format("cliBytes", &[("value", &report.backup.manifest.database_bytes.to_string())]));
             }
         }
         DatabaseCommands::Verify { bundle, json } => {
@@ -639,11 +622,11 @@ fn run_database_command(command: DatabaseCommands) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
-                println!("Verified database backup: {}", report.bundle_path.display());
-                println!("Backup ID: {}", report.manifest.backup_id);
-                println!("Schema: {}", report.manifest.schema_version);
-                println!("SQLite quick check: {}", report.quick_check);
-                println!("Foreign key violations: {}", report.foreign_key_violations);
+                println!("{}", cli_format("cliVerifiedDatabaseBackup", &[("value", &report.bundle_path.display().to_string())]));
+                println!("{}", cli_format("cliBackupId", &[("value", &report.manifest.backup_id)]));
+                println!("{}", cli_format("cliSchema", &[("value", &report.manifest.schema_version.to_string())]));
+                println!("{}", cli_format("cliSqliteQuickCheck", &[("value", &report.quick_check)]));
+                println!("{}", cli_format("cliForeignKeyViolations", &[("value", &report.foreign_key_violations.to_string())]));
             }
         }
         DatabaseCommands::Restore {
@@ -663,17 +646,11 @@ fn run_database_command(command: DatabaseCommands) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
-                println!(
-                    "Restored database backup: {}",
-                    report.restored_backup.bundle_path.display()
-                );
-                println!("Backup ID: {}", report.restored_backup.manifest.backup_id);
-                println!(
-                    "Safety backup: {}",
-                    report.safety_backup.bundle_path.display()
-                );
-                println!("Schema: {}", report.schema_version);
-                println!("Operation: {}", report.operation_id);
+                println!("{}", cli_format("cliRestoredDatabaseBackup", &[("value", &report.restored_backup.bundle_path.display().to_string())]));
+                println!("{}", cli_format("cliBackupId", &[("value", &report.restored_backup.manifest.backup_id)]));
+                println!("{}", cli_format("cliSafetyBackup", &[("value", &report.safety_backup.bundle_path.display().to_string())]));
+                println!("{}", cli_format("cliSchema", &[("value", &report.schema_version.to_string())]));
+                println!("{}", cli_format("cliOperation", &[("value", &report.operation_id)]));
             }
         }
     }
@@ -687,8 +664,8 @@ fn run_artifact_command(command: ArtifactCommands) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
-                println!("Registered artifacts: {}", report.registered.len());
-                println!("Orphan files: {}", report.orphan_files.len());
+                print_stat("cliRegisteredArtifacts", report.registered.len());
+                print_stat("cliOrphanFiles", report.orphan_files.len());
                 for entry in report.registered {
                     println!(
                         "{} | {} | {} | {} | {}",
@@ -700,12 +677,11 @@ fn run_artifact_command(command: ArtifactCommands) -> Result<()> {
                     );
                 }
                 for orphan in report.orphan_files {
-                    println!(
-                        "orphan | {} | {} bytes | managed_layout={}",
-                        orphan.path.display(),
-                        orphan.byte_size,
-                        orphan.managed_layout
-                    );
+                    println!("{}", cli_format("cliOrphanFile", &[
+                        ("path", &orphan.path.display().to_string()),
+                        ("bytes", &orphan.byte_size.to_string()),
+                        ("managed_layout", &orphan.managed_layout.to_string()),
+                    ]));
                 }
             }
         }
@@ -719,18 +695,12 @@ fn run_artifact_command(command: ArtifactCommands) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
-                println!(
-                    "{} cleanup: {} orphan candidates",
-                    if report.applied { "Applied" } else { "Planned" },
-                    report.candidate_orphan_paths.len()
-                );
-                println!("Deleted files: {}", report.deleted_paths.len());
-                println!(
-                    "Retained shared files: {}",
-                    report.retained_shared_paths.len()
-                );
+                let cleanup_key = if report.applied { "cliAppliedCleanup" } else { "cliPlannedCleanup" };
+                print_stat(cleanup_key, report.candidate_orphan_paths.len());
+                print_stat("cliDeletedFiles", report.deleted_paths.len());
+                print_stat("cliRetainedSharedFiles", report.retained_shared_paths.len());
                 for failure in report.failures {
-                    println!("Failure: {}", failure.reason);
+                    println!("{}", cli_format("cliFailure", &[("reason", &failure.reason)]));
                 }
             }
         }
@@ -740,71 +710,57 @@ fn run_artifact_command(command: ArtifactCommands) -> Result<()> {
 
 fn session_projection_report_text(view: &core::SessionDetailView) -> String {
     let mut lines = Vec::new();
-    lines.push(format!("Provider: {}", view.provider_id));
-    lines.push(format!("Session: {}", view.session_id));
-    lines.push(format!("Canonical: {}", view.canonical_id));
-    lines.push(format!(
-        "Title: {}",
-        view.title.as_deref().unwrap_or("(untitled)")
-    ));
+    lines.push(cli_format("cliProvider", &[("value", &view.provider_id)]));
+    lines.push(cli_format("cliSession", &[("value", &view.session_id)]));
+    lines.push(cli_format("cliCanonical", &[("value", &view.canonical_id)]));
+    lines.push(cli_format("cliTitle", &[("value", view.title.as_deref().unwrap_or(i18n::text(cli_language(), "cliUntitled")))]));
     if let Some(workspace_dir) = &view.workspace_dir {
-        lines.push(format!("Workspace: {}", workspace_dir));
+        lines.push(cli_format("cliWorkspace", &[("value", workspace_dir)]));
     }
     if let Some(source_path) = &view.source_path {
-        lines.push(format!("Source: {}", source_path));
+        lines.push(cli_format("cliSourceValue", &[("value", source_path)]));
     }
-    lines.push(format!("Events: {}", view.event_count));
-    lines.push(format!("Messages: {}", view.message_count));
+    lines.push(cli_format("cliEvents", &[("value", &view.event_count.to_string())]));
+    lines.push(cli_format("cliMessages", &[("value", &view.message_count.to_string())]));
 
     let Some(report) = &view.projection_report else {
-        lines.push("Projection report: none".to_string());
+        lines.push(cli_format(
+            "cliProjectionReport",
+            &[("value", i18n::text(cli_language(), "cliNoProjectionReport"))],
+        ));
         return lines.join("\n");
     };
 
-    lines.push(format!("Projection report: {}", report.id));
-    lines.push(format!(
-        "  Operation: {}",
-        serialized_enum_label(report.operation_kind)
-    ));
-    lines.push(format!(
-        "  Status: {}",
-        serialized_enum_label(report.status)
-    ));
-    lines.push(format!("  Version: {}", report.projection_version));
-    lines.push(format!("  Created at: {}", report.created_at));
+    lines.push(cli_format("cliProjectionReport", &[("value", &report.id)]));
+    lines.push(cli_format("cliIndentedOperation", &[("value", &serialized_enum_label(report.operation_kind))]));
+    lines.push(cli_format("cliIndentedStatus", &[("value", &serialized_enum_label(report.status))]));
+    lines.push(cli_format("cliIndentedVersion", &[("value", &report.projection_version.to_string())]));
+    lines.push(cli_format("cliCreatedAt", &[("value", &report.created_at.to_string())]));
     if let Some(count) = report.summary.canonical_event_count {
-        lines.push(format!("  Canonical events: {}", count));
+        lines.push(cli_format("cliCanonicalEvents", &[("value", &count.to_string())]));
     }
     if let Some(direction) = report.summary.mapping_direction {
-        lines.push(format!(
-            "  Mapping direction: {}",
-            serialized_enum_label(direction)
-        ));
+        lines.push(cli_format("cliMappingDirection", &[("value", &serialized_enum_label(direction))]));
     }
     if let Some(overall) = report.summary.mapping_overall {
-        lines.push(format!(
-            "  Mapping overall: {}",
-            serialized_enum_label(overall)
-        ));
+        lines.push(cli_format("cliMappingOverall", &[("value", &serialized_enum_label(overall))]));
     }
-    lines.push(format!(
-        "  Fidelity: preserved={} normalized={} dropped={}",
-        report.summary.preserved_count,
-        report.summary.normalized_count,
-        report.summary.dropped_count
-    ));
-    lines.push(format!("  Issues: {}", report.item_count));
+    lines.push(cli_format("cliFidelity", &[
+        ("preserved", &report.summary.preserved_count.to_string()),
+        ("normalized", &report.summary.normalized_count.to_string()),
+        ("dropped", &report.summary.dropped_count.to_string()),
+    ]));
+    lines.push(cli_format("cliIssues", &[("value", &report.item_count.to_string())]));
     for item in &report.items {
-        let field = item.field_path.as_deref().unwrap_or("(session)");
-        let reason = item.reason.as_deref().unwrap_or("(no reason)");
-        lines.push(format!(
-            "    {}. {} {} {} - {}",
-            item.item_order,
-            serialized_enum_label(item.fidelity),
-            serialized_enum_label(item.scope),
-            field,
-            reason
-        ));
+        let field = item.field_path.as_deref().unwrap_or(i18n::text(cli_language(), "cliSessionField"));
+        let reason = item.reason.as_deref().unwrap_or(i18n::text(cli_language(), "cliNoReason"));
+        lines.push(cli_format("cliProjectionIssue", &[
+            ("order", &item.item_order.to_string()),
+            ("fidelity", &serialized_enum_label(item.fidelity)),
+            ("scope", &serialized_enum_label(item.scope)),
+            ("field", field),
+            ("reason", reason),
+        ]));
     }
 
     lines.join("\n")
@@ -836,66 +792,64 @@ fn run_codex_sync_workspace_sessions(
 }
 
 fn print_codex_repair_report(report: providers::codex::CodexWorkspaceRepairReport) {
-    println!("Workspace: {}", report.workspace_dir);
-    println!("Current provider: {}", report.current_model_provider);
-    println!("Scanned rollout files: {}", report.scanned_rollouts);
-    println!("Workspace sessions: {}", report.workspace_session_count);
-    println!("Hidden sessions: {}", report.hidden_session_count);
-    println!("Repaired sessions: {}", report.repaired_session_count);
-    println!("Reindexed sessions: {}", report.reindexed_session_count);
-    println!("Retitled sessions: {}", report.retitled_session_count);
-    println!("Updated SQLite rows: {}", report.sqlite_rows_updated);
+    println!("{}", cli_format("cliWorkspace", &[("value", &report.workspace_dir)]));
+    println!("{}", cli_format("cliCurrentProvider", &[("value", &report.current_model_provider)]));
+    print_stat("cliScannedRollouts", report.scanned_rollouts);
+    print_stat("cliWorkspaceSessions", report.workspace_session_count);
+    print_stat("cliHiddenSessions", report.hidden_session_count);
+    print_stat("cliRepairedSessions", report.repaired_session_count);
+    print_stat("cliReindexedSessions", report.reindexed_session_count);
+    print_stat("cliRetitledSessions", report.retitled_session_count);
+    print_stat("cliUpdatedSqliteRows", report.sqlite_rows_updated);
     if report.sqlite_provider_rows_updated > 0 {
         println!(
-            "Updated SQLite provider rows: {}",
-            report.sqlite_provider_rows_updated
+            "{}",
+            cli_format("cliUpdatedSqliteProviderRows", &[("count", &report.sqlite_provider_rows_updated.to_string())])
         );
     }
     if report.sqlite_user_event_rows_updated > 0 {
         println!(
-            "Updated SQLite user-event rows: {}",
-            report.sqlite_user_event_rows_updated
+            "{}",
+            cli_format("cliUpdatedSqliteUserEventRows", &[("count", &report.sqlite_user_event_rows_updated.to_string())])
         );
     }
     if report.sqlite_cwd_rows_updated > 0 {
         println!(
-            "Updated SQLite cwd rows: {}",
-            report.sqlite_cwd_rows_updated
+            "{}",
+            cli_format("cliUpdatedSqliteCwdRows", &[("count", &report.sqlite_cwd_rows_updated.to_string())])
         );
     }
     if let Some(backup_dir) = &report.backup_dir {
-        println!("Backup: {}", backup_dir);
+        println!("{}", cli_format("cliBackup", &[("value", backup_dir)]));
     }
     if report.pruned_backup_count > 0 {
-        println!("Pruned backups: {}", report.pruned_backup_count);
+        print_stat("cliPrunedBackups", report.pruned_backup_count);
     }
     if !report.skipped_rollout_files.is_empty() {
         println!(
-            "Skipped rollout files: {}",
-            report.skipped_rollout_files.len()
+            "{}",
+            cli_format("cliSkippedRolloutFiles", &[("count", &report.skipped_rollout_files.len().to_string())])
         );
     }
     if report.touched_sessions.is_empty() {
-        println!("No Codex sessions needed sync.");
+        println!("{}", i18n::text(cli_language(), "cliNoCodexSessionsSync"));
     } else {
         println!();
         for item in report.touched_sessions {
-            println!(
-                "- {} | {} | provider: {} -> {} | index_added={} | title_fixed={}",
-                item.session_id,
-                item.title.unwrap_or_else(|| "(untitled)".to_string()),
-                item.previous_model_provider
-                    .unwrap_or_else(|| "(none)".to_string()),
-                item.current_model_provider,
-                item.added_to_index,
-                item.updated_index_title
-            );
+            println!("{}", cli_format("cliCodexTouchedSession", &[
+                ("session_id", &item.session_id),
+                ("title", &item.title.unwrap_or_else(|| i18n::text(cli_language(), "cliUntitled").to_string())),
+                ("previous_provider", &item.previous_model_provider.unwrap_or_else(|| i18n::text(cli_language(), "cliNone").to_string())),
+                ("provider", &item.current_model_provider),
+                ("index_added", &item.added_to_index.to_string()),
+                ("title_fixed", &item.updated_index_title.to_string()),
+            ]));
         }
     }
     if !report.skipped_rollout_files.is_empty() {
         println!();
         for path in report.skipped_rollout_files {
-            println!("- skipped rollout: {}", path);
+            println!("{}", cli_format("cliSkippedRollout", &[("path", &path)]));
         }
     }
 }
@@ -905,7 +859,7 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
         CompressionCommands::List => {
             let archives = core::compression_application::list_compression_archives(None)?;
             if archives.is_empty() {
-                println!("No compression archives.");
+                println!("{}", i18n::text(cli_language(), "cliNoCompressionArchives"));
             } else {
                 for archive in archives {
                     println!(
@@ -965,7 +919,7 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
                 ActivityActor::Cli,
             )?;
             for file in result.files {
-                println!("Restored compression archive: {}", file);
+                println!("{}", cli_format("cliRestoredCompressionArchive", &[("file", &file.to_string())]));
             }
         }
         CompressionCommands::RestoreNative {
@@ -981,17 +935,16 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
                 },
                 ActivityActor::Cli,
             )?;
-            println!(
-                "Restored {} compressed segment(s) in {}/{} ({} events, {}B -> {}B)",
-                result.restored_segments,
-                provider_id,
-                session_id,
-                result.restored_events,
-                result.source_bytes_before,
-                result.source_bytes_after
-            );
+            println!("{}", cli_format("cliRestoredCompressedSegments", &[
+                ("segments", &result.restored_segments.to_string()),
+                ("provider", &provider_id),
+                ("session_id", &session_id),
+                ("events", &result.restored_events.to_string()),
+                ("before", &result.source_bytes_before.to_string()),
+                ("after", &result.source_bytes_after.to_string()),
+            ]));
             if !result.remaining_archive_refs.is_empty() {
-                println!("Remaining archives:");
+                println!("{}", i18n::text(cli_language(), "cliRemainingArchives"));
                 for archive_ref in result.remaining_archive_refs {
                     println!("- {archive_ref}");
                 }
@@ -1025,7 +978,7 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
                 ActivityActor::Cli,
             )?;
             for file in result.files {
-                println!("Expanded compression session: {}", file);
+                println!("{}", cli_format("cliExpandedCompressionSession", &[("file", &file.to_string())]));
             }
         }
         CompressionCommands::Plan {
@@ -1095,15 +1048,14 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
                 },
                 ActivityActor::Cli,
             )?;
-            println!(
-                "Replaced native session {}/{} ({}B -> {}B)",
-                source_provider_id,
-                session_id.as_deref().unwrap_or("(unknown)"),
-                result.source_bytes_before,
-                result.source_bytes_after
-            );
+            println!("{}", cli_format("cliReplacedNativeSession", &[
+                ("provider", &source_provider_id),
+                ("session_id", session_id.as_deref().unwrap_or(i18n::text(cli_language(), "cliUnknown"))),
+                ("before", &result.source_bytes_before.to_string()),
+                ("after", &result.source_bytes_after.to_string()),
+            ]));
             for archive_ref in &result.archive_refs {
-                println!("Archive: {}", archive_ref);
+                println!("{}", cli_format("cliArchive", &[("value", archive_ref)]));
             }
             print_active_compression_report(&result.report);
         }
@@ -1112,36 +1064,30 @@ fn run_compression_command(command: CompressionCommands) -> Result<()> {
 }
 
 fn print_active_compression_report(report: &core::active_compression::ActiveCompressionReport) {
-    println!(
-        "Active compression dry-run: {} -> {}",
-        report.source_provider_id, report.target_provider_id
-    );
-    println!(
-        "events={} messages={} already_compressed={}",
-        report.session_event_count,
-        report.message_event_count,
-        report.already_compressed_event_count
-    );
-    println!(
-        "estimated: {}B/{} tokens -> {}B/{} tokens, saved {}B/{} tokens",
-        report.original_estimated_bytes,
-        report.original_estimated_tokens,
-        report.compressed_estimated_bytes,
-        report.compressed_estimated_tokens,
-        report.estimated_bytes_saved,
-        report.estimated_tokens_saved
-    );
-    println!(
-        "token estimator: {:?}, effective={} chars/token x100={}",
-        report.token_estimator.strategy,
-        report.token_estimator.effective_provider_id,
-        report.token_estimator.effective_chars_per_token_x100
-    );
+    println!("{}", cli_format("cliActiveCompressionDryRun", &[("source", &report.source_provider_id), ("target", &report.target_provider_id)]));
+    println!("{}", cli_format("cliCompressionCounts", &[
+        ("events", &report.session_event_count.to_string()),
+        ("messages", &report.message_event_count.to_string()),
+        ("already_compressed", &report.already_compressed_event_count.to_string()),
+    ]));
+    println!("{}", cli_format("cliCompressionEstimate", &[
+        ("original_bytes", &report.original_estimated_bytes.to_string()),
+        ("original_tokens", &report.original_estimated_tokens.to_string()),
+        ("compressed_bytes", &report.compressed_estimated_bytes.to_string()),
+        ("compressed_tokens", &report.compressed_estimated_tokens.to_string()),
+        ("saved_bytes", &report.estimated_bytes_saved.to_string()),
+        ("saved_tokens", &report.estimated_tokens_saved.to_string()),
+    ]));
+    println!("{}", cli_format("cliTokenEstimator", &[
+        ("strategy", &format!("{:?}", report.token_estimator.strategy)),
+        ("provider", &report.token_estimator.effective_provider_id),
+        ("chars_per_token", &report.token_estimator.effective_chars_per_token_x100.to_string()),
+    ]));
 
     if report.candidates.is_empty() {
-        println!("No compression candidates.");
+        println!("{}", i18n::text(cli_language(), "cliNoCompressionCandidates"));
     } else {
-        println!("Candidates:");
+        println!("{}", i18n::text(cli_language(), "cliCandidates"));
         for candidate in &report.candidates {
             println!(
                 "- {} {:?} events={:?} reason={:?} risk={:?} saved={}B/{} tokens",
@@ -1157,7 +1103,7 @@ fn print_active_compression_report(report: &core::active_compression::ActiveComp
     }
 
     if !report.skipped.is_empty() {
-        println!("Skipped:");
+        println!("{}", i18n::text(cli_language(), "cliSkipped"));
         for skipped in &report.skipped {
             println!(
                 "- {} reason={:?} size={}B/{} tokens",
@@ -1183,8 +1129,8 @@ fn run_sync_command(command: SyncCommands) -> Result<()> {
                 to_dir,
                 title,
             })?;
-            println!("Sync group created: {}", result.id);
-            println!("Title: {}", result.title);
+            println!("{}", cli_format("cliSharedGroupCreated", &[("id", &result.id)]));
+            println!("{}", cli_format("cliTitle", &[("value", &result.title)]));
             for holding in result.holdings {
                 println!(
                     "  {} | {} | {}",
@@ -1204,50 +1150,38 @@ fn run_sync_command(command: SyncCommands) -> Result<()> {
                 session_id,
                 to_dir,
             })?;
-            println!(
-                "Holding added: {} | {} | {}",
-                holding.id, holding.provider, holding.session_id
-            );
+            println!("{}", cli_format("cliHoldingAdded", &[("id", &holding.id), ("provider", &holding.provider), ("session_id", &holding.session_id)]));
         }
         SyncCommands::Unbind {
             group_id,
             holding_id,
         } => {
             session_sync::remove_holding(&group_id, &holding_id)?;
-            println!("Holding removed: {}", holding_id);
+            println!("{}", cli_format("cliHoldingRemoved", &[("id", &holding_id)]));
         }
         SyncCommands::Remove {
             group_id,
             delete_provider_sessions,
         } => {
             session_sync::delete_group(&group_id, delete_provider_sessions)?;
-            println!("Sync group removed: {}", group_id);
+            println!("{}", cli_format("cliSharedGroupRemoved", &[("id", &group_id)]));
         }
         SyncCommands::Rename { group_id, title } => {
             session_sync::rename_group(&group_id, &title)?;
-            println!("Sync group renamed: {} -> {}", group_id, title);
+            println!("{}", cli_format("cliSharedGroupRenamed", &[("id", &group_id), ("title", &title)]));
         }
         SyncCommands::List => {
             let groups = session_sync::list_groups()?;
             if groups.is_empty() {
-                println!("No sync groups.");
+                println!("{}", i18n::text(cli_language(), "cliNoSharedGroups"));
             }
             for group in groups {
-                println!(
-                    "\n{} | {} | holdings={} | updated={}",
-                    group.id,
-                    group.title,
-                    group.holdings.len(),
-                    group.updated_at
-                );
+                println!("\n{}", cli_format("cliListGroupHeader", &[("id", &group.id), ("title", &group.title), ("count", &group.holdings.len().to_string()), ("updated", &group.updated_at.to_string())]));
                 for holding in group.holdings {
                     let dir = holding.target_dir.as_deref().unwrap_or("-");
                     let sync_from = holding.last_sync_from.as_deref().unwrap_or("-");
                     let error = holding.last_error.as_deref().unwrap_or("-");
-                    println!(
-                        "  {} | {} | {} | dir={} | sync_from={} | error={}",
-                        holding.id, holding.provider, holding.session_id, dir, sync_from, error
-                    );
+                    println!("  {}", cli_format("cliHoldingListItem", &[("id", &holding.id), ("provider", &holding.provider), ("session_id", &holding.session_id), ("dir", dir), ("sync_from", sync_from), ("error", error)]));
                 }
             }
         }
@@ -1258,14 +1192,11 @@ fn run_sync_command(command: SyncCommands) -> Result<()> {
                 session_sync::list_groups()?
             };
             if groups.is_empty() {
-                println!("No sync groups.");
+                println!("{}", i18n::text(cli_language(), "cliNoSharedGroups"));
             }
             for mut group in groups {
                 let _ = session_sync::refresh_active_times(&mut group);
-                println!(
-                    "\n{} | {} | created={} | updated={}",
-                    group.id, group.title, group.created_at, group.updated_at
-                );
+                println!("\n{}", cli_format("cliStatusGroupHeader", &[("id", &group.id), ("title", &group.title), ("created", &group.created_at.to_string()), ("updated", &group.updated_at.to_string())]));
                 for holding in group.holdings {
                     let active = holding
                         .last_active_at
@@ -1276,17 +1207,9 @@ fn run_sync_command(command: SyncCommands) -> Result<()> {
                         .map(|t| t.to_string())
                         .unwrap_or_else(|| "-".to_string());
                     let sync_from = holding.last_sync_from.as_deref().unwrap_or("-");
-                    println!(
-                        "  {} | {} | {} | active_at={} | sync_at={} | sync_from={}",
-                        holding.id,
-                        holding.provider,
-                        holding.session_id,
-                        active,
-                        sync_at,
-                        sync_from
-                    );
+                    println!("  {}", cli_format("cliHoldingStatusItem", &[("id", &holding.id), ("provider", &holding.provider), ("session_id", &holding.session_id), ("active", &active), ("sync_from", sync_from), ("sync_at", &sync_at)]));
                     if let Some(error) = holding.last_error {
-                        println!("    error={}", error);
+                        println!("    {}", cli_format("cliHoldingError", &[("error", &error)]));
                     }
                 }
             }
@@ -1300,12 +1223,7 @@ fn run_sync_command(command: SyncCommands) -> Result<()> {
             } else {
                 session_sync::sync_to_latest(&group_id, ActivityActor::Cli)?
             };
-            println!(
-                "Sync complete: source={} | success={:?} | errors={}",
-                report.source_provider,
-                report.success,
-                report.errors.len()
-            );
+            println!("{}", cli_format("cliSyncComplete", &[("source", &report.source_provider), ("success", &format!("{:?}", report.success)), ("count", &report.errors.len().to_string())]));
             for error in report.errors {
                 eprintln!("  {}", error);
             }
@@ -1315,12 +1233,7 @@ fn run_sync_command(command: SyncCommands) -> Result<()> {
             holding_id,
         } => {
             let report = session_sync::push_sync(&group_id, &holding_id, ActivityActor::Cli)?;
-            println!(
-                "Push sync complete: source={} | success={:?} | errors={}",
-                report.source_provider,
-                report.success,
-                report.errors.len()
-            );
+            println!("{}", cli_format("cliPushSyncComplete", &[("source", &report.source_provider), ("success", &format!("{:?}", report.success)), ("count", &report.errors.len().to_string())]));
             for error in report.errors {
                 eprintln!("  {}", error);
             }

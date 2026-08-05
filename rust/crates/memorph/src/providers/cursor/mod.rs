@@ -70,6 +70,10 @@ impl Provider for CursorProvider {
         scan::scan_sessions(Some(workspace_dir))
     }
 
+    fn supports_workspace_scan(&self) -> bool {
+        true
+    }
+
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         load::import_session(source_path)
     }

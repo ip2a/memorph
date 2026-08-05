@@ -25,11 +25,14 @@
 //! are masked in the serialized output; other providers report unsupported cleanly.
 
 pub mod claude;
+pub mod codex;
+pub mod opencode;
 pub mod redaction;
 
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 /// One read-only configuration surface rendered as labeled sections of facts.
@@ -61,6 +64,20 @@ pub struct ConfigSource {
 pub struct ConfigSection {
     pub label: String,
     pub rows: Vec<ConfigRow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry: Option<ConfigEntryMetadata>,
+}
+
+/// Stable, opaque identity and optimistic-concurrency token for a removable entry.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigEntryMetadata {
+    pub entry_id: String,
+    pub fingerprint: String,
+    pub name: String,
+    pub scope: String,
+    pub source: String,
+    pub removable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +123,20 @@ impl ConfigView {
         self.sections.push(ConfigSection {
             label: label.into(),
             rows,
+            entry: None,
+        });
+    }
+
+    pub fn push_entry_section(
+        &mut self,
+        label: impl Into<String>,
+        rows: Vec<ConfigRow>,
+        entry: ConfigEntryMetadata,
+    ) {
+        self.sections.push(ConfigSection {
+            label: label.into(),
+            rows,
+            entry: Some(entry),
         });
     }
 
@@ -114,6 +145,66 @@ impl ConfigView {
             tone,
             message: message.into(),
         });
+    }
+}
+
+pub(crate) fn entry_metadata(provider: &str, view: &str, location: &str, value: &Value) -> ConfigEntryMetadata {
+    let name = location.rsplit(':').next().unwrap_or(location).to_string();
+    let scope = if location.starts_with("project:") { "project" } else { "global" };
+    ConfigEntryMetadata {
+        entry_id: format!("mcp:sha256:{:x}", Sha256::digest(format!("{provider}:{view}:{location}").as_bytes())),
+        fingerprint: format!("sha256:{:x}", Sha256::digest(serde_json::to_vec(value).unwrap_or_default())),
+        name,
+        scope: scope.into(),
+        source: location.into(),
+        removable: true,
+    }
+}
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum RemovalError {
+    #[error("configuration entry changed since it was inspected")]
+    Conflict,
+    #[error("configuration removal is not supported for this provider or view")]
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemovalReport {
+    pub provider_id: String,
+    pub view_id: String,
+    pub entry_id: String,
+    pub status: &'static str,
+    pub changed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<String>,
+}
+
+impl RemovalReport {
+    fn already_absent(provider: &str, view: &str, entry: &str) -> Self {
+        Self { provider_id: provider.into(), view_id: view.into(), entry_id: entry.into(), status: "already_absent", changed: false, backup_path: None }
+    }
+    fn removed(provider: &str, view: &str, entry: &str, backup: Option<std::path::PathBuf>) -> Self {
+        Self { provider_id: provider.into(), view_id: view.into(), entry_id: entry.into(), status: "removed", changed: true, backup_path: backup.map(|p| p.display().to_string()) }
+    }
+}
+
+fn backup_config(path: &Path) -> anyhow::Result<Option<std::path::PathBuf>> {
+    if !path.is_file() { return Ok(None); }
+    let stamp = chrono::Utc::now().format("%Y%m%d%H%M%S%f");
+    let backup = path.with_file_name(format!("{}.memorph-config-backup-{stamp}", path.file_name().and_then(|n| n.to_str()).unwrap_or("config")));
+    std::fs::copy(path, &backup)?;
+    Ok(Some(backup))
+}
+
+pub fn remove_mcp(provider_id: &str, view_id: &str, entry_id: &str, expected_fingerprint: &str) -> anyhow::Result<RemovalReport> {
+    if view_id != "view_mcp" || entry_id.is_empty() || expected_fingerprint.is_empty() { return Err(anyhow::anyhow!(RemovalError::Unsupported)); }
+    match crate::providers::canonical_provider_id(provider_id).as_str() {
+        "claude" => claude::remove_mcp(entry_id, expected_fingerprint),
+        "codex" => codex::remove_mcp(entry_id, expected_fingerprint),
+        "opencode" => opencode::remove_mcp(entry_id, expected_fingerprint),
+        _ => Err(RemovalError::Unsupported.into()),
     }
 }
 
@@ -146,6 +237,8 @@ pub fn inspect(provider_id: &str, view_id: &str) -> Result<ConfigView> {
     let canonical = crate::providers::canonical_provider_id(provider_id);
     let mut view = match canonical.as_str() {
         "claude" => claude::inspect(view_id)?,
+        "codex" => codex::inspect(view_id)?,
+        "opencode" => opencode::inspect(view_id)?,
         other => anyhow::bail!("Config inspection is not supported for provider: {other}"),
     };
     redaction::redact(&mut view);

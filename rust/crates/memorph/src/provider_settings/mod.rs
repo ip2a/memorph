@@ -208,7 +208,19 @@ fn provider_setting_definitions(
     for setting in common_hooks::definitions_for(provider_id) {
         push_unique_setting(&mut settings, setting);
     }
+    for setting in config_view_definitions(provider_id) {
+        push_unique_setting(&mut settings, setting);
+    }
     settings
+}
+
+fn config_view_definitions(provider_id: &str) -> &'static [SettingDefinition] {
+    match crate::providers::canonical_provider_id(provider_id).as_str() {
+        "claude" => crate::provider_config::claude::VIEW_SETTINGS,
+        "codex" => crate::provider_config::codex::VIEW_SETTINGS,
+        "opencode" => crate::provider_config::opencode::VIEW_SETTINGS,
+        _ => &[],
+    }
 }
 
 fn push_unique_setting(

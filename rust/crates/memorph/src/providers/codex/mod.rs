@@ -304,7 +304,7 @@ impl Provider for CodexProvider {
             delete: true,
             rename: true,
             resume: true,
-            lightweight_scan: true,
+            lightweight_scan: false,
             single_session_lookup: true,
             scan_strategy: ScanStrategy::Indexed,
             page_strategy: PageStrategy::IndexedPage,

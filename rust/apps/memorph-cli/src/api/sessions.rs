@@ -18,9 +18,10 @@ pub(super) async fn get_stats_dashboard(
 fn session_list_params(q: ListQuery, limit: Option<usize>) -> core::SessionListParams {
     let providers = q
         .provider
+        .as_ref()
         .map(|p| p.split(',').map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
-    let cwd = q.workspace.or(q.dir).or_else(|| {
+    let cwd = q.workspace.clone().or(q.dir.clone()).or_else(|| {
         std::env::current_dir()
             .ok()
             .map(|p| p.to_string_lossy().to_string())
@@ -47,55 +48,96 @@ struct SessionPagePayload {
     offset: usize,
     limit: usize,
     has_more: bool,
-    /// True when the SQLite store had no indexed sessions for the requested
-    /// workspace and a background workspace indexing pass was triggered.
-    /// Clients should re-poll shortly; this response is intentionally empty
-    /// rather than blocking on a scan (read paths never implicitly block on
-    /// full provider scans).
+    /// Kept for backward compatibility; prefer `feed_state`.
+    ///
+    /// True when no cached sessions were available for at least one provider
+    /// and a background workspace scan is in flight.
     degraded: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    feed_state: Option<core::workspace_session_feed::FeedState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_states: Option<Vec<core::workspace_session_feed::ProviderFeedState>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refreshed_at: Option<i64>,
 }
 
 pub(super) async fn list_session_page(Query(q): Query<ListQuery>) -> impl IntoResponse {
-    let limit = q.limit.unwrap_or(25).clamp(1, 100);
     let offset = q.offset.unwrap_or(0);
-    let cwd_for_warmup = q.workspace.clone().or(q.dir.clone());
-    let params = session_list_params(q, Some(limit.saturating_add(1)));
-    match memorph::runtime::run_blocking(move || core::projection::list_sessions(&params)).await {
-        Ok(groups) => {
-            let has_more = groups.iter().any(|group| group.sessions.len() > limit);
-            let total: usize = groups.iter().map(|g| g.sessions.len()).sum();
-            // Cold path: empty result for a workspace scope means the SQLite
-            // projection has not indexed this workspace yet. Trigger a
-            // background warmup for that workspace only (per-provider, bounded
-            // by fingerprint dedup) and flag the response so clients re-poll.
-            // The read itself never blocks on a scan.
-            let degraded = total == 0
-                && cwd_for_warmup
-                    .as_deref()
-                    .map(|d| !d.trim().is_empty())
-                    .unwrap_or(false);
-            if degraded {
-                if let Some(cwd) = cwd_for_warmup.clone() {
-                    core::projection::spawn_workspace_index_background(
-                        std::path::PathBuf::from(cwd),
-                        memorph::storage::activity_store::ActivityActor::Api,
-                    );
-                }
+
+    // Use the new workspace-scoped adaptive feed when the caller explicitly
+    // scopes the request to a workspace. This gives the home view per-provider
+    // limits, background refresh state, and fallback to full provider scans when
+    // no lightweight scan is available. Queries without an explicit workspace
+    // stay on the legacy projection path.
+    if let Some(workspace) = q
+        .workspace
+        .as_deref()
+        .or(q.dir.as_deref())
+        .filter(|value| !value.trim().is_empty())
+    {
+        let per_provider_limit = q.limit.unwrap_or(20).clamp(1, 100);
+        let feed_params = core::workspace_session_feed::WorkspaceSessionFeedParams {
+            workspace_dir: std::path::PathBuf::from(workspace),
+            providers: q
+                .provider
+                .as_ref()
+                .map(|p| p.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_default(),
+            per_provider_limit,
+            refresh: q.refresh.unwrap_or(false),
+            fields: q.fields.unwrap_or_default(),
+            sort: q.sort.unwrap_or_default(),
+        };
+        match memorph::runtime::run_blocking(move || {
+            core::workspace_session_feed::workspace_session_feed(&feed_params)
+        })
+        .await
+        {
+            Ok(feed) => {
+                let _ = config::remember_workspace(std::path::Path::new(workspace));
+                let degraded = matches!(
+                    feed.feed_state.kind,
+                    core::workspace_session_feed::FeedStateKind::ColdScanning
+                );
+                ApiResponse::success(SessionPagePayload {
+                    groups: feed.groups,
+                    offset,
+                    limit: per_provider_limit,
+                    has_more: feed.has_more,
+                    degraded,
+                    feed_state: Some(feed.feed_state),
+                    provider_states: Some(feed.provider_states),
+                    refreshed_at: feed.refreshed_at,
+                })
+                .into_response()
             }
-            let mut groups = groups;
-            for group in &mut groups {
-                group.sessions.truncate(limit);
-            }
-            ApiResponse::success(SessionPagePayload {
-                groups,
-                offset,
-                limit,
-                has_more,
-                degraded,
-            })
-            .into_response()
+            Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
         }
-        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    } else {
+        let limit = q.limit.unwrap_or(25).clamp(1, 100);
+        let params = session_list_params(q, Some(limit.saturating_add(1)));
+        match memorph::runtime::run_blocking(move || core::projection::list_sessions(&params)).await
+        {
+            Ok(groups) => {
+                let has_more = groups.iter().any(|group| group.sessions.len() > limit);
+                let mut groups = groups;
+                for group in &mut groups {
+                    group.sessions.truncate(limit);
+                }
+                ApiResponse::success(SessionPagePayload {
+                    groups,
+                    offset,
+                    limit,
+                    has_more,
+                    degraded: false,
+                    feed_state: None,
+                    provider_states: None,
+                    refreshed_at: None,
+                })
+                .into_response()
+            }
+            Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+        }
     }
 }
 

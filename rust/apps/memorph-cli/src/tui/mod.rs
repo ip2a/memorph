@@ -1,8 +1,10 @@
 pub mod app;
 pub mod event;
+pub mod overlays;
 pub mod screens;
 pub mod theme;
 pub mod ui;
+pub mod widgets;
 
 use anyhow::Result;
 use app::App;

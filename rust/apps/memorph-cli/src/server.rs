@@ -39,11 +39,11 @@ pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
     if let Err(err) = memorph::hooks::runtime_state::publish_runtime_endpoint(&url) {
         memorph::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
-    println!("memorph server started: {}", url);
+    println!("{}", memorph::i18n::format(server_language(), "cliServerStarted", &[("url", &url)]));
 
     if !no_open {
         if let Err(err) = open::that(&url) {
-            eprintln!("Failed to open browser: {err}");
+            eprintln!("{}", memorph::i18n::format(server_language(), "cliBrowserOpenFailed", &[("error", &err.to_string())]));
         }
     }
 
@@ -63,8 +63,8 @@ pub async fn run_api(port: u16, allow_fallback: bool) -> Result<()> {
         memorph::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
 
-    println!("memorph API server started: {}", url);
-    println!("API base path: /api/v1");
+    println!("{}", memorph::i18n::format(server_language(), "cliApiServerStarted", &[("url", &url)]));
+    println!("{}", memorph::i18n::text(server_language(), "cliApiBasePath"));
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -102,7 +102,7 @@ async fn bind_with_fallback(
         let addr = format!("{}:{}", host, try_port);
         match tokio::net::TcpListener::bind(&addr).await {
             Ok(listener) => {
-                println!("Port {} is in use, using fallback port {}", port, try_port);
+                println!("{}", memorph::i18n::format(server_language(), "cliPortFallback", &[("port", &port.to_string()), ("fallback", &try_port.to_string())]));
                 return Ok((listener, try_port));
             }
             Err(e) if e.kind() == io::ErrorKind::AddrInUse => continue,
@@ -116,4 +116,10 @@ async fn bind_with_fallback(
         port,
         max_port
     )
+}
+
+fn server_language() -> memorph::config::UiLanguage {
+    memorph::config::web_preferences()
+        .map(|preferences| preferences.language)
+        .unwrap_or_default()
 }

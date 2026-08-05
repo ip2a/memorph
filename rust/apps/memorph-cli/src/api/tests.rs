@@ -51,6 +51,170 @@ async fn read_json(app: Router, request: Request<Body>) -> (StatusCode, serde_js
     (status, value)
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn readiness_assessment_has_all_contract_phases() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = ConfigTestHome::new(dir.path());
+    let request = Request::builder()
+        .uri("/api/v1/readiness")
+        .body(Body::empty())
+        .unwrap();
+
+    let (status, value) = read_json(router(), request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    for phase in [
+        "foundation",
+        "agents",
+        "sessions",
+        "session_stats",
+        "skills",
+        "usage",
+        "derived",
+    ] {
+        assert!(value["data"]["phases"][phase]["state"].is_string());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn readiness_reconcile_rejects_invalid_enum() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = ConfigTestHome::new(dir.path());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/readiness/reconcile")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"focus":"everything"}"#))
+        .unwrap();
+
+    let response = router().oneshot(request).await.unwrap();
+    assert!(response.status().is_client_error());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn readiness_reconcile_starts_and_status_is_queryable() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = ConfigTestHome::new(dir.path());
+    let request = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/readiness/reconcile")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"focus":"overview","priority":"background"}"#,
+            ))
+            .unwrap()
+    };
+
+    let (status, started) = read_json(router(), request()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(started["data"]["disposition"], "started");
+    let operation_id = started["data"]["operation_id"].as_str().unwrap();
+
+    let status_request = Request::builder()
+        .uri(format!("/api/v1/readiness/operations/{operation_id}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, operation) = read_json(router(), status_request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(operation["data"]["operation_id"], operation_id);
+
+    let (status, joined) = read_json(router(), request()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(matches!(
+        joined["data"]["disposition"].as_str(),
+        Some("joined" | "noop")
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_config_mcp_delete_is_fingerprint_safe_and_preserves_other_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = ConfigTestHome::new(dir.path());
+    let config = dir.path().join(".claude.json");
+    std::fs::write(
+        &config,
+        serde_json::to_vec(&serde_json::json!({
+            "mcpServers": {
+                "demo": {"command": "run"},
+                "keep": {"command": "keep"}
+            },
+            "projects": {},
+            "unrelated": {"preserve": true}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let get = Request::builder()
+        .uri("/api/v1/providers/claude/config/view_mcp")
+        .body(Body::empty())
+        .unwrap();
+    let (status, value) = read_json(router(), get).await;
+    assert_eq!(status, StatusCode::OK);
+    let entry = value["data"]["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|section| section["label"] == "demo")
+        .unwrap()["entry"]
+        .clone();
+    let entry_id = entry["entryId"].as_str().unwrap();
+    let fingerprint = entry["fingerprint"].as_str().unwrap();
+    assert_eq!(entry["name"], "demo");
+    assert_eq!(entry["scope"], "global");
+    assert_eq!(entry["source"], "global:demo");
+    assert_eq!(entry["removable"], true);
+
+    let unconfirmed = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/providers/claude/config/view_mcp/entries/{entry_id}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::json!({"confirm": false, "expected_fingerprint": fingerprint}).to_string()))
+        .unwrap();
+    let (status, _) = read_json(router(), unconfirmed).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let stale = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/providers/claude/config/view_mcp/entries/{entry_id}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::json!({"confirm": true, "expected_fingerprint": "sha256:stale"}).to_string()))
+        .unwrap();
+    let (status, _) = read_json(router(), stale).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let unchanged: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    assert_eq!(unchanged["mcpServers"]["demo"]["command"], "run");
+
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/v1/providers/claude/config/view_mcp/entries/{entry_id}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::json!({"confirm": true, "expected_fingerprint": fingerprint}).to_string()))
+        .unwrap();
+    let (status, result) = read_json(router(), delete).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["data"]["status"], "removed");
+
+    let updated: serde_json::Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+    assert!(updated["mcpServers"]["demo"].is_null());
+    assert_eq!(updated["mcpServers"]["keep"]["command"], "keep");
+    assert_eq!(updated["unrelated"]["preserve"], true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_config_mcp_delete_rejects_unsupported_view() {
+    let delete = Request::builder()
+        .method("DELETE")
+        .uri("/api/v1/providers/claude/config/view_plugins/entries/not-a-path")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"confirm":true,"expected_fingerprint":"sha256:any"}"#))
+        .unwrap();
+    let (status, _) = read_json(router(), delete).await;
+    assert!(status.is_client_error());
+}
+
 #[test]
 fn directory_listing_returns_only_sorted_directories() {
     let root = Builder::new()
@@ -192,6 +356,28 @@ async fn session_bootstrap_route_returns_empty_provider_report() {
     assert_eq!(value["data"]["projected_sessions"], 0);
     assert_eq!(value["data"]["unchanged_sessions"], 0);
     assert_eq!(value["data"]["failures"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn workspace_scan_route_runs_global_provider_bootstrap() {
+    let dir = tempfile::tempdir().unwrap();
+    let _home = ConfigTestHome::new(dir.path());
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/workspaces/scan")
+        .body(Body::empty())
+        .unwrap();
+
+    let (status, value) = read_json(router(), request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let report = &value["data"];
+    let attempted_providers = report["scanned_providers"].as_u64().unwrap()
+        + report["failed_providers"].as_u64().unwrap()
+        + report["unsupported_providers"].as_u64().unwrap();
+    assert!(attempted_providers > 1);
+    assert!(report["discovered_sessions"].as_u64().is_some());
+    assert!(report.get("queued").is_none());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1095,6 +1281,7 @@ async fn provider_hooks_route_reports_scan_support() {
         .tempdir()
         .unwrap();
     let _config_home = ConfigTestHome::new(home.path());
+    let _hook_home = memorph::hooks::test_support::TestHookHomeGuard::new();
     let request = Request::builder()
         .uri("/api/v1/agents/kimi/hooks/discovered")
         .body(Body::empty())
@@ -1106,6 +1293,58 @@ async fn provider_hooks_route_reports_scan_support() {
     assert_eq!(value["ok"], true);
     assert_eq!(value["data"]["provider"], "kimi");
     assert!(value["data"]["hooks"].is_array());
+}
+
+#[tokio::test]
+async fn provider_hooks_route_deletes_a_detected_hook_entry() {
+    let home = Builder::new()
+        .prefix("memorph-provider-hooks-delete")
+        .tempdir()
+        .unwrap();
+    let _config_home = ConfigTestHome::new(home.path());
+    let _hook_home = memorph::hooks::test_support::TestHookHomeGuard::new();
+    let path = memorph::hooks::shared::hook_home_dir().join(".claude/settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    memorph::hooks::config_formats::json_hooks::write_json_object(
+        &path,
+        &serde_json::from_value(serde_json::json!({
+            "hooks": {"PreToolUse": [
+                {"command": "echo third-party"},
+                {"command": "memorph __hook-bridge --managed-version hook-v1"}
+            ]}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let request = Request::builder()
+        .uri("/api/v1/agents/claude/hooks/discovered")
+        .body(Body::empty())
+        .unwrap();
+    let (status, value) = read_json(router(), request).await;
+    assert_eq!(status, StatusCode::OK);
+    let hook = &value["data"]["hooks"][0];
+    let event = hook["event"].as_str().unwrap();
+    let index = hook["index"].as_u64().unwrap();
+    let fingerprint = hook["fingerprint"].as_str().unwrap();
+
+    let delete_request = Request::builder()
+        .method("DELETE")
+        .uri(format!(
+            "/api/v1/agents/claude/hooks/discovered/{}/{}/{}",
+            event, index, fingerprint
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let (delete_status, delete_value) = read_json(router(), delete_request).await;
+
+    assert_eq!(delete_status, StatusCode::OK);
+    assert_eq!(delete_value["ok"], true);
+    assert!(delete_value["data"]["changed"].as_bool().unwrap());
+
+    let updated = memorph::hooks::discovery::list("claude").unwrap();
+    assert_eq!(updated.hooks.len(), 1);
+    assert!(updated.hooks[0].managed_by_memorph);
 }
 
 #[tokio::test]

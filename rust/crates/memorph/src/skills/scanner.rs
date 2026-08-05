@@ -6,8 +6,10 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use super::{
-    inspection::{inspect_bundle, read_frontmatter, SkillAgent, SkillEntry, SkillsOverview},
-    invocation, repository,
+    inspection::{
+        inspect_bundle, read_frontmatter, BundleInspection, SkillAgent, SkillEntry, SkillsOverview,
+    },
+    repository,
 };
 use crate::storage::local_store::LocalSqliteStore;
 
@@ -23,8 +25,6 @@ pub struct ScanSummary {
     pub roots_scanned: usize,
     pub skills_seen: usize,
     pub installations_seen: usize,
-    pub session_sources_seen: usize,
-    pub session_index: invocation::IndexSummary,
 }
 
 pub fn persist_default(overview: &SkillsOverview, mode: ScanMode) -> Result<ScanSummary> {
@@ -51,14 +51,13 @@ pub fn persist(
         skills_seen: overview.skills.len(),
         ..ScanSummary::default()
     };
-    let mut catalog_changed = false;
     for agent in &overview.agents {
         let entries = entries_for_agent(overview, agent);
-        let (catalog, installations) = records(&entries, agent)?;
+        let (catalog, installations) = records(&entries, agent, overview.catalog_only)?;
         let fingerprint = root_fingerprint(agent, &catalog, &installations);
-        catalog_changed |= repository::persist_root(
+        repository::persist_root(
             conn,
-            &agent.provider_id,
+            &agent.agent_id,
             &agent.scope_kind,
             agent
                 .workspace_dir
@@ -75,11 +74,15 @@ pub fn persist(
         summary.roots_scanned += 1;
         summary.installations_seen += installations.len();
     }
-    summary.session_index = invocation::index(conn, catalog_changed)?;
-    summary.session_sources_seen = summary.session_index.sources_scanned
-        + summary.session_index.sources_skipped
-        + summary.session_index.sources_failed;
     Ok(summary)
+}
+
+fn installation_used_by(agent_id: &str) -> &str {
+    if agent_id == "agents-shared" {
+        "all"
+    } else {
+        agent_id
+    }
 }
 
 fn entries_for_agent<'a>(overview: &'a SkillsOverview, agent: &SkillAgent) -> Vec<&'a SkillEntry> {
@@ -90,7 +93,7 @@ fn entries_for_agent<'a>(overview: &'a SkillsOverview, agent: &SkillAgent) -> Ve
             skill
                 .installations
                 .iter()
-                .any(|item| item.provider_id == agent.provider_id)
+                .any(|item| item.used_by == installation_used_by(&agent.agent_id))
         })
         .collect()
 }
@@ -98,6 +101,7 @@ fn entries_for_agent<'a>(overview: &'a SkillsOverview, agent: &SkillAgent) -> Ve
 fn records(
     entries: &[&SkillEntry],
     agent: &SkillAgent,
+    catalog_only: bool,
 ) -> Result<(
     Vec<repository::CatalogRecord>,
     Vec<repository::InstallationRecord>,
@@ -106,13 +110,23 @@ fn records(
     let mut installations = Vec::new();
     for skill in entries {
         for item in skill.installations.iter().filter(|item| {
-            item.provider_id == agent.provider_id && item.path.join("SKILL.md").is_file()
+            item.used_by == installation_used_by(&agent.agent_id)
+                && item.path.join("SKILL.md").is_file()
         }) {
             let entry_path = item.path.join("SKILL.md");
             let entry = fs::read(&entry_path)
                 .with_context(|| format!("Failed to read {}", item.path.display()))?;
             let entry_hash = hash(&entry);
-            let inspection = inspect_bundle(&item.path);
+            let inspection = if catalog_only {
+                BundleInspection {
+                    fingerprint: item.fingerprint.clone(),
+                    statistics: skill.statistics.clone(),
+                    assets: Vec::new(),
+                    issues: skill.issues.clone(),
+                }
+            } else {
+                inspect_bundle(&item.path)
+            };
             let frontmatter = read_frontmatter(&entry_path);
             let id = format!(
                 "skill:{}",
@@ -141,6 +155,7 @@ fn records(
                         .expect("bundle assets are serializable"),
                     file_count: inspection.statistics.files as u64,
                     total_bytes: inspection.statistics.bytes,
+                    tags: tags(agent, &inspection),
                 });
             let metadata = item.path.symlink_metadata()?;
             let is_link = metadata.file_type().is_symlink();
@@ -150,12 +165,12 @@ fn records(
                 .unwrap_or_else(|_| item.path.clone());
             let install_id = format!(
                 "installation:{}",
-                hash(format!("{}:{}", item.provider_id, item.path.display()).as_bytes())
+                hash(format!("{}:{}", item.used_by, item.path.display()).as_bytes())
             );
             installations.push(repository::InstallationRecord {
                 id: install_id,
                 skill_id: id,
-                provider_id: item.provider_id.clone(),
+                used_by: item.used_by.clone(),
                 scope_kind: agent.scope_kind.clone(),
                 workspace_dir: agent
                     .workspace_dir
@@ -188,7 +203,24 @@ fn records(
             });
         }
     }
-    Ok((catalog.into_values().collect(), installations))
+    let mut catalog = catalog.into_values().collect::<Vec<_>>();
+    let mut names = std::collections::BTreeMap::<String, usize>::new();
+    for record in &catalog {
+        *names.entry(record.normalized_name.clone()).or_default() += 1;
+    }
+    for record in &mut catalog {
+        if names
+            .get(&record.normalized_name)
+            .copied()
+            .unwrap_or_default()
+            > 1
+        {
+            record.tags.push("conflict".into());
+        }
+        record.tags.sort();
+        record.tags.dedup();
+    }
+    Ok((catalog, installations))
 }
 
 #[derive(Serialize)]
@@ -226,6 +258,41 @@ fn sections(entry: &str) -> Vec<SectionIndex> {
         .collect()
 }
 
+fn tags(agent: &SkillAgent, inspection: &super::inspection::BundleInspection) -> Vec<String> {
+    let mut tags = vec![format!("scope:{}", agent.scope_kind)];
+    if agent.agent_id == "agents-shared" {
+        tags.extend(["shared".into(), "used-by:all".into()]);
+    } else {
+        tags.push(format!("used-by:{}", agent.agent_id));
+    }
+    if inspection.statistics.scripts > 0 {
+        tags.push("has:scripts".into());
+    }
+    if inspection.statistics.references > 0 {
+        tags.push("has:references".into());
+    }
+    if inspection.statistics.assets > 0 {
+        tags.push("has:assets".into());
+    }
+    if inspection
+        .issues
+        .iter()
+        .any(|issue| issue.message.starts_with("Risk signal:"))
+    {
+        tags.push("risk".into());
+    }
+    if inspection
+        .issues
+        .iter()
+        .any(|issue| issue.message == "File is unreadable")
+    {
+        tags.push("missing".into());
+    }
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
 fn trigger_terms(skill: &SkillEntry, metadata: &BTreeMap<String, String>) -> Vec<String> {
     let mut terms = vec![skill.id.clone(), skill.name.clone()];
     for key in ["trigger", "triggers", "command"] {
@@ -257,7 +324,7 @@ fn root_fingerprint(
         .iter()
         .map(|item| (item.id.as_str(), item))
         .collect();
-    let mut value = format!("{}:{}", agent.provider_id, agent.skills_dir.display());
+    let mut value = format!("{}:{}", agent.agent_id, agent.skills_dir.display());
     for item in installations {
         let entry_hash = entry_by_id
             .get(item.skill_id.as_str())
@@ -279,6 +346,7 @@ fn hash(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::skills::inspection::{SkillInstallation, SkillStatistics};
+    use crate::skills::invocation;
 
     #[test]
     fn persists_all_session_sources_without_a_200_item_limit() {
@@ -318,7 +386,7 @@ mod tests {
         fs::write(path.join("notes.txt"), "actual bundle file").unwrap();
         let mut overview = SkillsOverview {
             agents: vec![SkillAgent {
-                provider_id: "codex".into(),
+                agent_id: "codex".into(),
                 name: "Codex".into(),
                 skills_dir: root,
                 scope_kind: "global".into(),
@@ -341,7 +409,7 @@ mod tests {
                 },
                 issues: vec![],
                 installations: vec![SkillInstallation {
-                    provider_id: "codex".into(),
+                    used_by: "codex".into(),
                     path,
                     managed: false,
                     deployment_mode: "external".into(),
@@ -350,8 +418,14 @@ mod tests {
                     drifted: false,
                 }],
             }],
+            catalog_only: false,
         };
         let mut store = LocalSqliteStore::open(dir.path().join("memorph.db")).unwrap();
+        store.connection().execute(
+            "INSERT INTO session_sources (id, provider_id, provider_session_id, source_path, first_seen_at_ms, last_seen_at_ms)
+             VALUES ('source-1', 'codex', 'session-1', '/tmp/session.jsonl', 1, 1)",
+            [],
+        ).unwrap();
         let summary = persist(store.connection_mut(), &overview, ScanMode::Incremental).unwrap();
         let count: i64 = store
             .connection()
@@ -366,6 +440,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(summary.installations_seen, 1);
+        let session_scan_states: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM skill_scan_state WHERE state_kind IN ('session-source', 'aggregate')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let invocation_rows: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM skill_invocations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(session_scan_states, 0);
+        assert_eq!(invocation_rows, 0);
         assert_eq!(count, 1);
         assert_eq!(metadata.0.as_deref(), Some("1.2.3"));
         assert_eq!(metadata.1.as_deref(), Some("Ada"));

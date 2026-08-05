@@ -39,7 +39,7 @@ pub struct ContextSummary {
 
 pub fn summary(
     conn: &Connection,
-    provider: Option<&str>,
+    used_by: Option<&str>,
     baseline: Option<u64>,
 ) -> Result<ContextSummary> {
     let mut statement = conn.prepare(
@@ -48,10 +48,10 @@ pub fn summary(
                 (SELECT MAX(token_count) FROM skill_invocations v WHERE v.skill_id = c.id AND token_count IS NOT NULL)
          FROM skill_catalog c JOIN skill_installations i ON i.id = (
            SELECT id FROM skill_installations WHERE skill_id = c.id AND status = 'active'
-             AND (?1 IS NULL OR provider_id = ?1) ORDER BY provider_id, id LIMIT 1)
+             AND (?1 IS NULL OR used_by = ?1 OR used_by = 'all') ORDER BY used_by, id LIMIT 1)
          WHERE c.missing_since_ms IS NULL ORDER BY c.canonical_name COLLATE NOCASE",
     )?;
-    let rows = statement.query_map([provider], |row| {
+    let rows = statement.query_map([used_by], |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -88,7 +88,7 @@ pub fn detail(conn: &Connection, skill_id: &str, baseline: Option<u64>) -> Resul
                     (SELECT MIN(token_count) FROM skill_invocations v WHERE v.skill_id = c.id AND token_count IS NOT NULL),
                     (SELECT MAX(token_count) FROM skill_invocations v WHERE v.skill_id = c.id AND token_count IS NOT NULL)
              FROM skill_catalog c JOIN skill_installations i ON i.id = (
-               SELECT id FROM skill_installations WHERE skill_id = c.id AND status = 'active' ORDER BY provider_id, id LIMIT 1)
+               SELECT id FROM skill_installations WHERE skill_id = c.id AND status = 'active' ORDER BY used_by, id LIMIT 1)
              WHERE c.id = ?1",
             [skill_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, Option<i64>>(4)?)),

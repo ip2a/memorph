@@ -1,6 +1,7 @@
 pub mod conflicts;
 pub mod context;
 pub mod coverage;
+pub mod discovery;
 pub mod graph;
 pub mod health;
 pub mod inspection;

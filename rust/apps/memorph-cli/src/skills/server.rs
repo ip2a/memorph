@@ -8,7 +8,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
@@ -17,7 +16,7 @@ use std::{
 use walkdir::WalkDir;
 
 use memorph::skills::{
-    conflicts, context, coverage, graph, health,
+    conflicts, context, coverage, discovery, graph, health,
     invocation::{self, StatsQuery},
     prune,
     repository::{self, CatalogQuery},
@@ -33,9 +32,9 @@ struct SkillsState {
 #[derive(Debug, Deserialize, Serialize)]
 struct SkillMutation {
     skill_id: String,
-    provider: String,
+    used_by: String,
     #[serde(default)]
-    source_provider: Option<String>,
+    source_used_by: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -76,7 +75,9 @@ fn router_with_state(
 ) -> Router {
     Router::new()
         .route("/api/v1/skills", get(list_skills))
+        .route("/api/v1/skills/catalog", get(list_skills))
         .route("/api/v1/skills/scan", post(scan_skills))
+        .route("/api/v1/skills/analyze", post(analyze_skills))
         .route("/api/v1/skills/stats/summary", get(get_stats_summary))
         .route("/api/v1/skills/context/summary", get(get_context_summary))
         .route(
@@ -95,8 +96,17 @@ fn router_with_state(
         .route("/api/v1/skills/graph", get(get_skill_graph))
         .route("/api/v1/skills/stats/ranking", get(get_stats_ranking))
         .route("/api/v1/skills/{skill_id}", get(get_skill))
+        .route("/api/v1/skills/detail/{skill_id}", get(get_skill))
         .route("/api/v1/skills/{skill_id}/tree", get(get_skill_tree))
-        .route("/api/v1/skills/{skill_id}/file", get(get_skill_file))
+        .route("/api/v1/skills/detail/{skill_id}/tree", get(get_skill_tree))
+        .route(
+            "/api/v1/skills/{skill_id}/file",
+            get(get_skill_file).put(put_skill_file),
+        )
+        .route(
+            "/api/v1/skills/detail/{skill_id}/file",
+            get(get_skill_file).put(put_skill_file),
+        )
         .route(
             "/api/v1/skills/{skill_id}/invocations",
             get(get_skill_invocations),
@@ -128,124 +138,23 @@ fn router_with_state(
         })
 }
 
-const SKILL_PROVIDERS: [(&str, &str, &str, &str); 5] = [
-    ("claude", "Claude Code", ".claude/skills", ".claude/skills"),
-    ("codex", "Codex", ".codex/skills", ".codex/skills"),
-    ("gemini", "Gemini CLI", ".gemini/skills", ".gemini/skills"),
-    (
-        "opencode",
-        "OpenCode",
-        ".config/opencode/skills",
-        ".opencode/skills",
-    ),
-    ("hermes", "Hermes", ".hermes/skills", ".hermes/skills"),
-];
-
 fn default_agents() -> Vec<memorph::skills::inspection::SkillAgent> {
     let home = dirs::home_dir().unwrap_or_default();
-    SKILL_PROVIDERS
-        .iter()
-        .map(
-            |(provider_id, name, global_root, _)| memorph::skills::inspection::SkillAgent {
-                provider_id: (*provider_id).into(),
-                name: (*name).into(),
-                skills_dir: home.join(global_root),
-                scope_kind: "global".into(),
-                workspace_dir: None,
-            },
-        )
-        .collect()
+    discovery::agents(&home, None)
+}
+
+fn agent_id_for_used_by(used_by: &str) -> &str {
+    if used_by == "all" {
+        "agents-shared"
+    } else {
+        used_by
+    }
 }
 
 fn discover(
     agents: &[memorph::skills::inspection::SkillAgent],
 ) -> memorph::skills::inspection::SkillsOverview {
-    let mut skills: BTreeMap<String, memorph::skills::inspection::SkillEntry> = BTreeMap::new();
-
-    for agent in agents {
-        let Ok(children) = fs::read_dir(&agent.skills_dir) else {
-            continue;
-        };
-        let mut children = children.filter_map(Result::ok).collect::<Vec<_>>();
-        children.sort_by_key(|entry| entry.file_name());
-
-        for child in children {
-            let path = child.path();
-            if !path.is_dir() || !path.join("SKILL.md").is_file() {
-                continue;
-            }
-            let directory = child.file_name().to_string_lossy().into_owned();
-            let (name, description) = read_metadata(&path.join("SKILL.md"), &directory);
-            let id = {
-                let normalized = skill_id(&name);
-                if normalized.is_empty() {
-                    skill_id(&directory)
-                } else {
-                    normalized
-                }
-            };
-            let bundle = memorph::skills::inspection::inspect_bundle(&path);
-            let is_link = path
-                .symlink_metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_symlink());
-            let installation = memorph::skills::inspection::SkillInstallation {
-                provider_id: agent.provider_id.clone(),
-                fingerprint: bundle.fingerprint.clone(),
-                drifted: false,
-                managed: is_link
-                    || path
-                        .join(memorph::skills::inspection::MANAGED_MARKER)
-                        .is_file(),
-                deployment_mode: if is_link {
-                    "symlink"
-                } else if path
-                    .join(memorph::skills::inspection::MANAGED_MARKER)
-                    .is_file()
-                {
-                    "copy"
-                } else {
-                    "external"
-                }
-                .into(),
-                link_valid: !is_link || path.canonicalize().is_ok(),
-                path,
-            };
-            let skill = skills.entry(id.clone()).or_insert_with(|| {
-                memorph::skills::inspection::SkillEntry {
-                    id,
-                    name,
-                    description: description.clone(),
-                    directory,
-                    fingerprint: bundle.fingerprint.clone(),
-                    conflict: false,
-                    statistics: bundle.statistics.clone(),
-                    issues: bundle.issues.clone(),
-                    installations: Vec::new(),
-                }
-            });
-            if skill.description.is_none() {
-                skill.description = description;
-            }
-            if skill.fingerprint != bundle.fingerprint {
-                skill.conflict = true;
-            }
-            skill.installations.push(installation);
-        }
-    }
-
-    let skills = skills
-        .into_values()
-        .map(|mut skill| {
-            for installation in &mut skill.installations {
-                installation.drifted = installation.fingerprint != skill.fingerprint;
-            }
-            skill
-        })
-        .collect();
-    memorph::skills::inspection::SkillsOverview {
-        agents: agents.to_vec(),
-        skills,
-    }
+    discovery::discover(agents)
 }
 
 fn image_mime_type(ext: &str) -> &'static str {
@@ -285,50 +194,51 @@ fn bundle_detail(
             .cloned()
             .collect(),
         skill,
+        tags: Vec::new(),
+        used_by: Vec::new(),
     })
 }
 
-fn read_metadata(path: &Path, directory: &str) -> (String, Option<String>) {
-    let Ok(contents) = fs::read_to_string(path) else {
-        return (directory.to_string(), None);
+fn catalog_detail(
+    state: &SkillsState,
+    id: &str,
+) -> Result<memorph::skills::inspection::SkillDetail> {
+    let item = match state.database_path.as_deref() {
+        Some(path) => repository::get_catalog_item_path(path, id)?,
+        None => repository::get_catalog_item_default(id)?,
+    }
+    .ok_or_else(|| anyhow!("Unknown skill: {id}"))?;
+    let installation = item
+        .installations
+        .iter()
+        .find(|item| item.status == "active")
+        .or_else(|| item.installations.first())
+        .ok_or_else(|| anyhow!("Skill has no installation"))?;
+    let path = PathBuf::from(&installation.install_path);
+    let inspection = memorph::skills::inspection::inspect_bundle(&path);
+    let skill = memorph::skills::inspection::SkillEntry {
+        id: item.id.clone(),
+        name: item.name,
+        description: item.description,
+        directory: path.to_string_lossy().into_owned(),
+        fingerprint: item.bundle_hash,
+        conflict: item.tags.iter().any(|tag| tag == "conflict"),
+        statistics: inspection.statistics.clone(),
+        issues: inspection.issues.clone(),
+        installations: vec![],
     };
-    let mut name = None;
-    let mut description = None;
-    let mut lines = contents.lines();
-    if lines.next().map(str::trim) == Some("---") {
-        for line in lines {
-            let line = line.trim();
-            if line == "---" {
-                break;
-            }
-            if let Some((key, value)) = line.split_once(':') {
-                let value = value.trim().trim_matches(['\'', '"']);
-                match key.trim() {
-                    "name" if !value.is_empty() => name = Some(value.to_string()),
-                    "description" if !value.is_empty() => description = Some(value.to_string()),
-                    _ => {}
-                }
-            }
-        }
-    }
-    (name.unwrap_or_else(|| directory.to_string()), description)
-}
-
-fn skill_id(name: &str) -> String {
-    let mut id = String::new();
-    let mut separator = false;
-    for ch in name.trim().chars().flat_map(char::to_lowercase) {
-        if ch.is_alphanumeric() || ch == '_' || ch == '-' {
-            if separator && !id.is_empty() {
-                id.push('-');
-            }
-            separator = false;
-            id.push(ch);
-        } else {
-            separator = true;
-        }
-    }
-    id.trim_matches('-').to_string()
+    Ok(memorph::skills::inspection::SkillDetail {
+        frontmatter: memorph::skills::inspection::read_frontmatter(&path.join("SKILL.md")),
+        provider_metadata: inspection
+            .assets
+            .iter()
+            .filter(|asset| asset.category == "metadata")
+            .cloned()
+            .collect(),
+        tags: item.tags,
+        used_by: item.used_by,
+        skill,
+    })
 }
 
 fn validate_directory(directory: &str) -> Result<()> {
@@ -355,15 +265,15 @@ fn install(
         .find(|skill| skill.id == request.skill_id)
         .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
     validate_directory(&skill.directory)?;
-    let source = match request.source_provider.as_deref() {
-        Some(provider) => skill
+    let source = match request.source_used_by.as_deref() {
+        Some(used_by) => skill
             .installations
             .iter()
-            .find(|installation| installation.provider_id == provider)
-            .ok_or_else(|| anyhow!("Skill is not installed for source provider: {provider}"))?,
+            .find(|installation| installation.used_by == used_by)
+            .ok_or_else(|| anyhow!("Skill is not installed for source used_by: {used_by}"))?,
         None if skill.conflict => {
             return Err(anyhow!(
-                "Skill installations contain different content; source_provider is required"
+                "Skill installations contain different content; source_used_by is required"
             ));
         }
         None => skill
@@ -373,8 +283,8 @@ fn install(
     };
     let agent = agents
         .iter()
-        .find(|agent| agent.provider_id == request.provider)
-        .ok_or_else(|| anyhow!("Unknown skill provider: {}", request.provider))?;
+        .find(|agent| agent.agent_id == agent_id_for_used_by(&request.used_by))
+        .ok_or_else(|| anyhow!("Unknown skill used_by: {}", request.used_by))?;
     let destination = agent.skills_dir.join(&skill.directory);
     if destination.exists() {
         return Err(anyhow!(
@@ -470,12 +380,12 @@ fn uninstall(
         .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
     let agent = agents
         .iter()
-        .find(|agent| agent.provider_id == request.provider)
-        .ok_or_else(|| anyhow!("Unknown skill provider: {}", request.provider))?;
+        .find(|agent| agent.agent_id == agent_id_for_used_by(&request.used_by))
+        .ok_or_else(|| anyhow!("Unknown skill used_by: {}", request.used_by))?;
     let installation = skill
         .installations
         .iter()
-        .find(|installation| installation.provider_id == request.provider)
+        .find(|installation| installation.used_by == request.used_by)
         .ok_or_else(|| anyhow!("Skill is not installed for {}", agent.name))?;
     let directory = installation
         .path
@@ -508,7 +418,7 @@ fn uninstall(
 #[derive(Debug, Deserialize)]
 struct SkillFileQuery {
     path: String,
-    provider: Option<String>,
+    used_by: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -523,27 +433,55 @@ struct SkillFilePreview {
     content: String,
 }
 
-fn preview_file(
-    overview: &memorph::skills::inspection::SkillsOverview,
+fn resolve_skill_bundle_path(
+    state: &SkillsState,
     skill_id: &str,
-    query: &SkillFileQuery,
-) -> Result<SkillFilePreview> {
-    let skill = overview
-        .skills
-        .iter()
-        .find(|skill| skill.id == skill_id)
-        .ok_or_else(|| anyhow!("Unknown skill: {skill_id}"))?;
-    let installation = match query.provider.as_deref() {
-        Some(provider) => skill
+    used_by: Option<&str>,
+) -> Result<PathBuf> {
+    let overview = discover(&state.agents);
+    if let Some(skill) = overview.skills.iter().find(|skill| skill.id == skill_id) {
+        let installation = match used_by {
+            Some(agent) => skill
+                .installations
+                .iter()
+                .find(|item| item.used_by == agent)
+                .ok_or_else(|| anyhow!("Skill is not installed for {agent}"))?,
+            None => skill
+                .installations
+                .first()
+                .ok_or_else(|| anyhow!("Skill has no installation"))?,
+        };
+        return Ok(installation.path.clone());
+    }
+
+    let item = match state.database_path.as_deref() {
+        Some(path) => repository::get_catalog_item_path(path, skill_id)?,
+        None => repository::get_catalog_item_default(skill_id)?,
+    }
+    .ok_or_else(|| anyhow!("Unknown skill: {skill_id}"))?;
+    let installation = match used_by {
+        Some(agent) => item
             .installations
             .iter()
-            .find(|item| item.provider_id == provider)
-            .ok_or_else(|| anyhow!("Skill is not installed for {provider}"))?,
-        None => skill
+            .find(|item| item.status == "active" && item.used_by == agent)
+            .or_else(|| item.installations.iter().find(|item| item.used_by == agent))
+            .ok_or_else(|| anyhow!("Skill is not installed for {agent}"))?,
+        None => item
             .installations
-            .first()
+            .iter()
+            .find(|item| item.status == "active")
+            .or_else(|| item.installations.first())
             .ok_or_else(|| anyhow!("Skill has no installation"))?,
     };
+    Ok(PathBuf::from(&installation.install_path))
+}
+
+fn resolve_skill_file(
+    state: &SkillsState,
+    skill_id: &str,
+    query: &SkillFileQuery,
+) -> Result<(memorph::skills::inspection::SkillAsset, PathBuf)> {
+    let bundle_path = resolve_skill_bundle_path(state, skill_id, query.used_by.as_deref())?;
     let relative = Path::new(&query.path);
     if relative.is_absolute()
         || relative.components().count() == 0
@@ -553,20 +491,30 @@ fn preview_file(
     {
         return Err(anyhow!("Unsafe skill file path"));
     }
-    let inspection = memorph::skills::inspection::inspect_bundle(&installation.path);
+    let inspection = memorph::skills::inspection::inspect_bundle(&bundle_path);
     let asset = inspection
         .assets
         .iter()
         .find(|asset| asset.path == query.path)
-        .ok_or_else(|| anyhow!("Unknown skill asset: {}", query.path))?;
+        .ok_or_else(|| anyhow!("Unknown skill asset: {}", query.path))?
+        .clone();
     if !asset.previewable {
         return Err(anyhow!("Skill asset is not previewable"));
     }
-    let root = installation.path.canonicalize()?;
+    let root = bundle_path.canonicalize()?;
     let target = root.join(relative).canonicalize()?;
     if !target.starts_with(&root) {
         return Err(anyhow!("Skill file escapes its bundle"));
     }
+    Ok((asset, target))
+}
+
+fn preview_file(
+    state: &SkillsState,
+    skill_id: &str,
+    query: &SkillFileQuery,
+) -> Result<SkillFilePreview> {
+    let (asset, target) = resolve_skill_file(state, skill_id, query)?;
     let file = fs::File::open(&target)?;
     let mut bytes = Vec::new();
     file.take(memorph::skills::inspection::MAX_PREVIEW_BYTES + 1)
@@ -601,11 +549,39 @@ fn preview_file(
     })
 }
 
+#[derive(Debug, Deserialize)]
+struct SkillFileUpdate {
+    content: String,
+}
+
+fn write_skill_file(
+    state: &SkillsState,
+    skill_id: &str,
+    query: &SkillFileQuery,
+    update: &SkillFileUpdate,
+) -> Result<SkillFilePreview> {
+    let (asset, target) = resolve_skill_file(state, skill_id, query)?;
+    let extension = asset.extension.as_deref().unwrap_or("");
+    if memorph::skills::inspection::is_image_extension(extension) {
+        return Err(anyhow!("Skill asset is not editable"));
+    }
+    if update.content.len() as u64 > memorph::skills::inspection::MAX_PREVIEW_BYTES {
+        return Err(anyhow!("Skill asset exceeds preview limit"));
+    }
+    if update.content.contains('\0') {
+        return Err(anyhow!("Skill asset is not UTF-8 text"));
+    }
+    memorph::storage::atomic_write::write_string_atomic(&target, &update.content)?;
+    preview_file(state, skill_id, query)
+}
+
 async fn get_skill(
     State(state): State<SkillsState>,
     AxumPath(skill_id): AxumPath<String>,
 ) -> impl IntoResponse {
-    match bundle_detail(&discover(&state.agents), &skill_id) {
+    match bundle_detail(&discover(&state.agents), &skill_id)
+        .or_else(|_| catalog_detail(&state, &skill_id))
+    {
         Ok(detail) => ApiResponse::success(detail).into_response(),
         Err(error) => error_response(error),
     }
@@ -615,21 +591,19 @@ async fn get_skill_tree(
     State(state): State<SkillsState>,
     AxumPath(skill_id): AxumPath<String>,
 ) -> impl IntoResponse {
-    let overview = discover(&state.agents);
-    let Some(skill) = overview.skills.iter().find(|skill| skill.id == skill_id) else {
-        return error_response(anyhow!("Unknown skill: {skill_id}"));
-    };
-    let Some(source) = skill.installations.first() else {
-        return error_response(anyhow!("Skill has no installation"));
-    };
-    let inspection = memorph::skills::inspection::inspect_bundle(&source.path);
-    ApiResponse::success(memorph::skills::inspection::SkillTree {
-        skill_id,
-        fingerprint: inspection.fingerprint,
-        assets: inspection.assets,
-        issues: inspection.issues,
-    })
-    .into_response()
+    match resolve_skill_bundle_path(&state, &skill_id, None) {
+        Ok(path) => {
+            let inspection = memorph::skills::inspection::inspect_bundle(&path);
+            ApiResponse::success(memorph::skills::inspection::SkillTree {
+                skill_id,
+                fingerprint: inspection.fingerprint,
+                assets: inspection.assets,
+                issues: inspection.issues,
+            })
+            .into_response()
+        }
+        Err(error) => error_response(error),
+    }
 }
 
 async fn get_skill_file(
@@ -637,7 +611,19 @@ async fn get_skill_file(
     AxumPath(skill_id): AxumPath<String>,
     Query(query): Query<SkillFileQuery>,
 ) -> impl IntoResponse {
-    match preview_file(&discover(&state.agents), &skill_id, &query) {
+    match preview_file(&state, &skill_id, &query) {
+        Ok(preview) => ApiResponse::success(preview).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn put_skill_file(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+    Query(query): Query<SkillFileQuery>,
+    Json(update): Json<SkillFileUpdate>,
+) -> impl IntoResponse {
+    match write_skill_file(&state, &skill_id, &query, &update) {
         Ok(preview) => ApiResponse::success(preview).into_response(),
         Err(error) => error_response(error),
     }
@@ -662,9 +648,12 @@ async fn scan_skills(
                 "Skill workspace must be an existing absolute directory"
             ));
         }
-        for (provider_id, name, _, relative) in SKILL_PROVIDERS {
+        for (agent_id, name, _, relative) in discovery::SKILL_AGENTS {
+            if agent_id == "agents-shared" {
+                continue;
+            }
             agents.push(memorph::skills::inspection::SkillAgent {
-                provider_id: provider_id.into(),
+                agent_id: agent_id.into(),
                 name: name.into(),
                 skills_dir: workspace.join(relative),
                 scope_kind: "project".into(),
@@ -718,6 +707,41 @@ async fn scan_skills(
     .into_response()
 }
 
+async fn analyze_skills(
+    State(state): State<SkillsState>,
+    Json(request): Json<SkillScanRequest>,
+) -> impl IntoResponse {
+    let mode = request.mode.unwrap_or(ScanMode::Incremental);
+    let database_path = state
+        .database_path
+        .as_deref()
+        .map(|p| p.as_path().to_path_buf());
+    let force = mode == ScanMode::Full;
+    std::thread::Builder::new()
+        .name("memorph-skill-analyze".into())
+        .spawn(move || {
+            let result = match database_path.as_deref() {
+                Some(path) => memorph::storage::local_store::LocalSqliteStore::open(path)
+                    .and_then(|mut store| invocation::index(store.connection_mut(), force)),
+                None => memorph::storage::local_store::LocalSqliteStore::open_default()
+                    .and_then(|mut store| invocation::index(store.connection_mut(), force)),
+            };
+            if let Err(error) = result {
+                memorph::logging::error(
+                    "skill_analyze_background",
+                    format!("background skill analysis failed: {error:#}"),
+                );
+            }
+        })
+        .ok();
+
+    let mode = match mode {
+        ScanMode::Incremental => "incremental",
+        ScanMode::Full => "full",
+    };
+    ApiResponse::success(SkillAnalyzeQueued { queued: true, mode }).into_response()
+}
+
 #[derive(Debug, Serialize)]
 struct SkillScanQueued {
     queued: bool,
@@ -726,11 +750,18 @@ struct SkillScanQueued {
     skills_seen: usize,
 }
 
+#[derive(Debug, Serialize)]
+struct SkillAnalyzeQueued {
+    queued: bool,
+    mode: &'static str,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CatalogListQuery {
     query: Option<String>,
-    provider: Option<String>,
+    #[serde(rename = "used_by")]
+    used_by: Option<String>,
     scope: Option<String>,
     sort: Option<String>,
     order: Option<String>,
@@ -744,7 +775,7 @@ async fn list_skills(
 ) -> impl IntoResponse {
     let catalog_query = CatalogQuery {
         query: query.query,
-        provider: query.provider,
+        used_by: query.used_by,
         scope: query.scope,
         sort: query.sort,
         descending: query.order.as_deref() == Some("desc"),
@@ -969,7 +1000,7 @@ async fn get_coverage_evidence(
 
 #[derive(Debug, Default, Deserialize)]
 struct ContextQuery {
-    provider: Option<String>,
+    used_by: Option<String>,
     #[serde(rename = "baselineTokens")]
     baseline_tokens: Option<u64>,
 }
@@ -981,7 +1012,7 @@ async fn get_context_summary(
     let result = stats_store(&state).and_then(|store| {
         context::summary(
             store.connection(),
-            query.provider.as_deref(),
+            query.used_by.as_deref(),
             query.baseline_tokens,
         )
     });
@@ -1151,15 +1182,13 @@ mod tests {
             ("gemini", "Gemini CLI"),
         ]
         .into_iter()
-        .map(
-            |(provider_id, name)| memorph::skills::inspection::SkillAgent {
-                provider_id: provider_id.into(),
-                name: name.into(),
-                skills_dir: root.join(provider_id).join("skills"),
-                scope_kind: "global".into(),
-                workspace_dir: None,
-            },
-        )
+        .map(|(agent_id, name)| memorph::skills::inspection::SkillAgent {
+            agent_id: agent_id.into(),
+            name: name.into(),
+            skills_dir: root.join(agent_id).join("skills"),
+            scope_kind: "global".into(),
+            workspace_dir: None,
+        })
         .collect()
     }
 
@@ -1291,8 +1320,8 @@ mod tests {
         let agents = agents(root.path());
         let request = SkillMutation {
             skill_id: "writer".into(),
-            provider: "codex".into(),
-            source_provider: None,
+            used_by: "codex".into(),
+            source_used_by: None,
         };
 
         let overview = install(&agents, &request).unwrap();
@@ -1304,7 +1333,7 @@ mod tests {
         let installation = overview.skills[0]
             .installations
             .iter()
-            .find(|item| item.provider_id == "codex")
+            .find(|item| item.used_by == "codex")
             .unwrap();
         assert!(installation.managed);
         assert!(matches!(
@@ -1323,8 +1352,8 @@ mod tests {
         let agents = agents(root.path());
         let managed = SkillMutation {
             skill_id: "writer".into(),
-            provider: "codex".into(),
-            source_provider: None,
+            used_by: "codex".into(),
+            source_used_by: None,
         };
         install(&agents, &managed).unwrap();
         uninstall(&agents, &managed).unwrap();
@@ -1332,8 +1361,8 @@ mod tests {
 
         let user_owned = SkillMutation {
             skill_id: "writer".into(),
-            provider: "claude".into(),
-            source_provider: None,
+            used_by: "claude".into(),
+            source_used_by: None,
         };
         assert!(uninstall(&agents, &user_owned).is_err());
         assert!(root.path().join("claude/skills/writer").exists());
@@ -1380,12 +1409,12 @@ mod tests {
         assert_eq!(detail.provider_metadata.len(), 1);
         let missing_source = SkillMutation {
             skill_id: "writer".into(),
-            provider: "gemini".into(),
-            source_provider: None,
+            used_by: "gemini".into(),
+            source_used_by: None,
         };
         assert!(install(&agents(root.path()), &missing_source).is_err());
         let selected_source = SkillMutation {
-            source_provider: Some("claude".into()),
+            source_used_by: Some("claude".into()),
             ..missing_source
         };
         assert!(install(&agents(root.path()), &selected_source).is_ok());
@@ -1426,32 +1455,35 @@ mod tests {
             0xAE, 0x42, 0x60, 0x82,
         ];
         fs::write(skill.join("assets/icon.png"), png).unwrap();
-        let overview = discover(&agents(root.path()));
+        let state = SkillsState {
+            agents: Arc::new(agents(root.path())),
+            database_path: None,
+        };
 
         assert!(preview_file(
-            &overview,
+            &state,
             "writer",
             &SkillFileQuery {
                 path: "../secret".into(),
-                provider: None
+                used_by: None
             }
         )
         .is_err());
         assert!(preview_file(
-            &overview,
+            &state,
             "writer",
             &SkillFileQuery {
                 path: "image.bin".into(),
-                provider: None
+                used_by: None
             }
         )
         .is_err());
         let preview = preview_file(
-            &overview,
+            &state,
             "writer",
             &SkillFileQuery {
                 path: "SKILL.md".into(),
-                provider: None,
+                used_by: None,
             },
         )
         .unwrap();
@@ -1459,11 +1491,11 @@ mod tests {
         assert_eq!(preview.content, "# Writer");
 
         let image = preview_file(
-            &overview,
+            &state,
             "writer",
             &SkillFileQuery {
                 path: "assets/icon.png".into(),
-                provider: None,
+                used_by: None,
             },
         )
         .unwrap();
@@ -1507,15 +1539,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_does_not_scan_skill_directories() {
+    async fn empty_catalog_requires_scan_until_empty_roots_are_scanned() {
         let root = tempfile::tempdir().unwrap();
-        create_skill(root.path(), "claude", "writer", "# Writer");
         let app = router_for(agents(root.path()));
 
         let (status, listed) = json(
-            app,
+            app.clone(),
             Request::builder()
-                .uri("/api/v1/skills")
+                .uri("/api/v1/skills/catalog")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1524,12 +1555,48 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(listed["data"]["total"], 0);
         assert_eq!(listed["data"]["completeness"]["status"], "unknown");
+        assert_eq!(listed["data"]["needs_scan"], true);
+
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/scan")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let (status, listed) = json(
+                app.clone(),
+                Request::builder()
+                    .uri("/api/v1/skills/catalog")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            if listed["data"]["completeness"]["status"] == "complete" {
+                assert_eq!(listed["data"]["total"], 0);
+                assert_eq!(listed["data"]["needs_scan"], false);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "empty skill-root scan did not complete: {listed}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
     }
 
     #[tokio::test]
     async fn api_lists_installs_and_removes_skills() {
         let root = tempfile::tempdir().unwrap();
-        create_skill(
+        let skill = create_skill(
             root.path(),
             "claude",
             "writer",
@@ -1551,7 +1618,51 @@ mod tests {
 
         let listed = wait_for_skills(app.clone(), 2000).await;
         assert_eq!(listed["data"]["items"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["data"]["items"][0]["used_by"][0], "claude");
+        assert_eq!(
+            listed["data"]["items"][0]["installations"][0]["used_by"],
+            "claude"
+        );
+        assert!(listed["data"]["items"][0]["installations"][0]
+            .get("provider_id")
+            .is_none());
+        let (status, filtered) = json(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/skills?used_by=claude")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(filtered["data"]["total"], 1);
         let catalog_id = listed["data"]["items"][0]["id"].as_str().unwrap();
+        let store = memorph::storage::local_store::LocalSqliteStore::open(
+            root.path().join("memorph-skills-test.db"),
+        )
+        .unwrap();
+        let invocation_scan_states: i64 = store
+            .connection()
+            .query_row(
+                "SELECT COUNT(*) FROM skill_scan_state WHERE state_kind IN ('session-source', 'aggregate')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(invocation_scan_states, 0);
+
+        let (status, analyzed) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/analyze")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(analyzed["data"]["queued"], true);
 
         for uri in [
             "/api/v1/skills/context/summary?baselineTokens=128000".to_string(),
@@ -1563,6 +1674,8 @@ mod tests {
             format!("/api/v1/skills/{catalog_id}/health"),
             format!("/api/v1/skills/{catalog_id}/conflicts"),
             format!("/api/v1/skills/{catalog_id}/coverage?range=90d"),
+            format!("/api/v1/skills/detail/{catalog_id}"),
+            format!("/api/v1/skills/detail/{catalog_id}/tree"),
         ] {
             let (status, body) = json(
                 app.clone(),
@@ -1575,8 +1688,8 @@ mod tests {
 
         let request = serde_json::to_vec(&SkillMutation {
             skill_id: "writer".into(),
-            provider: "codex".into(),
-            source_provider: None,
+            used_by: "codex".into(),
+            source_used_by: None,
         })
         .unwrap();
         let (status, installed) = json(
@@ -1590,6 +1703,8 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+        assert_eq!(installed["data"]["agents"][0]["agent_id"], "claude");
+        assert!(installed["data"]["agents"][0].get("provider_id").is_none());
         assert_eq!(
             installed["data"]["skills"][0]["installations"]
                 .as_array()
@@ -1667,5 +1782,21 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert_eq!(rejected["ok"], false);
+
+        let (status, updated) = json(
+            router_for(agents(root.path())),
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/skills/writer/file?path=SKILL.md")
+                .header("content-type", "application/json")
+                .body(Body::from(r##"{"content":"# Writer Updated"}"##))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(updated["data"]["content"], "# Writer Updated");
+        assert!(fs::read_to_string(skill.join("SKILL.md"))
+            .unwrap()
+            .contains("# Writer Updated"));
     }
 }

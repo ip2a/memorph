@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use crate::provider_config::{user_visible, ConfigRow, ConfigSource, ConfigTone, ConfigView};
+use crate::provider_config::{entry_metadata, user_visible, ConfigRow, ConfigSource, ConfigTone, ConfigView};
 use crate::provider_settings::{SettingDefinition, SettingKind, SettingScope};
 
 /// The `View`-kind settings the agent page advertises for Claude. This slice is the
@@ -95,7 +95,7 @@ fn mcp(home: &Path) -> ConfigView {
     let mut count = 0usize;
     if let Some(servers) = root.get("mcpServers").and_then(Value::as_object) {
         for (name, cfg) in servers {
-            push_server_section(&mut view, name, cfg, "User");
+            push_server_section(&mut view, name, cfg, "User", &format!("global:{name}"));
             count += 1;
         }
     }
@@ -106,7 +106,7 @@ fn mcp(home: &Path) -> ConfigView {
             };
             let scope = format!("Project · {}", user_visible(Path::new(project_dir)));
             for (name, cfg) in servers {
-                push_server_section(&mut view, name, cfg, &scope);
+                push_server_section(&mut view, name, cfg, &scope, &format!("project:{project_dir}:{name}"));
                 count += 1;
             }
         }
@@ -122,7 +122,7 @@ fn mcp(home: &Path) -> ConfigView {
     view
 }
 
-fn push_server_section(view: &mut ConfigView, name: &str, cfg: &Value, scope: &str) {
+fn push_server_section(view: &mut ConfigView, name: &str, cfg: &Value, scope: &str, location: &str) {
     let transport = cfg.get("type").and_then(Value::as_str).unwrap_or("");
     let mut rows = vec![ConfigRow::fact("Scope", scope)];
 
@@ -170,7 +170,34 @@ fn push_server_section(view: &mut ConfigView, name: &str, cfg: &Value, scope: &s
         );
     }
 
-    view.push_section(name, rows);
+    view.push_entry_section(name, rows, entry_metadata("claude", "view_mcp", location, cfg));
+}
+
+pub(crate) fn remove_mcp(entry_id: &str, expected: &str) -> anyhow::Result<super::RemovalReport> {
+    let home = crate::config::effective_home_dir()?;
+    let path = claude_json(&home);
+    let Some(text) = std::fs::read_to_string(&path).ok() else {
+        return Ok(super::RemovalReport::already_absent("claude", "view_mcp", entry_id));
+    };
+    let mut root: Value = serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("Invalid Claude config: {e}"))?;
+    let mut found = None;
+    if let Some(map) = root.get("mcpServers").and_then(Value::as_object) {
+        for (name, cfg) in map { if entry_metadata("claude", "view_mcp", &format!("global:{name}"), cfg).entry_id == entry_id { found = Some((false, String::new(), name.clone(), cfg.clone())); break; } }
+    }
+    if found.is_none() {
+        if let Some(projects) = root.get("projects").and_then(Value::as_object) {
+            'projects: for (project, value) in projects { if let Some(map) = value.get("mcpServers").and_then(Value::as_object) { for (name, cfg) in map { if entry_metadata("claude", "view_mcp", &format!("project:{project}:{name}"), cfg).entry_id == entry_id { found = Some((true, project.clone(), name.clone(), cfg.clone())); break 'projects; } } } }
+        }
+    }
+    let Some((project, project_dir, name, cfg)) = found else { return Ok(super::RemovalReport::already_absent("claude", "view_mcp", entry_id)); };
+    let location = if project { format!("project:{project_dir}:{name}") } else { format!("global:{name}") };
+    let metadata = entry_metadata("claude", "view_mcp", &location, &cfg);
+    if metadata.fingerprint != expected { return Err(super::RemovalError::Conflict.into()); }
+    if project { root.get_mut("projects").and_then(Value::as_object_mut).and_then(|p| p.get_mut(&project_dir)).and_then(Value::as_object_mut).and_then(|p| p.get_mut("mcpServers")).and_then(Value::as_object_mut).map(|m| m.remove(&name)); }
+    else { root.get_mut("mcpServers").and_then(Value::as_object_mut).map(|m| m.remove(&name)); }
+    let backup = super::backup_config(&path)?;
+    crate::storage::atomic_write::write_string_atomic(&path, &serde_json::to_string_pretty(&root)?)?;
+    Ok(super::RemovalReport::removed("claude", "view_mcp", entry_id, backup))
 }
 
 // --- Plugins -----------------------------------------------------------------

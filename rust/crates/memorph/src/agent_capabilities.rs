@@ -35,6 +35,7 @@ pub struct HookManagementCapability {
 pub struct McpManagementCapability {
     pub list: bool,
     pub inspect: bool,
+    pub remove: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -98,6 +99,7 @@ pub fn build_manifest(provider_id: &str) -> Result<AgentCapabilityManifest> {
         mcp_management: has_mcp.then_some(McpManagementCapability {
             list: true,
             inspect: true,
+            remove: has_mcp && matches!(crate::providers::canonical_provider_id(provider_id).as_str(), "claude" | "codex" | "opencode"),
         }),
         plugin_management: has_plugins.then_some(PluginManagementCapability {
             list: true,
@@ -116,6 +118,7 @@ mod tests {
         let manifest = build_manifest("claude").unwrap();
         assert!(manifest.hook_management.is_some());
         assert!(manifest.mcp_management.is_some());
+        assert_eq!(manifest.mcp_management.as_ref().map(|mcp| mcp.remove), Some(true));
         assert!(manifest.plugin_management.is_some());
         assert!(manifest
             .config_views
@@ -126,5 +129,11 @@ mod tests {
     #[test]
     fn manifest_rejects_unknown_provider() {
         assert!(build_manifest("unknown-provider").is_err());
+    }
+
+    #[test]
+    fn manifest_does_not_advertise_mcp_removal_without_a_removable_view() {
+        let manifest = build_manifest("gemini").unwrap();
+        assert!(manifest.mcp_management.is_none());
     }
 }

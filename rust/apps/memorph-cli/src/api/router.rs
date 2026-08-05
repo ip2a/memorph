@@ -3,6 +3,15 @@ use super::*;
 pub fn router() -> Router {
     Router::new()
         .route("/api/v1/meta", get(meta::get_meta))
+        .route("/api/v1/readiness", get(readiness::get_readiness))
+        .route(
+            "/api/v1/readiness/reconcile",
+            post(readiness::reconcile_readiness),
+        )
+        .route(
+            "/api/v1/readiness/operations/{operation_id}",
+            get(readiness::get_readiness_operation),
+        )
         .route("/api/v1/update-check", get(meta::check_for_update))
         .route("/api/v1/agents", get(providers::list_agent_management))
         .route(
@@ -39,6 +48,10 @@ pub fn router() -> Router {
             get(providers::list_provider_hooks),
         )
         .route(
+            "/api/v1/agents/{provider}/hooks/discovered/{event}/{index}/{fingerprint}",
+            delete(providers::delete_provider_hook),
+        )
+        .route(
             "/api/v1/providers/{provider}/settings",
             get(providers::list_provider_settings),
         )
@@ -51,6 +64,10 @@ pub fn router() -> Router {
         .route(
             "/api/v1/providers/{provider}/config/{view_id}",
             get(providers::get_provider_config_view),
+        )
+        .route(
+            "/api/v1/providers/{provider}/config/{view_id}/entries/{entry_id}",
+            delete(providers::delete_provider_config_entry),
         )
         .route(
             "/api/v1/settings",
@@ -180,7 +197,7 @@ pub fn router() -> Router {
         .route("/api/v1/workspaces", get(workspaces::list_workspaces))
         .route(
             "/api/v1/workspaces/scan",
-            post(workspaces::scan_known_workspaces),
+            post(workspaces::discover_workspaces),
         )
         .route(
             "/api/v1/workspaces/with-sessions",

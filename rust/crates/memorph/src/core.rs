@@ -35,11 +35,13 @@ pub mod management;
 pub mod manager;
 pub mod projection;
 pub mod query;
+pub mod readiness;
 pub mod session_event_search;
 pub mod session_management;
 pub mod session_mutation;
 pub mod sessions;
 pub mod transfer;
+pub mod workspace_session_feed;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";
 const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
