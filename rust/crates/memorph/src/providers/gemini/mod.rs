@@ -483,6 +483,7 @@ fn import_parsed_session(path: &Path, parsed: ParsedGeminiSession) -> Result<Imp
         .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: session_id.clone(),
@@ -612,11 +613,11 @@ fn message_blocks(message: &Value, report: &mut MappingReport, index: usize) -> 
                 blocks.push(Block::ToolResult {
                     tool_call_id,
                     content: extract_text(result),
-                    is_error: tool_call
+                    outcome: crate::session::execution_outcome(tool_call
                         .get("status")
                         .and_then(Value::as_str)
                         .map(|status| status.eq_ignore_ascii_case("error"))
-                        .unwrap_or(false),
+                        .unwrap_or(false)),
                 });
             }
         }

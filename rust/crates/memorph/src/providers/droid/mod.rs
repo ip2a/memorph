@@ -127,6 +127,7 @@ impl Provider for DroidProvider {
             .unwrap_or_else(Utc::now);
         Ok(ImportedSession {
             session: Session {
+                lineage: Vec::new(),
                 schema: Schema::default(),
                 identity: Identity {
                     id: id.clone(),
@@ -289,7 +290,7 @@ fn blocks(v: &Value) -> Vec<Block> {
                         .unwrap_or("unknown")
                         .into(),
                     content: b.get("content").map(|x| x.to_string()).unwrap_or_default(),
-                    is_error: b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+                    outcome: crate::session::execution_outcome(b.get("is_error").and_then(Value::as_bool).unwrap_or(false)),
                 }),
                 _ => None,
             },

@@ -131,6 +131,7 @@ impl Provider for WorkBuddyProvider {
             .unwrap_or_else(Utc::now);
         Ok(ImportedSession {
             session: Session {
+                lineage: Vec::new(),
                 schema: Schema::default(),
                 identity: Identity {
                     id: id.clone(),
@@ -294,7 +295,7 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
             vec![Block::ToolResult {
                 tool_call_id: format!("workbuddy:{i}"),
                 content: text_for(v).unwrap_or_default(),
-                is_error: false,
+                outcome: crate::session::execution_outcome(false),
             }],
         ),
         _ => return None,

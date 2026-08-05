@@ -123,6 +123,7 @@ impl Provider for ClineProvider {
         extensions.insert("cline_api_conversation_history".into(), value);
         Ok(ImportedSession {
             session: Session {
+                lineage: Vec::new(),
                 schema: Schema::default(),
                 identity: Identity {
                     id: task_id.clone(),
@@ -363,10 +364,10 @@ fn message_blocks(item: &Value) -> Vec<Block> {
                         .unwrap_or("unknown")
                         .into(),
                     content: block.get("content").map(value_text).unwrap_or_default(),
-                    is_error: block
+                    outcome: crate::session::execution_outcome(block
                         .get("is_error")
                         .and_then(Value::as_bool)
-                        .unwrap_or(false),
+                        .unwrap_or(false)),
                 }),
                 _ => None,
             },

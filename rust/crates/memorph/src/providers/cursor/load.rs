@@ -151,6 +151,7 @@ fn imported_session_from_cursor(
 
     ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: source.metadata.composer_id.clone(),
@@ -317,7 +318,7 @@ fn event_from_bubble(
                 blocks.push(Block::ToolResult {
                     tool_call_id: tool_call_id.to_string(),
                     content: content.to_string(),
-                    is_error: field_is_error || status == Some("error"),
+                    outcome: crate::session::execution_outcome(field_is_error || status == Some("error")),
                 });
             }
         } else {
@@ -615,8 +616,8 @@ mod tests {
         )));
         assert!(assistant.blocks.iter().any(|block| matches!(
             block,
-            Block::ToolResult { tool_call_id, content, is_error }
-                if tool_call_id == "call-1" && content == "ok" && !is_error
+            Block::ToolResult { tool_call_id, content, outcome }
+                if tool_call_id == "call-1" && content == "ok" && *outcome == crate::session::ExecutionOutcome::Succeeded
         )));
         assert_eq!(
             assistant_meta.provider_ext["cursor_bubble"]["unknownField"],

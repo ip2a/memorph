@@ -1147,6 +1147,7 @@ mod tests {
     #[test]
     fn preserve_opencode_compaction_replaces_expanded_history_with_compressed_segment() {
         let session = Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: "s1".to_string(),
@@ -1404,6 +1405,7 @@ mod tests {
     #[test]
     fn preserve_recognizes_memorph_compressed_block_from_non_native_provider() {
         let session = Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: "compressed-s1".to_string(),
@@ -1463,6 +1465,7 @@ mod tests {
     #[test]
     fn preserve_opencode_compaction_reuses_memorph_projection_metadata() {
         let session = Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: "native-roundtrip".to_string(),
@@ -1648,6 +1651,7 @@ mod tests {
 
     fn sample_opencode_compacted_session() -> Session {
         Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: "s1".to_string(),

@@ -784,12 +784,12 @@ fn block_to_claude_content(block: &Block) -> Option<Value> {
         Block::ToolResult {
             tool_call_id,
             content,
-            is_error,
+            outcome,
         } => Some(serde_json::json!({
             "type": "tool_result",
             "tool_use_id": tool_call_id,
             "content": content,
-            "is_error": is_error,
+            "is_error": crate::session::execution_outcome_is_error(*outcome),
         })),
         Block::Other { .. } => None,
         _ => {
@@ -888,6 +888,7 @@ fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
 
     Ok(ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: source_session_id.clone(),
@@ -985,6 +986,7 @@ fn import_claude_session_page(
 
     let imported = ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: state.session_id.clone(),
@@ -1450,10 +1452,10 @@ fn claude_content_block(
                             .unwrap_or_else(|| v.to_string())
                     })
                     .unwrap(),
-                is_error: value
+                outcome: crate::session::execution_outcome(value
                     .get("is_error")
                     .and_then(|v| v.as_bool())
-                    .unwrap_or(false),
+                    .unwrap_or(false)),
             }
         }
         Some("text" | "thinking" | "tool_use" | "server_tool_use" | "tool_result") => {
@@ -2419,8 +2421,8 @@ mod tests {
             Some(Block::ToolResult {
                 tool_call_id,
                 content,
-                is_error
-            }) if tool_call_id == "toolu_1" && content == "contents" && !is_error
+                outcome
+            }) if tool_call_id == "toolu_1" && content == "contents" && *outcome == crate::session::ExecutionOutcome::Succeeded
         ));
     }
 

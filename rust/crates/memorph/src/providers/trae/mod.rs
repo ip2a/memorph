@@ -114,6 +114,7 @@ impl Provider for TraeProvider {
         extensions.insert("trae_storage_key".into(), Value::String(STORAGE_KEY.into()));
         Ok(ImportedSession {
             session: Session {
+                lineage: Vec::new(),
                 schema: Schema::default(),
                 identity: Identity {
                     id: id.clone(),

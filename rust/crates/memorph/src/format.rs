@@ -73,6 +73,7 @@ pub fn read_session(path: &Path) -> Result<Session> {
 
     let meta = meta.context("Missing meta line in morph file")?;
     Ok(Session {
+        lineage: Vec::new(),
         schema: meta.schema,
         identity: meta.identity,
         context: meta.context,
@@ -245,11 +246,11 @@ fn event_block_markdown(block: &Block) -> String {
         Block::ToolResult {
             tool_call_id,
             content,
-            is_error,
+            outcome,
         } => format!(
             "```text\n[Tool Result: {}{}]\n{}\n```",
             tool_call_id,
-            if *is_error { " error" } else { "" },
+            if crate::session::execution_outcome_is_error(*outcome) { " error" } else { "" },
             content
         ),
         Block::Patch {
@@ -282,23 +283,29 @@ fn event_block_markdown(block: &Block) -> String {
             }
             format!("```diff\n{}\n```", body.trim_end())
         }
-        Block::Command { command, argv, cwd } => json_block_markdown(&serde_json::json!({
+        Block::Command {
+            command_id,
+            command,
+            argv,
+            cwd,
+            tool_call_id,
+        } => json_block_markdown(&serde_json::json!({
+            "command_id": command_id,
             "command": command,
             "argv": argv,
             "cwd": cwd,
+            "tool_call_id": tool_call_id,
         })),
         Block::CommandResult {
-            command,
+            command_id,
             exit_code,
             stdout,
             stderr,
         } => {
             let mut body = String::new();
-            if let Some(command) = command {
-                body.push_str("Command: ");
-                body.push_str(command);
-                body.push('\n');
-            }
+            body.push_str("Command ID: ");
+            body.push_str(command_id);
+            body.push('\n');
             if let Some(exit_code) = exit_code {
                 body.push_str("Exit: ");
                 body.push_str(&exit_code.to_string());
@@ -374,11 +381,11 @@ fn event_block_html(block: &Block) -> String {
         Block::ToolResult {
             tool_call_id,
             content,
-            is_error,
+            outcome,
         } => format!(
             "<pre>[Tool Result: {}{}]\n{}</pre>",
             html_escape(tool_call_id),
-            if *is_error { " error" } else { "" },
+            if crate::session::execution_outcome_is_error(*outcome) { " error" } else { "" },
             html_escape(content)
         ),
         Block::Patch {
@@ -395,18 +402,26 @@ fn event_block_html(block: &Block) -> String {
             });
             json_block_html(&payload)
         }
-        Block::Command { command, argv, cwd } => json_block_html(&serde_json::json!({
+        Block::Command {
+            command_id,
+            command,
+            argv,
+            cwd,
+            tool_call_id,
+        } => json_block_html(&serde_json::json!({
+            "command_id": command_id,
             "command": command,
             "argv": argv,
             "cwd": cwd,
+            "tool_call_id": tool_call_id,
         })),
         Block::CommandResult {
-            command,
+            command_id,
             exit_code,
             stdout,
             stderr,
         } => json_block_html(&serde_json::json!({
-            "command": command,
+            "command_id": command_id,
             "exit_code": exit_code,
             "stdout": stdout,
             "stderr": stderr,
@@ -517,6 +532,7 @@ mod tests {
 
     fn sample_session() -> Session {
         Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: "session-1".to_string(),

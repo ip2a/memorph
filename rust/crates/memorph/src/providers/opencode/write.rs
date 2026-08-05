@@ -359,7 +359,7 @@ pub(super) fn block_to_opencode_part(
         Block::ToolResult {
             tool_call_id,
             content,
-            is_error,
+            outcome,
         } => Some(serde_json::json!({
             "id": part_id,
             "sessionID": session_id,
@@ -368,7 +368,7 @@ pub(super) fn block_to_opencode_part(
             "callID": tool_call_id,
             "tool": "unknown",
             "state": {
-                "status": if *is_error { "error" } else { "completed" },
+                "status": if crate::session::execution_outcome_is_error(*outcome) { "error" } else { "completed" },
                 "input": {},
                 "output": content,
                 "title": "Tool result",

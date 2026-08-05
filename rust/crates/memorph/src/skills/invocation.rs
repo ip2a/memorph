@@ -447,13 +447,13 @@ fn event_text(event: &Event) -> String {
             Block::ToolResult { content, .. } => Some(content.clone()),
             Block::Command { command, argv, .. } => Some(format!("{} {}", command, argv.join(" "))),
             Block::CommandResult {
-                command,
+                command_id,
                 stdout,
                 stderr,
                 ..
             } => Some(format!(
                 "{} {} {}",
-                command.as_deref().unwrap_or(""),
+                command_id,
                 stdout.as_deref().unwrap_or(""),
                 stderr.as_deref().unwrap_or("")
             )),

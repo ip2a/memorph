@@ -1041,10 +1041,10 @@ fn current_format_import_maps_main_and_sub_execution_events_without_fake_artifac
     );
     assert!(matches!(
         event("msg-tool-result-1").blocks.as_slice(),
-        [Block::ToolResult { tool_call_id, content, is_error }]
+        [Block::ToolResult { tool_call_id, content, outcome }]
             if tool_call_id == "tool-1"
                 && content == "[sanitized tool output]"
-                && !is_error
+                && *outcome == crate::session::ExecutionOutcome::Succeeded
     ));
     assert_eq!(event("exec-1-turn-start").links.turn_outcome, None);
     assert_eq!(

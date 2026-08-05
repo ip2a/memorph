@@ -839,6 +839,7 @@ pub(crate) fn session_from_compression_archive(
     let archive_value = serde_json::to_value(&archive)?;
 
     Ok(Session {
+        lineage: Vec::new(),
         schema: Schema::default(),
         identity: Identity {
             id: archive.canonical_id.clone(),
@@ -1437,6 +1438,7 @@ mod tests {
 
     fn sample_opencode_compacted_session() -> Session {
         Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: "s1".to_string(),

@@ -1541,6 +1541,7 @@ fn compressed_segment_exports_as_native_codex_compacted_rollout() {
     .unwrap();
 
     let session = Session {
+        lineage: Vec::new(),
         schema: Schema::default(),
         identity: Identity {
             id: "session-native-compact".to_string(),
@@ -1677,6 +1678,7 @@ fn active_compression_export_round_trips_as_native_codex_compacted_rollout() {
 
     let now = Utc::now();
     let mut source_session = Session {
+        lineage: Vec::new(),
         schema: Schema::default(),
         identity: Identity {
             id: "active-to-codex".to_string(),
@@ -1869,6 +1871,7 @@ fn compressed_segment_content_fallback_stays_portable_for_non_native_paths() {
 #[test]
 fn first_user_message_skips_empty_user_events_but_has_user_event_stays_true() {
     let session = Session {
+        lineage: Vec::new(),
         schema: Schema::default(),
         identity: Identity {
             id: "session-3".to_string(),
@@ -2787,6 +2790,7 @@ fn codex_base_instructions_use_instruction_context_not_lifecycle() {
     std::fs::write(codex_dir.join("config.toml"), "model_provider = \"test\"\n").unwrap();
 
     let session = Session {
+        lineage: Vec::new(),
         schema: Schema::default(),
         identity: Identity {
             id: "session-base-instructions".to_string(),

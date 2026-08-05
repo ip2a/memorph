@@ -717,6 +717,7 @@ mod tests {
     #[test]
     fn sync_export_preparation_preserves_source_compression() {
         let session = Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: "s1".to_string(),

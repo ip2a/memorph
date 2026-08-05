@@ -117,13 +117,13 @@ fn tool_output_signals(source_events: &[Event]) -> Vec<String> {
         let Block::ToolResult {
             tool_call_id,
             content,
-            is_error,
+            outcome,
         } = block
         else {
             continue;
         };
         result_count += 1;
-        if *is_error {
+        if crate::session::execution_outcome_is_error(*outcome) {
             error_count += 1;
         }
         push_unique(&mut call_ids, tool_call_id);
@@ -366,7 +366,7 @@ fn command_log_signals(source_events: &[Event]) -> Vec<String> {
     let summary_count = records.iter().filter(|record| record.is_summary).count();
 
     if !commands.is_empty() {
-        push_signal(&mut signals, format!("Commands: {}", commands.join(" | ")));
+        push_signal(&mut signals, format!("Command IDs: {}", commands.join(" | ")));
     }
     if !exit_codes.is_empty() {
         push_signal(
@@ -413,7 +413,7 @@ fn collect_log_records(source_events: &[Event]) -> (Vec<LogRecord>, Vec<String>,
 
     for block in source_events.iter().flat_map(|event| event.blocks.iter()) {
         let Block::CommandResult {
-            command,
+            command_id,
             exit_code,
             stdout,
             stderr,
@@ -422,12 +422,8 @@ fn collect_log_records(source_events: &[Event]) -> (Vec<LogRecord>, Vec<String>,
             continue;
         };
         saw_command_result = true;
-        if let Some(command) = command
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            push_unique(&mut commands, command);
+        if let Some(command_id) = (!command_id.trim().is_empty()).then_some(command_id.as_str()) {
+            push_unique(&mut commands, command_id);
         }
         if let Some(exit_code) = exit_code {
             push_unique_owned(&mut exit_codes, exit_code.to_string());

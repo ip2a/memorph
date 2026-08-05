@@ -222,6 +222,7 @@ fn imported_session_title_prefers_display_title_before_native_and_meta() {
     };
     let mut imported = ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: "canonical-1".to_string(),
@@ -891,6 +892,7 @@ fn active_compression_source_session() -> Session {
         .unwrap(),
     );
     Session {
+        lineage: Vec::new(),
         schema: Schema::default(),
         identity: Identity {
             id: "dry-run-file".to_string(),

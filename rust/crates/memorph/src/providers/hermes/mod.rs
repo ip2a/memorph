@@ -160,7 +160,7 @@ impl Provider for HermesProvider {
                         .clone()
                         .unwrap_or_else(|| message_id.to_string()),
                     content: content.clone().unwrap_or_default(),
-                    is_error: false,
+                    outcome: crate::session::execution_outcome(false),
                 });
                 let _ = name;
             }
@@ -248,6 +248,7 @@ impl Provider for HermesProvider {
         });
         Ok(ImportedSession {
             session: Session {
+                lineage: Vec::new(),
                 schema: Schema::default(),
                 identity: Identity {
                     id: meta.0.clone(),

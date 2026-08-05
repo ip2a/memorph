@@ -448,6 +448,7 @@ pub(super) fn import_canonical_session_from_dir(session_dir: &Path) -> Result<Im
         .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: metadata.id.clone(),
@@ -753,7 +754,7 @@ pub(super) fn event_from_kiro_record(
                 vec![Block::ToolResult {
                     tool_call_id,
                     content,
-                    is_error,
+                    outcome: crate::session::execution_outcome(is_error),
                 }],
             )
         }

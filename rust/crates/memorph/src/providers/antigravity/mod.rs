@@ -135,6 +135,7 @@ impl Provider for AntigravityProvider {
             .collect::<Vec<_>>();
         Ok(ImportedSession {
             session: Session {
+                lineage: Vec::new(),
                 schema: Schema::default(),
                 identity: Identity {
                     id: id.clone(),
@@ -305,7 +306,7 @@ fn blocks(v: &Value) -> Vec<Block> {
                         .unwrap_or("unknown")
                         .into(),
                     content: result.to_string(),
-                    is_error: false,
+                    outcome: crate::session::execution_outcome(false),
                 });
             }
         }

@@ -692,6 +692,7 @@ fn import_canonical_session_from_connection(
 
     Ok(ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: thread.id.clone(),
@@ -839,10 +840,10 @@ fn blocks_from_message(
                             .map(str::to_string)
                             .unwrap_or_else(|| message.id.to_string()),
                         content: output.to_string(),
-                        is_error: item
+                        outcome: crate::session::execution_outcome(item
                             .get("is_error")
                             .and_then(|value| value.as_bool())
-                            .unwrap_or(false),
+                            .unwrap_or(false)),
                     });
                     if !content.is_empty() && content != output {
                         blocks.push(Block::Text {
@@ -2209,8 +2210,8 @@ mod tests {
             Some(Block::ToolResult {
                 tool_call_id,
                 content,
-                is_error
-            }) if tool_call_id == "call-1" && content == "file contents" && !is_error
+                outcome
+            }) if tool_call_id == "call-1" && content == "file contents" && *outcome == crate::session::ExecutionOutcome::Succeeded
         ));
         assert!(imported.session.extensions.contains_key("deepseek_thread"));
     }

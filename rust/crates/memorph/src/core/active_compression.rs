@@ -600,6 +600,7 @@ mod tests {
     #[test]
     fn dry_run_uses_target_provider_token_estimator() {
         let session = Session {
+            lineage: Vec::new(),
             events: vec![text_event("old-user", Role::User, &"x".repeat(400))],
             ..sample_session()
         };
@@ -1066,7 +1067,7 @@ mod tests {
         );
         let summary = compressed_summary(&result.session, "candidate-0001");
         assert!(summary.contains("Rule strategy: log reducer"));
-        assert!(summary.contains("Commands: cargo test -p memorph"));
+        assert!(summary.contains("Command IDs: cargo test -p memorph"));
         assert!(summary.contains("Exit codes: 101"));
         assert!(summary.contains("Log lines: total=12"));
         assert!(summary.contains("warning: unused import in src/core.rs"));
@@ -1076,6 +1077,7 @@ mod tests {
 
     fn sample_session() -> Session {
         Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: "active-compression-sample".to_string(),
@@ -1165,7 +1167,7 @@ mod tests {
             blocks: vec![Block::ToolResult {
                 tool_call_id: "tool-1".to_string(),
                 content: content.to_string(),
-                is_error: false,
+                outcome: crate::session::execution_outcome(false),
             }],
             tags: Vec::new(),
             extensions: Default::default(),
@@ -1190,7 +1192,7 @@ mod tests {
             timestamp: Utc::now(),
             links: Links::default(),
             blocks: vec![Block::CommandResult {
-                command,
+                command_id: command.unwrap_or_default(),
                 exit_code,
                 stdout: Some(stdout.to_string()),
                 stderr: None,

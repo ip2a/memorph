@@ -460,6 +460,7 @@ pub(super) fn import_canonical_session_from_dir(session_dir: &Path) -> Result<Im
         .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: session_id.clone(),

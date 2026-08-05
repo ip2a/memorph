@@ -143,6 +143,7 @@ impl Provider for CopilotProvider {
             .collect::<Vec<_>>();
         Ok(ImportedSession {
             session: Session {
+                lineage: Vec::new(),
                 schema: Schema::default(),
                 identity: Identity {
                     id: id.clone(),

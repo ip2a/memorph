@@ -212,6 +212,7 @@ pub(super) fn import_canonical_session(path: &Path) -> Result<ImportedSession> {
         .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: canonical_id.clone(),
@@ -320,6 +321,7 @@ pub(super) fn import_canonical_session_page(
         .collect::<Vec<_>>();
     let imported = ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: state.session_id.clone(),
@@ -851,7 +853,7 @@ pub(super) fn codex_response_item_event(
             blocks: vec![Block::ToolResult {
                 tool_call_id: call_id.to_string(),
                 content,
-                is_error: false,
+                outcome: crate::session::execution_outcome(false),
             }],
             tags: Vec::new(),
             extensions: Default::default(),

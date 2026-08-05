@@ -15,11 +15,29 @@
 //! [`ImportedSession`] and in memorph's own projection store.
 
 pub use oasf::{
-    Block, Context, Event, EventKind, Identity, Links, Metadata, Role, Schema, Session,
-    TurnOutcome, Usage, OASF_SCHEMA_NAME, OASF_SCHEMA_VERSION,
+    Block, Context, Event, EventKind, ExecutionOutcome, Identity, Links, Metadata, Role, Schema,
+    Session, SessionRelation, TurnOutcome, Usage, OASF_SCHEMA_NAME, OASF_SCHEMA_VERSION,
 };
 
 use chrono::{DateTime, Utc};
+
+pub fn execution_outcome(is_error: bool) -> ExecutionOutcome {
+    if is_error {
+        ExecutionOutcome::Failed
+    } else {
+        ExecutionOutcome::Succeeded
+    }
+}
+
+pub fn execution_outcome_is_error(outcome: ExecutionOutcome) -> bool {
+    matches!(
+        outcome,
+        ExecutionOutcome::Failed
+            | ExecutionOutcome::Cancelled
+            | ExecutionOutcome::Declined
+            | ExecutionOutcome::TimedOut
+    )
+}
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;

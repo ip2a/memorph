@@ -302,6 +302,7 @@ pub(super) fn imported_session_from_data(
         .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: session_id_val.clone(),
@@ -427,7 +428,7 @@ pub(super) fn blocks_from_parts(
                 blocks.push(Block::ToolResult {
                     tool_call_id: call_id,
                     content: output,
-                    is_error: status == "error",
+                    outcome: crate::session::execution_outcome(status == "error"),
                 });
             }
             Some("file") => {

@@ -100,6 +100,7 @@ pub fn import_session_from_value(
 
     Ok(ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: session_id.clone(),
@@ -517,11 +518,11 @@ fn message_blocks(
                 blocks.push(Block::ToolResult {
                     tool_call_id: id,
                     content,
-                    is_error: tool_call
+                    outcome: crate::session::execution_outcome(tool_call
                         .get("status")
                         .and_then(|value| value.as_str())
                         .map(|status| status.eq_ignore_ascii_case("error"))
-                        .unwrap_or(false),
+                        .unwrap_or(false)),
                 });
             }
         }

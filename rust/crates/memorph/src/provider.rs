@@ -826,9 +826,9 @@ pub fn block_text(block: &Block) -> String {
         Block::ToolResult {
             tool_call_id,
             content,
-            is_error,
+            outcome,
         } => {
-            let label = if *is_error {
+            let label = if crate::session::execution_outcome_is_error(*outcome) {
                 "Tool error"
             } else {
                 "Tool result"
@@ -853,7 +853,7 @@ pub fn block_text(block: &Block) -> String {
             }
             parts.join("\n")
         }
-        Block::Command { command, argv, cwd } => {
+        Block::Command { command, argv, cwd, .. } => {
             let mut text = command.clone();
             if !argv.is_empty() {
                 text.push('\n');
@@ -865,15 +865,12 @@ pub fn block_text(block: &Block) -> String {
             text
         }
         Block::CommandResult {
-            command,
+            command_id,
             exit_code,
             stdout,
             stderr,
         } => {
-            let mut parts = Vec::new();
-            if let Some(command) = command {
-                parts.push(format!("Command: {}", command));
-            }
+            let mut parts = vec![format!("Command ID: {}", command_id)];
             if let Some(exit_code) = exit_code {
                 parts.push(format!("Exit: {}", exit_code));
             }
@@ -1054,6 +1051,7 @@ mod tests {
     #[test]
     fn export_report_uses_actual_block_kinds_and_target_fidelity() {
         let session = Session {
+            lineage: Vec::new(),
             schema: crate::session::Schema::default(),
             identity: crate::session::Identity {
                 id: "canonical-1".to_string(),
@@ -1073,9 +1071,11 @@ mod tests {
                         signature: None,
                     },
                     Block::Command {
+                        command_id: "command-1".to_string(),
                         command: "cargo test".to_string(),
                         argv: Vec::new(),
                         cwd: None,
+                        tool_call_id: None,
                     },
                 ],
             )],
@@ -1107,6 +1107,7 @@ mod tests {
     #[test]
     fn canonical_session_title_uses_visible_user_or_assistant_message() {
         let session = Session {
+            lineage: Vec::new(),
             schema: crate::session::Schema {
                 name: crate::session::OASF_SCHEMA_NAME.to_string(),
                 version: 1,
@@ -1143,6 +1144,7 @@ mod tests {
     #[test]
     fn instruction_context_uses_only_system_or_developer_messages() {
         let session = Session {
+            lineage: Vec::new(),
             schema: crate::session::Schema {
                 name: crate::session::OASF_SCHEMA_NAME.to_string(),
                 version: 1,

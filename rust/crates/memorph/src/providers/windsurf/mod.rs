@@ -153,6 +153,7 @@ impl Provider for WindsurfProvider {
         let now = modified_datetime(&db).unwrap_or_else(Utc::now);
         Ok(ImportedSession {
             session: Session {
+                lineage: Vec::new(),
                 schema: Schema::default(),
                 identity: Identity {
                     id: id.clone(),
@@ -350,6 +351,7 @@ fn import_legacy_session(source: &str) -> Result<ImportedSession> {
         .collect::<Vec<_>>();
     Ok(ImportedSession {
         session: Session {
+            lineage: Vec::new(),
             schema: Schema::default(),
             identity: Identity {
                 id: id.into(),
@@ -638,7 +640,7 @@ fn map_step(step: &Step, i: usize, r: &mut MappingReport) -> Option<Event> {
             blocks.push(Block::ToolResult {
                 tool_call_id: tool.id.clone(),
                 content: result.clone(),
-                is_error: false,
+                outcome: crate::session::execution_outcome(false),
             })
         }
     }
