@@ -61,7 +61,12 @@ impl ManagerItem {
 }
 
 impl ManagerPreviewResult {
-    fn from_items(mut items: Vec<ManagerItem>, sort: Option<&str>, limit: Option<usize>) -> Self {
+    fn from_items(
+        mut items: Vec<ManagerItem>,
+        sort: Option<&str>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Self {
         match sort {
             Some("recent") => {
                 items.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
@@ -88,6 +93,7 @@ impl ManagerPreviewResult {
         let total_count = items.len();
         let total_size_bytes = items.iter().map(|item| item.size_bytes).sum();
 
+        items = items.into_iter().skip(offset.unwrap_or(0)).collect();
         if let Some(limit) = limit {
             items.truncate(limit);
         }
@@ -111,6 +117,7 @@ impl ManagerWorkspacesResult {
     fn from_items(
         mut items: Vec<ManagerWorkspaceItem>,
         sort: Option<&str>,
+        offset: Option<usize>,
         limit: Option<usize>,
     ) -> Self {
         match sort {
@@ -129,6 +136,7 @@ impl ManagerWorkspacesResult {
         let total_count = items.len();
         let total_size_bytes = items.iter().map(|item| item.total_size_bytes).sum();
 
+        items = items.into_iter().skip(offset.unwrap_or(0)).collect();
         if let Some(limit) = limit {
             items.truncate(limit);
         }
@@ -185,11 +193,31 @@ pub struct ManagerBackupResult {
 /// Preview sessions matching the filter criteria.
 pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
     let mut workspace_keys = WorkspaceKeyCache::default();
-    let items = projected_manager_items(filter, &mut workspace_keys)?;
+    let mut items = projected_manager_items(filter, &mut workspace_keys)?;
+    if let Some(search) = filter
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase)
+    {
+        items.retain(|item| {
+            item.title
+                .as_deref()
+                .is_some_and(|value| value.to_lowercase().contains(&search))
+                || item.session_id.to_lowercase().contains(&search)
+                || item
+                    .project_dir
+                    .as_deref()
+                    .is_some_and(|value| value.to_lowercase().contains(&search))
+                || item.provider_name.to_lowercase().contains(&search)
+        });
+    }
 
     Ok(ManagerPreviewResult::from_items(
         items,
         filter.sort.as_deref(),
+        filter.offset,
         filter.limit,
     ))
 }
@@ -640,11 +668,24 @@ pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
         );
     }
 
-    let items = groups.into_values().collect();
+    let mut items: Vec<_> = groups.into_values().collect();
+    if let Some(search) = filter
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase)
+    {
+        items.retain(|item| {
+            item.workspace.to_lowercase().contains(&search)
+                || item.provider_name.to_lowercase().contains(&search)
+        });
+    }
 
     Ok(ManagerWorkspacesResult::from_items(
         items,
         filter.sort.as_deref(),
+        filter.offset,
         filter.limit,
     ))
 }
@@ -1043,6 +1084,163 @@ mod tests {
     }
 
     #[test]
+    fn preview_applies_search_before_pagination() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let conn = local_store::open_database().unwrap();
+        for (session_id, title, last_active_at, size_bytes) in [
+            ("canonical-alpha-new", "Alpha newest", 300, 30),
+            ("canonical-alpha-old", "Alpha older", 200, 20),
+            ("canonical-beta", "Beta", 100, 10),
+        ] {
+            insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+                conn: &conn,
+                session_id,
+                provider_session_id: session_id,
+                workspace: "/work/search",
+                source_path: &format!("/missing/provider/{session_id}.jsonl"),
+                title,
+                last_active_at,
+                size_bytes,
+            });
+        }
+        drop(conn);
+
+        let filter = ManagerFilter {
+            providers: vec!["claude".to_string()],
+            older_than_days: None,
+            older_than_ms: None,
+            larger_than_mb: None,
+            larger_than_bytes: None,
+            smaller_than_bytes: None,
+            workspace: None,
+            search: Some(" alpha ".to_string()),
+            sort: Some("recent".to_string()),
+            offset: Some(1),
+            limit: Some(1),
+        };
+        let result = preview(&filter).unwrap();
+
+        assert_eq!(result.total_count, 2);
+        assert_eq!(result.total_size_bytes, 50);
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].title.as_deref(), Some("Alpha older"));
+
+        let no_match = preview(&ManagerFilter {
+            search: Some("does-not-exist".to_string()),
+            offset: None,
+            ..filter
+        })
+        .unwrap();
+        assert!(no_match.items.is_empty());
+        assert_eq!(no_match.total_count, 0);
+        assert_eq!(no_match.total_size_bytes, 0);
+    }
+
+    #[test]
+    fn preview_offsets_pages_without_repeating_items() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let conn = local_store::open_database().unwrap();
+        for index in 0..3 {
+            let session_id = format!("canonical-page-{index}");
+            insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+                conn: &conn,
+                session_id: &session_id,
+                provider_session_id: &session_id,
+                workspace: "/work/pages",
+                source_path: &format!("/missing/provider/{session_id}.jsonl"),
+                title: &format!("Page {index}"),
+                last_active_at: 300 - index,
+                size_bytes: 10 + index,
+            });
+        }
+        drop(conn);
+
+        let filter = ManagerFilter {
+            providers: vec!["claude".to_string()],
+            older_than_days: None,
+            older_than_ms: None,
+            larger_than_mb: None,
+            larger_than_bytes: None,
+            smaller_than_bytes: None,
+            workspace: None,
+            search: None,
+            sort: Some("recent".to_string()),
+            offset: Some(0),
+            limit: Some(1),
+        };
+        let first_page = preview(&filter).unwrap();
+        let second_page = preview(&ManagerFilter {
+            offset: Some(1),
+            ..filter
+        })
+        .unwrap();
+
+        assert_eq!(first_page.total_count, 3);
+        assert_eq!(second_page.total_count, 3);
+        assert_ne!(first_page.items[0].id, second_page.items[0].id);
+    }
+
+    #[test]
+    fn workspaces_preserve_workspace_scope_and_search() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let first_workspace = home.path().join("project-one");
+        let second_workspace = home.path().join("project-two");
+        std::fs::create_dir_all(&first_workspace).unwrap();
+        std::fs::create_dir_all(&second_workspace).unwrap();
+        let conn = local_store::open_database().unwrap();
+        insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+            conn: &conn,
+            session_id: "canonical-scope-one",
+            provider_session_id: "native-scope-one",
+            workspace: first_workspace.to_str().unwrap(),
+            source_path: "/missing/provider/scope-one.jsonl",
+            title: "Scope one",
+            last_active_at: 200,
+            size_bytes: 20,
+        });
+        insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+            conn: &conn,
+            session_id: "canonical-scope-two",
+            provider_session_id: "native-scope-two",
+            workspace: second_workspace.to_str().unwrap(),
+            source_path: "/missing/provider/scope-two.jsonl",
+            title: "Scope two",
+            last_active_at: 100,
+            size_bytes: 10,
+        });
+        drop(conn);
+
+        let filter = ManagerFilter {
+            providers: vec!["claude".to_string()],
+            older_than_days: None,
+            older_than_ms: None,
+            larger_than_mb: None,
+            larger_than_bytes: None,
+            smaller_than_bytes: None,
+            workspace: Some(first_workspace.to_string_lossy().into_owned()),
+            search: None,
+            sort: None,
+            offset: None,
+            limit: None,
+        };
+        let scoped = workspaces(&filter).unwrap();
+        assert_eq!(scoped.total_count, 1);
+        assert!(scoped.items[0].workspace.ends_with("project-one"));
+
+        let searched = workspaces(&ManagerFilter {
+            workspace: None,
+            search: Some("PROJECT-TWO".to_string()),
+            ..filter
+        })
+        .unwrap();
+        assert_eq!(searched.total_count, 1);
+        assert!(searched.items[0].workspace.ends_with("project-two"));
+    }
+
+    #[test]
     fn preview_result_deduplicates_before_counting_and_limiting() {
         let mut older_duplicate = test_item();
         older_duplicate.title = Some("Older duplicate".to_string());
@@ -1068,6 +1266,7 @@ mod tests {
         let result = ManagerPreviewResult::from_items(
             vec![older_duplicate, second, third, newer_duplicate],
             Some("recent"),
+            None,
             Some(2),
         );
 
@@ -1087,7 +1286,8 @@ mod tests {
         larger.title = Some("Larger".to_string());
         larger.size_bytes = 20;
 
-        let result = ManagerPreviewResult::from_items(vec![smaller, larger], Some("size"), None);
+        let result =
+            ManagerPreviewResult::from_items(vec![smaller, larger], Some("size"), None, None);
 
         assert_eq!(result.total_count, 1);
         assert_eq!(result.total_size_bytes, 20);
@@ -1109,7 +1309,7 @@ mod tests {
             })
             .collect();
 
-        let result = ManagerWorkspacesResult::from_items(items, Some("size"), Some(2));
+        let result = ManagerWorkspacesResult::from_items(items, Some("size"), None, Some(2));
 
         assert_eq!(result.items.len(), 2);
         assert_eq!(result.total_count, 3);
@@ -1131,7 +1331,7 @@ mod tests {
             })
             .collect();
 
-        let result = ManagerWorkspacesResult::from_items(items, Some("sessions"), None);
+        let result = ManagerWorkspacesResult::from_items(items, Some("sessions"), None, None);
 
         assert_eq!(result.items[0].session_count, 8);
         assert_eq!(result.items[1].session_count, 4);
