@@ -2,9 +2,8 @@ use anyhow::{Context as _, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
-    thread,
 };
 
 use crate::{
@@ -86,9 +85,6 @@ impl ManagerPreviewResult {
             }),
             _ => items.sort_by_key(|item| std::cmp::Reverse(item.size_bytes)),
         }
-
-        let mut identities = BTreeSet::new();
-        items.retain(|item| identities.insert(item.id.clone()));
 
         let total_count = items.len();
         let total_size_bytes = items.iter().map(|item| item.size_bytes).sum();
@@ -193,7 +189,7 @@ pub struct ManagerBackupResult {
 /// Preview sessions matching the filter criteria.
 pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
     let mut workspace_keys = WorkspaceKeyCache::default();
-    let mut items = projected_manager_items(filter, &mut workspace_keys)?;
+    let mut items = load_manager_items(filter, &mut workspace_keys)?;
     if let Some(search) = filter
         .search
         .as_deref()
@@ -222,7 +218,7 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
     ))
 }
 
-fn projected_manager_items(
+fn load_manager_items(
     filter: &ManagerFilter,
     workspace_keys: &mut WorkspaceKeyCache,
 ) -> Result<Vec<ManagerItem>> {
@@ -248,7 +244,7 @@ fn projected_manager_items(
     let snapshots = crate::storage::snapshot_store::SnapshotStore::new(&conn)
         .list_session_snapshots_filtered(Some(&provider_ids), None, false)?;
 
-    Ok(snapshots
+    let items = snapshots
         .into_iter()
         .filter_map(|snapshot| {
             let provider_name = provider_names.get(&snapshot.provider_id)?;
@@ -287,7 +283,16 @@ fn projected_manager_items(
                 size_bytes,
             })
         })
-        .collect())
+        .collect();
+
+    Ok(deduplicate_manager_items(items))
+}
+
+fn deduplicate_manager_items(mut items: Vec<ManagerItem>) -> Vec<ManagerItem> {
+    items.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
+    let mut seen = HashSet::new();
+    items.retain(|item| seen.insert(item.id.clone()));
+    items
 }
 
 #[derive(Default)]
@@ -338,47 +343,42 @@ pub fn stats(filter: &ManagerFilter) -> Result<ManagerStatsResult> {
         filter.providers.iter().collect::<BTreeSet<_>>().len()
     };
 
-    let mut current_filter = filter.clone();
-    current_filter.limit = None;
+    let mut source_filter = filter.clone();
+    source_filter.workspace = None;
+    source_filter.search = None;
+    source_filter.sort = None;
+    source_filter.offset = None;
+    source_filter.limit = None;
 
-    let mut all_filter = filter.clone();
-    all_filter.workspace = None;
-    all_filter.limit = None;
-    let (current_workspace, all_workspaces) = thread::scope(|scope| {
-        let current_handle = scope.spawn(|| preview(&current_filter));
-        let all_handle = scope.spawn(|| workspaces(&all_filter));
-        let current_workspace = current_handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("manager stats preview task failed"))??;
-        let all_workspaces = all_handle
-            .join()
-            .map_err(|_| anyhow::anyhow!("manager stats workspaces task failed"))??;
-        Ok::<_, anyhow::Error>((current_workspace, all_workspaces))
-    })?;
+    let mut workspace_keys = WorkspaceKeyCache::default();
+    let items = load_manager_items(&source_filter, &mut workspace_keys)?;
+    let mut current_workspace_session_count = 0;
+    let mut current_workspace_size_bytes = 0;
+    let mut all_workspace_size_bytes = 0;
+    let mut all_workspace_keys = HashSet::new();
 
-    let all_workspace_count = all_workspaces
-        .items
-        .iter()
-        .map(|item| item.workspace.clone())
-        .collect::<BTreeSet<_>>()
-        .len();
-    let all_workspace_session_count = all_workspaces
-        .items
-        .iter()
-        .map(|item| item.session_count)
-        .sum();
-    let all_workspace_size_bytes = all_workspaces
-        .items
-        .iter()
-        .map(|item| item.total_size_bytes)
-        .sum();
+    for item in &items {
+        all_workspace_size_bytes += item.size_bytes;
+        if let Some(workspace) = workspace_keys.key(&item.provider_id, item.project_dir.as_deref())
+        {
+            all_workspace_keys.insert(workspace);
+        }
+        if workspace_keys.matches(
+            &item.provider_id,
+            item.project_dir.as_deref(),
+            filter.workspace.as_deref(),
+        ) {
+            current_workspace_session_count += 1;
+            current_workspace_size_bytes += item.size_bytes;
+        }
+    }
 
     let result = ManagerStatsResult {
         selected_agent_count,
-        current_workspace_session_count: current_workspace.total_count,
-        current_workspace_size_bytes: current_workspace.total_size_bytes,
-        all_workspace_count,
-        all_workspace_session_count,
+        current_workspace_session_count,
+        current_workspace_size_bytes,
+        all_workspace_count: all_workspace_keys.len(),
+        all_workspace_session_count: items.len(),
         all_workspace_size_bytes,
     };
 
@@ -641,10 +641,7 @@ pub struct ManagerWorkspaceItem {
 /// Build an aggregated view of (provider, workspace) groups across the requested providers.
 pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
     let mut workspace_keys = WorkspaceKeyCache::default();
-    let mut candidates = projected_manager_items(filter, &mut workspace_keys)?;
-    candidates.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
-    let mut session_ids_seen = BTreeSet::new();
-    candidates.retain(|item| session_ids_seen.insert(item.id.clone()));
+    let candidates = load_manager_items(filter, &mut workspace_keys)?;
 
     let mut groups: BTreeMap<(String, String), ManagerWorkspaceItem> = BTreeMap::new();
     for item in candidates {
@@ -745,7 +742,7 @@ pub fn workspaces_with_sessions(
 /// Resolve the concrete ManagerItem rows for a given provider workspace.
 fn list_workspace_sessions(provider_id: &str, workspace: &str) -> Result<Vec<ManagerItem>> {
     let mut workspace_keys = WorkspaceKeyCache::default();
-    projected_manager_items(
+    load_manager_items(
         &ManagerFilter {
             providers: vec![provider_id.to_string()],
             older_than_days: None,
@@ -1241,57 +1238,138 @@ mod tests {
     }
 
     #[test]
-    fn preview_result_deduplicates_before_counting_and_limiting() {
+    fn stats_count_current_and_global_in_one_dataset() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        invalidate_stats_cache();
+        let first_workspace = home.path().join("stats-one");
+        let second_workspace = home.path().join("stats-two");
+        std::fs::create_dir_all(&first_workspace).unwrap();
+        std::fs::create_dir_all(&second_workspace).unwrap();
+        let conn = local_store::open_database().unwrap();
+        for (session_id, workspace, size_bytes) in [
+            ("canonical-stats-one", first_workspace.as_path(), 10),
+            ("canonical-stats-two", first_workspace.as_path(), 20),
+            ("canonical-stats-three", second_workspace.as_path(), 30),
+        ] {
+            insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+                conn: &conn,
+                session_id,
+                provider_session_id: session_id,
+                workspace: workspace.to_str().unwrap(),
+                source_path: &format!("/missing/provider/{session_id}.jsonl"),
+                title: session_id,
+                last_active_at: size_bytes,
+                size_bytes,
+            });
+        }
+        drop(conn);
+
+        let filter = ManagerFilter {
+            providers: vec!["claude".to_string()],
+            older_than_days: None,
+            older_than_ms: None,
+            larger_than_mb: None,
+            larger_than_bytes: None,
+            smaller_than_bytes: None,
+            workspace: Some(first_workspace.to_string_lossy().into_owned()),
+            search: Some("ignored".to_string()),
+            sort: Some("title".to_string()),
+            offset: Some(99),
+            limit: Some(0),
+        };
+        let result = stats(&filter).unwrap();
+
+        assert_eq!(result.selected_agent_count, 1);
+        assert_eq!(result.current_workspace_session_count, 2);
+        assert_eq!(result.current_workspace_size_bytes, 30);
+        assert_eq!(result.all_workspace_count, 2);
+        assert_eq!(result.all_workspace_session_count, 3);
+        assert_eq!(result.all_workspace_size_bytes, 60);
+        invalidate_stats_cache();
+    }
+
+    #[test]
+    fn stats_are_independent_of_sort_and_pagination() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        invalidate_stats_cache();
+        let workspace = home.path().join("stats-stable");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let conn = local_store::open_database().unwrap();
+        insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+            conn: &conn,
+            session_id: "canonical-stats-stable",
+            provider_session_id: "native-stats-stable",
+            workspace: workspace.to_str().unwrap(),
+            source_path: "/missing/provider/stats-stable.jsonl",
+            title: "Stats stable",
+            last_active_at: 100,
+            size_bytes: 42,
+        });
+        drop(conn);
+
+        let filter = ManagerFilter {
+            providers: vec!["claude".to_string()],
+            older_than_days: None,
+            older_than_ms: None,
+            larger_than_mb: None,
+            larger_than_bytes: None,
+            smaller_than_bytes: None,
+            workspace: Some(workspace.to_string_lossy().into_owned()),
+            search: Some("missing".to_string()),
+            sort: Some("title".to_string()),
+            offset: Some(50),
+            limit: Some(0),
+        };
+        let first = stats(&filter).unwrap();
+        let second = stats(&ManagerFilter {
+            search: None,
+            sort: Some("size".to_string()),
+            offset: None,
+            limit: None,
+            ..filter
+        })
+        .unwrap();
+
+        assert_eq!(first.selected_agent_count, second.selected_agent_count);
+        assert_eq!(
+            first.current_workspace_session_count,
+            second.current_workspace_session_count
+        );
+        assert_eq!(
+            first.current_workspace_size_bytes,
+            second.current_workspace_size_bytes
+        );
+        assert_eq!(first.all_workspace_count, second.all_workspace_count);
+        assert_eq!(
+            first.all_workspace_session_count,
+            second.all_workspace_session_count
+        );
+        assert_eq!(
+            first.all_workspace_size_bytes,
+            second.all_workspace_size_bytes
+        );
+        invalidate_stats_cache();
+    }
+
+    #[test]
+    fn deduplicate_manager_items_keeps_most_recent_item() {
         let mut older_duplicate = test_item();
         older_duplicate.title = Some("Older duplicate".to_string());
         older_duplicate.last_active_at = Some(10);
-        older_duplicate.size_bytes = 10;
+        older_duplicate.size_bytes = 30;
 
         let mut newer_duplicate = older_duplicate.clone();
         newer_duplicate.title = Some("Newer duplicate".to_string());
         newer_duplicate.last_active_at = Some(40);
+        newer_duplicate.size_bytes = 10;
 
-        let mut second = test_item();
-        second.id = ManagerItem::action_identity("database-provider", "provider-session-2");
-        second.session_id = "provider-session-2".to_string();
-        second.last_active_at = Some(30);
-        second.size_bytes = 20;
+        let items = deduplicate_manager_items(vec![older_duplicate, newer_duplicate]);
 
-        let mut third = test_item();
-        third.id = ManagerItem::action_identity("database-provider", "provider-session-3");
-        third.session_id = "provider-session-3".to_string();
-        third.last_active_at = Some(20);
-        third.size_bytes = 30;
-
-        let result = ManagerPreviewResult::from_items(
-            vec![older_duplicate, second, third, newer_duplicate],
-            Some("recent"),
-            None,
-            Some(2),
-        );
-
-        assert_eq!(result.items.len(), 2);
-        assert_eq!(result.total_count, 3);
-        assert_eq!(result.total_size_bytes, 60);
-        assert_eq!(result.items[0].title.as_deref(), Some("Newer duplicate"));
-    }
-
-    #[test]
-    fn preview_size_sort_keeps_largest_duplicate() {
-        let mut smaller = test_item();
-        smaller.title = Some("Smaller".to_string());
-        smaller.size_bytes = 10;
-
-        let mut larger = smaller.clone();
-        larger.title = Some("Larger".to_string());
-        larger.size_bytes = 20;
-
-        let result =
-            ManagerPreviewResult::from_items(vec![smaller, larger], Some("size"), None, None);
-
-        assert_eq!(result.total_count, 1);
-        assert_eq!(result.total_size_bytes, 20);
-        assert_eq!(result.items[0].title.as_deref(), Some("Larger"));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].title.as_deref(), Some("Newer duplicate"));
+        assert_eq!(items[0].size_bytes, 10);
     }
 
     #[test]

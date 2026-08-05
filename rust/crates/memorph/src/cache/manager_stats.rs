@@ -39,7 +39,7 @@ pub fn manager_stats_cache() -> Arc<ManagerStatsCache> {
 fn cache_key(filter: &ManagerFilter) -> String {
     let providers = filter.providers.iter().collect::<BTreeSet<_>>();
     format!(
-        "providers={}|older_days={:?}|older_ms={:?}|larger_mb={:?}|larger_bytes={:?}|smaller_bytes={:?}|workspace={:?}|sort={:?}",
+        "providers={}|older_days={:?}|older_ms={:?}|larger_mb={:?}|larger_bytes={:?}|smaller_bytes={:?}|workspace={:?}",
         providers
             .into_iter()
             .map(|value| value.as_str())
@@ -50,7 +50,6 @@ fn cache_key(filter: &ManagerFilter) -> String {
         filter.larger_than_mb,
         filter.larger_than_bytes,
         filter.smaller_than_bytes,
-        filter.workspace,
-        filter.sort
+        filter.workspace
     )
 }
