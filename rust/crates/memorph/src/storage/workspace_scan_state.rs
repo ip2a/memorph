@@ -356,6 +356,20 @@ impl<'a> WorkspaceScanStateStore<'a> {
             })?;
         Ok(())
     }
+
+    /// True when any provider for this workspace is mid-scan. Used by the feed
+    /// revision endpoint so the client can poll faster while work is in flight
+    /// and relax once everything settles.
+    pub fn is_workspace_busy(&self, workspace_key: &str) -> Result<bool> {
+        let busy: i64 = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1
+                 FROM workspace_provider_scan_state
+                 WHERE workspace_key = ?1 AND status = 'scanning')",
+            params![workspace_key],
+            |row| row.get(0),
+        )?;
+        Ok(busy != 0)
+    }
 }
 
 #[cfg(test)]

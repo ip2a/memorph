@@ -2059,3 +2059,68 @@ async fn session_page_returns_pagination_metadata() {
     assert_eq!(body["data"]["limit"], 25);
     assert_eq!(body["data"]["has_more"], false);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_feed_revision_is_read_only_and_does_not_trigger_scan() {
+    let home = Builder::new()
+        .prefix("memorph-feed-revision")
+        .tempdir()
+        .unwrap();
+    let _config_home = ConfigTestHome::new(home.path());
+    let workspace = home.path().to_string_lossy().to_string();
+    let uri = format!("/api/v1/session-feed/revision?workspace={workspace}");
+
+    // First poll: a fresh workspace reports revision 0 and not busy.
+    let request = Request::builder()
+        .uri(&uri)
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = read_json(router(), request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["revision"], 0);
+    assert_eq!(body["data"]["busy"], false);
+
+    // Second poll: still 0 and not busy — the GET must not have started a scan
+    // (a scan would mark the provider scanning and flip busy to true).
+    let request = Request::builder()
+        .uri(&uri)
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = read_json(router(), request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["revision"], 0);
+    assert_eq!(body["data"]["busy"], false);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_feed_revision_reflects_persisted_bumps() {
+    let home = Builder::new()
+        .prefix("memorph-feed-revision-bump")
+        .tempdir()
+        .unwrap();
+    let _config_home = ConfigTestHome::new(home.path());
+    let workspace = home.path().to_string_lossy().to_string();
+
+    // Bump the revision directly through the store, the way a scan settlement
+    // or session mutation would.
+    let workspace_key = memorph::core::workspace_session_feed::workspace_feed_key(
+        std::path::Path::new(&workspace),
+    )
+    .unwrap_or_else(|| workspace.clone());
+    {
+        let conn = memorph::storage::local_store::open_database().unwrap();
+        memorph::storage::workspace_feed_revision::bump(&conn, &workspace_key, 1_000).unwrap();
+        memorph::storage::workspace_feed_revision::bump(&conn, &workspace_key, 2_000).unwrap();
+    }
+
+    let uri = format!("/api/v1/session-feed/revision?workspace={workspace}");
+    let request = Request::builder()
+        .uri(&uri)
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = read_json(router(), request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"]["revision"], 2);
+    assert_eq!(body["data"]["updated_at"], 2_000);
+    assert_eq!(body["data"]["busy"], false);
+}

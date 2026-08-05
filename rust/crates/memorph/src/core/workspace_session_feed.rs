@@ -193,6 +193,17 @@ fn now_ms() -> i64 {
         .as_millis() as i64
 }
 
+/// Canonical workspace key shared by the feed, persisted scan state, and feed
+/// revision. Resolved identically everywhere so the lightweight revision
+/// endpoint agrees with the scan path. All current providers use the default
+/// normalization, so the key depends only on the resolved workspace path.
+pub fn workspace_feed_key(workspace_dir: &std::path::Path) -> Option<String> {
+    let resolved = workspace_dir
+        .canonicalize()
+        .unwrap_or_else(|_| workspace_dir.to_path_buf());
+    crate::provider::default_normalized_workspace_key(Some(&resolved.to_string_lossy()))
+}
+
 /// Return a fast workspace-scoped session feed.
 ///
 /// Behavior:
@@ -457,6 +468,23 @@ fn complete_workspace_provider_scan(
     let store = WorkspaceScanStateStore::new(&conn);
     let now = now_ms();
     let prev = store.read(workspace_key, provider_id).ok().flatten();
+    let new_status = match result {
+        Ok(report) => {
+            if report.discovered_sessions > 0 {
+                ScanStatus::Ready
+            } else {
+                ScanStatus::Empty
+            }
+        }
+        Err(_) => ScanStatus::Error,
+    };
+    // Bump the feed revision when the provider's status transitions, so a
+    // client polling revision sees the convergence (e.g. first scan that finds
+    // zero sessions: unindexed -> empty). A data change also bumps, but that is
+    // done in `index_workspace_sessions` where the workspace key is already
+    // known; bumping on status here covers the zero-data convergence that the
+    // data path would miss.
+    let status_changed = prev.as_ref().map_or(true, |p| p.status != new_status);
     let settle_result = match result {
         Ok(report) => store.settle(
             workspace_key,
@@ -466,6 +494,15 @@ fn complete_workspace_provider_scan(
         ),
         Err(error) => store.fail(workspace_key, provider_id, &format!("{error:#}"), prev.as_ref(), now),
     };
+    if status_changed {
+        if let Err(error) = crate::storage::workspace_feed_revision::bump(&conn, workspace_key, now)
+        {
+            crate::logging::error(
+                "workspace_session_feed",
+                format!("Failed to bump feed revision for {workspace_key}: {error:#}"),
+            );
+        }
+    }
     if let Err(error) = settle_result {
         crate::logging::error(
             "workspace_session_feed",

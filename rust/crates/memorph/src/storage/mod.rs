@@ -8,4 +8,5 @@ pub mod session_index_store;
 pub mod session_state;
 pub mod snapshot_store;
 pub mod sync_store;
+pub mod workspace_feed_revision;
 pub mod workspace_scan_state;

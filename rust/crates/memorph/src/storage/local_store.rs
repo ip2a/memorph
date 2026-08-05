@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 
 static JOURNAL_MODE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -368,6 +368,26 @@ fn apply_workspace_scan_state_schema(conn: &mut Connection) -> Result<()> {
     }
     tx.commit()
         .context("Failed to commit memorph DB schema v16 migration")?;
+    apply_workspace_feed_revision_schema(conn)
+}
+
+fn apply_workspace_feed_revision_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("Failed to start memorph DB schema v17 migration")?;
+    let applied = applied_migrations(&tx)?;
+    if !applied.contains(&17) {
+        tx.execute_batch(V17_SCHEMA)
+            .context("Failed to apply memorph DB schema v17")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![17, "workspace_feed_revision_v17"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    tx.commit()
+        .context("Failed to commit memorph DB schema v17 migration")?;
     Ok(())
 }
 
@@ -1366,6 +1386,14 @@ CREATE INDEX IF NOT EXISTS idx_workspace_provider_scan_state_due
     ON workspace_provider_scan_state(next_scan_at_ms);
 "#;
 
+const V17_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS workspace_feed_revision (
+    workspace_key TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 0,
+    updated_at_ms INTEGER NOT NULL
+);
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1478,6 +1506,7 @@ mod tests {
         assert!(table_exists(conn, "skill_usage_daily"));
         assert!(table_exists(conn, "skill_coverage_observations"));
         assert!(table_exists(conn, "workspace_provider_scan_state"));
+        assert!(table_exists(conn, "workspace_feed_revision"));
 
         let foreign_keys: i64 = conn
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))

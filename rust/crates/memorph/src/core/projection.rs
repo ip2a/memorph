@@ -3,6 +3,13 @@ use std::path::PathBuf;
 
 static PROJECTION_OPERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
 pub fn resolve_providers(filter: &[String]) -> Vec<String> {
     if filter.is_empty() {
         providers::all_provider_ids()
@@ -471,6 +478,17 @@ pub fn index_workspace_sessions(
         report.discovered_sessions = sessions.len();
         for session in &sessions {
             bootstrap_provider_session(&mut conn, provider_id, session, &mut report);
+        }
+        // Bump the workspace feed revision when real projections landed, so the
+        // home view can refetch silently. A scan that only confirmed unchanged
+        // sessions (projected_sessions == 0) does not bump.
+        if report.projected_sessions > 0 {
+            if let Some(workspace_key) = super::session_management::normalized_workspace_key(
+                provider_id,
+                Some(&workspace_dir.to_string_lossy()),
+            ) {
+                let _ = crate::storage::workspace_feed_revision::bump(&conn, &workspace_key, now_ms());
+            }
         }
         Ok(report)
     })();
@@ -1024,7 +1042,10 @@ pub(super) fn reproject_stale_snapshot_sources(
                 provider.capabilities(),
                 &fingerprint,
             ) {
-            Ok(_) => report.reprojected_snapshots += 1,
+            Ok(_) => {
+                report.reprojected_snapshots += 1;
+                bump_feed_revision_for_session(conn, &source.provider_id, provider_session_id);
+            }
             Err(error) => {
                 report.failed_snapshots += 1;
                 report
@@ -1038,6 +1059,62 @@ pub(super) fn reproject_stale_snapshot_sources(
 
 pub(super) fn provider_supports_session_projection(provider_id: &str) -> bool {
     PROJECTED_SESSION_PROVIDER_IDS.contains(&provider_id)
+}
+
+/// Bump the feed revision for the workspace a projected session belongs to.
+/// Used by the reproject and mutation paths that change display data outside
+/// the workspace-scoped scan path. Sessions with no workspace, or no row at
+/// all, are skipped — they are not part of any workspace feed. The lookup
+/// ignores `deleted_at_ms` so it still resolves the workspace when a caller
+/// captures the key before a hard delete.
+pub(super) fn bump_feed_revision_for_session(
+    conn: &rusqlite::Connection,
+    provider_id: &str,
+    provider_session_id: &str,
+) {
+    let workspace_dir: Option<String> = conn
+        .query_row(
+            "SELECT workspace_dir FROM sessions
+             WHERE provider_id = ?1 AND provider_session_id = ?2",
+            rusqlite::params![provider_id, provider_session_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|value| !value.is_empty());
+    let Some(workspace_dir) = workspace_dir else {
+        return;
+    };
+    let Some(workspace_key) = super::session_management::normalized_workspace_key(
+        provider_id,
+        Some(&workspace_dir),
+    ) else {
+        return;
+    };
+    let _ = crate::storage::workspace_feed_revision::bump(conn, &workspace_key, now_ms());
+}
+
+/// Resolve the workspace feed key for a session row without bumping. Used to
+/// capture the key before a hard delete so the revision can be bumped after.
+pub(super) fn workspace_key_for_session(
+    conn: &rusqlite::Connection,
+    provider_id: &str,
+    provider_session_id: &str,
+) -> Option<String> {
+    let workspace_dir: Option<String> = conn
+        .query_row(
+            "SELECT workspace_dir FROM sessions
+             WHERE provider_id = ?1 AND provider_session_id = ?2",
+            rusqlite::params![provider_id, provider_session_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|value| !value.is_empty());
+    let Some(workspace_dir) = workspace_dir else {
+        return None;
+    };
+    super::session_management::normalized_workspace_key(provider_id, Some(&workspace_dir))
 }
 
 pub(super) fn reprojection_failure(

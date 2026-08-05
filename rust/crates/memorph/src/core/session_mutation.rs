@@ -1,5 +1,20 @@
 use super::*;
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
+}
+
+/// Bump the feed revision for a session's workspace after a mutation that
+/// changes its display. No-op for sessions without a workspace (they are not
+/// part of any workspace feed). Logs instead of failing — a stale revision is
+/// preferable to failing a user mutation.
+fn bump_session_workspace_revision(conn: &rusqlite::Connection, provider_id: &str, session_id: &str) {
+    super::projection::bump_feed_revision_for_session(conn, provider_id, session_id);
+}
+
 pub fn delete_session(provider_id: &str, session_id: &str, actor: ActivityActor) -> Result<()> {
     delete_sessions(provider_id, &[session_id], actor)
         .into_iter()
@@ -67,6 +82,15 @@ pub fn delete_sessions(
         }
     }
 
+    // Capture each session's workspace before the hard delete removes its row,
+    // so the feed revision can be bumped for the affected workspace afterwards.
+    let workspace_keys: Vec<Option<String>> = session_ids
+        .iter()
+        .map(|session_id| {
+            super::projection::workspace_key_for_session(&activity_conn, provider_id, session_id)
+        })
+        .collect();
+
     let results = session_management::delete_sessions(
         provider_id,
         session_ids,
@@ -78,7 +102,8 @@ pub fn delete_sessions(
         .into_iter()
         .zip(activities)
         .zip(session_ids)
-        .map(|((result, activity_id), session_id)| match result {
+        .zip(workspace_keys)
+        .map(|(((result, activity_id), session_id), workspace_key)| match result {
             Ok(()) => {
                 ActivityStore::new(&activity_conn).finish(
                     &activity_id,
@@ -87,6 +112,13 @@ pub fn delete_sessions(
                         serde_json::json!({"provider_session_id": session_id}),
                     ),
                 )?;
+                if let Some(workspace_key) = workspace_key {
+                    let _ = crate::storage::workspace_feed_revision::bump(
+                        &activity_conn,
+                        &workspace_key,
+                        now_ms(),
+                    );
+                }
                 Ok(())
             }
             Err(error) => {
@@ -158,6 +190,7 @@ pub fn rename_session(
                     }),
                 ),
             )?;
+            bump_session_workspace_revision(&activity_conn, provider_id, session_id);
             Ok(renamed)
         }
         Err(error) => {
@@ -224,6 +257,7 @@ pub fn update_session_local_state(
                     serde_json::to_value(&state)?,
                 ),
             )?;
+            bump_session_workspace_revision(&activity_conn, provider_id, session_id);
             Ok(state)
         }
         Err(error) => {

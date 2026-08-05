@@ -141,6 +141,53 @@ pub(super) async fn list_session_page(Query(q): Query<ListQuery>) -> impl IntoRe
     }
 }
 
+#[derive(Deserialize)]
+pub(super) struct SessionFeedRevisionQuery {
+    workspace: String,
+}
+
+#[derive(Serialize)]
+struct SessionFeedRevisionPayload {
+    workspace: String,
+    revision: i64,
+    updated_at: i64,
+    busy: bool,
+}
+
+/// Lightweight workspace feed revision poll. Reads the persisted revision and
+/// scan-state only — it never starts a scan, so clients can poll it cheaply
+/// while a workspace is open and refetch the full session list only when the
+/// revision moves.
+pub(super) async fn get_session_feed_revision(
+    Query(query): Query<SessionFeedRevisionQuery>,
+) -> impl IntoResponse {
+    match memorph::runtime::run_blocking(move || {
+        let workspace_key =
+            core::workspace_session_feed::workspace_feed_key(std::path::Path::new(&query.workspace));
+        let conn = memorph::storage::local_store::open_database()?;
+        let revision = memorph::storage::workspace_feed_revision::read(
+            &conn,
+            workspace_key.as_deref().unwrap_or(""),
+        )?;
+        let busy = match workspace_key.as_deref() {
+            Some(key) => memorph::storage::workspace_scan_state::WorkspaceScanStateStore::new(&conn)
+                .is_workspace_busy(key)?,
+            None => false,
+        };
+        Ok::<_, anyhow::Error>(SessionFeedRevisionPayload {
+            workspace: query.workspace,
+            revision: revision.revision,
+            updated_at: revision.updated_at_ms,
+            busy,
+        })
+    })
+    .await
+    {
+        Ok(payload) => ApiResponse::success(payload).into_response(),
+        Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
 pub(super) async fn refresh_session_staleness() -> impl IntoResponse {
     match memorph::runtime::run_blocking(|| {
         core::projection::refresh_projected_session_staleness(ActivityActor::Api)
