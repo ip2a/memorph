@@ -340,39 +340,55 @@ function ProviderFilter({
 function ManagerStatsStrip({
   stats,
   loading,
+  error,
+  onRetry,
 }: {
   stats: ReturnType<typeof useManagerStats>["data"];
   loading: boolean;
+  error: Error | null;
+  onRetry: () => void;
 }) {
   const { t } = useI18n();
   const placeholder = loading ? <Skeleton className="h-5 w-20" /> : "-";
   return (
-    <MetricGrid columns="four" data-manager-stats-strip>
-      <MetricTile
-        label={t("managerCurrentWorkspace")}
-        value={stats ? formatBytes(stats.current_workspace_size_bytes) : placeholder}
-        hint={t("managerSessionsCount", { count: stats?.current_workspace_session_count ?? 0 })}
-        variant="compact"
-      />
-      <MetricTile
-        label={t("managerAllWorkspaces")}
-        value={stats ? stats.all_workspace_count : placeholder}
-        hint={t("managerSessionsCount", { count: stats?.all_workspace_session_count ?? 0 })}
-        variant="compact"
-      />
-      <MetricTile
-        label={t("managerSelectedAgents")}
-        value={stats?.selected_agent_count ?? placeholder}
-        hint={t("managerInstalledProviders")}
-        variant="compact"
-      />
-      <MetricTile
-        label={t("managerAllSize")}
-        value={stats ? formatBytes(stats.all_workspace_size_bytes) : placeholder}
-        hint={t("managerIndexedStorage")}
-        variant="compact"
-      />
-    </MetricGrid>
+    <div data-manager-stats-section>
+      {error ? (
+        <div data-manager-stats-error data-testid="manager-stats-error" role="alert">
+          <PageError
+            title={t("managerStatsLoadFailed")}
+            message={error.message}
+            onRetry={onRetry}
+          />
+        </div>
+      ) : (
+        <MetricGrid columns="four" data-manager-stats-strip>
+          <MetricTile
+            label={t("managerCurrentWorkspace")}
+            value={stats ? formatBytes(stats.current_workspace_size_bytes) : placeholder}
+            hint={t("managerSessionsCount", { count: stats?.current_workspace_session_count ?? 0 })}
+            variant="compact"
+          />
+          <MetricTile
+            label={t("managerAllWorkspaces")}
+            value={stats ? stats.all_workspace_count : placeholder}
+            hint={t("managerSessionsCount", { count: stats?.all_workspace_session_count ?? 0 })}
+            variant="compact"
+          />
+          <MetricTile
+            label={t("managerSelectedAgents")}
+            value={stats?.selected_agent_count ?? placeholder}
+            hint={t("managerInstalledProviders")}
+            variant="compact"
+          />
+          <MetricTile
+            label={t("managerAllSize")}
+            value={stats ? formatBytes(stats.all_workspace_size_bytes) : placeholder}
+            hint={t("managerIndexedStorage")}
+            variant="compact"
+          />
+        </MetricGrid>
+      )}
+    </div>
   );
 }
 
@@ -1053,15 +1069,6 @@ export function ManagerPage() {
       />
     );
   }
-  if (stats.error) {
-    return (
-      <PageError
-        title={t("managerStatsLoadFailed")}
-        message={stats.error.message}
-        onRetry={() => void stats.refetch()}
-      />
-    );
-  }
   if (route.view === "sessions" && sessions.error) {
     return (
       <PageError
@@ -1114,8 +1121,7 @@ export function ManagerPage() {
   const initialResultsLoading = activeResults.isLoading && !activeResults.data;
   const listPageFetching =
     activeResults.isFetching && Boolean(activeResults.data);
-  const resultsRefreshing =
-    !initialResultsLoading && (stats.isFetching || listPageFetching);
+  const resultsRefreshing = !initialResultsLoading && listPageFetching;
   const scopeIsEmpty =
     !initialResultsLoading && totalCount === 0 && !hasNarrowingFilters;
   const filtersAreEmpty =
@@ -1372,7 +1378,12 @@ export function ManagerPage() {
               </div>
             </div>
 
-            <ManagerStatsStrip stats={stats.data} loading={stats.isLoading} />
+            <ManagerStatsStrip
+              stats={stats.data}
+              loading={stats.isLoading}
+              error={stats.error}
+              onRetry={() => void stats.refetch()}
+            />
 
             <FilterToolbar
               view={route.view}

@@ -549,6 +549,54 @@ describe("ManagerPage interaction model", () => {
     ).toBeTruthy();
   });
 
+  it("keeps the result list usable when stats fail and retries stats inline", async () => {
+    const user = userEvent.setup();
+    const refetch = vi.fn();
+    mocks.useManagerStats.mockReturnValue(
+      queryResult(undefined, {
+        error: new Error("Stats failed"),
+        isError: true,
+        refetch,
+      }),
+    );
+
+    renderManager();
+
+    expect(screen.getByRole("link", { name: /Alpha session/i })).toBeTruthy();
+    expect(screen.getByTestId("manager-stats-error").textContent).toContain(
+      "Manager stats failed to load",
+    );
+    expect(screen.getByTestId("manager-stats-error").textContent).toContain(
+      "Stats failed",
+    );
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps list refresh state independent from stats fetching", () => {
+    mocks.useManagerStats.mockReturnValue(
+      queryResult(
+        {
+          selected_agent_count: 2,
+          current_workspace_session_count: 2,
+          current_workspace_size_bytes: 3072,
+          all_workspace_count: 2,
+          all_workspace_session_count: 5,
+          all_workspace_size_bytes: 6144,
+        },
+        { isFetching: true },
+      ),
+    );
+
+    renderManager();
+
+    expect(
+      (screen.getByRole("button", { name: "Refresh" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+    expect(screen.queryByText("Loading page")).toBeNull();
+  });
+
   it("distinguishes filter-empty results and retries a failed query", async () => {
     const user = userEvent.setup();
     mocks.useManagerPreview.mockImplementation((filter?: { search?: string }) =>

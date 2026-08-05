@@ -40,7 +40,6 @@ function baseManagerFilter(
     providers:
       route.providerSelection === "custom" ? route.providers : [],
     workspace: workspace ?? undefined,
-    sort: route.sort,
   };
 }
 
@@ -99,6 +98,7 @@ export function resolveManagerRequest(
   const listFilter: ManagerFilter = {
     ...baseManagerFilter(route, workspace),
     search: search || undefined,
+    sort: route.sort,
     limit: pageSize,
     offset: (page - 1) * pageSize,
   };

@@ -76,6 +76,10 @@ afterEach(() => {
 describe("ManagerPage API workflow", () => {
   it("loads a projected session with route filters and submits the selected backup", async () => {
     useUiStore.setState({ selectedWorkspace: null });
+    let resolveStats!: (response: Response) => void;
+    const statsResponse = new Promise<Response>((resolve) => {
+      resolveStats = resolve;
+    });
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init: RequestInit = {}) => {
         const path = requestPath(input);
@@ -126,14 +130,7 @@ describe("ManagerPage API workflow", () => {
           ]);
         }
         if (path === "/api/v1/manager/stats") {
-          return jsonResponse({
-            selected_agent_count: 1,
-            current_workspace_session_count: 1,
-            current_workspace_size_bytes: 2048,
-            all_workspace_count: 1,
-            all_workspace_session_count: 1,
-            all_workspace_size_bytes: 2048,
-          });
+          return statsResponse;
         }
         if (path === "/api/v1/manager/preview") {
           return jsonResponse({
@@ -161,6 +158,19 @@ describe("ManagerPage API workflow", () => {
     expect(
       await screen.findByRole("link", { name: /Alpha session/i }),
     ).toBeTruthy();
+    expect(
+      document.querySelector("[data-manager-stats-strip] .animate-pulse"),
+    ).toBeTruthy();
+    resolveStats(
+      jsonResponse({
+        selected_agent_count: 1,
+        current_workspace_session_count: 1,
+        current_workspace_size_bytes: 2048,
+        all_workspace_count: 1,
+        all_workspace_session_count: 1,
+        all_workspace_size_bytes: 2048,
+      }),
+    );
 
     await waitFor(() => {
       const previewCall = fetchMock.mock.calls.find(

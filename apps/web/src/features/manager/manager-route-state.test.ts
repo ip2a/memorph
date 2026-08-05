@@ -35,7 +35,6 @@ describe("manager route state", () => {
       statsFilter: {
         providers: [],
         workspace: "/work/current",
-        sort: "recent",
       },
     });
   });
@@ -58,7 +57,6 @@ describe("manager route state", () => {
       statsFilter: {
         providers: [],
         workspace: undefined,
-        sort: "recent",
       },
     });
   });
@@ -106,6 +104,29 @@ describe("manager route state", () => {
 
     expect(route.providerSelection).toBe("none");
     expect(route.providers).toEqual([]);
+  });
+
+  it("keeps stats independent from search, sort, and pagination", () => {
+    const route = readManagerRouteState(
+      new URLSearchParams(
+        "view=workspaces&scope=all&providers=codex&q=memory&sort=sessions&page=3&pageSize=50",
+      ),
+    );
+
+    const request = resolveManagerRequest(route, "/work/current");
+
+    expect(request.statsFilter).toEqual({
+      providers: ["codex"],
+      workspace: undefined,
+    });
+    expect(request.listFilter).toEqual({
+      providers: ["codex"],
+      workspace: undefined,
+      search: "memory",
+      sort: "sessions",
+      limit: 50,
+      offset: 100,
+    });
   });
 
   it("supports workspace session-count sorting without leaking it into sessions", () => {
