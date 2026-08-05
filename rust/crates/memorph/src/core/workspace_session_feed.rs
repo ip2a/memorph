@@ -281,16 +281,8 @@ pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<Wor
 
         let (kind, needs_scan) = provider_kind_for_decision(&decision, state.as_ref());
 
-        if needs_scan && !is_scanning(&workspace_key, provider_id) {
-            // Persist the start so a crash between here and completion still
-            // leaves a recoverable row, then launch the background scan.
-            scan_state_store
-                .mark_scanning(&workspace_key, provider_id, now)
-                .with_context(|| {
-                    format!("Failed to record scanning state for provider {provider_id}")
-                })?;
-            mark_scanning_inflight(workspace_key.clone(), provider_id.clone());
-            spawn_provider_workspace_scan(
+        if needs_scan {
+            ensure_provider_scan(
                 workspace_dir.clone(),
                 workspace_key.clone(),
                 provider_id.clone(),
@@ -394,6 +386,29 @@ fn provider_message(
         ScanDecision::JoinScan => Some("Scanning provider sessions for workspace".to_string()),
         ScanDecision::UseCache => None,
     }
+}
+
+/// Start a background scan for (workspace, provider) unless one is already
+/// running in this process. Persists the scanning state so a crash still
+/// leaves a recoverable row, records the in-flight task for in-process dedup,
+/// and launches the scan thread that settles the state and bumps the feed
+/// revision on completion. Shared by the feed read path and the discovery
+/// scheduler so both converge through one settlement point.
+pub(crate) fn ensure_provider_scan(
+    workspace_dir: PathBuf,
+    workspace_key: String,
+    provider_id: String,
+    actor: ActivityActor,
+) {
+    if is_scanning(&workspace_key, &provider_id) {
+        return;
+    }
+    if let Ok(conn) = local_store::open_database() {
+        let store = WorkspaceScanStateStore::new(&conn);
+        let _ = store.mark_scanning(&workspace_key, &provider_id, now_ms());
+    }
+    mark_scanning_inflight(workspace_key.clone(), provider_id.clone());
+    spawn_provider_workspace_scan(workspace_dir, workspace_key, provider_id, actor);
 }
 
 /// Spawn a background per-provider workspace scan. On completion, persist the

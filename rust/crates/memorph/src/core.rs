@@ -31,6 +31,7 @@ pub mod active_compression;
 pub mod compression;
 pub mod compression_application;
 pub mod database_management;
+pub mod discovery;
 pub mod management;
 pub mod manager;
 pub mod projection;
@@ -300,15 +301,17 @@ pub(super) fn register_session_export_artifacts(
     ArtifactStore::new(conn).register_paths(manifests)
 }
 
-/// Background maintenance interval. The loop refreshes staleness flags and
-/// reprojects stale snapshots, never running a full provider-wide bootstrap.
-/// New sessions enter SQLite through on-demand indexing on the read path
-/// (`index_single_session`) or through an explicit `bootstrap_session_projections`.
+/// Background maintenance interval. Each tick refreshes staleness flags,
+/// reprojects stale snapshots, and runs a discovery pass that re-scans
+/// providers whose freshness window has elapsed so externally created
+/// sessions surface on an already-open home view. Shared by CLI
+/// (`memorph web`/`memorph api`) and the desktop app.
 pub const BACKGROUND_SYNC_INTERVAL_SECS: u64 = 60;
 
-/// Spawn a background thread that refreshes stale flags and reprojects stale
-/// snapshots on a fixed interval. Shared by CLI (`memorph web`/`memorph api`)
-/// and the desktop app so both surfaces stay warm without blocking read paths.
+/// Spawn a background thread that refreshes stale flags, reprojects stale
+/// snapshots, and runs discovery on a fixed interval. Shared by CLI
+/// (`memorph web`/`memorph api`) and the desktop app so both surfaces stay warm
+/// without blocking read paths.
 pub fn spawn_background_sync_loop() {
     std::thread::Builder::new()
         .name("memorph-background-sync".to_string())
@@ -328,6 +331,15 @@ pub fn spawn_background_sync_loop() {
                 crate::logging::error(
                     "background_sync",
                     format!("Stale reprojection failed: {error:#}"),
+                );
+            }
+            // Discovery: re-scan providers whose freshness window has elapsed
+            // so externally created sessions surface on an already-open home
+            // view. Runs after reproject on the same tick.
+            if let Err(error) = discovery::run_discovery_pass() {
+                crate::logging::error(
+                    "background_sync",
+                    format!("Discovery pass failed: {error:#}"),
                 );
             }
             std::thread::sleep(std::time::Duration::from_secs(
