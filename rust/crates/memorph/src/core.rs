@@ -42,6 +42,7 @@ pub mod session_management;
 pub mod session_mutation;
 pub mod sessions;
 pub mod transfer;
+pub mod workspace_scan_policy;
 pub mod workspace_session_feed;
 
 const MEMORPH_ARCHIVE_SCHEME: &str = "memorph-archive://";

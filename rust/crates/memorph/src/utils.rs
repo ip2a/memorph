@@ -1,5 +1,11 @@
 // use std::path::Path;
 
+/// Current wall-clock time in milliseconds since the Unix epoch. The single
+/// source for "now" across scan state, projection, discovery, and mutation.
+pub fn now_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
 /// Encode a directory path for Claude Code project naming
 /// /Users/yuuu/work/2026_4/memorph -> -Users-yuuu-work-2026-4-memorph
 pub fn encode_project_dir(path: &str) -> String {

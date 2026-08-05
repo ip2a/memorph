@@ -3,13 +3,6 @@ use std::path::PathBuf;
 
 static PROJECTION_OPERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
 pub fn resolve_providers(filter: &[String]) -> Vec<String> {
     if filter.is_empty() {
         providers::all_provider_ids()
@@ -487,7 +480,7 @@ pub fn index_workspace_sessions(
                 provider_id,
                 Some(&workspace_dir.to_string_lossy()),
             ) {
-                let _ = crate::storage::workspace_feed_revision::bump(&conn, &workspace_key, now_ms());
+                let _ = crate::storage::workspace_feed_revision::bump(&conn, &workspace_key, crate::utils::now_ms());
             }
         }
         Ok(report)
@@ -1091,7 +1084,7 @@ pub(super) fn bump_feed_revision_for_session(
     ) else {
         return;
     };
-    let _ = crate::storage::workspace_feed_revision::bump(conn, &workspace_key, now_ms());
+    let _ = crate::storage::workspace_feed_revision::bump(conn, &workspace_key, crate::utils::now_ms());
 }
 
 /// Resolve the workspace feed key for a session row without bumping. Used to

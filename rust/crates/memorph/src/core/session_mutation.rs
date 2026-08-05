@@ -1,12 +1,5 @@
 use super::*;
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
 /// Bump the feed revision for a session's workspace after a mutation that
 /// changes its display. No-op for sessions without a workspace (they are not
 /// part of any workspace feed). Logs instead of failing — a stale revision is
@@ -116,7 +109,7 @@ pub fn delete_sessions(
                     let _ = crate::storage::workspace_feed_revision::bump(
                         &activity_conn,
                         &workspace_key,
-                        now_ms(),
+                        crate::utils::now_ms(),
                     );
                 }
                 Ok(())

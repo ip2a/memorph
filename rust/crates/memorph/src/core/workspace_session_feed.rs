@@ -1,19 +1,17 @@
 use super::{SessionGroup, SessionItem, SessionListFields, SessionListSort};
+use crate::core::workspace_scan_policy::{self, decide_scan, ScanDecision};
 use crate::core::{projection, session_management};
 use crate::providers;
 use crate::storage::{
     activity_store::ActivityActor, local_store, snapshot_store::SnapshotStore,
-    workspace_scan_state::{
-        self, decide_scan, ScanDecision, ScanStatus, WorkspaceProviderScanState,
-        WorkspaceScanStateStore,
-    },
+    workspace_scan_state::{ScanStatus, WorkspaceProviderScanState, WorkspaceScanStateStore},
 };
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 /// Parameters for the unified workspace session feed.
 ///
@@ -182,15 +180,8 @@ fn prune_stale_in_flight() {
     let now = Instant::now();
     map.retain(|_, scan| {
         now.duration_since(scan.started_at).as_secs()
-            < workspace_scan_state::SCAN_TIMEOUT_SECS as u64
+            < workspace_scan_policy::SCAN_TIMEOUT_SECS as u64
     });
-}
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
 }
 
 /// Canonical workspace key shared by the feed, persisted scan state, and feed
@@ -234,7 +225,7 @@ pub fn workspace_session_feed(params: &WorkspaceSessionFeedParams) -> Result<Wor
     let store = SnapshotStore::new(&conn);
     let scan_state_store = WorkspaceScanStateStore::new(&conn);
 
-    let now = now_ms();
+    let now = crate::utils::now_ms();
     let per_provider_limit = params.per_provider_limit.max(1);
     let mut groups = Vec::with_capacity(provider_ids.len());
     let mut provider_states = Vec::with_capacity(provider_ids.len());
@@ -405,7 +396,7 @@ pub(crate) fn ensure_provider_scan(
     }
     if let Ok(conn) = local_store::open_database() {
         let store = WorkspaceScanStateStore::new(&conn);
-        let _ = store.mark_scanning(&workspace_key, &provider_id, now_ms());
+        let _ = store.mark_scanning(&workspace_key, &provider_id, crate::utils::now_ms());
     }
     mark_scanning_inflight(workspace_key.clone(), provider_id.clone());
     spawn_provider_workspace_scan(workspace_dir, workspace_key, provider_id, actor);
@@ -481,17 +472,33 @@ fn complete_workspace_provider_scan(
         return;
     };
     let store = WorkspaceScanStateStore::new(&conn);
-    let now = now_ms();
+    let now = crate::utils::now_ms();
     let prev = store.read(workspace_key, provider_id).ok().flatten();
+    let discovered = result
+        .as_ref()
+        .map(|report| report.discovered_sessions as i64)
+        .unwrap_or(0);
     let new_status = match result {
-        Ok(report) => {
-            if report.discovered_sessions > 0 {
+        Ok(_) => {
+            if discovered > 0 {
                 ScanStatus::Ready
             } else {
                 ScanStatus::Empty
             }
         }
         Err(_) => ScanStatus::Error,
+    };
+    // Storage writes exactly the status + deadline the policy picks, so this
+    // settlement point carries no freshness logic itself.
+    let settle_result = match result {
+        Ok(_) => {
+            let next = now + workspace_scan_policy::scan_ttl_secs(provider_id, new_status) * 1000;
+            store.settle(workspace_key, provider_id, new_status, discovered, next, now)
+        }
+        Err(error) => {
+            let next = now + workspace_scan_policy::error_backoff_secs(prev.as_ref()) * 1000;
+            store.fail(workspace_key, provider_id, &format!("{error:#}"), next, now)
+        }
     };
     // Bump the feed revision when the provider's status transitions, so a
     // client polling revision sees the convergence (e.g. first scan that finds
@@ -500,15 +507,6 @@ fn complete_workspace_provider_scan(
     // known; bumping on status here covers the zero-data convergence that the
     // data path would miss.
     let status_changed = prev.as_ref().map_or(true, |p| p.status != new_status);
-    let settle_result = match result {
-        Ok(report) => store.settle(
-            workspace_key,
-            provider_id,
-            report.discovered_sessions as i64,
-            now,
-        ),
-        Err(error) => store.fail(workspace_key, provider_id, &format!("{error:#}"), prev.as_ref(), now),
-    };
     if status_changed {
         if let Err(error) = crate::storage::workspace_feed_revision::bump(&conn, workspace_key, now)
         {

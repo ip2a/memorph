@@ -12,12 +12,12 @@
 //! a `workspace_provider_scan_state` row) are scheduled — a workspace that was
 //! never opened is never polled.
 
+use crate::core::workspace_scan_policy::{decide_scan, ScanDecision};
 use crate::core::workspace_session_feed::ensure_provider_scan;
 use crate::providers;
 use crate::storage::{
-    activity_store::ActivityActor,
-    local_store,
-    workspace_scan_state::{decide_scan, ScanDecision, WorkspaceScanStateStore},
+    activity_store::ActivityActor, local_store,
+    workspace_scan_state::WorkspaceScanStateStore,
 };
 use anyhow::{Context as _, Result};
 
@@ -35,7 +35,7 @@ const MAX_FALLBACK_SPAWNS_PER_TICK: usize = 3;
 pub fn run_discovery_pass() -> Result<usize> {
     let conn = local_store::open_database()?;
     let store = WorkspaceScanStateStore::new(&conn);
-    let now = now_ms();
+    let now = crate::utils::now_ms();
 
     let mut stmt = conn
         .prepare(
@@ -106,16 +106,10 @@ fn provider_is_relevant(provider_id: &str) -> bool {
     environment.installed || crate::agent_environment::provider_config_path(provider_id).exists()
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::workspace_scan_state::ScanStatus;
     use std::sync::{Mutex, OnceLock};
 
     static TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -169,7 +163,14 @@ mod tests {
                 .mark_scanning("/fake/workspace", "nonexistent-provider", 1_000)
                 .unwrap();
             store
-                .settle("/fake/workspace", "nonexistent-provider", 0, 2_000)
+                .settle(
+                    "/fake/workspace",
+                    "nonexistent-provider",
+                    ScanStatus::Empty,
+                    0,
+                    9_999,
+                    2_000,
+                )
                 .unwrap();
             conn.execute(
                 "UPDATE workspace_provider_scan_state
