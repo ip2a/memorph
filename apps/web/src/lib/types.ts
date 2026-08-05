@@ -1057,6 +1057,16 @@ export type ProviderFeedState = {
   discovered_count: number;
 };
 
+/** Lightweight workspace feed revision poll. The home view refetches the full
+ *  session list only when `revision` moves; `busy` lets it poll faster while a
+ *  scan is in flight and relax once the workspace settles. */
+export type WorkspaceFeedRevision = {
+  workspace: string;
+  revision: number;
+  updated_at: number;
+  busy: boolean;
+};
+
 export type SessionPage = {
   groups: SessionGroup[];
   offset: number;

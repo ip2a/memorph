@@ -93,6 +93,7 @@ import type {
   SessionStalenessRefreshReport,
   SwitchSessionPayload,
   SwitchSessionResult,
+  WorkspaceFeedRevision,
   SyncGroup,
   SyncHolding,
   SyncReport,
@@ -638,6 +639,12 @@ export function getStatsDashboard(params: {
 
 export function listSessions(params: SessionListParams = {}) {
   return api<SessionPage>(`/api/v1/sessions${buildQuery(params)}`);
+}
+
+export function getSessionFeedRevision(workspace: string) {
+  return api<WorkspaceFeedRevision>(
+    `/api/v1/session-feed/revision${buildQuery({ workspace })}`,
+  );
 }
 
 export function refreshSessionStaleness() {

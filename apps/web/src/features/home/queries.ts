@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { getMeta, getProviderCatalog, getWorkspaceProviders, listProviders, listSessions, listSyncGroups } from "@/lib/api";
+import { getMeta, getProviderCatalog, getSessionFeedRevision, getWorkspaceProviders, listProviders, listSessions, listSyncGroups } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import type { SessionListSort } from "@/lib/types";
 
@@ -7,10 +7,6 @@ type HomeSessionOptions = {
   sort?: SessionListSort;
   sessionLimit?: number;
 };
-
-function isFeedBusy(kind?: string) {
-  return kind === "cold_scanning" || kind === "warming";
-}
 
 export function useHomeData(
   workspace?: string | null,
@@ -58,15 +54,24 @@ export function useHomeData(
     enabled: Boolean(selectedWorkspace) && !meta.isLoading,
   });
 
+  // Two-level feed sync (scan-mechanism v2): a cheap revision poll runs on a
+  // cadence that tightens while a scan is busy and relaxes once the workspace
+  // settles; the full session list refetches only when the revision moves.
+  // refetchIntervalInBackground is off so a hidden tab does not poll.
+  const sessionsEnabled = !meta.isLoading && Boolean(selectedProviders?.length);
+  const feedRevision = useQuery({
+    queryKey: queryKeys.sessionFeedRevision(selectedWorkspace || ""),
+    queryFn: () => getSessionFeedRevision(selectedWorkspace || ""),
+    enabled: Boolean(selectedWorkspace) && sessionsEnabled,
+    refetchInterval: (query) => (query.state.data?.busy ? 2000 : 15000),
+    refetchIntervalInBackground: false,
+  });
+
   const sessions = useQuery({
-    queryKey: queryKeys.sessionPage(sessionParams),
+    queryKey: queryKeys.homeSessionPage(sessionParams, feedRevision.data?.revision ?? 0),
     queryFn: () => listSessions(sessionParams),
-    enabled: !meta.isLoading && Boolean(selectedProviders?.length),
+    enabled: sessionsEnabled,
     placeholderData: (previous) => previous,
-    // The workspace feed returns immediately and scans providers in the
-    // background. Poll while it reports a non-ready state.
-    refetchInterval: (query) =>
-      isFeedBusy(query.state.data?.feed_state?.kind) ? 2000 : false,
   });
 
   const syncGroups = useQuery({

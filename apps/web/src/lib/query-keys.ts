@@ -25,6 +25,14 @@ export const queryKeys = {
     ["providers", "catalog", workspace ?? "global"] as const,
   sessionsRoot: ["sessions"] as const,
   sessionPage: (params: SessionListParams = {}) => ["sessions", "page", params] as const,
+  // Home sessions are keyed by their session params plus the workspace feed
+  // revision, so a revision bump swaps the key and react-query refetches the
+  // full list (placeholderData keeps the old rows visible until it resolves).
+  // Prefix invalidations against `sessionPage` / `sessionsRoot` still match.
+  homeSessionPage: (params: SessionListParams, revision: number) =>
+    ["sessions", "page", params, { rev: revision }] as const,
+  sessionFeedRevision: (workspace: string) =>
+    ["sessions", "feed-revision", workspace] as const,
   session: (
     provider: string,
     sessionId: string,
