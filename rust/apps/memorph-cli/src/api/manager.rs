@@ -1,41 +1,8 @@
 use super::*;
 
-#[derive(Deserialize)]
-pub(super) struct ManagerPreviewBody {
-    #[serde(default)]
-    providers: Vec<String>,
-    older_than_days: Option<u32>,
-    older_than_ms: Option<i64>,
-    larger_than_mb: Option<u32>,
-    larger_than_bytes: Option<u64>,
-    smaller_than_bytes: Option<u64>,
-    workspace: Option<String>,
-    sort: Option<String>,
-    limit: Option<usize>,
-}
-
-fn manager_filter_from_body(
-    body: ManagerPreviewBody,
-    workspace: Option<String>,
-    limit: Option<usize>,
-) -> memorph::core::manager::ManagerFilter {
-    memorph::core::manager::ManagerFilter {
-        providers: body.providers,
-        older_than_days: body.older_than_days,
-        older_than_ms: body.older_than_ms,
-        larger_than_mb: body.larger_than_mb,
-        larger_than_bytes: body.larger_than_bytes,
-        smaller_than_bytes: body.smaller_than_bytes,
-        workspace,
-        sort: body.sort,
-        limit,
-    }
-}
-
-pub(super) async fn manager_preview(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
-    let workspace = body.workspace.clone();
-    let limit = body.limit;
-    let filter = manager_filter_from_body(body, workspace, limit);
+pub(super) async fn manager_preview(
+    Json(filter): Json<memorph::core::manager::ManagerFilter>,
+) -> impl IntoResponse {
     match memorph::runtime::run_blocking(move || memorph::core::manager::preview(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -89,7 +56,9 @@ fn quick_filter(provider_ids: Vec<String>) -> memorph::core::manager::ManagerFil
         larger_than_bytes: None,
         smaller_than_bytes: None,
         workspace: None,
+        search: None,
         sort: Some("recent".to_string()),
+        offset: None,
         limit: Some(MANAGER_QUICK_LIMIT),
     }
 }
@@ -152,9 +121,9 @@ pub(super) async fn manager_quick_workspaces(
     }
 }
 
-pub(super) async fn manager_stats(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
-    let workspace = body.workspace.clone();
-    let filter = manager_filter_from_body(body, workspace, None);
+pub(super) async fn manager_stats(
+    Json(filter): Json<memorph::core::manager::ManagerFilter>,
+) -> impl IntoResponse {
     match memorph::runtime::run_blocking(move || memorph::core::manager::stats(&filter)).await {
         Ok(result) => ApiResponse::success(result).into_response(),
         Err(e) => api_error(StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
@@ -219,9 +188,9 @@ pub(super) async fn manager_backup(Json(body): Json<ManagerItemsBody>) -> impl I
     }
 }
 
-pub(super) async fn manager_workspaces(Json(body): Json<ManagerPreviewBody>) -> impl IntoResponse {
-    let limit = body.limit;
-    let filter = manager_filter_from_body(body, None, limit);
+pub(super) async fn manager_workspaces(
+    Json(filter): Json<memorph::core::manager::ManagerFilter>,
+) -> impl IntoResponse {
     match memorph::runtime::run_blocking(move || memorph::core::manager::workspaces(&filter)).await
     {
         Ok(result) => ApiResponse::success(result).into_response(),

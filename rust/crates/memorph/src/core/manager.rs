@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     thread,
 };
@@ -20,6 +20,7 @@ use crate::{
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManagerFilter {
+    #[serde(default)]
     pub providers: Vec<String>,
     pub older_than_days: Option<u32>,
     pub older_than_ms: Option<i64>,
@@ -27,7 +28,9 @@ pub struct ManagerFilter {
     pub larger_than_bytes: Option<u64>,
     pub smaller_than_bytes: Option<u64>,
     pub workspace: Option<String>,
+    pub search: Option<String>,
     pub sort: Option<String>,
+    pub offset: Option<usize>,
     pub limit: Option<usize>,
 }
 
@@ -181,7 +184,8 @@ pub struct ManagerBackupResult {
 
 /// Preview sessions matching the filter criteria.
 pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
-    let items = projected_manager_items(filter)?;
+    let mut workspace_keys = WorkspaceKeyCache::default();
+    let items = projected_manager_items(filter, &mut workspace_keys)?;
 
     Ok(ManagerPreviewResult::from_items(
         items,
@@ -190,12 +194,16 @@ pub fn preview(filter: &ManagerFilter) -> Result<ManagerPreviewResult> {
     ))
 }
 
-fn projected_manager_items(filter: &ManagerFilter) -> Result<Vec<ManagerItem>> {
-    let provider_names: BTreeMap<String, String> = manager_provider_ids(filter)
-        .into_iter()
+fn projected_manager_items(
+    filter: &ManagerFilter,
+    workspace_keys: &mut WorkspaceKeyCache,
+) -> Result<Vec<ManagerItem>> {
+    let provider_ids = manager_provider_ids(filter);
+    let provider_names: BTreeMap<String, String> = provider_ids
+        .iter()
         .filter_map(|provider_id| {
             providers::find_provider(&provider_id)
-                .map(|provider| (provider_id, provider.name().to_string()))
+                .map(|provider| (provider_id.clone(), provider.name().to_string()))
         })
         .collect();
     let cutoff_ms = filter.older_than_ms.or_else(|| {
@@ -209,18 +217,18 @@ fn projected_manager_items(filter: &ManagerFilter) -> Result<Vec<ManagerItem>> {
         .or_else(|| filter.larger_than_mb.map(|mb| mb as u64 * 1024 * 1024));
     let smaller_than_bytes = filter.smaller_than_bytes;
     let conn = local_store::open_database()?;
-    let snapshots =
-        crate::storage::snapshot_store::SnapshotStore::new(&conn).list_session_snapshots()?;
+    let snapshots = crate::storage::snapshot_store::SnapshotStore::new(&conn)
+        .list_session_snapshots_filtered(Some(&provider_ids), None, false)?;
 
     Ok(snapshots
         .into_iter()
         .filter_map(|snapshot| {
             let provider_name = provider_names.get(&snapshot.provider_id)?;
             if filter.workspace.as_deref().is_some_and(|workspace| {
-                !projected_workspace_matches(
+                !workspace_keys.matches(
                     &snapshot.provider_id,
                     snapshot.workspace_dir.as_deref(),
-                    workspace,
+                    Some(workspace),
                 )
             }) {
                 return None;
@@ -254,21 +262,41 @@ fn projected_manager_items(filter: &ManagerFilter) -> Result<Vec<ManagerItem>> {
         .collect())
 }
 
-fn projected_workspace_group_key(provider_id: &str, workspace: Option<&str>) -> String {
-    crate::core::session_management::normalized_workspace_key(provider_id, workspace)
-        .unwrap_or_else(|| workspace.unwrap_or("—").to_string())
+#[derive(Default)]
+struct WorkspaceKeyCache {
+    values: HashMap<(String, String), Option<String>>,
 }
 
-fn projected_workspace_matches(
-    provider_id: &str,
-    session_workspace: Option<&str>,
-    requested_workspace: &str,
-) -> bool {
-    crate::core::session_management::workspace_matches(
-        provider_id,
-        session_workspace,
-        Some(requested_workspace),
-    ) || projected_workspace_group_key(provider_id, session_workspace) == requested_workspace
+impl WorkspaceKeyCache {
+    fn key(&mut self, provider_id: &str, workspace: Option<&str>) -> Option<String> {
+        let workspace = workspace.map(str::trim).filter(|value| !value.is_empty())?;
+        self.values
+            .entry((provider_id.to_string(), workspace.to_string()))
+            .or_insert_with(|| {
+                crate::core::session_management::normalized_workspace_key(
+                    provider_id,
+                    Some(workspace),
+                )
+            })
+            .clone()
+    }
+
+    fn matches(
+        &mut self,
+        provider_id: &str,
+        session_workspace: Option<&str>,
+        requested_workspace: Option<&str>,
+    ) -> bool {
+        let Some(requested_key) = self.key(provider_id, requested_workspace) else {
+            return true;
+        };
+        self.key(provider_id, session_workspace).as_deref() == Some(requested_key.as_str())
+    }
+
+    fn group_key(&mut self, provider_id: &str, workspace: Option<&str>) -> String {
+        self.key(provider_id, workspace)
+            .unwrap_or_else(|| workspace.unwrap_or("—").to_string())
+    }
 }
 
 pub fn stats(filter: &ManagerFilter) -> Result<ManagerStatsResult> {
@@ -584,15 +612,15 @@ pub struct ManagerWorkspaceItem {
 
 /// Build an aggregated view of (provider, workspace) groups across the requested providers.
 pub fn workspaces(filter: &ManagerFilter) -> Result<ManagerWorkspacesResult> {
-    let mut candidates = projected_manager_items(filter)?;
+    let mut workspace_keys = WorkspaceKeyCache::default();
+    let mut candidates = projected_manager_items(filter, &mut workspace_keys)?;
     candidates.sort_by_key(|item| std::cmp::Reverse(item.last_active_at.unwrap_or(0)));
     let mut session_ids_seen = BTreeSet::new();
     candidates.retain(|item| session_ids_seen.insert(item.id.clone()));
 
     let mut groups: BTreeMap<(String, String), ManagerWorkspaceItem> = BTreeMap::new();
     for item in candidates {
-        let workspace =
-            projected_workspace_group_key(&item.provider_id, item.project_dir.as_deref());
+        let workspace = workspace_keys.group_key(&item.provider_id, item.project_dir.as_deref());
         let key = (item.provider_id.clone(), workspace.clone());
         let entry = groups.entry(key).or_insert_with(|| ManagerWorkspaceItem {
             provider_id: item.provider_id.clone(),
@@ -675,17 +703,23 @@ pub fn workspaces_with_sessions(
 
 /// Resolve the concrete ManagerItem rows for a given provider workspace.
 fn list_workspace_sessions(provider_id: &str, workspace: &str) -> Result<Vec<ManagerItem>> {
-    projected_manager_items(&ManagerFilter {
-        providers: vec![provider_id.to_string()],
-        older_than_days: None,
-        older_than_ms: None,
-        larger_than_mb: None,
-        larger_than_bytes: None,
-        smaller_than_bytes: None,
-        workspace: Some(workspace.to_string()),
-        sort: Some("recent".to_string()),
-        limit: None,
-    })
+    let mut workspace_keys = WorkspaceKeyCache::default();
+    projected_manager_items(
+        &ManagerFilter {
+            providers: vec![provider_id.to_string()],
+            older_than_days: None,
+            older_than_ms: None,
+            larger_than_mb: None,
+            larger_than_bytes: None,
+            smaller_than_bytes: None,
+            workspace: Some(workspace.to_string()),
+            search: None,
+            sort: Some("recent".to_string()),
+            offset: None,
+            limit: None,
+        },
+        &mut workspace_keys,
+    )
 }
 
 /// Delete all sessions in a provider workspace.
@@ -870,6 +904,66 @@ mod tests {
     }
 
     #[test]
+    fn manager_filter_defaults_providers_for_empty_requests() {
+        let filter: ManagerFilter = serde_json::from_str("{}").unwrap();
+        assert!(filter.providers.is_empty());
+    }
+
+    #[test]
+    fn workspaces_group_equivalent_existing_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let workspace = home.path().join("project");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let equivalent_workspace = workspace.join(".");
+        let conn = local_store::open_database().unwrap();
+        insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+            conn: &conn,
+            session_id: "canonical-path-one",
+            provider_session_id: "native-path-one",
+            workspace: workspace.to_str().unwrap(),
+            source_path: "/missing/provider/path-one.jsonl",
+            title: "Path one",
+            last_active_at: 200,
+            size_bytes: 4096,
+        });
+        insert_projected_manager_snapshot(ProjectedManagerSnapshot {
+            conn: &conn,
+            session_id: "canonical-path-two",
+            provider_session_id: "native-path-two",
+            workspace: equivalent_workspace.to_str().unwrap(),
+            source_path: "/missing/provider/path-two.jsonl",
+            title: "Path two",
+            last_active_at: 100,
+            size_bytes: 512,
+        });
+        drop(conn);
+
+        let result = workspaces(&ManagerFilter {
+            providers: vec!["claude".to_string()],
+            older_than_days: None,
+            older_than_ms: None,
+            larger_than_mb: None,
+            larger_than_bytes: None,
+            smaller_than_bytes: None,
+            workspace: None,
+            search: None,
+            sort: None,
+            offset: None,
+            limit: None,
+        })
+        .unwrap();
+
+        assert_eq!(result.total_count, 1);
+        assert_eq!(result.total_size_bytes, 4608);
+        assert_eq!(result.items[0].session_count, 2);
+        assert_eq!(
+            result.items[0].workspace,
+            std::fs::canonicalize(&workspace).unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
     fn manager_read_models_ignore_provider_history_and_requested_provider_volume() {
         let home = tempfile::tempdir().unwrap();
         let _home_guard = TestConfigHomeGuard::new(home.path());
@@ -918,7 +1012,9 @@ mod tests {
             larger_than_bytes: None,
             smaller_than_bytes: None,
             workspace: None,
+            search: None,
             sort: Some("recent".to_string()),
+            offset: None,
             limit: Some(100),
         };
 
