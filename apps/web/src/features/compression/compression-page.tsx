@@ -37,6 +37,7 @@ import { CompressSessionDialog } from "@/features/compression/compression-action
 import { useCompressionArchive, useCompressionArchives, useCompressionProviders, useRestoreCompressionArchive } from "@/features/compression/queries";
 import { SessionBlock } from "@/features/sessions/session-block";
 import { formatBytes, formatDateTime } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
 import type { CompressionArchive, CompressionArchiveSummary, CompressionFormat, CompressionProviderSupport, ManagerItem, SessionEvent } from "@/lib/types";
 
 type RestoreTarget = {
@@ -44,8 +45,8 @@ type RestoreTarget = {
   title: string;
 };
 
-function archiveTitle(archive: CompressionArchive, fallback: string) {
-  return archive.canonical_id || fallback || "Compression Archive";
+function archiveTitle(archive: CompressionArchive, fallback: string, archiveLabel: string) {
+  return archive.canonical_id || fallback || archiveLabel;
 }
 
 function defaultRestorePrefix(archiveRef: string) {
@@ -57,12 +58,13 @@ function defaultRestorePrefix(archiveRef: string) {
 }
 
 function ProviderSupportList({ providers }: { providers: CompressionProviderSupport[] }) {
+  const { t } = useI18n();
   if (!providers.length) {
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>No providers</EmptyTitle>
-          <EmptyDescription>No compression provider support was reported.</EmptyDescription>
+          <EmptyTitle>{t("compressionNoProviders")}</EmptyTitle>
+          <EmptyDescription>{t("compressionNoProvidersDescription")}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
@@ -105,6 +107,7 @@ function SectionHeader({ title, count }: { title: string; count: number }) {
 }
 
 function CandidateRow({ item, onCompress }: { item: ManagerItem; onCompress: (item: ManagerItem) => void }) {
+  const { t } = useI18n();
   const href = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
   return (
     <EntityRow
@@ -113,10 +116,10 @@ function CandidateRow({ item, onCompress }: { item: ManagerItem; onCompress: (it
       actions={(
         <>
           <Button asChild variant="outline">
-            <Link to={href}>View</Link>
+            <Link to={href}>{t("view")}</Link>
           </Button>
           <Button type="button" variant="outline" onClick={() => onCompress(item)}>
-            Compression
+            {t("compression")}
           </Button>
         </>
       )}
@@ -131,7 +134,7 @@ function CandidateRow({ item, onCompress }: { item: ManagerItem; onCompress: (it
               <span>{item.provider_name || item.provider_id}</span>
             </span>
             <span>{formatBytes(item.size_bytes)}</span>
-            <span>Updated {formatDateTime(item.last_active_at)}</span>
+            <span>{t("compressionUpdated", { date: formatDateTime(item.last_active_at) })}</span>
           </div>
           <PathText value={item.project_dir || item.source_path} fallback="-" wrap="all" />
         </div>
@@ -140,6 +143,7 @@ function CandidateRow({ item, onCompress }: { item: ManagerItem; onCompress: (it
 }
 
 function ArchiveSummaryRow({ archive, onRestore }: { archive: CompressionArchiveSummary; onRestore: (target: RestoreTarget) => void }) {
+  const { t } = useI18n();
   const href = `/compression?archive_ref=${encodeURIComponent(archive.archive_ref)}`;
   const title = archive.canonical_id || archive.archive_ref;
   return (
@@ -149,10 +153,10 @@ function ArchiveSummaryRow({ archive, onRestore }: { archive: CompressionArchive
       actions={(
         <>
           <Button asChild variant="outline">
-            <Link to={href}>View</Link>
+            <Link to={href}>{t("view")}</Link>
           </Button>
           <Button type="button" variant="outline" onClick={() => onRestore({ archiveRef: archive.archive_ref, title })}>
-            Restore
+            {t("resume")}
           </Button>
         </>
       )}
@@ -173,9 +177,9 @@ function ArchiveSummaryRow({ archive, onRestore }: { archive: CompressionArchive
             ) : null}
             <span>{archive.target_provider_id || "-"}</span>
           </span>
-          <span>{archive.source_event_count} events</span>
+          <span>{t("compressionEvents", { count: archive.source_event_count })}</span>
           <span>{formatBytes(archive.stored_size_bytes)}</span>
-          <span>Created {formatDateTime(archive.created_at)}</span>
+          <span>{t("compressionCreated", { date: formatDateTime(archive.created_at) })}</span>
         </div>
         <PathText value={archive.workspace_dir || archive.archive_ref} fallback="-" wrap="all" />
       </div>
@@ -192,6 +196,7 @@ function RestoreCompressionDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const targetKey = target?.archiveRef || "";
   const defaultPrefix = useMemo(() => defaultRestorePrefix(targetKey), [targetKey]);
@@ -221,7 +226,7 @@ function RestoreCompressionDialog({
         onSuccess: async (result) => {
           setFileState({ key: targetKey, files: result.files ?? [] });
           await queryClient.invalidateQueries({ queryKey: ["compression"] });
-          toast.success("Restore", { description: result.files?.length ? result.files.join(", ") : "Archive restored" });
+          toast.success(t("resume"), { description: result.files?.length ? result.files.join(", ") : t("compressionArchiveRestored") });
         },
       },
     );
@@ -231,19 +236,19 @@ function RestoreCompressionDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-lg" data-restore-compression-dialog>
         <DialogHeader>
-          <DialogTitle>Restore Compression Archive</DialogTitle>
-          <DialogDescription>{target ? target.title : "Choose a compression archive to restore."}</DialogDescription>
+          <DialogTitle>{t("compressionRestoreTitle")}</DialogTitle>
+          <DialogDescription>{target ? target.title : t("compressionRestoreDescription")}</DialogDescription>
         </DialogHeader>
         <FieldGroup>
           <Field>
             <input type="hidden" name="archive_ref" value={target?.archiveRef || ""} />
-            <FieldLabel>Archive Ref</FieldLabel>
+            <FieldLabel>{t("compressionArchiveRef")}</FieldLabel>
             <div className="break-all rounded-md border p-3 font-mono text-xs" data-compression-restore-archive-ref>
               <PathText value={target?.archiveRef} fallback="-" tone="default" wrap="all" />
             </div>
           </Field>
           <Field>
-            <FieldLabel htmlFor="restore-output-prefix">Output Prefix</FieldLabel>
+            <FieldLabel htmlFor="restore-output-prefix">{t("compressionOutputPrefix")}</FieldLabel>
             <Input
               id="restore-output-prefix"
               value={currentDraft.outputPrefix}
@@ -251,13 +256,13 @@ function RestoreCompressionDialog({
             />
           </Field>
           <Field>
-            <FieldLabel>Format</FieldLabel>
+            <FieldLabel>{t("sessionFormat")}</FieldLabel>
             <Select
               value={currentDraft.format}
               onValueChange={(value) => setDraft({ key: targetKey, outputPrefix: currentDraft.outputPrefix, format: value as CompressionFormat })}
             >
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="Format" />
+                <SelectValue placeholder={t("sessionFormat")} />
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
@@ -267,11 +272,11 @@ function RestoreCompressionDialog({
                 </SelectGroup>
               </SelectContent>
             </Select>
-            <FieldDescription>Restored files are written by the backend using this prefix and format.</FieldDescription>
+            <FieldDescription>{t("compressionRestoreFormatDescription")}</FieldDescription>
           </Field>
           {files.length ? (
             <Field>
-              <FieldLabel>Files</FieldLabel>
+              <FieldLabel>{t("compressionFiles")}</FieldLabel>
               <div className="flex max-h-40 flex-col gap-2 overflow-auto rounded-md border p-3">
                 {files.map((file) => <span key={file} className="break-all font-mono text-xs">{file}</span>)}
               </div>
@@ -279,10 +284,10 @@ function RestoreCompressionDialog({
           ) : null}
         </FieldGroup>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => handleOpenChange(false)} disabled={restoreMutation.isPending}>Cancel</Button>
+          <Button type="button" variant="outline" onClick={() => handleOpenChange(false)} disabled={restoreMutation.isPending}>{t("cancel")}</Button>
           <Button type="button" onClick={restoreArchive} disabled={!target || restoreMutation.isPending}>
             {restoreMutation.isPending ? <Spinner data-icon="inline-start" /> : <ArchiveRestoreIcon data-icon="inline-start" />}
-            Restore
+            {t("resume")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -291,6 +296,7 @@ function RestoreCompressionDialog({
 }
 
 function CompressionOverview() {
+  const { t } = useI18n();
   const [compressTarget, setCompressTarget] = useState<ManagerItem | null>(null);
   const [restoreTarget, setRestoreTarget] = useState<RestoreTarget | null>(null);
   const meta = useManagerMeta();
@@ -299,10 +305,10 @@ function CompressionOverview() {
   const archives = useCompressionArchives({ limit: 50 });
 
   if (providers.isLoading || candidates.isLoading || archives.isLoading || meta.isLoading) return <PageSkeleton />;
-  if (providers.error) return <PageError title="Compression providers failed to load" message={providers.error.message} />;
-  if (candidates.error) return <PageError title="Compression candidates failed to load" message={candidates.error.message} />;
-  if (archives.error) return <PageError title="Compression archives failed to load" message={archives.error.message} />;
-  if (meta.error) return <PageError title="Compression workspace failed to load" message={meta.error.message} />;
+  if (providers.error) return <PageError title={t("compressionProvidersLoadFailed")} message={providers.error.message} />;
+  if (candidates.error) return <PageError title={t("compressionCandidatesLoadFailed")} message={candidates.error.message} />;
+  if (archives.error) return <PageError title={t("compressionArchivesLoadFailed")} message={archives.error.message} />;
+  if (meta.error) return <PageError title={t("compressionWorkspaceLoadFailed")} message={meta.error.message} />;
 
   const providerRows = providers.data ?? [];
   const candidateRows = candidates.data?.items ?? [];
@@ -312,23 +318,23 @@ function CompressionOverview() {
     <TwoPanePage data-manager-page-layout>
       <CompressionControlPanel workspace={meta.data?.selected_workspace} providers={providerRows} />
       <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)_auto_minmax(0,1fr)] gap-3" data-manager-result-panel>
-          <SectionHeader title="Compress Sessions" count={candidates.data?.total_count ?? candidateRows.length} />
+          <SectionHeader title={t("compressSessions")} count={candidates.data?.total_count ?? candidateRows.length} />
           <ScrollArea className="min-h-0 pr-3">
             <div className="flex flex-col gap-2">
               {candidateRows.length ? (
                 candidateRows.map((item) => <CandidateRow key={item.id} item={item} onCompress={setCompressTarget} />)
               ) : (
-                <PageEmpty title="No sessions" description="No recent sessions are available for compression." />
+                <PageEmpty title={t("compressionNoSessions")} description={t("compressionNoSessionsDescription")} />
               )}
             </div>
           </ScrollArea>
-          <SectionHeader title="Compression Archives" count={archiveRows.length} />
+          <SectionHeader title={t("compressionArchives")} count={archiveRows.length} />
           <ScrollArea className="min-h-0 pr-3">
             <div className="flex flex-col gap-2">
               {archiveRows.length ? (
                 archiveRows.map((archive) => <ArchiveSummaryRow key={archive.archive_ref} archive={archive} onRestore={setRestoreTarget} />)
               ) : (
-                <PageEmpty title="No archives" description="No compression archives have been created yet." />
+                <PageEmpty title={t("compressionNoArchives")} description={t("compressionNoArchivesDescription")} />
               )}
             </div>
           </ScrollArea>
@@ -357,6 +363,7 @@ function CompressionOverview() {
 }
 
 function EventSection({ event, index }: { event: SessionEvent; index: number }) {
+  const { t } = useI18n();
   return (
     <section className="flex flex-col gap-4">
       {index > 0 ? <Separator /> : null}
@@ -376,8 +383,8 @@ function EventSection({ event, index }: { event: SessionEvent; index: number }) 
         {event.blocks.length === 0 ? (
           <Empty>
             <EmptyHeader>
-              <EmptyTitle>No blocks</EmptyTitle>
-              <EmptyDescription>This archived event has metadata but no rendered content blocks.</EmptyDescription>
+              <EmptyTitle>{t("compressionNoBlocks")}</EmptyTitle>
+              <EmptyDescription>{t("compressionNoBlocksDescription")}</EmptyDescription>
             </EmptyHeader>
           </Empty>
         ) : (
@@ -389,15 +396,16 @@ function EventSection({ event, index }: { event: SessionEvent; index: number }) 
 }
 
 function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
+  const { t } = useI18n();
   const [restoreOpen, setRestoreOpen] = useState(false);
   const archive = useCompressionArchive(archiveRef);
 
   if (archive.isLoading) return <PageSkeleton />;
-  if (archive.error) return <PageError title="Archive failed to load" message={archive.error.message} />;
-  if (!archive.data) return <PageEmpty title="Archive not found" description="Return to compression archives and choose another archive." />;
+  if (archive.error) return <PageError title={t("compressionArchiveLoadFailed")} message={archive.error.message} />;
+  if (!archive.data) return <PageEmpty title={t("compressionArchiveNotFound")} description={t("compressionArchiveNotFoundDescription")} />;
 
   const data = archive.data;
-  const title = archiveTitle(data, archiveRef);
+  const title = archiveTitle(data, archiveRef, t("compressionArchive"));
   const sourceEventCount = data.source_event_ids?.length ?? data.events.length;
 
   return (
@@ -405,15 +413,15 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
       <DetailHeader
         data-session-header
         separated
-        eyebrow="Compression Archive Detail"
+        eyebrow={t("compressionArchiveDetail")}
         title={title}
         meta={(
           <>
-            <span>archiveRef=<code>{archiveRef}</code></span>
+            <span>{t("compressionArchiveRef")}: <code>{archiveRef}</code></span>
             <span>{data.source_provider_id || "-"} -&gt; {data.target_provider_id || "-"}</span>
-            <span>sourceEvents={sourceEventCount}</span>
-            <span>createdAt={formatDateTime(data.created_at)}</span>
-            {data.workspace_dir ? <span>workspace=<code>{data.workspace_dir}</code></span> : null}
+            <span>{t("compressionSourceEvents", { count: sourceEventCount })}</span>
+            <span>{t("compressionCreatedAt", { date: formatDateTime(data.created_at) })}</span>
+            {data.workspace_dir ? <span>{t("workspace")}: <code>{data.workspace_dir}</code></span> : null}
           </>
         )}
         actions={(
@@ -421,18 +429,18 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
           <Button asChild variant="outline">
             <Link to="/compression">
               <ArrowLeftIcon data-icon="inline-start" />
-              Back
+              {t("back")}
             </Link>
           </Button>
           <Button type="button" variant="outline" onClick={() => setRestoreOpen(true)}>
             <ArchiveRestoreIcon data-icon="inline-start" />
-            Restore
+            {t("resume")}
           </Button>
           </>
         )}
       />
       <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[4rem_minmax(0,1fr)]" data-detail-layout data-compression-detail-layout>
-        <aside className="hidden min-h-0 rounded-md border p-2 lg:flex lg:flex-col lg:gap-1" aria-label="Timeline" data-detail-timeline>
+        <aside className="hidden min-h-0 rounded-md border p-2 lg:flex lg:flex-col lg:gap-1" aria-label={t("compressionTimeline")} data-detail-timeline>
           {data.events.length ? data.events.map((event) => <span key={event.id} className="min-h-3 flex-1 rounded-sm bg-muted" />) : null}
         </aside>
         <section className="grid min-h-0 grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(280px,0.38fr)]">
@@ -441,7 +449,7 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
               <ScrollArea className="h-full pr-3">
                 <div className="flex flex-col gap-5">
                   {data.events.length ? data.events.map((event, index) => <EventSection key={event.id} event={event} index={index} />) : (
-                    <PageEmpty title="No archived events" description="This archive has metadata but no embedded events." />
+                    <PageEmpty title={t("compressionNoArchivedEvents")} description={t("compressionNoArchivedEventsDescription")} />
                   )}
                 </div>
               </ScrollArea>
@@ -451,20 +459,20 @@ function CompressionArchiveDetail({ archiveRef }: { archiveRef: string }) {
             <CardContent className="flex flex-col gap-3">
               <div className="flex items-center gap-2">
                 <FileArchiveIcon aria-hidden="true" />
-                <strong>Archive Metadata</strong>
+                <strong>{t("compressionArchiveMetadata")}</strong>
               </div>
-              <MetaLine columns="wide" className="gap-1" label="Archive Ref" value={<PathText value={archiveRef} tone="default" weight="medium" wrap="all" className="text-sm" />} />
-              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Canonical ID" value={data.canonical_id} />
-              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Source Provider" value={data.source_provider_id} />
-              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Target Provider" value={data.target_provider_id} />
-              <MetaLine columns="wide" className="gap-1" label="Workspace" value={<PathText value={data.workspace_dir} tone="default" weight="medium" wrap="words" className="text-sm" />} />
-              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Summary Event" value={data.summary_event_id} />
-              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label="Created" value={formatDateTime(data.created_at)} />
+              <MetaLine columns="wide" className="gap-1" label={t("compressionArchiveRef")} value={<PathText value={archiveRef} tone="default" weight="medium" wrap="all" className="text-sm" />} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label={t("compressionCanonicalId")} value={data.canonical_id} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label={t("compressionSourceProvider")} value={data.source_provider_id} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label={t("compressionTargetProvider")} value={data.target_provider_id} />
+              <MetaLine columns="wide" className="gap-1" label={t("workspace")} value={<PathText value={data.workspace_dir} tone="default" weight="medium" wrap="words" className="text-sm" />} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label={t("compressionSummaryEvent")} value={data.summary_event_id} />
+              <MetaLine columns="wide" className="gap-1" valueClassName="break-words font-medium" label={t("compressionCreatedLabel")} value={formatDateTime(data.created_at)} />
               <Separator />
               <div className="flex flex-col gap-2">
                 <div className="flex items-center gap-2 text-sm font-medium">
                   <BoxIcon aria-hidden="true" />
-                  Source Events
+                  {t("compressionSourceEventsLabel")}
                 </div>
                 <div className="flex max-h-56 flex-col gap-1 overflow-auto">
                   {data.source_event_ids.map((eventId) => <span key={eventId} className="break-all font-mono text-xs text-muted-foreground">{eventId}</span>)}

@@ -38,6 +38,7 @@ import { readSessionDetailRouteState, writeSessionDetailRouteState } from "@/fea
 import { SessionDetailResultPagination } from "@/features/sessions/session-detail-result-pagination";
 import { ApiError, getMeta, listProviders } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
+import { useI18n } from "@/lib/i18n-context";
 
 function detailTitle(view: SessionDetailView) {
   return view.display_title || view.title || view.native_title || view.session_id;
@@ -54,12 +55,12 @@ function qualityBadgeVariant(value: string | null | undefined): "secondary" | "o
   return value === "preserved" || value === "exact" || value === "completed" ? "secondary" : "outline";
 }
 
-async function copyText(text: string, label: string) {
+async function copyText(text: string, successMessage: string, errorMessage: string) {
   try {
     await navigator.clipboard.writeText(text);
-    toast.success(`Copied ${label}`);
+    toast.success(successMessage);
   } catch {
-    toast.error(`Failed to copy ${label}`);
+    toast.error(errorMessage);
   }
 }
 
@@ -80,45 +81,46 @@ function SessionDetailsDialog({
   archives: number;
   localState: NonNullable<SessionDetailView["local_state"]>;
 }) {
+  const { t } = useI18n();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl" data-session-details-dialog>
         <DialogHeader>
-          <DialogTitle>Session details</DialogTitle>
-          <DialogDescription>Snapshot state, projection quality, and persisted turn boundaries.</DialogDescription>
+          <DialogTitle>{t("sessionDetailsTitle")}</DialogTitle>
+          <DialogDescription>{t("sessionDetailsDescription")}</DialogDescription>
         </DialogHeader>
         <ScrollArea className="max-h-[min(72vh,42rem)] pr-3">
           <div className="flex flex-col gap-5 text-sm">
             <section className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <strong>Snapshot</strong>
-                {view.stale ? <Badge variant="destructive"><TriangleAlertIcon />Stale source</Badge> : <Badge variant="secondary">Fresh</Badge>}
+                <strong>{t("sessionSnapshot")}</strong>
+                {view.stale ? <Badge variant="destructive"><TriangleAlertIcon />{t("sessionStaleSource")}</Badge> : <Badge variant="secondary">{t("sessionFresh")}</Badge>}
               </div>
-              <MetaLine columns="wide" label="Messages" value={String(view.message_count)} />
-              <MetaLine columns="wide" label="Events" value={String(view.event_count)} />
-              <MetaLine columns="wide" label="Turns" value={String(view.turns.length)} />
+              <MetaLine columns="wide" label={t("sessionsMessages")} value={String(view.message_count)} />
+              <MetaLine columns="wide" label={t("sessionEvents")} value={String(view.event_count)} />
+              <MetaLine columns="wide" label={t("sessionTurns")} value={String(view.turns.length)} />
               <MetaLine
                 columns="wide"
-                label="Loaded"
-                value={hasMoreEvents ? `${returnedEventCount} (more available)` : String(returnedEventCount)}
+                label={t("sessionLoaded")}
+                value={hasMoreEvents ? `${returnedEventCount} (${t("sessionMoreAvailable")})` : String(returnedEventCount)}
               />
-              <MetaLine columns="wide" label="Archives" value={String(archives)} />
-              <MetaLine columns="wide" label="Session ID" value={<span className="break-all font-mono text-xs">{view.session_id}</span>} />
-              <MetaLine columns="wide" label="Created" value={formatDateTime(view.created_at)} />
-              <MetaLine columns="wide" label="Last active" value={formatDateTime(view.last_active_at)} />
+              <MetaLine columns="wide" label={t("sessionArchives")} value={String(archives)} />
+              <MetaLine columns="wide" label={t("sessionId")} value={<span className="break-all font-mono text-xs">{view.session_id}</span>} />
+              <MetaLine columns="wide" label={t("sessionCreated")} value={formatDateTime(view.created_at)} />
+              <MetaLine columns="wide" label={t("sessionLastActive")} value={formatDateTime(view.last_active_at)} />
               {view.source_path ? (
                 <MetaLine
                   columns="wide"
-                  label="Source path"
+                  label={t("sessionSourcePath")}
                   value={<PathText value={view.source_path} tone="default" wrap="all" className="text-sm" />}
                 />
               ) : null}
-              {localState.notes ? <MetaLine columns="wide" label="Notes" value={localState.notes} /> : null}
+              {localState.notes ? <MetaLine columns="wide" label={t("sessionNotes")} value={localState.notes} /> : null}
             </section>
 
             <section className="flex flex-col gap-3 border-t pt-4">
               <div className="flex flex-wrap items-center gap-2">
-                <strong>Projection quality</strong>
+                <strong>{t("sessionProjectionQuality")}</strong>
                 {view.projection_report ? (
                   <>
                     <Badge variant={qualityBadgeVariant(view.projection_report.status)}>
@@ -128,7 +130,7 @@ function SessionDetailsDialog({
                       {readable(view.projection_report.summary.mapping_overall)}
                     </Badge>
                   </>
-                ) : <Badge variant="outline">No report</Badge>}
+                ) : <Badge variant="outline">{t("sessionNoReport")}</Badge>}
               </div>
               {view.projection_report ? (
                 (() => {
@@ -136,13 +138,13 @@ function SessionDetailsDialog({
                   return (
                     <>
                       <div className="grid grid-cols-3 gap-2">
-                        <StatItem label="Preserved" value={view.projection_report.summary.preserved_count} />
-                        <StatItem label="Normalized" value={view.projection_report.summary.normalized_count} />
-                        <StatItem label="Dropped" value={view.projection_report.summary.dropped_count} />
+                        <StatItem label={t("sessionPreserved")} value={view.projection_report.summary.preserved_count} />
+                        <StatItem label={t("sessionNormalized")} value={view.projection_report.summary.normalized_count} />
+                        <StatItem label={t("sessionDropped")} value={view.projection_report.summary.dropped_count} />
                       </div>
-                      <MetaLine columns="wide" label="Operation" value={readable(view.projection_report.operation_kind)} />
-                      <MetaLine columns="wide" label="Version" value={String(view.projection_report.projection_version)} />
-                      <MetaLine columns="wide" label="Projected" value={formatDateTime(view.projection_report.created_at)} />
+                      <MetaLine columns="wide" label={t("sessionOperation")} value={readable(view.projection_report.operation_kind)} />
+                      <MetaLine columns="wide" label={t("sessionVersion")} value={String(view.projection_report.projection_version)} />
+                      <MetaLine columns="wide" label={t("sessionProjected")} value={formatDateTime(view.projection_report.created_at)} />
                       {projectionItems.length ? (
                         <div className="flex flex-col border-t">
                           {projectionItems.map((item) => (
@@ -162,7 +164,7 @@ function SessionDetailsDialog({
               ) : null}
             </section>
             <section className="flex flex-col gap-3 border-t pt-4">
-              <strong>Turns</strong>
+              <strong>{t("sessionTurns")}</strong>
               {view.turns.length ? view.turns.map((turn) => (
                 <div key={turn.id} className="grid gap-2 border-b pb-3 sm:grid-cols-[auto_auto_minmax(0,1fr)] sm:items-center">
                   <span className="font-mono text-xs">#{turn.turn_order + 1}</span>
@@ -174,7 +176,7 @@ function SessionDetailsDialog({
                     {formatDateTime(turn.started_at_ms)} to {formatDateTime(turn.ended_at_ms)}
                   </div>
                 </div>
-              )) : <span className="text-muted-foreground">No persisted turns.</span>}
+              )) : <span className="text-muted-foreground">{t("sessionNoPersistedTurns")}</span>}
             </section>
           </div>
         </ScrollArea>
@@ -193,6 +195,7 @@ function StatItem({ label, value, title }: { label: string; value: number | stri
 }
 
 function SessionHeaderSubtitle({ sessionId, createdAt, lastActiveAt }: { sessionId: string; createdAt?: string | null; lastActiveAt?: string | null }) {
+  const { t } = useI18n();
   const created = formatNumericDateTime(createdAt);
   const active = formatNumericDateTime(lastActiveAt);
   const timeLabel = lastActiveAt && active !== created ? `${created} · ${active}` : created;
@@ -203,9 +206,9 @@ function SessionHeaderSubtitle({ sessionId, createdAt, lastActiveAt }: { session
       <code className="min-w-0 truncate font-mono text-xs text-muted-foreground" title={sessionId}>
         {sessionId}
       </code>
-      <Button type="button" variant="ghost" size="sm" className="h-6 shrink-0 px-2" onClick={() => copyText(sessionId, "session ID")}>
+      <Button type="button" variant="ghost" size="sm" className="h-6 shrink-0 px-2" onClick={() => copyText(sessionId, t("sessionCopied", { label: t("sessionId") }), t("sessionCopyFailed", { label: t("sessionId") }))}>
         <CopyIcon className="size-3.5" />
-        Copy
+        {t("sessionCopy")}
       </Button>
     </div>
   );
@@ -222,6 +225,7 @@ function SessionDetailMeta({
   pageSize: number;
   matchedEventCount?: number | null;
 }) {
+  const { t } = useI18n();
   const activity = useSessionActivity(view.provider_id, view.session_id);
   const searching = matchedEventCount != null;
   const totalEvents = searching ? matchedEventCount : view.event_count;
@@ -234,15 +238,15 @@ function SessionDetailMeta({
     <div className="flex w-full flex-col gap-2.5" data-session-detail-meta>
       <div className="grid grid-cols-[minmax(0,0.34fr)_auto_minmax(0,1fr)] items-center gap-x-0 border-y py-2.5">
         <div className="flex min-w-0 flex-col justify-center gap-2.5 px-4 py-1 pr-3">
-          <StatItem label="Provider source" value={formatBytes(view.length_metrics.provider_source_bytes_measured)} title="Measured from the provider-owned native source" />
-          <StatItem label="Model-visible" value={formatBytes(view.length_metrics.model_visible_bytes_measured)} title="Measured canonical event payload bytes" />
-          <StatItem label="Estimated tokens" value={view.length_metrics.estimated_tokens.toLocaleString()} title="Estimate derived from model-visible bytes; not the provider model context window" />
-          <StatItem label="Messages / events / turns" value={`${view.length_metrics.message_count} / ${view.length_metrics.event_count} / ${view.length_metrics.turn_count}`} />
-          <StatItem label="Compressed / archives" value={`${view.length_metrics.compressed_segment_count} / ${view.length_metrics.archive_count}`} />
+          <StatItem label={t("sessionProviderSource")} value={formatBytes(view.length_metrics.provider_source_bytes_measured)} title={t("sessionProviderSourceTooltip")} />
+          <StatItem label={t("sessionModelVisible")} value={formatBytes(view.length_metrics.model_visible_bytes_measured)} title={t("sessionModelVisibleTooltip")} />
+          <StatItem label={t("sessionEstimatedTokens")} value={view.length_metrics.estimated_tokens.toLocaleString()} title={t("sessionEstimatedTokensTooltip")} />
+          <StatItem label={t("sessionMessagesEventsTurns")} value={`${view.length_metrics.message_count} / ${view.length_metrics.event_count} / ${view.length_metrics.turn_count}`} />
+          <StatItem label={t("sessionCompressedArchives")} value={`${view.length_metrics.compressed_segment_count} / ${view.length_metrics.archive_count}`} />
           <StatItem
-            label={searching ? "Matches loaded" : "Loaded"}
+            label={searching ? t("sessionMatchesLoaded") : t("sessionLoaded")}
             value={totalEvents === 0 ? "0" : `${loadedFrom}–${loadedTo}${searching ? ` of ${matchedEventCount}` : ""}`}
-            title={totalPages > 1 ? `Page ${currentPage} of ${totalPages}` : undefined}
+            title={totalPages > 1 ? t("sessionPageOf", { page: currentPage, total: totalPages }) : undefined}
           />
         </div>
 
@@ -279,16 +283,17 @@ function EventFoldDialog({
   onSetKindOpen: (kind: string, open: boolean) => void;
   onSetAllOpen: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md" data-session-event-fold-dialog>
         <DialogHeader>
-          <DialogTitle>Filter events</DialogTitle>
-          <DialogDescription>Sort events and expand or collapse them by kind on this page.</DialogDescription>
+          <DialogTitle>{t("sessionFilterEvents")}</DialogTitle>
+          <DialogDescription>{t("sessionFilterDescription")}</DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">
-            <div className="text-sm font-medium">Order</div>
+            <div className="text-sm font-medium">{t("sessionOrder")}</div>
             <div className="grid grid-cols-2 gap-2">
               <Button
                 type="button"
@@ -296,7 +301,7 @@ function EventFoldDialog({
                 size="sm"
                 onClick={() => onEventOrderChange("asc")}
               >
-                Oldest first
+                {t("sessionOldestFirst")}
               </Button>
               <Button
                 type="button"
@@ -304,39 +309,39 @@ function EventFoldDialog({
                 size="sm"
                 onClick={() => onEventOrderChange("desc")}
               >
-                Newest first
+                {t("sessionNewestFirst")}
               </Button>
             </div>
           </div>
 
           <div className="flex flex-col gap-2">
             <div className="flex items-center justify-between gap-2">
-              <div className="text-sm font-medium">Fold by type</div>
+              <div className="text-sm font-medium">{t("sessionFoldByType")}</div>
               <div className="flex gap-2">
                 <Button type="button" variant="outline" size="sm" onClick={() => onSetAllOpen(true)}>
-                  Expand all
+                  {t("sessionExpandAll")}
                 </Button>
                 <Button type="button" variant="outline" size="sm" onClick={() => onSetAllOpen(false)}>
-                  Collapse all
+                  {t("sessionCollapseAll")}
                 </Button>
               </div>
             </div>
             {kinds.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No events on this page.</p>
+              <p className="text-sm text-muted-foreground">{t("sessionNoEventsOnPage")}</p>
             ) : (
               <div className="flex flex-col divide-y border-t">
                 {kinds.map(({ kind, count }) => (
                   <div key={kind} className="flex items-center justify-between gap-3 py-3">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium">{readable(kind)}</div>
-                      <div className="text-xs text-muted-foreground">{count} event{count === 1 ? "" : "s"}</div>
+                      <div className="text-xs text-muted-foreground">{t("sessionEventCount", { count })}</div>
                     </div>
                     <div className="flex shrink-0 gap-2">
                       <Button type="button" variant="outline" size="sm" onClick={() => onSetKindOpen(kind, true)}>
-                        Expand
+                        {t("sessionExpand")}
                       </Button>
                       <Button type="button" variant="outline" size="sm" onClick={() => onSetKindOpen(kind, false)}>
-                        Collapse
+                        {t("sessionCollapse")}
                       </Button>
                     </div>
                   </div>
@@ -365,9 +370,10 @@ function DetailEventItem({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   const role = event.role ?? "unknown";
   const kind = event.kind ?? "unknown";
-  const blockTags = getBlockTags(event.blocks);
+  const blockTags = getBlockTags(event.blocks, t);
   const blocks = event.blocks ?? [];
 
   return (
@@ -429,7 +435,7 @@ function DetailEventItem({
           <CollapsibleContent className="overflow-hidden">
             <div className="p-3">
               {blocks.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No details.</p>
+                <p className="text-sm text-muted-foreground">{t("sessionNoDetails")}</p>
               ) : (
                 <SessionEventBlocks blocks={blocks} eventId={event.id} />
               )}
@@ -442,6 +448,7 @@ function DetailEventItem({
 }
 
 export function SessionDetailPage() {
+  const { t } = useI18n();
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [compressionOpen, setCompressionOpen] = useState(false);
@@ -556,12 +563,12 @@ export function SessionDetailPage() {
   if (session.isLoading && !session.data) return <PageSkeleton />;
   if (session.error) {
     const status = session.error instanceof ApiError ? session.error.status : 0;
-    if (status === 410) return <PageError title="Session source removed" message={session.error.message} />;
-    if (status === 501) return <PageError title="Detail view unsupported" message={session.error.message} />;
-    if (status === 404) return <PageError title="Session not indexed" message={session.error.message} />;
-    return <PageError title="Session failed to load" message={session.error.message} />;
+    if (status === 410) return <PageError title={t("sessionSourceRemoved")} message={session.error.message} />;
+    if (status === 501) return <PageError title={t("sessionDetailUnsupported")} message={session.error.message} />;
+    if (status === 404) return <PageError title={t("sessionNotIndexed")} message={session.error.message} />;
+    return <PageError title={t("sessionFailedToLoad")} message={session.error.message} />;
   }
-  if (!session.data) return <PageEmpty title="Session not found" description="Return to the session list and choose another session." />;
+  if (!session.data) return <PageEmpty title={t("sessionNotFound")} description={t("sessionNotFoundDescription")} />;
 
   const { view, returned_event_count, has_more_events, matched_event_count, returned_event_indices } = session.data;
   const localState = view.local_state ?? { archived: false, hidden: false, pinned: false, tags: [], preferred_targets: [], compressed_archive_refs: [] };
@@ -635,7 +642,7 @@ export function SessionDetailPage() {
             actionsProps={{ className: "w-full" }}
           />
 
-          <div className="grid min-w-0 max-w-full gap-4 lg:grid-cols-[auto_minmax(0,1fr)] lg:items-stretch" data-detail-layout>
+          <div className="grid min-w-0 max-w-full grid-cols-[auto_minmax(0,1fr)] items-stretch gap-4" data-detail-layout>
             <DetailTimeline
               items={visibleEvents.map(({ event, index, eventNumber }) => ({ event, index, eventNumber }))}
               highlightedIndex={highlightedIndex}
@@ -646,11 +653,11 @@ export function SessionDetailPage() {
               data-session-message-list
             >
               {!searching && view.event_count === 0 ? (
-                <PageEmpty title="No events" description="This session has no canonical events to render." />
+                <PageEmpty title={t("sessionNoEvents")} description={t("sessionNoEventsDescription")} />
               ) : searching && (matched_event_count ?? 0) === 0 ? (
                 <PageEmpty
-                  title="No matching events"
-                  description="Try a different search term."
+                  title={t("sessionNoMatchingEvents")}
+                  description={t("sessionTryDifferentSearch")}
                 />
               ) : (
                 visibleEvents.map(({ event, index, eventNumber }) => (

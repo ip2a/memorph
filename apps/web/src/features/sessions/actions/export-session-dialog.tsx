@@ -14,6 +14,7 @@ import type { SessionActionTarget } from "@/features/sessions/session-action-tar
 import { exportSchema, providerLabel, workspaceOptions } from "@/features/sessions/model/schemas";
 import type { ExportForm } from "@/features/sessions/model/schemas";
 import { exportSession } from "@/lib/api";
+import { useI18n } from "@/lib/i18n-context";
 import type { MetaPayload } from "@/lib/types";
 
 export function ExportSessionDialog({
@@ -27,6 +28,7 @@ export function ExportSessionDialog({
   onOpenChange: (open: boolean) => void;
   meta?: MetaPayload;
 }) {
+  const { t } = useI18n();
   const form = useForm<ExportForm>({
     resolver: zodResolver(exportSchema),
     defaultValues: { output_prefix: "", format: "both", output_dir: "" },
@@ -54,7 +56,7 @@ export function ExportSessionDialog({
     },
     onSuccess: (result) => {
       onOpenChange(false);
-      toast.success("Exported", {
+      toast.success(t("sessionExported"), {
         description: result.files.length ? result.files.join("\n") : providerLabel([], target?.providerId || ""),
       });
     },
@@ -66,18 +68,18 @@ export function ExportSessionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl" data-export-session-dialog>
         <DialogHeader>
-          <DialogTitle>Export</DialogTitle>
-          <DialogDescription>Write this session to export files using the legacy export workflow fields.</DialogDescription>
+          <DialogTitle>{t("export")}</DialogTitle>
+          <DialogDescription>{t("sessionExportDescription")}</DialogDescription>
         </DialogHeader>
         <DialogForm onSubmit={form.handleSubmit((values) => exportMutation.mutate(values))}>
           <input type="hidden" name="provider" value={target?.providerId || ""} />
           <input type="hidden" name="session_id" value={target?.sessionId || ""} />
           <FieldGroup className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_11rem]" data-export-modal-grid>
             <Field data-invalid={Boolean(form.formState.errors.output_prefix)} className="sm:col-span-2">
-              <FieldLabel htmlFor="export-output-prefix">Output File Name</FieldLabel>
+              <FieldLabel htmlFor="export-output-prefix">{t("sessionOutputFileName")}</FieldLabel>
               <Input
                 id="export-output-prefix"
-                placeholder="Output file name"
+                placeholder={t("sessionOutputFileNamePlaceholder")}
                 aria-invalid={Boolean(form.formState.errors.output_prefix)}
                 {...form.register("output_prefix")}
               />
@@ -85,10 +87,10 @@ export function ExportSessionDialog({
             </Field>
 
             <Field data-invalid={Boolean(form.formState.errors.format)}>
-              <FieldLabel htmlFor="export-format">Format</FieldLabel>
+              <FieldLabel htmlFor="export-format">{t("sessionFormat")}</FieldLabel>
               <Select value={selectedFormat} onValueChange={(value) => form.setValue("format", value, { shouldValidate: true })}>
                 <SelectTrigger id="export-format" className="w-full" aria-invalid={Boolean(form.formState.errors.format)}>
-                  <SelectValue placeholder="Format" />
+                  <SelectValue placeholder={t("sessionFormat")} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
@@ -110,17 +112,17 @@ export function ExportSessionDialog({
             </Field>
 
             <Field>
-              <FieldLabel htmlFor="export-output-dir">Export Directory</FieldLabel>
+              <FieldLabel htmlFor="export-output-dir">{t("sessionExportDirectory")}</FieldLabel>
               <InputGroup>
-                <InputGroupInput id="export-output-dir" list="known-workspaces" placeholder="Export directory" {...form.register("output_dir")} />
+                <InputGroupInput id="export-output-dir" list="known-workspaces" placeholder={t("sessionExportDirectory")} {...form.register("output_dir")} />
                 <InputGroupAddon align="inline-end">
                   <InputGroupButton type="button" variant="ghost" disabled>
                     <FolderOpenIcon data-icon="inline-start" />
-                    Browse
+                    {t("sessionBrowse")}
                   </InputGroupButton>
                 </InputGroupAddon>
               </InputGroup>
-              <FieldDescription>Defaults to the current workspace when left unchanged.</FieldDescription>
+              <FieldDescription>{t("sessionExportDirectoryDescription")}</FieldDescription>
             </Field>
           </FieldGroup>
 
@@ -132,8 +134,9 @@ export function ExportSessionDialog({
 
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}
+            cancelLabel={t("cancel")}
             submitDisabled={!target}
-            submitLabel="Export"
+            submitLabel={t("export")}
             submitting={exportMutation.isPending}
           />
         </DialogForm>

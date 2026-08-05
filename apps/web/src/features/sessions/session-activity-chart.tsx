@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { formatChartAxisDateTime } from "@/lib/format";
 import type { SessionActivityBucket, SessionActivityTimeline } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n-context";
 
 type SessionActivityChartProps = {
   className?: string;
@@ -28,24 +29,24 @@ function bucketActivity(bucket: SessionActivityBucket) {
   return bucket.activity_score ?? bucket.event_count + bucket.message_count;
 }
 
-function bucketUnitLabel(timeline: SessionActivityTimeline) {
+function bucketUnitLabel(timeline: SessionActivityTimeline, t: ReturnType<typeof useI18n>["t"]) {
   switch (timeline.bucket_seconds) {
     case 60:
-      return "per minute";
+      return t("activityPerMinute");
     case 3600:
-      return "per hour";
+      return t("activityPerHour");
     case 43_200:
-      return "per 12 hours";
+      return t("activityPer12Hours");
     default:
       if (timeline.bucket_seconds % 86_400 === 0) {
         const days = timeline.bucket_seconds / 86_400;
-        return `per ${days} ${days === 1 ? "day" : "days"}`;
+        return t("activityPerDays", { count: days });
       }
       if (timeline.bucket_seconds % 3600 === 0) {
         const hours = timeline.bucket_seconds / 3600;
-        return `per ${hours} ${hours === 1 ? "hour" : "hours"}`;
+        return t("activityPerHours", { count: hours });
       }
-      return `per ${timeline.bucket_seconds} seconds`;
+      return t("activityPerSeconds", { count: timeline.bucket_seconds });
   }
 }
 
@@ -101,6 +102,7 @@ function formatActivityScore(value: number) {
 }
 
 export function SessionActivityChart({ className, isLoading, timeline }: SessionActivityChartProps) {
+  const { t } = useI18n();
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const points = useMemo(() => (timeline ? buildChartPoints(timeline) : []), [timeline]);
   const activePoint = activeIndex === null ? null : points[activeIndex] ?? null;
@@ -121,7 +123,7 @@ export function SessionActivityChart({ className, isLoading, timeline }: Session
   if (!timeline || timeline.buckets.length === 0) {
     return (
       <div className={cn("flex min-h-[104px] flex-col justify-center text-sm text-muted-foreground", className)}>
-        No activity timeline
+        {t("statsNoData")}
       </div>
     );
   }
@@ -136,22 +138,22 @@ export function SessionActivityChart({ className, isLoading, timeline }: Session
     <div className={cn("flex min-h-[104px] min-w-0 flex-col gap-1 overflow-visible", className)} data-session-activity-chart>
       <div className="flex min-h-12 items-start justify-between gap-3 overflow-visible pr-0.5">
         <div className="min-w-0">
-          <p className="text-xs font-medium text-foreground">Activity</p>
+          <p className="text-xs font-medium text-foreground">{t("activity")}</p>
           <p className="truncate text-[11px] text-muted-foreground">
-            {bucketUnitLabel(timeline)} · peak {formatActivityScore(peak)}
+            {bucketUnitLabel(timeline, t)} · {t("activityPeak", { value: formatActivityScore(peak) })}
           </p>
         </div>
         <div className="flex h-12 shrink-0 flex-col items-end text-right text-[11px] leading-4 text-muted-foreground">
           {activePoint ? (
             <>
               <div className="font-medium text-foreground tabular-nums">{activePoint.timeLabel}</div>
-              <div>{formatActivityScore(activePoint.activityScore)} activity</div>
+              <div>{formatActivityScore(activePoint.activityScore)} {t("activity")}</div>
               <div>
-                {activePoint.messageCount} msgs · {activePoint.eventCount} events
+                {t("activityMessagesEvents", { messages: activePoint.messageCount, events: activePoint.eventCount })}
               </div>
             </>
           ) : (
-            <div className="tabular-nums">{formatActivityScore(totalActivity)} total</div>
+            <div className="tabular-nums">{t("activityTotal", { value: formatActivityScore(totalActivity) })}</div>
           )}
         </div>
       </div>
@@ -162,7 +164,7 @@ export function SessionActivityChart({ className, isLoading, timeline }: Session
           preserveAspectRatio="none"
           className="block h-[88px] w-full overflow-visible"
           role="img"
-          aria-label="Session activity timeline"
+          aria-label={t("activityTimeline")}
           onMouseLeave={() => setActiveIndex(null)}
         >
           <defs>

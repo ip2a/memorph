@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n-context";
 
 type DialogFormProps = ComponentProps<"form">;
 
@@ -23,7 +24,7 @@ export function DialogForm({ className, ...props }: DialogFormProps) {
 
 export function DialogFormFooter({
   cancelButtonProps,
-  cancelLabel = "Cancel",
+  cancelLabel,
   children,
   onCancel,
   submitButtonProps,
@@ -32,10 +33,11 @@ export function DialogFormFooter({
   submitting = false,
   ...props
 }: DialogFormFooterProps) {
+  const { t } = useI18n();
   return (
     <DialogFooter {...props}>
       <Button type="button" variant="outline" onClick={onCancel} {...cancelButtonProps}>
-        {cancelLabel}
+        {cancelLabel ?? t("cancel")}
       </Button>
       <Button
         type="submit"

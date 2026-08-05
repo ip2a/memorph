@@ -1,5 +1,6 @@
 import type { AgentManagementEntry } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/lib/i18n-context";
 
 export type ProviderListInstallStatus = "installed" | "not_installed" | "unsupported";
 
@@ -14,13 +15,10 @@ export function providerListInstallStatus(provider: AgentManagementEntry, kind: 
   return provider.environment.installed ? "installed" : "not_installed";
 }
 
-function statusLabel(status: ProviderListInstallStatus): string {
-  if (status === "installed") return "Installed";
-  return status;
-}
-
 export function ProviderListInstallStatusBadge({ status }: { status: ProviderListInstallStatus }) {
-  return <Badge variant={status === "installed" ? "secondary" : "outline"}>{statusLabel(status)}</Badge>;
+  const { t } = useI18n();
+  const label = status === "installed" ? t("installedStatus") : status === "unsupported" ? t("unsupportedStatus") : t("notInstalled");
+  return <Badge variant={status === "installed" ? "secondary" : "outline"}>{label}</Badge>;
 }
 
 export function ProviderListStatusTrailing({ attention, status }: { attention?: number; status: ProviderListInstallStatus }) {

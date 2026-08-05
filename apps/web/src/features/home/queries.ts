@@ -8,6 +8,10 @@ type HomeSessionOptions = {
   sessionLimit?: number;
 };
 
+function isFeedBusy(kind?: string) {
+  return kind === "cold_scanning" || kind === "warming";
+}
+
 export function useHomeData(
   workspace?: string | null,
   selectedProviders?: string[],
@@ -29,12 +33,13 @@ export function useHomeData(
   );
   const sessionParams = {
     all: false,
-    fields: "with_stats",
+    fields: "with_stats" as const,
     limit: sessionLimit,
     workspace: selectedWorkspace,
     sort: sessionOptions.sort ?? "recent",
+    refresh: false,
     ...(providerFilter ? { provider: providerFilter } : {}),
-  } as const;
+  };
 
   const providers = useQuery({
     queryKey: queryKeys.providers,
@@ -58,9 +63,10 @@ export function useHomeData(
     queryFn: () => listSessions(sessionParams),
     enabled: !meta.isLoading && Boolean(selectedProviders?.length),
     placeholderData: (previous) => previous,
-    // Backend flags `degraded: true` when it returned an empty result and
-    // triggered a background workspace indexing pass. Poll until it clears.
-    refetchInterval: (query) => (query.state.data?.degraded ? 2000 : false),
+    // The workspace feed returns immediately and scans providers in the
+    // background. Poll while it reports a non-ready state.
+    refetchInterval: (query) =>
+      isFeedBusy(query.state.data?.feed_state?.kind) ? 2000 : false,
   });
 
   const syncGroups = useQuery({
@@ -68,5 +74,5 @@ export function useHomeData(
     queryFn: listSyncGroups,
   });
 
-  return { meta, providers, catalog, workspaceProviders, sessions, syncGroups };
+  return { meta, providers, catalog, workspaceProviders, sessions, syncGroups, sessionParams };
 }

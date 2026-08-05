@@ -42,6 +42,7 @@ import {
   useAgentsMeta,
   useAgentsSummary,
   useDetectAgent,
+  useDeleteAgentDetectedHook,
   useRunAgentHookOperation,
   useRunProviderSetting,
   useUpdateProviderSetting,
@@ -98,12 +99,17 @@ function DetailSection({
   );
 }
 
-function DetailRow({ label, value, hint }: { label: string; value: string | number | null | undefined; hint?: string }) {
+function DetailRow({ label, value, hint, actions }: { label: string; value: string | number | null | undefined; hint?: string; actions?: ReactNode }) {
   const display = value || "-";
   const title = typeof value === "string" && value ? value : undefined;
 
   return (
-    <div className="grid gap-3 border-b py-3 md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]">
+    <div
+      className={cn(
+        "grid gap-3 border-b py-3",
+        actions ? "md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)_auto]" : "md:grid-cols-[minmax(160px,0.42fr)_minmax(0,1fr)]",
+      )}
+    >
       <div className="flex min-w-0 flex-col gap-1">
         <strong className="text-sm font-medium">{label}</strong>
         {hint ? <span className="text-muted-foreground text-xs">{hint}</span> : null}
@@ -111,6 +117,7 @@ function DetailRow({ label, value, hint }: { label: string; value: string | numb
       <div className="text-muted-foreground min-w-0 truncate font-mono text-xs" title={title}>
         {display}
       </div>
+      {actions ? <div className="flex items-start justify-end">{actions}</div> : null}
     </div>
   );
 }
@@ -245,20 +252,21 @@ function HooksBlock({ provider }: { provider: AgentManagementEntry }) {
   const capability = provider.capabilities.hook_management;
   const detectedHooks = useAgentDetectedHooks(provider.provider_id, capability?.discovery === true);
   const operation = useRunAgentHookOperation();
+  const deleteHook = useDeleteAgentDetectedHook();
 
   if (!capability) return null;
 
   const operations = [
-    ["install_hook", capability.install, "Install"],
-    ["verify_hook", capability.verify, "Verify"],
-    ["repair_hook", capability.repair, "Repair"],
-    ["uninstall_hook", capability.uninstall, "Uninstall"],
+    ["install_hook", capability.install, t("install")],
+    ["verify_hook", capability.verify, t("verify")],
+    ["repair_hook", capability.repair, t("repair")],
+    ["uninstall_hook", capability.uninstall, t("uninstall")],
   ] as const;
 
   return (
     <DetailSection
       title={t("hooks")}
-      description={`Status: ${capability.status}`}
+      description={`${t("status")}: ${capability.status}`}
       headingClassName="md:items-center"
       actionsClassName="items-center"
       actions={<Badge variant={capability.status === "installed_ok" ? "secondary" : "outline"}>{capability.status}</Badge>}
@@ -286,11 +294,37 @@ function HooksBlock({ provider }: { provider: AgentManagementEntry }) {
               key={`${hook.event}:${hook.index}:${hook.fingerprint}`}
               label={`${hook.event} #${hook.index + 1}`}
               value={hook.command || hook.hook_type || hook.fingerprint}
+              actions={
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  disabled={operation.isPending || deleteHook.isPending}
+                  onClick={() =>
+                    deleteHook.mutate({
+                      provider: provider.provider_id,
+                      event: hook.event,
+                      index: hook.index,
+                      fingerprint: hook.fingerprint,
+                    })
+                  }
+                >
+                  {deleteHook.isPending &&
+                  deleteHook.variables?.provider === provider.provider_id &&
+                  deleteHook.variables?.event === hook.event &&
+                  deleteHook.variables?.index === hook.index &&
+                  deleteHook.variables?.fingerprint === hook.fingerprint ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : null}
+                  {t("remove")}
+                </Button>
+              }
             />
           ))}
         </div>
       ) : null}
-      {operation.error ? <PageError title="Hook operation failed" message={operation.error.message} /> : null}
+      {operation.error ? <PageError title={t("hookOperationFailed")} message={operation.error.message} /> : null}
+      {deleteHook.error ? <PageError title={t("hookDeleteFailed")} message={deleteHook.error.message} /> : null}
     </DetailSection>
   );
 }
@@ -370,7 +404,7 @@ function CapabilityContent({ capabilities }: { capabilities: ProviderCapabilitie
           <strong className="text-sm font-medium">{t("operations")}</strong>
           <div className="flex flex-wrap gap-1.5">
             {operations.map(([label, supported]) => (
-              <Badge key={label} variant={supported ? "secondary" : "outline"}>{label}: {supported ? "yes" : "no"}</Badge>
+              <Badge key={label} variant={supported ? "secondary" : "outline"}>{label}: {supported ? t("yes") : t("no")}</Badge>
             ))}
           </div>
         </div>
@@ -382,7 +416,7 @@ function CapabilityContent({ capabilities }: { capabilities: ProviderCapabilitie
           <div className="flex flex-wrap gap-1.5">
             <Badge variant={riskVariant(capabilities.write_risk.level)}>{capabilityLabel(capabilities.write_risk.level)}</Badge>
             {topology.map(([label, present]) => (
-              <Badge key={label} variant={present ? "outline" : "ghost"}>{label}: {present ? "yes" : "no"}</Badge>
+              <Badge key={label} variant={present ? "outline" : "ghost"}>{label}: {present ? t("yes") : t("no")}</Badge>
             ))}
           </div>
         </div>
@@ -390,12 +424,12 @@ function CapabilityContent({ capabilities }: { capabilities: ProviderCapabilitie
           <strong className="text-sm font-medium">{t("backupContract")}</strong>
           <div className="flex flex-wrap gap-1.5">
             <Badge variant={capabilities.backup_support.before_write ? "secondary" : "destructive"}>
-              Before write: {capabilities.backup_support.before_write ? "yes" : "no"}
+              {t("beforeWrite")}: {capabilities.backup_support.before_write ? t("yes") : t("no")}
             </Badge>
             <Badge variant={capabilities.backup_support.restore ? "secondary" : "destructive"}>
-              Restore: {capabilities.backup_support.restore ? "yes" : "no"}
+              {t("restore")}: {capabilities.backup_support.restore ? t("yes") : t("no")}
             </Badge>
-            <Badge variant="outline">Sync only: {capabilities.backup_support.sync_only ? "yes" : "no"}</Badge>
+            <Badge variant="outline">{t("syncOnly")}: {capabilities.backup_support.sync_only ? t("yes") : t("no")}</Badge>
           </div>
         </div>
         <FidelityRows label={t("importFidelity")} fidelity={capabilities.import_fidelity} />
@@ -404,13 +438,13 @@ function CapabilityContent({ capabilities }: { capabilities: ProviderCapabilitie
           <strong className="text-sm font-medium">{t("activityCoverage")}</strong>
           <div className="flex flex-wrap gap-1.5">
             <Badge variant={capabilities.activity_support.hook_events ? "secondary" : "outline"}>
-              Hook events: {capabilities.activity_support.hook_events ? "yes" : "no"}
+              {t("hookEvents")}: {capabilities.activity_support.hook_events ? t("yes") : t("no")}
             </Badge>
             <Badge variant={capabilities.activity_support.runtime_endpoint ? "secondary" : "outline"}>
-              Runtime endpoint: {capabilities.activity_support.runtime_endpoint ? "yes" : "no"}
+              {t("runtimeEndpoint")}: {capabilities.activity_support.runtime_endpoint ? t("yes") : t("no")}
             </Badge>
             <Badge variant={capabilities.activity_support.session_activity ? "secondary" : "outline"}>
-              Session activity: {capabilities.activity_support.session_activity ? "yes" : "no"}
+              {t("sessionActivity")}: {capabilities.activity_support.session_activity ? t("yes") : t("no")}
             </Badge>
           </div>
         </div>
@@ -492,7 +526,7 @@ function ProviderItemsBlock({
           </EmptyHeader>
         </Empty>
       )}
-      <div className="text-muted-foreground text-xs">Actions run with workspace {workspace || "-"}.</div>
+      <div className="text-muted-foreground text-xs">{t("actionsRunWithWorkspace", { workspace: workspace || "-" })}</div>
     </DetailSection>
   );
 }
@@ -603,20 +637,20 @@ function ProviderDetail({
               </Dialog>
               <Button type="button" variant="outline" size="sm" disabled={detectAgent.isPending} onClick={() => detectAgent.mutate(provider.provider_id)}>
                 {detectAgent.isPending ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
-                Detect
+                {t("detect")}
               </Button>
             </div>
           </header>
           {detectAgent.error ? <PageError title={t("detectFailed")} message={detectAgent.error.message} /> : null}
           {updateSetting.error ? <PageError title={t("settingUpdateFailed")} message={updateSetting.error.message} /> : null}
           {runSetting.error ? <PageError title={t("providerActionFailed")} message={runSetting.error.message} /> : null}
-          <div className="flex flex-wrap gap-1 border-b" role="tablist" aria-label="Agent capabilities">
+          <div className="flex flex-wrap gap-1 border-b" role="tablist" aria-label={t("agentCapabilities")}>
             {([
-              ["overview", "Overview"],
-              ...(provider.capabilities.hook_management ? [["hooks", "Hooks"]] : []),
+              ["overview", t("overview")],
+              ...(provider.capabilities.hook_management ? [["hooks", t("hooks")]] : []),
               ...(provider.capabilities.mcp_management ? [["mcp", "MCP"]] : []),
-              ...(provider.capabilities.plugin_management ? [["plugins", "Plugins"]] : []),
-              ...(provider.capabilities.config_views.length > 0 ? [["config", "Config"]] : []),
+              ...(provider.capabilities.plugin_management ? [["plugins", t("plugins")]] : []),
+              ...(provider.capabilities.config_views.length > 0 ? [["config", t("config")]] : []),
             ] as Array<[DetailTab, string]>).map(([tab, label]) => (
               <button
                 key={tab}
@@ -663,16 +697,16 @@ function ProviderDetail({
             <DialogDescription>{confirmAction?.description}</DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-2 rounded-md border p-3 font-mono text-xs">
-            <span>Provider: {provider.provider_id}</span>
-            <span>Workspace: {workspaceName(workspace)}</span>
+            <span>{t("provider")}: {provider.provider_id}</span>
+            <span>{t("workspace")}: {workspaceName(workspace)}</span>
             {workspace ? <span className="text-muted-foreground break-all">{workspace}</span> : null}
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setConfirmAction(null)} disabled={runSetting.isPending}>
-              Cancel
+              {t("cancel")}
             </Button>
             <Button type="button" onClick={handleConfirmRun} disabled={runSetting.isPending}>
-              Confirm
+              {t("confirm")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -691,7 +725,7 @@ function ProviderDetail({
           ) : null}
           <DialogFooter>
             <Button type="button" onClick={() => setActionResult(null)}>
-              Close
+              {t("close")}
             </Button>
           </DialogFooter>
         </DialogContent>

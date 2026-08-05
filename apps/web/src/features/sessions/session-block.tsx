@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { SessionCodeBlock, SessionContent } from "@/features/sessions/session-content";
+import { useI18n } from "@/lib/i18n-context";
 import type { EventBlock } from "@/lib/types";
 
 function FileList({ files }: { files: string[] | undefined }) {
@@ -27,6 +28,8 @@ function compressionArchiveHref(archiveRef: string) {
 }
 
 export function SessionBlock({ block, embedded = false }: { block: EventBlock; embedded?: boolean }) {
+  const { t } = useI18n();
+
   switch (block.type) {
     case "text":
       return <SessionContent embedded={embedded} value={block.text} />;
@@ -42,7 +45,7 @@ export function SessionBlock({ block, embedded = false }: { block: EventBlock; e
     case "tool_result":
       return (
         <div className="flex flex-col gap-2">
-          {block.is_error ? <Badge variant="destructive">Error</Badge> : null}
+          {block.is_error ? <Badge variant="destructive">{t("error")}</Badge> : null}
           <SessionContent embedded={embedded} variant="tool" value={block.content} />
         </div>
       );
@@ -73,7 +76,9 @@ export function SessionBlock({ block, embedded = false }: { block: EventBlock; e
               {block.stderr}
             </div>
           ) : null}
-          {!block.stdout && !block.stderr ? <span className="text-sm text-muted-foreground">(No output)</span> : null}
+          {!block.stdout && !block.stderr ? (
+            <span className="text-sm text-muted-foreground">({t("blockNoOutput")})</span>
+          ) : null}
         </div>
       );
     case "file":
@@ -90,7 +95,7 @@ export function SessionBlock({ block, embedded = false }: { block: EventBlock; e
           {block.path || block.mime_type ? (
             <code className="break-all font-mono text-xs text-muted-foreground">{block.path ?? block.mime_type}</code>
           ) : null}
-          <img alt={block.path ?? "Session image"} className="max-h-96 rounded-md object-contain" src={src} />
+          <img alt={block.path ?? t("sessionImage")} className="max-h-96 rounded-md object-contain" src={src} />
         </div>
       ) : (
         <SessionCodeBlock embedded={embedded} value={block} />
@@ -116,7 +121,9 @@ export function SessionBlock({ block, embedded = false }: { block: EventBlock; e
             <p className="text-sm">{raw?.summary}</p>
           )}
           {raw?.source_event_count == null ? null : (
-            <Badge variant="secondary">{raw.source_event_count} source events</Badge>
+            <Badge variant="secondary">
+              {t("compressionSourceEvents", { count: raw.source_event_count })}
+            </Badge>
           )}
           <FileList files={raw?.source_event_ids} />
         </div>

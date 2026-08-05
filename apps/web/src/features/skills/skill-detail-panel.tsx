@@ -18,18 +18,130 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SkillBundlePanel } from "@/features/skills/skill-bundle-panel";
 import { SkillContextHealthPanel } from "@/features/skills/skill-context-health-panel";
 import { SkillCoverageConflictsPanel } from "@/features/skills/skill-coverage-conflicts-panel";
 import { SkillHealthDetails } from "@/features/skills/skill-health-tags";
 import { formatBytes } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
+import { cn } from "@/lib/utils";
+import type { I18nKey } from "@/lib/i18n-core";
 import type { SkillAsset, SkillCatalogItem, SkillDetail, SkillFilePreview } from "@/lib/types";
 
 const AGENTS = ["claude", "codex", "gemini", "opencode", "hermes"] as const;
 
 type DetailTab = "bundle" | "coverage" | "installations";
+
+function installKindLabel(
+  kind: SkillCatalogItem["installations"][number]["install_kind"],
+  t: (key: I18nKey) => string,
+) {
+  switch (kind) {
+    case "symlink":
+      return t("skillsInstallKindSymlink");
+    case "managed-copy":
+      return t("skillsInstallKindManagedCopy");
+    default:
+      return t("skillsInstallKindDirectory");
+  }
+}
+
+function InstallationRow({
+  agent,
+  installation,
+  pending,
+  sourceUsedBy,
+  t,
+  onInstall,
+  onRemove,
+}: {
+  agent: (typeof AGENTS)[number];
+  installation?: SkillCatalogItem["installations"][number];
+  pending: boolean;
+  sourceUsedBy?: string;
+  t: (key: I18nKey, vars?: Record<string, string | number>) => string;
+  onInstall: (agent: string) => void;
+  onRemove: (agent: string) => void;
+}) {
+  const managed =
+    installation?.install_kind === "symlink" ||
+    installation?.install_kind === "managed-copy";
+  const linkBroken =
+    installation?.install_kind === "symlink" &&
+    installation.link_status === "broken";
+
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-lg border p-3">
+      <div className="min-w-0 flex-1 space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <strong>{agent}</strong>
+          <Badge variant={installation ? "secondary" : "outline"}>
+            {installation ? t("installed") : t("notInstalled")}
+          </Badge>
+          {installation ? (
+            <>
+              <Badge variant="outline">{installation.scope_kind}</Badge>
+              <Badge variant="outline">
+                {installKindLabel(installation.install_kind, t)}
+              </Badge>
+              {linkBroken ? (
+                <Badge variant="destructive">{t("skillsLinkBroken")}</Badge>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+        {installation ? (
+          <div className="space-y-1 text-xs">
+            <div>
+              <span className="text-muted-foreground">{t("skillsInstallPath")}</span>
+              <p className="break-all font-mono">{installation.install_path}</p>
+            </div>
+            {installation.scope_kind === "project" && installation.workspace_dir ? (
+              <div>
+                <span className="text-muted-foreground">
+                  {t("skillsProjectScope")}
+                </span>
+                <p className="break-all font-mono">{installation.workspace_dir}</p>
+              </div>
+            ) : null}
+            {installation.install_kind === "symlink" && installation.symlink_target ? (
+              <div>
+                <span className="text-muted-foreground">
+                  {t("skillsSymlinkTarget")}
+                </span>
+                <p className="break-all font-mono">{installation.symlink_target}</p>
+              </div>
+            ) : null}
+          </div>
+        ) : (
+          <p className="text-muted-foreground text-xs">—</p>
+        )}
+      </div>
+      {installation ? (
+        <Button
+          variant="destructive"
+          size="sm"
+          className="shrink-0"
+          disabled={pending || !managed}
+          title={!managed ? t("skillsUserOwnedHint") : undefined}
+          onClick={() => onRemove(agent)}
+        >
+          <Trash2Icon />
+          {t("remove")}
+        </Button>
+      ) : (
+        <Button
+          size="sm"
+          className="shrink-0"
+          disabled={pending || !sourceUsedBy}
+          onClick={() => onInstall(agent)}
+        >
+          {t("install")}
+        </Button>
+      )}
+    </div>
+  );
+}
 
 async function copyFingerprint(value: string, copied: string, failed: string) {
   try {
@@ -49,8 +161,6 @@ export function SkillDetailPanel({
   onPreviewPathChange,
   preview,
   previewLoading,
-  sourceProvider,
-  onSourceProviderChange,
   pending,
   mutationError,
   provider,
@@ -65,22 +175,18 @@ export function SkillDetailPanel({
   onPreviewPathChange: (path: string | null) => void;
   preview?: SkillFilePreview;
   previewLoading: boolean;
-  sourceProvider?: string;
-  onSourceProviderChange: (provider: string) => void;
   pending: boolean;
   mutationError: Error | null;
   provider?: string;
-  onInstall: (provider: string) => void;
-  onRemove: (provider: string) => void;
+  onInstall: (agent: string) => void;
+  onRemove: (agent: string) => void;
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<DetailTab>("bundle");
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const selectedSource = selected?.installations.some(
-    (item) => item.provider_id === sourceProvider,
-  )
-    ? sourceProvider
-    : selected?.installations[0]?.provider_id;
+  const sourceUsedBy = selected?.installations.find(
+    (item) => item.status === "active",
+  )?.used_by;
 
   useEffect(() => {
     setTab("bundle");
@@ -128,6 +234,21 @@ export function SkillDetailPanel({
                   {selected.missing ? (
                     <Badge variant="destructive">{t("skillsMissing")}</Badge>
                   ) : null}
+                  {(detail?.tags ?? selected.tags).map((tag) => (
+                    <Badge key={tag} variant="outline">{tag}</Badge>
+                  ))}
+                </div>
+                <div className="space-y-2 border-t pt-5">
+                  <h3 className="text-sm font-semibold">{t("skillsUsedBy")}</h3>
+                  {(detail?.used_by ?? selected.used_by).length ? (
+                    <div className="flex flex-wrap gap-2">
+                      {(detail?.used_by ?? selected.used_by).map((agent) => (
+                        <Badge key={agent} variant="secondary">{agent}</Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-muted-foreground text-sm">{t("skillsNoUsedBy")}</p>
+                  )}
                 </div>
                 <div className="space-y-2">
                   <p className="text-muted-foreground text-xs">{t("skillsFingerprint")}</p>
@@ -183,121 +304,102 @@ export function SkillDetailPanel({
           {selected.description || t("skillsNoDescription")}
         </p>
       </div>
-      <Tabs
-        value={tab}
-        onValueChange={(value) => setTab(value as DetailTab)}
-        className="flex min-h-0 flex-1 flex-col gap-3"
-      >
-        <TabsList className="grid w-full shrink-0 grid-cols-3">
-          <TabsTrigger value="bundle">{t("skillsBundleFiles")}</TabsTrigger>
-          <TabsTrigger value="coverage">{t("skillsCoverageConflicts")}</TabsTrigger>
-          <TabsTrigger value="installations">{t("skillsInstallations")}</TabsTrigger>
-        </TabsList>
-
-        <TabsContent
-          value="bundle"
-          className="mt-0 flex min-h-0 flex-1 flex-col gap-3"
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
+        <div
+          className="flex shrink-0 flex-wrap gap-1 border-b"
+          role="tablist"
+          aria-label={t("skillsDetails")}
         >
-          {selected.installations.length > 1 ? (
-            <label className="flex shrink-0 items-center gap-2 text-sm">
-              {t("skillsPreviewSource")}
-              <select
-                value={selectedSource}
-                onChange={(event) => onSourceProviderChange(event.target.value)}
-                className="h-8 rounded border bg-background px-2"
-              >
-                {selected.installations.map((item) => (
-                  <option
-                    key={`${item.provider_id}:${item.install_path}`}
-                    value={item.provider_id}
-                  >
-                    {item.provider_id} · {item.scope_kind}
-                  </option>
-                ))}
-              </select>
-            </label>
-          ) : null}
-          <div className="flex min-h-0 flex-1 flex-col">
-            {treeLoading ? (
-              <div className="flex flex-1 items-center justify-center">
-                <Spinner />
-              </div>
-            ) : (
-              <SkillBundlePanel
-                assets={assets}
-                previewPath={previewPath}
-                onPreviewPathChange={onPreviewPathChange}
-                preview={preview}
-                previewLoading={previewLoading}
-              />
-            )}
-          </div>
-        </TabsContent>
+          {(
+            [
+              ["bundle", t("skillsBundleFiles")],
+              ["coverage", t("skillsCoverageConflicts")],
+              ["installations", t("skillsInstallations")],
+            ] as Array<[DetailTab, string]>
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={tab === value}
+              onClick={() => setTab(value)}
+              className={cn(
+                "border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                tab === value
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted-foreground",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
 
-        <TabsContent
-          value="coverage"
-          className="mt-0 flex min-h-0 flex-1 flex-col"
-        >
-          <SkillCoverageConflictsPanel embedded skillId={selected.id} />
-        </TabsContent>
-
-        <TabsContent
-          value="installations"
-          className="mt-0 flex min-h-0 flex-1 flex-col"
-        >
-          <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-3">
-            {AGENTS.map((agent) => {
-              const installation = selected.installations.find(
-                (item) => item.provider_id === agent && item.status === "active",
-              );
-              const managed =
-                installation?.install_kind === "symlink" ||
-                installation?.install_kind === "managed-copy";
-              return (
-                <div
-                  key={agent}
-                  className="flex items-center justify-between gap-3 rounded-lg border p-3"
-                >
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap gap-2">
-                      <strong>{agent}</strong>
-                      <Badge variant={installation ? "secondary" : "outline"}>
-                        {installation ? t("installed") : t("notInstalled")}
-                      </Badge>
-                      {installation ? (
-                        <Badge variant="outline">{installation.scope_kind}</Badge>
-                      ) : null}
-                    </div>
-                    <p className="text-muted-foreground mt-1 truncate font-mono text-xs">
-                      {installation?.install_path ?? "—"}
-                    </p>
-                  </div>
-                  {installation ? (
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      disabled={pending || !managed}
-                      title={!managed ? t("skillsUserOwnedHint") : undefined}
-                      onClick={() => onRemove(agent)}
-                    >
-                      <Trash2Icon />
-                      {t("remove")}
-                    </Button>
-                  ) : (
-                    <Button
-                      size="sm"
-                      disabled={pending || !selectedSource}
-                      onClick={() => onInstall(agent)}
-                    >
-                      {t("install")}
-                    </Button>
-                  )}
+        {tab === "bundle" ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-3">
+            <div className="flex min-h-0 flex-1 flex-col">
+              {treeLoading ? (
+                <div className="flex flex-1 items-center justify-center">
+                  <Spinner />
                 </div>
-              );
-            })}
-          </ScrollPane>
-        </TabsContent>
-      </Tabs>
+              ) : (
+                <SkillBundlePanel
+                  skillId={selected.source_id}
+                  usedBy={sourceUsedBy}
+                  assets={assets}
+                  previewPath={previewPath}
+                  onPreviewPathChange={onPreviewPathChange}
+                  preview={preview}
+                  previewLoading={previewLoading}
+                />
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {tab === "coverage" ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <SkillCoverageConflictsPanel embedded skillId={selected.id} />
+          </div>
+        ) : null}
+
+        {tab === "installations" ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-3">
+              {AGENTS.flatMap((agent) => {
+                const installations = selected.installations.filter(
+                  (item) => item.used_by === agent && item.status === "active",
+                );
+                if (!installations.length) {
+                  return [
+                    <InstallationRow
+                      key={agent}
+                      agent={agent}
+                      pending={pending}
+                      sourceUsedBy={sourceUsedBy}
+                      t={t}
+                      onInstall={onInstall}
+                      onRemove={onRemove}
+                    />,
+                  ];
+                }
+                return installations.map((installation) => (
+                  <InstallationRow
+                    key={`${agent}:${installation.install_path}`}
+                    agent={agent}
+                    installation={installation}
+                    pending={pending}
+                    sourceUsedBy={sourceUsedBy}
+                    t={t}
+                    onInstall={onInstall}
+                    onRemove={onRemove}
+                  />
+                ));
+              })}
+            </ScrollPane>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

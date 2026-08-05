@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import {
   cleanup,
   render,
@@ -12,6 +13,8 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ManagerPage } from "./manager-page";
+import { I18nContext } from "@/lib/i18n-context";
+import { translate } from "@/lib/i18n-core";
 import { useUiStore } from "@/stores/ui-store";
 
 const mocks = vi.hoisted(() => ({
@@ -152,6 +155,21 @@ function LocationProbe() {
   );
 }
 
+function TestI18nProvider({ children }: { children: ReactNode }) {
+  return (
+    <I18nContext.Provider
+      value={{
+        language: "en",
+        languageSetting: "en",
+        setLanguageOverride: () => {},
+        t: (key, vars) => translate("en", key, vars),
+      }}
+    >
+      {children}
+    </I18nContext.Provider>
+  );
+}
+
 function renderManager(initialEntry = "/manager") {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -159,19 +177,21 @@ function renderManager(initialEntry = "/manager") {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[initialEntry]}>
-        <Routes>
-          <Route
-            path="*"
-            element={
-              <>
-                <ManagerPage />
-                <LocationProbe />
-              </>
-            }
-          />
-        </Routes>
-      </MemoryRouter>
+      <TestI18nProvider>
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <Routes>
+            <Route
+              path="*"
+              element={
+                <>
+                  <ManagerPage />
+                  <LocationProbe />
+                </>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      </TestI18nProvider>
     </QueryClientProvider>,
   );
 }
@@ -243,11 +263,9 @@ beforeEach(() => {
 });
 
 describe("ManagerPage interaction model", () => {
-  it("makes All providers explicit and closes the final explicit selection back to all", async () => {
+  it("allows deselecting the last provider without falling back to all", async () => {
     const user = userEvent.setup();
     renderManager();
-
-    expect(screen.getByRole("button", { name: /All providers/i })).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: /Codex/i }));
 
@@ -257,23 +275,25 @@ describe("ManagerPage interaction model", () => {
       );
     });
 
-    await user.click(screen.getByRole("button", { name: /All providers/i }));
-    await waitFor(() => {
-      expect(screen.getByTestId("location").textContent).toBe("/manager");
-    });
-    expect(screen.getByRole("button", { name: /All providers/i })).toBeTruthy();
-
-    await user.click(screen.getByRole("button", { name: /Codex/i }));
     await user.click(screen.getByRole("button", { name: /Codex/i }));
 
     await waitFor(() => {
-      expect(screen.getByTestId("location").textContent).toBe("/manager");
+      expect(screen.getByTestId("location").textContent).toContain(
+        "providers=none",
+      );
     });
-    await user.keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: /All providers/i })).toBeTruthy();
+    expect(screen.getByText("No providers selected")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /Codex/i }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain(
+        "providers=codex",
+      );
+    });
   });
 
-  it("uses scope tabs instead of stat tiles to switch workspace scope", async () => {
+  it("uses a scope toggle button instead of stat tiles to switch workspace scope", async () => {
     const user = userEvent.setup();
     renderManager();
 
@@ -283,8 +303,9 @@ describe("ManagerPage interaction model", () => {
     expect(screen.queryByRole("button", { name: /All Workspaces/i })).toBeNull();
     expect(screen.getByText("Current Workspace")).toBeTruthy();
     expect(screen.getByText("All Workspaces")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Switch to all" })).toBeTruthy();
 
-    await user.click(screen.getByRole("tab", { name: "All workspaces" }));
+    await user.click(screen.getByRole("button", { name: "Switch to all" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toContain("scope=all");
@@ -293,7 +314,7 @@ describe("ManagerPage interaction model", () => {
       );
     });
 
-    await user.click(screen.getByRole("tab", { name: "Current workspace" }));
+    await user.click(screen.getByRole("button", { name: "Switch to current" }));
 
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/manager");

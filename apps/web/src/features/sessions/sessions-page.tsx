@@ -26,6 +26,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { formatBytes, formatDateTime, sessionTitle } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
 import type { SessionItem, SessionListSort } from "@/lib/types";
 import { useRefreshSessionStaleness, useReprojectStaleSessions, useSessions } from "@/features/sessions/queries";
 
@@ -39,6 +40,7 @@ function matchesSearch(session: SessionItem, query: string) {
 }
 
 export function SessionsPage() {
+  const { t } = useI18n();
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SessionListSort>("recent");
   const [page, setPage] = useState(0);
@@ -53,7 +55,7 @@ export function SessionsPage() {
   const reprojectStale = useReprojectStaleSessions();
 
   if (sessions.isLoading) return <PageSkeleton />;
-  if (sessions.error) return <PageError title="Sessions failed to load" message={sessions.error.message} />;
+  if (sessions.error) return <PageError title={t("sessionsFailedToLoad")} message={sessions.error.message} />;
 
   const groups = (sessions.data?.groups ?? [])
     .map((group) => ({
@@ -71,7 +73,7 @@ export function SessionsPage() {
     refreshStaleness.mutate(undefined, {
       onSuccess: (report) => {
         toast.success(
-          `Checked ${report.checked_sources} sources: ${report.stale_snapshots} stale, ${report.fresh_snapshots} fresh`,
+          t("sessionsSourcesChecked", { checked: report.checked_sources, stale: report.stale_snapshots, fresh: report.fresh_snapshots }),
         );
       },
       onError: (error) => toast.error(error.message),
@@ -81,7 +83,7 @@ export function SessionsPage() {
   function handleReprojectStale() {
     reprojectStale.mutate(null, {
       onSuccess: (report) => {
-        const summary = `${report.reprojected_snapshots}/${report.candidate_snapshots} snapshots reprojected`;
+        const summary = t("sessionsReprojected", { reprojected: report.reprojected_snapshots, candidate: report.candidate_snapshots });
         if (report.failed_snapshots || report.missing_sources || report.unsupported_providers) {
           toast.warning(summary);
         } else {
@@ -96,22 +98,22 @@ export function SessionsPage() {
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-2">
-          <Badge variant="secondary">Session List</Badge>
-          <h1 className="text-3xl font-semibold">Sessions</h1>
-          <p className="text-muted-foreground">Provider-scoped sessions rebuilt as a shadcn table workflow.</p>
+          <Badge variant="secondary">{t("sessionsList")}</Badge>
+          <h1 className="text-3xl font-semibold">{t("sessions")}</h1>
+          <p className="text-muted-foreground">{t("sessionsDescription")}</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button type="button" variant="outline" disabled={refreshStaleness.isPending} onClick={handleRefreshStaleness}>
             <RefreshCwIcon className={refreshStaleness.isPending ? "animate-spin" : undefined} data-icon="inline-start" />
-            Check sources
+            {t("sessionsCheckSources")}
           </Button>
           <Button type="button" variant="outline" disabled={reprojectStale.isPending || staleTotal === 0} onClick={handleReprojectStale}>
             <RotateCwIcon className={reprojectStale.isPending ? "animate-spin" : undefined} data-icon="inline-start" />
-            Reproject stale
+            {t("sessionsReprojectStale")}
           </Button>
           <Button asChild variant="outline">
             <Link to="/manager">
-              Manager
+              {t("sessionsManager")}
               <ArrowRightIcon data-icon="inline-end" />
             </Link>
           </Button>
@@ -120,10 +122,10 @@ export function SessionsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Filters</CardTitle>
+          <CardTitle>{t("sessionsFilters")}</CardTitle>
           <CardDescription>
-            {total} sessions across {groups.length} providers
-            {staleTotal ? ` · ${staleTotal} stale` : ""}
+            {t("sessionsSummary", { count: total, providers: groups.length })}
+            {staleTotal ? t("sessionsStaleSummary", { count: staleTotal }) : ""}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -134,7 +136,7 @@ export function SessionsPage() {
                 className="pl-8"
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search title, id, or workspace"
+                placeholder={t("sessionsSearchPlaceholder")}
               />
             </div>
             <Select value={sort} onValueChange={(value) => {
@@ -142,12 +144,12 @@ export function SessionsPage() {
               setPage(0);
             }}>
               <SelectTrigger>
-                <SelectValue placeholder="Sort" />
+                <SelectValue placeholder={t("sessionsSortPlaceholder")} />
               </SelectTrigger>
               <SelectContent>
                 <SelectGroup>
-                  <SelectItem value="recent">Recent</SelectItem>
-                  <SelectItem value="title">Title</SelectItem>
+                  <SelectItem value="recent">{t("sessionsRecent")}</SelectItem>
+                  <SelectItem value="title">{t("sessionsTitle")}</SelectItem>
                 </SelectGroup>
               </SelectContent>
             </Select>
@@ -156,7 +158,7 @@ export function SessionsPage() {
       </Card>
 
       {total === 0 ? (
-        <PageEmpty title="No sessions matched" description="Change filters or switch workspace to inspect provider sessions." />
+        <PageEmpty title={t("sessionsNoMatches")} description={t("sessionsNoMatchesDescription")} />
       ) : (
         <>
           {groups.map((group) => (
@@ -166,19 +168,19 @@ export function SessionsPage() {
                 <ProviderLogo providerId={group.provider_id} size="sm" alt={group.provider_name || group.provider_id} />
                 <span className="truncate">{group.provider_name || group.provider_id}</span>
               </CardTitle>
-              <CardDescription>{group.sessions.length} sessions</CardDescription>
+              <CardDescription>{t("sessionsProviderCount", { count: group.sessions.length })}</CardDescription>
             </CardHeader>
             <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Title</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Workspace</TableHead>
-                    <TableHead>Updated</TableHead>
-                    <TableHead className="text-right">Messages</TableHead>
-                    <TableHead className="text-right">Size</TableHead>
-                    <TableHead className="text-right">Open</TableHead>
+                    <TableHead>{t("sessionsTitle")}</TableHead>
+                    <TableHead>{t("sessionsStatus")}</TableHead>
+                    <TableHead>{t("sessionsWorkspace")}</TableHead>
+                    <TableHead>{t("sessionsUpdated")}</TableHead>
+                    <TableHead className="text-right">{t("sessionsMessages")}</TableHead>
+                    <TableHead className="text-right">{t("size")}</TableHead>
+                    <TableHead className="text-right">{t("sessionsOpen")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -192,9 +194,9 @@ export function SessionsPage() {
                       </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
-                          {session.pinned ? <Badge variant="secondary"><PinIcon />Pinned</Badge> : null}
-                          {session.hidden ? <Badge variant="outline"><EyeIcon />Hidden</Badge> : null}
-                          {session.stale ? <Badge variant="destructive"><TriangleAlertIcon />Stale</Badge> : null}
+                          {session.pinned ? <Badge variant="secondary"><PinIcon />{t("sessionsPinned")}</Badge> : null}
+                          {session.hidden ? <Badge variant="outline"><EyeIcon />{t("sessionsHidden")}</Badge> : null}
+                          {session.stale ? <Badge variant="destructive"><TriangleAlertIcon />{t("sessionsStale")}</Badge> : null}
                         </div>
                       </TableCell>
                       <TableCell><PathText value={session.project_dir} wrap="all" /></TableCell>
@@ -204,7 +206,7 @@ export function SessionsPage() {
                       <TableCell className="text-right">
                         <Button asChild variant="ghost">
                           <Link to={`/sessions/${encodeURIComponent(session.provider_id)}/${encodeURIComponent(session.session_id)}`}>
-                            Detail
+                            {t("sessionDetail")}
                             <ArrowRightIcon data-icon="inline-end" />
                           </Link>
                         </Button>
@@ -217,12 +219,12 @@ export function SessionsPage() {
           </Card>
           ))}
           <div className="flex items-center justify-end gap-2">
-            <span className="text-muted-foreground text-sm">Page {page + 1}</span>
+            <span className="text-muted-foreground text-sm">{t("sessionsPage", { page: page + 1 })}</span>
             <Button type="button" variant="outline" disabled={page === 0 || sessions.isFetching} onClick={() => setPage((current) => current - 1)}>
-              Previous
+              {t("sessionsPrevious")}
             </Button>
             <Button type="button" variant="outline" disabled={!sessions.data?.has_more || sessions.isFetching} onClick={() => setPage((current) => current + 1)}>
-              Next
+              {t("sessionsNext")}
             </Button>
           </div>
         </>

@@ -46,15 +46,16 @@ import { Spinner } from "@/components/ui/spinner";
 import { useManagerMeta, useManagerProviders } from "@/features/manager/queries";
 import { useSyncGroups } from "@/features/sync/queries";
 import { formatDateTime } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
 import { removeSyncGroup, renameSyncGroup, runSyncGroup } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import type { ProviderInfo, SyncGroup, SyncReport } from "@/lib/types";
 
-const renameSchema = z.object({
-  title: z.string().trim().min(1, "Enter a title."),
+const renameSchema = (message: string) => z.object({
+  title: z.string().trim().min(1, message),
 });
 
-type RenameForm = z.infer<typeof renameSchema>;
+type RenameForm = z.infer<ReturnType<typeof renameSchema>>;
 
 function errorCount(groups: SyncGroup[]) {
   return groups.flatMap((group) => group.holdings).filter((holding) => holding.last_error).length;
@@ -64,10 +65,12 @@ function latestHolding(group: SyncGroup) {
   return [...group.holdings].sort((left, right) => (right.last_active_at ?? 0) - (left.last_active_at ?? 0))[0];
 }
 
-function syncReportDescription(report: SyncReport) {
-  const success = report.success.length ? `success=${report.success.length}` : "success=0";
-  const errors = report.errors.length ? `errors=${report.errors.length}` : "errors=0";
-  return `${report.source_provider} · ${success} · ${errors}`;
+function syncReportDescription(report: SyncReport, t: ReturnType<typeof useI18n>["t"]) {
+  return t("syncReportSummary", {
+    provider: report.source_provider,
+    success: report.success.length,
+    errors: report.errors.length,
+  });
 }
 
 function providerOptions(providers: ProviderInfo[] | undefined) {
@@ -115,12 +118,13 @@ function ProviderControls({
   selected: string[];
   onToggle: (providerId: string) => void;
 }) {
+  const { t } = useI18n();
   if (!providers.length) {
     return (
       <Empty>
         <EmptyHeader>
-          <EmptyTitle>No providers</EmptyTitle>
-          <EmptyDescription>No sync providers were returned by the backend.</EmptyDescription>
+          <EmptyTitle>{t("syncNoProviders")}</EmptyTitle>
+          <EmptyDescription>{t("syncNoProvidersDescription")}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
@@ -181,6 +185,7 @@ function SyncGroupRow({
   onSyncLatest: (group: SyncGroup) => void;
   syncing: boolean;
 }) {
+  const { t } = useI18n();
   const latest = latestHolding(group);
   const detailHref = `/sync/${encodeURIComponent(group.id)}`;
   const errorHoldings = group.holdings.filter((holding) => holding.last_error);
@@ -193,19 +198,19 @@ function SyncGroupRow({
         <>
           <Button asChild variant="outline">
             <Link to={detailHref}>
-              View
+              {t("syncView")}
               <ArrowRightIcon data-icon="inline-end" />
             </Link>
           </Button>
           <Button variant="outline" onClick={() => onSyncLatest(group)} disabled={syncing}>
             {syncing ? <Spinner data-icon="inline-start" /> : null}
-            Sync Latest
+            {t("syncLatest")}
           </Button>
           <Button variant="outline" onClick={() => onRename(group)}>
-            Rename
+            {t("rename")}
           </Button>
           <Button variant="destructive" onClick={() => onRemove(group)}>
-            Remove
+            {t("remove")}
           </Button>
         </>
       )}
@@ -217,15 +222,15 @@ function SyncGroupRow({
         </Link>
         <div className="text-muted-foreground flex flex-wrap gap-2 text-xs">
           {group.source_provider ? <Badge variant="outline">{group.source_provider}</Badge> : null}
-          <Badge variant="secondary">{group.holdings.length} holdings</Badge>
-          <span>Updated {formatDateTime(group.updated_at)}</span>
+          <Badge variant="secondary">{t("syncHoldingsCount", { count: group.holdings.length })}</Badge>
+          <span>{t("syncUpdatedAt", { date: formatDateTime(group.updated_at) })}</span>
         </div>
         <div className="text-muted-foreground flex flex-col gap-1 text-xs">
           <span className="truncate font-mono">{group.id}</span>
           <span className="truncate">
-            Latest {latest ? `${latest.provider}:${latest.session_id}` : "-"}
+            {t("syncLatestHolding", { holding: latest ? `${latest.provider}:${latest.session_id}` : "-" })}
           </span>
-          <PathText value={latest?.target_dir} fallback="No target dir" wrap="all" />
+          <PathText value={latest?.target_dir} fallback={t("syncNoTargetDir")} wrap="all" />
         </div>
         {errorHoldings.length ? (
           <div className="flex flex-wrap gap-2">
@@ -264,18 +269,19 @@ function ResultPanel({
   onSyncLatest: (group: SyncGroup) => void;
   syncing: boolean;
 }) {
+  const { t } = useI18n();
   const holdings = groups.reduce((sum, group) => sum + group.holdings.length, 0);
   const searchActive = search.trim().length > 0;
   const summary = searchActive
-    ? `${filteredGroups.length} shown / ${groups.length} total`
-    : `${groups.length} sync groups / ${holdings} holdings`;
+    ? t("syncGroupsShown", { shown: filteredGroups.length, total: groups.length })
+    : t("syncGroupsSummary", { groups: groups.length, holdings });
 
   return (
     <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_auto_minmax(0,1fr)] gap-4" data-sync-result-panel>
       <MetricGrid columns="three">
-        <MetricTile label="Groups" value={groups.length} variant="compact" />
-        <MetricTile label="Holdings" value={holdings} variant="compact" />
-        <MetricTile label="Errors" value={errorCount(groups)} variant="compact" />
+        <MetricTile label={t("syncGroupsMetric")} value={groups.length} variant="compact" />
+        <MetricTile label={t("syncHoldings")} value={holdings} variant="compact" />
+        <MetricTile label={t("syncErrors")} value={errorCount(groups)} variant="compact" />
       </MetricGrid>
       <Separator />
       <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3">
@@ -283,14 +289,14 @@ function ResultPanel({
           <SectionHeading
             variant="page"
             titleAs="h1"
-            eyebrow="Sync Groups"
-            title="Shared Sessions"
+            eyebrow={t("syncGroups")}
+            title={t("syncSharedSessions")}
             description={summary}
             className="border-b-0 pb-0"
             actions={(
               <Button variant="outline" onClick={onRefresh} disabled={refreshing}>
                 {refreshing ? <Spinner data-icon="inline-start" /> : <RotateCwIcon data-icon="inline-start" />}
-                Refresh
+                {t("refresh")}
               </Button>
             )}
           />
@@ -300,7 +306,7 @@ function ResultPanel({
               className="pl-8"
               value={search}
               onChange={(event) => onSearchChange(event.target.value)}
-              placeholder="Search title, id, provider, or path"
+              placeholder={t("syncSearchPlaceholder")}
               data-sync-preview-search
             />
           </div>
@@ -308,11 +314,11 @@ function ResultPanel({
         <ScrollArea className="min-h-0 pr-3">
           {filteredGroups.length === 0 ? (
             <PageEmpty
-              title={groups.length ? "No matching sync groups" : "No sync groups"}
+              title={groups.length ? t("syncNoMatches") : t("syncNoGroups")}
               description={
                 groups.length
-                  ? "Try another search or provider filter."
-                  : "Create a sync group from a session row or detail action."
+                  ? t("syncNoMatchesDescription")
+                  : t("syncNoGroupsDescription")
               }
             />
           ) : (
@@ -336,6 +342,7 @@ function ResultPanel({
 }
 
 export function SyncPage() {
+  const { t } = useI18n();
   const syncGroups = useSyncGroups();
   const meta = useManagerMeta();
   const providers = useManagerProviders();
@@ -364,14 +371,14 @@ export function SyncPage() {
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups }),
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroup(group.id) }),
       ]);
-      toast.success("Sync Latest", { description: syncReportDescription(report) });
+      toast.success(t("syncLatest"), { description: syncReportDescription(report, t) });
     },
   });
 
   if (syncGroups.isLoading || meta.isLoading || providers.isLoading) return <PageSkeleton />;
-  if (syncGroups.error) return <PageError title="Sync groups failed to load" message={syncGroups.error.message} />;
-  if (meta.error) return <PageError title="Workspace failed to load" message={meta.error.message} />;
-  if (providers.error) return <PageError title="Providers failed to load" message={providers.error.message} />;
+  if (syncGroups.error) return <PageError title={t("syncGroupsLoadFailed")} message={syncGroups.error.message} />;
+  if (meta.error) return <PageError title={t("syncWorkspaceLoadFailed")} message={meta.error.message} />;
+  if (providers.error) return <PageError title={t("syncProvidersLoadFailed")} message={providers.error.message} />;
 
   const options = providerOptions(providers.data);
 
@@ -420,9 +427,10 @@ function RenameSyncGroupDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const form = useForm<RenameForm>({
-    resolver: zodResolver(renameSchema),
+    resolver: zodResolver(renameSchema(t("syncTitleRequired"))),
     defaultValues: { title: "" },
   });
 
@@ -441,7 +449,7 @@ function RenameSyncGroupDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups }),
         target ? queryClient.invalidateQueries({ queryKey: queryKeys.syncGroup(target.id) }) : Promise.resolve(),
       ]);
-      toast.success("Rename", { description: form.getValues("title") });
+      toast.success(t("rename"), { description: form.getValues("title") });
       onOpenChange(false);
     },
   });
@@ -450,14 +458,14 @@ function RenameSyncGroupDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md" data-rename-sync-group-dialog>
         <DialogHeader>
-          <DialogTitle>Rename</DialogTitle>
-          <DialogDescription>Update the sync group title from the legacy row action.</DialogDescription>
+          <DialogTitle>{t("rename")}</DialogTitle>
+          <DialogDescription>{t("syncRenameDescription")}</DialogDescription>
         </DialogHeader>
         <DialogForm onSubmit={form.handleSubmit((values) => renameMutation.mutate(values))}>
           <input type="hidden" name="group_id" value={target?.id || ""} />
           <FieldGroup>
             <Field data-invalid={Boolean(form.formState.errors.title)}>
-              <FieldLabel htmlFor="rename-sync-title">Title</FieldLabel>
+              <FieldLabel htmlFor="rename-sync-title">{t("syncTitle")}</FieldLabel>
               <Input id="rename-sync-title" aria-invalid={Boolean(form.formState.errors.title)} {...form.register("title")} />
               {form.formState.errors.title ? <FieldDescription>{form.formState.errors.title.message}</FieldDescription> : null}
             </Field>
@@ -465,7 +473,8 @@ function RenameSyncGroupDialog({
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}
             submitDisabled={!target}
-            submitLabel="Save"
+            cancelLabel={t("cancel")}
+            submitLabel={t("save")}
             submitting={renameMutation.isPending}
           />
         </DialogForm>
@@ -483,6 +492,7 @@ function RemoveSyncGroupDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [deleteProviderSessions, setDeleteProviderSessions] = useState(false);
 
@@ -493,7 +503,7 @@ function RemoveSyncGroupDialog({
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups });
-      toast.success("Removed", { description: target?.title });
+      toast.success(t("syncRemoved"), { description: target?.title });
       onOpenChange(false);
     },
   });
@@ -508,12 +518,12 @@ function RemoveSyncGroupDialog({
     >
       <AlertDialogContent data-remove-sync-group-dialog>
         <AlertDialogHeader>
-          <AlertDialogTitle>Remove</AlertDialogTitle>
-          <AlertDialogDescription>Remove this sync group. Choose whether provider sessions should also be deleted.</AlertDialogDescription>
+          <AlertDialogTitle>{t("remove")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("syncRemoveDescription")}</AlertDialogDescription>
         </AlertDialogHeader>
         <div className="flex flex-col gap-3 rounded-md border p-3">
           <input type="hidden" name="group_id" value={target?.id || ""} />
-          <div className="font-medium">{target?.title || "Sync group"}</div>
+          <div className="font-medium">{target?.title || t("syncGroupFallback")}</div>
           <div className="break-all font-mono text-xs text-muted-foreground">{target?.id || "-"}</div>
           <Field orientation="horizontal">
             <Checkbox
@@ -524,14 +534,14 @@ function RemoveSyncGroupDialog({
             />
             <FieldContent>
               <FieldLabel htmlFor="delete-provider-sessions">
-                <FieldTitle>Delete provider sessions</FieldTitle>
+                <FieldTitle>{t("syncDeleteProviderSessions")}</FieldTitle>
               </FieldLabel>
-              <FieldDescription>Also remove the sessions owned by providers in this group.</FieldDescription>
+              <FieldDescription>{t("syncDeleteProviderSessionsDescription")}</FieldDescription>
             </FieldContent>
           </Field>
         </div>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={removeMutation.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={removeMutation.isPending}>{t("cancel")}</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
             disabled={!target || removeMutation.isPending}
@@ -541,7 +551,7 @@ function RemoveSyncGroupDialog({
             }}
           >
             {removeMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-            Remove
+            {t("remove")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

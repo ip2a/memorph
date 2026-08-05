@@ -63,7 +63,6 @@ import {
 } from "@/components/ui/select";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import {
   backupManagerItems,
@@ -72,6 +71,8 @@ import {
   cleanManagerWorkspace,
 } from "@/lib/api";
 import { formatBytes, formatDateTime } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
+import type { I18nKey } from "@/lib/i18n-core";
 import { queryKeys } from "@/lib/query-keys";
 import type {
   ManagerBackupResult,
@@ -94,6 +95,7 @@ import {
   resolveManagerRequest,
 } from "@/features/manager/manager-route-state";
 import type {
+  ManagerProviderSelection,
   ManagerScope,
   ManagerSort,
   ManagerView,
@@ -136,22 +138,23 @@ function workspaceIdentity(item: ManagerWorkspaceItem) {
   return JSON.stringify([item.provider_id, item.workspace]);
 }
 
-function actionTitle(target: ManagerActionTarget | null) {
+type Translate = (
+  key: I18nKey,
+  vars?: Record<string, string | number | null | undefined>,
+) => string;
+
+function actionTitle(target: ManagerActionTarget | null, t: Translate) {
   switch (target?.kind) {
     case "delete-sessions":
-      return target.items.length === 1 ? "Delete session" : "Delete sessions";
+      return t(target.items.length === 1 ? "managerDeleteSession" : "managerDeleteSessions");
     case "backup-sessions":
-      return target.items.length === 1 ? "Back up session" : "Back up sessions";
+      return t(target.items.length === 1 ? "managerBackupSession" : "managerBackupSessions");
     case "delete-workspaces":
-      return target.items.length === 1
-        ? "Delete workspace sessions"
-        : "Delete workspace sessions";
+      return t("managerDeleteWorkspace");
     case "backup-workspaces":
-      return target.items.length === 1
-        ? "Back up workspace"
-        : "Back up workspaces";
+      return t(target.items.length === 1 ? "managerBackupWorkspace" : "managerBackupWorkspaces");
     default:
-      return "Manager action";
+      return t("managerAction");
   }
 }
 
@@ -222,12 +225,12 @@ function actionWorkspaces(target: ManagerActionTarget | null) {
   );
 }
 
-function cleanSummary(result: ManagerCleanResult) {
-  return `${result.success} deleted, ${result.failed} failed, ${formatBytes(result.freed_bytes)} freed`;
+function cleanSummary(result: ManagerCleanResult, t: Translate) {
+  return t("managerDeletedSummary", { success: result.success, failed: result.failed, size: formatBytes(result.freed_bytes) });
 }
 
-function backupSummary(result: ManagerBackupResult) {
-  return `${result.success} backed up, ${result.failed} failed`;
+function backupSummary(result: ManagerBackupResult, t: Translate) {
+  return t("managerBackedUpSummary", { success: result.success, failed: result.failed });
 }
 
 function ActionTargetSummary({
@@ -237,6 +240,7 @@ function ActionTargetSummary({
   target: ManagerActionTarget;
   backupDir?: string;
 }) {
+  const { t } = useI18n();
   const stats = actionStats(target);
   const providers = actionProviders(target);
   const workspaces = actionWorkspaces(target);
@@ -245,29 +249,29 @@ function ActionTargetSummary({
   return (
     <div className="grid gap-3" data-manager-action-summary>
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 rounded-lg border bg-muted/30 p-3 text-xs">
-        <dt className="text-muted-foreground">Selected objects</dt>
+        <dt className="text-muted-foreground">{t("managerSelectedObjects")}</dt>
         <dd className="text-right font-medium">{target.items.length}</dd>
         {stats.workspaces > 0 ? (
           <>
-            <dt className="text-muted-foreground">Workspaces</dt>
+            <dt className="text-muted-foreground">{t("managerWorkspaces")}</dt>
             <dd className="text-right font-medium">{stats.workspaces}</dd>
           </>
         ) : null}
-        <dt className="text-muted-foreground">Sessions affected</dt>
+        <dt className="text-muted-foreground">{t("managerSessionsAffected")}</dt>
         <dd className="text-right font-medium">{stats.sessions}</dd>
-        <dt className="text-muted-foreground">Estimated size</dt>
+        <dt className="text-muted-foreground">{t("managerEstimatedSize")}</dt>
         <dd className="text-right font-medium">{formatBytes(stats.bytes)}</dd>
-        <dt className="text-muted-foreground">Provider</dt>
+        <dt className="text-muted-foreground">{t("managerProvider")}</dt>
         <dd className="break-words text-right font-medium">
-          {providers.length ? providers.join(", ") : "Unknown"}
+          {providers.length ? providers.join(", ") : t("managerUnknown")}
         </dd>
-        <dt className="text-muted-foreground">Workspace</dt>
+        <dt className="text-muted-foreground">{t("managerWorkspace")}</dt>
         <dd className="min-w-0 whitespace-pre-wrap break-all text-right font-mono">
-          {workspaces.length ? workspaces.join("\n") : "Unknown"}
+          {workspaces.length ? workspaces.join("\n") : t("managerUnknown")}
         </dd>
         {backupDir ? (
           <>
-            <dt className="text-muted-foreground">Backup directory</dt>
+            <dt className="text-muted-foreground">{t("managerBackupDirectory")}</dt>
             <dd className="min-w-0 break-all text-right font-mono">
               {backupDir}
             </dd>
@@ -280,11 +284,7 @@ function ActionTargetSummary({
             className="mt-0.5 size-4 shrink-0"
             aria-hidden="true"
           />
-          <p>
-            {
-              "This permanently deletes the selected session data. This action cannot be undone."
-            }
-          </p>
+          <p>{t("managerDeleteWarning")}</p>
         </div>
       ) : null}
     </div>
@@ -294,19 +294,20 @@ function ActionTargetSummary({
 function ProviderFilter({
   providers,
   selected,
+  selection,
   onToggle,
-  onSelectAll,
 }: {
   providers: ManagerProviderOption[];
   selected: string[];
+  selection: ManagerProviderSelection;
   onToggle: (providerId: string) => void;
-  onSelectAll: () => void;
 }) {
+  const { t } = useI18n();
   if (!providers.length) {
     return (
       <PageEmpty
-        title="No providers"
-        description="No installed scan providers were returned by the backend."
+        title={t("managerNoProviders")}
+        description={t("managerNoProvidersDescription")}
       />
     );
   }
@@ -317,14 +318,9 @@ function ProviderFilter({
       data-manager-provider-controls
       innerClassName="flex flex-col gap-2"
     >
-      <SelectableRowButton
-        title="All providers"
-        meta={`${providers.length} installed providers`}
-        selected={selected.length === 0}
-        onClick={onSelectAll}
-      />
       {providers.map((provider) => {
-        const checked = selected.length === 0 || selected.includes(provider.id);
+        const checked =
+          selection === "all" || selected.includes(provider.id);
         return (
           <SelectableRowButton
             key={provider.id}
@@ -341,34 +337,6 @@ function ProviderFilter({
   );
 }
 
-function ScopeControl({
-  scope,
-  specifiedWorkspace,
-  onChange,
-}: {
-  scope: ManagerScope;
-  specifiedWorkspace: boolean;
-  onChange: (scope: ManagerScope) => void;
-}) {
-  return (
-    <Tabs
-      value={specifiedWorkspace ? "" : scope}
-      onValueChange={(value) => {
-        if (value === "current" || value === "all") {
-          onChange(value);
-        }
-      }}
-      data-manager-scope-control
-      aria-label="Workspace scope"
-    >
-      <TabsList className="grid w-full grid-cols-2">
-        <TabsTrigger value="current">Current workspace</TabsTrigger>
-        <TabsTrigger value="all">All workspaces</TabsTrigger>
-      </TabsList>
-    </Tabs>
-  );
-}
-
 function ManagerStatsStrip({
   stats,
   loading,
@@ -376,31 +344,32 @@ function ManagerStatsStrip({
   stats: ReturnType<typeof useManagerStats>["data"];
   loading: boolean;
 }) {
+  const { t } = useI18n();
   const placeholder = loading ? <Skeleton className="h-5 w-20" /> : "-";
   return (
     <MetricGrid columns="four" data-manager-stats-strip>
       <MetricTile
-        label="Current Workspace"
+        label={t("managerCurrentWorkspace")}
         value={stats ? formatBytes(stats.current_workspace_size_bytes) : placeholder}
-        hint={`${stats?.current_workspace_session_count ?? 0} sessions`}
+        hint={t("managerSessionsCount", { count: stats?.current_workspace_session_count ?? 0 })}
         variant="compact"
       />
       <MetricTile
-        label="All Workspaces"
+        label={t("managerAllWorkspaces")}
         value={stats ? stats.all_workspace_count : placeholder}
-        hint={`${stats?.all_workspace_session_count ?? 0} sessions`}
+        hint={t("managerSessionsCount", { count: stats?.all_workspace_session_count ?? 0 })}
         variant="compact"
       />
       <MetricTile
-        label="Selected Agents"
+        label={t("managerSelectedAgents")}
         value={stats?.selected_agent_count ?? placeholder}
-        hint="installed providers"
+        hint={t("managerInstalledProviders")}
         variant="compact"
       />
       <MetricTile
-        label="All Size"
+        label={t("managerAllSize")}
         value={stats ? formatBytes(stats.all_workspace_size_bytes) : placeholder}
-        hint="indexed storage"
+        hint={t("managerIndexedStorage")}
         variant="compact"
       />
     </MetricGrid>
@@ -437,6 +406,7 @@ function FilterToolbar({
   onSelectVisible: () => void;
   onClearFilters: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div
       className={
@@ -456,8 +426,8 @@ function FilterToolbar({
           onChange={(event) => onSearchChange(event.target.value)}
           placeholder={
             view === "sessions"
-              ? "Search sessions, providers, or paths"
-              : "Search workspaces, providers, or paths"
+              ? t("managerSearchSessions")
+              : t("managerSearchWorkspaces")
           }
           className="min-h-10 pl-8"
           data-manager-search
@@ -469,17 +439,17 @@ function FilterToolbar({
         onValueChange={(value) => onSortChange(value as ManagerSort)}
       >
         <SelectTrigger className="min-h-10 w-full min-w-0" data-manager-sort>
-          <SelectValue placeholder="Sort" />
+          <SelectValue placeholder={t("managerSort")} />
         </SelectTrigger>
         <SelectContent>
           <SelectGroup>
-            <SelectItem value="recent">Recent</SelectItem>
-            <SelectItem value="size">Size</SelectItem>
+            <SelectItem value="recent">{t("managerRecent")}</SelectItem>
+            <SelectItem value="size">{t("managerSize")}</SelectItem>
             {view === "workspaces" ? (
-              <SelectItem value="sessions">Session count</SelectItem>
+              <SelectItem value="sessions">{t("managerSessionCount")}</SelectItem>
             ) : null}
             <SelectItem value="title">
-              {view === "sessions" ? "Title" : "Name"}
+              {view === "sessions" ? t("managerTitle") : t("managerName")}
             </SelectItem>
           </SelectGroup>
         </SelectContent>
@@ -490,12 +460,12 @@ function FilterToolbar({
           <div
             className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:col-span-1"
             data-manager-selection-bar
-            aria-label={`${selection.count} selected`}
+            aria-label={t("managerSelected", { count: selection.count })}
             role="group"
           >
-            <strong className="text-sm">{selection.count} selected</strong>
+            <strong className="text-sm">{t("managerSelected", { count: selection.count })}</strong>
             <span className="text-xs text-muted-foreground">
-              {selection.visibleCount} visible · {formatBytes(selection.bytes)}
+              {t("managerVisibleAndSize", { count: selection.visibleCount, size: formatBytes(selection.bytes) })}
             </span>
           </div>
           <Button
@@ -504,7 +474,7 @@ function FilterToolbar({
             className="min-h-10 min-w-0"
             onClick={selection.onClear}
           >
-            Clear
+            {t("managerClear")}
           </Button>
           <Button
             type="button"
@@ -513,7 +483,7 @@ function FilterToolbar({
             onClick={selection.onBackup}
           >
             <ArchiveIcon data-icon="inline-start" />
-            Back up
+            {t("managerBackUp")}
           </Button>
           <Button
             type="button"
@@ -522,7 +492,7 @@ function FilterToolbar({
             onClick={selection.onDelete}
           >
             <Trash2Icon data-icon="inline-start" />
-            Delete
+            {t("managerDelete")}
           </Button>
         </>
       ) : (
@@ -536,7 +506,7 @@ function FilterToolbar({
             data-manager-select-visible
           >
             <CheckIcon data-icon="inline-start" />
-            Select visible
+            {t("managerSelectVisible")}
           </Button>
 
           {hasActiveFilters ? (
@@ -548,7 +518,7 @@ function FilterToolbar({
               data-manager-clear-filters
             >
               <XIcon data-icon="inline-start" />
-              Clear filters
+              {t("managerClearFilters")}
             </Button>
           ) : null}
         </>
@@ -598,6 +568,7 @@ function RowActions({
   onBackup: () => void;
   onDelete: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div
       className="flex flex-wrap items-center justify-start gap-2 md:justify-end"
@@ -606,7 +577,7 @@ function RowActions({
     >
       <Button asChild variant="outline">
         <Link to={href}>
-          View
+          {t("managerView")}
           <ArrowRightIcon data-icon="inline-end" />
         </Link>
       </Button>
@@ -614,22 +585,22 @@ function RowActions({
         trailingAction={
           <Button type="button" variant="outline" onClick={onDelete}>
             <Trash2Icon data-icon="inline-start" />
-            Remove
+            {t("managerRemove")}
           </Button>
         }
-        moreLabel={`More actions for ${label}`}
+        moreLabel={t("managerMoreActionsFor", { label })}
       >
         <DropdownMenuItem asChild>
-          <Link to={href}>Open</Link>
+          <Link to={href}>{t("managerOpen")}</Link>
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={onBackup}>
           <ArchiveIcon />
-          Back up
+          {t("managerBackUp")}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem variant="destructive" onSelect={onDelete}>
           <Trash2Icon />
-          Delete
+          {t("managerDelete")}
         </DropdownMenuItem>
       </TrailingMoreButtonGroup>
     </div>
@@ -649,11 +620,12 @@ function SessionRows({
   onBackup: (item: ManagerItem) => void;
   onDelete: (item: ManagerItem) => void;
 }) {
+  const { t } = useI18n();
   if (!items.length) {
     return (
       <PageEmpty
-        title="No sessions matched"
-        description="Change the search or filters to see sessions in this scope."
+        title={t("managerNoSessionsMatched")}
+        description={t("managerNoSessionsMatchedDescription")}
       />
     );
   }
@@ -685,7 +657,7 @@ function SessionRows({
                   <span>{item.provider_name || item.provider_id}</span>
                 </span>
                 <span>{formatBytes(item.size_bytes)}</span>
-                <span>Updated {formatDateTime(item.last_active_at)}</span>
+                <span>{t("managerUpdated", { date: formatDateTime(item.last_active_at) })}</span>
               </div>
               <PathText
                 value={item.project_dir || item.source_path}
@@ -718,11 +690,12 @@ function WorkspaceRows({
   onBackup: (item: ManagerWorkspaceItem) => void;
   onDelete: (item: ManagerWorkspaceItem) => void;
 }) {
+  const { t } = useI18n();
   if (!items.length) {
     return (
       <PageEmpty
-        title="No workspaces matched"
-        description="Change the search or filters to see workspaces in this scope."
+        title={t("managerNoWorkspacesMatched")}
+        description={t("managerNoWorkspacesMatchedDescription")}
       />
     );
   }
@@ -759,9 +732,9 @@ function WorkspaceRows({
                   <ProviderLogo providerId={item.provider_id} size="xs" alt={item.provider_name || item.provider_id} />
                   <span>{item.provider_name || item.provider_id}</span>
                 </span>
-                <span>{item.session_count} sessions</span>
+                <span>{t("managerSessionsCount", { count: item.session_count })}</span>
                 <span>{formatBytes(item.total_size_bytes)}</span>
-                <span>Updated {formatDateTime(item.last_active_at)}</span>
+                <span>{t("managerUpdated", { date: formatDateTime(item.last_active_at) })}</span>
               </div>
               <span className="break-words font-mono text-xs text-muted-foreground">
                 {item.workspace}
@@ -781,6 +754,7 @@ function WorkspaceRows({
 }
 
 export function ManagerPage() {
+  const { t } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const route = useMemo(
     () => readManagerRouteState(searchParams),
@@ -825,21 +799,20 @@ export function ManagerPage() {
     [availableProviderIds, providerCatalog.data, route.providers],
   );
   const request = useMemo(
-    () =>
-      resolveManagerRequest(
-        { ...route, providers: selectedProviders },
-        currentWorkspace,
-      ),
-    [currentWorkspace, route, selectedProviders],
+    () => resolveManagerRequest(route, currentWorkspace),
+    [currentWorkspace, route],
   );
+  const providersSelected = route.providerSelection !== "none";
   const listFilter = request.listFilter;
   const statsFilter = request.statsFilter;
-  const stats = useManagerStats(statsFilter, { enabled: request.enabled });
+  const stats = useManagerStats(statsFilter, {
+    enabled: request.enabled && providersSelected,
+  });
   const sessions = useManagerPreview(listFilter, {
-    enabled: request.enabled && route.view === "sessions",
+    enabled: request.enabled && providersSelected && route.view === "sessions",
   });
   const workspaces = useManagerWorkspaces(listFilter, {
-    enabled: request.enabled && route.view === "workspaces",
+    enabled: request.enabled && providersSelected && route.view === "workspaces",
   });
 
   useEffect(() => {
@@ -889,14 +862,29 @@ export function ManagerPage() {
 
   useEffect(() => {
     if (!providerCatalog.data) return;
-    const canonicalProviders = selectedProviders.join(",");
-    if ((searchParams.get("providers") ?? "") === canonicalProviders) return;
+    const expectedProvidersParam =
+      route.providerSelection === "all"
+        ? null
+        : route.providerSelection === "none"
+          ? "none"
+          : selectedProviders.join(",");
+    const currentProvidersParam = searchParams.has("providers")
+      ? searchParams.get("providers")
+      : null;
+
+    if (currentProvidersParam === expectedProvidersParam) return;
 
     const next = new URLSearchParams(searchParams);
-    if (canonicalProviders) next.set("providers", canonicalProviders);
-    else next.delete("providers");
+    if (expectedProvidersParam === null) next.delete("providers");
+    else next.set("providers", expectedProvidersParam);
     setSearchParams(next, { replace: true });
-  }, [providerCatalog.data, searchParams, selectedProviders, setSearchParams]);
+  }, [
+    providerCatalog.data,
+    route.providerSelection,
+    searchParams,
+    selectedProviders,
+    setSearchParams,
+  ]);
 
   const managerAction = useMutation({
     mutationFn: async (
@@ -910,11 +898,11 @@ export function ManagerPage() {
         return {
           title: actionResultTitle(
             outcome,
-            "Sessions deleted",
-            "Some sessions could not be deleted",
-            "Sessions were not deleted",
+            t("managerDeletedTitle"),
+            t("managerDeletePartialTitle"),
+            t("managerDeleteFailureTitle"),
           ),
-          summary: cleanSummary(result),
+          summary: cleanSummary(result, t),
           lines: result.errors || [],
           outcome,
         };
@@ -929,11 +917,11 @@ export function ManagerPage() {
         return {
           title: actionResultTitle(
             outcome,
-            "Sessions backed up",
-            "Some sessions could not be backed up",
-            "Sessions were not backed up",
+            t("managerBackedUpTitle"),
+            t("managerBackupPartialTitle"),
+            t("managerBackupFailureTitle"),
           ),
-          summary: backupSummary(result),
+          summary: backupSummary(result, t),
           lines: [...(result.files || []), ...(result.errors || [])],
           outcome,
         };
@@ -955,7 +943,7 @@ export function ManagerPage() {
           failed += result.failed;
           freed += result.freed_bytes;
           lines.push(
-            `${item.provider_id} / ${workspaceName(item.workspace)}: ${result.success} deleted, ${result.failed} failed`,
+            t("managerUpdatedItemSummary", { provider: item.provider_id, workspace: workspaceName(item.workspace), success: result.success, failed: result.failed }),
           );
           errors.push(...(result.errors || []));
         }
@@ -964,16 +952,16 @@ export function ManagerPage() {
         return {
           title: actionResultTitle(
             outcome,
-            "Workspace sessions deleted",
-            "Some workspace sessions could not be deleted",
-            "Workspace sessions were not deleted",
+            t("managerWorkspaceDeletedTitle"),
+            t("managerWorkspaceDeletePartialTitle"),
+            t("managerWorkspaceDeleteFailureTitle"),
           ),
           summary: cleanSummary({
             success,
             failed,
             freed_bytes: freed,
             errors,
-          }),
+          }, t),
           lines: [...lines, ...errors],
           outcome,
         };
@@ -994,7 +982,7 @@ export function ManagerPage() {
         success += result.success;
         failed += result.failed;
         lines.push(
-          `${item.provider_id} / ${workspaceName(item.workspace)}: ${result.success} backed up, ${result.failed} failed`,
+          t("managerBackedUpItemSummary", { provider: item.provider_id, workspace: workspaceName(item.workspace), success: result.success, failed: result.failed }),
         );
         files.push(...(result.files || []));
         errors.push(...(result.errors || []));
@@ -1004,11 +992,11 @@ export function ManagerPage() {
       return {
         title: actionResultTitle(
           outcome,
-          "Workspaces backed up",
-          "Some workspaces could not be backed up",
-          "Workspaces were not backed up",
+          t("managerWorkspacesBackedUpTitle"),
+          t("managerWorkspacesBackupPartialTitle"),
+          t("managerWorkspacesBackupFailureTitle"),
         ),
-        summary: backupSummary({ success, failed, files, errors }),
+        summary: backupSummary({ success, failed, files, errors }, t),
         lines: [...lines, ...files, ...errors],
         outcome,
       };
@@ -1031,19 +1019,18 @@ export function ManagerPage() {
       const message = error instanceof Error ? error.message : String(error);
       setActionTarget(null);
       setActionReport({
-        title: `${actionTitle(target)} failed`,
-        summary:
-          "No changes were completed. Your selection is still available to retry.",
+        title: `${actionTitle(target, t)} ${t("managerFailedSuffix")}`,
+        summary: t("managerNoChangesRetry"),
         lines: [message],
         outcome: "failure",
       });
-      toast.error("Manager action failed", { description: message });
+      toast.error(t("managerActionFailed"), { description: message });
     },
   });
 
   if (providerCatalog.isLoading || meta.isLoading) {
     return (
-      <div data-manager-initial-loading aria-label="Loading session manager">
+      <div data-manager-initial-loading aria-label={t("managerLoading")}>
         <PageSkeleton />
       </div>
     );
@@ -1051,7 +1038,7 @@ export function ManagerPage() {
   if (providerCatalog.error) {
     return (
       <PageError
-        title="Manager providers failed to load"
+        title={t("managerProvidersLoadFailed")}
         message={providerCatalog.error.message}
         onRetry={() => void providerCatalog.refetch()}
       />
@@ -1060,7 +1047,7 @@ export function ManagerPage() {
   if (meta.error) {
     return (
       <PageError
-        title="Manager workspace failed to load"
+        title={t("managerWorkspaceLoadFailed")}
         message={meta.error.message}
         onRetry={() => void meta.refetch()}
       />
@@ -1069,7 +1056,7 @@ export function ManagerPage() {
   if (stats.error) {
     return (
       <PageError
-        title="Manager stats failed to load"
+        title={t("managerStatsLoadFailed")}
         message={stats.error.message}
         onRetry={() => void stats.refetch()}
       />
@@ -1078,7 +1065,7 @@ export function ManagerPage() {
   if (route.view === "sessions" && sessions.error) {
     return (
       <PageError
-        title="Manager sessions failed to load"
+        title={t("managerSessionsLoadFailed")}
         message={sessions.error.message}
         onRetry={() => void sessions.refetch()}
       />
@@ -1087,7 +1074,7 @@ export function ManagerPage() {
   if (route.view === "workspaces" && workspaces.error) {
     return (
       <PageError
-        title="Manager workspaces failed to load"
+        title={t("managerWorkspacesLoadFailed")}
         message={workspaces.error.message}
         onRetry={() => void workspaces.refetch()}
       />
@@ -1120,9 +1107,8 @@ export function ManagerPage() {
     route.view === "sessions"
       ? selectedSessionItems.length
       : selectedWorkspaceItems.length;
-  const specifiedWorkspace = Boolean(route.workspace);
   const hasNarrowingFilters =
-    selectedProviders.length > 0 || Boolean(route.search.trim());
+    route.providerSelection !== "all" || Boolean(route.search.trim());
   const hasActiveFilters = hasNarrowingFilters || route.sort !== "recent";
   const activeResults = route.view === "sessions" ? sessions : workspaces;
   const initialResultsLoading = activeResults.isLoading && !activeResults.data;
@@ -1135,9 +1121,9 @@ export function ManagerPage() {
   const filtersAreEmpty =
     !initialResultsLoading && resultRows.length === 0 && !scopeIsEmpty;
   const listBusyLabel = listPageFetching
-    ? "Loading page"
+    ? t("managerLoadingPage")
     : resultsRefreshing
-      ? "Refreshing results"
+      ? t("managerRefreshingResults")
       : null;
 
   function replaceRoute(
@@ -1179,21 +1165,52 @@ export function ManagerPage() {
     clearSelection();
   }
 
-  function setProviders(nextProviders: string[]) {
+  function setProviderSelection(
+    selection: ManagerProviderSelection,
+    customProviders: string[] = [],
+  ) {
     replaceRoute((next) => {
       resetManagerPageParam(next);
-      if (nextProviders.length) next.set("providers", nextProviders.join(","));
-      else next.delete("providers");
+      if (selection === "all") next.delete("providers");
+      else if (selection === "none") next.set("providers", "none");
+      else if (customProviders.length) {
+        next.set("providers", customProviders.join(","));
+      } else {
+        next.set("providers", "none");
+      }
     });
     clearSelection();
   }
 
   function toggleProvider(providerId: string) {
-    setProviders(
-      selectedProviders.includes(providerId)
-        ? selectedProviders.filter((id) => id !== providerId)
-        : [...selectedProviders, providerId],
-    );
+    if (route.providerSelection === "all") {
+      setProviderSelection("custom", [providerId]);
+      return;
+    }
+
+    if (route.providerSelection === "none") {
+      setProviderSelection("custom", [providerId]);
+      return;
+    }
+
+    if (selectedProviders.includes(providerId)) {
+      const nextProviders = selectedProviders.filter((id) => id !== providerId);
+      if (nextProviders.length === 0) {
+        setProviderSelection("none");
+      } else if (nextProviders.length === providerOptions.length) {
+        setProviderSelection("all");
+      } else {
+        setProviderSelection("custom", nextProviders);
+      }
+      return;
+    }
+
+    const nextProviders = [...selectedProviders, providerId];
+    if (nextProviders.length === providerOptions.length) {
+      setProviderSelection("all");
+    } else {
+      setProviderSelection("custom", nextProviders);
+    }
   }
 
   function clearFilters() {
@@ -1267,7 +1284,7 @@ export function ManagerPage() {
 
   function openAction(target: ManagerActionTarget) {
     if (!target.items.length) {
-      toast.error("No selection");
+      toast.error(t("managerNoSelection"));
       return;
     }
     setActionTarget(target);
@@ -1287,40 +1304,18 @@ export function ManagerPage() {
           >
             <WorkspaceIdentity
               workspace={request.workspace}
-              fallbackTitle={route.scope === "all" ? "All workspaces" : "No workspace"}
+              fallbackTitle={route.scope === "all" ? t("allWorkspaces") : t("workspaceNoWorkspace")}
               titleClassName="mt-1 block text-lg leading-tight"
               pathClassName="mt-1"
             />
           </section>
 
-          <section className="flex shrink-0 flex-col gap-3 border-b py-3">
-            <div className="flex items-center justify-between gap-2">
-              <strong className="text-sm font-medium">Scope</strong>
-              <span className="text-xs text-muted-foreground">
-                {route.scope === "all" ? "All workspaces" : "Current workspace"}
-              </span>
-            </div>
-            <ScopeControl
-              scope={route.scope}
-              specifiedWorkspace={specifiedWorkspace}
-              onChange={changeScope}
-            />
-          </section>
-
           <section className="flex min-h-0 flex-1 flex-col gap-3 pt-3">
-            <div className="flex items-center justify-between gap-2">
-              <strong className="text-sm font-medium">Providers</strong>
-              <span className="text-xs text-muted-foreground">
-                {selectedProviders.length === 0
-                  ? `${providerOptions.length} active`
-                  : `${selectedProviders.length} selected`}
-              </span>
-            </div>
             <ProviderFilter
               providers={providerOptions}
               selected={selectedProviders}
+              selection={route.providerSelection}
               onToggle={toggleProvider}
-              onSelectAll={() => setProviders([])}
             />
           </section>
         </PanelCard>
@@ -1334,8 +1329,8 @@ export function ManagerPage() {
             <div className="flex items-center justify-between gap-2">
               <strong className="text-sm font-medium">
                 {route.view === "sessions"
-                  ? "Session preview"
-                  : "Workspace preview"}
+                  ? t("managerSessionPreview")
+                  : t("managerWorkspacePreview")}
               </strong>
               <div className="flex items-center gap-2">
                 {listBusyLabel ? (
@@ -1354,12 +1349,25 @@ export function ManagerPage() {
                   type="button"
                   variant="ghost"
                   className="min-h-10"
+                  onClick={() =>
+                    changeScope(route.scope === "all" ? "current" : "all")
+                  }
+                  data-manager-scope-toggle
+                >
+                  {route.scope === "all"
+                    ? t("managerSwitchToCurrent")
+                    : t("managerSwitchToAll")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="min-h-10"
                   onClick={refreshResults}
                   disabled={!request.enabled || resultsRefreshing}
                   data-manager-refresh
                 >
                   <RefreshCwIcon data-icon="inline-start" />
-                  Refresh
+                  {t("managerRefresh")}
                 </Button>
               </div>
             </div>
@@ -1419,13 +1427,18 @@ export function ManagerPage() {
           <ScrollPane className="min-h-0 flex-1">
             {!request.enabled ? (
               <PageEmpty
-                title="No current workspace"
-                description="Choose a workspace from the app switcher or change the scope to All workspaces."
+                title={t("managerNoCurrentWorkspace")}
+                description={t("managerNoCurrentWorkspaceDescription")}
+              />
+            ) : !providersSelected ? (
+              <PageEmpty
+                title={t("managerNoProvidersSelected")}
+                description={t("managerNoProvidersSelectedDescription")}
               />
             ) : initialResultsLoading ? (
               <div
                 data-manager-results-loading
-                aria-label="Loading manager results"
+                aria-label={t("managerLoadingResults")}
               >
                 <PageSkeleton />
               </div>
@@ -1433,13 +1446,13 @@ export function ManagerPage() {
               <PageEmpty
                 title={
                   route.view === "sessions"
-                    ? "No sessions in this scope"
-                    : "No workspaces in this scope"
+                    ? t("managerNoSessionsInScope")
+                    : t("managerNoWorkspacesInScope")
                 }
                 description={
                   route.scope === "all"
-                    ? "No indexed session data is available across your workspaces yet."
-                    : "This workspace does not contain indexed session data yet."
+                    ? t("managerNoIndexedAll")
+                    : t("managerNoIndexedCurrent")
                 }
                 onRefresh={refreshResults}
               />
@@ -1447,10 +1460,10 @@ export function ManagerPage() {
               <PageEmpty
                 title={
                   route.view === "sessions"
-                    ? "No sessions matched your filters"
-                    : "No workspaces matched your filters"
+                    ? t("managerNoSessionsFiltered")
+                    : t("managerNoWorkspacesFiltered")
                 }
-                description="Clear or change the current search, Provider, and sort filters."
+                description={t("managerClearOrChangeFilters")}
                 onRefresh={refreshResults}
               />
             ) : (
@@ -1522,9 +1535,9 @@ export function ManagerPage() {
             <AlertDialogMedia className="bg-destructive/10 text-destructive">
               <Trash2Icon />
             </AlertDialogMedia>
-            <AlertDialogTitle>{actionTitle(deleteTarget)}</AlertDialogTitle>
+            <AlertDialogTitle>{actionTitle(deleteTarget, t)}</AlertDialogTitle>
             <AlertDialogDescription>
-              Review the exact scope before permanently deleting session data.
+              {t("managerReviewDelete")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           {deleteTarget ? <ActionTargetSummary target={deleteTarget} /> : null}
@@ -1533,7 +1546,7 @@ export function ManagerPage() {
               className="min-h-10"
               disabled={managerAction.isPending}
             >
-              Cancel
+              {t("managerCancel")}
             </AlertDialogCancel>
             <Button
               type="button"
@@ -1549,12 +1562,12 @@ export function ManagerPage() {
                     className="animate-spin"
                     data-icon="inline-start"
                   />
-                  Deleting…
+                  {t("managerDeleting")}
                 </>
               ) : (
                 <>
                   <Trash2Icon data-icon="inline-start" />
-                  Delete permanently
+                  {t("managerDeletePermanently")}
                 </>
               )}
             </Button>
@@ -1581,9 +1594,9 @@ export function ManagerPage() {
           data-manager-backup-dialog
         >
           <DialogHeader>
-            <DialogTitle>{actionTitle(backupTarget)}</DialogTitle>
+            <DialogTitle>{actionTitle(backupTarget, t)}</DialogTitle>
             <DialogDescription>
-              Confirm the selected session data and backup destination.
+              {t("managerConfirmBackup")}
             </DialogDescription>
           </DialogHeader>
           {backupTarget ? (
@@ -1597,7 +1610,7 @@ export function ManagerPage() {
               onClick={() => setActionTarget(null)}
               disabled={managerAction.isPending}
             >
-              Cancel
+              {t("managerCancel")}
             </Button>
             <Button
               type="button"
@@ -1612,12 +1625,12 @@ export function ManagerPage() {
                     className="animate-spin"
                     data-icon="inline-start"
                   />
-                  Backing up…
+                  {t("managerBackingUp")}
                 </>
               ) : (
                 <>
                   <ArchiveIcon data-icon="inline-start" />
-                  Start backup
+                  {t("managerStartBackup")}
                 </>
               )}
             </Button>
@@ -1647,10 +1660,10 @@ export function ManagerPage() {
                 }
               >
                 {actionReport.outcome === "success"
-                  ? "Completed"
+                  ? t("managerCompleted")
                   : actionReport.outcome === "partial"
-                    ? "Partially completed"
-                    : "Failed"}
+                    ? t("managerPartiallyCompleted")
+                    : t("managerFailed")}
               </Badge>
             ) : null}
             <DialogTitle>{actionReport?.title}</DialogTitle>
@@ -1669,7 +1682,7 @@ export function ManagerPage() {
               className="min-h-10"
               onClick={() => setActionReport(null)}
             >
-              Close
+              {t("managerClose")}
             </Button>
           </DialogFooter>
         </DialogContent>

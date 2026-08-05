@@ -23,6 +23,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
+import { useI18n } from "@/lib/i18n-context";
 import { cn } from "@/lib/utils";
 import { listDirectories } from "@/lib/api";
 
@@ -163,6 +164,7 @@ function PathBreadcrumbNav({
   layoutSeed: string;
   onNavigate: (path: string) => void;
 }) {
+  const { t } = useI18n();
   const listRef = useRef<HTMLOListElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState<CollapsedPathCrumbs>(() => initialCollapsedPathCrumbs(crumbs));
@@ -292,7 +294,7 @@ function PathBreadcrumbNav({
                     <button
                       type="button"
                       className="flex size-5 items-center justify-center rounded-md transition-colors hover:text-foreground"
-                      aria-label="Show collapsed path segments"
+                      aria-label={t("pathBrowserShowCollapsedSegments")}
                     >
                       <BreadcrumbEllipsis />
                     </button>
@@ -358,11 +360,13 @@ function DirectoryList({
   isLoading: boolean;
   onNavigate: (path: string) => void;
 }) {
+  const { t } = useI18n();
+
   if (isLoading) {
     return (
       <div className="flex min-h-24 items-center justify-center gap-2 text-sm text-muted-foreground">
         <Spinner />
-        Loading directories
+        {t("pathBrowserLoadingDirectories")}
       </div>
     );
   }
@@ -371,7 +375,7 @@ function DirectoryList({
     return (
       <Empty className="min-h-24 border-0">
         <EmptyHeader>
-          <EmptyTitle>No directories</EmptyTitle>
+          <EmptyTitle>{t("pathBrowserNoDirectories")}</EmptyTitle>
           <EmptyDescription>{emptyDescription}</EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -417,6 +421,7 @@ export function PathBrowser({
   onFilterChange?: (filter: string) => void;
   active?: boolean;
 }) {
+  const { t } = useI18n();
   const activePath = initialPath?.trim() || null;
   const [pathInput, setPathInput] = useState(activePath || "");
   const [isEditingPath, setIsEditingPath] = useState(false);
@@ -499,15 +504,15 @@ export function PathBrowser({
   const crumbs = pathCrumbs(displayedPath);
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col gap-2" aria-label="Directory browser">
+    <section className="flex min-h-0 flex-1 flex-col gap-2" aria-label={t("pathBrowserLabel")}>
       <div ref={rowRef} className="flex min-w-0 shrink-0 items-center gap-2">
         <div
           className="flex min-w-0 flex-1 basis-0 items-stretch overflow-hidden rounded-lg border border-border shadow-xs"
-          aria-label="Path navigation"
+          aria-label={t("pathBrowserNavigation")}
         >
           <PathNavButton
             className="rounded-l-lg border-0 border-r border-border"
-            aria-label="Parent directory"
+            aria-label={t("pathBrowserParentDirectory")}
             disabled={!listing.data?.parent || listing.isFetching || isEditingPath}
             onClick={() => listing.data?.parent && navigate(listing.data.parent)}
           >
@@ -517,9 +522,9 @@ export function PathBrowser({
           {isEditingPath ? (
             <Input
               ref={pathInputRef}
-              aria-label="Directory path"
+              aria-label={t("pathBrowserDirectoryPath")}
               value={pathInput}
-              placeholder="Absolute directory path"
+              placeholder={t("pathBrowserAbsolutePath")}
               className="min-w-0 flex-1 basis-0 rounded-none border-0 bg-muted shadow-none focus-visible:z-10 focus-visible:ring-0"
               onChange={(event) => setPathInput(event.target.value)}
               onKeyDown={(event) => {
@@ -551,7 +556,7 @@ export function PathBrowser({
 
           <PathNavButton
             className="border-0 border-l border-border"
-            aria-label="Refresh directory"
+            aria-label={t("refresh")}
             disabled={listing.isFetching || isEditingPath}
             onClick={() => void listing.refetch()}
           >
@@ -562,7 +567,7 @@ export function PathBrowser({
             <>
               <PathNavButton
                 className="border-0 border-l border-border"
-                aria-label="Apply path"
+                aria-label={t("apply")}
                 disabled={!pathInput.trim()}
                 onClick={submitPath}
               >
@@ -570,7 +575,7 @@ export function PathBrowser({
               </PathNavButton>
               <PathNavButton
                 className="rounded-r-lg border-0 border-l border-border"
-                aria-label="Cancel editing"
+                aria-label={t("cancel")}
                 onClick={cancelEditingPath}
               >
                 <XIcon />
@@ -579,7 +584,7 @@ export function PathBrowser({
           ) : (
             <PathNavButton
               className="rounded-r-lg border-0 border-l border-border"
-              aria-label="Edit path"
+              aria-label={t("pathBrowserEditPath")}
               onClick={startEditingPath}
             >
               <PencilIcon />
@@ -591,7 +596,7 @@ export function PathBrowser({
 
       {listing.isError ? (
         <Alert variant="destructive">
-          <AlertTitle>Cannot open directory</AlertTitle>
+          <AlertTitle>{t("pathBrowserCannotOpenDirectory")}</AlertTitle>
           <AlertDescription>{listing.error.message}</AlertDescription>
         </Alert>
       ) : (
@@ -600,10 +605,12 @@ export function PathBrowser({
             <>
               <section
                 className="flex min-h-0 w-[min(42%,14rem)] min-w-0 shrink-0 flex-col"
-                aria-label="Parent directory"
+                aria-label={t("pathBrowserParentDirectory")}
               >
                 <div className="flex min-w-0 items-center gap-2 border-b bg-muted/40 px-2.5 py-1.5">
-                  <span className="shrink-0 text-xs font-medium text-muted-foreground">Parent</span>
+                  <span className="shrink-0 text-xs font-medium text-muted-foreground">
+                    {t("pathBrowserParent")}
+                  </span>
                   <button
                     type="button"
                     className="min-w-0 truncate text-xs hover:underline"
@@ -618,7 +625,7 @@ export function PathBrowser({
                     currentPath={displayedPath}
                     isLoading={parentListing.isLoading && !parentListing.data}
                     emptyDescription={
-                      filter ? "No directories match the current filter." : "The parent directory is empty."
+                      filter ? t("pathBrowserNoFilterMatches") : t("pathBrowserParentEmpty")
                     }
                     onNavigate={navigate}
                   />
@@ -627,10 +634,13 @@ export function PathBrowser({
               <Separator orientation="vertical" />
             </>
           ) : null}
-          <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="Current directory">
+          <section
+            className="flex min-h-0 min-w-0 flex-1 flex-col"
+            aria-label={t("pathBrowserCurrentDirectory")}
+          >
             <div className="flex min-w-0 items-center gap-2 border-b bg-muted/40 px-2.5 py-1.5">
               <span className="shrink-0 text-xs font-medium text-muted-foreground">
-                {parentPath ? "Current" : "Directory"}
+                {parentPath ? t("pathBrowserCurrent") : t("pathBrowserDirectory")}
               </span>
               <span className="min-w-0 truncate text-xs">{currentDirectoryName}</span>
             </div>
@@ -639,7 +649,7 @@ export function PathBrowser({
                 directories={directories}
                 isLoading={listing.isLoading && !listing.data}
                 emptyDescription={
-                  filter ? "No directories match the current filter." : "This directory has no subdirectories."
+                  filter ? t("pathBrowserNoFilterMatches") : t("pathBrowserNoSubdirectories")
                 }
                 onNavigate={navigate}
               />

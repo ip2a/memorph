@@ -86,7 +86,7 @@ export function SwitchSessionDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.home }),
       ]);
       onOpenChange(false);
-      toast.success("Native fork created", { description: `${result.to_name}: ${result.target_session_id}` });
+      toast.success(t("sessionNativeForkCreated"), { description: `${result.to_name}: ${result.target_session_id}` });
       navigate(`/sessions/${encodeURIComponent(result.to_name)}/${encodeURIComponent(result.target_session_id)}`);
     },
   });
@@ -110,10 +110,10 @@ export function SwitchSessionDialog({
           <input type="hidden" name="session_id" value={target?.sessionId || ""} />
           <FieldGroup className="grid gap-4 sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]" data-switch-modal-grid>
             <Field data-invalid={Boolean(form.formState.errors.to)}>
-              <FieldLabel htmlFor="switch-target-provider">Target Provider</FieldLabel>
+              <FieldLabel htmlFor="switch-target-provider">{t("sessionTargetProvider")}</FieldLabel>
               <Select value={selectedTarget} onValueChange={(value) => form.setValue("to", value, { shouldValidate: true })}>
                 <SelectTrigger id="switch-target-provider" className="w-full" aria-invalid={Boolean(form.formState.errors.to)}>
-                  <SelectValue placeholder="Provider" />
+                  <SelectValue placeholder={t("provider")} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
@@ -129,23 +129,23 @@ export function SwitchSessionDialog({
             </Field>
 
             <Field data-invalid={Boolean(form.formState.errors.target_title)}>
-              <FieldLabel htmlFor="switch-copy-title">Copy Session Title</FieldLabel>
-              <Input id="switch-copy-title" placeholder={target?.title || target?.sessionId || "Session title"} {...form.register("target_title")} />
+              <FieldLabel htmlFor="switch-copy-title">{t("sessionCopyTitle")}</FieldLabel>
+              <Input id="switch-copy-title" placeholder={target?.title || target?.sessionId || t("sessionTitlePlaceholder")} {...form.register("target_title")} />
               {form.formState.errors.target_title ? <FieldDescription>{form.formState.errors.target_title.message}</FieldDescription> : null}
             </Field>
 
             <Field className="sm:col-span-2">
-              <FieldLabel htmlFor="switch-target-dir">Target Dir</FieldLabel>
+              <FieldLabel htmlFor="switch-target-dir">{t("sessionTargetDirectory")}</FieldLabel>
               <InputGroup>
-                <InputGroupInput id="switch-target-dir" list="known-workspaces" placeholder="Workspace path" {...form.register("to_dir")} />
+                <InputGroupInput id="switch-target-dir" list="known-workspaces" placeholder={t("sessionWorkspacePath")} {...form.register("to_dir")} />
                 <InputGroupAddon align="inline-end">
                   <InputGroupButton type="button" variant="ghost" disabled>
                     <FolderOpenIcon data-icon="inline-start" />
-                    Browse
+                    {t("sessionBrowse")}
                   </InputGroupButton>
                 </InputGroupAddon>
               </InputGroup>
-              <FieldDescription>Copy Session Title is used as the target session display title when provided.</FieldDescription>
+              <FieldDescription>{t("sessionCopyTitleDescription")}</FieldDescription>
             </Field>
           </FieldGroup>
 
@@ -157,6 +157,7 @@ export function SwitchSessionDialog({
 
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}
+            cancelLabel={t("cancel")}
             submitDisabled={!target || !exportProviders.length}
             submitLabel={t("runSwitch")}
             submitting={switchMutation.isPending}
@@ -171,10 +172,10 @@ export function SwitchSessionDialog({
                 switchMutation.isPending ||
                 nativeForkMutation.isPending
               }
-              title={providers.find((provider) => provider.id === target?.providerId)?.native_fork ? undefined : "This provider does not expose a verified native fork API"}
+              title={providers.find((provider) => provider.id === target?.providerId)?.native_fork ? undefined : t("sessionNativeForkUnavailable")}
               onClick={() => nativeForkMutation.mutate()}
             >
-              Native Fork
+              {t("sessionNativeFork")}
             </Button>
             <Button
               type="button"
@@ -182,7 +183,7 @@ export function SwitchSessionDialog({
               disabled={!target || !exportProviders.length || switchMutation.isPending || nativeForkMutation.isPending}
               onClick={form.handleSubmit((values) => submitSwitch(values, true))}
             >
-              Move
+              {t("sessionMove")}
             </Button>
           </DialogFormFooter>
         </DialogForm>

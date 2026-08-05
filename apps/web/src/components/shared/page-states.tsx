@@ -32,6 +32,7 @@ export function PageEmpty({
   description: string;
   onRefresh?: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <Empty>
       <EmptyHeader>
@@ -45,7 +46,7 @@ export function PageEmpty({
         <EmptyContent>
           <Button variant="outline" className="min-h-10" onClick={onRefresh}>
             <RefreshCwIcon data-icon="inline-start" />
-            Refresh
+            {t("refresh")}
           </Button>
         </EmptyContent>
       ) : null}
@@ -62,6 +63,7 @@ export function PageError({
   message: string;
   onRetry?: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <Alert variant="destructive">
       <AlertTitle>{title}</AlertTitle>
@@ -75,7 +77,7 @@ export function PageError({
             onClick={onRetry}
           >
             <RefreshCwIcon data-icon="inline-start" />
-            Retry
+            {t("retry")}
           </Button>
         ) : null}
       </AlertDescription>

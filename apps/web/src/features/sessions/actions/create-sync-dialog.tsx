@@ -15,6 +15,7 @@ import type { SessionActionTarget } from "@/features/sessions/session-action-tar
 import { createSyncSchema, defaultSwitchTarget, syncTargetProviders, workspaceOptions } from "@/features/sessions/model/schemas";
 import type { CreateSyncForm } from "@/features/sessions/model/schemas";
 import { createSyncGroup } from "@/lib/api";
+import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 import type { MetaPayload, ProviderInfo } from "@/lib/types";
 
@@ -32,6 +33,7 @@ export function CreateSyncDialog({
   meta?: MetaPayload;
 }) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const form = useForm<CreateSyncForm>({
     resolver: zodResolver(createSyncSchema),
@@ -73,7 +75,7 @@ export function CreateSyncDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.home }),
       ]);
       onOpenChange(false);
-      toast.success("Sync created", {
+      toast.success(t("sessionSyncCreated"), {
         description: `${group.id} · holdings=${group.holdings.length}`,
       });
       navigate(`/sync/${encodeURIComponent(group.id)}`);
@@ -94,35 +96,35 @@ export function CreateSyncDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl" data-create-sync-dialog>
         <DialogHeader>
-          <DialogTitle>Create Sync</DialogTitle>
-          <DialogDescription>Create a sync group from this session using the legacy field order.</DialogDescription>
+          <DialogTitle>{t("sessionCreateSync")}</DialogTitle>
+          <DialogDescription>{t("sessionCreateSyncDescription")}</DialogDescription>
         </DialogHeader>
         <DialogForm onSubmit={form.handleSubmit((values) => createSyncMutation.mutate(values))}>
           <input type="hidden" name="provider" value={target?.providerId || ""} />
           <input type="hidden" name="session_id" value={target?.sessionId || ""} />
           <FieldGroup data-create-sync-modal-stack>
             <Field data-invalid={Boolean(form.formState.errors.title)}>
-              <FieldLabel htmlFor="sync-title">Title</FieldLabel>
-              <Input id="sync-title" placeholder={target?.title || target?.sessionId || "Sync title"} {...form.register("title")} />
+              <FieldLabel htmlFor="sync-title">{t("sessionTitleLabel")}</FieldLabel>
+              <Input id="sync-title" placeholder={target?.title || target?.sessionId || t("sessionCreateSync")} {...form.register("title")} />
               {form.formState.errors.title ? <FieldDescription>{form.formState.errors.title.message}</FieldDescription> : null}
             </Field>
 
             <Field>
-              <FieldLabel htmlFor="sync-target-dir">Target Dir</FieldLabel>
+              <FieldLabel htmlFor="sync-target-dir">{t("sessionTargetDirectory")}</FieldLabel>
               <InputGroup>
-                <InputGroupInput id="sync-target-dir" list="known-workspaces" placeholder="Workspace path" {...form.register("to_dir")} />
+                <InputGroupInput id="sync-target-dir" list="known-workspaces" placeholder={t("sessionWorkspacePath")} {...form.register("to_dir")} />
                 <InputGroupAddon align="inline-end">
                   <InputGroupButton type="button" variant="ghost" disabled>
                     <FolderOpenIcon data-icon="inline-start" />
-                    Browse
+                    {t("sessionBrowse")}
                   </InputGroupButton>
                 </InputGroupAddon>
               </InputGroup>
-              <FieldDescription>Use the current workspace unless another target directory is selected.</FieldDescription>
+              <FieldDescription>{t("sessionTargetDirectoryDescription")}</FieldDescription>
             </Field>
 
             <FieldSet data-invalid={Boolean(form.formState.errors.targets)} data-create-sync-target-providers>
-              <FieldLegend>Target Providers</FieldLegend>
+              <FieldLegend>{t("sessionTargetProviders")}</FieldLegend>
               <FieldGroup data-slot="checkbox-group">
                 {candidateTargets.length ? (
                   candidateTargets.map((provider) => {
@@ -147,7 +149,7 @@ export function CreateSyncDialog({
                     );
                   })
                 ) : (
-                  <FieldDescription>No sync targets</FieldDescription>
+                  <FieldDescription>{t("sessionNoSyncTargets")}</FieldDescription>
                 )}
               </FieldGroup>
               {form.formState.errors.targets ? <FieldDescription>{form.formState.errors.targets.message}</FieldDescription> : null}
@@ -162,8 +164,9 @@ export function CreateSyncDialog({
 
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}
+            cancelLabel={t("cancel")}
             submitDisabled={!target || !candidateTargets.length}
-            submitLabel="Create"
+            submitLabel={t("sessionCreate")}
             submitting={createSyncMutation.isPending}
           />
         </DialogForm>

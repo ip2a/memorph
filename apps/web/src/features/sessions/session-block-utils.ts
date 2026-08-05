@@ -1,29 +1,32 @@
 import type { EventBlock } from "@/lib/types";
+import { translate, type I18nKey } from "@/lib/i18n-core";
+type Translator = (key: I18nKey, vars?: Record<string, string | number | null | undefined>) => string;
 
-export function getBlockLabel(block: EventBlock): string {
+export function getBlockLabel(block: EventBlock, t?: Translator): string {
+  const label = (key: I18nKey, vars?: Record<string, string | number>) => t?.(key, vars) ?? translate("en", key, vars);
   switch (block.type) {
     case "text":
       return "";
     case "thinking":
-      return "Thinking";
+      return label("blockThinking");
     case "tool_call":
-      return `Tool: ${block.name || ""}`.replace(/:\s$/, "");
+      return block.name ? label("blockTool", { name: block.name }) : label("blockToolCall");
     case "tool_result":
-      return "Tool Result";
+      return label("blockToolResult");
     case "patch":
-      return "Patch";
+      return label("blockPatch");
     case "command":
-      return "Command";
+      return label("blockCommand");
     case "command_result":
-      return "Command Result";
+      return label("blockCommandResult");
     case "file":
-      return "File";
+      return label("blockFile");
     case "image":
-      return "Image";
+      return label("blockImage");
     case "compressed":
-      return "Compressed";
+      return label("blockCompressed");
     case "other":
-      return "Other";
+      return label("blockOther");
     default:
       return "";
   }
@@ -34,10 +37,10 @@ export type SessionBlockTag = {
   label: string;
 };
 
-export function getBlockTags(blocks: EventBlock[] | undefined): SessionBlockTag[] {
+export function getBlockTags(blocks: EventBlock[] | undefined, t?: Translator): SessionBlockTag[] {
   return (blocks ?? [])
     .map((block) => {
-      const label = getBlockLabel(block);
+      const label = getBlockLabel(block, t);
       return label ? { type: block.type, label } : null;
     })
     .filter((tag): tag is SessionBlockTag => tag != null);

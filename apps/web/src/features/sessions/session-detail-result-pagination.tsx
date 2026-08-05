@@ -25,6 +25,7 @@ import {
   type SessionEventPageSize,
 } from "@/features/sessions/session-detail-pagination";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n-context";
 
 type SessionDetailResultPaginationProps = {
   page: number;
@@ -43,6 +44,7 @@ export function SessionDetailResultPagination({
   onPageChange,
   onPageSizeChange,
 }: SessionDetailResultPaginationProps) {
+  const { t } = useI18n();
   const totalPages = sessionEventTotalPages(totalCount, pageSize);
   const currentPage = Math.min(page, totalPages);
   const canGoBack = currentPage > 1;
@@ -73,10 +75,10 @@ export function SessionDetailResultPagination({
       data-session-detail-pagination
     >
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>{formatSessionEventListSummary(currentPage, pageSize, totalCount)} events</span>
+        <span>{formatSessionEventListSummary(currentPage, pageSize, totalCount)} {t("events")}</span>
         <span aria-hidden="true">·</span>
         <span>
-          Page {currentPage} / {totalPages}
+          {t("sessionPageOf", { page: currentPage, total: totalPages })}
         </span>
       </div>
 
@@ -88,7 +90,7 @@ export function SessionDetailResultPagination({
         >
           <SelectTrigger
             className="min-h-10 w-[7.5rem]"
-            aria-label="Events per page"
+            aria-label={t("eventsPerPage")}
             data-session-detail-page-size
           >
             <SelectValue />
@@ -97,7 +99,7 @@ export function SessionDetailResultPagination({
             <SelectGroup>
               {SESSION_EVENT_PAGE_SIZES.map((size) => (
                 <SelectItem key={size} value={String(size)}>
-                  {size} / page
+                  {t("perPage", { count: size })}
                 </SelectItem>
               ))}
             </SelectGroup>
@@ -124,7 +126,7 @@ export function SessionDetailResultPagination({
             <PaginationItem>
               <PaginationPrevious
                 href="#"
-                text="Prev"
+                text={t("previousPage")}
                 aria-disabled={!canGoBack || disabled}
                 className={cn(
                   "min-h-10",
@@ -146,7 +148,7 @@ export function SessionDetailResultPagination({
                 inputMode="numeric"
                 value={pageInput}
                 disabled={disabled || totalPages <= 1}
-                aria-label="Go to page"
+                aria-label={t("goToPage")}
                 data-session-detail-page-jump
                 className="h-10 w-14 px-1 text-center [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 onChange={(event) => setPageInput(event.target.value)}
@@ -162,7 +164,7 @@ export function SessionDetailResultPagination({
             <PaginationItem>
               <PaginationNext
                 href="#"
-                text="Next"
+                text={t("nextPage")}
                 aria-disabled={!canGoForward || disabled}
                 className={cn(
                   "min-h-10",

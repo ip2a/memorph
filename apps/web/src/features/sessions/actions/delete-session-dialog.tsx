@@ -14,6 +14,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import type { SessionActionTarget } from "@/features/sessions/session-action-target";
 import { deleteSession } from "@/lib/api";
+import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 
 export function DeleteSessionDialog({
@@ -29,6 +30,7 @@ export function DeleteSessionDialog({
 }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { t } = useI18n();
 
   const deleteMutation = useMutation({
     mutationFn: () => {
@@ -41,7 +43,7 @@ export function DeleteSessionDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.home }),
       ]);
       onOpenChange(false);
-      toast.success("Deleted", { description: target ? `${target.providerId}: ${target.sessionId}` : undefined });
+      toast.success(t("sessionDeleted"), { description: target ? `${target.providerId}: ${target.sessionId}` : undefined });
       if (returnHomeOnSuccess) navigate("/");
     },
   });
@@ -50,9 +52,9 @@ export function DeleteSessionDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent data-delete-session-dialog>
         <AlertDialogHeader>
-          <AlertDialogTitle>Remove</AlertDialogTitle>
+          <AlertDialogTitle>{t("sessionRemove")}</AlertDialogTitle>
           <AlertDialogDescription>
-            Delete this session from its provider. This matches the legacy remove workflow and cannot be undone here.
+            {t("sessionDeleteDescription")}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="grid gap-1 rounded-md border p-3 font-mono text-xs" data-delete-session-target>
@@ -60,7 +62,7 @@ export function DeleteSessionDialog({
           <span className="break-all text-muted-foreground">{target?.sessionId || "-"}</span>
         </div>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={deleteMutation.isPending}>{t("cancel")}</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
             disabled={!target || deleteMutation.isPending}
@@ -70,7 +72,7 @@ export function DeleteSessionDialog({
             }}
           >
             {deleteMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-            Remove
+            {t("sessionRemove")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

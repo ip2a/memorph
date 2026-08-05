@@ -42,7 +42,7 @@ function ToolbarOverflowMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="icon-sm" aria-label={ariaLabel}>
+        <Button variant="outline" size="icon" aria-label={ariaLabel}>
           <MoreHorizontalIcon />
         </Button>
       </DropdownMenuTrigger>
@@ -65,7 +65,7 @@ function ToolbarOverflowSplitButton({
       <ButtonGroup>
         {trailingButton}
         <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="icon-sm" aria-label={ariaLabel}>
+          <Button variant="outline" size="icon" aria-label={ariaLabel}>
             <MoreHorizontalIcon />
           </Button>
         </DropdownMenuTrigger>
@@ -198,7 +198,7 @@ export function CollapsibleToolbar({
         {entries.map((entry) => (
           <div key={entry.id}>{entry.renderButton()}</div>
         ))}
-        <Button variant="outline" size="icon-sm" tabIndex={-1}>
+        <Button variant="outline" size="icon" tabIndex={-1}>
           <MoreHorizontalIcon />
         </Button>
       </div>

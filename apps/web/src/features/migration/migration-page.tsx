@@ -2,6 +2,7 @@ import { useLocation, useParams, useSearchParams } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { PageEmpty } from "@/components/shared/page-states";
+import { useI18n } from "@/lib/i18n-context";
 
 type MigrationPageProps = {
   title: string;
@@ -11,6 +12,7 @@ type MigrationPageProps = {
 };
 
 export function MigrationPage({ title, description, legacySource, workflows }: MigrationPageProps) {
+  const { t } = useI18n();
   const location = useLocation();
   const params = useParams();
   const [searchParams] = useSearchParams();
@@ -25,22 +27,22 @@ export function MigrationPage({ title, description, legacySource, workflows }: M
               <CardTitle>{title}</CardTitle>
               <CardDescription>{description}</CardDescription>
             </div>
-            <Badge variant="secondary">Migration target</Badge>
+            <Badge variant="secondary">{t("migrationTarget")}</Badge>
           </div>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="grid gap-3 md:grid-cols-3">
             <div className="flex flex-col gap-1 rounded-lg border p-3">
-              <span className="text-xs text-muted-foreground">Current route</span>
+              <span className="text-xs text-muted-foreground">{t("migrationCurrentRoute")}</span>
               <span className="truncate text-sm font-medium">{location.pathname}</span>
             </div>
             <div className="flex flex-col gap-1 rounded-lg border p-3">
-              <span className="text-xs text-muted-foreground">Legacy source</span>
+              <span className="text-xs text-muted-foreground">{t("migrationLegacySource")}</span>
               <span className="truncate text-sm font-medium">{legacySource}</span>
             </div>
             <div className="flex flex-col gap-1 rounded-lg border p-3">
-              <span className="text-xs text-muted-foreground">Status</span>
-              <span className="text-sm font-medium">Ready for feature implementation</span>
+              <span className="text-xs text-muted-foreground">{t("status")}</span>
+              <span className="text-sm font-medium">{t("migrationReady")}</span>
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -56,8 +58,8 @@ export function MigrationPage({ title, description, legacySource, workflows }: M
       {(Object.keys(params).length > 0 || query.length > 0) && (
         <Card size="sm">
           <CardHeader>
-            <CardTitle>Route context</CardTitle>
-            <CardDescription>Values preserved from the legacy route contract.</CardDescription>
+            <CardTitle>{t("migrationRouteContext")}</CardTitle>
+            <CardDescription>{t("migrationRouteContextDescription")}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-2 text-sm">
             {Object.entries(params).map(([key, value]) => (
@@ -77,8 +79,8 @@ export function MigrationPage({ title, description, legacySource, workflows }: M
       )}
 
       <PageEmpty
-        title="Feature body pending migration"
-        description="This React route is in place; the next step is replacing the matching legacy DOM workflow with typed queries and shadcn components."
+        title={t("migrationFeaturePending")}
+        description={t("migrationFeaturePendingDescription")}
       />
     </div>
   );

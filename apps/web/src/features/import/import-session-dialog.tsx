@@ -30,21 +30,28 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { getMeta, importSession, listProviders, selectFile, selectFolder } from "@/lib/api";
+import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 import { useUiStore } from "@/stores/ui-store";
 
-const importSessionSchema = z.object({
-  provider: z.string().min(1, "Choose a provider."),
-  file_or_id: z.string().trim().min(1, "Enter a file path or session id."),
-  to_dir: z.string().trim().optional(),
-});
+const importSessionSchema = (messages: { providerRequired: string; fileOrIdRequired: string }) =>
+  z.object({
+    provider: z.string().min(1, messages.providerRequired),
+    file_or_id: z.string().trim().min(1, messages.fileOrIdRequired),
+    to_dir: z.string().trim().optional(),
+  });
 
-type ImportSessionForm = z.infer<typeof importSessionSchema>;
+type ImportSessionForm = z.infer<ReturnType<typeof importSessionSchema>>;
 
 export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const selectedWorkspace = useUiStore((state) => state.selectedWorkspace);
+  const { t } = useI18n();
+  const schema = useMemo(
+    () => importSessionSchema({ providerRequired: t("importProviderRequired"), fileOrIdRequired: t("importFileOrIdRequired") }),
+    [t],
+  );
 
   const providers = useQuery({
     queryKey: queryKeys.providers,
@@ -61,7 +68,7 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
   const workspace = selectedWorkspace || meta.data?.selected_workspace || "";
 
   const form = useForm<ImportSessionForm>({
-    resolver: zodResolver(importSessionSchema),
+    resolver: zodResolver(schema),
     defaultValues: {
       provider: "",
       file_or_id: "",
@@ -84,7 +91,7 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
       ]);
       onOpenChange(false);
       form.reset({ provider: variables.provider, file_or_id: "", to_dir: variables.to_dir || workspace });
-      toast.success("Imported", {
+      toast.success(t("imported"), {
         description: result.resume_command || `${result.provider_name}: ${result.new_session_id}`,
       });
       navigate(`/sessions/${encodeURIComponent(variables.provider)}/${encodeURIComponent(result.new_session_id)}`);
@@ -105,8 +112,8 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
       if (result.path) form.setValue("file_or_id", result.path, { shouldValidate: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      toast.error("Error", {
-        description: /only available in the desktop app/i.test(message) ? "File picker is only available in the desktop app." : message,
+      toast.error(t("error"), {
+        description: /only available in the desktop app/i.test(message) ? t("importFilePickerDesktopOnly") : message,
       });
     }
   }
@@ -117,8 +124,8 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
       if (result.path) form.setValue("to_dir", result.path, { shouldValidate: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      toast.error("Error", {
-        description: /only available in the desktop app/i.test(message) ? "Folder picker is only available in the desktop app." : message,
+      toast.error(t("error"), {
+        description: /only available in the desktop app/i.test(message) ? t("importFolderPickerDesktopOnly") : message,
       });
     }
   }
@@ -127,17 +134,17 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl" data-import-session-dialog>
         <DialogHeader>
-          <DialogTitle>Import Session</DialogTitle>
-          <DialogDescription>Import a file or session id into the selected target provider.</DialogDescription>
+          <DialogTitle>{t("importSession")}</DialogTitle>
+          <DialogDescription>{t("importSessionDescription")}</DialogDescription>
         </DialogHeader>
 
         <DialogForm onSubmit={form.handleSubmit(submitImport)}>
           <FieldGroup className="grid gap-4 sm:grid-cols-[minmax(0,0.7fr)_minmax(0,1.3fr)]" data-import-modal-grid>
             <Field data-invalid={Boolean(form.formState.errors.provider)}>
-              <FieldLabel htmlFor="import-provider">Target Provider</FieldLabel>
+              <FieldLabel htmlFor="import-provider">{t("importTargetProvider")}</FieldLabel>
               <Select value={selectedProvider} onValueChange={(value) => form.setValue("provider", value, { shouldValidate: true })}>
                 <SelectTrigger id="import-provider" className="w-full" aria-invalid={Boolean(form.formState.errors.provider)}>
-                  <SelectValue placeholder={providers.isLoading ? "Loading" : "Provider"} />
+                  <SelectValue placeholder={providers.isLoading ? t("loading") : t("provider")} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
@@ -153,18 +160,18 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
             </Field>
 
             <Field data-invalid={Boolean(form.formState.errors.file_or_id)}>
-              <FieldLabel htmlFor="import-file-or-id">File Or Id</FieldLabel>
+              <FieldLabel htmlFor="import-file-or-id">{t("importFileOrId")}</FieldLabel>
               <InputGroup>
                 <InputGroupInput
                   id="import-file-or-id"
-                  placeholder="File path or existing session id"
+                  placeholder={t("importFileOrIdPlaceholder")}
                   aria-invalid={Boolean(form.formState.errors.file_or_id)}
                   {...form.register("file_or_id")}
                 />
                 <InputGroupAddon align="inline-end">
                   <InputGroupButton type="button" variant="ghost" onClick={browseImportFile}>
                     <FolderOpenIcon data-icon="inline-start" />
-                    Browse
+                    {t("sessionBrowse")}
                   </InputGroupButton>
                 </InputGroupAddon>
               </InputGroup>
@@ -172,22 +179,22 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
             </Field>
 
             <Field className="sm:col-span-2">
-              <FieldLabel htmlFor="import-target-dir">Target Dir</FieldLabel>
+              <FieldLabel htmlFor="import-target-dir">{t("sessionTargetDirectory")}</FieldLabel>
               <InputGroup>
                 <InputGroupInput
                   id="import-target-dir"
                   list="known-workspaces"
-                  placeholder={workspace || "Workspace path"}
+                  placeholder={workspace || t("sessionWorkspacePath")}
                   {...form.register("to_dir")}
                 />
                 <InputGroupAddon align="inline-end">
                   <InputGroupButton type="button" variant="ghost" onClick={browseTargetDir}>
                     <FolderOpenIcon data-icon="inline-start" />
-                    Browse
+                    {t("sessionBrowse")}
                   </InputGroupButton>
                 </InputGroupAddon>
               </InputGroup>
-              <FieldDescription>Defaults to the current workspace when left unchanged.</FieldDescription>
+              <FieldDescription>{t("sessionTargetDirectoryDescription")}</FieldDescription>
             </Field>
           </FieldGroup>
 
@@ -199,8 +206,9 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
 
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}
+            cancelLabel={t("cancel")}
             submitDisabled={!importProviders.length}
-            submitLabel="Import"
+            submitLabel={t("import")}
             submitting={importMutation.isPending}
           />
         </DialogForm>

@@ -13,6 +13,7 @@ import {
   type ChainStep,
 } from "@/features/sessions/session-chain-of-thought-utils";
 import type { EventBlock } from "@/lib/types";
+import { useI18n } from "@/lib/i18n-context";
 
 function ChainStepContent({ step }: { step: ChainStep }) {
   if (step.kind === "thinking" && step.thinkingText) {
@@ -22,13 +23,13 @@ function ChainStepContent({ step }: { step: ChainStep }) {
   return <SessionBlock block={step.block} embedded />;
 }
 
-function stepLabel(step: ChainStep) {
+function stepLabel(step: ChainStep, errorLabel: string) {
   if (step.kind === "tool_result" && step.block.type === "tool_result" && step.block.is_error) {
     return (
       <span className="inline-flex flex-wrap items-center gap-2">
         {step.label}
         <Badge variant="destructive" className="px-1.5 py-0 text-[10px] font-normal">
-          Error
+          {errorLabel}
         </Badge>
       </span>
     );
@@ -44,19 +45,20 @@ export function SessionChainOfThought({
   blocks: EventBlock[];
   defaultOpen?: boolean;
 }) {
-  const steps = blocksToChainSteps(blocks);
+  const { t } = useI18n();
+  const steps = blocksToChainSteps(blocks, t);
   if (steps.length === 0) return null;
 
   return (
     <ChainOfThought defaultOpen={defaultOpen} data-chain-of-thought>
-      <ChainOfThoughtHeader>Chain of thought</ChainOfThoughtHeader>
+      <ChainOfThoughtHeader>{t("chainOfThought")}</ChainOfThoughtHeader>
       <ChainOfThoughtContent>
         {steps.map((step) => (
           <ChainOfThoughtStep
             key={step.id}
             data-chain-step={step.kind}
             icon={step.kind === "tool_call" ? WrenchIcon : DotIcon}
-            label={stepLabel(step)}
+            label={stepLabel(step, t("chainError"))}
             description={step.description}
             status="complete"
           >

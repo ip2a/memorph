@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionEvent, SessionEventKind } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n-context";
 
 export type DetailTimelineItem = {
   index: number;
@@ -141,6 +142,7 @@ export function DetailTimeline({
   listSelector = DEFAULT_LIST_SELECTOR,
   onScrollToMessage,
 }: DetailTimelineProps) {
+  const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
   const [layout, setLayout] = useState<MinimapLayout | null>(null);
   const [viewport, setViewport] = useState({ topRatio: 0, heightRatio: 1 });
@@ -230,8 +232,8 @@ export function DetailTimeline({
 
   return (
     <aside
-      className={cn("hidden w-10 shrink-0 min-w-0 lg:block", className)}
-      aria-label="Event minimap"
+      className={cn("w-10 shrink-0 min-w-0", className)}
+      aria-label={t("eventMinimap")}
       data-detail-timeline
     >
       <div className={cn("sticky top-4 z-10 w-10 rounded-md border bg-muted/20 p-1", TRACK_HEIGHT_CLASS)}>

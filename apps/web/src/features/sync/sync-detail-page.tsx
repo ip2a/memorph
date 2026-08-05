@@ -16,6 +16,7 @@ import { PathText } from "@/components/shared/path-text";
 import { TwoPanePage } from "@/components/shared/two-pane-page";
 import { bindSyncGroup, getMeta, listProviders, removeSyncGroup, renameSyncGroup, runSyncGroup, unbindSyncHolding } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 import type { MetaPayload, ProviderInfo, SyncGroup, SyncHolding, SyncReport } from "@/lib/types";
 import { useSyncGroup } from "@/features/sync/queries";
@@ -48,19 +49,19 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 
-const bindSchema = z.object({
-  provider: z.string().min(1, "Choose a provider."),
+const bindSchema = (message: string) => z.object({
+  provider: z.string().min(1, message),
   session_id: z.string().trim().optional(),
   to_dir: z.string().trim().optional(),
 });
 
-type BindForm = z.infer<typeof bindSchema>;
+type BindForm = z.infer<ReturnType<typeof bindSchema>>;
 
-const renameSchema = z.object({
-  title: z.string().trim().min(1, "Enter a title."),
+const renameSchema = (message: string) => z.object({
+  title: z.string().trim().min(1, message),
 });
 
-type RenameForm = z.infer<typeof renameSchema>;
+type RenameForm = z.infer<ReturnType<typeof renameSchema>>;
 
 function providerLabel(providers: ProviderInfo[], providerId?: string | null) {
   if (!providerId) return "-";
@@ -77,8 +78,12 @@ function workspaceOptions(meta?: MetaPayload) {
   return meta?.workspaces ?? [];
 }
 
-function syncReportDescription(report: SyncReport) {
-  return `${report.source_provider} · success=${report.success.length} · errors=${report.errors.length}`;
+function syncReportDescription(report: SyncReport, t: ReturnType<typeof useI18n>["t"]) {
+  return t("syncReportSummary", {
+    provider: report.source_provider,
+    success: report.success.length,
+    errors: report.errors.length,
+  });
 }
 
 function firstReportLine(report: SyncReport) {
@@ -86,6 +91,7 @@ function firstReportLine(report: SyncReport) {
 }
 
 export function SyncDetailPage() {
+  const { t } = useI18n();
   const { groupId = "" } = useParams();
   const queryClient = useQueryClient();
   const syncGroup = useSyncGroup(groupId);
@@ -107,13 +113,13 @@ export function SyncDetailPage() {
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups }),
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroup(groupId) }),
       ]);
-      toast.success("Start Execution", { description: syncReportDescription(report) });
+      toast.success(t("syncStartExecution"), { description: syncReportDescription(report, t) });
     },
   });
 
   if (syncGroup.isLoading) return <PageSkeleton />;
-  if (syncGroup.error) return <PageError title="Sync group failed to load" message={syncGroup.error.message} />;
-  if (!group) return <PageEmpty title="Sync group not found" description="Return to the sync list and choose another group." />;
+  if (syncGroup.error) return <PageError title={t("syncGroupLoadFailed")} message={syncGroup.error.message} />;
+  if (!group) return <PageEmpty title={t("syncGroupNotFound")} description={t("syncGroupNotFoundDescription")} />;
 
   return (
     <>
@@ -130,11 +136,11 @@ export function SyncDetailPage() {
           <ScrollArea className="min-h-0 flex-1 pr-3">
             <div className="flex flex-col gap-4">
               <div className="flex flex-col gap-2 text-sm">
-                <MetaLine label="Provider" value={providerLabel(providerItems, group.source_provider)} />
-                <MetaLine label="Sync Title" value={group.title} />
-                <MetaLine label="Holdings" value={String(group.holdings.length)} />
-                <MetaLine label="Created At" value={formatDateTime(group.created_at)} />
-                <MetaLine label="Updated At" value={formatDateTime(group.updated_at)} />
+                <MetaLine label={t("provider")} value={providerLabel(providerItems, group.source_provider)} />
+                <MetaLine label={t("syncTitleLabel")} value={group.title} />
+                <MetaLine label={t("syncHoldings")} value={String(group.holdings.length)} />
+                <MetaLine label={t("syncCreatedAt")} value={formatDateTime(group.created_at)} />
+                <MetaLine label={t("syncUpdatedAtLabel")} value={formatDateTime(group.updated_at)} />
               </div>
 
               <Separator />
@@ -142,15 +148,15 @@ export function SyncDetailPage() {
               <div className="flex flex-col gap-2" data-sync-detail-row-actions>
                 <Button variant="default" onClick={() => runLatestMutation.mutate()} disabled={runLatestMutation.isPending}>
                   {runLatestMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-                  Start Execution
+                  {t("syncStartExecution")}
                 </Button>
-                <Button variant="outline" onClick={() => setBindOpen(true)}>Add Holding</Button>
-                <Button variant="outline" onClick={() => setRenameOpen(true)}>Rename</Button>
-                <Button variant="destructive" onClick={() => setRemoveOpen(true)}>Remove</Button>
+                <Button variant="outline" onClick={() => setBindOpen(true)}>{t("syncAddHolding")}</Button>
+                <Button variant="outline" onClick={() => setRenameOpen(true)}>{t("rename")}</Button>
+                <Button variant="destructive" onClick={() => setRemoveOpen(true)}>{t("remove")}</Button>
                 <Button asChild variant="outline">
                   <Link to="/sync">
                     <ArrowLeftIcon data-icon="inline-start" />
-                    Back
+                    {t("back")}
                   </Link>
                 </Button>
               </div>
@@ -161,13 +167,13 @@ export function SyncDetailPage() {
         <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4" data-sync-holdings-panel>
           <DetailHeader
             title={group.title}
-            badges={<Badge variant="secondary">Holdings</Badge>}
-            description={`${group.holdings.length} linked sessions`}
+            badges={<Badge variant="secondary">{t("syncHoldings")}</Badge>}
+            description={t("syncLinkedSessions", { count: group.holdings.length })}
           />
 
           <ScrollArea className="min-h-0 pr-3">
             {group.holdings.length === 0 ? (
-              <PageEmpty title="No holdings" description="Add a holding from the status panel to bind this sync group." />
+              <PageEmpty title={t("syncNoHoldings")} description={t("syncNoHoldingsDescription")} />
             ) : (
               <div className="flex flex-col gap-2" data-sync-holding-grid>
                 {group.holdings.map((holding) => (
@@ -214,6 +220,7 @@ function HoldingCard({
   onSyncFrom: () => void;
   onUnbind: () => void;
 }) {
+  const { t } = useI18n();
   const sessionHref = `/sessions/${encodeURIComponent(holding.provider)}/${encodeURIComponent(holding.session_id)}`;
   return (
     <EntityRow
@@ -223,15 +230,15 @@ function HoldingCard({
         <>
           <Button asChild variant="outline">
             <Link to={sessionHref}>
-              Open Session
+              {t("syncOpenSession")}
               <ArrowRightIcon data-icon="inline-end" />
             </Link>
           </Button>
           <Button variant="outline" onClick={onSyncFrom} data-group-id={group.id} data-holding-id={holding.id}>
-            Sync From This
+            {t("syncFromThis")}
           </Button>
           <Button variant="destructive" onClick={onUnbind} data-group-id={group.id} data-holding-id={holding.id}>
-            Unbind
+            {t("syncUnbind")}
           </Button>
         </>
       )}
@@ -242,11 +249,11 @@ function HoldingCard({
         </Link>
         <p className="truncate font-mono text-xs text-muted-foreground">{holding.session_id}</p>
         <div className="flex flex-col gap-1 text-sm">
-          <MetaLine label="Workspace" value={<PathText value={holding.target_dir} wrap="all" />} />
-          <MetaLine label="Last Active At" value={formatDateTime(holding.last_active_at)} />
-          <MetaLine label="Last Sync" value={formatDateTime(holding.last_sync_at)} />
-          <MetaLine label="Sync From" value={holding.last_sync_from || "-"} />
-          <MetaLine label="Error" value={holding.last_error || "-"} destructive={Boolean(holding.last_error)} />
+          <MetaLine label={t("workspace")} value={<PathText value={holding.target_dir} wrap="all" />} />
+          <MetaLine label={t("syncLastActiveAt")} value={formatDateTime(holding.last_active_at)} />
+          <MetaLine label={t("syncLastSync")} value={formatDateTime(holding.last_sync_at)} />
+          <MetaLine label={t("syncFrom")} value={holding.last_sync_from || "-"} />
+          <MetaLine label={t("error")} value={holding.last_error || "-"} destructive={Boolean(holding.last_error)} />
         </div>
       </div>
     </EntityRow>
@@ -266,9 +273,10 @@ function BindSyncHoldingDialog({
   providers: ProviderInfo[];
   meta?: MetaPayload;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const form = useForm<BindForm>({
-    resolver: zodResolver(bindSchema),
+    resolver: zodResolver(bindSchema(t("syncChooseProvider"))),
     defaultValues: { provider: "", session_id: "", to_dir: "" },
   });
   const selectedProvider = useWatch({ control: form.control, name: "provider" });
@@ -294,7 +302,7 @@ function BindSyncHoldingDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups }),
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroup(group.id) }),
       ]);
-      toast.success("Add Holding", { description: `${holding.provider}: ${holding.session_id}` });
+      toast.success(t("syncAddHolding"), { description: `${holding.provider}: ${holding.session_id}` });
       onOpenChange(false);
     },
   });
@@ -303,17 +311,17 @@ function BindSyncHoldingDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-2xl" data-bind-sync-holding-dialog>
         <DialogHeader>
-          <DialogTitle>Add Holding</DialogTitle>
-          <DialogDescription>Bind another provider session to this sync group.</DialogDescription>
+          <DialogTitle>{t("syncAddHolding")}</DialogTitle>
+          <DialogDescription>{t("syncAddHoldingDescription")}</DialogDescription>
         </DialogHeader>
         <DialogForm onSubmit={form.handleSubmit((values) => bindMutation.mutate(values))}>
           <input type="hidden" name="group_id" value={group.id} />
           <FieldGroup data-bind-sync-modal-stack>
             <Field data-invalid={Boolean(form.formState.errors.provider)}>
-              <FieldLabel htmlFor="bind-provider">Provider</FieldLabel>
+              <FieldLabel htmlFor="bind-provider">{t("provider")}</FieldLabel>
               <Select value={selectedProvider} onValueChange={(value) => form.setValue("provider", value, { shouldValidate: true })}>
                 <SelectTrigger id="bind-provider" className="w-full" aria-invalid={Boolean(form.formState.errors.provider)}>
-                  <SelectValue placeholder="Provider" />
+                  <SelectValue placeholder={t("provider")} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
@@ -327,23 +335,23 @@ function BindSyncHoldingDialog({
             </Field>
 
             <Field data-invalid={Boolean(form.formState.errors.session_id)}>
-              <FieldLabel htmlFor="bind-session-id">Session Id</FieldLabel>
-              <Input id="bind-session-id" placeholder="Empty creates new holding" {...form.register("session_id")} />
+              <FieldLabel htmlFor="bind-session-id">{t("syncSessionId")}</FieldLabel>
+              <Input id="bind-session-id" placeholder={t("syncSessionIdPlaceholder")} {...form.register("session_id")} />
               {form.formState.errors.session_id ? <FieldDescription>{form.formState.errors.session_id.message}</FieldDescription> : null}
             </Field>
 
             <Field>
-              <FieldLabel htmlFor="bind-target-dir">Target Dir</FieldLabel>
+              <FieldLabel htmlFor="bind-target-dir">{t("syncTargetDir")}</FieldLabel>
               <InputGroup>
-                <InputGroupInput id="bind-target-dir" list="known-workspaces" placeholder="Workspace path" {...form.register("to_dir")} />
+                <InputGroupInput id="bind-target-dir" list="known-workspaces" placeholder={t("syncWorkspacePath")} {...form.register("to_dir")} />
                 <InputGroupAddon align="inline-end">
                   <InputGroupButton type="button" variant="ghost" disabled>
                     <FolderOpenIcon data-icon="inline-start" />
-                    Browse
+                    {t("syncBrowse")}
                   </InputGroupButton>
                 </InputGroupAddon>
               </InputGroup>
-              <FieldDescription>Leave Session Id empty to create a new provider holding when supported.</FieldDescription>
+              <FieldDescription>{t("syncNewHoldingDescription")}</FieldDescription>
             </Field>
           </FieldGroup>
 
@@ -354,7 +362,8 @@ function BindSyncHoldingDialog({
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}
             submitDisabled={!providers.length}
-            submitLabel="Add Holding"
+            cancelLabel={t("cancel")}
+            submitLabel={t("syncAddHolding")}
             submitting={bindMutation.isPending}
           />
         </DialogForm>
@@ -374,6 +383,7 @@ function SyncFromHoldingDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const syncMutation = useMutation({
     mutationFn: () => {
@@ -385,7 +395,7 @@ function SyncFromHoldingDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups }),
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroup(group.id) }),
       ]);
-      toast.success("Sync From This", { description: firstReportLine(report) });
+      toast.success(t("syncFromThis"), { description: firstReportLine(report) });
       onOpenChange(false);
     },
   });
@@ -394,8 +404,8 @@ function SyncFromHoldingDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md" data-sync-from-holding-dialog>
         <DialogHeader>
-          <DialogTitle>Push Sync</DialogTitle>
-          <DialogDescription>Use this holding as the source for the sync group.</DialogDescription>
+          <DialogTitle>{t("syncPush")}</DialogTitle>
+          <DialogDescription>{t("syncPushDescription")}</DialogDescription>
         </DialogHeader>
         <input type="hidden" name="group_id" value={group.id} />
         <input type="hidden" name="holding_id" value={holding?.id || ""} />
@@ -404,10 +414,10 @@ function SyncFromHoldingDialog({
           <div className="break-all font-mono text-xs text-muted-foreground">{holding?.session_id || "-"}</div>
         </div>
         <DialogFooter>
-          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>{t("cancel")}</Button>
           <Button type="button" onClick={() => syncMutation.mutate()} disabled={!holding || syncMutation.isPending}>
             {syncMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-            Sync From This
+            {t("syncFromThis")}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -426,6 +436,7 @@ function UnbindHoldingDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const unbindMutation = useMutation({
     mutationFn: () => {
@@ -437,7 +448,7 @@ function UnbindHoldingDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups }),
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroup(group.id) }),
       ]);
-      toast.success("Unbind", { description: holding?.session_id });
+      toast.success(t("syncUnbind"), { description: holding?.session_id });
       onOpenChange(false);
     },
   });
@@ -446,8 +457,8 @@ function UnbindHoldingDialog({
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent data-unbind-sync-holding-dialog>
         <AlertDialogHeader>
-          <AlertDialogTitle>Unbind</AlertDialogTitle>
-          <AlertDialogDescription>Remove this holding from the sync group without deleting the provider session.</AlertDialogDescription>
+          <AlertDialogTitle>{t("syncUnbind")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("syncUnbindDescription")}</AlertDialogDescription>
         </AlertDialogHeader>
         <input type="hidden" name="group_id" value={group.id} />
         <input type="hidden" name="holding_id" value={holding?.id || ""} />
@@ -456,7 +467,7 @@ function UnbindHoldingDialog({
           <div className="break-all font-mono text-xs text-muted-foreground">{holding?.session_id || "-"}</div>
         </div>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={unbindMutation.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={unbindMutation.isPending}>{t("cancel")}</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
             disabled={!holding || unbindMutation.isPending}
@@ -466,7 +477,7 @@ function UnbindHoldingDialog({
             }}
           >
             {unbindMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-            Unbind
+            {t("syncUnbind")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -475,8 +486,9 @@ function UnbindHoldingDialog({
 }
 
 function RenameSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
-  const form = useForm<RenameForm>({ resolver: zodResolver(renameSchema), defaultValues: { title: group.title } });
+  const form = useForm<RenameForm>({ resolver: zodResolver(renameSchema(t("syncTitleRequired"))), defaultValues: { title: group.title } });
 
   useEffect(() => {
     if (!open) return;
@@ -490,7 +502,7 @@ function RenameSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups }),
         queryClient.invalidateQueries({ queryKey: queryKeys.syncGroup(group.id) }),
       ]);
-      toast.success("Rename", { description: form.getValues("title") });
+      toast.success(t("rename"), { description: form.getValues("title") });
       onOpenChange(false);
     },
   });
@@ -499,19 +511,19 @@ function RenameSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md" data-rename-sync-group-dialog>
         <DialogHeader>
-          <DialogTitle>Rename</DialogTitle>
-          <DialogDescription>Update the sync group title.</DialogDescription>
+          <DialogTitle>{t("rename")}</DialogTitle>
+          <DialogDescription>{t("syncRenameDescription")}</DialogDescription>
         </DialogHeader>
         <DialogForm onSubmit={form.handleSubmit((values) => renameMutation.mutate(values))}>
           <input type="hidden" name="group_id" value={group.id} />
           <FieldGroup>
             <Field data-invalid={Boolean(form.formState.errors.title)}>
-              <FieldLabel htmlFor="rename-sync-detail-title">Title</FieldLabel>
+              <FieldLabel htmlFor="rename-sync-detail-title">{t("syncTitle")}</FieldLabel>
               <Input id="rename-sync-detail-title" aria-invalid={Boolean(form.formState.errors.title)} {...form.register("title")} />
               {form.formState.errors.title ? <FieldDescription>{form.formState.errors.title.message}</FieldDescription> : null}
             </Field>
           </FieldGroup>
-          <DialogFormFooter onCancel={() => onOpenChange(false)} submitLabel="Save" submitting={renameMutation.isPending} />
+          <DialogFormFooter onCancel={() => onOpenChange(false)} cancelLabel={t("cancel")} submitLabel={t("save")} submitting={renameMutation.isPending} />
         </DialogForm>
       </DialogContent>
     </Dialog>
@@ -519,6 +531,7 @@ function RenameSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
 }
 
 function RemoveSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [deleteProviderSessions, setDeleteProviderSessions] = useState(false);
@@ -527,7 +540,7 @@ function RemoveSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
     mutationFn: () => removeSyncGroup(group.id, deleteProviderSessions),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups });
-      toast.success("Removed", { description: group.title });
+      toast.success(t("syncRemoved"), { description: group.title });
       onOpenChange(false);
       navigate("/sync");
     },
@@ -543,8 +556,8 @@ function RemoveSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
     >
       <AlertDialogContent data-remove-sync-group-dialog>
         <AlertDialogHeader>
-          <AlertDialogTitle>Remove</AlertDialogTitle>
-          <AlertDialogDescription>Remove this sync group. Choose whether provider sessions should also be deleted.</AlertDialogDescription>
+          <AlertDialogTitle>{t("remove")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("syncRemoveDescription")}</AlertDialogDescription>
         </AlertDialogHeader>
         <div className="flex flex-col gap-3 rounded-md border p-3 text-sm">
           <input type="hidden" name="group_id" value={group.id} />
@@ -559,14 +572,14 @@ function RemoveSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
             />
             <FieldContent>
               <FieldLabel htmlFor="delete-provider-sessions-detail">
-                <FieldTitle>Delete provider sessions</FieldTitle>
+                <FieldTitle>{t("syncDeleteProviderSessions")}</FieldTitle>
               </FieldLabel>
-              <FieldDescription>Also remove the sessions owned by providers in this group.</FieldDescription>
+              <FieldDescription>{t("syncDeleteProviderSessionsDescription")}</FieldDescription>
             </FieldContent>
           </Field>
         </div>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={removeMutation.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={removeMutation.isPending}>{t("cancel")}</AlertDialogCancel>
           <AlertDialogAction
             variant="destructive"
             disabled={removeMutation.isPending}
@@ -576,7 +589,7 @@ function RemoveSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
             }}
           >
             {removeMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-            Remove
+            {t("remove")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

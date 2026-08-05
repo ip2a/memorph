@@ -47,13 +47,13 @@ export function SessionDetailHeaderActions({
         renderButton: () => (
           <Button type="button" variant="outline" onClick={onOpenFilter}>
             <ListFilterIcon data-icon="inline-start" />
-            Filter
+            {t("filters")}
           </Button>
         ),
         renderMenuItem: () => (
           <DropdownMenuItem onSelect={onOpenFilter}>
             <ListFilterIcon />
-            Filter
+            {t("filters")}
           </DropdownMenuItem>
         ),
       },
@@ -63,13 +63,13 @@ export function SessionDetailHeaderActions({
         renderButton: () => (
           <Button type="button" variant="outline" onClick={onOpenDetails}>
             <InfoIcon data-icon="inline-start" />
-            Details
+            {t("details")}
           </Button>
         ),
         renderMenuItem: () => (
           <DropdownMenuItem onSelect={onOpenDetails}>
             <InfoIcon />
-            Details
+            {t("details")}
           </DropdownMenuItem>
         ),
       },
@@ -164,7 +164,7 @@ export function SessionDetailHeaderActions({
               onEventSearchSubmit()
             }
           }}
-          placeholder="Search events"
+          placeholder={t("searchEvents")}
           data-session-event-search
         />
         <Button
@@ -172,7 +172,7 @@ export function SessionDetailHeaderActions({
           variant="outline"
           size="icon-sm"
           className="shrink-0"
-          aria-label="Search events"
+          aria-label={t("searchEvents")}
           disabled={eventSearchPending}
           onClick={onEventSearchSubmit}
           data-session-event-search-submit

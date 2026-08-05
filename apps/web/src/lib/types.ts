@@ -428,14 +428,18 @@ export type WorkspaceEntry = {
   providers?: string[];
 };
 
+export type HomeSessionLayout = "stack" | "tabs";
+
 export type SettingsPayload = {
   sessions_per_provider: number;
+  skills_catalog_page_size: number;
   language: UiLanguage;
   show_opencode_subagents: boolean;
   sort_providers_by_session_count: boolean;
   default_backup_dir: string;
   logging: Record<string, unknown>;
   home_buttons: Record<string, unknown>;
+  home_session_layout: HomeSessionLayout;
   agent_order: string[];
   primary_agents: string[];
   server?: ServerSettingsPayload;
@@ -462,12 +466,14 @@ export type ServerSettingsPayload = {
 
 export type UpdateSettingsPayload = {
   sessions_per_provider: number;
+  skills_catalog_page_size: number;
   language: UiLanguage;
   show_opencode_subagents: boolean;
   sort_providers_by_session_count?: boolean;
   default_backup_dir: string;
   logging: LogSettingsPayload;
   home_buttons: HomeButtonSettingsPayload;
+  home_session_layout: HomeSessionLayout;
   agent_order: string[];
   primary_agents: string[];
   server: ServerSettingsPayload;
@@ -610,8 +616,76 @@ export type EnsureReadyPayload = {
   repaired: boolean;
 };
 
+export type ReadinessState = "ready" | "partial" | "degraded" | "error";
+export type ReadinessPhaseName =
+  | "foundation"
+  | "agents"
+  | "sessions"
+  | "session_stats"
+  | "skills"
+  | "usage"
+  | "derived";
+export type ReadinessFocus = "overview" | Exclude<ReadinessPhaseName, "foundation">;
+export type ReadinessPriority = "background" | "foreground";
+export type ReadinessTrigger = "startup" | "manual" | "workspace_change" | "incomplete_panel" | "retry";
+export type ReadinessPhase = {
+  state: ReadinessState;
+  message?: string | null;
+};
+
+export type ReadinessPhases = Record<ReadinessPhaseName, ReadinessPhase>;
+
+export type ReadinessPayload = {
+  workspace: string | null;
+  state: ReadinessState;
+  active_operation_id?: string | null;
+  recommended_focus?: ReadinessFocus | null;
+  phases: ReadinessPhases;
+};
+
+export type ReadinessReconcilePayload = {
+  workspace?: string | null;
+  focus: ReadinessFocus;
+  priority: ReadinessPriority;
+  trigger: ReadinessTrigger;
+};
+
+export type ReadinessReconcileResult = {
+  operation_id?: string | null;
+  disposition: "started" | "joined" | "noop";
+  status: string;
+  readiness: ReadinessPayload;
+  status_url: string;
+};
+
+export type ReadinessOperation = {
+  operation_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  readiness: ReadinessPayload;
+  trigger: ReadinessTrigger;
+  priority: ReadinessPriority;
+  current_phase?: ReadinessPhaseName;
+  completed_phases: ReadinessPhaseName[];
+  running_phases: ReadinessPhaseName[];
+  pending_phases: ReadinessPhaseName[];
+  failures: Array<{ phase: ReadinessPhaseName; message: string }>;
+};
+
 export type ScanWorkspacesPayload = {
-  queued: number;
+  scanned_providers: number;
+  failed_providers: number;
+  discovered_sessions: number;
+  projected_sessions: number;
+  unchanged_sessions: number;
+  missing_sources: number;
+  unsupported_providers: number;
+  failed_sessions: number;
+  failures: Array<{
+    provider_id: string;
+    session_id?: string | null;
+    source_path?: string | null;
+    reason: string;
+  }>;
 };
 
 export type MetaPayload = {
@@ -641,6 +715,9 @@ export type SessionListParams = {
   limit?: number;
   offset?: number;
   sort?: SessionListSort;
+  /** When true, the workspace feed asks providers to rescan instead of
+   *  returning cached data. Used for explicit refresh actions. */
+  refresh?: boolean;
 };
 
 export type SessionItem = {
@@ -955,6 +1032,31 @@ export type SessionGroup = {
   sessions: SessionItem[];
 };
 
+export type FeedStateKind =
+  | "fresh"
+  | "warming"
+  | "cold_scanning"
+  | "complete"
+  | "error";
+
+export type FeedState = {
+  kind: FeedStateKind;
+  message?: string | null;
+};
+
+export type ProviderFeedStateKind =
+  | "cached"
+  | "scanning"
+  | "scanned"
+  | "error";
+
+export type ProviderFeedState = {
+  provider_id: string;
+  kind: ProviderFeedStateKind;
+  message?: string | null;
+  discovered_count: number;
+};
+
 export type SessionPage = {
   groups: SessionGroup[];
   offset: number;
@@ -963,6 +1065,12 @@ export type SessionPage = {
   /** True when the store had no indexed sessions for the requested workspace
    *  and a background indexing pass was triggered. Clients should re-poll. */
   degraded?: boolean;
+  /** Workspace feed state. Present when the request scoped to a workspace. */
+  feed_state?: FeedState;
+  /** Per-provider feed state from the workspace scan. */
+  provider_states?: ProviderFeedState[];
+  /** Unix epoch milliseconds when the feed completed a refresh. */
+  refreshed_at?: number | null;
 };
 
 export type SyncHolding = {
@@ -1053,6 +1161,7 @@ export type ProviderConfigRow = {
 export type ProviderConfigSection = {
   label: string;
   rows: ProviderConfigRow[];
+  entry?: ProviderConfigEntry;
 };
 
 export type ProviderConfigIssue = {
@@ -1063,10 +1172,41 @@ export type ProviderConfigIssue = {
 export type ProviderConfigView = {
   provider_id: string;
   view_id: string;
+  providerId?: string;
+  viewId?: string;
   title: string;
   sources?: ProviderConfigSource[];
   sections?: ProviderConfigSection[];
   issues?: ProviderConfigIssue[];
+  entries?: ProviderConfigEntry[];
+};
+
+/** Metadata for a configuration entry that the backend explicitly permits removing. */
+export type ProviderConfigEntry = {
+  entry_id?: string;
+  entryId?: string;
+  id?: string;
+  name?: string;
+  label?: string;
+  title?: string;
+  scope?: string;
+  source?: string;
+  source_path?: string;
+  sourcePath?: string;
+  fingerprint?: string;
+  expected_fingerprint?: string;
+  expectedFingerprint?: string;
+  removable?: boolean;
+  can_remove?: boolean;
+  canRemove?: boolean;
+};
+
+export type ProviderConfigEntryRemovalResult = {
+  status?: string;
+  outcome?: string;
+  result?: string;
+  message?: string | null;
+  [key: string]: unknown;
 };
 
 export type CodexWorkspaceRepairItem = {
@@ -1121,6 +1261,7 @@ export type AgentHookManagementCapability = {
 export type AgentMcpManagementCapability = {
   list: boolean;
   inspect: boolean;
+  remove?: boolean;
 };
 
 export type AgentPluginManagementCapability = {
@@ -1205,6 +1346,10 @@ export type StatsSessionItem = {
 export type StatsDashboard = {
   generated_at: string;
   range_start: string | null;
+  completeness: {
+    status: "complete" | "partial";
+    incomplete_session_count: number;
+  };
   overview: {
     total_sessions: number;
     active_sessions: number;
@@ -1265,13 +1410,13 @@ export type StatsDashboard = {
 };
 
 export type SkillAgent = {
-  provider_id: string;
+  agent_id: string;
   name: string;
   skills_dir: string;
 };
 
 export type SkillInstallation = {
-  provider_id: string;
+  used_by: string;
   path: string;
   managed: boolean;
   deployment_mode: "symlink" | "copy" | "external";
@@ -1318,6 +1463,8 @@ export type SkillEntry = {
 export type SkillDetail = SkillEntry & {
   frontmatter: Record<string, string>;
   provider_metadata: SkillAsset[];
+  tags: string[];
+  used_by: string[];
 };
 
 export type SkillTree = {
@@ -1344,8 +1491,8 @@ export type SkillsOverview = {
 
 export type SkillMutation = {
   skill_id: string;
-  provider: string;
-  source_provider?: string;
+  used_by: string;
+  source_used_by?: string;
 };
 
 export type SkillScanQueued = {
@@ -1360,7 +1507,7 @@ export type SkillScanSummary = SkillScanQueued;
 
 export type SkillCatalogParams = {
   query?: string;
-  provider?: string;
+  used_by?: string;
   scope?: "global" | "project";
   sort?: "name" | "size" | "files" | "updated";
   order?: "asc" | "desc";
@@ -1369,11 +1516,12 @@ export type SkillCatalogParams = {
 };
 
 export type SkillCatalogInstallation = {
-  provider_id: string;
+  used_by: string;
   scope_kind: "global" | "project";
   workspace_dir?: string | null;
   install_path: string;
   install_kind: "directory" | "symlink" | "managed-copy";
+  symlink_target?: string | null;
   link_status:
     "not-applicable" | "valid" | "broken" | "outside-allowed-root" | "loop";
   status: "active" | "missing" | "removed" | "error";
@@ -1392,6 +1540,8 @@ export type SkillCatalogItem = {
   missing: boolean;
   updated_at_ms: number;
   installations: SkillCatalogInstallation[];
+  tags: string[];
+  used_by: string[];
 };
 
 export type SkillCatalogPage = {
@@ -1399,7 +1549,7 @@ export type SkillCatalogPage = {
   page: number;
   page_size: number;
   total: number;
-  providers: string[];
+  used_by: string[];
   completeness: {
     status: "unknown" | "partial" | "complete" | "error";
     updated_at_ms?: number | null;

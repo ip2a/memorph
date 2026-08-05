@@ -9,6 +9,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useI18n } from "@/lib/i18n-context";
 import { cn } from "@/lib/utils";
 
 interface ChainOfThoughtContextValue {
@@ -67,6 +68,7 @@ export type ChainOfThoughtHeaderProps = ComponentProps<typeof CollapsibleTrigger
 export const ChainOfThoughtHeader = memo(
   ({ className, children, ...props }: ChainOfThoughtHeaderProps) => {
     const { isOpen, setIsOpen } = useChainOfThought();
+    const { t } = useI18n();
 
     return (
       <Collapsible onOpenChange={setIsOpen} open={isOpen}>
@@ -78,7 +80,7 @@ export const ChainOfThoughtHeader = memo(
           {...props}
         >
           <BrainIcon className="size-4" />
-          <span className="flex-1 text-left">{children ?? "Chain of thought"}</span>
+          <span className="flex-1 text-left">{children ?? t("chainOfThought")}</span>
           <ChevronDownIcon
             className={cn("size-4 transition-transform", isOpen ? "rotate-180" : "rotate-0")}
           />

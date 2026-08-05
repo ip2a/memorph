@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCwIcon, SearchIcon } from "lucide-react";
 import { toast } from "sonner";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
@@ -18,6 +19,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Empty,
   EmptyDescription,
@@ -38,16 +40,22 @@ import {
 import { SkillDetailPanel } from "@/features/skills/skill-detail-panel";
 import {
   SkillsCatalogFilterTrigger,
+  type SkillsCatalogFilterApply,
   type SkillsCatalogFilters,
 } from "@/features/skills/skills-catalog-filters";
 import { SkillOverviewPanel } from "@/features/skills/skill-overview-panel";
+import { clampSkillsCatalogPageSize } from "@/features/skills/skills-catalog-page-size";
+import { buildUpdateSettingsPayloadFromMeta } from "@/features/skills/skills-settings-payload";
+import { getMeta, updateSettings } from "@/lib/api";
 import { useI18n } from "@/lib/i18n-context";
+import { queryKeys } from "@/lib/query-keys";
 import { useUiStore } from "@/stores/ui-store";
 
 export function SkillsPage() {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
-  const [provider, setProvider] = useState("all");
+  const [usedBy, setUsedBy] = useState("all");
   const [scope, setScope] = useState("all");
   const [sort, setSort] = useState<"name" | "size" | "files" | "updated">(
     "name",
@@ -57,17 +65,40 @@ export function SkillsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rightView, setRightView] = useState<"overview" | "detail">("overview");
   const [previewPath, setPreviewPath] = useState<string | null>(null);
-  const [sourceProvider, setSourceProvider] = useState<string>();
-  const [removalProvider, setRemovalProvider] = useState<string | null>(null);
+  const [removalAgent, setRemovalAgent] = useState<string | null>(null);
   const initialScanStarted = useRef(false);
+  const metaQuery = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta });
+  const pageSize = clampSkillsCatalogPageSize(
+    metaQuery.data?.settings.skills_catalog_page_size,
+  );
+  const persistPageSizeMutation = useMutation({
+    mutationFn: async (nextPageSize: number) => {
+      const meta = metaQuery.data ?? (await getMeta());
+      await updateSettings(
+        buildUpdateSettingsPayloadFromMeta(meta.settings, {
+          skills_catalog_page_size: clampSkillsCatalogPageSize(nextPageSize),
+        }),
+      );
+      return getMeta();
+    },
+    onSuccess: (nextMeta) => {
+      queryClient.setQueryData(queryKeys.meta, nextMeta);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot });
+    },
+    onError: (error) => {
+      toast.error(
+        error instanceof Error ? error.message : String(error),
+      );
+    },
+  });
   const skillsQuery = useSkills({
     query: search.trim() || undefined,
-    provider: provider === "all" ? undefined : provider,
+    used_by: usedBy === "all" ? undefined : usedBy,
     scope: scope === "all" ? undefined : (scope as "global" | "project"),
     sort,
     order,
     page,
-    pageSize: 50,
+    pageSize,
   });
   const currentWorkspace =
     useUiStore((state) => state.selectedWorkspace) ?? undefined;
@@ -76,38 +107,33 @@ export function SkillsPage() {
   const uninstallMutation = useUninstallSkill();
   const items = skillsQuery.data?.items ?? [];
   const selected = items.find((item) => item.id === selectedId) ?? null;
-  const sourceId = selected?.source_id ?? null;
-  const selectedSource = selected?.installations.some(
-    (item) => item.provider_id === sourceProvider,
-  )
-    ? sourceProvider
-    : selected?.installations[0]?.provider_id;
-  const detailQuery = useSkillDetail(sourceId);
-  const treeQuery = useSkillTree(sourceId);
+  const detailId = selected?.id ?? null;
+  const sourceUsedBy = selected?.installations.find(
+    (item) => item.status === "active",
+  )?.used_by;
+  const detailQuery = useSkillDetail(detailId);
+  const treeQuery = useSkillTree(detailId);
   const previewQuery = useSkillFilePreview(
-    sourceId,
+    detailId,
     previewPath,
-    selectedSource,
+    sourceUsedBy,
   );
 
-  const needsScan = skillsQuery.data?.needs_scan === true;
-
-  // Fire one background scan the first time the catalog reports it is
-  // unpopulated. The scan endpoint is non-blocking, so this just queues the
-  // work — list refetches will pick up the result.
+  // Fire one background scan after the catalog first loads. The scan endpoint
+  // is non-blocking, so this just queues the work — list refetches will pick up
+  // the result.
   useEffect(() => {
-    if (initialScanStarted.current || !needsScan) return;
+    if (initialScanStarted.current || !skillsQuery.data) return;
     initialScanStarted.current = true;
     scanMutation.mutate({
       mode: "incremental",
       workspace: currentWorkspace,
     });
-  }, [currentWorkspace, scanMutation, needsScan]);
+  }, [currentWorkspace, scanMutation, skillsQuery.data]);
 
-  useEffect(() => setPage(1), [search, provider, scope, sort, order]);
+  useEffect(() => setPage(1), [search, usedBy, scope, sort, order, pageSize]);
   useEffect(() => {
     setPreviewPath(null);
-    setSourceProvider(undefined);
   }, [selected?.id]);
   useEffect(() => {
     const assets = treeQuery.data?.assets ?? [];
@@ -131,19 +157,27 @@ export function SkillsPage() {
   const pending = installMutation.isPending || uninstallMutation.isPending;
   const mutationError =
     scanMutation.error || installMutation.error || uninstallMutation.error;
-  const pageCount = Math.max(1, Math.ceil((skillsQuery.data?.total ?? 0) / 50));
+  const total = skillsQuery.data?.total ?? 0;
+  const responsePageSize = skillsQuery.data?.page_size ?? pageSize;
+  const pageCount = Math.max(1, Math.ceil(total / responsePageSize));
+  const rangeFrom = total === 0 ? 0 : (page - 1) * responsePageSize + 1;
+  const rangeTo = Math.min(page * responsePageSize, total);
   const catalogFilters: SkillsCatalogFilters = {
-    provider,
+    used_by: usedBy,
     scope: scope as SkillsCatalogFilters["scope"],
     sort,
     order,
   };
 
-  function applyCatalogFilters(next: SkillsCatalogFilters) {
-    setProvider(next.provider);
-    setScope(next.scope);
-    setSort(next.sort);
-    setOrder(next.order);
+  function applyCatalogFilters(next: SkillsCatalogFilterApply) {
+    setUsedBy(next.filters.used_by);
+    setScope(next.filters.scope);
+    setSort(next.filters.sort);
+    setOrder(next.filters.order);
+    const nextPageSize = clampSkillsCatalogPageSize(next.page_size);
+    if (nextPageSize !== pageSize) {
+      persistPageSizeMutation.mutate(nextPageSize);
+    }
   }
 
   return (
@@ -181,10 +215,10 @@ export function SkillsPage() {
                       )
                     }
                     disabled={scanMutation.isPending}
-                    title={t("skillsRefresh")}
+                    title={t("skillsRefreshList")}
                   >
                     {scanMutation.isPending ? <Spinner /> : <RefreshCwIcon />}
-                    {t("skillsRefresh")}
+                    {t("skillsRefreshList")}
                   </Button>
                 </div>
               </div>
@@ -199,9 +233,18 @@ export function SkillsPage() {
                 />
               </label>
               <SkillsCatalogFilterTrigger
-                total={skillsQuery.data?.total ?? 0}
+                pagination={{
+                  rangeFrom,
+                  rangeTo,
+                  total,
+                  page,
+                  pageCount,
+                  onPrevious: () => setPage((value) => value - 1),
+                  onNext: () => setPage((value) => value + 1),
+                }}
+                pageSize={pageSize}
                 filters={catalogFilters}
-                providers={skillsQuery.data?.providers ?? []}
+                usedBy={skillsQuery.data?.used_by ?? []}
                 onApply={applyCatalogFilters}
               />
             </section>
@@ -216,7 +259,14 @@ export function SkillsPage() {
                     key={item.id}
                     selected={rightView === "detail" && item.id === selectedId}
                     title={item.name}
-                    meta={item.description || item.source_id}
+                    meta={
+                      <span className="flex flex-wrap items-center gap-1">
+                        <span>{item.description || item.source_id}</span>
+                        {item.tags.map((tag) => (
+                          <Badge key={tag} variant="outline">{tag}</Badge>
+                        ))}
+                      </span>
+                    }
                     onClick={() => {
                       setSelectedId(item.id);
                       setRightView("detail");
@@ -239,34 +289,13 @@ export function SkillsPage() {
                 </Empty>
               ) : null}
             </ScrollPane>
-            <div className="flex items-center justify-between border-t pt-3 text-xs">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={page <= 1}
-                onClick={() => setPage((value) => value - 1)}
-              >
-                {t("skillsPreviousPage")}
-              </Button>
-              <span>
-                {page} / {pageCount}
-              </span>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={page >= pageCount}
-                onClick={() => setPage((value) => value + 1)}
-              >
-                {t("skillsNextPage")}
-              </Button>
-            </div>
           </PanelCard>
 
           <PanelCard className="flex min-h-0 flex-col gap-4 p-4">
             {rightView === "overview" ? (
               <SkillOverviewPanel
                 skillId={selectedId}
-                provider={provider === "all" ? undefined : provider}
+                provider={usedBy === "all" ? undefined : usedBy}
               />
             ) : (
               <SkillDetailPanel
@@ -278,28 +307,26 @@ export function SkillsPage() {
                 onPreviewPathChange={setPreviewPath}
                 preview={previewQuery.data}
                 previewLoading={previewQuery.isLoading}
-                sourceProvider={selectedSource}
-                onSourceProviderChange={setSourceProvider}
                 pending={pending}
                 mutationError={mutationError}
-                provider={provider === "all" ? undefined : provider}
+                provider={usedBy === "all" ? undefined : usedBy}
                 onInstall={(agent) =>
                   selected &&
                   installMutation.mutate({
                     skill_id: selected.source_id,
-                    provider: agent,
-                    source_provider: selectedSource,
+                    used_by: agent,
+                    source_used_by: sourceUsedBy,
                   })
                 }
-                onRemove={setRemovalProvider}
+                onRemove={setRemovalAgent}
               />
             )}
           </PanelCard>
         </TwoPanePage>
       </div>
       <AlertDialog
-        open={Boolean(removalProvider)}
-        onOpenChange={(open) => !open && setRemovalProvider(null)}
+        open={Boolean(removalAgent)}
+        onOpenChange={(open) => !open && setRemovalAgent(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -307,7 +334,7 @@ export function SkillsPage() {
             <AlertDialogDescription>
               {t("skillsRemoveDescription", {
                 skill: selected?.name || "",
-                agent: removalProvider || "",
+                agent: removalAgent || "",
               })}
             </AlertDialogDescription>
           </AlertDialogHeader>
@@ -315,12 +342,12 @@ export function SkillsPage() {
             <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (selected && removalProvider)
+                if (selected && removalAgent)
                   uninstallMutation.mutate({
                     skill_id: selected.source_id,
-                    provider: removalProvider,
+                    used_by: removalAgent,
                   });
-                setRemovalProvider(null);
+                setRemovalAgent(null);
               }}
             >
               {t("remove")}

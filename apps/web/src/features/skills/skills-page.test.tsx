@@ -9,6 +9,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nContext } from "@/lib/i18n-context";
@@ -34,10 +35,23 @@ const mocks = vi.hoisted(() => ({
   useSkillGraph: vi.fn(),
   useSkillPrune: vi.fn(),
   useExecuteSkillPrune: vi.fn(),
+  useUpdateSkillFile: vi.fn(),
+  analyze: vi.fn(),
   scan: vi.fn(),
   install: vi.fn(),
   uninstall: vi.fn(),
+  getMeta: vi.fn(),
+  updateSettings: vi.fn(),
 }));
+
+vi.mock("@/lib/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api")>();
+  return {
+    ...actual,
+    getMeta: mocks.getMeta,
+    updateSettings: mocks.updateSettings,
+  };
+});
 
 vi.mock("@/features/skills/queries", () => ({
   useSkills: mocks.useSkills,
@@ -56,6 +70,16 @@ vi.mock("@/features/skills/queries", () => ({
   useSkillGraph: mocks.useSkillGraph,
   useSkillPrune: mocks.useSkillPrune,
   useExecuteSkillPrune: mocks.useExecuteSkillPrune,
+  useUpdateSkillFile: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+  }),
+  useAnalyzeSkills: () => ({
+    mutate: mocks.analyze,
+    isPending: false,
+    error: null,
+  }),
   useScanSkills: () => ({
     mutate: mocks.scan,
     isPending: false,
@@ -84,9 +108,11 @@ const items = [
     total_bytes: 128,
     missing: false,
     updated_at_ms: 1,
+    tags: ["documentation"],
+    used_by: ["claude", "gemini"],
     installations: [
       {
-        provider_id: "claude",
+        used_by: "claude",
         scope_kind: "global",
         install_path: "/home/test/.claude/skills/document-writer",
         install_kind: "directory",
@@ -94,10 +120,11 @@ const items = [
         status: "active",
       },
       {
-        provider_id: "gemini",
+        used_by: "gemini",
         scope_kind: "global",
         install_path: "/home/test/.gemini/skills/document-writer",
         install_kind: "symlink",
+        symlink_target: "/home/test/.claude/skills/document-writer",
         link_status: "valid",
         status: "active",
       },
@@ -113,9 +140,11 @@ const items = [
     total_bytes: 64,
     missing: false,
     updated_at_ms: 1,
+    tags: ["review"],
+    used_by: ["codex"],
     installations: [
       {
-        provider_id: "codex",
+        used_by: "codex",
         scope_kind: "global",
         install_path: "/home/test/.codex/skills/reviewer",
         install_kind: "managed-copy",
@@ -127,21 +156,26 @@ const items = [
 ];
 
 function renderRoute() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
-    <I18nContext.Provider
-      value={{
-        language: "en",
-        languageSetting: "en",
-        setLanguageOverride: vi.fn(),
-        t: (key, vars) => translate("en", key, vars),
-      }}
-    >
-      <MemoryRouter initialEntries={["/skills"]}>
-        <Routes>
-          <Route path="/skills" element={<SkillsPage />} />
-        </Routes>
-      </MemoryRouter>
-    </I18nContext.Provider>,
+    <QueryClientProvider client={queryClient}>
+      <I18nContext.Provider
+        value={{
+          language: "en",
+          languageSetting: "en",
+          setLanguageOverride: vi.fn(),
+          t: (key, vars) => translate("en", key, vars),
+        }}
+      >
+        <MemoryRouter initialEntries={["/skills"]}>
+          <Routes>
+            <Route path="/skills" element={<SkillsPage />} />
+          </Routes>
+        </MemoryRouter>
+      </I18nContext.Provider>
+    </QueryClientProvider>,
   );
 }
 
@@ -149,6 +183,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   useUiStore.setState({ selectedWorkspace: null });
+  mocks.getMeta.mockResolvedValue({
+    version: "0.1.32",
+    settings: {
+      skills_catalog_page_size: 50,
+      sessions_per_provider: 12,
+      language: "en",
+      home_session_layout: "tabs",
+      agent_order: [],
+      primary_agents: [],
+    },
+  });
+  mocks.updateSettings.mockResolvedValue({
+    skills_catalog_page_size: 25,
+    sessions_per_provider: 12,
+    language: "en",
+  });
   mocks.useSkills.mockImplementation((params: SkillCatalogParams) => {
     const filtered = params.query
       ? items.filter((item) =>
@@ -161,7 +211,7 @@ beforeEach(() => {
         page: 1,
         page_size: 50,
         total: filtered.length,
-        providers: ["claude", "codex", "gemini"],
+        used_by: ["claude", "codex", "gemini"],
         completeness: { status: "partial" },
       },
       error: null,
@@ -216,16 +266,16 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("SkillsPage", () => {
-  it("starts one incremental scan for an uninitialized catalog", async () => {
+  it("starts one incremental scan after the catalog loads", async () => {
     mocks.useSkills.mockReturnValue({
       data: {
         items: [],
         page: 1,
         page_size: 50,
         total: 0,
-        providers: [],
+        used_by: [],
         completeness: { status: "unknown" },
-        needs_scan: true,
+        needs_scan: false,
       },
       error: null,
       isError: false,
@@ -258,7 +308,7 @@ describe("SkillsPage", () => {
     renderRoute();
 
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh List" })).toBeTruthy();
   });
 
   it("renders the SQLite catalog and sends search filters to the query", async () => {
@@ -277,12 +327,114 @@ describe("SkillsPage", () => {
     expect(screen.getAllByText("Reviewer").length).toBeGreaterThan(0);
   });
 
+  it("filters the catalog by which Agent uses a Skill", async () => {
+    const user = userEvent.setup();
+    renderRoute();
+
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Used by Agents" }),
+      "codex",
+    );
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(mocks.useSkills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ used_by: "codex" }),
+    );
+  });
+
+  it("paginates the catalog in pages of fifty", async () => {
+    const catalogItems = Array.from({ length: 51 }, (_, index) => ({
+      id: `skill-${index}`,
+      source_id: `skill-${index}`,
+      name: `Skill ${index}`,
+      description: null,
+      version: null,
+      author: null,
+      bundle_hash: `hash-${index}`,
+      file_count: 1,
+      total_bytes: 100,
+      missing: false,
+      updated_at_ms: index,
+      tags: [],
+      used_by: ["codex"],
+      installations: [],
+    }));
+    mocks.useSkills.mockImplementation((params: SkillCatalogParams) => {
+      const currentPage = params.page ?? 1;
+      const pageSize = params.pageSize ?? 50;
+      const start = (currentPage - 1) * pageSize;
+      const slice = catalogItems.slice(start, start + pageSize);
+      return {
+        data: {
+          items: slice,
+          page: currentPage,
+          page_size: pageSize,
+          total: catalogItems.length,
+          used_by: ["codex"],
+          completeness: { status: "complete" },
+        },
+        error: null,
+        isError: false,
+        isFetching: false,
+        isLoading: false,
+        refetch: vi.fn(),
+      };
+    });
+
+    const user = userEvent.setup();
+    renderRoute();
+
+    expect(screen.getByText("1–50/51 · 1/2")).toBeTruthy();
+    expect(screen.getByText("Skill 0")).toBeTruthy();
+    expect(screen.queryByText("Skill 50")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Next" }));
+
+    expect(mocks.useSkills).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 2, pageSize: 50 }),
+    );
+    expect(screen.getByText("51/51 · 2/2")).toBeTruthy();
+    expect(screen.getByText("Skill 50")).toBeTruthy();
+  });
+
+  it("persists page size from the filter dialog", async () => {
+    const user = userEvent.setup();
+    renderRoute();
+
+    await user.click(screen.getByRole("button", { name: "Filter" }));
+    await user.click(screen.getByRole("button", { name: "20 per page" }));
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    await waitFor(() => expect(mocks.updateSettings).toHaveBeenCalled());
+    expect(mocks.updateSettings.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ skills_catalog_page_size: 20 }),
+    );
+  });
+
+  it("uses the catalog page size from settings", async () => {
+    mocks.getMeta.mockResolvedValue({
+      version: "0.1.32",
+      settings: {
+        skills_catalog_page_size: 25,
+        sessions_per_provider: 12,
+        language: "en",
+      },
+    });
+    renderRoute();
+    await waitFor(() =>
+      expect(mocks.useSkills).toHaveBeenCalledWith(
+        expect.objectContaining({ pageSize: 25 }),
+      ),
+    );
+  });
+
   it("scans global and current project roots", async () => {
     useUiStore.setState({ selectedWorkspace: "/work/demo" });
     const user = userEvent.setup();
     renderRoute();
 
-    await user.click(screen.getByRole("button", { name: "Refresh" }));
+    await user.click(screen.getByRole("button", { name: "Refresh List" }));
 
     expect(mocks.scan).toHaveBeenCalledWith(
       { mode: "incremental", workspace: "/work/demo" },
@@ -436,11 +588,11 @@ describe("SkillsPage", () => {
     ).toBe("/sessions/codex/session-1");
   });
 
-  it("installs into a missing provider and safely removes a managed installation", async () => {
+  it("installs for a missing Agent and safely removes a managed installation", async () => {
     const user = userEvent.setup();
     renderRoute();
     await user.click(screen.getByText("Document Writer"));
-    await user.click(screen.getByRole("tab", { name: "Installations" }));
+    await user.click(screen.getByRole("tab", { name: "Used by Agents" }));
     const codex = screen
       .getAllByText("codex")
       .map((element) => element.closest("div.rounded-lg"))
@@ -450,8 +602,8 @@ describe("SkillsPage", () => {
     );
     expect(mocks.install).toHaveBeenCalledWith({
       skill_id: "document-writer",
-      provider: "codex",
-      source_provider: "claude",
+      used_by: "codex",
+      source_used_by: "claude",
     });
     const gemini = screen
       .getAllByText("gemini")
@@ -467,7 +619,7 @@ describe("SkillsPage", () => {
     );
     expect(mocks.uninstall).toHaveBeenCalledWith({
       skill_id: "document-writer",
-      provider: "gemini",
+      used_by: "gemini",
     });
   });
 });

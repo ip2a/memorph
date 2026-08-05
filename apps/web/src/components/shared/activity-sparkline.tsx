@@ -1,5 +1,6 @@
 import { useId, useMemo } from "react";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n-context";
 
 type ActivitySparklineProps = {
   className?: string;
@@ -81,6 +82,7 @@ export function ActivitySparkline({
   title,
   values,
 }: ActivitySparklineProps) {
+  const { t } = useI18n();
   const gradientId = useId().replace(/:/g, "");
   const paths = useMemo(() => buildSparklinePath(values, height), [height, values]);
 
@@ -99,7 +101,7 @@ export function ActivitySparkline({
       className={cn("block w-full overflow-visible text-primary", className)}
       style={{ height }}
       role="img"
-      aria-label={title ?? "Activity sparkline"}
+      aria-label={title ?? t("activity")}
     >
       {title ? <title>{title}</title> : null}
       <defs>

@@ -10,6 +10,7 @@ import type { SessionActionTarget } from "@/features/sessions/session-action-tar
 import { renameSchema } from "@/features/sessions/model/schemas";
 import type { RenameForm } from "@/features/sessions/model/schemas";
 import { renameSession } from "@/lib/api";
+import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 
 export function RenameSessionDialog({
@@ -22,6 +23,7 @@ export function RenameSessionDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
+  const { t } = useI18n();
   const form = useForm<RenameForm>({
     resolver: zodResolver(renameSchema),
     values: { title: target?.title || "" },
@@ -39,7 +41,7 @@ export function RenameSessionDialog({
         queryClient.invalidateQueries({ queryKey: queryKeys.home }),
       ]);
       onOpenChange(false);
-      toast.success("Rename", { description: result.warning || result.display_title });
+      toast.success(t("sessionRename"), { description: result.warning || result.display_title });
     },
   });
 
@@ -47,23 +49,24 @@ export function RenameSessionDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md" data-rename-session-dialog>
         <DialogHeader>
-          <DialogTitle>Rename</DialogTitle>
-          <DialogDescription>Update the display title for this session.</DialogDescription>
+          <DialogTitle>{t("sessionRename")}</DialogTitle>
+          <DialogDescription>{t("sessionRenameDescription")}</DialogDescription>
         </DialogHeader>
         <DialogForm onSubmit={form.handleSubmit((values) => renameMutation.mutate(values))}>
           <input type="hidden" name="provider" value={target?.providerId || ""} />
           <input type="hidden" name="session_id" value={target?.sessionId || ""} />
           <FieldGroup>
             <Field data-invalid={Boolean(form.formState.errors.title)}>
-              <FieldLabel htmlFor="rename-session-title">Title</FieldLabel>
+              <FieldLabel htmlFor="rename-session-title">{t("sessionTitleLabel")}</FieldLabel>
               <Input id="rename-session-title" aria-invalid={Boolean(form.formState.errors.title)} {...form.register("title")} />
               {form.formState.errors.title ? <FieldDescription>{form.formState.errors.title.message}</FieldDescription> : null}
             </Field>
           </FieldGroup>
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}
+            cancelLabel={t("cancel")}
             submitDisabled={!target}
-            submitLabel="Save"
+            submitLabel={t("save")}
             submitting={renameMutation.isPending}
           />
         </DialogForm>

@@ -9,12 +9,14 @@ import {
 export type ManagerView = "sessions" | "workspaces";
 export type ManagerScope = "current" | "all";
 export type ManagerSort = "recent" | "size" | "title" | "sessions";
+export type ManagerProviderSelection = "all" | "none" | "custom";
 
 export type ManagerRouteState = {
   view: ManagerView;
   scope: ManagerScope;
   workspace: string | null;
   providers: string[];
+  providerSelection: ManagerProviderSelection;
   search: string;
   sort: ManagerSort;
   page: number;
@@ -35,21 +37,35 @@ function baseManagerFilter(
   workspace: string | null,
 ): ManagerFilter {
   return {
-    providers: route.providers,
+    providers:
+      route.providerSelection === "custom" ? route.providers : [],
     workspace: workspace ?? undefined,
     sort: route.sort,
   };
 }
 
 export function readManagerRouteState(searchParams: URLSearchParams): ManagerRouteState {
-  const providers = Array.from(
-    new Set(
-      (searchParams.get("providers") ?? "")
-        .split(",")
-        .map((provider) => provider.trim())
-        .filter(Boolean),
-    ),
-  );
+  const providersParam = searchParams.get("providers");
+  let providerSelection: ManagerProviderSelection;
+  let providers: string[];
+
+  if (providersParam === null) {
+    providerSelection = "all";
+    providers = [];
+  } else if (providersParam === "none") {
+    providerSelection = "none";
+    providers = [];
+  } else {
+    providers = Array.from(
+      new Set(
+        providersParam
+          .split(",")
+          .map((provider) => provider.trim())
+          .filter(Boolean),
+      ),
+    );
+    providerSelection = providers.length ? "custom" : "none";
+  }
   const view = searchParams.get("view") === "workspaces" ? "workspaces" : "sessions";
   const sort = searchParams.get("sort");
   const normalizedSort =
@@ -62,6 +78,7 @@ export function readManagerRouteState(searchParams: URLSearchParams): ManagerRou
     scope: searchParams.get("scope") === "all" ? "all" : "current",
     workspace: searchParams.get("workspace") || null,
     providers,
+    providerSelection,
     search: searchParams.get("q") ?? "",
     sort: normalizedSort,
     page: readManagerPage(searchParams),

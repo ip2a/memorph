@@ -6,8 +6,10 @@ import type { AgentManagementEntry, ProviderConfigView, ProviderSettingItem } fr
 import { ConfigViewsBlock } from "./config-views-panel";
 
 const useProviderConfigView = vi.hoisted(() => vi.fn());
+const useRemoveProviderConfigEntry = vi.hoisted(() => vi.fn());
 vi.mock("@/features/agents/queries", () => ({
   useProviderConfigView: (...args: unknown[]) => useProviderConfigView(...args),
+  useRemoveProviderConfigEntry: (...args: unknown[]) => useRemoveProviderConfigEntry(...args),
 }));
 
 vi.mock("@/lib/i18n-context", () => ({
@@ -18,6 +20,11 @@ vi.mock("@/lib/i18n-context", () => ({
       missing: "missing",
       no: "no",
       ok: "OK",
+      provider: "Provider",
+      remove: "Remove",
+      removeMcpConfiguration: "Remove MCP configuration",
+      scope: "Scope",
+      source: "Source",
       warning: "Warning",
       danger: "Danger",
       muted: "Muted",
@@ -30,6 +37,7 @@ vi.mock("@/lib/i18n-context", () => ({
 afterEach(() => {
   cleanup();
   useProviderConfigView.mockReset();
+  useRemoveProviderConfigEntry.mockReset();
 });
 
 function makeProvider(settings: ProviderSettingItem[]): AgentManagementEntry {
@@ -62,23 +70,53 @@ describe("ConfigViewsBlock", () => {
     expect(container.querySelector("[data-config-views]")).toBeNull();
   });
 
-  it("declares a panel per view and only fetches content once expanded", async () => {
-    // The hook mirrors its `enabled` argument: no data while closed, the view once open.
-    useProviderConfigView.mockImplementation((_provider, _viewId, enabled) =>
-      enabled ? { data: MCP_VIEW, isLoading: false } : { data: undefined, isLoading: false },
-    );
+  it("loads and renders view content directly when the tab mounts", async () => {
+    useProviderConfigView.mockReturnValue({ data: MCP_VIEW, isLoading: false, error: undefined });
 
     render(<ConfigViewsBlock provider={makeProvider([viewSetting("view_mcp", "MCP servers")])} />);
 
-    // Declared, but content is not fetched yet (panel closed).
-    const button = await screen.findByRole("button", { name: /MCP servers/ });
-    expect(screen.queryByText(/Read from/)).toBeNull();
-    expect(useProviderConfigView).toHaveBeenLastCalledWith("claude", "view_mcp", false);
-
-    // Expanding flips the gate and renders the lazily-loaded content.
-    fireEvent.click(button);
-    expect(useProviderConfigView).toHaveBeenLastCalledWith("claude", "view_mcp", true);
+    expect(useProviderConfigView).toHaveBeenCalledWith("claude", "view_mcp", true);
     expect(await screen.findByText(/Read from/)).toBeTruthy();
     expect(screen.getByText("openpage")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /MCP servers/ })).toBeNull();
+  });
+
+  it("shows removal only for explicitly removable MCP entries and confirms their context", () => {
+    const mutate = vi.fn();
+    useRemoveProviderConfigEntry.mockReturnValue({ mutate, isPending: false, error: null, reset: vi.fn() });
+    useProviderConfigView.mockReturnValue({
+      data: {
+        ...MCP_VIEW,
+        entries: [{ entry_id: "demo", name: "openpage", scope: "User", source: "~/.claude.json", fingerprint: "fp-1", removable: true }],
+      },
+      isLoading: false,
+      error: undefined,
+    });
+
+    render(<ConfigViewsBlock provider={makeProvider([viewSetting("view_mcp", "MCP servers")])} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove MCP configuration: openpage" }));
+    expect(screen.getByText("Provider:")).toBeTruthy();
+    expect(screen.getByText(/MCP:/)).toBeTruthy();
+    expect(screen.getByText("User")).toBeTruthy();
+    expect(screen.getByText("~/.claude.json")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(mutate).toHaveBeenCalledWith(
+      { provider: "claude", viewId: "view_mcp", entryId: "demo", expectedFingerprint: "fp-1" },
+      expect.any(Object),
+    );
+  });
+
+  it("does not expose removal for entries without backend removal metadata", () => {
+    useProviderConfigView.mockReturnValue({
+      data: { ...MCP_VIEW, entries: [{ entry_id: "demo", name: "openpage", fingerprint: "fp-1" }] },
+      isLoading: false,
+      error: undefined,
+    });
+
+    render(<ConfigViewsBlock provider={makeProvider([viewSetting("view_mcp", "MCP servers")])} />);
+
+    expect(screen.queryByRole("button", { name: /Remove MCP configuration/ })).toBeNull();
   });
 });

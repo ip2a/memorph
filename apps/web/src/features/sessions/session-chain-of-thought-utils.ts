@@ -1,4 +1,6 @@
 import type { EventBlock } from "@/lib/types";
+import { translate, type I18nKey } from "@/lib/i18n-core";
+type Translator = (key: I18nKey, vars?: Record<string, string | number | null | undefined>) => string;
 
 const CHAIN_BLOCK_TYPES = new Set<EventBlock["type"]>(["thinking", "tool_call", "tool_result"]);
 
@@ -78,7 +80,8 @@ export function previewToolInput(input: unknown): string | undefined {
   }
 }
 
-export function blocksToChainSteps(blocks: EventBlock[]): ChainStep[] {
+export function blocksToChainSteps(blocks: EventBlock[], t?: Translator): ChainStep[] {
+  const label = (key: I18nKey, vars?: Record<string, string | number>) => t?.(key, vars) ?? translate("en", key, vars);
   const steps: ChainStep[] = [];
   let index = 0;
 
@@ -89,7 +92,7 @@ export function blocksToChainSteps(blocks: EventBlock[]): ChainStep[] {
         steps.push({
           id: `thinking-${index}`,
           kind: "thinking",
-          label: "Thinking",
+          label: label("blockThinking"),
           block,
           thinkingText: block.text,
         });
@@ -98,7 +101,7 @@ export function blocksToChainSteps(blocks: EventBlock[]): ChainStep[] {
           steps.push({
             id: `thinking-${index}-${partIndex}`,
             kind: "thinking",
-            label: parts.length > 1 ? `Thinking ${partIndex + 1}` : "Thinking",
+            label: parts.length > 1 ? `${label("blockThinking")} ${partIndex + 1}` : label("blockThinking"),
             block,
             thinkingText: part,
           });
@@ -112,7 +115,7 @@ export function blocksToChainSteps(blocks: EventBlock[]): ChainStep[] {
       steps.push({
         id: `tool-${block.tool_call_id || index}`,
         kind: "tool_call",
-        label: block.name || "Tool call",
+        label: block.name || label("blockToolCall"),
         description: previewToolInput(block.input),
         block,
       });
@@ -124,7 +127,7 @@ export function blocksToChainSteps(blocks: EventBlock[]): ChainStep[] {
       steps.push({
         id: `result-${block.tool_call_id || index}`,
         kind: "tool_result",
-        label: block.is_error ? "Tool error" : "Tool result",
+        label: block.is_error ? label("blockToolError") : label("blockToolResult"),
         block,
       });
       index += 1;

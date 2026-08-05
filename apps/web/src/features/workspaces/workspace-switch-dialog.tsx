@@ -1,6 +1,6 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeftIcon, ChevronRightIcon, FolderOpenIcon, RadarIcon, SearchIcon, Trash2Icon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, FolderOpenIcon, SearchIcon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
 import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
 import { PathText } from "@/components/shared/path-text";
@@ -35,6 +35,7 @@ import {
   selectFolder,
 } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
+import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 import type { ManagerWorkspaceItem, WorkspaceEntry, WorkspaceWithSessionsItem } from "@/lib/types";
 import { useUiStore } from "@/stores/ui-store";
@@ -70,6 +71,7 @@ function WorkspaceSessionPickerPanel({
   search: string;
   onPick: (workspace: string) => void;
 }) {
+  const { t } = useI18n();
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const [page, setPage] = useState(1);
 
@@ -110,7 +112,7 @@ function WorkspaceSessionPickerPanel({
   return (
     <section className="flex min-h-0 flex-1 flex-col gap-2" data-workspace-session-picker>
       <div className="flex shrink-0 items-center justify-between gap-3">
-        <strong className="text-sm">With Sessions</strong>
+        <strong className="text-sm">{t("workspaceWithSessions")}</strong>
         {showPager ? (
           <div className="flex items-center gap-1">
             <span className="font-mono text-xs text-muted-foreground">
@@ -120,7 +122,8 @@ function WorkspaceSessionPickerPanel({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label="Previous page"
+              aria-label={t("workspacePreviousPage")}
+              title={t("workspacePreviousPage")}
               disabled={!canPrev}
               onClick={() => setPage(currentPage - 1)}
             >
@@ -130,7 +133,8 @@ function WorkspaceSessionPickerPanel({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label="Next page"
+              aria-label={t("workspaceNextPage")}
+              title={t("workspaceNextPage")}
               disabled={!canNext}
               onClick={() => setPage(currentPage + 1)}
             >
@@ -146,7 +150,7 @@ function WorkspaceSessionPickerPanel({
           {isLoading ? (
             <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">
               <Spinner />
-              Loading
+              {t("loading")}
             </div>
           ) : pageItems.length ? (
             pageItems.map((workspace) => (
@@ -159,11 +163,11 @@ function WorkspaceSessionPickerPanel({
           ) : (
             <Empty className="min-h-32 border-0">
               <EmptyHeader>
-                <EmptyTitle>{debouncedSearch.trim() ? "No matches" : "No sessions found"}</EmptyTitle>
+                <EmptyTitle>{debouncedSearch.trim() ? t("workspaceNoMatches") : t("workspaceNoSessions")}</EmptyTitle>
                 <EmptyDescription>
                   {debouncedSearch.trim()
-                    ? "Try a different name or path."
-                    : "Install an agent and create sessions, or paste a path manually."}
+                    ? t("workspaceTryDifferentSearch")
+                    : t("workspaceNoSessionsDescription")}
                 </EmptyDescription>
               </EmptyHeader>
             </Empty>
@@ -181,6 +185,7 @@ function WorkspaceSessionPickerRow({
   workspace: WorkspaceWithSessionsItem;
   onPick: (workspace: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
@@ -191,7 +196,7 @@ function WorkspaceSessionPickerRow({
       <span className="flex min-w-0 items-center justify-between gap-3">
         <strong className="truncate">{workspaceName(workspace.path, "memorph")}</strong>
         <span className="flex shrink-0 items-center gap-3 font-mono text-xs text-muted-foreground">
-          <span>{workspace.session_count} sessions</span>
+          <span>{t("workspaceSessionsCount", { count: workspace.session_count })}</span>
           {workspace.last_active_at ? <span>{formatDateTime(workspace.last_active_at)}</span> : null}
         </span>
       </span>
@@ -213,6 +218,7 @@ function WorkspaceHistoryRow({
   onPick: (workspace: string) => void;
   onRemove: (workspace: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div
       className="group flex w-full items-center gap-1 rounded-md transition-colors hover:bg-muted"
@@ -226,7 +232,7 @@ function WorkspaceHistoryRow({
         <span className="flex min-w-0 items-center justify-between gap-3">
           <strong className="truncate">{workspaceName(workspace.path, "memorph")}</strong>
           <span className="flex shrink-0 items-center gap-3 font-mono text-xs text-muted-foreground">
-            {sessionCount !== undefined ? <span>{sessionCount} sessions</span> : null}
+            {sessionCount !== undefined ? <span>{t("workspaceSessionsCount", { count: sessionCount })}</span> : null}
             <span>{formatDateTime(workspace.last_viewed_at)}</span>
           </span>
         </span>
@@ -238,7 +244,8 @@ function WorkspaceHistoryRow({
         size="icon-sm"
         className="mr-1 shrink-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         disabled={isRemoving}
-        aria-label="Remove workspace history"
+        aria-label={t("workspaceRemoveHistory")}
+        title={t("workspaceRemoveHistory")}
         onClick={() => onRemove(workspace.path)}
       >
         {isRemoving ? <Spinner /> : <Trash2Icon />}
@@ -248,6 +255,7 @@ function WorkspaceHistoryRow({
 }
 
 export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const selectedWorkspace = useUiStore((state) => state.selectedWorkspace);
   const setSelectedWorkspace = useUiStore((state) => state.setSelectedWorkspace);
@@ -292,7 +300,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
     onSuccess: (workspace) => {
       setSelectedWorkspace(workspace);
       onOpenChange(false);
-      toast.success("Workspace switched", { description: workspaceName(workspace, "memorph") });
+      toast.success(t("workspaceSwitched"), { description: workspaceName(workspace, "memorph") });
       // Don't await — React Query keeps isPending true until async onSuccess settles,
       // so waiting on a full-cache refetch left the Go spinner spinning after the switch.
       void queryClient.invalidateQueries();
@@ -314,29 +322,28 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
           : meta.data,
       );
       if (currentWorkspace === removedWorkspace) setSelectedWorkspace(null);
-      toast.success("Workspace history removed", { description: workspaceName(removedWorkspace, "memorph") });
+      toast.success(t("workspaceHistoryRemoved"), { description: workspaceName(removedWorkspace, "memorph") });
     },
   });
 
   const scanWorkspacesMutation = useMutation({
     mutationFn: scanWorkspaces,
     onSuccess: (result) => {
-      if (result.queued === 0) {
-        toast.info("No known workspaces", {
-          description: "Browse to a directory first — scan indexes places you've used before.",
+      if (result.discovered_sessions === 0) {
+        toast.info(t("workspaceNoProviderSessions"), {
+          description: t("workspaceNoProviderSessionsDescription"),
         });
-        return;
+      } else {
+        toast.success(t("workspaceScanComplete"), {
+          description: t("workspaceScanSummary", { discovered: result.discovered_sessions, projected: result.projected_sessions }),
+        });
       }
-      toast.success("Scanning workspaces", {
-        description: `Indexing ${result.queued} workspace${result.queued === 1 ? "" : "s"} in the background.`,
-      });
-      // Poll history: background indexers write sessions to SQLite and the
-      // listWorkspaces endpoint reads config; refetch both as they warm up.
-      void queryClient.invalidateQueries({ queryKey: queryKeys.workspaces });
-      void queryClient.invalidateQueries({ queryKey: queryKeys.manager("workspaces", sessionWorkspaceFilter) });
+      // The scan has completed synchronously; refresh every Pick query without
+      // treating Recent history as the discovery result.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.workspacesWithSessionsRoot });
     },
     onError: (error: Error) => {
-      toast.error("Scan failed", { description: error.message });
+      toast.error(t("workspaceScanFailed"), { description: error.message });
     },
   });
 
@@ -356,7 +363,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
   const handleFilterChange = useCallback((value: string) => setSearch(value), []);
 
   const searchPlaceholder =
-    activeTab === "browse" ? "Filter directories" : activeTab === "recent" ? "Search recent" : "Search workspaces";
+    activeTab === "browse" ? t("workspaceFilterDirectories") : activeTab === "recent" ? t("workspaceSearchRecent") : t("workspaceSearchWorkspaces");
 
   async function browseFolder() {
     try {
@@ -366,9 +373,9 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
       if (result.path) setDraft(result.path);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      toast.error("Error", {
+      toast.error(t("error"), {
         description: /only available in the desktop app/i.test(message)
-          ? "Folder picker is only available in the desktop app."
+          ? t("importFolderPickerDesktopOnly")
           : message,
       });
     }
@@ -391,8 +398,8 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
         data-workspace-switch-dialog
       >
         <DialogHeader className="shrink-0">
-          <DialogTitle>Switch Workspace</DialogTitle>
-          <DialogDescription>Choose a known workspace or enter a path to load its sessions.</DialogDescription>
+          <DialogTitle>{t("workspaceSwitchTitle")}</DialogTitle>
+          <DialogDescription>{t("workspaceSwitchDescription")}</DialogDescription>
         </DialogHeader>
 
         <DialogForm className="flex min-h-0 min-w-0 flex-1 flex-col" onSubmit={submitWorkspace}>
@@ -403,30 +410,31 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
           >
             <div className="flex min-w-0 shrink-0 items-center gap-2">
               <TabsList className="shrink-0">
-                <TabsTrigger value="browse">Browse</TabsTrigger>
-                <TabsTrigger value="recent">Recent</TabsTrigger>
-                <TabsTrigger value="pick">Pick</TabsTrigger>
+                <TabsTrigger value="browse">{t("browse")}</TabsTrigger>
+                <TabsTrigger value="recent">{t("recent")}</TabsTrigger>
+                <TabsTrigger value="pick">{t("pick")}</TabsTrigger>
               </TabsList>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     type="button"
                     variant="outline"
-                    size="icon"
-                    aria-label="Scan known workspaces"
+                    size="sm"
+                    className="shrink-0"
+                    aria-label={t("scan")}
                     disabled={scanWorkspacesMutation.isPending}
                     onClick={() => scanWorkspacesMutation.mutate()}
                   >
-                    <RadarIcon className={scanWorkspacesMutation.isPending ? "animate-pulse" : undefined} />
+                    {scanWorkspacesMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
+                    {t("scan")}
                   </Button>
                 </TooltipTrigger>
-                <TooltipContent>
-                  Scan known workspaces in the background to repopulate this list.
-                </TooltipContent>
+                <TooltipContent>{t("scanWorkspacesHint")}</TooltipContent>
               </Tooltip>
               <InputGroup className="min-w-0 flex-1">
                 <InputGroupInput
-                  aria-label="Search"
+                  aria-label={t("search")}
+                  title={t("search")}
                   value={search}
                   placeholder={searchPlaceholder}
                   onChange={(event) => setSearch(event.target.value)}
@@ -455,12 +463,12 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                           onClick={() => void browseFolder()}
                         >
                           <FolderOpenIcon data-icon="inline-start" />
-                          System Browse
+                          {t("systemBrowse")}
                         </Button>
                       </span>
                     </TooltipTrigger>
                     {!meta.data?.capabilities.system_folder_picker ? (
-                      <TooltipContent>System folder browsing is only available in the desktop app.</TooltipContent>
+                      <TooltipContent>{t("systemBrowseDesktopOnly")}</TooltipContent>
                     ) : null}
                   </Tooltip>
                 }
@@ -470,7 +478,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
             <TabsContent className="mt-0 flex min-h-0 min-w-0 flex-1 flex-col data-[state=inactive]:hidden" value="recent" forceMount>
               <section className="flex min-h-0 flex-1 flex-col gap-2" data-workspace-switch-list>
                 <div className="flex shrink-0 items-center justify-between gap-3">
-                  <strong className="text-sm">Workspace History</strong>
+                  <strong className="text-sm">{t("workspaceHistory")}</strong>
                   <span className="font-mono text-xs text-muted-foreground">
                     {filteredWorkspaceItems.length}
                     {search.trim() && filteredWorkspaceItems.length !== workspaceItems.length
@@ -483,7 +491,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                     {workspaces.isLoading ? (
                       <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-muted-foreground">
                         <Spinner />
-                        Loading
+                        {t("loading")}
                       </div>
                     ) : filteredWorkspaceItems.length ? (
                       filteredWorkspaceItems.map((workspace) => (
@@ -503,11 +511,11 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
                     ) : (
                       <Empty className="min-h-36 border-0">
                         <EmptyHeader>
-                          <EmptyTitle>{search.trim() ? "No matches" : "No Workspace"}</EmptyTitle>
+                          <EmptyTitle>{search.trim() ? t("workspaceNoMatches") : t("workspaceNoWorkspace")}</EmptyTitle>
                           <EmptyDescription>
                             {search.trim()
-                              ? "Try a different name or path."
-                              : "No known workspaces yet. Switch to one, or click scan to index places you've used before."}
+                              ? t("workspaceTryDifferentSearch")
+                              : t("workspaceNoHistoryDescription")}
                           </EmptyDescription>
                         </EmptyHeader>
                       </Empty>
@@ -530,7 +538,7 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
             className="shrink-0"
             onCancel={() => onOpenChange(false)}
             submitDisabled={!draftWorkspace.trim()}
-            submitLabel="Switch to this directory"
+            submitLabel={t("workspaceSwitchToDirectory")}
             submitting={switchWorkspace.isPending}
           />
         </DialogForm>

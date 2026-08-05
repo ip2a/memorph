@@ -23,6 +23,10 @@ import type {
   ImportSessionPayload,
   ImportSessionResult,
   EnsureReadyPayload,
+  ReadinessOperation,
+  ReadinessPayload,
+  ReadinessReconcilePayload,
+  ReadinessReconcileResult,
   ScanWorkspacesPayload,
   MetaPayload,
   ManagerFilter,
@@ -45,6 +49,7 @@ import type {
   ProviderCatalogPayload,
   ProviderCatalogUpdatePayload,
   ProviderConfigView,
+  ProviderConfigEntryRemovalResult,
   RenameSyncGroupPayload,
   RenameSessionPayload,
   RenameSessionResult,
@@ -216,6 +221,23 @@ export function ensureReady() {
   });
 }
 
+export function getReadiness(workspace?: string | null) {
+  return api<ReadinessPayload>(`/api/v1/readiness${buildQuery({ workspace })}`);
+}
+
+export function reconcileReadiness(payload: ReadinessReconcilePayload) {
+  return api<ReadinessReconcileResult>("/api/v1/readiness/reconcile", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getReadinessOperation(operationId: string) {
+  return api<ReadinessOperation>(
+    `/api/v1/readiness/operations/${encodeURIComponent(operationId)}`,
+  );
+}
+
 export function scanWorkspaces() {
   return api<ScanWorkspacesPayload>("/api/v1/workspaces/scan", {
     method: "POST",
@@ -361,6 +383,21 @@ export function getProviderConfigView(provider: string, viewId: string) {
   );
 }
 
+export function removeProviderConfigEntry(
+  provider: string,
+  viewId: string,
+  entryId: string,
+  expectedFingerprint: string,
+) {
+  return api<ProviderConfigEntryRemovalResult>(
+    `/api/v1/providers/${encodeURIComponent(provider)}/config/${encodeURIComponent(viewId)}/entries/${encodeURIComponent(entryId)}`,
+    {
+      method: "DELETE",
+      body: JSON.stringify({ confirm: true, expected_fingerprint: expectedFingerprint }),
+    },
+  );
+}
+
 export function listDetectedHooks(provider: string) {
   return api<DetectedHooks>(
     `/api/v1/agents/${encodeURIComponent(provider)}/hooks/discovered`,
@@ -371,6 +408,18 @@ export function runHookProviderOperation(provider: string, operation: string) {
   return api<HookOperationReport>(
     `/api/v1/agents/${encodeURIComponent(provider)}/hooks/${encodeURIComponent(operation)}`,
     { method: "POST" },
+  );
+}
+
+export function deleteDetectedHook(
+  provider: string,
+  event: string,
+  index: number,
+  fingerprint: string,
+) {
+  return api<HookOperationReport>(
+    `/api/v1/agents/${encodeURIComponent(provider)}/hooks/discovered/${encodeURIComponent(event)}/${index}/${encodeURIComponent(fingerprint)}`,
+    { method: "DELETE" },
   );
 }
 
@@ -668,13 +717,20 @@ export function getSyncGroup(groupId: string) {
 }
 
 export function getSkills(params: SkillCatalogParams = {}) {
-  return api<SkillCatalogPage>(`/api/v1/skills${buildQuery(params)}`);
+  return api<SkillCatalogPage>(`/api/v1/skills/catalog${buildQuery(params)}`);
 }
 
 export function scanSkills(mode: "incremental" | "full", workspace?: string) {
   return api<SkillScanQueued>("/api/v1/skills/scan", {
     method: "POST",
     body: JSON.stringify({ mode, workspace }),
+  });
+}
+
+export function analyzeSkills(mode: "incremental" | "full" = "incremental") {
+  return api<{ queued: boolean; mode: string }>("/api/v1/skills/analyze", {
+    method: "POST",
+    body: JSON.stringify({ mode }),
   });
 }
 
@@ -796,20 +852,39 @@ export function getSkillInvocations(
 }
 
 export function getSkillDetail(skillId: string) {
-  return api<SkillDetail>(`/api/v1/skills/${encodeURIComponent(skillId)}`);
+  return api<SkillDetail>(
+    `/api/v1/skills/detail/${encodeURIComponent(skillId)}`,
+  );
 }
 
 export function getSkillTree(skillId: string) {
-  return api<SkillTree>(`/api/v1/skills/${encodeURIComponent(skillId)}/tree`);
+  return api<SkillTree>(
+    `/api/v1/skills/detail/${encodeURIComponent(skillId)}/tree`,
+  );
 }
 
 export function getSkillFilePreview(
   skillId: string,
   path: string,
-  provider?: string,
+  usedBy?: string,
 ) {
   return api<SkillFilePreview>(
-    `/api/v1/skills/${encodeURIComponent(skillId)}/file${buildQuery({ path, provider })}`,
+    `/api/v1/skills/detail/${encodeURIComponent(skillId)}/file${buildQuery({ path, used_by: usedBy })}`,
+  );
+}
+
+export function updateSkillFile(
+  skillId: string,
+  path: string,
+  content: string,
+  usedBy?: string,
+) {
+  return api<SkillFilePreview>(
+    `/api/v1/skills/detail/${encodeURIComponent(skillId)}/file${buildQuery({ path, used_by: usedBy })}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ content }),
+    },
   );
 }
 export function installSkill(payload: SkillMutation) {

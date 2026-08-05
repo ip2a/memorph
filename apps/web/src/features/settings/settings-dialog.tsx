@@ -32,14 +32,18 @@ import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
 import { queryKeys } from "@/lib/query-keys";
 import { cn } from "@/lib/utils";
-import type { ProviderCatalogEntry, SettingsPayload, UiLanguage, UpdateCheckPayload, UpdateSettingsPayload } from "@/lib/types";
+import type { HomeSessionLayout, ProviderCatalogEntry, SettingsPayload, UiLanguage, UpdateCheckPayload, UpdateSettingsPayload } from "@/lib/types";
 import { AgentOrderList } from "@/features/settings/agent-order-list";
+import { IndexSettingsPanel } from "@/features/settings/index-settings-panel";
 import { SkillsStatsCustomRangePreferenceField } from "@/features/settings/skills-stats-custom-range-preference-field";
+import { SkillsCatalogPageSizeField } from "@/features/settings/skills-catalog-page-size-field";
+import { clampSkillsCatalogPageSize } from "@/features/skills/skills-catalog-page-size";
 
 const SECTIONS = [
   { id: "general", labelKey: "general" },
+  { id: "index", labelKey: "indexSection" },
   { id: "display", labelKey: "display" },
-  { id: "statsRange", labelKey: "skillsStatsRange" },
+  { id: "skills", labelKey: "skills" },
   { id: "order", labelKey: "order" },
   { id: "config", labelKey: "configFile" },
   { id: "about", labelKey: "about" },
@@ -74,6 +78,7 @@ function defaultDraft(settings: SettingsPayload | undefined, catalog: ProviderCa
   const agentOrder = settings?.agent_order?.length ? settings.agent_order : catalog.map((provider) => provider.provider_id);
   return {
     sessions_per_provider: settings?.sessions_per_provider ?? 12,
+    skills_catalog_page_size: clampSkillsCatalogPageSize(settings?.skills_catalog_page_size),
     language: settings?.language ?? "auto",
     show_opencode_subagents: settings?.show_opencode_subagents ?? false,
     sort_providers_by_session_count: settings?.sort_providers_by_session_count ?? false,
@@ -90,6 +95,7 @@ function defaultDraft(settings: SettingsPayload | undefined, catalog: ProviderCa
       sync: settings?.home_buttons?.sync !== false,
       delete: settings?.home_buttons?.delete !== false,
     },
+    home_session_layout: settings?.home_session_layout ?? "tabs",
     agent_order: agentOrder,
     primary_agents: settings?.primary_agents ?? [],
     server: {
@@ -144,12 +150,14 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
     mutationFn: async (current: SettingsDraft) => {
       const settingsBody: UpdateSettingsPayload = {
         sessions_per_provider: Math.max(1, Math.min(200, Number(current.sessions_per_provider || 12))),
+        skills_catalog_page_size: clampSkillsCatalogPageSize(current.skills_catalog_page_size),
         language: current.language,
         show_opencode_subagents: current.show_opencode_subagents,
         sort_providers_by_session_count: current.sort_providers_by_session_count,
         default_backup_dir: current.default_backup_dir || "./backups",
         logging: current.logging,
         home_buttons: current.home_buttons,
+        home_session_layout: current.home_session_layout,
         agent_order: current.agent_order,
         primary_agents: current.primary_agents,
         server: {
@@ -172,6 +180,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         queryClient.invalidateQueries({ queryKey: queryKeys.agentsSummary }),
         queryClient.invalidateQueries({ queryKey: queryKeys.sessionsRoot }),
         queryClient.invalidateQueries({ queryKey: queryKeys.home }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
       ]);
       toast.success(t("saved"), { description: t("settings") });
       setLanguageOverride(null);
@@ -267,7 +276,9 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           </nav>
 
           <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-5 p-4 sm:p-5">
-              {!draft || meta.isLoading ? <SettingsLoading label={t("loadingSettings")} /> : null}
+              {(!draft || meta.isLoading) && section !== "index" ? <SettingsLoading label={t("loadingSettings")} /> : null}
+
+              {section === "index" ? <IndexSettingsPanel /> : null}
 
               {draft && section === "general" ? (
                 <section className="flex flex-col gap-4" data-settings-section="general">
@@ -317,6 +328,21 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                       <FieldContent><FieldTitle>{t("sessionsPerProvider")}</FieldTitle><FieldDescription>{t("sessionsPerProviderHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" type="number" min={1} max={200} value={draft.sessions_per_provider} onChange={(event) => patchDraft({ sessions_per_provider: Number(event.target.value || 1) })} />
                     </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("homeSessionLayout")}</FieldTitle><FieldDescription>{t("homeSessionLayoutHint")}</FieldDescription></FieldContent>
+                      <Select
+                        value={draft.home_session_layout}
+                        onValueChange={(value) => patchDraft({ home_session_layout: value as HomeSessionLayout })}
+                      >
+                        <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectGroup>
+                            <SelectItem value="stack">{t("homeSessionLayoutStack")}</SelectItem>
+                            <SelectItem value="tabs">{t("homeSessionLayoutTabs")}</SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </Field>
                     <FieldSet>
                       <FieldLegend variant="label">{t("homeButtons")}</FieldLegend>
                       <FieldDescription>{t("homeButtonsHint")}</FieldDescription>
@@ -348,9 +374,15 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                 </section>
               ) : null}
 
-              {draft && section === "statsRange" ? (
-                <section className="flex flex-col gap-4" data-settings-section="stats-range">
-                  <SectionHead title={t("skillsStatsRange")} />
+              {draft && section === "skills" ? (
+                <section className="flex flex-col gap-4" data-settings-section="skills">
+                  <SectionHead title={t("skills")} />
+                  <SkillsCatalogPageSizeField
+                    value={draft.skills_catalog_page_size}
+                    onChange={(next) =>
+                      patchDraft({ skills_catalog_page_size: next })
+                    }
+                  />
                   <SkillsStatsCustomRangePreferenceField />
                 </section>
               ) : null}

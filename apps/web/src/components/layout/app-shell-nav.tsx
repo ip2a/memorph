@@ -12,6 +12,9 @@ function isRoute(pathname: string, route: string) {
   return route === "/" ? pathname === "/" : pathname.startsWith(route)
 }
 
+// Storage page is Phase 9 — nav hidden until the feature is complete (未开发完善).
+const STORAGE_NAV_ENABLED = false
+
 export function AppShellNav({
   onOpenImportSession,
   onOpenSettings,
@@ -30,7 +33,6 @@ export function AppShellNav({
   const isSkills = isRoute(pathname, "/skills")
   const isAgents = isRoute(pathname, "/agents")
   const isStats = isRoute(pathname, "/stats")
-  const isStorage = isRoute(pathname, "/storage")
 
   const entries = React.useMemo<CollapsibleToolbarEntry[]>(() => {
     const next: CollapsibleToolbarEntry[] = []
@@ -82,7 +84,7 @@ export function AppShellNav({
       })
     }
 
-    if (!isStorage) {
+    if (STORAGE_NAV_ENABLED) {
       next.push({
         id: "storage",
         collapsePriority: 10,
@@ -217,7 +219,6 @@ export function AppShellNav({
     isSkills,
     isManager,
     isStats,
-    isStorage,
     navigate,
     onOpenImportSession,
     onOpenSettings,

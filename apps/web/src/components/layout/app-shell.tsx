@@ -7,6 +7,7 @@ import { AppShellNav } from "@/components/layout/app-shell-nav";
 import { WorkspaceSwitchDialog } from "@/features/workspaces/workspace-switch-dialog";
 import { WorkspaceQuickSwitchDialog } from "@/features/workspaces/workspace-quick-switch-dialog";
 import { useUiStore } from "@/stores/ui-store";
+import { ReadinessIndicator } from "@/features/readiness/readiness-indicator";
 
 const ImportSessionDialog = lazy(() =>
   import("@/features/import/import-session-dialog").then((module) => ({ default: module.ImportSessionDialog })),
@@ -68,10 +69,13 @@ export function AppShell() {
           ) : null}
         </div>
 
-        <AppShellNav
-          onOpenImportSession={() => setImportSessionOpen(true)}
-          onOpenSettings={() => setSettingsOpen(true)}
-        />
+        <div className="flex min-w-0 items-center gap-3">
+          <ReadinessIndicator />
+          <AppShellNav
+            onOpenImportSession={() => setImportSessionOpen(true)}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        </div>
       </header>
 
       <WorkspaceSwitchDialog open={workspaceSwitchOpen} onOpenChange={setWorkspaceSwitchOpen} />

@@ -17,12 +17,13 @@ import type { SessionActionTarget } from "@/features/sessions/session-action-tar
 import { useApplyCompression } from "@/features/compression/queries";
 import { formatBytes } from "@/lib/format";
 import { queryKeys } from "@/lib/query-keys";
+import { useI18n } from "@/lib/i18n-context";
 import type { ActiveCompressionPolicy, ApplyCompressionResult } from "@/lib/types";
 
-function compressionSummary(result: ApplyCompressionResult) {
+function compressionSummary(result: ApplyCompressionResult, t: ReturnType<typeof useI18n>["t"]) {
   const candidates = result.report?.candidates?.length ?? 0;
   const saved = result.report?.estimated_bytes_saved ?? 0;
-  return `${candidates} segments, ${formatBytes(saved)} saved`;
+  return t("compressionSummary", { count: candidates, size: formatBytes(saved) });
 }
 
 function compressionArchiveHref(archiveRef: string) {
@@ -42,6 +43,7 @@ export function CompressSessionDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const targetKey = target ? `${target.providerId}:${target.sessionId}` : "";
   const [resultState, setResultState] = useState<{ key: string; result: ApplyCompressionResult } | null>(null);
@@ -79,7 +81,7 @@ export function CompressSessionDialog({
             queryClient.invalidateQueries({ queryKey: queryKeys.compressionProviders }),
           ]);
           setResultState({ key: targetKey, result: nextResult });
-          toast.success("Compression", { description: compressionSummary(nextResult) });
+          toast.success(t("compression"), { description: compressionSummary(nextResult, t) });
         },
       },
     );
@@ -91,22 +93,22 @@ export function CompressSessionDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-lg" data-compress-session-dialog>
         <DialogHeader>
-          <DialogTitle>{result ? "Compression Complete" : "Compress Session"}</DialogTitle>
+          <DialogTitle>{result ? t("compressionComplete") : t("compressionSession")}</DialogTitle>
           <DialogDescription>
-            {result ? compressionSummary(result) : "Confirm active compression for this provider session."}
+            {result ? compressionSummary(result, t) : t("compressionConfirmation")}
           </DialogDescription>
         </DialogHeader>
         {result ? (
           <div className="flex flex-col gap-3">
             <div className="rounded-md border p-3">
-              <div className="font-medium">{target?.title || target?.sessionId || "Session"}</div>
+              <div className="font-medium">{target?.title || target?.sessionId || t("compressionSessionFallback")}</div>
               <div className="break-all font-mono text-xs text-muted-foreground">
                 {target?.providerId || "-"} / {target?.sessionId || "-"}
               </div>
             </div>
             <div className="grid grid-cols-2 gap-2 text-sm">
-              <div className="rounded-md border p-2"><span className="text-muted-foreground">Provider source before (measured)</span><div>{formatBytes(result.source_bytes_before)}</div></div>
-              <div className="rounded-md border p-2"><span className="text-muted-foreground">Provider source after (measured)</span><div>{formatBytes(result.source_bytes_after)}</div></div>
+              <div className="rounded-md border p-2"><span className="text-muted-foreground">{t("compressionSourceBefore")}</span><div>{formatBytes(result.source_bytes_before)}</div></div>
+              <div className="rounded-md border p-2"><span className="text-muted-foreground">{t("compressionSourceAfter")}</span><div>{formatBytes(result.source_bytes_after)}</div></div>
             </div>
             <div className="flex max-h-48 flex-col gap-2 overflow-auto rounded-md border p-3" data-compression-result-lines>
               {lines.length ? (
@@ -118,7 +120,7 @@ export function CompressSessionDialog({
                   <div key={line} className="break-all font-mono text-xs">{line}</div>
                 ))
               ) : (
-                <div className="text-sm text-muted-foreground">No archive refs or files were returned.</div>
+                <div className="text-sm text-muted-foreground">{t("compressionNoResultFiles")}</div>
               )}
             </div>
           </div>
@@ -126,18 +128,18 @@ export function CompressSessionDialog({
           <div className="flex flex-col gap-3">
             <input type="hidden" name="provider" value={target?.providerId || ""} />
             <input type="hidden" name="session_id" value={target?.sessionId || ""} />
-            <p className="text-sm text-muted-foreground">This will back up and replace the provider-owned session. The policy controls what may be compressed; measured sizes and estimated tokens remain read-only.</p>
+            <p className="text-sm text-muted-foreground">{t("compressionPolicyDescription")}</p>
             <div className="grid grid-cols-3 gap-3">
               <label className="grid gap-1 text-xs text-muted-foreground">
-                Recent messages kept
+                {t("compressionRecentMessagesKept")}
                 <input className="h-9 rounded-md border bg-background px-2 text-foreground" type="number" min={0} value={policy.protect_recent_message_events} onChange={(event) => setPolicy({ ...policy, protect_recent_message_events: Math.max(0, Number(event.target.value) || 0) })} />
               </label>
               <label className="grid gap-1 text-xs text-muted-foreground">
-                Minimum bytes
+                {t("compressionMinimumBytes")}
                 <input className="h-9 rounded-md border bg-background px-2 text-foreground" type="number" min={1} value={policy.min_candidate_bytes} onChange={(event) => setPolicy({ ...policy, min_candidate_bytes: Math.max(1, Number(event.target.value) || 1) })} />
               </label>
               <label className="grid gap-1 text-xs text-muted-foreground">
-                Minimum savings %
+                {t("compressionMinimumSavings")}
                 <input className="h-9 rounded-md border bg-background px-2 text-foreground" type="number" min={0} max={100} value={policy.min_savings_ratio_percent} onChange={(event) => setPolicy({ ...policy, min_savings_ratio_percent: Math.min(100, Math.max(0, Number(event.target.value) || 0)) })} />
               </label>
             </div>
@@ -151,24 +153,24 @@ export function CompressSessionDialog({
             <Button asChild variant="outline">
               <Link to={compressionArchiveHref(primaryArchiveRef)}>
                 <ArchiveIcon data-icon="inline-start" />
-                Open Archive
+                {t("compressionOpenArchive")}
               </Link>
             </Button>
           ) : result && target ? (
             <Button asChild variant="outline">
               <Link to={`/sessions/${encodeURIComponent(target.providerId)}/${encodeURIComponent(target.sessionId)}`}>
                 <ArchiveIcon data-icon="inline-start" />
-                Open Session
+                {t("compressionOpenSession")}
               </Link>
             </Button>
           ) : null}
           <Button type="button" variant="outline" onClick={() => handleOpenChange(false)} disabled={compressMutation.isPending}>
-            {result ? "Close" : "Cancel"}
+            {result ? t("compressionClose") : t("cancel")}
           </Button>
           {!result ? (
             <Button type="button" onClick={runCompression} disabled={!target || compressMutation.isPending}>
               {compressMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-              Confirm
+              {t("confirmAction")}
             </Button>
           ) : null}
         </DialogFooter>

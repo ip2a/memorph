@@ -15,11 +15,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  formatManagerListSummary,
   MANAGER_PAGE_SIZES,
   type ManagerPageSize,
+  managerPageRange,
   managerTotalPages,
 } from "@/features/manager/manager-pagination";
+import { useI18n } from "@/lib/i18n-context";
 import { cn } from "@/lib/utils";
 
 type ManagerResultPaginationProps = {
@@ -39,8 +40,10 @@ export function ManagerResultPagination({
   onPageChange,
   onPageSizeChange,
 }: ManagerResultPaginationProps) {
+  const { t } = useI18n();
   const totalPages = managerTotalPages(totalCount, pageSize);
   const currentPage = Math.min(page, totalPages);
+  const range = managerPageRange(currentPage, pageSize, totalCount);
   const canGoBack = currentPage > 1;
   const canGoForward = currentPage < totalPages;
 
@@ -50,10 +53,16 @@ export function ManagerResultPagination({
       data-manager-pagination
     >
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>{formatManagerListSummary(currentPage, pageSize, totalCount)}</span>
+        <span>
+          {t("managerResultsSummary", {
+            from: range.from,
+            to: range.to,
+            total: totalCount,
+          })}
+        </span>
         <span aria-hidden="true">·</span>
         <span>
-          Page {currentPage} / {totalPages}
+          {t("managerPageOf", { page: currentPage, total: totalPages })}
         </span>
       </div>
 
@@ -67,7 +76,7 @@ export function ManagerResultPagination({
         >
           <SelectTrigger
             className="min-h-10 w-[7.5rem]"
-            aria-label="Results per page"
+            aria-label={t("managerResultsPerPage")}
             data-manager-page-size
           >
             <SelectValue />
@@ -76,7 +85,7 @@ export function ManagerResultPagination({
             <SelectGroup>
               {MANAGER_PAGE_SIZES.map((size) => (
                 <SelectItem key={size} value={String(size)}>
-                  {size} / page
+                  {t("managerPerPage", { size })}
                 </SelectItem>
               ))}
             </SelectGroup>
@@ -88,7 +97,7 @@ export function ManagerResultPagination({
             <PaginationItem>
               <PaginationPrevious
                 href="#"
-                text="Prev"
+                text={t("managerPrevious")}
                 aria-disabled={!canGoBack || disabled}
                 className={cn(
                   "min-h-10",
@@ -110,7 +119,7 @@ export function ManagerResultPagination({
                 className="min-h-10 min-w-10"
                 disabled
                 aria-current="page"
-                aria-label={`Page ${currentPage}`}
+                aria-label={t("managerPageNumber", { page: currentPage })}
               >
                 {currentPage}
               </Button>
@@ -118,7 +127,7 @@ export function ManagerResultPagination({
             <PaginationItem>
               <PaginationNext
                 href="#"
-                text="Next"
+                text={t("managerNext")}
                 aria-disabled={!canGoForward || disabled}
                 className={cn(
                   "min-h-10",

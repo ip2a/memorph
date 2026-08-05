@@ -1,5 +1,5 @@
 import { queryOptions, type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { detectAgent, getAgent, getMeta, getProviderCatalog, getProviderConfigView, listAgentsSummary, listDetectedHooks, runHookProviderOperation, runProviderSetting, updateProviderSetting } from "@/lib/api";
+import { deleteDetectedHook, detectAgent, getAgent, getMeta, getProviderCatalog, getProviderConfigView, listAgentsSummary, listDetectedHooks, removeProviderConfigEntry, runHookProviderOperation, runProviderSetting, updateProviderSetting } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 
 export function useAgentsSummary() {
@@ -85,11 +85,57 @@ export function useProviderConfigView(provider: string | null, viewId: string, e
   });
 }
 
+export function useRemoveProviderConfigEntry() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      provider,
+      viewId,
+      entryId,
+      expectedFingerprint,
+    }: {
+      provider: string;
+      viewId: string;
+      entryId: string;
+      expectedFingerprint: string;
+    }) => removeProviderConfigEntry(provider, viewId, entryId, expectedFingerprint),
+    onSuccess: async (_result, variables) => {
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.providerConfigView(variables.provider, variables.viewId),
+      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.agent(variables.provider) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.agentsSummary });
+    },
+  });
+}
+
 export function useRunAgentHookOperation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ provider, operation }: { provider: string; operation: string }) =>
       runHookProviderOperation(provider, operation),
+    onSuccess: (_report, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agent(variables.provider) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agentHooks(variables.provider) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agentsSummary });
+    },
+  });
+}
+
+export function useDeleteAgentDetectedHook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      provider,
+      event,
+      index,
+      fingerprint,
+    }: {
+      provider: string;
+      event: string;
+      index: number;
+      fingerprint: string;
+    }) => deleteDetectedHook(provider, event, index, fingerprint),
     onSuccess: (_report, variables) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agent(variables.provider) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agentHooks(variables.provider) });

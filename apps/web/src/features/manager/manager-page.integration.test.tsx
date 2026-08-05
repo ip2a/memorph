@@ -1,11 +1,14 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ManagerPage } from "./manager-page";
+import { I18nContext } from "@/lib/i18n-context";
+import { translate } from "@/lib/i18n-core";
 import { useUiStore } from "@/stores/ui-store";
 
 const session = {
@@ -31,19 +34,36 @@ function requestPath(input: RequestInfo | URL) {
   return typeof input === "string" ? input : input.toString();
 }
 
+function TestI18nProvider({ children }: { children: ReactNode }) {
+  return (
+    <I18nContext.Provider
+      value={{
+        language: "en",
+        languageSetting: "en",
+        setLanguageOverride: () => {},
+        t: (key, vars) => translate("en", key, vars),
+      }}
+    >
+      {children}
+    </I18nContext.Provider>
+  );
+}
+
 function renderManager() {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter
-        initialEntries={["/manager?scope=all&providers=codex&sort=title"]}
-      >
-        <Routes>
-          <Route path="*" element={<ManagerPage />} />
-        </Routes>
-      </MemoryRouter>
+      <TestI18nProvider>
+        <MemoryRouter
+          initialEntries={["/manager?scope=all&providers=codex&sort=title"]}
+        >
+          <Routes>
+            <Route path="*" element={<ManagerPage />} />
+          </Routes>
+        </MemoryRouter>
+      </TestI18nProvider>
     </QueryClientProvider>,
   );
 }

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  analyzeSkills,
   getSkillContext,
   getSkillContextSummary,
   getSkillHealth,
@@ -23,6 +24,7 @@ import {
   executeSkillPrune,
   scanSkills,
   uninstallSkill,
+  updateSkillFile,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import type {
@@ -41,6 +43,20 @@ export function useScanSkills() {
       mode: "incremental" | "full";
       workspace?: string;
     }) => scanSkills(mode, workspace),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot });
+      window.setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot });
+      }, 1000);
+    },
+  });
+}
+
+export function useAnalyzeSkills() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (mode: "incremental" | "full" = "incremental") =>
+      analyzeSkills(mode),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
   });
@@ -217,16 +233,43 @@ export function useSkillTree(skillId: string | null) {
 export function useSkillFilePreview(
   skillId: string | null,
   path: string | null,
-  provider?: string,
+  usedBy?: string,
 ) {
   return useQuery({
     queryKey:
       skillId && path
-        ? queryKeys.skillFile(skillId, path, provider)
+        ? queryKeys.skillFile(skillId, path, usedBy)
         : ["skills", "file", "none"],
     queryFn: () =>
-      getSkillFilePreview(skillId as string, path as string, provider),
+      getSkillFilePreview(skillId as string, path as string, usedBy),
     enabled: Boolean(skillId && path),
+  });
+}
+
+export function useUpdateSkillFile() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      skillId,
+      path,
+      content,
+      usedBy,
+    }: {
+      skillId: string;
+      path: string;
+      content: string;
+      usedBy?: string;
+    }) => updateSkillFile(skillId, path, content, usedBy),
+    onSuccess: (preview, variables) => {
+      queryClient.setQueryData(
+        queryKeys.skillFile(variables.skillId, variables.path, variables.usedBy),
+        preview,
+      );
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.skillTree(variables.skillId),
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot });
+    },
   });
 }
 export function useInstallSkill() {

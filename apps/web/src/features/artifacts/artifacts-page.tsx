@@ -57,6 +57,7 @@ import type {
   OrphanArtifactFile,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useI18n } from "@/lib/i18n-context";
 
 type StorageView = "artifacts" | "backups" | "exports";
 
@@ -84,8 +85,21 @@ const retentionStates: Array<ArtifactRetentionState | "all"> = [
   "retained",
 ];
 
-function readable(value: string) {
-  return value.replaceAll("_", " ");
+type Translate = ReturnType<typeof useI18n>["t"];
+
+function artifactKindLabel(value: ArtifactManifestKind | "all", t: Translate) {
+  const keys = { all: "artifactKindAll", event_payload: "artifactKindEventPayload", database_backup: "artifactKindDatabaseBackup", session_backup: "artifactKindSessionBackup", session_export: "artifactKindSessionExport", compression_archive: "artifactKindCompressionArchive" } as const;
+  return t(keys[value]);
+}
+
+function verificationLabel(value: ArtifactVerificationStatus | "all", t: Translate) {
+  const keys = { all: "artifactStatusAll", verified: "artifactStatusVerified", changed: "artifactStatusChanged", missing: "artifactStatusMissing", unverifiable: "artifactStatusUnverifiable" } as const;
+  return t(keys[value]);
+}
+
+function retentionLabel(value: ArtifactRetentionState | "all", t: Translate) {
+  const keys = { all: "artifactRetentionAll", current_event_payload: "artifactRetentionCurrentEventPayload", detached_event_payload: "artifactRetentionDetachedEventPayload", retained: "artifactRetentionRetained" } as const;
+  return t(keys[value]);
 }
 
 function statusVariant(status: ArtifactVerificationStatus) {
@@ -118,6 +132,7 @@ function DetailLine({ label, children }: { label: string; children: ReactNode })
 }
 
 function ManifestDetail({ entry }: { entry: ArtifactInspectionEntry }) {
+  const { t } = useI18n();
   const { manifest, verification, retention_state: retentionState } = entry;
   const sessionHref = manifest.provider_id && manifest.provider_session_id
     ? `/sessions/${encodeURIComponent(manifest.provider_id)}/${encodeURIComponent(manifest.provider_session_id)}`
@@ -127,36 +142,36 @@ function ManifestDetail({ entry }: { entry: ArtifactInspectionEntry }) {
     <div className="flex min-h-0 flex-col gap-4">
       <SectionHeading
         title={manifest.id}
-        description={readable(manifest.artifact_kind)}
+        description={artifactKindLabel(manifest.artifact_kind, t)}
         actions={(
           <>
-            <Badge variant={statusVariant(verification.status)}>{verification.status}</Badge>
-            <Badge variant="outline">{readable(retentionState)}</Badge>
+            <Badge variant={statusVariant(verification.status)}>{verificationLabel(verification.status, t)}</Badge>
+            <Badge variant="outline">{retentionLabel(retentionState, t)}</Badge>
           </>
         )}
       />
       <ScrollArea className="min-h-0 flex-1 pr-3">
         <div className="flex flex-col gap-3">
-          <DetailLine label="Path"><PathText value={manifest.path} tone="default" wrap="all" /></DetailLine>
-          <DetailLine label="Storage">{manifest.storage_kind}</DetailLine>
-          <DetailLine label="Size">{formatBytes(manifest.byte_size)}</DetailLine>
-          <DetailLine label="Created">{formatDateTime(manifest.created_at_ms)}</DetailLine>
-          <DetailLine label="Format">{manifest.format || "-"}</DetailLine>
-          <DetailLine label="MIME">{manifest.mime_type || "-"}</DetailLine>
-          <DetailLine label="Provider">{manifest.provider_id || "-"}</DetailLine>
-          <DetailLine label="Provider session">
+          <DetailLine label={t("artifactPath")}><PathText value={manifest.path} tone="default" wrap="all" /></DetailLine>
+          <DetailLine label={t("artifactStorage")}>{manifest.storage_kind}</DetailLine>
+          <DetailLine label={t("size")}>{formatBytes(manifest.byte_size)}</DetailLine>
+          <DetailLine label={t("artifactCreated")}>{formatDateTime(manifest.created_at_ms)}</DetailLine>
+          <DetailLine label={t("artifactFormat")}>{manifest.format || "-"}</DetailLine>
+          <DetailLine label={t("artifactMime")}>{manifest.mime_type || "-"}</DetailLine>
+          <DetailLine label={t("provider")}>{manifest.provider_id || "-"}</DetailLine>
+          <DetailLine label={t("artifactProviderSession")}>
             {sessionHref ? <Link className="break-all underline underline-offset-4" to={sessionHref}>{manifest.provider_session_id}</Link> : manifest.provider_session_id || "-"}
           </DetailLine>
-          <DetailLine label="Canonical session">{manifest.session_id || "-"}</DetailLine>
-          <DetailLine label="Operation">{manifest.operation_id || "-"}</DetailLine>
-          <DetailLine label="Projection report">{manifest.projection_report_id || "-"}</DetailLine>
-          <DetailLine label="Event">{manifest.event_id || "-"}</DetailLine>
-          <DetailLine label="Block">{manifest.block_id || "-"}</DetailLine>
-          <DetailLine label="Expected hash"><span className="break-all font-mono text-xs">{verification.expected_content_hash}</span></DetailLine>
-          <DetailLine label="Actual hash"><span className="break-all font-mono text-xs">{verification.actual_content_hash || "-"}</span></DetailLine>
-          <DetailLine label="Actual size">{verification.actual_byte_size == null ? "-" : formatBytes(verification.actual_byte_size)}</DetailLine>
+          <DetailLine label={t("artifactCanonicalSession")}>{manifest.session_id || "-"}</DetailLine>
+          <DetailLine label={t("artifactOperation")}>{manifest.operation_id || "-"}</DetailLine>
+          <DetailLine label={t("artifactProjectionReport")}>{manifest.projection_report_id || "-"}</DetailLine>
+          <DetailLine label={t("artifactEvent")}>{manifest.event_id || "-"}</DetailLine>
+          <DetailLine label={t("artifactBlock")}>{manifest.block_id || "-"}</DetailLine>
+          <DetailLine label={t("artifactExpectedHash")}><span className="break-all font-mono text-xs">{verification.expected_content_hash}</span></DetailLine>
+          <DetailLine label={t("artifactActualHash")}><span className="break-all font-mono text-xs">{verification.actual_content_hash || "-"}</span></DetailLine>
+          <DetailLine label={t("artifactActualSize")}>{verification.actual_byte_size == null ? "-" : formatBytes(verification.actual_byte_size)}</DetailLine>
           <div className="flex flex-col gap-2">
-            <span className="text-muted-foreground font-mono text-xs uppercase">Metadata</span>
+            <span className="text-muted-foreground font-mono text-xs uppercase">{t("artifactMetadata")}</span>
             <MetadataBlock value={manifest.metadata} />
           </div>
         </div>
@@ -174,6 +189,7 @@ function ManifestRow({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const { t } = useI18n();
   const manifest = entry.manifest;
   return (
     <EntityRow
@@ -183,7 +199,7 @@ function ManifestRow({
       onClick={onSelect}
       actions={(
         <Badge variant={statusVariant(entry.verification.status)}>
-          {entry.verification.status}
+          {verificationLabel(entry.verification.status, t)}
         </Badge>
       )}
     >
@@ -194,7 +210,7 @@ function ManifestRow({
         </div>
         <span className="truncate font-mono text-xs text-muted-foreground">{manifest.path}</span>
         <span className="text-xs text-muted-foreground">
-          {formatBytes(manifest.byte_size)} · {formatDateTime(manifest.created_at_ms)} · {readable(entry.retention_state)}
+          {formatBytes(manifest.byte_size)} · {formatDateTime(manifest.created_at_ms)} · {retentionLabel(entry.retention_state, t)}
         </span>
       </div>
     </EntityRow>
@@ -202,18 +218,19 @@ function ManifestRow({
 }
 
 function CleanupReportView({ report }: { report: ArtifactCleanupReport }) {
+  const { t } = useI18n();
   return (
     <div className="grid gap-2 border-t pt-3 text-sm sm:grid-cols-3">
       <div>
-        <span className="text-muted-foreground block text-xs">Manifests</span>
+        <span className="text-muted-foreground block text-xs">{t("artifactManifests")}</span>
         <strong>{report.applied ? report.deleted_manifest_ids.length : report.candidate_manifest_ids.length}</strong>
       </div>
       <div>
-        <span className="text-muted-foreground block text-xs">Files</span>
+        <span className="text-muted-foreground block text-xs">{t("artifactFiles")}</span>
         <strong>{report.applied ? report.deleted_paths.length : report.candidate_orphan_paths.length}</strong>
       </div>
       <div>
-        <span className="text-muted-foreground block text-xs">Failures</span>
+        <span className="text-muted-foreground block text-xs">{t("artifactFailures")}</span>
         <strong className={cn(report.failures.length && "text-destructive")}>{report.failures.length}</strong>
       </div>
       {report.failures.length ? (
@@ -230,6 +247,7 @@ function CleanupReportView({ report }: { report: ArtifactCleanupReport }) {
 }
 
 function CleanupControls() {
+  const { t } = useI18n();
   const [retentionHours, setRetentionHours] = useState("168");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const cleanup = useCleanupArtifacts();
@@ -243,12 +261,12 @@ function CleanupControls() {
         onSuccess: (report) => {
           if (apply) {
             setConfirmOpen(false);
-            toast.success("Artifact cleanup completed", {
-              description: `${report.deleted_manifest_ids.length} manifests and ${report.deleted_paths.length} files removed`,
+            toast.success(t("artifactCleanupCompleted"), {
+              description: t("artifactCleanupRemoved", { manifests: report.deleted_manifest_ids.length, files: report.deleted_paths.length }),
             });
           }
         },
-        onError: (error) => toast.error(apply ? "Artifact cleanup failed" : "Cleanup plan failed", { description: error.message }),
+        onError: (error) => toast.error(apply ? t("artifactCleanupFailed") : t("artifactCleanupPlanFailed"), { description: error.message }),
       },
     );
   }
@@ -256,12 +274,12 @@ function CleanupControls() {
   return (
     <section className="flex flex-col gap-3 border-b pb-4">
       <SectionHeading
-        title="Event payload retention"
-        description="Only detached, verified memorph-managed event payloads and valid managed-layout orphans are eligible."
+        title={t("artifactRetentionTitle")}
+        description={t("artifactRetentionDescription")}
       />
       <div className="flex flex-wrap items-end gap-2">
         <label className="flex min-w-36 flex-1 flex-col gap-1 text-xs text-muted-foreground">
-          Retention hours
+          {t("artifactRetentionHours")}
           <Input
             inputMode="numeric"
             min={1}
@@ -271,11 +289,11 @@ function CleanupControls() {
         </label>
         <Button type="button" variant="outline" disabled={!valid || cleanup.isPending} onClick={() => run(false)}>
           {cleanup.isPending ? <Spinner data-icon="inline-start" /> : <SearchIcon data-icon="inline-start" />}
-          Preview
+          {t("artifactPreview")}
         </Button>
         <Button type="button" variant="destructive" disabled={!valid || cleanup.isPending} onClick={() => setConfirmOpen(true)}>
           <Trash2Icon data-icon="inline-start" />
-          Apply
+          {t("apply")}
         </Button>
       </div>
       {cleanup.data ? <CleanupReportView report={cleanup.data} /> : null}
@@ -283,13 +301,13 @@ function CleanupControls() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogMedia><ShieldAlertIcon /></AlertDialogMedia>
-            <AlertDialogTitle>Apply artifact cleanup?</AlertDialogTitle>
+            <AlertDialogTitle>{t("artifactApplyCleanupTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This removes eligible detached manifests and managed orphan files older than {hours} hours. Changed, missing, shared, backup, export, and compression artifacts remain untouched.
+              {t("artifactApplyCleanupDescription", { hours })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={cleanup.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={cleanup.isPending}>{t("cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               disabled={!valid || cleanup.isPending}
@@ -299,7 +317,7 @@ function CleanupControls() {
               }}
             >
               {cleanup.isPending ? <Spinner data-icon="inline-start" /> : <Trash2Icon data-icon="inline-start" />}
-              Apply cleanup
+              {t("artifactApplyCleanup")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -309,19 +327,20 @@ function CleanupControls() {
 }
 
 function OrphanRows({ files }: { files: OrphanArtifactFile[] }) {
+  const { t } = useI18n();
   if (!files.length) return null;
   return (
     <section className="flex flex-col gap-2 border-t pt-3">
-      <SectionHeading title="Unregistered files" badge={files.length} />
+      <SectionHeading title={t("artifactUnregisteredFiles")} badge={files.length} />
       {files.map((file) => (
         <EntityRow
           key={file.path}
           variant="inline"
-          actions={<Badge variant={file.managed_layout ? "outline" : "destructive"}>{file.managed_layout ? "managed layout" : "malformed layout"}</Badge>}
+          actions={<Badge variant={file.managed_layout ? "outline" : "destructive"}>{file.managed_layout ? t("artifactManagedLayout") : t("artifactMalformedLayout")}</Badge>}
         >
           <div className="flex min-w-0 flex-col gap-1">
             <PathText value={file.path} tone="default" wrap="all" />
-            <span className="text-xs text-muted-foreground">{formatBytes(file.byte_size)} · modified {formatDateTime(file.modified_at_ms)}</span>
+            <span className="text-xs text-muted-foreground">{formatBytes(file.byte_size)} · {t("artifactModified")} {formatDateTime(file.modified_at_ms)}</span>
           </div>
         </EntityRow>
       ))}
@@ -330,6 +349,7 @@ function OrphanRows({ files }: { files: OrphanArtifactFile[] }) {
 }
 
 function ArtifactsView({ exportsOnly = false }: { exportsOnly?: boolean }) {
+  const { t } = useI18n();
   const inspection = useArtifactInspection();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [kind, setKind] = useState<ArtifactManifestKind | "all">(exportsOnly ? "session_export" : "all");
@@ -359,8 +379,8 @@ function ArtifactsView({ exportsOnly = false }: { exportsOnly?: boolean }) {
   }, [exportsOnly, inspection.data?.registered, kind, retention, search, verification]);
 
   if (inspection.isLoading) return <PageSkeleton />;
-  if (inspection.error) return <PageError title="Artifact inspection failed" message={inspection.error.message} />;
-  if (!inspection.data) return <PageEmpty title="No inspection data" description="The artifact inspection returned no report." />;
+  if (inspection.error) return <PageError title={t("artifactInspectionFailed")} message={inspection.error.message} />;
+  if (!inspection.data) return <PageEmpty title={t("artifactNoInspectionData")} description={t("artifactInspectionNoReport")} />;
 
   const selected = rows.find((entry) => entry.manifest.id === selectedId) ?? rows[0] ?? null;
   return (
@@ -371,22 +391,22 @@ function ArtifactsView({ exportsOnly = false }: { exportsOnly?: boolean }) {
           {!exportsOnly ? (
             <Select value={kind} onValueChange={(value) => setKind(value as ArtifactManifestKind | "all")}>
               <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>{artifactKinds.map((value) => <SelectItem key={value} value={value}>{readable(value)}</SelectItem>)}</SelectContent>
+              <SelectContent>{artifactKinds.map((value) => <SelectItem key={value} value={value}>{artifactKindLabel(value, t)}</SelectItem>)}</SelectContent>
             </Select>
           ) : null}
           <Select value={verification} onValueChange={(value) => setVerification(value as ArtifactVerificationStatus | "all")}>
             <SelectTrigger><SelectValue /></SelectTrigger>
-            <SelectContent>{verificationStates.map((value) => <SelectItem key={value} value={value}>{readable(value)}</SelectItem>)}</SelectContent>
+            <SelectContent>{verificationStates.map((value) => <SelectItem key={value} value={value}>{verificationLabel(value, t)}</SelectItem>)}</SelectContent>
           </Select>
           {!exportsOnly ? (
             <Select value={retention} onValueChange={(value) => setRetention(value as ArtifactRetentionState | "all")}>
               <SelectTrigger><SelectValue /></SelectTrigger>
-              <SelectContent>{retentionStates.map((value) => <SelectItem key={value} value={value}>{readable(value)}</SelectItem>)}</SelectContent>
+              <SelectContent>{retentionStates.map((value) => <SelectItem key={value} value={value}>{retentionLabel(value, t)}</SelectItem>)}</SelectContent>
             </Select>
           ) : null}
           <div className={cn("relative", exportsOnly && "sm:col-span-1")}>
             <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-            <Input className="pl-9" placeholder="Path, session, operation..." value={search} onChange={(event) => setSearch(event.target.value)} />
+            <Input className="pl-9" placeholder={t("artifactSearchPlaceholder")} value={search} onChange={(event) => setSearch(event.target.value)} />
           </div>
         </div>
         <ScrollArea className="h-[min(28rem,60vh)] pr-3 xl:min-h-0 xl:flex-1">
@@ -398,14 +418,14 @@ function ArtifactsView({ exportsOnly = false }: { exportsOnly?: boolean }) {
                 selected={selected?.manifest.id === entry.manifest.id}
                 onSelect={() => setSelectedId(entry.manifest.id)}
               />
-            )) : <PageEmpty title={exportsOnly ? "No exports" : "No matching artifacts"} description="Adjust the current filters or create a new artifact." />}
+            )) : <PageEmpty title={exportsOnly ? t("artifactNoExports") : t("artifactNoMatching")} description={t("artifactAdjustFilters")} />}
             {!exportsOnly ? <OrphanRows files={inspection.data.orphan_files} /> : null}
           </div>
         </ScrollArea>
       </section>
       <section className={cn("min-w-0 border-t pt-4 xl:min-h-0 xl:border-t-0 xl:pt-0", !selected && "hidden xl:block")}>
         {selected ? <ManifestDetail entry={selected} /> : (
-          <PageEmpty title={exportsOnly ? "No export selected" : "No artifact selected"} description="Choose a manifest from the list to inspect integrity and provenance." />
+          <PageEmpty title={exportsOnly ? t("artifactNoExportSelected") : t("artifactNoArtifactSelected")} description={t("artifactSelectDescription")} />
         )}
       </section>
     </div>
@@ -419,6 +439,7 @@ function BackupDetail({
   view: BackupView;
   onRestore: (view: BackupView) => void;
 }) {
+  const { t } = useI18n();
   const backup = view.entry.backup;
   const latest = view.entry.latest_restore;
   const sessionHref = backup.provider_id && backup.provider_session_id
@@ -429,45 +450,45 @@ function BackupDetail({
     <div className="flex min-h-0 flex-col gap-4">
       <SectionHeading
         title={backup.id}
-        description={backup.provider_id || "Provider identity unavailable"}
+        description={backup.provider_id || t("artifactNoProviderIdentity")}
         actions={(
           <>
-            <Badge variant={statusVariant(view.verification.status)}>{view.verification.status}</Badge>
+            <Badge variant={statusVariant(view.verification.status)}>{verificationLabel(view.verification.status, t)}</Badge>
             <Button type="button" disabled={view.verification.status !== "verified"} onClick={() => onRestore(view)}>
               <ArchiveRestoreIcon data-icon="inline-start" />
-              Restore
+              {t("artifactRestore")}
             </Button>
           </>
         )}
       />
       <ScrollArea className="min-h-0 flex-1 pr-3">
         <div className="flex flex-col gap-3">
-          <DetailLine label="Artifact path"><PathText value={backup.artifact.path} tone="default" wrap="all" /></DetailLine>
-          <DetailLine label="Source path"><PathText value={backup.source_path} tone="default" wrap="all" /></DetailLine>
-          <DetailLine label="Provider">{backup.provider_id || "-"}</DetailLine>
-          <DetailLine label="Provider session">
+          <DetailLine label={t("artifactArtifactPath")}><PathText value={backup.artifact.path} tone="default" wrap="all" /></DetailLine>
+          <DetailLine label={t("artifactSourcePath")}><PathText value={backup.source_path} tone="default" wrap="all" /></DetailLine>
+          <DetailLine label={t("provider")}>{backup.provider_id || "-"}</DetailLine>
+          <DetailLine label={t("artifactProviderSession")}>
             {sessionHref ? <Link className="break-all underline underline-offset-4" to={sessionHref}>{backup.provider_session_id}</Link> : backup.provider_session_id || "-"}
           </DetailLine>
-          <DetailLine label="Canonical session">{backup.session_id || "-"}</DetailLine>
-          <DetailLine label="Operation">{backup.operation_id || "-"}</DetailLine>
-          <DetailLine label="Created">{formatDateTime(backup.created_at_ms)}</DetailLine>
-          <DetailLine label="Size">{formatBytes(backup.artifact.byte_size)}</DetailLine>
-          <DetailLine label="Format">{backup.artifact.format || "-"}</DetailLine>
-          <DetailLine label="Hash"><span className="break-all font-mono text-xs">{backup.artifact.content_hash}</span></DetailLine>
-          <DetailLine label="Restore status">
-            {latest ? <Badge variant={restoreVariant(latest.status)}>{latest.status}</Badge> : "Never restored"}
+          <DetailLine label={t("artifactCanonicalSession")}>{backup.session_id || "-"}</DetailLine>
+          <DetailLine label={t("artifactOperation")}>{backup.operation_id || "-"}</DetailLine>
+          <DetailLine label={t("artifactCreated")}>{formatDateTime(backup.created_at_ms)}</DetailLine>
+          <DetailLine label={t("size")}>{formatBytes(backup.artifact.byte_size)}</DetailLine>
+          <DetailLine label={t("artifactFormat")}>{backup.artifact.format || "-"}</DetailLine>
+          <DetailLine label={t("artifactHash")}><span className="break-all font-mono text-xs">{backup.artifact.content_hash}</span></DetailLine>
+          <DetailLine label={t("artifactRestoreStatus")}>
+            {latest ? <Badge variant={restoreVariant(latest.status)}>{t(latest.status === "success" ? "artifactRestoreStateSuccess" : latest.status === "failed" ? "artifactRestoreStateFailed" : "artifactRestoreStateRunning")}</Badge> : t("artifactNeverRestored")}
           </DetailLine>
-          <DetailLine label="Restore actor">{latest?.actor || "-"}</DetailLine>
-          <DetailLine label="Restore started">{latest ? formatDateTime(latest.started_at_ms) : "-"}</DetailLine>
-          <DetailLine label="Restore finished">{latest?.finished_at_ms ? formatDateTime(latest.finished_at_ms) : "-"}</DetailLine>
-          <DetailLine label="Restore error"><span className={cn(latest?.error && "text-destructive")}>{latest?.error || "-"}</span></DetailLine>
-          <DetailLine label="Restore hint">{backup.restore_hint || "-"}</DetailLine>
+          <DetailLine label={t("artifactRestoreActor")}>{latest?.actor || "-"}</DetailLine>
+          <DetailLine label={t("artifactRestoreStarted")}>{latest ? formatDateTime(latest.started_at_ms) : "-"}</DetailLine>
+          <DetailLine label={t("artifactRestoreFinished")}>{latest?.finished_at_ms ? formatDateTime(latest.finished_at_ms) : "-"}</DetailLine>
+          <DetailLine label={t("artifactRestoreError")}><span className={cn(latest?.error && "text-destructive")}>{latest?.error || "-"}</span></DetailLine>
+          <DetailLine label={t("artifactRestoreHint")}>{backup.restore_hint || "-"}</DetailLine>
           <div className="flex flex-col gap-2">
-            <span className="text-muted-foreground font-mono text-xs uppercase">Restore metadata</span>
+            <span className="text-muted-foreground font-mono text-xs uppercase">{t("artifactRestoreMetadata")}</span>
             <MetadataBlock value={backup.metadata} />
           </div>
           <div className="flex flex-col gap-2">
-            <span className="text-muted-foreground font-mono text-xs uppercase">Artifact metadata</span>
+            <span className="text-muted-foreground font-mono text-xs uppercase">{t("artifactArtifactMetadata")}</span>
             <MetadataBlock value={backup.artifact.metadata} />
           </div>
         </div>
@@ -485,6 +506,7 @@ function RestoreBackupDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const { t } = useI18n();
   const restore = useRestoreBackup();
   const backup = target?.entry.backup;
 
@@ -493,9 +515,9 @@ function RestoreBackupDialog({
     restore.mutate(backup.id, {
       onSuccess: (record) => {
         onOpenChange(false);
-        toast.success("Native backup restored", { description: `${backup.provider_id || "provider"} · ${record.id}` });
+        toast.success(t("artifactNativeBackupRestored"), { description: `${backup.provider_id || t("provider")} · ${record.id}` });
       },
-      onError: (error) => toast.error("Backup restore failed", { description: error.message }),
+      onError: (error) => toast.error(t("artifactBackupRestoreFailed"), { description: error.message }),
     });
   }
 
@@ -504,16 +526,16 @@ function RestoreBackupDialog({
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogMedia><DatabaseBackupIcon /></AlertDialogMedia>
-          <AlertDialogTitle>Restore provider-native backup?</AlertDialogTitle>
+          <AlertDialogTitle>{t("artifactRestoreTitle")}</AlertDialogTitle>
           <AlertDialogDescription>
-            This invokes the provider-owned restore contract for {backup?.provider_id || "the provider"} session {backup?.provider_session_id || "-"}. Integrity and identity are verified again before any provider data is written.
+            {t("artifactRestoreDescription", { provider: backup?.provider_id || t("provider"), session: backup?.provider_session_id || "-" })}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="rounded-md border p-3">
           <PathText value={backup?.artifact.path} tone="default" wrap="all" />
         </div>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={restore.isPending}>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={restore.isPending}>{t("cancel")}</AlertDialogCancel>
           <AlertDialogAction
             disabled={!backup || restore.isPending}
             onClick={(event) => {
@@ -522,7 +544,7 @@ function RestoreBackupDialog({
             }}
           >
             {restore.isPending ? <Spinner data-icon="inline-start" /> : <ArchiveRestoreIcon data-icon="inline-start" />}
-            Restore
+            {t("artifactRestore")}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -531,6 +553,7 @@ function RestoreBackupDialog({
 }
 
 function BackupsView() {
+  const { t } = useI18n();
   const [provider, setProvider] = useState("");
   const [providerSessionId, setProviderSessionId] = useState("");
   const [restoreStatus, setRestoreStatus] = useState<BackupRestoreStatus | "all">("all");
@@ -549,22 +572,22 @@ function BackupsView() {
   const selected = detail.data ?? selectedSummary;
 
   if (backups.isLoading) return <PageSkeleton />;
-  if (backups.error) return <PageError title="Backups failed to load" message={backups.error.message} />;
+  if (backups.error) return <PageError title={t("artifactBackupsLoadFailed")} message={backups.error.message} />;
 
   return (
     <>
       <div className="grid gap-4 xl:min-h-0 xl:flex-1 xl:grid-cols-[minmax(360px,0.85fr)_minmax(0,1.15fr)]">
         <section className="flex min-w-0 flex-col gap-3 border-r-0 xl:min-h-0 xl:border-r xl:pr-4">
           <div className="grid gap-2 sm:grid-cols-2">
-            <Input placeholder="Provider" value={provider} onChange={(event) => setProvider(event.target.value)} />
-            <Input placeholder="Provider session ID" value={providerSessionId} onChange={(event) => setProviderSessionId(event.target.value)} />
+            <Input placeholder={t("artifactProviderPlaceholder")} value={provider} onChange={(event) => setProvider(event.target.value)} />
+            <Input placeholder={t("artifactProviderSessionPlaceholder")} value={providerSessionId} onChange={(event) => setProviderSessionId(event.target.value)} />
             <Select value={restoreStatus} onValueChange={(value) => setRestoreStatus(value as BackupRestoreStatus | "all")}>
               <SelectTrigger className="sm:col-span-2"><SelectValue /></SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">all restore states</SelectItem>
-                <SelectItem value="success">success</SelectItem>
-                <SelectItem value="failed">failed</SelectItem>
-                <SelectItem value="running">running</SelectItem>
+                <SelectItem value="all">{t("artifactAllRestoreStates")}</SelectItem>
+                <SelectItem value="success">{t("artifactRestoreStateSuccess")}</SelectItem>
+                <SelectItem value="failed">{t("artifactRestoreStateFailed")}</SelectItem>
+                <SelectItem value="running">{t("artifactRestoreStateRunning")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -580,27 +603,27 @@ function BackupsView() {
                     selected={selectedSummary?.entry.backup.id === backup.id}
                     className="cursor-pointer"
                     onClick={() => setSelectedId(backup.id)}
-                    actions={<Badge variant={statusVariant(view.verification.status)}>{view.verification.status}</Badge>}
+                    actions={<Badge variant={statusVariant(view.verification.status)}>{verificationLabel(view.verification.status, t)}</Badge>}
                   >
                     <div className="flex min-w-0 flex-col gap-1">
                       <strong className="truncate text-sm font-medium">{backup.provider_session_id || backup.id}</strong>
                       <span className="truncate font-mono text-xs text-muted-foreground">{backup.artifact.path}</span>
                       <span className="text-xs text-muted-foreground">
-                        {backup.provider_id || "-"} · {formatBytes(backup.artifact.byte_size)} · {latest ? `restore ${latest.status}` : "never restored"}
+                        {backup.provider_id || "-"} · {formatBytes(backup.artifact.byte_size)} · {latest ? `${t("artifactRestore")} ${t(latest.status === "success" ? "artifactRestoreStateSuccess" : latest.status === "failed" ? "artifactRestoreStateFailed" : "artifactRestoreStateRunning")}` : t("artifactNeverRestored")}
                       </span>
                     </div>
                   </EntityRow>
                 );
-              }) : <PageEmpty title="No backups" description="No registered backups match these filters." />}
+              }) : <PageEmpty title={t("artifactNoBackups")} description={t("artifactNoBackupsDescription")} />}
             </div>
           </ScrollArea>
         </section>
         <section className={cn("min-w-0 border-t pt-4 xl:min-h-0 xl:border-t-0 xl:pt-0", !selected && "hidden xl:block")}>
           {detail.isLoading ? <PageSkeleton /> : detail.error ? (
-            <PageError title="Backup detail failed to load" message={detail.error.message} />
+            <PageError title={t("artifactBackupDetailLoadFailed")} message={detail.error.message} />
           ) : selected ? (
             <BackupDetail view={selected} onRestore={setRestoreTarget} />
-          ) : <PageEmpty title="No backup selected" description="Choose a registered backup to inspect its native restore contract." />}
+          ) : <PageEmpty title={t("artifactNoBackupSelected")} description={t("artifactBackupSelectDescription")} />}
         </section>
       </div>
       <RestoreBackupDialog
@@ -615,6 +638,7 @@ function BackupsView() {
 }
 
 export function ArtifactsPage() {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedView = searchParams.get("view");
@@ -637,8 +661,8 @@ export function ArtifactsPage() {
       data-artifacts-page
     >
       <SectionHeading
-        title="Storage Registry"
-        description="SQLite manifests and restore records for memorph-managed artifacts. Provider sources remain provider-owned."
+        title={t("artifactRegistry")}
+        description={t("artifactRegistryDescription")}
         actions={(
           <Button
             type="button"
@@ -650,21 +674,21 @@ export function ArtifactsPage() {
             }}
           >
             {inspection.isFetching || backups.isFetching ? <Spinner data-icon="inline-start" /> : <RefreshCwIcon data-icon="inline-start" />}
-            Refresh
+            {t("artifactRefresh")}
           </Button>
         )}
       />
       <MetricGrid columns="auto" className="grid-cols-2">
-        <MetricTile label="Registered" value={entries.length} hint="artifact manifests" variant="compact" />
-        <MetricTile label="Verified" value={verified} hint="content matches" variant="compact" />
-        <MetricTile label="Attention" value={attention + (inspection.data?.orphan_files.length ?? 0)} hint="integrity or orphan" variant="compact" />
-        <MetricTile label="Backups / Exports" value={`${backups.data?.length ?? 0} / ${exports}`} hint="queryable records" variant="compact" />
+        <MetricTile label={t("artifactRegistered")} value={entries.length} hint={t("artifactManifestsHint")} variant="compact" />
+        <MetricTile label={t("artifactVerified")} value={verified} hint={t("artifactVerifiedHint")} variant="compact" />
+        <MetricTile label={t("artifactAttention")} value={attention + (inspection.data?.orphan_files.length ?? 0)} hint={t("artifactAttentionHint")} variant="compact" />
+        <MetricTile label={t("artifactBackupsExports")} value={`${backups.data?.length ?? 0} / ${exports}`} hint={t("artifactRecordsHint")} variant="compact" />
       </MetricGrid>
       <Tabs value={view} onValueChange={setView} className="min-w-0 xl:min-h-0 xl:flex-1">
         <TabsList>
-          <TabsTrigger value="artifacts"><FileCheck2Icon />Artifacts</TabsTrigger>
-          <TabsTrigger value="backups"><DatabaseBackupIcon />Backups</TabsTrigger>
-          <TabsTrigger value="exports"><FileOutputIcon />Exports</TabsTrigger>
+          <TabsTrigger value="artifacts"><FileCheck2Icon />{t("artifactArtifactsTab")}</TabsTrigger>
+          <TabsTrigger value="backups"><DatabaseBackupIcon />{t("artifactBackupsTab")}</TabsTrigger>
+          <TabsTrigger value="exports"><FileOutputIcon />{t("artifactExportsTab")}</TabsTrigger>
         </TabsList>
         <Separator />
         <div className="flex min-w-0 flex-col xl:min-h-0 xl:flex-1">

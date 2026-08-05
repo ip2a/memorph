@@ -10,6 +10,7 @@ describe("manager route state", () => {
       scope: "current",
       workspace: null,
       providers: [],
+      providerSelection: "all",
       search: "",
       sort: "recent",
       page: 1,
@@ -86,6 +87,7 @@ describe("manager route state", () => {
       scope: "current",
       workspace: null,
       providers: ["codex", "claude"],
+      providerSelection: "custom",
       search: "memory",
       sort: "title",
       page: 2,
@@ -97,6 +99,13 @@ describe("manager route state", () => {
       limit: 50,
       offset: 50,
     });
+  });
+
+  it("reads providers=none as an explicit empty selection", () => {
+    const route = readManagerRouteState(new URLSearchParams("providers=none"));
+
+    expect(route.providerSelection).toBe("none");
+    expect(route.providers).toEqual([]);
   });
 
   it("supports workspace session-count sorting without leaking it into sessions", () => {

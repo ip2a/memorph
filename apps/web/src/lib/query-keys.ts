@@ -12,7 +12,10 @@ import type {
 export const queryKeys = {
   home: ["home"] as const,
   meta: ["meta"] as const,
+  readiness: (workspace?: string | null) => ["readiness", workspace ?? "default"] as const,
+  readinessOperation: (operationId: string) => ["readiness", "operation", operationId] as const,
   workspaces: ["workspaces"] as const,
+  workspacesWithSessionsRoot: ["workspaces", "with-sessions"] as const,
   workspacesWithSessions: (params: WorkspacesWithSessionsParams = {}) =>
     ["workspaces", "with-sessions", params] as const,
   workspaceProviders: (workspace: string) =>
@@ -54,6 +57,7 @@ export const queryKeys = {
     ["manager", "stats", filter] as const,
   statsDashboard: (all: boolean, workspace: string | null, range: string) =>
     ["stats-dashboard", all, workspace, range] as const,
+  statsRoot: ["stats-dashboard"] as const,
   artifacts: ["artifacts"] as const,
   artifactInspection: ["artifacts", "inspection"] as const,
   backups: (params: BackupQueryParams = {}) => ["backups", params] as const,
@@ -101,8 +105,8 @@ export const queryKeys = {
     ["skills", id, "invocations", params] as const,
   skillDetail: (id: string) => ["skills", id, "detail"] as const,
   skillTree: (id: string) => ["skills", id, "tree"] as const,
-  skillFile: (id: string, path: string, provider?: string) =>
-    ["skills", id, "file", path, provider] as const,
+  skillFile: (id: string, path: string, usedBy?: string) =>
+    ["skills", id, "file", path, usedBy] as const,
   hookProvider: (provider: string) => ["hooks", provider] as const,
   detectedHooks: (provider: string) =>
     ["providers", provider, "hooks"] as const,

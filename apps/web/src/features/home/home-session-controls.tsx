@@ -292,12 +292,10 @@ function SessionListLoadingOverlay({ label }: { label: string }) {
 
 export function HomeSessionListPanel({
   loading,
-  refreshing,
   errorMessage,
   children,
 }: {
   loading: boolean;
-  refreshing: boolean;
   errorMessage?: string | null;
   children: ReactNode;
 }) {
@@ -314,8 +312,7 @@ export function HomeSessionListPanel({
   return (
     <div className="relative flex min-h-full flex-col px-3 pb-3">
       {loading ? <SessionListLoadingOverlay label={t("loadingSessions")} /> : null}
-      {!loading && refreshing ? <SessionListLoadingOverlay label={t("updatingSessions")} /> : null}
-      <div className={cn("flex min-h-0 flex-1 flex-col", (loading || refreshing) && "pointer-events-none opacity-60")}>
+      <div className="flex min-h-0 flex-1 flex-col">
         {children}
       </div>
     </div>

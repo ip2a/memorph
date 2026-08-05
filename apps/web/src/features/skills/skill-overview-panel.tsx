@@ -1,6 +1,11 @@
 import { useState } from "react";
+import { RefreshCwIcon } from "lucide-react";
+import { toast } from "sonner";
 import { ScrollPane } from "@/components/shared/scroll-pane";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAnalyzeSkills } from "@/features/skills/queries";
 import { SkillGraphPanel } from "@/features/skills/skill-graph-panel";
 import {
   SkillPruneDayTabs,
@@ -33,6 +38,7 @@ export function SkillOverviewPanel({
   const { t } = useI18n();
   const [tab, setTab] = useState<OverviewTab>("summary");
   const [pruneDays, setPruneDays] = useState(30);
+  const analyzeMutation = useAnalyzeSkills();
   const showStatsFilters = tab === "summary" || tab === "ranking";
   const showPruneFilters = tab === "prune";
 
@@ -52,6 +58,23 @@ export function SkillOverviewPanel({
                 </TabsTrigger>
               ))}
             </TabsList>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={analyzeMutation.isPending}
+              onClick={() =>
+                analyzeMutation.mutate("incremental", {
+                  onSuccess: () => toast.success(t("skillsAnalysisRefreshed")),
+                  onError: (error) =>
+                    toast.error(t("skillsAnalysisRefreshFailed"), {
+                      description: error.message,
+                    }),
+                })
+              }
+            >
+              {analyzeMutation.isPending ? <Spinner /> : <RefreshCwIcon />}
+              {t("skillsRefreshUsageAnalysis")}
+            </Button>
             {showStatsFilters ? (
               <SkillStatsFilterTabs className="ml-auto shrink-0" />
             ) : null}
