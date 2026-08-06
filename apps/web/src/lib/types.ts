@@ -456,6 +456,7 @@ export type HomeButtonSettingsPayload = {
   switch?: boolean;
   export?: boolean;
   sync?: boolean;
+  rename?: boolean;
   delete?: boolean;
 };
 
@@ -1505,6 +1506,19 @@ export type SkillMutation = {
   source_used_by?: string;
 };
 
+export type SkillAnalysisOperation = {
+  operation_id: string;
+  mode: "incremental" | "full";
+  status: "queued" | "running" | "completed" | "failed";
+  phase: string;
+  processed_sources: number;
+  total_sources: number;
+  percentage: number;
+  started_at_ms?: number | null;
+  completed_at_ms?: number | null;
+  error?: string | null;
+};
+
 export type SkillScanQueued = {
   queued: boolean;
   mode: "incremental" | "full";
@@ -1736,35 +1750,6 @@ export type SkillCoverageSummaryItem = {
   covered: number;
   total: number;
   percent: number;
-};
-
-export type SkillPruneItem = {
-  installation_id: string;
-  skill_id: string;
-  name: string;
-  install_path: string;
-  install_kind: string;
-  unused_since_ms: number;
-  last_invoked_at_ms?: number | null;
-  installation_bytes: number;
-  metadata_tokens: number;
-  low_confidence_observations: number;
-  action: string;
-  executable: boolean;
-  blocked_reason?: string | null;
-  expected_fingerprint: string;
-};
-export type SkillPrunePreview = {
-  preview_id: string;
-  days: number;
-  completeness_status: string;
-  blocked_reason?: string | null;
-  items: SkillPruneItem[];
-};
-export type SkillPruneResult = {
-  installation_id: string;
-  status: string;
-  message: string;
 };
 
 export type SkillGraphDay = {

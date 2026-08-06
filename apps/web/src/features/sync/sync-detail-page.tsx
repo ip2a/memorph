@@ -1,9 +1,9 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftIcon, ArrowRightIcon, FolderOpenIcon, GitBranchIcon } from "lucide-react";
+import { ArrowRightIcon, FolderOpenIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useForm, useWatch } from "react-hook-form";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { z } from "zod";
 import { DetailHeader } from "@/components/shared/detail-header";
@@ -13,7 +13,6 @@ import { MetaLine } from "@/components/shared/meta-line";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PanelCard } from "@/components/shared/panel-card";
 import { PathText } from "@/components/shared/path-text";
-import { TwoPanePage } from "@/components/shared/two-pane-page";
 import { bindSyncGroup, getMeta, listProviders, removeSyncGroup, renameSyncGroup, runSyncGroup, unbindSyncHolding } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
@@ -46,7 +45,6 @@ import { Input } from "@/components/ui/input";
 import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 
 const bindSchema = (message: string) => z.object({
@@ -91,8 +89,18 @@ function firstReportLine(report: SyncReport) {
 }
 
 export function SyncDetailPage() {
-  const { t } = useI18n();
   const { groupId = "" } = useParams();
+  return <Navigate to={`/sync?group=${encodeURIComponent(groupId)}`} replace />;
+}
+
+export function SyncGroupDetailPanel({
+  groupId,
+  onRemoved,
+}: {
+  groupId: string;
+  onRemoved?: () => void;
+}) {
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const syncGroup = useSyncGroup(groupId);
   const providers = useQuery({ queryKey: queryKeys.providers, queryFn: listProviders });
@@ -123,74 +131,54 @@ export function SyncDetailPage() {
 
   return (
     <>
-      <TwoPanePage data-sync-detail-layout>
-        <PanelCard className="min-h-0" data-sync-detail-actions>
-          <section className="flex flex-col gap-3 border-b pb-4">
-            <div className="flex items-center gap-2">
-              <GitBranchIcon aria-hidden />
-              <h2 className="truncate text-lg font-semibold">{group.title || group.id}</h2>
-            </div>
-            <p className="break-all font-mono text-xs text-muted-foreground">{group.id}</p>
-          </section>
-
-          <ScrollArea className="min-h-0 flex-1 pr-3">
-            <div className="flex flex-col gap-4">
-              <div className="flex flex-col gap-2 text-sm">
-                <MetaLine label={t("provider")} value={providerLabel(providerItems, group.source_provider)} />
-                <MetaLine label={t("syncTitleLabel")} value={group.title} />
-                <MetaLine label={t("syncHoldings")} value={String(group.holdings.length)} />
-                <MetaLine label={t("syncCreatedAt")} value={formatDateTime(group.created_at)} />
-                <MetaLine label={t("syncUpdatedAtLabel")} value={formatDateTime(group.updated_at)} />
-              </div>
-
-              <Separator />
-
-              <div className="flex flex-col gap-2" data-sync-detail-row-actions>
-                <Button variant="default" onClick={() => runLatestMutation.mutate()} disabled={runLatestMutation.isPending}>
-                  {runLatestMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
-                  {t("syncStartExecution")}
-                </Button>
-                <Button variant="outline" onClick={() => setBindOpen(true)}>{t("syncAddHolding")}</Button>
-                <Button variant="outline" onClick={() => setRenameOpen(true)}>{t("rename")}</Button>
-                <Button variant="destructive" onClick={() => setRemoveOpen(true)}>{t("remove")}</Button>
-                <Button asChild variant="outline">
-                  <Link to="/sync">
-                    <ArrowLeftIcon data-icon="inline-start" />
-                    {t("back")}
-                  </Link>
-                </Button>
-              </div>
-            </div>
-          </ScrollArea>
-        </PanelCard>
-
-        <PanelCard variant="plain" className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-4" data-sync-holdings-panel>
+      <PanelCard className="flex min-h-0 flex-col gap-4 p-3" data-sync-detail-panel>
+        <div className="flex flex-col gap-3 border-b pb-3">
           <DetailHeader
             title={group.title}
-            badges={<Badge variant="secondary">{t("syncHoldings")}</Badge>}
-            description={t("syncLinkedSessions", { count: group.holdings.length })}
-          />
-
-          <ScrollArea className="min-h-0 pr-3">
-            {group.holdings.length === 0 ? (
-              <PageEmpty title={t("syncNoHoldings")} description={t("syncNoHoldingsDescription")} />
-            ) : (
-              <div className="flex flex-col gap-2" data-sync-holding-grid>
-                {group.holdings.map((holding) => (
-                  <HoldingCard
-                    key={holding.id}
-                    group={group}
-                    holding={holding}
-                    providerName={providerLabel(providerItems, holding.provider)}
-                    onSyncFrom={() => setSyncSource(holding)}
-                    onUnbind={() => setUnbindTarget(holding)}
-                  />
-                ))}
-              </div>
+            badges={(
+              <>
+                {group.source_provider ? <Badge variant="outline">{group.source_provider}</Badge> : null}
+                <Badge variant="secondary">{t("syncHoldingsCount", { count: group.holdings.length })}</Badge>
+              </>
             )}
-          </ScrollArea>
-        </PanelCard>
-      </TwoPanePage>
+            description={t("syncLinkedSessions", { count: group.holdings.length })}
+            meta={(
+              <>
+                <span className="break-all font-mono text-xs">{group.id}</span>
+                <span>{t("syncUpdatedAt", { date: formatDateTime(group.updated_at) })}</span>
+              </>
+            )}
+          />
+          <div className="flex flex-wrap gap-2" data-sync-detail-row-actions>
+            <Button variant="default" onClick={() => runLatestMutation.mutate()} disabled={runLatestMutation.isPending}>
+              {runLatestMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
+              {t("syncStartExecution")}
+            </Button>
+            <Button variant="outline" onClick={() => setBindOpen(true)}>{t("syncAddHolding")}</Button>
+            <Button variant="outline" onClick={() => setRenameOpen(true)}>{t("rename")}</Button>
+            <Button variant="destructive" onClick={() => setRemoveOpen(true)}>{t("remove")}</Button>
+          </div>
+        </div>
+
+        <ScrollArea className="min-h-0 flex-1 pr-3" data-sync-holdings-panel>
+          {group.holdings.length === 0 ? (
+            <PageEmpty title={t("syncNoHoldings")} description={t("syncNoHoldingsDescription")} />
+          ) : (
+            <div className="flex flex-col gap-2" data-sync-holding-grid>
+              {group.holdings.map((holding) => (
+                <HoldingCard
+                  key={holding.id}
+                  group={group}
+                  holding={holding}
+                  providerName={providerLabel(providerItems, holding.provider)}
+                  onSyncFrom={() => setSyncSource(holding)}
+                  onUnbind={() => setUnbindTarget(holding)}
+                />
+              ))}
+            </div>
+          )}
+        </ScrollArea>
+      </PanelCard>
 
       <BindSyncHoldingDialog
         group={group}
@@ -202,7 +190,7 @@ export function SyncDetailPage() {
       <SyncFromHoldingDialog group={group} holding={syncSource} open={Boolean(syncSource)} onOpenChange={(open) => !open && setSyncSource(null)} />
       <UnbindHoldingDialog group={group} holding={unbindTarget} open={Boolean(unbindTarget)} onOpenChange={(open) => !open && setUnbindTarget(null)} />
       <RenameSyncGroupDialog group={group} open={renameOpen} onOpenChange={setRenameOpen} />
-      <RemoveSyncGroupDialog group={group} open={removeOpen} onOpenChange={setRemoveOpen} />
+      <RemoveSyncGroupDialog group={group} open={removeOpen} onOpenChange={setRemoveOpen} onRemoved={onRemoved} />
     </>
   );
 }
@@ -530,7 +518,17 @@ function RenameSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
   );
 }
 
-function RemoveSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup; open: boolean; onOpenChange: (open: boolean) => void }) {
+function RemoveSyncGroupDialog({
+  group,
+  open,
+  onOpenChange,
+  onRemoved,
+}: {
+  group: SyncGroup;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onRemoved?: () => void;
+}) {
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -542,7 +540,11 @@ function RemoveSyncGroupDialog({ group, open, onOpenChange }: { group: SyncGroup
       await queryClient.invalidateQueries({ queryKey: queryKeys.syncGroups });
       toast.success(t("syncRemoved"), { description: group.title });
       onOpenChange(false);
-      navigate("/sync");
+      if (onRemoved) {
+        onRemoved();
+      } else {
+        navigate("/sync");
+      }
     },
   });
 

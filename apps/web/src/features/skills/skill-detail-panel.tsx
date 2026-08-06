@@ -22,7 +22,7 @@ import { SkillBundlePanel } from "@/features/skills/skill-bundle-panel";
 import { SkillContextHealthPanel } from "@/features/skills/skill-context-health-panel";
 import { SkillCoverageConflictsPanel } from "@/features/skills/skill-coverage-conflicts-panel";
 import { SkillHealthDetails } from "@/features/skills/skill-health-tags";
-import { formatBytes } from "@/lib/format";
+import { formatBytes, normalizeSkillDescription } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import { cn } from "@/lib/utils";
 import type { I18nKey } from "@/lib/i18n-core";
@@ -50,6 +50,7 @@ function InstallationRow({
   agent,
   installation,
   pending,
+  actionPending,
   sourceUsedBy,
   t,
   onInstall,
@@ -58,6 +59,7 @@ function InstallationRow({
   agent: (typeof AGENTS)[number];
   installation?: SkillCatalogItem["installations"][number];
   pending: boolean;
+  actionPending: boolean;
   sourceUsedBy?: string;
   t: (key: I18nKey, vars?: Record<string, string | number>) => string;
   onInstall: (agent: string) => void;
@@ -126,7 +128,7 @@ function InstallationRow({
           title={!managed ? t("skillsUserOwnedHint") : undefined}
           onClick={() => onRemove(agent)}
         >
-          <Trash2Icon />
+          {actionPending ? <Spinner data-icon="inline-start" /> : <Trash2Icon />}
           {t("remove")}
         </Button>
       ) : (
@@ -136,6 +138,7 @@ function InstallationRow({
           disabled={pending || !sourceUsedBy}
           onClick={() => onInstall(agent)}
         >
+          {actionPending ? <Spinner data-icon="inline-start" /> : null}
           {t("install")}
         </Button>
       )}
@@ -152,6 +155,59 @@ async function copyFingerprint(value: string, copied: string, failed: string) {
   }
 }
 
+// Always-visible summary of where this skill really lives and which symlinks
+// point at it. The catalog row is keyed by canonical path, so the row IS the
+// real skill; symlinks are installations pointing here, not separate entries.
+function LocationSummary({
+  installations,
+  t,
+}: {
+  installations: SkillCatalogItem["installations"];
+  t: (key: I18nKey, vars?: Record<string, string | number>) => string;
+}) {
+  const active = installations.filter((item) => item.status === "active");
+  const real = active.find(
+    (item) =>
+      item.install_kind === "directory" || item.install_kind === "managed-copy",
+  );
+  const realPath =
+    real?.install_path ??
+    active.find((item) => item.install_kind === "symlink")?.symlink_target ??
+    installations[0]?.install_path;
+  const symlinks = active.filter((item) => item.install_kind === "symlink");
+  return (
+    <div className="flex shrink-0 flex-col gap-3 rounded-lg border p-3 text-xs sm:flex-row sm:gap-6">
+      <div className="min-w-0 flex-1 space-y-1">
+        <span className="text-muted-foreground">{t("skillsRealPath")}</span>
+        <p className="break-all font-mono">{realPath || "—"}</p>
+      </div>
+      <div className="min-w-0 flex-1 space-y-1">
+        <span className="text-muted-foreground">
+          {t("skillsSymlinksHere", { count: symlinks.length })}
+        </span>
+        {symlinks.length ? (
+          <ul className="space-y-1">
+            {symlinks.map((item) => (
+              <li
+                key={item.used_by}
+                className="flex flex-wrap items-center gap-2"
+              >
+                <Badge variant="outline">{item.used_by}</Badge>
+                <code className="break-all font-mono">{item.install_path}</code>
+                {item.link_status === "broken" ? (
+                  <Badge variant="destructive">{t("skillsLinkBroken")}</Badge>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-muted-foreground">{t("skillsNoSymlinks")}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function SkillDetailPanel({
   selected,
   detail,
@@ -162,10 +218,12 @@ export function SkillDetailPanel({
   preview,
   previewLoading,
   pending,
+  pendingAgent,
   mutationError,
   provider,
   onInstall,
   onRemove,
+  onDelete,
 }: {
   selected: SkillCatalogItem | null;
   detail?: SkillDetail;
@@ -176,10 +234,12 @@ export function SkillDetailPanel({
   preview?: SkillFilePreview;
   previewLoading: boolean;
   pending: boolean;
+  pendingAgent: string | null;
   mutationError: Error | null;
   provider?: string;
   onInstall: (agent: string) => void;
   onRemove: (agent: string) => void;
+  onDelete: () => void;
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<DetailTab>("bundle");
@@ -189,7 +249,6 @@ export function SkillDetailPanel({
   )?.used_by;
 
   useEffect(() => {
-    setTab("bundle");
     setDetailsOpen(false);
   }, [selected?.id]);
 
@@ -211,13 +270,24 @@ export function SkillDetailPanel({
       <div className="flex shrink-0 flex-col gap-1">
         <div className="flex items-center justify-between gap-3">
           <h2 className="min-w-0 truncate text-xl font-semibold">{selected.name}</h2>
-          <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline" size="sm" className="shrink-0">
-                <InfoIcon data-icon="inline-start" />
-                {t("skillsDetails")}
-              </Button>
-            </DialogTrigger>
+          <div className="flex shrink-0 gap-2">
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={pending}
+              title={t("skillsDeleteHint")}
+              onClick={onDelete}
+            >
+              <Trash2Icon data-icon="inline-start" />
+              {t("delete")}
+            </Button>
+            <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="sm" className="shrink-0">
+                  <InfoIcon data-icon="inline-start" />
+                  {t("skillsDetails")}
+                </Button>
+              </DialogTrigger>
             <DialogContent className="flex h-[min(85dvh,840px)] w-[min(960px,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
               <DialogHeader className="shrink-0 border-b px-6 py-4">
                 <DialogTitle>{t("skillsDetails")}</DialogTitle>
@@ -238,6 +308,7 @@ export function SkillDetailPanel({
                     <Badge key={tag} variant="outline">{tag}</Badge>
                   ))}
                 </div>
+                <LocationSummary installations={selected.installations} t={t} />
                 <div className="space-y-2 border-t pt-5">
                   <h3 className="text-sm font-semibold">{t("skillsUsedBy")}</h3>
                   {(detail?.used_by ?? selected.used_by).length ? (
@@ -299,9 +370,10 @@ export function SkillDetailPanel({
               </ScrollPane>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
         <p className="text-muted-foreground line-clamp-2 h-[2lh] text-sm leading-normal">
-          {selected.description || t("skillsNoDescription")}
+          {normalizeSkillDescription(selected.description) || t("skillsNoDescription")}
         </p>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -376,6 +448,7 @@ export function SkillDetailPanel({
                       key={agent}
                       agent={agent}
                       pending={pending}
+                      actionPending={pendingAgent === agent}
                       sourceUsedBy={sourceUsedBy}
                       t={t}
                       onInstall={onInstall}
@@ -389,6 +462,7 @@ export function SkillDetailPanel({
                     agent={agent}
                     installation={installation}
                     pending={pending}
+                    actionPending={pendingAgent === agent}
                     sourceUsedBy={sourceUsedBy}
                     t={t}
                     onInstall={onInstall}

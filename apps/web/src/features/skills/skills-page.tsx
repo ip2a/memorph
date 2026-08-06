@@ -36,6 +36,7 @@ import {
   useSkillTree,
   useSkills,
   useUninstallSkill,
+  useDeleteSkill,
 } from "@/features/skills/queries";
 import { SkillDetailPanel } from "@/features/skills/skill-detail-panel";
 import {
@@ -47,9 +48,29 @@ import { SkillOverviewPanel } from "@/features/skills/skill-overview-panel";
 import { clampSkillsCatalogPageSize } from "@/features/skills/skills-catalog-page-size";
 import { buildUpdateSettingsPayloadFromMeta } from "@/features/skills/skills-settings-payload";
 import { getMeta, updateSettings } from "@/lib/api";
+import { normalizeSkillDescription } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 import { useUiStore } from "@/stores/ui-store";
+import type { SkillCatalogItem } from "@/lib/types";
+
+// The real on-disk location of a skill: a directory/managed-copy installation's
+// path, or — if every installation is a symlink — the target it points at. The
+// left list shows this so two same-named copies (different real paths) can be
+// told apart; symlinks never appear here as their own entry.
+function realPathOf(item: SkillCatalogItem): string | undefined {
+  const directory = item.installations.find(
+    (installation) =>
+      (installation.install_kind === "directory" ||
+        installation.install_kind === "managed-copy") &&
+      installation.status === "active",
+  );
+  if (directory) return directory.install_path;
+  const symlink = item.installations.find(
+    (installation) => installation.install_kind === "symlink",
+  );
+  return symlink?.symlink_target ?? item.installations[0]?.install_path;
+}
 
 export function SkillsPage() {
   const { t } = useI18n();
@@ -66,6 +87,7 @@ export function SkillsPage() {
   const [rightView, setRightView] = useState<"overview" | "detail">("overview");
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [removalAgent, setRemovalAgent] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const initialScanStarted = useRef(false);
   const metaQuery = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta });
   const pageSize = clampSkillsCatalogPageSize(
@@ -105,6 +127,7 @@ export function SkillsPage() {
   const scanMutation = useScanSkills();
   const installMutation = useInstallSkill();
   const uninstallMutation = useUninstallSkill();
+  const deleteMutation = useDeleteSkill();
   const items = skillsQuery.data?.items ?? [];
   const selected = items.find((item) => item.id === selectedId) ?? null;
   const detailId = selected?.id ?? null;
@@ -154,9 +177,20 @@ export function SkillsPage() {
     );
   }
 
-  const pending = installMutation.isPending || uninstallMutation.isPending;
+  const pending =
+    installMutation.isPending ||
+    uninstallMutation.isPending ||
+    deleteMutation.isPending;
+  const pendingAgent = installMutation.isPending
+    ? (installMutation.variables?.used_by ?? null)
+    : uninstallMutation.isPending
+      ? (uninstallMutation.variables?.used_by ?? null)
+      : null;
   const mutationError =
-    scanMutation.error || installMutation.error || uninstallMutation.error;
+    scanMutation.error ||
+    installMutation.error ||
+    uninstallMutation.error ||
+    deleteMutation.error;
   const total = skillsQuery.data?.total ?? 0;
   const responsePageSize = skillsQuery.data?.page_size ?? pageSize;
   const pageCount = Math.max(1, Math.ceil(total / responsePageSize));
@@ -205,15 +239,16 @@ export function SkillsPage() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() =>
+                    onClick={() => {
+                      uninstallMutation.reset();
                       scanMutation.mutate(
                         { mode: "incremental", workspace: currentWorkspace },
                         {
                           onSuccess: () =>
                             toast.success(t("skillsScanQueued")),
                         },
-                      )
-                    }
+                      );
+                    }}
                     disabled={scanMutation.isPending}
                     title={t("skillsRefreshList")}
                   >
@@ -260,11 +295,21 @@ export function SkillsPage() {
                     selected={rightView === "detail" && item.id === selectedId}
                     title={item.name}
                     meta={
-                      <span className="flex flex-wrap items-center gap-1">
-                        <span>{item.description || item.source_id}</span>
-                        {item.tags.map((tag) => (
-                          <Badge key={tag} variant="outline">{tag}</Badge>
-                        ))}
+                      <span className="flex flex-col gap-0.5">
+                        <span className="flex flex-wrap items-center gap-1">
+                          <span>{normalizeSkillDescription(item.description) || item.source_id}</span>
+                          {item.tags.map((tag) => (
+                            <Badge key={tag} variant="outline">{tag}</Badge>
+                          ))}
+                        </span>
+                        {realPathOf(item) ? (
+                          <span
+                            className="truncate font-mono text-[11px] text-muted-foreground"
+                            title={realPathOf(item)}
+                          >
+                            {realPathOf(item)}
+                          </span>
+                        ) : null}
                       </span>
                     }
                     onClick={() => {
@@ -308,17 +353,34 @@ export function SkillsPage() {
                 preview={previewQuery.data}
                 previewLoading={previewQuery.isLoading}
                 pending={pending}
+                pendingAgent={pendingAgent}
                 mutationError={mutationError}
                 provider={usedBy === "all" ? undefined : usedBy}
-                onInstall={(agent) =>
-                  selected &&
-                  installMutation.mutate({
-                    skill_id: selected.source_id,
-                    used_by: agent,
-                    source_used_by: sourceUsedBy,
-                  })
-                }
-                onRemove={setRemovalAgent}
+                onInstall={(agent) => {
+                  if (!selected) return;
+                  installMutation.mutate(
+                    {
+                      skill_id: selected.source_id,
+                      used_by: agent,
+                      source_used_by: sourceUsedBy,
+                    },
+                    {
+                      onSuccess: () => {
+                        toast.success(
+                          t("skillsInstalled", {
+                            skill: selected.name,
+                            agent,
+                          }),
+                        );
+                      },
+                    },
+                  );
+                }}
+                onRemove={(agent) => {
+                  uninstallMutation.reset();
+                  setRemovalAgent(agent);
+                }}
+                onDelete={() => setDeleteOpen(true)}
               />
             )}
           </PanelCard>
@@ -341,16 +403,60 @@ export function SkillsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
             <AlertDialogAction
+              disabled={uninstallMutation.isPending}
               onClick={() => {
-                if (selected && removalAgent)
-                  uninstallMutation.mutate({
-                    skill_id: selected.source_id,
-                    used_by: removalAgent,
-                  });
-                setRemovalAgent(null);
+                if (selected && removalAgent) {
+                  uninstallMutation.mutate(
+                    {
+                      skill_id: selected.source_id,
+                      used_by: removalAgent,
+                    },
+                    {
+                      onSuccess: () => {
+                        setRemovalAgent(null);
+                        toast.success(
+                          t("skillsRemoved", {
+                            skill: selected.name,
+                            agent: removalAgent,
+                          }),
+                        );
+                      },
+                    },
+                  );
+                }
               }}
             >
+              {uninstallMutation.isPending ? <Spinner data-icon="inline-start" /> : null}
               {t("remove")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skillsDeleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("skillsDeleteDescription", { skill: selected?.name || "" })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (selected) {
+                  deleteMutation.mutate(selected.id, {
+                    onSuccess: () => {
+                      setSelectedId(null);
+                      setRightView("overview");
+                      toast.success(t("skillsDeleted"));
+                    },
+                  });
+                }
+                setDeleteOpen(false);
+              }}
+            >
+              {t("delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

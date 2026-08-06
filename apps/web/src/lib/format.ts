@@ -4,6 +4,15 @@ export function sessionTitle(session: SessionItem) {
   return session.display_title || session.title || session.native_title || session.session_id;
 }
 
+export function normalizeWhitespace(value: string | null | undefined) {
+  return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+export function normalizeSkillDescription(value: string | null | undefined) {
+  const normalized = normalizeWhitespace(value);
+  return ["|", "|-", "|+", ">", ">-", ">+"].includes(normalized) ? "" : normalized;
+}
+
 export function formatDateTime(value: number | string | null | undefined) {
   if (value === null || value === undefined || value === "") return "-";
   const date = typeof value === "number" ? new Date(value > 100_000_000_000 ? value : value * 1000) : new Date(value);

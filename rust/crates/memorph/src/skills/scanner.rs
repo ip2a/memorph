@@ -128,9 +128,18 @@ fn records(
                 inspect_bundle(&item.path)
             };
             let frontmatter = read_frontmatter(&entry_path);
+            // Catalog identity is content-independent: keyed by the skill's stable
+            // normalized name and its canonical install location. Editing a skill's
+            // body must update the same row in place via ON CONFLICT, not fork a new
+            // id and orphan the previous row as a "missing" duplicate — which a
+            // content-hash id would do on every save.
+            let canonical = item
+                .path
+                .canonicalize()
+                .unwrap_or_else(|_| item.path.clone());
             let id = format!(
                 "skill:{}",
-                hash(format!("{entry_hash}:{}", inspection.fingerprint).as_bytes())
+                hash(format!("{}:{}", skill.id, canonical.display()).as_bytes())
             );
             catalog
                 .entry(id.clone())
@@ -159,10 +168,6 @@ fn records(
                 });
             let metadata = item.path.symlink_metadata()?;
             let is_link = metadata.file_type().is_symlink();
-            let canonical = item
-                .path
-                .canonicalize()
-                .unwrap_or_else(|_| item.path.clone());
             let install_id = format!(
                 "installation:{}",
                 hash(format!("{}:{}", item.used_by, item.path.display()).as_bytes())
@@ -510,5 +515,99 @@ mod tests {
         assert!(rebuilt_state.1.is_some());
         assert_eq!(rebuilt_state.2, "complete");
         assert_eq!(installation_status, "missing");
+    }
+
+    #[test]
+    fn content_edit_updates_catalog_row_in_place_without_orphan() {
+        // Editing a skill's body must not fork a new catalog id and strand the
+        // previous row as a "missing" duplicate. The id is derived from the
+        // stable name + canonical path, so a content edit upserts the same row.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("skills");
+        let path = root.join("demo");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("SKILL.md"), "---\nname: demo\n---\n# Demo v1").unwrap();
+
+        let overview = SkillsOverview {
+            agents: vec![SkillAgent {
+                agent_id: "codex".into(),
+                name: "Codex".into(),
+                skills_dir: root,
+                scope_kind: "global".into(),
+                workspace_dir: None,
+            }],
+            skills: vec![SkillEntry {
+                id: "demo".into(),
+                name: "demo".into(),
+                description: None,
+                directory: "demo".into(),
+                fingerprint: "sha256:bundle-v1".into(),
+                conflict: false,
+                statistics: SkillStatistics {
+                    files: 1,
+                    bytes: 10,
+                    scripts: 0,
+                    references: 0,
+                    assets: 0,
+                    previewable: 1,
+                },
+                issues: vec![],
+                installations: vec![SkillInstallation {
+                    used_by: "codex".into(),
+                    path: path.clone(),
+                    managed: false,
+                    deployment_mode: "external".into(),
+                    link_valid: true,
+                    fingerprint: "sha256:bundle-v1".into(),
+                    drifted: false,
+                }],
+            }],
+            catalog_only: false,
+        };
+        let mut store = LocalSqliteStore::open(dir.path().join("memorph.db")).unwrap();
+        persist(store.connection_mut(), &overview, ScanMode::Incremental).unwrap();
+
+        let (id_before, hash_before): (String, String) = store
+            .connection()
+            .query_row(
+                "SELECT id, entry_content_hash FROM skill_catalog",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let count: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM skill_catalog", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        // Simulate a content edit: same skill name, same path, new body + new bundle hash.
+        fs::write(
+            path.join("SKILL.md"),
+            "---\nname: demo\n---\n# Demo v2 entirely new body",
+        )
+        .unwrap();
+        let mut edited = overview.clone();
+        edited.skills[0].fingerprint = "sha256:bundle-v2".into();
+        edited.skills[0].installations[0].fingerprint = "sha256:bundle-v2".into();
+        persist(store.connection_mut(), &edited, ScanMode::Incremental).unwrap();
+
+        let (id_after, hash_after, missing_since): (String, String, Option<i64>) = store
+            .connection()
+            .query_row(
+                "SELECT id, entry_content_hash, missing_since_ms FROM skill_catalog",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let count: i64 = store
+            .connection()
+            .query_row("SELECT COUNT(*) FROM skill_catalog", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(count, 1, "content edit must not spawn a second catalog row");
+        assert_eq!(id_after, id_before, "catalog id must be stable across content edits");
+        assert_ne!(hash_after, hash_before, "entry hash must reflect the new content");
+        assert!(missing_since.is_none(), "row must not be marked missing after an edit");
     }
 }

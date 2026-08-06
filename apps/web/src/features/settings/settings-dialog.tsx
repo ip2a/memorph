@@ -58,6 +58,7 @@ const HOME_BUTTONS = [
   ["switch", "homeButtonSwitch"],
   ["export", "export"],
   ["sync", "sync"],
+  ["rename", "rename"],
   ["delete", "homeButtonDelete"],
 ] as const;
 
@@ -89,10 +90,11 @@ function defaultDraft(settings: SettingsPayload | undefined, catalog: ProviderCa
     },
     home_buttons: {
       view: settings?.home_buttons?.view !== false,
-      compress: settings?.home_buttons?.compress !== false,
+      compress: settings?.home_buttons?.compress === true,
       switch: settings?.home_buttons?.switch !== false,
-      export: settings?.home_buttons?.export !== false,
-      sync: settings?.home_buttons?.sync !== false,
+      export: settings?.home_buttons?.export === true,
+      sync: settings?.home_buttons?.sync === true,
+      rename: settings?.home_buttons?.rename !== false,
       delete: settings?.home_buttons?.delete !== false,
     },
     home_session_layout: settings?.home_session_layout ?? "tabs",

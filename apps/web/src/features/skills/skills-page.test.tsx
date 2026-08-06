@@ -33,13 +33,12 @@ const mocks = vi.hoisted(() => ({
   useSkillCoverageEvidence: vi.fn(),
   useSkillConflicts: vi.fn(),
   useSkillGraph: vi.fn(),
-  useSkillPrune: vi.fn(),
-  useExecuteSkillPrune: vi.fn(),
   useUpdateSkillFile: vi.fn(),
   analyze: vi.fn(),
   scan: vi.fn(),
   install: vi.fn(),
   uninstall: vi.fn(),
+  delete: vi.fn(),
   getMeta: vi.fn(),
   updateSettings: vi.fn(),
 }));
@@ -68,8 +67,6 @@ vi.mock("@/features/skills/queries", () => ({
   useSkillCoverageEvidence: mocks.useSkillCoverageEvidence,
   useSkillConflicts: mocks.useSkillConflicts,
   useSkillGraph: mocks.useSkillGraph,
-  useSkillPrune: mocks.useSkillPrune,
-  useExecuteSkillPrune: mocks.useExecuteSkillPrune,
   useUpdateSkillFile: () => ({
     mutate: vi.fn(),
     isPending: false,
@@ -92,6 +89,11 @@ vi.mock("@/features/skills/queries", () => ({
   }),
   useUninstallSkill: () => ({
     mutate: mocks.uninstall,
+    isPending: false,
+    error: null,
+  }),
+  useDeleteSkill: () => ({
+    mutate: mocks.delete,
     isPending: false,
     error: null,
   }),
@@ -250,11 +252,6 @@ beforeEach(() => {
   mocks.useSkillGraph.mockReturnValue({
     data: { days: [], total_invocations: 0, max_count: 0 },
     isError: false,
-  });
-  mocks.useSkillPrune.mockReturnValue({ data: { items: [] } });
-  mocks.useExecuteSkillPrune.mockReturnValue({
-    mutate: vi.fn(),
-    isPending: false,
   });
   mocks.useSkillConflicts.mockReturnValue({
     data: [],
@@ -608,7 +605,10 @@ describe("SkillsPage", () => {
     const gemini = screen
       .getAllByText("gemini")
       .map((element) => element.closest("div.rounded-lg"))
-      .find(Boolean);
+      .filter(Boolean)
+      .find((div) =>
+        within(div as HTMLElement).queryByRole("button", { name: "Remove" }),
+      );
     await user.click(
       within(gemini as HTMLElement).getByRole("button", { name: "Remove" }),
     );

@@ -39,7 +39,7 @@ export function SkillsStatsCustomRangePreferenceField() {
   const rangeLabel = formatSkillsStatsRangeLabel(range.from, range.to);
 
   return (
-    <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+    <div className="grid gap-4 border-b pb-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
       <Field orientation="vertical">
         <FieldContent>
           <FieldTitle>{t("skillsCustomRangePreference")}</FieldTitle>

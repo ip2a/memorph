@@ -68,6 +68,7 @@ import type {
   SkillCatalogPage,
   SkillCatalogParams,
   SkillScanQueued,
+  SkillAnalysisOperation,
   SkillDailyUsage,
   SkillContext,
   SkillContextSummary,
@@ -81,8 +82,6 @@ import type {
   SkillGraphParams,
   SkillInvocationPage,
   SkillRanking,
-  SkillPrunePreview,
-  SkillPruneResult,
   SkillStatsParams,
   SkillStatsSummary,
   SkillStatsBreakdown,
@@ -723,6 +722,14 @@ export function getSyncGroup(groupId: string) {
   );
 }
 
+export function getSkillAnalysisOperation(operationId: string) {
+  return api<SkillAnalysisOperation>(`/api/v1/skills/analyze/operations/${operationId}`);
+}
+
+export function getCurrentSkillAnalysis() {
+  return api<SkillAnalysisOperation | null>("/api/v1/skills/analyze/operations/current");
+}
+
 export function getSkills(params: SkillCatalogParams = {}) {
   return api<SkillCatalogPage>(`/api/v1/skills/catalog${buildQuery(params)}`);
 }
@@ -735,7 +742,7 @@ export function scanSkills(mode: "incremental" | "full", workspace?: string) {
 }
 
 export function analyzeSkills(mode: "incremental" | "full" = "incremental") {
-  return api<{ queued: boolean; mode: string }>("/api/v1/skills/analyze", {
+  return api<{ operation_id: string; queued: boolean; joined: boolean; mode: "incremental" | "full" }>("/api/v1/skills/analyze", {
     method: "POST",
     body: JSON.stringify({ mode }),
   });
@@ -794,31 +801,6 @@ export function getSkillCoverageEvidence(
   return api<SkillCoverageEvidencePage>(
     `/api/v1/skills/${encodeURIComponent(skillId)}/coverage/${encodeURIComponent(targetKey)}/evidence${buildQuery({ page, pageSize: 20 })}`,
   );
-}
-
-export function previewSkillPrune(days = 30) {
-  return api<SkillPrunePreview>("/api/v1/skills/prune/preview", {
-    method: "POST",
-    body: JSON.stringify({ days }),
-  });
-}
-export function executeSkillPrune(
-  preview: SkillPrunePreview,
-  installationIds: string[],
-) {
-  return api<SkillPruneResult[]>("/api/v1/skills/prune/execute", {
-    method: "POST",
-    body: JSON.stringify({
-      preview_id: preview.preview_id,
-      items: preview.items
-        .filter((item) => installationIds.includes(item.installation_id))
-        .map((item) => ({
-          installation_id: item.installation_id,
-          expected_fingerprint: item.expected_fingerprint,
-        })),
-      confirmation: "REMOVE_MANAGED_INSTALLATIONS",
-    }),
-  });
 }
 
 export function getSkillGraph(params: SkillGraphParams = {}) {
@@ -906,4 +888,11 @@ export function uninstallSkill(payload: SkillMutation) {
     method: "DELETE",
     body: JSON.stringify(payload),
   });
+}
+
+export function deleteSkill(skillId: string) {
+  return api<SkillsOverview>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}`,
+    { method: "DELETE" },
+  );
 }

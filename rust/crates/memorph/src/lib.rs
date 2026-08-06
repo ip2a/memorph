@@ -15,6 +15,7 @@ pub mod provider_config;
 pub mod provider_settings;
 pub mod providers;
 pub mod runtime;
+pub mod sanitize;
 pub mod session;
 pub mod session_projection;
 pub mod skills;

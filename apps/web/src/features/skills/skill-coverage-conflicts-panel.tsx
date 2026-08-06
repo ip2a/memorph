@@ -1,6 +1,7 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { PanelCard } from "@/components/shared/panel-card";
+import { ScrollPane } from "@/components/shared/scroll-pane";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,7 @@ export function SkillCoverageConflictsPanel({
   const { t } = useI18n();
   const [range, setRange] = useState("90d");
   const [category, setCategory] = useState("section");
+  const activeTabRef = useRef<HTMLButtonElement>(null);
   const [targetKey, setTargetKey] = useState<string | null>(null);
   const [evidencePage, setEvidencePage] = useState(1);
   const coverage = useSkillCoverage(skillId, range);
@@ -59,6 +61,13 @@ export function SkillCoverageConflictsPanel({
     () => coverage.data?.targets.filter((target) => target.target_kind === category) ?? [],
     [category, coverage.data?.targets],
   );
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [category]);
   if (!skillId) {
     return (
       <p className="text-muted-foreground text-sm">
@@ -99,22 +108,25 @@ export function SkillCoverageConflictsPanel({
                 </span>
               </p>
               <Progress value={coverage.data?.percent ?? 0} className="mt-2" />
-              {coverage.data?.completeness_status !== "complete" ? (
-                <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
-                  {t("skillsIncompleteCoverageHint")}
-                </p>
-              ) : null}
             </div>
-            <Tabs value={category} onValueChange={setCategory} className="shrink-0">
-              <TabsList className="max-w-full overflow-x-auto">
+            <Tabs value={category} onValueChange={setCategory} className="min-w-0 shrink-0">
+              <TabsList
+                variant="line"
+                className="w-full max-w-full justify-start overflow-x-auto rounded-none border-b p-0 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+              >
                 {categories.map(([value, label]) => (
-                  <TabsTrigger key={value} value={value}>
+                  <TabsTrigger
+                    key={value}
+                    value={value}
+                    ref={category === value ? activeTabRef : undefined}
+                    className="flex-none px-3 py-2"
+                  >
                     {t(label)}
                   </TabsTrigger>
                 ))}
               </TabsList>
             </Tabs>
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
+            <ScrollPane className="flex-1" innerClassName="space-y-2">
               {targets.map((target) => (
                 <button
                   type="button"
@@ -134,7 +146,7 @@ export function SkillCoverageConflictsPanel({
               {targets.length === 0 ? (
                 <p className="text-sm text-muted-foreground">{t("skillsEmptyCategory")}</p>
               ) : null}
-            </div>
+            </ScrollPane>
           </>
         )}
       </PanelShell>
@@ -148,7 +160,7 @@ export function SkillCoverageConflictsPanel({
         ) : conflicts.isError ? (
           <p className="text-sm text-destructive">{conflicts.error.message}</p>
         ) : conflicts.data?.length ? (
-          <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
+          <ScrollPane className="flex-1" innerClassName="space-y-2">
             {conflicts.data.map((item) => (
               <div key={item.id} className="rounded-md border p-3 text-sm">
                 <div className="flex items-center gap-2">
@@ -162,7 +174,7 @@ export function SkillCoverageConflictsPanel({
                 <p className="text-muted-foreground">{t("skillsRecommendation", { recommendation: item.recommendation })}</p>
               </div>
             ))}
-          </div>
+          </ScrollPane>
         ) : (
           <p className="text-sm text-muted-foreground">{t("skillsNoConflicts")}</p>
         )}

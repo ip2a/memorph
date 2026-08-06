@@ -393,7 +393,7 @@ function DetailEventItem({
               type="button"
               className="flex w-full shrink-0 items-center justify-between gap-2 border-b px-2.5 py-2 text-left font-mono text-xs transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
             >
-              <span className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5 overflow-hidden">
+              <span className="flex min-w-0 flex-1 flex-nowrap items-center gap-1.5 overflow-hidden whitespace-nowrap text-ellipsis">
                 <span className="shrink-0 tabular-nums text-muted-foreground">#{eventNumber}</span>
                 <Badge variant="outline" className={cn("uppercase", eventRoleTagClass(role))}>
                   {readable(role)}

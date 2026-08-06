@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   analyzeSkills,
+  getSkillAnalysisOperation,
+  getCurrentSkillAnalysis,
   getSkillContext,
   getSkillContextSummary,
   getSkillHealth,
@@ -20,10 +22,9 @@ import {
   getSkillStatsRanking,
   getSkillStatsSummary,
   installSkill,
-  previewSkillPrune,
-  executeSkillPrune,
   scanSkills,
   uninstallSkill,
+  deleteSkill,
   updateSkillFile,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -59,6 +60,29 @@ export function useAnalyzeSkills() {
       analyzeSkills(mode),
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useSkillAnalysisOperation(operationId: string | null) {
+  return useQuery({
+    queryKey: ["skills", "analysis-operation", operationId],
+    queryFn: () => getSkillAnalysisOperation(operationId as string),
+    enabled: Boolean(operationId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "running" ? 1500 : false;
+    },
+  });
+}
+
+export function useCurrentSkillAnalysis() {
+  return useQuery({
+    queryKey: ["skills", "analysis-operation", "current"],
+    queryFn: getCurrentSkillAnalysis,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "queued" || status === "running" ? 1500 : false;
+    },
   });
 }
 
@@ -145,27 +169,6 @@ export function useSkillCoverageEvidence(
     queryFn: () =>
       getSkillCoverageEvidence(skillId as string, targetKey as string, page),
     enabled: Boolean(skillId && targetKey),
-  });
-}
-
-export function useSkillPrune(days: number) {
-  return useQuery({
-    queryKey: queryKeys.skillPrune(days),
-    queryFn: () => previewSkillPrune(days),
-  });
-}
-export function useExecuteSkillPrune() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({
-      preview,
-      installationIds,
-    }: {
-      preview: import("@/lib/types").SkillPrunePreview;
-      installationIds: string[];
-    }) => executeSkillPrune(preview, installationIds),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
   });
 }
 
@@ -276,8 +279,9 @@ export function useInstallSkill() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: installSkill,
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot });
+    },
   });
 }
 
@@ -285,6 +289,16 @@ export function useUninstallSkill() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: uninstallSkill,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot });
+    },
+  });
+}
+
+export function useDeleteSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSkill,
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
   });

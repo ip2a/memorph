@@ -911,6 +911,7 @@ fn write_api_retrieve_archive_fixture() -> ArchiveFixture {
 async fn compression_plan_route_returns_candidates_from_file() {
     let now = Utc::now();
     let session = Session {
+        lineage: Vec::new(),
         schema: Schema::default(),
         identity: Identity {
             id: "api-dry-run-file".to_string(),

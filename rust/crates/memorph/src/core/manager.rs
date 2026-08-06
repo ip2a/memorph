@@ -300,9 +300,20 @@ struct WorkspaceKeyCache {
     values: HashMap<(String, String), Option<String>>,
 }
 
+/// Sentinel used by [`WorkspaceKeyCache::group_key`] for sessions with no
+/// resolvable workspace path. Cleaning/backing up this group must match those
+/// same sessions — not treat `"—"` as a literal filesystem path.
+const UNKNOWN_WORKSPACE_GROUP: &str = "—";
+
+fn is_unknown_workspace_group(workspace: &str) -> bool {
+    matches!(workspace.trim(), "" | "—" | "-")
+}
+
 impl WorkspaceKeyCache {
     fn key(&mut self, provider_id: &str, workspace: Option<&str>) -> Option<String> {
-        let workspace = workspace.map(str::trim).filter(|value| !value.is_empty())?;
+        let workspace = workspace
+            .map(str::trim)
+            .filter(|value| !value.is_empty() && !is_unknown_workspace_group(value))?;
         self.values
             .entry((provider_id.to_string(), workspace.to_string()))
             .or_insert_with(|| {
@@ -320,7 +331,16 @@ impl WorkspaceKeyCache {
         session_workspace: Option<&str>,
         requested_workspace: Option<&str>,
     ) -> bool {
-        let Some(requested_key) = self.key(provider_id, requested_workspace) else {
+        let Some(requested) = requested_workspace
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return true;
+        };
+        if is_unknown_workspace_group(requested) {
+            return self.group_key(provider_id, session_workspace) == UNKNOWN_WORKSPACE_GROUP;
+        }
+        let Some(requested_key) = self.key(provider_id, Some(requested)) else {
             return true;
         };
         self.key(provider_id, session_workspace).as_deref() == Some(requested_key.as_str())
@@ -328,7 +348,7 @@ impl WorkspaceKeyCache {
 
     fn group_key(&mut self, provider_id: &str, workspace: Option<&str>) -> String {
         self.key(provider_id, workspace)
-            .unwrap_or_else(|| workspace.unwrap_or("—").to_string())
+            .unwrap_or_else(|| UNKNOWN_WORKSPACE_GROUP.to_string())
     }
 }
 
@@ -771,12 +791,22 @@ pub fn clean_workspace(
         Err(e) => {
             return ManagerCleanResult {
                 success: 0,
-                failed: 0,
+                failed: 1,
                 freed_bytes: 0,
                 errors: vec![e.to_string()],
             };
         }
     };
+    if items.is_empty() {
+        return ManagerCleanResult {
+            success: 0,
+            failed: 1,
+            freed_bytes: 0,
+            errors: vec![format!(
+                "No sessions found for {provider_id} / {workspace}"
+            )],
+        };
+    }
     clean(&items, actor)
 }
 
@@ -792,12 +822,22 @@ pub fn backup_workspace(
         Err(e) => {
             return ManagerBackupResult {
                 success: 0,
-                failed: 0,
+                failed: 1,
                 files: Vec::new(),
                 errors: vec![e.to_string()],
             };
         }
     };
+    if items.is_empty() {
+        return ManagerBackupResult {
+            success: 0,
+            failed: 1,
+            files: Vec::new(),
+            errors: vec![format!(
+                "No sessions found for {provider_id} / {workspace}"
+            )],
+        };
+    }
     backup(&items, output_dir, actor)
 }
 
@@ -939,6 +979,65 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].session_id, "native-workspace");
         assert_eq!(items[0].size_bytes, 4096);
+    }
+
+    #[test]
+    fn unknown_workspace_group_resolves_sessions_without_workspace_dir() {
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = TestConfigHomeGuard::new(home.path());
+        let conn = local_store::open_database().unwrap();
+        conn.execute(
+            "INSERT INTO session_sources
+             (id, provider_id, provider_session_id, source_path, workspace_dir, file_size_bytes,
+              first_seen_at_ms, last_seen_at_ms)
+             VALUES ('source-unknown', 'claude', 'native-unknown', '/missing/unknown.jsonl', NULL, 2048, 10, 10)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+             (id, provider_id, provider_session_id, primary_source_id, workspace_dir, title,
+              status, created_at_ms, last_active_at_ms, event_count, turn_count)
+             VALUES ('canonical-unknown', 'claude', 'native-unknown', 'source-unknown', NULL,
+                     'No workspace session', 'completed', 10, 200, 2, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_snapshots
+             (session_id, provider_id, title, workspace_dir, status, last_active_at_ms,
+              event_count, turn_count, flags_json, projection_version, stale, updated_at_ms)
+             VALUES ('canonical-unknown', 'claude', 'No workspace session', NULL, 'completed',
+                     200, 2, 1, '{}', 1, 0, 200)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let groups = workspaces(&ManagerFilter {
+            providers: vec!["claude".to_string()],
+            older_than_days: None,
+            older_than_ms: None,
+            larger_than_mb: None,
+            larger_than_bytes: None,
+            smaller_than_bytes: None,
+            workspace: None,
+            search: None,
+            sort: None,
+            offset: None,
+            limit: None,
+        })
+        .unwrap();
+        assert_eq!(groups.total_count, 1);
+        assert_eq!(groups.items[0].workspace, "—");
+        assert_eq!(groups.items[0].session_count, 1);
+
+        // Before the fix, filtering by the "—" group key returned zero rows, so
+        // clean/backup reported "0 deleted, 0 failed" while the row stayed.
+        let items = list_workspace_sessions("claude", "—").unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].session_id, "native-unknown");
+        assert!(items[0].project_dir.is_none());
     }
 
     #[test]

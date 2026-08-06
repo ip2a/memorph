@@ -78,7 +78,7 @@ export function CreateSyncDialog({
       toast.success(t("sessionSyncCreated"), {
         description: `${group.id} · holdings=${group.holdings.length}`,
       });
-      navigate(`/sync/${encodeURIComponent(group.id)}`);
+      navigate(`/sync?group=${encodeURIComponent(group.id)}`);
     },
   });
 

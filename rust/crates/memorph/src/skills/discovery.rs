@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::inspection::{
-    inspect_bundle, SkillAgent, SkillEntry, SkillInstallation, SkillStatistics, SkillsOverview,
-    MANAGED_MARKER,
+    inspect_bundle, read_frontmatter, SkillAgent, SkillEntry, SkillInstallation, SkillStatistics,
+    SkillsOverview, MANAGED_MARKER,
 };
 
 pub const SKILL_AGENTS: [(&str, &str, &str, &str); 6] = [
@@ -202,29 +202,17 @@ fn installation_used_by(agent_id: &str) -> &str {
 }
 
 fn read_metadata(path: &Path, directory: &str) -> (String, Option<String>) {
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return (directory.to_string(), None);
-    };
-    let mut name = None;
-    let mut description = None;
-    let mut lines = contents.lines();
-    if lines.next().map(str::trim) == Some("---") {
-        for line in lines {
-            let line = line.trim();
-            if line == "---" {
-                break;
-            }
-            if let Some((key, value)) = line.split_once(':') {
-                let value = value.trim().trim_matches(['\'', '"']);
-                match key.trim() {
-                    "name" if !value.is_empty() => name = Some(value.to_string()),
-                    "description" if !value.is_empty() => description = Some(value.to_string()),
-                    _ => {}
-                }
-            }
-        }
-    }
-    (name.unwrap_or_else(|| directory.to_string()), description)
+    let frontmatter = read_frontmatter(path);
+    let name = frontmatter
+        .get("name")
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .unwrap_or_else(|| directory.to_string());
+    let description = frontmatter
+        .get("description")
+        .filter(|value| !value.is_empty())
+        .cloned();
+    (name, description)
 }
 
 fn skill_id(name: &str) -> String {
@@ -247,6 +235,33 @@ fn skill_id(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_discovery_reads_multiline_description() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("skills");
+        let skill = root.join("explore");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: explore\ndescription: |\n  first line\n  second line\n---\n",
+        )
+        .unwrap();
+        let agents = vec![SkillAgent {
+            agent_id: "codex".into(),
+            name: "Codex".into(),
+            skills_dir: root,
+            scope_kind: "global".into(),
+            workspace_dir: None,
+        }];
+
+        let overview = discover_catalog(&agents);
+
+        assert_eq!(
+            overview.skills[0].description.as_deref(),
+            Some("first line\nsecond line")
+        );
+    }
 
     #[test]
     fn catalog_discovery_ignores_non_entry_file_bodies() {

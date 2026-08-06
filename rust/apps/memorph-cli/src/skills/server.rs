@@ -7,18 +7,19 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::{
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
-    sync::Arc,
 };
+use uuid::Uuid;
 use walkdir::WalkDir;
 
 use memorph::skills::{
     conflicts, context, coverage, discovery, graph, health,
     invocation::{self, StatsQuery},
-    prune,
     repository::{self, CatalogQuery},
     scanner::{self, ScanMode},
 };
@@ -27,6 +28,22 @@ use memorph::skills::{
 struct SkillsState {
     agents: Arc<Vec<memorph::skills::inspection::SkillAgent>>,
     database_path: Option<Arc<PathBuf>>,
+    analysis_operations: Arc<Mutex<HashMap<String, SkillAnalysisOperation>>>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+struct SkillAnalysisOperation {
+    operation_id: String,
+    mode: String,
+    status: String,
+    phase: String,
+    processed_sources: usize,
+    total_sources: usize,
+    percentage: u8,
+    started_at_ms: Option<i64>,
+    completed_at_ms: Option<i64>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -78,6 +95,14 @@ fn router_with_state(
         .route("/api/v1/skills/catalog", get(list_skills))
         .route("/api/v1/skills/scan", post(scan_skills))
         .route("/api/v1/skills/analyze", post(analyze_skills))
+        .route(
+            "/api/v1/skills/analyze/operations/current",
+            get(get_current_analysis),
+        )
+        .route(
+            "/api/v1/skills/analyze/operations/{operation_id}",
+            get(get_analysis_operation),
+        )
         .route("/api/v1/skills/stats/summary", get(get_stats_summary))
         .route("/api/v1/skills/context/summary", get(get_context_summary))
         .route(
@@ -85,8 +110,6 @@ fn router_with_state(
             get(get_conflicts).post(check_conflicts),
         )
         .route("/api/v1/skills/coverage/summary", get(get_coverage_summary))
-        .route("/api/v1/skills/prune/preview", post(preview_prune))
-        .route("/api/v1/skills/prune/execute", post(execute_prune))
         .route(
             "/api/v1/skills/health/summary",
             get(get_health_summary).post(check_health_summary),
@@ -95,7 +118,10 @@ fn router_with_state(
         .route("/api/v1/skills/stats/breakdown", get(get_stats_breakdown))
         .route("/api/v1/skills/graph", get(get_skill_graph))
         .route("/api/v1/skills/stats/ranking", get(get_stats_ranking))
-        .route("/api/v1/skills/{skill_id}", get(get_skill))
+        .route(
+            "/api/v1/skills/{skill_id}",
+            get(get_skill).delete(delete_skill),
+        )
         .route("/api/v1/skills/detail/{skill_id}", get(get_skill))
         .route("/api/v1/skills/{skill_id}/tree", get(get_skill_tree))
         .route("/api/v1/skills/detail/{skill_id}/tree", get(get_skill_tree))
@@ -135,6 +161,7 @@ fn router_with_state(
         .with_state(SkillsState {
             agents: Arc::new(agents),
             database_path: database_path.map(Arc::new),
+            analysis_operations: Arc::new(Mutex::new(HashMap::new())),
         })
 }
 
@@ -415,6 +442,52 @@ fn uninstall(
     Ok(discover(agents))
 }
 
+/// Remove a specific set of installations from disk — the installations
+/// belonging to one catalog row. Symlinks and the real source directory are
+/// both removed; unlike [`uninstall`], user-owned directories (the real source)
+/// go too, which is what "delete this copy" has to mean. Safety: each path is
+/// checked to be exactly `<skills_dir>/<validated-directory>` before removal, so
+/// we never follow a stray path elsewhere. Removal is driven by the actual
+/// filesystem type (`symlink_metadata`), so the stored `install_kind` is only
+/// informational.
+fn remove_catalog_installations(
+    agents: &[memorph::skills::inspection::SkillAgent],
+    installations: &[repository::CatalogInstallation],
+) -> Result<()> {
+    for installation in installations {
+        let path = std::path::Path::new(&installation.install_path);
+        let agent = agents
+            .iter()
+            .find(|agent| agent.agent_id == agent_id_for_used_by(&installation.used_by))
+            .ok_or_else(|| anyhow!("Unknown agent for installation: {}", installation.used_by))?;
+        let directory = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| anyhow!("Skill installation has no directory name"))?;
+        validate_directory(directory)?;
+        let expected = agent.skills_dir.join(directory);
+        if path != expected {
+            return Err(anyhow!(
+                "Refusing to delete {}: expected it under {}",
+                path.display(),
+                agent.skills_dir.display()
+            ));
+        }
+        let is_link = path
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink());
+        if is_link {
+            // remove_file on a symlink removes the link itself, not its target.
+            fs::remove_file(path)
+                .with_context(|| format!("Failed to remove symlink {}", path.display()))?;
+        } else if path.is_dir() {
+            fs::remove_dir_all(path)
+                .with_context(|| format!("Failed to remove {}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct SkillFileQuery {
     path: String,
@@ -629,6 +702,14 @@ async fn put_skill_file(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct SkillScanQueued {
+    queued: bool,
+    mode: &'static str,
+    roots_scanned: usize,
+    skills_seen: usize,
+}
+
 #[derive(Debug, Deserialize)]
 struct SkillScanRequest {
     #[serde(default)]
@@ -712,48 +793,173 @@ async fn analyze_skills(
     Json(request): Json<SkillScanRequest>,
 ) -> impl IntoResponse {
     let mode = request.mode.unwrap_or(ScanMode::Incremental);
-    let database_path = state
-        .database_path
-        .as_deref()
-        .map(|p| p.as_path().to_path_buf());
-    let force = mode == ScanMode::Full;
-    std::thread::Builder::new()
-        .name("memorph-skill-analyze".into())
-        .spawn(move || {
-            let result = match database_path.as_deref() {
-                Some(path) => memorph::storage::local_store::LocalSqliteStore::open(path)
-                    .and_then(|mut store| invocation::index(store.connection_mut(), force)),
-                None => memorph::storage::local_store::LocalSqliteStore::open_default()
-                    .and_then(|mut store| invocation::index(store.connection_mut(), force)),
-            };
-            if let Err(error) = result {
-                memorph::logging::error(
-                    "skill_analyze_background",
-                    format!("background skill analysis failed: {error:#}"),
-                );
-            }
-        })
-        .ok();
-
-    let mode = match mode {
+    let mode_name = match mode {
         ScanMode::Incremental => "incremental",
         ScanMode::Full => "full",
     };
-    ApiResponse::success(SkillAnalyzeQueued { queued: true, mode }).into_response()
+    let mut operations = state
+        .analysis_operations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(existing) = operations
+        .values()
+        .find(|op| op.status == "queued" || op.status == "running")
+    {
+        return ApiResponse::success(SkillAnalyzeQueued {
+            operation_id: existing.operation_id.clone(),
+            queued: true,
+            joined: true,
+            mode: existing.mode.clone(),
+        })
+        .into_response();
+    }
+    let operation_id = Uuid::new_v4().to_string();
+    operations.insert(
+        operation_id.clone(),
+        SkillAnalysisOperation {
+            operation_id: operation_id.clone(),
+            mode: mode_name.into(),
+            status: "queued".into(),
+            phase: "queued".into(),
+            processed_sources: 0,
+            total_sources: 0,
+            percentage: 0,
+            started_at_ms: None,
+            completed_at_ms: None,
+            error: None,
+        },
+    );
+    drop(operations);
+
+    let operations_for_worker = Arc::clone(&state.analysis_operations);
+    let database_path = state
+        .database_path
+        .as_deref()
+        .map(|path| path.as_path().to_path_buf());
+    let force = mode == ScanMode::Full;
+    let worker_id = operation_id.clone();
+    let spawn_result = std::thread::Builder::new()
+        .name("memorph-skill-analyze".into())
+        .spawn(move || {
+            let now = || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or_default()
+            };
+            if let Ok(mut ops) = operations_for_worker.lock() {
+                if let Some(op) = ops.get_mut(&worker_id) {
+                    op.status = "running".into();
+                    op.phase = "loading_catalog".into();
+                    op.started_at_ms = Some(now());
+                }
+            }
+            let update = |processed: usize, total: usize, phase: &'static str| {
+                if let Ok(mut ops) = operations_for_worker.lock() {
+                    if let Some(op) = ops.get_mut(&worker_id) {
+                        op.phase = phase.into();
+                        op.processed_sources = processed;
+                        op.total_sources = total;
+                        op.percentage = if total == 0 {
+                            100
+                        } else {
+                            ((processed * 90) / total).min(90) as u8
+                        };
+                    }
+                }
+            };
+            let result =
+                match database_path.as_deref() {
+                    Some(path) => memorph::storage::local_store::LocalSqliteStore::open(path)
+                        .and_then(|mut store| {
+                            invocation::index_with_progress(store.connection_mut(), force, update)
+                        }),
+                    None => memorph::storage::local_store::LocalSqliteStore::open_default()
+                        .and_then(|mut store| {
+                            invocation::index_with_progress(store.connection_mut(), force, update)
+                        }),
+                };
+            if let Ok(mut ops) = operations_for_worker.lock() {
+                if let Some(op) = ops.get_mut(&worker_id) {
+                    op.completed_at_ms = Some(now());
+                    match result {
+                        Ok(summary) => {
+                            op.status = "completed".into();
+                            op.phase = "completed".into();
+                            op.percentage = 100;
+                            op.processed_sources = summary.sources_scanned
+                                + summary.sources_skipped
+                                + summary.sources_failed;
+                            op.total_sources = op.processed_sources;
+                        }
+                        Err(error) => {
+                            op.status = "failed".into();
+                            op.phase = "failed".into();
+                            op.error = Some(format!("{error:#}"));
+                        }
+                    }
+                }
+            }
+        });
+    if spawn_result.is_err() {
+        if let Ok(mut ops) = state.analysis_operations.lock() {
+            if let Some(op) = ops.get_mut(&operation_id) {
+                op.status = "failed".into();
+                op.phase = "failed".into();
+                op.error = Some("failed to start analysis worker".into());
+            }
+        }
+    }
+    ApiResponse::success(SkillAnalyzeQueued {
+        operation_id,
+        queued: true,
+        joined: false,
+        mode: mode_name.into(),
+    })
+    .into_response()
 }
 
-#[derive(Debug, Serialize)]
-struct SkillScanQueued {
-    queued: bool,
-    mode: &'static str,
-    roots_scanned: usize,
-    skills_seen: usize,
+async fn get_analysis_operation(
+    State(state): State<SkillsState>,
+    AxumPath(operation_id): AxumPath<String>,
+) -> impl IntoResponse {
+    match state
+        .analysis_operations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&operation_id)
+        .cloned()
+    {
+        Some(operation) => ApiResponse::success(operation).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(ApiResponse::<SkillAnalysisOperation> {
+                ok: false,
+                data: None,
+                error: Some("analysis operation not found".into()),
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_current_analysis(State(state): State<SkillsState>) -> impl IntoResponse {
+    let operation = state
+        .analysis_operations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .find(|op| op.status == "queued" || op.status == "running")
+        .cloned();
+    ApiResponse::success(operation).into_response()
 }
 
 #[derive(Debug, Serialize)]
 struct SkillAnalyzeQueued {
+    operation_id: String,
     queued: bool,
-    mode: &'static str,
+    joined: bool,
+    mode: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -851,46 +1057,6 @@ async fn get_skill_graph(
     match stats_store(&state).and_then(|store| graph::graph(store.connection(), &query)) {
         Ok(value) => ApiResponse::success(value).into_response(),
         Err(error) => error_response(error),
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct PrunePreviewRequest {
-    days: Option<u32>,
-}
-async fn preview_prune(
-    State(state): State<SkillsState>,
-    Json(request): Json<PrunePreviewRequest>,
-) -> impl IntoResponse {
-    let result = stats_store(&state)
-        .and_then(|store| prune::preview(store.connection(), request.days.unwrap_or(30)));
-    match result {
-        Ok(value) => ApiResponse::success(value).into_response(),
-        Err(error) => error_response(error),
-    }
-}
-async fn execute_prune(
-    State(state): State<SkillsState>,
-    Json(request): Json<prune::ExecuteRequest>,
-) -> impl IntoResponse {
-    let roots = state
-        .agents
-        .iter()
-        .map(|agent| agent.skills_dir.clone())
-        .collect::<Vec<_>>();
-    let result =
-        stats_store(&state).and_then(|store| prune::execute(store.connection(), &roots, &request));
-    match result {
-        Ok(value) => ApiResponse::success(value).into_response(),
-        Err(error) => (
-            StatusCode::CONFLICT,
-            Json(ApiResponse::<()> {
-                ok: false,
-                data: None,
-                error: Some(error.to_string()),
-            }),
-        )
-            .into_response(),
     }
 }
 
@@ -1136,12 +1302,26 @@ async fn get_skill_invocations(
     }
 }
 
+fn persist_installation_change(
+    state: &SkillsState,
+    overview: &memorph::skills::inspection::SkillsOverview,
+) -> Result<()> {
+    match state.database_path.as_deref() {
+        Some(path) => scanner::persist_path(path, overview, ScanMode::Incremental),
+        None => scanner::persist_default(overview, ScanMode::Incremental),
+    }?;
+    Ok(())
+}
+
 async fn install_skill(
     State(state): State<SkillsState>,
     Json(request): Json<SkillMutation>,
 ) -> impl IntoResponse {
     match install(&state.agents, &request) {
-        Ok(overview) => ApiResponse::success(overview).into_response(),
+        Ok(overview) => match persist_installation_change(&state, &overview) {
+            Ok(()) => ApiResponse::success(overview).into_response(),
+            Err(error) => error_response(error),
+        },
         Err(error) => error_response(error),
     }
 }
@@ -1151,7 +1331,31 @@ async fn uninstall_skill(
     Json(request): Json<SkillMutation>,
 ) -> impl IntoResponse {
     match uninstall(&state.agents, &request) {
-        Ok(overview) => ApiResponse::success(overview).into_response(),
+        Ok(overview) => match persist_installation_change(&state, &overview) {
+            Ok(()) => ApiResponse::success(overview).into_response(),
+            Err(error) => error_response(error),
+        },
+        Err(error) => error_response(error),
+    }
+}
+
+async fn delete_skill(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+) -> impl IntoResponse {
+    // Per-row delete: `skill_id` is the catalog row's hash id (one list entry).
+    // Load that row's installations, remove only those from disk, then drop the
+    // catalog row + children by id — sibling copies under the same name survive.
+    let result: Result<()> = (|| {
+        let mut store = stats_store(&state)?;
+        let item = repository::get_catalog_item(store.connection(), &skill_id)?
+            .ok_or_else(|| anyhow!("Unknown skill: {skill_id}"))?;
+        remove_catalog_installations(&state.agents, &item.installations)?;
+        repository::delete_skill(store.connection_mut(), &skill_id)?;
+        Ok(())
+    })();
+    match result {
+        Ok(_) => ApiResponse::success(discover(&state.agents)).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -1366,6 +1570,67 @@ mod tests {
         };
         assert!(uninstall(&agents, &user_owned).is_err());
         assert!(root.path().join("claude/skills/writer").exists());
+    }
+
+    #[test]
+    fn delete_skill_removes_symlink_and_user_owned_source_directory() {
+        let root = tempfile::tempdir().unwrap();
+        // Real, user-owned source under claude — the case uninstall refuses.
+        create_skill(root.path(), "claude", "writer", "# Writer");
+        let agents = agents(root.path());
+        // Managed deployment under codex (symlink or copy) pointing at it.
+        let managed = SkillMutation {
+            skill_id: "writer".into(),
+            used_by: "codex".into(),
+            source_used_by: None,
+        };
+        install(&agents, &managed).unwrap();
+        assert!(root.path().join("claude/skills/writer").exists());
+        assert!(root.path().join("codex/skills/writer").exists());
+
+        // remove_catalog_installations takes the row's installation records and
+        // removes exactly those paths: the codex deployment AND the user-owned
+        // claude source directory. Removal follows the real filesystem type, so
+        // install_kind here is informational.
+        let installations = vec![
+            repository::CatalogInstallation {
+                used_by: "claude".into(),
+                scope_kind: "global".into(),
+                workspace_dir: None,
+                install_path: root
+                    .path()
+                    .join("claude/skills/writer")
+                    .to_string_lossy()
+                    .into_owned(),
+                install_kind: "directory".into(),
+                symlink_target: None,
+                link_status: "not-applicable".into(),
+                status: "active".into(),
+            },
+            repository::CatalogInstallation {
+                used_by: "codex".into(),
+                scope_kind: "global".into(),
+                workspace_dir: None,
+                install_path: root
+                    .path()
+                    .join("codex/skills/writer")
+                    .to_string_lossy()
+                    .into_owned(),
+                install_kind: "directory".into(),
+                symlink_target: None,
+                link_status: "not-applicable".into(),
+                status: "active".into(),
+            },
+        ];
+        remove_catalog_installations(&agents, &installations).unwrap();
+        assert!(
+            !root.path().join("codex/skills/writer").exists(),
+            "symlink/copy installation should be removed"
+        );
+        assert!(
+            !root.path().join("claude/skills/writer").exists(),
+            "user-owned source directory should be removed"
+        );
     }
 
     #[test]

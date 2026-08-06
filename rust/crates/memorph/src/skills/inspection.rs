@@ -301,21 +301,88 @@ pub fn read_frontmatter(path: &Path) -> BTreeMap<String, String> {
         return BTreeMap::new();
     };
     let mut result = BTreeMap::new();
-    let mut lines = contents.lines();
+    let mut lines = contents.lines().peekable();
     if lines.next().map(str::trim) != Some("---") {
         return result;
     }
-    for line in lines {
-        let line = line.trim();
-        if line == "---" {
+    while let Some(line) = lines.next() {
+        if line.trim() == "---" {
             break;
         }
-        if let Some((key, value)) = line.split_once(':') {
-            let value = value.trim().trim_matches(['\'', '"']);
-            if !key.trim().is_empty() && !value.is_empty() {
-                result.insert(key.trim().to_string(), value.to_string());
+        let Some((key, raw_value)) = line.split_once(':') else {
+            continue;
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            continue;
+        }
+        let value = raw_value.trim();
+        if matches!(value, "|" | ">" | "|-" | "|+" | ">-" | ">+") {
+            let folded = value.starts_with('>');
+            let mut block = Vec::new();
+            while let Some(next) = lines.peek().copied() {
+                if next.trim() == "---"
+                    || (!next.is_empty() && !next.starts_with(char::is_whitespace))
+                {
+                    break;
+                }
+                let next = lines.next().expect("peeked line exists");
+                block.push(next.trim_start());
             }
+            let separator = if folded { " " } else { "\n" };
+            let block = block.join(separator).trim().to_string();
+            if !block.is_empty() {
+                result.insert(key.to_string(), block);
+            }
+            continue;
+        }
+        let value = value.trim_matches(['\'', '"']);
+        if !value.is_empty() {
+            result.insert(key.to_string(), value.to_string());
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_frontmatter;
+    use std::fs;
+
+    #[test]
+    fn reads_literal_multiline_frontmatter_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        fs::write(
+            &path,
+            "---\nname: explore\ndescription: |\n  first line\n  second line\nversion: 1\n---\n",
+        )
+        .unwrap();
+
+        let values = read_frontmatter(&path);
+
+        assert_eq!(
+            values.get("description").map(String::as_str),
+            Some("first line\nsecond line")
+        );
+        assert_eq!(values.get("version").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn folds_multiline_frontmatter_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("SKILL.md");
+        fs::write(
+            &path,
+            "---\ndescription: >-\n  first line\n  second line\n---\n",
+        )
+        .unwrap();
+
+        let values = read_frontmatter(&path);
+
+        assert_eq!(
+            values.get("description").map(String::as_str),
+            Some("first line second line")
+        );
+    }
 }

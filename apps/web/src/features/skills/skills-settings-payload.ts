@@ -40,10 +40,11 @@ export function buildUpdateSettingsPayloadFromMeta(
     },
     home_buttons: patch.home_buttons ?? {
       view: settings.home_buttons?.view !== false,
-      compress: settings.home_buttons?.compress !== false,
+      compress: settings.home_buttons?.compress === true,
       switch: settings.home_buttons?.switch !== false,
-      export: settings.home_buttons?.export !== false,
-      sync: settings.home_buttons?.sync !== false,
+      export: settings.home_buttons?.export === true,
+      sync: settings.home_buttons?.sync === true,
+      rename: settings.home_buttons?.rename !== false,
       delete: settings.home_buttons?.delete !== false,
     },
     home_session_layout:

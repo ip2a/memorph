@@ -29,16 +29,28 @@ import { useReadiness } from "@/features/readiness/queries";
 import { homeProviderCandidates, resolveHomeProviders } from "@/features/home/model/providers";
 import { randomAsciiBannerColor } from "@/features/home/ascii-banner";
 import { HomeSessionListPanel, HomeSessionToolbar } from "@/features/home/home-session-controls";
-import { CompressSessionDialog } from "@/features/compression/compression-actions";
+import { DEFAULT_SKILLS_CATALOG_PAGE_SIZE } from "@/features/skills/skills-catalog-page-size";
 import { targetFromSession } from "@/features/sessions/session-action-target";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
-import type { FeedState, HomeButtonSettingsPayload, HomeSessionLayout, ProviderFeedState, SessionGroup, SessionItem, SessionListParams, SessionListSort, SettingsPayload, SyncGroup, UpdateSettingsPayload } from "@/lib/types";
+import { CompressSessionDialog } from "@/features/compression/compression-actions";
+import type { HomeButtonSettingsPayload, HomeSessionLayout, SessionGroup, SessionItem, SessionListParams, SessionListSort, SettingsPayload, SyncGroup, UpdateSettingsPayload } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type HomeButtons = Record<string, unknown> | undefined;
 
+const DEFAULT_HOME_BUTTONS: Required<HomeButtonSettingsPayload> = {
+  view: true,
+  compress: false,
+  switch: true,
+  export: false,
+  sync: false,
+  rename: true,
+  delete: true,
+};
+
 function homeButtonEnabled(homeButtons: HomeButtons, key: keyof HomeButtonSettingsPayload) {
-  return homeButtons?.[key] !== false;
+  const configured = homeButtons?.[key];
+  return typeof configured === "boolean" ? configured : DEFAULT_HOME_BUTTONS[key];
 }
 
 function clampSessionsPerProvider(value: number) {
@@ -58,14 +70,15 @@ function settingsPayloadFromMeta(settings: SettingsPayload, sessionsPerProvider:
     },
     home_buttons: {
       view: settings.home_buttons?.view !== false,
-      compress: settings.home_buttons?.compress !== false,
+      compress: settings.home_buttons?.compress === true,
       switch: settings.home_buttons?.switch !== false,
-      export: settings.home_buttons?.export !== false,
-      sync: settings.home_buttons?.sync !== false,
+      export: settings.home_buttons?.export === true,
+      sync: settings.home_buttons?.sync === true,
+      rename: settings.home_buttons?.rename !== false,
       delete: settings.home_buttons?.delete !== false,
     },
     home_session_layout: settings.home_session_layout ?? "tabs",
-    skills_catalog_page_size: settings.skills_catalog_page_size ?? 50,
+    skills_catalog_page_size: settings.skills_catalog_page_size ?? DEFAULT_SKILLS_CATALOG_PAGE_SIZE,
     agent_order: settings.agent_order ?? [],
     primary_agents: settings.primary_agents ?? [],
     server: {
@@ -204,67 +217,55 @@ function SessionRowActions({
   onSync: (session: SessionItem) => void;
 }) {
   const { t } = useI18n();
-  const showView = homeButtonEnabled(homeButtons, "view");
-  const showCompress = homeButtonEnabled(homeButtons, "compress");
-  const showSwitch = homeButtonEnabled(homeButtons, "switch");
-  const showExport = homeButtonEnabled(homeButtons, "export");
-  const showSync = homeButtonEnabled(homeButtons, "sync");
-  const showDelete = homeButtonEnabled(homeButtons, "delete");
+  const inlineEnabled = {
+    view: homeButtonEnabled(homeButtons, "view"),
+    compress: homeButtonEnabled(homeButtons, "compress"),
+    switch: homeButtonEnabled(homeButtons, "switch"),
+    export: homeButtonEnabled(homeButtons, "export"),
+    sync: homeButtonEnabled(homeButtons, "sync"),
+    rename: homeButtonEnabled(homeButtons, "rename"),
+    remove: homeButtonEnabled(homeButtons, "delete"),
+  };
 
-  const actions: TrailingMoreAction[] = [];
-  if (showView) {
-    actions.push({ id: "view", label: t("view"), href: detailHref });
-  }
-  if (showCompress) {
-    actions.push({
+  const actions: TrailingMoreAction[] = [
+    { id: "view", label: t("view"), href: detailHref },
+    {
       id: "compress",
       label: t("compression"),
       onSelect: () => onCompress(session),
-    });
-  }
-  if (showSwitch) {
-    actions.push({
+    },
+    {
       id: "switch",
       label: t("switch"),
       onSelect: () => onSwitch(session),
-    });
-  }
-  if (showExport) {
-    actions.push({
+    },
+    {
       id: "export",
       label: t("export"),
       onSelect: () => onExport(session),
-    });
-  }
-  if (showSync && syncRef) {
-    actions.push({ id: "sync-open", label: t("openSync"), href: `/sync/${syncRef}` });
-  } else if (showSync) {
-    actions.push({
-      id: "sync",
-      label: t("sync"),
-      onSelect: () => onSync(session),
-    });
-  }
-  actions.push({
-    id: "rename",
-    label: t("rename"),
-    onSelect: () => onRename(session),
-  });
-  if (showDelete) {
-    actions.push({
+    },
+    syncRef
+      ? { id: "sync", label: t("openSync"), href: `/sync?group=${encodeURIComponent(syncRef)}` }
+      : {
+          id: "sync",
+          label: t("sync"),
+          onSelect: () => onSync(session),
+        },
+    {
+      id: "rename",
+      label: t("rename"),
+      onSelect: () => onRename(session),
+    },
+    {
       id: "remove",
       label: t("remove"),
       variant: "destructive",
       onSelect: () => onDelete(session),
-    });
-  }
-
-  const leadingActions = actions.slice(0, -1);
-  const trailingAction = actions.at(-1);
-
-  if (!trailingAction) {
-    return null;
-  }
+    },
+  ];
+  const inlineActions = actions.filter((action) => inlineEnabled[action.id as keyof typeof inlineEnabled]);
+  const leadingActions = inlineActions.slice(0, -1);
+  const trailingAction = inlineActions.at(-1);
 
   const dialogTitle = t("moreActionsFor", { title: sessionTitle(session) });
 
@@ -272,7 +273,7 @@ function SessionRowActions({
     <div className="flex shrink-0 flex-wrap items-center justify-end gap-2" data-session-row-actions>
       {leadingActions.map(renderSessionActionButton)}
       <TrailingMoreActionsDialog
-        trailingAction={renderSessionActionButton(trailingAction)}
+        trailingAction={trailingAction ? renderSessionActionButton(trailingAction) : null}
         moreLabel={dialogTitle}
         dialogTitle={dialogTitle}
         actions={actions}
@@ -316,7 +317,7 @@ function SessionRow({
             </Link>
             {syncRef ? (
               <Badge asChild className="shrink-0">
-                <Link to={`/sync/${syncRef}`}>{t("activeSync")}</Link>
+                <Link to={`/sync?group=${encodeURIComponent(syncRef)}`}>{t("activeSync")}</Link>
               </Badge>
             ) : null}
           </div>
@@ -439,6 +440,7 @@ function SessionGroupsTabs({
   groups,
   syncGroups,
   homeButtons,
+  isRefreshing,
   onRename,
   onDelete,
   onCompress,
@@ -449,6 +451,7 @@ function SessionGroupsTabs({
   groups: SessionGroup[];
   syncGroups: SyncGroup[];
   homeButtons?: HomeButtons;
+  isRefreshing: boolean;
   onRename: (session: SessionItem) => void;
   onDelete: (session: SessionItem) => void;
   onCompress: (session: SessionItem) => void;
@@ -468,26 +471,31 @@ function SessionGroupsTabs({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
-      <div className="flex shrink-0 flex-wrap gap-1 border-b" role="tablist" aria-label={t("homeSessionProviders")}>
-        {groups.map((group) => (
-          <button
-            key={group.provider_id}
-            type="button"
-            role="tab"
-            aria-selected={activeProviderId === group.provider_id}
-            data-home-session-group={group.provider_id}
-            onClick={() => setActiveProviderId(group.provider_id)}
-            className={cn(
-              "flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
-              activeProviderId === group.provider_id
-                ? "border-primary text-foreground"
-                : "border-transparent text-muted-foreground",
-            )}
-          >
-            <ProviderLogo providerId={group.provider_id} size="sm" alt={group.provider_name || group.provider_id} />
-            <span className="font-mono">{group.provider_name || group.provider_id}</span>
-          </button>
-        ))}
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-1 border-b" role="tablist" aria-label={t("homeSessionProviders")}>
+        <div className="flex flex-wrap gap-1">
+          {groups.map((group) => (
+            <button
+              key={group.provider_id}
+              type="button"
+              role="tab"
+              aria-selected={activeProviderId === group.provider_id}
+              data-home-session-group={group.provider_id}
+              onClick={() => setActiveProviderId(group.provider_id)}
+              className={cn(
+                "flex items-center gap-2 border-b-2 px-3 py-2 text-sm font-medium transition-colors",
+                activeProviderId === group.provider_id
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted-foreground",
+              )}
+            >
+              <ProviderLogo providerId={group.provider_id} size="sm" alt={group.provider_name || group.provider_id} />
+              <span className="font-mono">{group.provider_name || group.provider_id}</span>
+            </button>
+          ))}
+        </div>
+        {isRefreshing ? (
+          <RefreshCwIcon className="mr-2 size-3.5 animate-spin text-muted-foreground" aria-label={t("scanning")} />
+        ) : null}
       </div>
       {activeGroup ? (
         <SessionGroupSessions
@@ -512,6 +520,7 @@ function SessionGroups({
   groups,
   syncGroups,
   homeButtons,
+  isRefreshing,
   onRename,
   onDelete,
   onCompress,
@@ -523,6 +532,7 @@ function SessionGroups({
   groups: SessionGroup[];
   syncGroups: SyncGroup[];
   homeButtons?: HomeButtons;
+  isRefreshing: boolean;
   onRename: (session: SessionItem) => void;
   onDelete: (session: SessionItem) => void;
   onCompress: (session: SessionItem) => void;
@@ -555,45 +565,10 @@ function SessionGroups({
   };
 
   if (layout === "tabs") {
-    return <SessionGroupsTabs {...sharedProps} />;
+    return <SessionGroupsTabs {...sharedProps} isRefreshing={isRefreshing} />;
   }
 
   return <SessionGroupsStack {...sharedProps} />;
-}
-
-function FeedStateBar({
-  feedState,
-  providerStates,
-}: {
-  feedState?: FeedState;
-  providerStates?: ProviderFeedState[];
-}) {
-  const { t } = useI18n();
-  const hidden = !feedState || feedState.kind === "fresh";
-  const busy = feedState?.kind === "cold_scanning" || feedState?.kind === "warming";
-  const scanningCount = providerStates?.filter((state) => state.kind === "scanning").length ?? 0;
-
-  return (
-    <div
-      className={cn(
-        "flex min-h-8 items-center gap-2 border-b px-3 py-2 text-xs",
-        busy ? "bg-muted/50" : "bg-background",
-        hidden && "invisible",
-      )}
-      aria-hidden={hidden}
-    >
-      {busy ? (
-        <span
-          className="size-3 animate-spin rounded-full border-2 border-current border-t-transparent"
-          aria-hidden="true"
-        />
-      ) : null}
-      <span className="text-muted-foreground">{feedState?.message || feedState?.kind || ""}</span>
-      {scanningCount > 0 ? (
-        <span className="ml-auto font-mono text-muted-foreground">{scanningCount} {t("scanning")}</span>
-      ) : null}
-    </div>
-  );
 }
 
 export function HomePage() {
@@ -770,7 +745,9 @@ export function HomePage() {
 
       <section className="flex h-full min-h-0 flex-col overflow-hidden rounded-md border bg-background">
         <div className="flex shrink-0 items-center gap-3 border-b p-3">
-          <strong className="shrink-0">{t("recentSessions")}</strong>
+          <div className="flex shrink-0 items-center gap-2">
+            <strong className="shrink-0">{t("recentSessions")}</strong>
+          </div>
           <HomeSessionToolbar
             className="min-w-0 flex-1"
             search={search}
@@ -796,10 +773,6 @@ export function HomePage() {
             {t("refresh")}
           </Button>
         </div>
-        <FeedStateBar
-          feedState={sessions.data?.feed_state}
-          providerStates={sessions.data?.provider_states}
-        />
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <ScrollPane
             ref={sessionScrollRef}
@@ -819,6 +792,7 @@ export function HomePage() {
                 groups={sessionGroups}
                 syncGroups={syncItems}
                 homeButtons={homeButtons}
+                isRefreshing={listRefreshing}
                 onRename={setRenameTarget}
                 onDelete={setDeleteTarget}
                 onCompress={setCompressionTarget}

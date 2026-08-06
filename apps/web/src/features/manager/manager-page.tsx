@@ -191,6 +191,7 @@ function actionStats(target: ManagerActionTarget | null) {
 }
 
 function actionOutcome(success: number, failed: number): ManagerActionOutcome {
+  if (success === 0 && failed === 0) return "failure";
   if (failed === 0) return "success";
   return success > 0 ? "partial" : "failure";
 }
@@ -423,38 +424,48 @@ function FilterToolbar({
   onClearFilters: () => void;
 }) {
   const { t } = useI18n();
+  const isSelectionMode = Boolean(selection);
   return (
     <div
       className={
-        selection
-          ? "grid min-w-0 grid-cols-2 gap-2 border-t pt-3 sm:grid-cols-[minmax(14rem,1fr)_auto_minmax(0,1fr)_auto_auto_auto]"
+        isSelectionMode
+          ? "flex min-w-0 flex-nowrap items-center gap-2 overflow-hidden border-t pt-3"
           : "grid min-w-0 grid-cols-2 gap-2 border-t pt-3 sm:grid-cols-[minmax(14rem,1fr)_auto_auto_auto]"
       }
       data-manager-filter-toolbar
     >
-      <div className="relative col-span-2 min-w-0 sm:col-span-1">
-        <SearchIcon
-          className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-          aria-hidden="true"
-        />
-        <Input
-          value={search}
-          onChange={(event) => onSearchChange(event.target.value)}
-          placeholder={
-            view === "sessions"
-              ? t("managerSearchSessions")
-              : t("managerSearchWorkspaces")
-          }
-          className="min-h-10 pl-8"
-          data-manager-search
-        />
-      </div>
+      {!isSelectionMode ? (
+        <div className="relative col-span-2 min-w-0 sm:col-span-1">
+          <SearchIcon
+            className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <Input
+            value={search}
+            onChange={(event) => onSearchChange(event.target.value)}
+            placeholder={
+              view === "sessions"
+                ? t("managerSearchSessions")
+                : t("managerSearchWorkspaces")
+            }
+            className="min-h-10 pl-8"
+            data-manager-search
+          />
+        </div>
+      ) : null}
 
       <Select
         value={sort}
         onValueChange={(value) => onSortChange(value as ManagerSort)}
       >
-        <SelectTrigger className="min-h-10 w-full min-w-0" data-manager-sort>
+        <SelectTrigger
+          className={
+            isSelectionMode
+              ? "min-h-10 w-auto shrink-0"
+              : "min-h-10 w-full min-w-0"
+          }
+          data-manager-sort
+        >
           <SelectValue placeholder={t("managerSort")} />
         </SelectTrigger>
         <SelectContent>
@@ -474,20 +485,25 @@ function FilterToolbar({
       {selection ? (
         <>
           <div
-            className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:col-span-1"
+            className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden whitespace-nowrap"
             data-manager-selection-bar
             aria-label={t("managerSelected", { count: selection.count })}
             role="group"
           >
-            <strong className="text-sm">{t("managerSelected", { count: selection.count })}</strong>
-            <span className="text-xs text-muted-foreground">
-              {t("managerVisibleAndSize", { count: selection.visibleCount, size: formatBytes(selection.bytes) })}
+            <strong className="shrink-0 text-sm">
+              {t("managerSelected", { count: selection.count })}
+            </strong>
+            <span className="min-w-0 truncate text-xs text-muted-foreground">
+              {t("managerVisibleAndSize", {
+                count: selection.visibleCount,
+                size: formatBytes(selection.bytes),
+              })}
             </span>
           </div>
           <Button
             type="button"
             variant="ghost"
-            className="min-h-10 min-w-0"
+            className="min-h-10 shrink-0"
             onClick={selection.onClear}
           >
             {t("managerClear")}
@@ -495,7 +511,7 @@ function FilterToolbar({
           <Button
             type="button"
             variant="outline"
-            className="min-h-10 min-w-0"
+            className="min-h-10 shrink-0"
             onClick={selection.onBackup}
           >
             <ArchiveIcon data-icon="inline-start" />
@@ -504,7 +520,7 @@ function FilterToolbar({
           <Button
             type="button"
             variant="destructive"
-            className="min-h-10 min-w-0"
+            className="min-h-10 shrink-0"
             onClick={selection.onDelete}
           >
             <Trash2Icon data-icon="inline-start" />
