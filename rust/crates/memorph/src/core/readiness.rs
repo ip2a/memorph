@@ -583,8 +583,8 @@ fn reconcile_skills(workspace: Option<&str>) -> Result<()> {
 // cheap signature per phase so snapshot() can decide whether a recompute is
 // needed without ever calling assess_* on the hot read path.
 
-const PHASE_TIMEOUT_MS: u64 = 30_000;
-const TOTAL_BUDGET_MS: u64 = 120_000;
+pub const PHASE_TIMEOUT_MS: u64 = 30_000;
+pub const TOTAL_BUDGET_MS: u64 = 120_000;
 const PERIODIC_FULL_REFRESH_DAYS: i64 = 7;
 
 /// Phases that are not virtual. `derived` is excluded — it is always computed
@@ -619,7 +619,7 @@ fn checkpoint_workspace_key(phase: &str, workspace: Option<&str>) -> String {
 /// Dispatch to the existing assess_* function for a phase. Used by
 /// ReadinessCache::record_after_reconcile to produce the PhaseReadiness that
 /// gets persisted.
-fn assess_named_phase(phase: &str, workspace: Option<&str>) -> PhaseReadiness {
+pub fn assess_named_phase(phase: &str, workspace: Option<&str>) -> PhaseReadiness {
     match phase {
         "foundation" => assess_foundation(),
         "agents" => assess_agents(),

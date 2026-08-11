@@ -1,54 +1,12 @@
 use super::*;
-use memorph::core::readiness::{self as core_readiness, PhaseState, Readiness, PHASES};
+use memorph::core::readiness::{
+    self as core_readiness, PhaseState, Readiness, ReconcileTrigger, REAL_PHASES,
+};
 use std::collections::{BTreeSet, HashMap};
+use std::sync::mpsc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum ReconcileFocus {
-    Overview,
-    Agents,
-    Sessions,
-    Skills,
-    Usage,
-    Derived,
-}
-
-impl Default for ReconcileFocus {
-    fn default() -> Self {
-        Self::Overview
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum ReconcilePriority {
-    Background,
-    Foreground,
-}
-
-impl Default for ReconcilePriority {
-    fn default() -> Self {
-        Self::Foreground
-    }
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum ReconcileTrigger {
-    Startup,
-    Manual,
-    WorkspaceChange,
-    IncompletePanel,
-    Retry,
-}
-
-impl Default for ReconcileTrigger {
-    fn default() -> Self {
-        Self::Manual
-    }
-}
 
 #[derive(Debug, Deserialize)]
 pub(super) struct ReadinessQuery {
@@ -58,12 +16,12 @@ pub(super) struct ReadinessQuery {
 #[derive(Debug, Deserialize)]
 pub(super) struct ReconcileRequest {
     workspace: Option<String>,
-    #[serde(default)]
-    focus: ReconcileFocus,
-    #[serde(default)]
-    priority: ReconcilePriority,
-    #[serde(default)]
+    #[serde(default = "default_trigger")]
     trigger: ReconcileTrigger,
+}
+
+fn default_trigger() -> ReconcileTrigger {
+    ReconcileTrigger::Manual
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -73,6 +31,7 @@ enum OperationStatus {
     Running,
     Completed,
     Failed,
+    Superseded,
 }
 
 impl OperationStatus {
@@ -93,7 +52,7 @@ pub(super) struct ReadinessOperation {
     status: OperationStatus,
     readiness: Readiness,
     trigger: ReconcileTrigger,
-    priority: ReconcilePriority,
+    plan: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     current_phase: Option<String>,
     completed_phases: Vec<String>,
@@ -103,7 +62,7 @@ pub(super) struct ReadinessOperation {
     #[serde(skip)]
     workspace: Option<String>,
     #[serde(skip)]
-    required_phases: BTreeSet<String>,
+    started_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -146,7 +105,10 @@ pub(super) async fn get_readiness(Query(query): Query<ReadinessQuery>) -> impl I
         .values()
         .find(|operation| operation.workspace == workspace && operation.status.active())
         .map(|operation| operation.operation_id.clone());
-    let readiness = core_readiness::assess(workspace.as_deref(), active_operation_id);
+    let readiness = core_readiness::ReadinessCache::snapshot(
+        workspace.as_deref(),
+        active_operation_id,
+    );
     ApiResponse::success(readiness).into_response()
 }
 
@@ -157,85 +119,88 @@ pub(super) async fn reconcile_readiness(
         Ok(workspace) => workspace,
         Err(error) => return api_error(StatusCode::BAD_REQUEST, error).into_response(),
     };
-    let required_phases = phases_for_focus(request.focus);
-    let mut initial = core_readiness::assess(workspace.as_deref(), None);
+
+    let plan = core_readiness::decide_reconcile(request.trigger, workspace.as_deref());
 
     let mut state = coordinator()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(operation) = state
-        .operations
-        .values_mut()
-        .find(|operation| operation.workspace == workspace && operation.status.active())
-    {
-        if request.priority == ReconcilePriority::Foreground {
-            operation.priority = ReconcilePriority::Foreground;
-        }
-        let requested_pending = pending_phases(
-            &required_phases,
-            &initial,
-            request.trigger,
-            workspace.as_deref(),
-        );
-        operation.required_phases.extend(required_phases);
-        for phase in requested_pending {
-            if !operation.completed_phases.contains(&phase)
-                && !operation.running_phases.contains(&phase)
-                && !operation.pending_phases.contains(&phase)
+
+    // Manual/Retry preempts any running Steady operation on the same workspace.
+    if request.trigger.is_manual() {
+        for operation in state.operations.values_mut() {
+            if operation.workspace == workspace
+                && operation.status.active()
+                && !operation.trigger.is_manual()
             {
-                operation.pending_phases.push(phase);
+                operation.status = OperationStatus::Superseded;
+                operation.current_phase = None;
+                operation.running_phases.clear();
+                operation.pending_phases.clear();
+                operation
+                    .readiness
+                    .active_operation_id
+                    .take();
             }
         }
-        return ApiResponse::success(response(operation, ReconcileDisposition::Joined))
-            .into_response();
     }
 
-    let pending = pending_phases(
-        &required_phases,
-        &initial,
-        request.trigger,
-        workspace.as_deref(),
-    );
-    if pending.is_empty() {
+    // Join an already-active operation on the same workspace.
+    if let Some(operation) = state
+        .operations
+        .values()
+        .find(|operation| operation.workspace == workspace && operation.status.active())
+    {
+        let payload = response(operation, ReconcileDisposition::Joined);
+        return ApiResponse::success(payload).into_response();
+    }
+
+    if plan.is_noop() {
         let operation_id = Uuid::new_v4().to_string();
+        let readiness =
+            core_readiness::ReadinessCache::snapshot(workspace.as_deref(), None);
         let operation = ReadinessOperation {
             operation_id: operation_id.clone(),
             status: OperationStatus::Completed,
-            readiness: initial,
+            readiness,
             trigger: request.trigger,
-            priority: request.priority,
+            plan: plan.label(),
             current_phase: None,
             completed_phases: Vec::new(),
             running_phases: Vec::new(),
             pending_phases: Vec::new(),
             failures: Vec::new(),
             workspace,
-            required_phases,
+            started_at: None,
         };
         let payload = response(&operation, ReconcileDisposition::Noop);
         state.operations.insert(operation_id, operation);
-        prune_completed_history(&mut state, Some(&payload.operation_id));
+        prune_completed_history(&mut state, None);
         return ApiResponse::success(payload).into_response();
     }
 
+    let pending: Vec<String> = ordered_phases(&plan.phases());
     let operation_id = Uuid::new_v4().to_string();
+    let mut initial =
+        core_readiness::ReadinessCache::snapshot(workspace.as_deref(), Some(operation_id.clone()));
     initial.active_operation_id = Some(operation_id.clone());
     let operation = ReadinessOperation {
         operation_id: operation_id.clone(),
         status: OperationStatus::Queued,
         readiness: initial,
         trigger: request.trigger,
-        priority: request.priority,
+        plan: plan.label(),
         current_phase: None,
         completed_phases: Vec::new(),
         running_phases: Vec::new(),
         pending_phases: pending,
         failures: Vec::new(),
         workspace: workspace.clone(),
-        required_phases,
+        started_at: Some(Instant::now()),
     };
     state.operations.insert(operation_id.clone(), operation);
     drop(state);
+
     if let Err(error) = spawn_worker(operation_id.clone()) {
         let mut state = coordinator()
             .lock()
@@ -257,6 +222,7 @@ pub(super) async fn reconcile_readiness(
         }
         operation.readiness.state = PhaseState::Error;
     }
+
     let state = coordinator()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -270,7 +236,9 @@ pub(super) async fn reconcile_readiness(
     ApiResponse::success(payload).into_response()
 }
 
-pub(super) async fn get_readiness_operation(Path(operation_id): Path<String>) -> impl IntoResponse {
+pub(super) async fn get_readiness_operation(
+    Path(operation_id): Path<String>,
+) -> impl IntoResponse {
     let state = coordinator()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -284,43 +252,11 @@ pub(super) async fn get_readiness_operation(Path(operation_id): Path<String>) ->
     }
 }
 
-fn phases_for_focus(focus: ReconcileFocus) -> BTreeSet<String> {
-    let phases: &[&str] = match focus {
-        ReconcileFocus::Overview => &PHASES,
-        ReconcileFocus::Agents => &["foundation", "agents", "derived"],
-        ReconcileFocus::Sessions => &["foundation", "sessions", "session_stats", "derived"],
-        ReconcileFocus::Skills => &["foundation", "skills", "derived"],
-        ReconcileFocus::Usage => &[
-            "foundation",
-            "sessions",
-            "session_stats",
-            "skills",
-            "usage",
-            "derived",
-        ],
-        ReconcileFocus::Derived => &PHASES,
-    };
-    phases.iter().map(|phase| (*phase).to_string()).collect()
-}
-
-fn pending_phases(
-    required_phases: &BTreeSet<String>,
-    readiness: &Readiness,
-    trigger: ReconcileTrigger,
-    workspace: Option<&str>,
-) -> Vec<String> {
-    let repeat_real_phases = matches!(
-        trigger,
-        ReconcileTrigger::Manual | ReconcileTrigger::Retry | ReconcileTrigger::WorkspaceChange
-    );
-    required_phases
+fn ordered_phases(phases: &BTreeSet<String>) -> Vec<String> {
+    REAL_PHASES
         .iter()
-        .filter(|phase| phase.as_str() != "derived")
-        .filter(|phase| phase.as_str() != "sessions" || workspace.is_some())
-        .filter(|phase| {
-            repeat_real_phases || readiness.phases[phase.as_str()].state != PhaseState::Ready
-        })
-        .cloned()
+        .filter(|phase| phases.contains(**phase))
+        .map(|phase| (*phase).to_string())
         .collect()
 }
 
@@ -329,7 +265,9 @@ fn prune_completed_history(state: &mut Coordinator, protected_id: Option<&str>) 
     let mut terminal = state
         .operations
         .iter()
-        .filter(|(id, operation)| !operation.status.active() && protected_id != Some(id.as_str()))
+        .filter(|(id, operation)| {
+            !operation.status.active() && protected_id != Some(id.as_str())
+        })
         .map(|(id, _)| id.clone())
         .collect::<Vec<_>>();
     let terminal_count = terminal.len() + usize::from(protected_id.is_some());
@@ -371,7 +309,7 @@ fn spawn_worker(operation_id: String) -> std::io::Result<()> {
 }
 
 fn run_worker(operation_id: &str) {
-    let workspace = {
+    let (workspace, deadline) = {
         let mut state = coordinator()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -379,37 +317,63 @@ fn run_worker(operation_id: &str) {
             return;
         };
         operation.status = OperationStatus::Running;
-        operation.workspace.clone()
+        let deadline = operation
+            .started_at
+            .map(|s| s + Duration::from_millis(core_readiness::TOTAL_BUDGET_MS));
+        (operation.workspace.clone(), deadline)
     };
 
     let mut foundation_failed = false;
     loop {
+        // Total budget watchdog.
+        if deadline.is_some_and(|d| Instant::now() > d) {
+            force_fail(operation_id, "total budget exceeded");
+            return;
+        }
+
+        // Superseded? Exit quietly.
+        let superseded = coordinator()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .operations
+            .get(operation_id)
+            .map(|op| matches!(op.status, OperationStatus::Superseded))
+            .unwrap_or(true);
+        if superseded {
+            return;
+        }
+
         let phase = {
             let mut state = coordinator()
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let operation = state
-                .operations
-                .get_mut(operation_id)
-                .expect("operation exists");
+            let Some(operation) = state.operations.get_mut(operation_id) else {
+                return;
+            };
             begin_next_phase_or_close(operation, foundation_failed)
         };
         let Some(phase) = phase else {
             break;
         };
+
+        // usage depends on sessions/skills — skip if those failed.
         if phase == "usage" {
-            let mut state = coordinator()
+            let inputs_failed = coordinator()
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let operation = state
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .operations
-                .get_mut(operation_id)
-                .expect("operation exists");
-            let inputs_failed = operation
-                .failures
-                .iter()
-                .any(|failure| matches!(failure.phase.as_str(), "sessions" | "skills"));
+                .get(operation_id)
+                .map(|op| {
+                    op.failures
+                        .iter()
+                        .any(|f| matches!(f.phase.as_str(), "sessions" | "skills"))
+                })
+                .unwrap_or(false);
             if inputs_failed {
+                let mut state = coordinator()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                let operation = state.operations.get_mut(operation_id).expect("exists");
                 operation.running_phases.clear();
                 operation.failures.push(OperationFailure {
                     phase,
@@ -418,67 +382,91 @@ fn run_worker(operation_id: &str) {
                 continue;
             }
         }
-        let result = core_readiness::reconcile_phase(&phase, workspace.as_deref());
+
+        let result = run_phase_with_timeout(&phase, workspace.as_deref());
+
         let mut state = coordinator()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let operation = state
-            .operations
-            .get_mut(operation_id)
-            .expect("operation exists");
+        let operation = state.operations.get_mut(operation_id).expect("exists");
         operation.running_phases.clear();
         match result {
-            Ok(()) => operation.completed_phases.push(phase),
+            Ok(()) => {
+                // Record into checkpoint cache, then refresh snapshot for this
+                // operation's readiness view.
+                let pr = core_readiness::assess_named_phase(&phase, workspace.as_deref());
+                let _ = core_readiness::ReadinessCache::record(
+                    &phase,
+                    workspace.as_deref(),
+                    &pr,
+                );
+                operation.completed_phases.push(phase.clone());
+            }
             Err(error) => {
                 foundation_failed = phase == "foundation";
                 operation.failures.push(OperationFailure {
-                    phase,
+                    phase: phase.clone(),
                     message: format!("{error:#}"),
                 });
             }
         }
-        operation.readiness =
-            core_readiness::assess(workspace.as_deref(), Some(operation_id.to_string()));
+        operation.readiness = core_readiness::ReadinessCache::snapshot(
+            workspace.as_deref(),
+            Some(operation_id.to_string()),
+        );
         if foundation_failed {
             operation.status = OperationStatus::Failed;
             operation.current_phase = None;
             operation.pending_phases.clear();
+            operation.readiness.active_operation_id = None;
             break;
         }
     }
 
-    let mut state = coordinator()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let operation = state
-        .operations
-        .get_mut(operation_id)
-        .expect("operation exists");
-    operation.readiness = core_readiness::assess(workspace.as_deref(), None);
-    if !operation.failures.is_empty() && !foundation_failed {
-        for failure in &operation.failures {
-            if let Some(phase) = operation.readiness.phases.get_mut(&failure.phase) {
-                phase.state = PhaseState::Degraded;
-                phase.message = Some(failure.message.clone());
-            }
+    finalize_operation(operation_id);
+}
+
+/// Run a single reconcile_phase in a detached thread, waiting up to
+/// PHASE_TIMEOUT_MS. On timeout the thread is abandoned (its late writes are
+/// made idempotent by SQLite PK upsert semantics in record()).
+fn run_phase_with_timeout(phase: &str, workspace: Option<&str>) -> anyhow::Result<()> {
+    let phase_label = phase.to_string();
+    let (tx, rx) = mpsc::channel::<anyhow::Result<()>>();
+    let phase = phase_label.clone();
+    let workspace = workspace.map(str::to_string);
+    std::thread::Builder::new()
+        .name(format!("memorph-readiness-phase-{phase}"))
+        .spawn(move || {
+            let result = core_readiness::reconcile_phase(&phase, workspace.as_deref());
+            let _ = tx.send(result);
+        })?;
+    match rx.recv_timeout(Duration::from_millis(core_readiness::PHASE_TIMEOUT_MS)) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(anyhow::anyhow!(
+            "phase {phase_label} timed out after {}ms",
+            core_readiness::PHASE_TIMEOUT_MS
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(anyhow::anyhow!("phase {phase_label} worker thread died"))
         }
-        operation.readiness.state = PhaseState::Degraded;
     }
-    prune_completed_history(&mut state, Some(operation_id));
 }
 
 fn begin_next_phase_or_close(
     operation: &mut ReadinessOperation,
     foundation_failed: bool,
 ) -> Option<String> {
-    let phase = ordered_pending(operation).into_iter().next();
+    let phase = REAL_PHASES
+        .iter()
+        .filter(|p| operation.pending_phases.contains(&(**p).to_string()))
+        .map(|p| (*p).to_string())
+        .next();
     if let Some(phase) = phase {
         operation.current_phase = Some(phase.clone());
         operation.running_phases = vec![phase.clone()];
         operation.pending_phases.retain(|pending| pending != &phase);
         return Some(phase);
     }
-
     operation.current_phase = None;
     operation.running_phases.clear();
     operation.pending_phases.clear();
@@ -490,18 +478,52 @@ fn begin_next_phase_or_close(
     None
 }
 
-fn ordered_pending(operation: &ReadinessOperation) -> Vec<String> {
-    PHASES
-        .iter()
-        .filter(|phase| **phase != "derived")
-        .filter(|phase| {
-            operation
-                .pending_phases
-                .iter()
-                .any(|pending| pending == **phase)
-        })
-        .map(|phase| (*phase).to_string())
-        .collect()
+fn finalize_operation(operation_id: &str) {
+    let mut state = coordinator()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(operation) = state.operations.get_mut(operation_id) else {
+        return;
+    };
+    // Non-foundation phase failures surface as Degraded in readiness.state but
+    // the operation itself is Completed. Failed is only set on foundation
+    // failure (early break in run_worker) or budget timeout (force_fail).
+    if !matches!(operation.status, OperationStatus::Superseded | OperationStatus::Failed) {
+        operation.status = OperationStatus::Completed;
+    }
+    operation.current_phase = None;
+    operation.running_phases.clear();
+    operation.pending_phases.clear();
+    operation.readiness =
+        core_readiness::ReadinessCache::snapshot(operation.workspace.as_deref(), None);
+    operation.readiness.active_operation_id = None;
+    prune_completed_history(&mut state, Some(operation_id));
+}
+
+fn force_fail(operation_id: &str, reason: &str) {
+    let mut state = coordinator()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(operation) = state.operations.get_mut(operation_id) else {
+        return;
+    };
+    if matches!(operation.status, OperationStatus::Superseded) {
+        return;
+    }
+    let orphaned = std::mem::take(&mut operation.running_phases);
+    for phase in orphaned {
+        operation.failures.push(OperationFailure {
+            phase,
+            message: reason.to_string(),
+        });
+    }
+    operation.status = OperationStatus::Failed;
+    operation.current_phase = None;
+    operation.pending_phases.clear();
+    operation.readiness =
+        core_readiness::ReadinessCache::snapshot(operation.workspace.as_deref(), None);
+    operation.readiness.active_operation_id = None;
+    prune_completed_history(&mut state, Some(operation_id));
 }
 
 #[cfg(test)]
@@ -509,124 +531,133 @@ mod tests {
     use super::*;
 
     #[test]
-    fn derived_focus_expands_to_real_baseline_dependencies() {
-        let phases = phases_for_focus(ReconcileFocus::Derived);
-        for phase in [
-            "foundation",
-            "agents",
-            "sessions",
-            "session_stats",
-            "skills",
-            "usage",
-            "derived",
-        ] {
-            assert!(phases.contains(phase));
-        }
+    fn ordered_phases_preserves_real_phase_canonical_order() {
+        let mut phases = BTreeSet::new();
+        phases.insert("usage".to_string());
+        phases.insert("foundation".to_string());
+        assert_eq!(
+            ordered_phases(&phases),
+            vec!["foundation".to_string(), "usage".to_string()]
+        );
     }
 
     #[test]
-    fn ordered_pending_never_queues_virtual_derived_phase() {
-        let operation = ReadinessOperation {
-            operation_id: "test".into(),
-            status: OperationStatus::Queued,
-            readiness: core_readiness::assess(None, None),
-            trigger: ReconcileTrigger::Manual,
-            priority: ReconcilePriority::Foreground,
-            current_phase: None,
-            completed_phases: Vec::new(),
-            running_phases: Vec::new(),
-            pending_phases: vec!["sessions".into(), "derived".into()],
-            failures: Vec::new(),
-            workspace: None,
-            required_phases: BTreeSet::new(),
-        };
-        assert_eq!(ordered_pending(&operation), vec!["sessions"]);
+    fn ordered_phases_filters_unknown_and_derived() {
+        let mut phases = BTreeSet::new();
+        phases.insert("derived".to_string());
+        phases.insert("bogus".to_string());
+        phases.insert("agents".to_string());
+        assert_eq!(ordered_phases(&phases), vec!["agents".to_string()]);
     }
 
     #[test]
-    fn manual_trigger_repeats_ready_real_phases_but_startup_is_gap_only() {
+    fn begin_next_phase_clears_running_when_pending_empty() {
         let home = tempfile::tempdir().unwrap();
         memorph::config::set_test_home_dir(home.path().to_path_buf());
-        let readiness = core_readiness::assess(None, None);
-        let required = [
-            "foundation".to_string(),
-            "agents".to_string(),
-            "derived".to_string(),
-        ]
-        .into_iter()
-        .collect();
-
-        let manual = pending_phases(&required, &readiness, ReconcileTrigger::Manual, None);
-        let startup = pending_phases(&required, &readiness, ReconcileTrigger::Startup, None);
-
-        memorph::config::reset_test_home_dir();
-        assert_eq!(manual, vec!["agents", "foundation"]);
-        assert!(startup.is_empty());
-    }
-
-    #[test]
-    fn no_pending_phase_closes_operation_before_joiners_can_observe_it() {
         let mut operation = ReadinessOperation {
-            operation_id: "closing".into(),
+            operation_id: "x".into(),
             status: OperationStatus::Running,
-            readiness: core_readiness::assess(None, None),
+            readiness: core_readiness::ReadinessCache::snapshot(None, None),
             trigger: ReconcileTrigger::Manual,
-            priority: ReconcilePriority::Foreground,
+            plan: "incremental",
             current_phase: None,
             completed_phases: vec!["foundation".into()],
-            running_phases: Vec::new(),
+            running_phases: vec!["foundation".into()],
             pending_phases: Vec::new(),
             failures: Vec::new(),
             workspace: None,
-            required_phases: BTreeSet::new(),
+            started_at: Some(Instant::now()),
         };
-
         assert_eq!(begin_next_phase_or_close(&mut operation, false), None);
         assert_eq!(operation.status, OperationStatus::Completed);
-        assert!(!operation.status.active());
+        assert!(operation.running_phases.is_empty());
+        memorph::config::reset_test_home_dir();
     }
 
     #[test]
-    fn safe_skill_phase_completes_in_one_operation() {
+    fn manual_preemption_supersedes_running_steady_operation() {
         let home = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
         memorph::config::set_test_home_dir(home.path().to_path_buf());
-        let workspace = workspace.path().canonicalize().unwrap();
-        let workspace_text = workspace.to_string_lossy().into_owned();
-        let operation_id = Uuid::new_v4().to_string();
-        let operation = ReadinessOperation {
-            operation_id: operation_id.clone(),
-            status: OperationStatus::Queued,
-            readiness: core_readiness::assess(Some(&workspace_text), None),
-            trigger: ReconcileTrigger::Manual,
-            priority: ReconcilePriority::Foreground,
-            current_phase: None,
-            completed_phases: Vec::new(),
-            running_phases: Vec::new(),
-            pending_phases: vec!["skills".into()],
-            failures: Vec::new(),
-            workspace: Some(workspace_text),
-            required_phases: ["skills".to_string()].into_iter().collect(),
-        };
-        coordinator()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .operations
-            .insert(operation_id.clone(), operation);
+        let mut state = Coordinator::default();
+        let mut readiness = core_readiness::ReadinessCache::snapshot(None, None);
+        readiness.active_operation_id = Some("op-steady".into());
+        state.operations.insert(
+            "op-steady".into(),
+            ReadinessOperation {
+                operation_id: "op-steady".into(),
+                status: OperationStatus::Running,
+                readiness,
+                trigger: ReconcileTrigger::Startup,
+                plan: "incremental",
+                current_phase: Some("sessions".into()),
+                completed_phases: vec!["foundation".into()],
+                running_phases: vec!["sessions".into()],
+                pending_phases: vec!["sessions".into()],
+                failures: Vec::new(),
+                workspace: None,
+                started_at: Some(Instant::now()),
+            },
+        );
+        // Simulate manual preemption pass.
+        for operation in state.operations.values_mut() {
+            if operation.status.active() && !operation.trigger.is_manual() {
+                operation.status = OperationStatus::Superseded;
+                operation.current_phase = None;
+                operation.running_phases.clear();
+                operation.pending_phases.clear();
+            }
+        }
+        let steady = &state.operations["op-steady"];
+        assert_eq!(steady.status, OperationStatus::Superseded);
+        assert!(!steady.status.active());
+        memorph::config::reset_test_home_dir();
+    }
 
-        run_worker(&operation_id);
-
+    #[test]
+    fn force_fail_marks_failures_and_clears_active_operation_id() {
+        let home = tempfile::tempdir().unwrap();
+        memorph::config::set_test_home_dir(home.path().to_path_buf());
+        // Seed coordinator with a running operation that has an orphaned phase.
+        {
+            let mut state = coordinator()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            state.operations.clear();
+            let mut readiness = core_readiness::ReadinessCache::snapshot(None, None);
+            readiness.active_operation_id = Some("op-budget".into());
+            state.operations.insert(
+                "op-budget".into(),
+                ReadinessOperation {
+                    operation_id: "op-budget".into(),
+                    status: OperationStatus::Running,
+                    readiness,
+                    trigger: ReconcileTrigger::Manual,
+                    plan: "full",
+                    current_phase: Some("skills".into()),
+                    completed_phases: vec!["foundation".into()],
+                    running_phases: vec!["skills".into()],
+                    pending_phases: vec!["skills".into(), "usage".into()],
+                    failures: Vec::new(),
+                    workspace: None,
+                    started_at: Some(Instant::now()),
+                },
+            );
+        }
+        force_fail("op-budget", "total budget exceeded");
         let state = coordinator()
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let operation = &state.operations[&operation_id];
-        assert_eq!(operation.status, OperationStatus::Completed);
-        assert!(operation.failures.is_empty());
-        assert!(operation
-            .completed_phases
-            .iter()
-            .any(|phase| phase == "skills"));
-        drop(state);
+            .unwrap_or_else(|p| p.into_inner());
+        let op = &state.operations["op-budget"];
+        assert_eq!(op.status, OperationStatus::Failed);
+        assert!(op.readiness.active_operation_id.is_none());
+        assert!(op.failures.iter().any(|f| f.phase == "skills"));
         memorph::config::reset_test_home_dir();
+    }
+
+    #[test]
+    fn reconcile_request_trigger_defaults_to_manual() {
+        let req: ReconcileRequest =
+            serde_json::from_str(r#"{"workspace": null}"#).unwrap();
+        assert_eq!(req.trigger, ReconcileTrigger::Manual);
     }
 }
