@@ -324,8 +324,8 @@ impl Provider for CodexProvider {
             export_fidelity: ProviderContentFidelity {
                 text: Some(Fidelity::Preserved),
                 thinking: Some(Fidelity::Downgraded),
-                tool_call: Some(Fidelity::Downgraded),
-                tool_result: Some(Fidelity::Downgraded),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
                 patch: Some(Fidelity::Downgraded),
                 image: Some(Fidelity::Normalized),
                 file: Some(Fidelity::Downgraded),
