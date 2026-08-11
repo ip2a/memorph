@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getMeta, getReadiness, getReadinessOperation, reconcileReadiness } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
+import { hasSeenReadinessFirstRun } from "@/features/readiness/readiness-first-run";
 import type { ReadinessOperation, ReadinessReconcilePayload } from "@/lib/types";
 import { useUiStore } from "@/stores/ui-store";
 
@@ -16,8 +17,12 @@ export function shouldStartStartupReconcile(
   activeOperationId: string | null | undefined,
   workspace: string | null,
   attemptedWorkspace: string | null,
+  firstRunPending = true,
 ) {
-  return state !== "ready" && !activeOperationId && attemptedWorkspace !== (workspace || "__default__");
+  return firstRunPending
+    && state !== "ready"
+    && !activeOperationId
+    && attemptedWorkspace !== (workspace || "__default__");
 }
 
 export function manualReconcilePayload(workspace: string | null): ReadinessReconcilePayload {
@@ -72,7 +77,13 @@ export function useReadiness(options: { startOnMount?: boolean } = {}) {
   useEffect(() => {
     if (!startOnMount || meta.isLoading || readiness.isLoading || !readiness.data) return;
     const activeId = readiness.data.active_operation_id;
-    if (!shouldStartStartupReconcile(readiness.data.state, activeId, workspace, startupAttemptedFor.current)) return;
+    if (!shouldStartStartupReconcile(
+      readiness.data.state,
+      activeId,
+      workspace,
+      startupAttemptedFor.current,
+      !hasSeenReadinessFirstRun(workspace),
+    )) return;
     startupAttemptedFor.current = workspaceKey;
     reconcile.mutate({
       workspace,
@@ -89,10 +100,12 @@ export function useReadiness(options: { startOnMount?: boolean } = {}) {
   const operationId = readiness.data?.active_operation_id ||
     (startedOperation?.workspaceKey === workspaceKey ? startedOperation.id : null);
 
+  const operationKey = queryKeys.readinessOperation(operationId || "");
+  const cachedOperation = queryClient.getQueryData<ReadinessOperation>(operationKey);
   const operation = useQuery({
-    queryKey: queryKeys.readinessOperation(operationId || ""),
+    queryKey: operationKey,
     queryFn: () => getReadinessOperation(operationId!),
-    enabled: Boolean(operationId),
+    enabled: Boolean(operationId) && !isReadinessOperationTerminal(cachedOperation),
     refetchInterval: (query) =>
       isActiveStatus(query.state.data?.status) ? 1500 : false,
   });

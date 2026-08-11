@@ -7,10 +7,11 @@ describe("readiness startup policy", () => {
     expect(shouldStartStartupReconcile("partial", "op-1", "/work", null)).toBe(false);
   });
 
-  it("reconciles incomplete data only once per workspace", () => {
-    expect(shouldStartStartupReconcile("partial", null, "/work", null)).toBe(true);
-    expect(shouldStartStartupReconcile("partial", null, "/work", "/work")).toBe(false);
-    expect(shouldStartStartupReconcile("degraded", null, null, null)).toBe(true);
+  it("reconciles incomplete data only once per workspace and first run", () => {
+    expect(shouldStartStartupReconcile("partial", null, "/work", null, true)).toBe(true);
+    expect(shouldStartStartupReconcile("partial", null, "/work", "/work", true)).toBe(false);
+    expect(shouldStartStartupReconcile("degraded", null, null, null, true)).toBe(true);
+    expect(shouldStartStartupReconcile("degraded", null, "/work", null, false)).toBe(false);
   });
 
   it("uses a foreground manual overview reconcile", () => {

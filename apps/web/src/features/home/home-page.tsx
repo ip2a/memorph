@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDownIcon, RefreshCwIcon } from "lucide-react";
+import { toast } from "sonner";
 import { PageLoadError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
 import { ProviderLogo } from "@/components/shared/provider-logo";
@@ -307,10 +308,19 @@ function SessionRow({
   const syncRef = findSyncRef(syncGroups, session.provider_id, session.session_id);
   const detailHref = `/sessions/${encodeURIComponent(session.provider_id)}/${encodeURIComponent(session.session_id)}`;
 
+  const copySessionId = async () => {
+    try {
+      await navigator.clipboard.writeText(session.session_id);
+      toast.success(t("sessionCopied", { label: "ID" }));
+    } catch {
+      toast.error(t("sessionCopyFailed", { label: "ID" }));
+    }
+  };
+
   return (
     <article className="grid min-h-14 border-b py-2.5 hover:bg-muted/60">
       <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0 pl-2">
           <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
             <Link to={detailHref} className="min-w-0 truncate font-semibold hover:underline">
               {sessionTitle(session)}
@@ -322,7 +332,20 @@ function SessionRow({
             ) : null}
           </div>
           <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
-            <Badge variant="outline" className="max-w-full font-mono">
+            <Badge
+              variant="outline"
+              className="max-w-full cursor-pointer font-mono"
+              role="button"
+              tabIndex={0}
+              title={t("sessionCopy")}
+              onClick={() => void copySessionId()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  void copySessionId();
+                }
+              }}
+            >
               <span className="truncate">{session.session_id}</span>
             </Badge>
             <span className="shrink-0">{formatDateTime(session.last_active_at)}</span>

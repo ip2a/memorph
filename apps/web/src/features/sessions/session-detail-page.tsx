@@ -381,7 +381,7 @@ function DetailEventItem({
       <Collapsible open={open} onOpenChange={onOpenChange}>
         <article
           className={cn(
-            "flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card",
+            "flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card",
             highlighted && "outline-2 outline-foreground/35 -outline-offset-2",
           )}
           data-event-number={eventNumber}
@@ -667,7 +667,7 @@ export function SessionDetailPage() {
                     index={index}
                     eventNumber={eventNumber}
                     highlighted={highlightedIndex === index}
-                    open={eventOpenById[event.id] ?? true}
+                    open={eventOpenById[event.id] ?? (event.kind !== "lifecycle")}
                     onOpenChange={(open) => setEventOpenById((prev) => ({ ...prev, [event.id]: open }))}
                   />
                 ))

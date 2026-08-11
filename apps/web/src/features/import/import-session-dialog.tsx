@@ -132,7 +132,7 @@ export function ImportSessionDialog({ open, onOpenChange }: { open: boolean; onO
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl" data-import-session-dialog>
+      <DialogContent className="sm:max-w-xl" data-import-session-dialog>
         <DialogHeader>
           <DialogTitle>{t("importSession")}</DialogTitle>
           <DialogDescription>{t("importSessionDescription")}</DialogDescription>

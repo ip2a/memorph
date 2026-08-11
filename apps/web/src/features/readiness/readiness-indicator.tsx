@@ -16,13 +16,13 @@ export function ReadinessIndicator() {
   const showFirstRunNote = firstRunPending && busy;
 
   useEffect(() => {
-    if (!workspace || !firstRunPending || !effectiveReadiness) return;
+    if (!firstRunPending || !effectiveReadiness) return;
     if (state === "ready" || !busy) {
       markReadinessFirstRunSeen(workspace);
     }
   }, [busy, effectiveReadiness, firstRunPending, state, workspace]);
 
-  if (!firstRunPending) return null;
+  if (!firstRunPending || !busy) return null;
   if (!effectiveReadiness && !isReconciling) return null;
   if (state === "ready") return null;
 
