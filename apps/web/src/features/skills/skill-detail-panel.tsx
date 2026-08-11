@@ -78,7 +78,7 @@ function InstallationRow({
         <div className="flex flex-wrap items-center gap-2">
           <strong>{agent}</strong>
           <Badge variant={installation ? "secondary" : "outline"}>
-            {installation ? t("installed") : t("notInstalled")}
+            {installation ? t("skillsEnabled") : t("skillsNotEnabled")}
           </Badge>
           {installation ? (
             <>
@@ -139,7 +139,7 @@ function InstallationRow({
           onClick={() => onInstall(agent)}
         >
           {actionPending ? <Spinner data-icon="inline-start" /> : null}
-          {t("install")}
+          {t("skillsEnable")}
         </Button>
       )}
     </div>

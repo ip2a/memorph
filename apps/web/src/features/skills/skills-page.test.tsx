@@ -613,7 +613,7 @@ describe("SkillsPage", () => {
       .map((element) => element.closest("div.rounded-lg"))
       .find(Boolean);
     await user.click(
-      within(codex as HTMLElement).getByRole("button", { name: "Install" }),
+      within(codex as HTMLElement).getByRole("button", { name: "Enable" }),
     );
     expect(mocks.install).toHaveBeenCalledWith({
       skill_id: "document-writer",
