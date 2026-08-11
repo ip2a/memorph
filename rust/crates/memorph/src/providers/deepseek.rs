@@ -581,13 +581,7 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
             Role::User => "user",
             Role::System | Role::Developer | _ => continue,
         };
-        let item_json = serde_json::json!({
-            "source": "memorph-canonical",
-            "event_id": event.id,
-            "event_kind": event.kind,
-            "event_role": event_role_label(event.role),
-            "blocks": event.blocks,
-        });
+        let item_json = deepseek_item_json(event);
         let created_at = event.timestamp.timestamp();
         tx.execute(
             "INSERT INTO messages (thread_id, role, content, item_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -609,6 +603,51 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
 
 fn deepseek_message_content(event: &Event) -> Option<String> {
     event_visible_message_text(event)
+}
+
+/// Build the item_json payload for a DeepSeek message row.
+///
+/// The import parser (`blocks_from_message`) looks for specific keys in
+/// item_json: `tool_name`/`call_id`/`arguments` for tool calls, and
+/// `output`/`tool_use_id`/`is_error` for tool results. Writing blocks in
+/// this shape lets DeepSeek exports round-trip tool structure instead of
+/// silently degrading to text.
+fn deepseek_item_json(event: &Event) -> Value {
+    for block in &event.blocks {
+        match block {
+            Block::ToolCall {
+                tool_call_id,
+                name,
+                input,
+            } => {
+                return serde_json::json!({
+                    "source": "memorph-canonical",
+                    "tool_name": name,
+                    "call_id": tool_call_id,
+                    "arguments": input.clone().unwrap_or(Value::Null),
+                });
+            }
+            Block::ToolResult {
+                tool_call_id,
+                content,
+                outcome,
+            } => {
+                return serde_json::json!({
+                    "source": "memorph-canonical",
+                    "output": content,
+                    "tool_use_id": tool_call_id,
+                    "is_error": crate::session::execution_outcome_is_error(*outcome),
+                });
+            }
+            _ => {}
+        }
+    }
+    serde_json::json!({
+        "source": "memorph-canonical",
+        "event_id": event.id,
+        "event_kind": event.kind,
+        "event_role": event_role_label(event.role),
+    })
 }
 
 #[derive(Debug)]
@@ -2276,4 +2315,127 @@ mod tests {
 
         assert!(deepseek_message_content(&event).is_none());
     }
+
+    #[test]
+    fn deepseek_item_json_roundtrips_tool_call_and_result_through_blocks_from_message() {
+        // Build a ToolCall event that export would process.
+        let tool_call_event = Event {
+            id: "evt-call-1".to_string(),
+            kind: EventKind::Action,
+            role: Role::Assistant,
+            timestamp: Utc::now(),
+            links: Links::default(),
+            blocks: vec![Block::ToolCall {
+                tool_call_id: "call-42".to_string(),
+                name: "read_file".to_string(),
+                input: Some(json!({"path": "src/lib.rs"})),
+            }],
+            tags: Vec::new(),
+            extensions: Default::default(),
+            metadata: Metadata {
+                model: None,
+                usage: None,
+            },
+        };
+
+        let item_json_value = deepseek_item_json(&tool_call_event);
+        assert_eq!(item_json_value["tool_name"], "read_file");
+        assert_eq!(item_json_value["call_id"], "call-42");
+        assert_eq!(item_json_value["arguments"]["path"], "src/lib.rs");
+
+        // Simulate what export writes into the DB row.
+        let call_row = MessageRow {
+            id: 10,
+            role: "assistant".to_string(),
+            content: "[Tool use: read_file (call-42)]\n{\"path\":\"src/lib.rs\"}"
+                .to_string(),
+            item_json: Some(serde_json::to_string(&item_json_value).unwrap()),
+            created_at: 1710000002,
+        };
+        let raw_call = serde_json::json!({"role": "assistant", "content": call_row.content});
+        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+        let (blocks, _fidelity) = blocks_from_message(&call_row, &raw_call, &mut report);
+
+        // The first block must be a ToolCall, not degraded text.
+        assert!(
+            blocks.iter().any(|b| matches!(
+                b,
+                Block::ToolCall { name, tool_call_id, .. }
+                    if name == "read_file" && tool_call_id == "call-42"
+            )),
+            "ToolCall did not round-trip; blocks = {:?}",
+            blocks
+        );
+
+        // Now a ToolResult event.
+        let tool_result_event = Event {
+            id: "evt-result-1".to_string(),
+            kind: EventKind::Observation,
+            role: Role::Tool,
+            timestamp: Utc::now(),
+            links: Links::default(),
+            blocks: vec![Block::ToolResult {
+                tool_call_id: "call-42".to_string(),
+                content: "file contents here".to_string(),
+                outcome: crate::session::ExecutionOutcome::Succeeded,
+            }],
+            tags: Vec::new(),
+            extensions: Default::default(),
+            metadata: Metadata {
+                model: None,
+                usage: None,
+            },
+        };
+
+        let result_item = deepseek_item_json(&tool_result_event);
+        assert_eq!(result_item["output"], "file contents here");
+        assert_eq!(result_item["tool_use_id"], "call-42");
+        assert_eq!(result_item["is_error"], false);
+
+        let result_row = MessageRow {
+            id: 11,
+            role: "tool".to_string(),
+            content: "file contents here".to_string(),
+            item_json: Some(serde_json::to_string(&result_item).unwrap()),
+            created_at: 1710000003,
+        };
+        let raw_result = serde_json::json!({"role": "tool", "content": result_row.content});
+        let mut report2 = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+        let (blocks2, _) = blocks_from_message(&result_row, &raw_result, &mut report2);
+
+        assert!(
+            blocks2.iter().any(|b| matches!(
+                b,
+                Block::ToolResult { tool_call_id, content, outcome }
+                    if tool_call_id == "call-42"
+                        && content == "file contents here"
+                        && *outcome == crate::session::ExecutionOutcome::Succeeded
+            )),
+            "ToolResult did not round-trip; blocks = {:?}",
+            blocks2
+        );
+
+        // An event with only Text falls back to the generic shape.
+        let text_event = Event {
+            id: "evt-text-1".to_string(),
+            kind: EventKind::Message,
+            role: Role::User,
+            timestamp: Utc::now(),
+            links: Links::default(),
+            blocks: vec![Block::Text {
+                text: "hello world".to_string(),
+            }],
+            tags: Vec::new(),
+            extensions: Default::default(),
+            metadata: Metadata {
+                model: None,
+                usage: None,
+            },
+        };
+        let text_item = deepseek_item_json(&text_event);
+        assert!(text_item.get("tool_name").is_none());
+        assert!(text_item.get("output").is_none());
+        assert_eq!(text_item["source"], "memorph-canonical");
+    }
+
 }
