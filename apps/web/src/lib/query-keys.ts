@@ -82,6 +82,7 @@ export const queryKeys = {
   hooks: ["hooks"] as const,
   agentHooks: (provider: string) => ["agents", provider, "hooks"] as const,
   skillsRoot: ["skills"] as const,
+  skillsDisabled: ["skills", "disabled"] as const,
   skills: (params: SkillCatalogParams = {}) =>
     ["skills", "catalog", params] as const,
   skillContextSummary: (provider?: string, baseline?: number) =>

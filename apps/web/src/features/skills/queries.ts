@@ -25,6 +25,11 @@ import {
   scanSkills,
   uninstallSkill,
   deleteSkill,
+  disableSkill,
+  enableSkill,
+  listDisabledSkills,
+  consolidateSkill,
+  removeSymlinksSkill,
   updateSkillFile,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -301,5 +306,49 @@ export function useDeleteSkill() {
     mutationFn: deleteSkill,
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useDisableSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: disableSkill,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useEnableSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ usedBy, directory }: { usedBy: string; directory: string }) =>
+      enableSkill(usedBy, directory),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useConsolidateSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: consolidateSkill,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useRemoveSymlinksSkill() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: removeSymlinksSkill,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useDisabledSkills() {
+  return useQuery({
+    queryKey: queryKeys.skillsDisabled,
+    queryFn: listDisabledSkills,
   });
 }

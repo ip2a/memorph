@@ -1589,6 +1589,18 @@ export type SkillCatalogPage = {
   needs_scan?: boolean;
 };
 
+export type DisabledSkill = {
+  used_by: string;
+  directory: string;
+  name: string;
+  description?: string | null;
+  archive_path: string;
+};
+
+export type DisabledSkillsPage = {
+  items: DisabledSkill[];
+};
+
 export type SkillStatsParams = {
   from?: string;
   to?: string;

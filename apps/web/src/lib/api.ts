@@ -67,6 +67,7 @@ import type {
   SkillMutation,
   SkillCatalogPage,
   SkillCatalogParams,
+  DisabledSkillsPage,
   SkillScanQueued,
   SkillAnalysisOperation,
   SkillDailyUsage,
@@ -895,4 +896,36 @@ export function deleteSkill(skillId: string) {
     `/api/v1/skills/${encodeURIComponent(skillId)}`,
     { method: "DELETE" },
   );
+}
+
+export function disableSkill(skillId: string) {
+  return api<SkillsOverview>("/api/v1/skills/disable", {
+    method: "POST",
+    body: JSON.stringify({ skill_id: skillId }),
+  });
+}
+
+export function enableSkill(usedBy: string, directory: string) {
+  return api<SkillsOverview>("/api/v1/skills/enable", {
+    method: "POST",
+    body: JSON.stringify({ used_by: usedBy, directory }),
+  });
+}
+
+export function listDisabledSkills() {
+  return api<DisabledSkillsPage>("/api/v1/skills/disabled");
+}
+
+export function consolidateSkill(canonicalPath: string) {
+  return api<SkillsOverview>("/api/v1/skills/consolidate", {
+    method: "POST",
+    body: JSON.stringify({ canonical_path: canonicalPath }),
+  });
+}
+
+export function removeSymlinksSkill(skillId: string) {
+  return api<SkillsOverview>("/api/v1/skills/remove-symlinks", {
+    method: "POST",
+    body: JSON.stringify({ skill_id: skillId }),
+  });
 }
