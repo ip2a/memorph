@@ -54,6 +54,17 @@ struct SkillMutation {
     source_used_by: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct SkillIdRequest {
+    skill_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct EnableSkillRequest {
+    used_by: String,
+    directory: String,
+}
+
 #[derive(Serialize)]
 struct ApiResponse<T: Serialize> {
     ok: bool,
@@ -158,6 +169,9 @@ fn router_with_state(
             "/api/v1/skills/install",
             post(install_skill).delete(uninstall_skill),
         )
+        .route("/api/v1/skills/disable", post(disable_skill))
+        .route("/api/v1/skills/enable", post(enable_skill))
+        .route("/api/v1/skills/disabled", get(list_disabled_skills))
         .with_state(SkillsState {
             agents: Arc::new(agents),
             database_path: database_path.map(Arc::new),
@@ -1360,6 +1374,190 @@ async fn delete_skill(
     }
 }
 
+/// Archive a skill's canonical directory into `<agent>/skills/.disabled/` and
+/// remove every other installation. The real directory is renamed in place
+/// (same filesystem → O(1)), so a large skill is not copied. The moved source
+/// is gone from its old path, so [`remove_catalog_installations`] silently
+/// skips it while clearing the remaining symlinks and managed copies.
+fn archive_skill(
+    agents: &[memorph::skills::inspection::SkillAgent],
+    item: &repository::CatalogItem,
+) -> Result<()> {
+    let real = item
+        .installations
+        .iter()
+        .find(|installation| {
+            installation.status == "active"
+                && matches!(installation.install_kind.as_str(), "directory" | "managed-copy")
+        })
+        .ok_or_else(|| anyhow!("Cannot disable: no managed source directory to archive"))?;
+    let real_path = std::path::Path::new(&real.install_path);
+    let directory = real_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("Skill installation has no directory name"))?;
+    validate_directory(directory)?;
+    let agent = agents
+        .iter()
+        .find(|agent| agent.agent_id == agent_id_for_used_by(&real.used_by))
+        .ok_or_else(|| anyhow!("Unknown agent: {}", real.used_by))?;
+    let archive_root = agent.skills_dir.join(".disabled");
+    fs::create_dir_all(&archive_root)
+        .with_context(|| format!("Failed to create {}", archive_root.display()))?;
+    let archive_target = archive_root.join(directory);
+    if archive_target.exists() {
+        return Err(anyhow!(
+            "Skill is already archived at {}",
+            archive_target.display()
+        ));
+    }
+    fs::rename(real_path, &archive_target)
+        .with_context(|| format!("Failed to archive {}", real_path.display()))?;
+    remove_catalog_installations(agents, &item.installations)?;
+    Ok(())
+}
+
+async fn disable_skill(
+    State(state): State<SkillsState>,
+    Json(request): Json<SkillIdRequest>,
+) -> impl IntoResponse {
+    // Disable = delete from the catalog, but preserve the files in `.disabled/`.
+    // The skill vanishes from the list (no misleading "missing" badge); the
+    // archive folder is the durable record and survives a catalog rebuild.
+    // The trailing persist syncs the scan fingerprint to the post-archive disk
+    // state, so a later `enable` is detected as a change instead of skipped.
+    let result: Result<()> = (|| {
+        let mut store = stats_store(&state)?;
+        let item = repository::get_catalog_item(store.connection(), &request.skill_id)?
+            .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
+        archive_skill(&state.agents, &item)?;
+        repository::delete_skill(store.connection_mut(), &request.skill_id)?;
+        Ok(())
+    })();
+    let overview = discover(&state.agents);
+    match result {
+        Ok(_) => {
+            let _ = persist_installation_change(&state, &overview);
+            ApiResponse::success(overview).into_response()
+        }
+        Err(error) => error_response(error),
+    }
+}
+
+async fn enable_skill(
+    State(state): State<SkillsState>,
+    Json(request): Json<EnableSkillRequest>,
+) -> impl IntoResponse {
+    // Restore an archived skill: move it back out of `.disabled/` into its
+    // agent's skills dir, then rescan so the catalog row is recreated.
+    let result: Result<()> = (|| {
+        let agent = state
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id == agent_id_for_used_by(&request.used_by))
+            .ok_or_else(|| anyhow!("Unknown agent: {}", request.used_by))?;
+        validate_directory(&request.directory)?;
+        let archive_path = agent
+            .skills_dir
+            .join(".disabled")
+            .join(&request.directory);
+        if !archive_path.join("SKILL.md").is_file() {
+            return Err(anyhow!(
+                "No archived skill at {}",
+                archive_path.display()
+            ));
+        }
+        let target = agent.skills_dir.join(&request.directory);
+        if target.exists() {
+            return Err(anyhow!(
+                "A skill named '{}' is already active in {}",
+                request.directory,
+                agent.skills_dir.display()
+            ));
+        }
+        fs::rename(&archive_path, &target)
+            .with_context(|| format!("Failed to restore {}", archive_path.display()))?;
+        Ok(())
+    })();
+    match result {
+        Ok(_) => {
+            let overview = discover(&state.agents);
+            let _ = persist_installation_change(&state, &overview);
+            ApiResponse::success(overview).into_response()
+        }
+        Err(error) => error_response(error),
+    }
+}
+
+#[derive(Serialize)]
+struct DisabledSkill {
+    used_by: String,
+    directory: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    archive_path: String,
+}
+
+#[derive(Serialize)]
+struct DisabledSkillsPage {
+    items: Vec<DisabledSkill>,
+}
+
+/// Scan each global agent's `.disabled/` folder one level deep. The archive
+/// folder is the single source of truth for disabled skills: anything parked
+/// here is disabled, independent of the catalog, so the list survives a full
+/// rebuild.
+async fn list_disabled_skills(State(state): State<SkillsState>) -> impl IntoResponse {
+    let mut items = Vec::new();
+    for agent in state.agents.iter() {
+        if agent.scope_kind != "global" {
+            continue;
+        }
+        let archive_root = agent.skills_dir.join(".disabled");
+        let Ok(children) = fs::read_dir(&archive_root) else {
+            continue;
+        };
+        for child in children.flatten() {
+            let path = child.path();
+            let is_hidden = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with('.'));
+            if is_hidden || !path.is_dir() || !path.join("SKILL.md").is_file() {
+                continue;
+            }
+            let Some(directory) = path.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let frontmatter =
+                memorph::skills::inspection::read_frontmatter(&path.join("SKILL.md"));
+            let name = frontmatter
+                .get("name")
+                .cloned()
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| directory.to_string());
+            let description = frontmatter
+                .get("description")
+                .cloned()
+                .filter(|value| !value.is_empty());
+            items.push(DisabledSkill {
+                used_by: if agent.agent_id == "agents-shared" {
+                    "all".into()
+                } else {
+                    agent.agent_id.clone()
+                },
+                directory: directory.to_string(),
+                name,
+                description,
+                archive_path: path.to_string_lossy().into_owned(),
+            });
+        }
+    }
+    items.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.directory.cmp(&b.directory)));
+    ApiResponse::success(DisabledSkillsPage { items }).into_response()
+}
+
 fn error_response(error: anyhow::Error) -> axum::response::Response {
     (
         StatusCode::BAD_REQUEST,
@@ -2064,5 +2262,151 @@ mod tests {
         assert!(fs::read_to_string(skill.join("SKILL.md"))
             .unwrap()
             .contains("# Writer Updated"));
+    }
+
+    #[tokio::test]
+    async fn disable_archives_to_disabled_folder_and_enable_restores() {
+        let root = tempfile::tempdir().unwrap();
+        create_skill(
+            root.path(),
+            "claude",
+            "writer",
+            "---\nname: Writer\ndescription: Writes docs\n---\n# Writer",
+        );
+        let app = router_for(agents(root.path()));
+
+        // Populate the catalog, then deploy a symlink to gemini so the skill
+        // has a real directory (claude) plus a linked installation.
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/scan")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"incremental"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let listed = wait_for_skills(app.clone(), 2000).await;
+        let catalog_id = listed["data"]["items"][0]["id"].as_str().unwrap().to_string();
+
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/install")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&SkillMutation {
+                        skill_id: "writer".into(),
+                        used_by: "gemini".into(),
+                        source_used_by: Some("claude".into()),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let real_dir = root.path().join("claude").join("skills").join("writer");
+        let gemini_link = root.path().join("gemini").join("skills").join("writer");
+        let archive = root
+            .path()
+            .join("claude")
+            .join("skills")
+            .join(".disabled")
+            .join("writer");
+        assert!(real_dir.is_dir());
+        assert!(gemini_link.symlink_metadata().is_ok());
+
+        // Disable: real dir moves into .disabled/, symlink removed, catalog row deleted.
+        let (status, body) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/disable")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"skill_id": catalog_id}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "disable failed: {body:?}");
+        assert!(archive.join("SKILL.md").is_file(), "skill must be archived");
+        assert!(!real_dir.exists(), "real dir must have moved");
+        assert!(
+            gemini_link.symlink_metadata().is_err(),
+            "gemini installation must be removed"
+        );
+
+        let (status, listed) = json(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/skills")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            listed["data"]["total"],
+            0,
+            "disabled skill must disappear from the catalog"
+        );
+
+        // The archive folder is the durable record.
+        let (status, disabled) = json(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/skills/disabled")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let items = disabled["data"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["used_by"], "claude");
+        assert_eq!(items[0]["directory"], "writer");
+        assert_eq!(items[0]["name"], "Writer");
+        assert_eq!(items[0]["description"], "Writes docs");
+
+        // Enable: move back to the original location, catalog row recreated.
+        let (status, body) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/enable")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"used_by": "claude", "directory": "writer"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "enable failed: {body:?}");
+        assert!(real_dir.join("SKILL.md").is_file(), "skill restored in place");
+        assert!(!archive.exists(), "archive folder emptied");
+
+        let listed = wait_for_skills(app.clone(), 2000).await;
+        assert_eq!(listed["data"]["total"], 1, "skill reappears after enable");
+
+        let (status, disabled) = json(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/skills/disabled")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            disabled["data"]["items"].as_array().unwrap().len(),
+            0,
+            "no disabled skills remain after enable"
+        );
     }
 }
