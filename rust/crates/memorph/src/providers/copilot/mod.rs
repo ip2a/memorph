@@ -41,6 +41,8 @@ impl Provider for CopilotProvider {
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
                 text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
                 provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },
@@ -616,9 +618,17 @@ fn vscode_state_to_events(state: &Value, report: &mut MappingReport) -> Vec<Even
                 path: Some(format!("requests[{idx}].response")),
                 raw: None,
             });
+            let kind = if blocks
+                .iter()
+                .any(|b| matches!(b, Block::ToolCall { .. }))
+            {
+                EventKind::Action
+            } else {
+                EventKind::Message
+            };
             events.push(Event {
                 id: format!("copilot:vscode:req:{idx}:assistant"),
-                kind: EventKind::Message,
+                kind,
                 role: Role::Assistant,
                 timestamp: req_ts,
                 links: Links::default(),
@@ -829,5 +839,44 @@ mod tests {
         assert_eq!(imported.session.events.len(), 2);
         assert_eq!(imported.session.events[0].role, Role::User);
         assert_eq!(imported.session.events[1].role, Role::Assistant);
+    }
+    #[test]
+    fn vscode_tool_invocation_maps_to_action_with_tool_call_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let chat_dir = tmp.path().join("workspaceStorage/abc/chatSessions");
+        std::fs::create_dir_all(&chat_dir).unwrap();
+        std::fs::write(
+            tmp.path().join("workspaceStorage/abc/workspace.json"),
+            r#"{"folder":"file:///tmp/project"}"#,
+        )
+        .unwrap();
+        let session_file = chat_dir.join("sess-002.jsonl");
+        let state = serde_json::json!({
+            "sessionId": "sess-002",
+            "creationDate": 1700000000000u64,
+            "requests": [{
+                "message": {"text": "run the tests"},
+                "timestamp": 1700000001000u64,
+                "response": [
+                    {"kind": "toolInvocationSerialized", "toolId": "runInTerminal", "toolCallId": "tc-1", "rawInput": {"command": "npm test"}}
+                ]
+            }]
+        });
+        let v = serde_json::to_string(&state).unwrap();
+        let line = format!(r#"{{"kind":0,"v":{}}}"#, v);
+        std::fs::write(&session_file, line).unwrap();
+        let imported = import_vscode_session(&session_file.to_string_lossy()).unwrap();
+        let assistant = imported
+            .session
+            .events
+            .iter()
+            .find(|e| e.role == Role::Assistant)
+            .expect("assistant event");
+        assert_eq!(assistant.kind, EventKind::Action);
+        assert!(matches!(
+            &assistant.blocks[0],
+            Block::ToolCall { ref name, ref tool_call_id, .. }
+                if name == "runInTerminal" && tool_call_id == "tc-1"
+        ));
     }
 }

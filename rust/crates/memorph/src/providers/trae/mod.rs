@@ -43,8 +43,8 @@ impl Provider for TraeProvider {
             turn_quality: TurnQuality::Inferred,
             import_fidelity: ProviderContentFidelity {
                 text: Some(Fidelity::Preserved),
-                tool_call: Some(Fidelity::Preserved),
-                tool_result: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Unsupported),
+                tool_result: Some(Fidelity::Unsupported),
                 provider_payload: Some(Fidelity::Preserved),
                 ..ProviderContentFidelity::unknown()
             },

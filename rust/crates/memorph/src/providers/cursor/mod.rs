@@ -8,10 +8,10 @@ mod write;
 
 use crate::provider::{
     export_result, PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport,
-    ProviderCapabilities, ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation,
+    ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary, ProviderSourceMutation,
     ProviderWriteRisk, ScanStrategy, StorageShape, TurnQuality, WriteRiskLevel,
 };
-use crate::session::{ExportedSession, ImportedSession, Session};
+use crate::session::{Fidelity, ExportedSession, ImportedSession, Session};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -57,6 +57,25 @@ impl Provider for CursorProvider {
                 hook_events: true,
                 runtime_endpoint: true,
                 session_activity: true,
+            },
+            import_fidelity: ProviderContentFidelity {
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Preserved),
+                tool_call: Some(Fidelity::Preserved),
+                tool_result: Some(Fidelity::Preserved),
+                provider_payload: Some(Fidelity::Preserved),
+                ..ProviderContentFidelity::unknown()
+            },
+            export_fidelity: ProviderContentFidelity {
+                text: Some(Fidelity::Preserved),
+                thinking: Some(Fidelity::Downgraded),
+                tool_call: Some(Fidelity::Downgraded),
+                tool_result: Some(Fidelity::Downgraded),
+                patch: Some(Fidelity::Downgraded),
+                image: Some(Fidelity::Downgraded),
+                file: Some(Fidelity::Downgraded),
+                compressed: Some(Fidelity::Downgraded),
+                provider_payload: Some(Fidelity::Dropped),
             },
             ..ProviderCapabilities::default()
         }
