@@ -327,6 +327,32 @@ pub fn delete_skill(conn: &mut Connection, catalog_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Delete every catalog row for a normalized skill name that has no active
+/// installation. Consolidation repoints scattered copies at one canonical
+/// directory; the rows for the superseded copies are left without an active
+/// installation and would otherwise linger as "missing" ghosts. This reuses
+/// [`delete_skill`] so the cascade stays in one place.
+pub fn delete_inactive_catalog_rows_for_name(
+    conn: &mut Connection,
+    normalized_name: &str,
+) -> Result<usize> {
+    let orphan_ids: Vec<String> = {
+        let mut statement = conn.prepare(
+            "SELECT c.id FROM skill_catalog c
+             WHERE c.normalized_name = ?1
+               AND c.id NOT IN (SELECT DISTINCT skill_id FROM skill_installations WHERE status = 'active')",
+        )?;
+        let rows = statement.query_map([normalized_name], |row| row.get::<_, String>(0))?;
+        let ids: Vec<String> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        ids
+    };
+    let count = orphan_ids.len();
+    for id in &orphan_ids {
+        delete_skill(conn, id)?;
+    }
+    Ok(count)
+}
+
 fn upsert_catalog(tx: &Transaction<'_>, skill: &CatalogRecord, now_ms: i64) -> Result<()> {
     tx.execute(
         "INSERT INTO skill_catalog

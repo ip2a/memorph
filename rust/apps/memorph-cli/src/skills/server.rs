@@ -65,6 +65,11 @@ struct EnableSkillRequest {
     directory: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ConsolidateRequest {
+    canonical_path: String,
+}
+
 #[derive(Serialize)]
 struct ApiResponse<T: Serialize> {
     ok: bool,
@@ -172,6 +177,8 @@ fn router_with_state(
         .route("/api/v1/skills/disable", post(disable_skill))
         .route("/api/v1/skills/enable", post(enable_skill))
         .route("/api/v1/skills/disabled", get(list_disabled_skills))
+        .route("/api/v1/skills/consolidate", post(consolidate_skill))
+        .route("/api/v1/skills/remove-symlinks", post(remove_symlinks_skill))
         .with_state(SkillsState {
             agents: Arc::new(agents),
             database_path: database_path.map(Arc::new),
@@ -1558,6 +1565,136 @@ async fn list_disabled_skills(State(state): State<SkillsState>) -> impl IntoResp
     ApiResponse::success(DisabledSkillsPage { items }).into_response()
 }
 
+/// Repoint every installation of a logical skill to one canonical directory.
+/// Discovery merges installations by normalized name, so this reaches every
+/// scattered copy — independent directories across agents collapse into
+/// symlinks at the chosen canonical path, and the catalog rows merge on the
+/// next scan. The picked installation may itself be a symlink; it is resolved
+/// to its target, which becomes the canonical real directory.
+fn consolidate_to_canonical(
+    overview: &memorph::skills::inspection::SkillsOverview,
+    canonical_install_path: &str,
+) -> Result<String> {
+    let agents = &overview.agents;
+    let canonical_path = std::path::Path::new(canonical_install_path);
+    let canonical_real = canonical_path
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve canonical path {canonical_install_path}"))?;
+    if !canonical_real.join("SKILL.md").is_file() {
+        return Err(anyhow!(
+            "Canonical path is not a skill directory: {}",
+            canonical_real.display()
+        ));
+    }
+    let skill = overview
+        .skills
+        .iter()
+        .find(|skill| {
+            skill.installations.iter().any(|installation| {
+                installation.path == canonical_path || installation.path == canonical_real
+            })
+        })
+        .ok_or_else(|| anyhow!("Canonical path is not a known skill installation"))?;
+    for installation in &skill.installations {
+        let path = &installation.path;
+        // Already resolves to the canonical real directory — leave it. This
+        // covers the picked installation, its target, and any symlink already
+        // pointing there.
+        let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+        if resolved == canonical_real {
+            continue;
+        }
+        let agent = agents
+            .iter()
+            .find(|agent| agent.agent_id == agent_id_for_used_by(&installation.used_by))
+            .ok_or_else(|| anyhow!("Unknown agent: {}", installation.used_by))?;
+        let directory = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| anyhow!("Skill installation has no directory name"))?;
+        validate_directory(directory)?;
+        if path != &agent.skills_dir.join(directory) {
+            return Err(anyhow!(
+                "Refusing to consolidate {}: expected it under {}",
+                path.display(),
+                agent.skills_dir.display()
+            ));
+        }
+        if path
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        {
+            fs::remove_file(path)
+                .with_context(|| format!("Failed to remove symlink {}", path.display()))?;
+        } else if path.is_dir() {
+            fs::remove_dir_all(path)
+                .with_context(|| format!("Failed to remove {}", path.display()))?;
+        }
+        create_directory_symlink(&canonical_real, path).with_context(|| {
+            format!(
+                "Failed to link {} -> {}",
+                path.display(),
+                canonical_real.display()
+            )
+        })?;
+    }
+    Ok(skill.id.clone())
+}
+
+async fn consolidate_skill(
+    State(state): State<SkillsState>,
+    Json(request): Json<ConsolidateRequest>,
+) -> impl IntoResponse {
+    let before = discover(&state.agents);
+    match consolidate_to_canonical(&before, &request.canonical_path) {
+        Ok(normalized_name) => {
+            let overview = discover(&state.agents);
+            let _ = persist_installation_change(&state, &overview);
+            // Scattered copies merged into one canonical row leave the superseded
+            // rows without an active installation; purge them so they don't linger
+            // as "missing" entries next to the merged skill.
+            if let Ok(mut store) = stats_store(&state) {
+                let _ = repository::delete_inactive_catalog_rows_for_name(
+                    store.connection_mut(),
+                    &normalized_name,
+                );
+            }
+            ApiResponse::success(overview).into_response()
+        }
+        Err(error) => error_response(error),
+    }
+}
+
+async fn remove_symlinks_skill(
+    State(state): State<SkillsState>,
+    Json(request): Json<SkillIdRequest>,
+) -> impl IntoResponse {
+    // Strip every symlink installation of this skill; real directories and
+    // managed copies stay in place. Reuses the per-installation remover, which
+    // only touches symlinks when fed symlink-only installations.
+    let result: Result<()> = (|| {
+        let store = stats_store(&state)?;
+        let item = repository::get_catalog_item(store.connection(), &request.skill_id)?
+            .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
+        let symlinks: Vec<repository::CatalogInstallation> = item
+            .installations
+            .iter()
+            .filter(|installation| installation.install_kind == "symlink")
+            .cloned()
+            .collect();
+        remove_catalog_installations(&state.agents, &symlinks)?;
+        Ok(())
+    })();
+    let overview = discover(&state.agents);
+    match result {
+        Ok(()) => {
+            let _ = persist_installation_change(&state, &overview);
+            ApiResponse::success(overview).into_response()
+        }
+        Err(error) => error_response(error),
+    }
+}
+
 fn error_response(error: anyhow::Error) -> axum::response::Response {
     (
         StatusCode::BAD_REQUEST,
@@ -2408,5 +2545,155 @@ mod tests {
             0,
             "no disabled skills remain after enable"
         );
+    }
+
+    #[tokio::test]
+    async fn consolidate_merges_independent_copies_into_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        create_skill(
+            root.path(),
+            "claude",
+            "writer",
+            "---\nname: Writer\n---\n# Claude copy",
+        );
+        create_skill(
+            root.path(),
+            "codex",
+            "writer",
+            "---\nname: Writer\n---\n# Codex copy",
+        );
+        let app = router_for(agents(root.path()));
+
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/scan")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"incremental"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let listed = wait_for_skills(app.clone(), 2000).await;
+        assert_eq!(
+            listed["data"]["total"],
+            2,
+            "two independent copies surface as two catalog rows"
+        );
+
+        let claude_path = root.path().join("claude").join("skills").join("writer");
+        let codex_path = root.path().join("codex").join("skills").join("writer");
+
+        // Pick claude's copy as canonical; codex must collapse into a symlink.
+        let (status, body) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/consolidate")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"canonical_path": claude_path}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "consolidate failed: {body:?}");
+        assert!(codex_path
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.file_type().is_symlink()));
+        assert_eq!(
+            fs::read_link(&codex_path).unwrap(),
+            claude_path.canonicalize().unwrap()
+        );
+        assert!(claude_path.join("SKILL.md").is_file(), "canonical copy kept");
+
+        let listed = wait_for_skills(app.clone(), 2000).await;
+        assert_eq!(
+            listed["data"]["total"],
+            1,
+            "symlinked copies merge into one catalog row"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_symlinks_keeps_real_directories() {
+        let root = tempfile::tempdir().unwrap();
+        create_skill(
+            root.path(),
+            "claude",
+            "writer",
+            "---\nname: Writer\n---\n# Writer",
+        );
+        let app = router_for(agents(root.path()));
+
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/scan")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"incremental"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let listed = wait_for_skills(app.clone(), 2000).await;
+        let catalog_id = listed["data"]["items"][0]["id"].as_str().unwrap().to_string();
+
+        // Deploy a symlink to gemini, then strip symlinks.
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/install")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&SkillMutation {
+                        skill_id: "writer".into(),
+                        used_by: "gemini".into(),
+                        source_used_by: Some("claude".into()),
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let claude_path = root.path().join("claude").join("skills").join("writer");
+        let gemini_link = root.path().join("gemini").join("skills").join("writer");
+        assert!(gemini_link.symlink_metadata().is_ok());
+
+        let (status, body) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/remove-symlinks")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"skill_id": catalog_id}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "remove-symlinks failed: {body:?}");
+        assert!(
+            gemini_link.symlink_metadata().is_err(),
+            "symlink installation removed"
+        );
+        assert!(
+            claude_path.join("SKILL.md").is_file(),
+            "real directory kept in place"
+        );
+
+        let listed = wait_for_skills(app.clone(), 2000).await;
+        let active: Vec<&Value> = listed["data"]["items"][0]["installations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|installation| installation["status"] == "active")
+            .collect();
+        assert_eq!(active.len(), 1, "only the real directory remains active");
+        assert_eq!(active[0]["used_by"], "claude");
     }
 }
