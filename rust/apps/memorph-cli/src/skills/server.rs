@@ -1723,6 +1723,7 @@ mod tests {
         let state = SkillsState {
             agents: Arc::new(agents(root.path())),
             database_path: None,
+            analysis_operations: Arc::new(Mutex::new(HashMap::new())),
         };
 
         assert!(preview_file(

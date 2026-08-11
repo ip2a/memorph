@@ -84,7 +84,7 @@ async fn readiness_reconcile_rejects_invalid_enum() {
         .method("POST")
         .uri("/api/v1/readiness/reconcile")
         .header("content-type", "application/json")
-        .body(Body::from(r#"{"focus":"everything"}"#))
+        .body(Body::from(r#"{"trigger":"bogus"}"#))
         .unwrap();
 
     let response = router().oneshot(request).await.unwrap();
@@ -100,9 +100,7 @@ async fn readiness_reconcile_starts_and_status_is_queryable() {
             .method("POST")
             .uri("/api/v1/readiness/reconcile")
             .header("content-type", "application/json")
-            .body(Body::from(
-                r#"{"focus":"overview","priority":"background"}"#,
-            ))
+            .body(Body::from(r#"{"trigger":"manual"}"#))
             .unwrap()
     };
 
