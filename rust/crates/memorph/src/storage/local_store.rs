@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
 
 static JOURNAL_MODE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -388,6 +388,26 @@ fn apply_workspace_feed_revision_schema(conn: &mut Connection) -> Result<()> {
     }
     tx.commit()
         .context("Failed to commit memorph DB schema v17 migration")?;
+    apply_readiness_checkpoint_schema(conn)
+}
+
+fn apply_readiness_checkpoint_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("Failed to start memorph DB schema v18 migration")?;
+    let applied = applied_migrations(&tx)?;
+    if !applied.contains(&18) {
+        tx.execute_batch(V18_SCHEMA)
+            .context("Failed to apply memorph DB schema v18")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![18, "readiness_checkpoint_v18"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    tx.commit()
+        .context("Failed to commit memorph DB schema v18 migration")?;
     Ok(())
 }
 
@@ -1392,6 +1412,23 @@ CREATE TABLE IF NOT EXISTS workspace_feed_revision (
     revision INTEGER NOT NULL DEFAULT 0,
     updated_at_ms INTEGER NOT NULL
 );
+"#;
+
+const V18_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS readiness_checkpoint (
+    phase TEXT NOT NULL,
+    workspace_key TEXT NOT NULL,
+    state TEXT NOT NULL
+        CHECK(state IN ('ready','partial','degraded','error')),
+    message TEXT,
+    signature TEXT NOT NULL,
+    assessed_at_ms INTEGER NOT NULL,
+    reconciled_at_ms INTEGER,
+    PRIMARY KEY (phase, workspace_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_readiness_checkpoint_workspace
+    ON readiness_checkpoint(workspace_key);
 "#;
 
 #[cfg(test)]
