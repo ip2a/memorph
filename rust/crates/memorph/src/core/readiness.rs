@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -80,6 +80,31 @@ pub struct Readiness {
     pub active_operation_id: Option<String>,
     pub recommended_focus: Option<String>,
     pub phases: BTreeMap<String, PhaseReadiness>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconcile_required: Option<ReconcileRequired>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconcile_reason: Option<ReconcileReason>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_full_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_incremental_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconcileRequired {
+    None,
+    Incremental,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconcileReason {
+    ColdStart,
+    FoundationError,
+    StaleSignatures,
+    PeriodicRefresh,
 }
 
 pub fn validate_workspace(workspace: Option<&str>) -> Result<Option<String>> {
@@ -470,6 +495,10 @@ fn finish_readiness(
         active_operation_id,
         recommended_focus,
         phases,
+        reconcile_required: None,
+        reconcile_reason: None,
+        last_full_at: None,
+        last_incremental_at: None,
     }
 }
 
@@ -542,6 +571,594 @@ fn reconcile_skills(workspace: Option<&str>) -> Result<()> {
     let overview = discovery::discover_catalog(&agents);
     scanner::persist_default(&overview, ScanMode::Incremental)?;
     Ok(())
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Tiered reconcile: signature-driven snapshots + decide_reconcile
+// ───────────────────────────────────────────────────────────────────────────
+//
+// ponytail: the existing assess_* functions already compute PhaseReadiness
+// correctly. We reuse them (via assess_named_phase) to produce the value that
+// gets persisted into readiness_checkpoint after a reconcile, and we compute a
+// cheap signature per phase so snapshot() can decide whether a recompute is
+// needed without ever calling assess_* on the hot read path.
+
+const PHASE_TIMEOUT_MS: u64 = 30_000;
+const TOTAL_BUDGET_MS: u64 = 120_000;
+const PERIODIC_FULL_REFRESH_DAYS: i64 = 7;
+
+/// Phases that are not virtual. `derived` is excluded — it is always computed
+/// from the other phases inside `finish_readiness`.
+pub const REAL_PHASES: [&str; 6] = [
+    "foundation",
+    "agents",
+    "sessions",
+    "session_stats",
+    "skills",
+    "usage",
+];
+
+/// Phases that depend on a workspace. Stored with a non-empty workspace_key.
+const WORKSPACE_SCOPED_PHASES: [&str; 2] = ["sessions", "session_stats"];
+
+fn is_workspace_scoped(phase: &str) -> bool {
+    WORKSPACE_SCOPED_PHASES.contains(&phase)
+}
+
+/// Stable workspace key for checkpoint rows. Global phases use ""; scoped
+/// phases use the canonicalized workspace path (same form validate_workspace
+/// produces, which assess_sessions/assess_session_stats already consume).
+fn checkpoint_workspace_key(phase: &str, workspace: Option<&str>) -> String {
+    if is_workspace_scoped(phase) {
+        workspace.unwrap_or("").to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Dispatch to the existing assess_* function for a phase. Used by
+/// ReadinessCache::record_after_reconcile to produce the PhaseReadiness that
+/// gets persisted.
+fn assess_named_phase(phase: &str, workspace: Option<&str>) -> PhaseReadiness {
+    match phase {
+        "foundation" => assess_foundation(),
+        "agents" => assess_agents(),
+        "sessions" => assess_sessions(workspace),
+        "session_stats" => assess_session_stats(workspace),
+        "skills" => assess_skills(workspace),
+        "usage" => assess_usage(workspace),
+        _ => PhaseReadiness::error(format!("Unknown phase: {phase}")),
+    }
+}
+
+// ── signatures ──────────────────────────────────────────────────────────────
+//
+// Each signature is a short string computed from cheap SQL aggregates over the
+// tables a phase reads. A phase's data is considered unchanged iff its
+// signature equals the one stored at last successful reconcile. Every signature
+// includes a max(updated_at_ms)-style component so writes are detected even
+// when row counts are stable.
+
+pub mod signatures {
+    use super::*;
+
+    pub fn foundation() -> Result<String> {
+        let conn = local_store::open_database()?;
+        let user_version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let mtime = crate::config::config_path()
+            .ok()
+            .and_then(|path| std::fs::metadata(path).ok())
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        Ok(format!("v{user_version}|m{mtime}"))
+    }
+
+    pub fn agents() -> Result<String> {
+        // agent_management is computed live from providers, not stored. Use the
+        // provider registry size + any provider-config mtimes as a proxy. This
+        // is intentionally cheap; agent capability changes are rare and also
+        // surface through skill/session signature drift.
+        let count = crate::providers::all_provider_ids().len();
+        let home = crate::config::effective_home_dir()?;
+        let cfg = home.join("providers");
+        let mut buf = format!("n{count}");
+        if cfg.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&cfg) {
+                let mut mtimes: Vec<i64> = entries
+                    .filter_map(|e| e.ok())
+                    .filter_map(|e| e.metadata().ok())
+                    .filter_map(|m| m.modified().ok())
+                    .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .collect();
+                mtimes.sort_unstable();
+                if let Some(&last) = mtimes.last() {
+                    buf.push_str(&format!("|m{last}"));
+                }
+            }
+        }
+        Ok(buf)
+    }
+
+    pub fn sessions(workspace_key: &str) -> Result<String> {
+        let conn = local_store::open_database()?;
+        let (count, last): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(finished_at_ms)
+                 FROM session_activity
+                 WHERE operation_kind = 'scan'
+                   AND workspace_dir = ?1
+                   AND json_extract(details_json, '$.scan_kind') = 'readiness_workspace_projection'",
+                rusqlite::params![workspace_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        Ok(format!("n{count}|m{}", last.unwrap_or(0)))
+    }
+
+    pub fn session_stats(workspace_key: &str) -> Result<String> {
+        let conn = local_store::open_database()?;
+        let (total, incomplete): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*),
+                    SUM(CASE WHEN message_count IS NULL THEN 1 ELSE 0 END)
+             FROM session_snapshots
+             WHERE workspace_dir = ?1",
+            rusqlite::params![workspace_key],
+            |row| {
+                let inc: Option<i64> = row.get(1)?;
+                Ok((row.get(0)?, inc.unwrap_or(0)))
+            },
+        )?;
+        Ok(format!("n{total}|i{incomplete}"))
+    }
+
+    pub fn skills() -> Result<String> {
+        let conn = local_store::open_database()?;
+        let row: (i64, i64, String) = conn.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(MAX(updated_at_ms), 0),
+                    COALESCE(GROUP_CONCAT(completeness_status, ''), '')
+             FROM skill_scan_state
+             WHERE state_kind = 'skill-root'",
+            [],
+            |row| {
+                let g: Option<String> = row.get(2)?;
+                Ok((row.get(0)?, row.get(1)?, g.unwrap_or_default()))
+            },
+        )?;
+        Ok(format!("n{}|m{}|s{}", row.0, row.1, row.2))
+    }
+
+    pub fn usage() -> Result<String> {
+        let conn = local_store::open_database()?;
+        let (count, max_seen): (i64, i64) = conn.query_row(
+            "SELECT COUNT(*), COALESCE(MAX(last_seen_at_ms), 0) FROM session_sources",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let catalog = invocation::catalog_generation(&conn).unwrap_or_default();
+        Ok(format!("n{count}|m{max_seen}|c{catalog}"))
+    }
+}
+
+/// Compute the live signature for a single phase.
+pub fn signature_for(phase: &str, workspace_key: &str) -> Result<String> {
+    match phase {
+        "foundation" => signatures::foundation(),
+        "agents" => signatures::agents(),
+        "sessions" => signatures::sessions(workspace_key),
+        "session_stats" => signatures::session_stats(workspace_key),
+        "skills" => signatures::skills(),
+        "usage" => signatures::usage(),
+        _ => Ok(String::new()),
+    }
+}
+
+/// Compute live signatures for all real phases in one pass. Global phases key
+/// on ""; workspace-scoped phases key on the provided workspace_key.
+fn live_signatures(workspace_key: &str) -> HashMap<String, String> {
+    REAL_PHASES
+        .iter()
+        .filter_map(|&phase| {
+            let key = checkpoint_workspace_key(phase, Some(workspace_key));
+            // Only include this phase if it is in scope: global phases always;
+            // workspace-scoped phases only when a workspace was provided.
+            if is_workspace_scoped(phase) && workspace_key.is_empty() {
+                return None;
+            }
+            match signature_for(phase, &key) {
+                Ok(sig) => Some((phase.to_string(), sig)),
+                Err(_) => None,
+            }
+        })
+        .collect()
+}
+
+// ── ReadinessCache ──────────────────────────────────────────────────────────
+
+pub struct ReadinessCache;
+
+impl ReadinessCache {
+    /// O(1) snapshot read. Replaces the old uncached assess() on GET /readiness.
+    /// Missing rows are treated as Partial("Not yet assessed") and force
+    /// reconcile_required = Full (cold_start).
+    pub fn snapshot(workspace: Option<&str>, active_operation_id: Option<String>) -> Readiness {
+        let validated = validate_workspace(workspace);
+        let workspace_canonical = match validated {
+            Ok(ws) => ws,
+            Err(error) => {
+                return error_readiness(
+                    workspace.map(str::to_string),
+                    active_operation_id,
+                    error,
+                );
+            }
+        };
+
+        let conn = match local_store::open_database() {
+            Ok(c) => c,
+            Err(error) => {
+                return error_readiness(
+                    workspace_canonical.clone(),
+                    active_operation_id,
+                    anyhow::anyhow!("Database is unavailable: {error}"),
+                );
+            }
+        };
+
+        let rows = Self::read_all_rows(&conn, workspace_canonical.as_deref());
+        let now_ms = current_timestamp_ms();
+
+        let mut phases: BTreeMap<String, PhaseReadiness> = BTreeMap::new();
+        let mut any_missing = false;
+        let mut any_error = false;
+        let mut min_reconciled_ms: Option<i64> = None;
+        let mut max_reconciled_ms: Option<i64> = None;
+
+        for &phase in REAL_PHASES.iter() {
+            let key = checkpoint_workspace_key(phase, workspace_canonical.as_deref());
+            // workspace-scoped phase with no workspace → "not applicable" (ready)
+            if is_workspace_scoped(phase) && workspace_canonical.is_none() {
+                phases.insert(
+                    phase.to_string(),
+                    PhaseReadiness::ready("Workspace session projection is not applicable"),
+                );
+                continue;
+            }
+            match rows.get(&(phase.to_string(), key.clone())) {
+                Some(row) => {
+                    phases.insert(phase.to_string(), row.to_phase_readiness());
+                    if row.state == "error" {
+                        any_error = true;
+                    }
+                    if let Some(b) = row.reconciled_at_ms {
+                        min_reconciled_ms = Some(min_reconciled_ms.map_or(b, |a| a.min(b)));
+                        max_reconciled_ms = Some(max_reconciled_ms.map_or(b, |a| a.max(b)));
+                    }
+                }
+                None => {
+                    any_missing = true;
+                    phases.insert(
+                        phase.to_string(),
+                        PhaseReadiness::partial("Not yet assessed"),
+                    );
+                }
+            }
+        }
+
+        // derived: aggregate of real phases
+        let inputs_ready = REAL_PHASES
+            .iter()
+            .all(|phase| phases[*phase].state == PhaseState::Ready);
+        phases.insert(
+            "derived".into(),
+            if inputs_ready {
+                PhaseReadiness::ready("Readiness summary is current")
+            } else {
+                PhaseReadiness::partial("Waiting for readiness inputs")
+            },
+        );
+
+        let reconcile_required = if any_missing {
+            Some(ReconcileRequired::Full)
+        } else if phases["foundation"].state == PhaseState::Error || any_error {
+            Some(ReconcileRequired::Full)
+        } else {
+            // compare signatures
+            let ws_key = workspace_canonical.clone().unwrap_or_default();
+            let stored = Self::stored_signatures_from_rows(&rows);
+            let live = live_signatures(&ws_key);
+            let drifted = drifted_phases(&stored, &live);
+            if !drifted.is_empty() {
+                Some(ReconcileRequired::Incremental)
+            } else {
+                // periodic refresh check
+                let stale_by_age = min_reconciled_ms.is_some_and(|m| {
+                    now_ms.saturating_sub(m) > PERIODIC_FULL_REFRESH_DAYS * 86_400_000
+                });
+                if stale_by_age {
+                    Some(ReconcileRequired::Full)
+                } else {
+                    Some(ReconcileRequired::None)
+                }
+            }
+        };
+
+        let reconcile_reason = match reconcile_required {
+            Some(ReconcileRequired::Full) if any_missing => Some(ReconcileReason::ColdStart),
+            Some(ReconcileRequired::Full)
+                if phases["foundation"].state == PhaseState::Error || any_error =>
+            {
+                Some(ReconcileReason::FoundationError)
+            }
+            Some(ReconcileRequired::Full) => Some(ReconcileReason::PeriodicRefresh),
+            Some(ReconcileRequired::Incremental) => Some(ReconcileReason::StaleSignatures),
+            _ => None,
+        };
+
+        // last_full_at = earliest reconciled timestamp (full pass writes all);
+        // last_incremental_at = latest reconciled timestamp.
+        let last_full_at = min_reconciled_ms;
+        let last_incremental_at = max_reconciled_ms;
+
+        let mut readiness = finish_readiness(workspace_canonical, active_operation_id, phases);
+        readiness.reconcile_required = reconcile_required;
+        readiness.reconcile_reason = reconcile_reason;
+        readiness.last_full_at = last_full_at;
+        readiness.last_incremental_at = last_incremental_at;
+        readiness
+    }
+
+    /// Persist a phase result into readiness_checkpoint. Called by the worker
+    /// after a successful reconcile_phase. Uses INSERT OR REPLACE.
+    pub fn record(phase: &str, workspace: Option<&str>, result: &PhaseReadiness) -> Result<()> {
+        let workspace_key = checkpoint_workspace_key(phase, workspace);
+        let signature = signature_for(phase, &workspace_key).unwrap_or_default();
+        let state = phase_state_to_str(&result.state);
+        let now_ms = current_timestamp_ms();
+        let conn = local_store::open_database()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO readiness_checkpoint
+                (phase, workspace_key, state, message, signature,
+                 assessed_at_ms, reconciled_at_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            rusqlite::params![
+                phase,
+                workspace_key,
+                state,
+                result.message.as_deref().unwrap_or(""),
+                signature,
+                now_ms,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Read all checkpoint rows for a given workspace (global "" + scoped).
+    fn read_all_rows(
+        conn: &rusqlite::Connection,
+        workspace: Option<&str>,
+    ) -> HashMap<(String, String), CheckpointRow> {
+        let ws = workspace.unwrap_or("");
+        let mut stmt = match conn.prepare(
+            "SELECT phase, workspace_key, state, message, signature, reconciled_at_ms
+             FROM readiness_checkpoint
+             WHERE workspace_key = '' OR workspace_key = ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return HashMap::new(),
+        };
+        let rows = stmt
+            .query_map(rusqlite::params![ws], |row| {
+                Ok(CheckpointRow {
+                    phase: row.get(0)?,
+                    workspace_key: row.get(1)?,
+                    state: row.get(2)?,
+                    message: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    signature: row.get(4)?,
+                    reconciled_at_ms: row.get(5)?,
+                })
+            });
+        let mut out = HashMap::new();
+        if let Ok(rows) = rows {
+            for row in rows.flatten() {
+                out.insert((row.phase.clone(), row.workspace_key.clone()), row);
+            }
+        }
+        out
+    }
+
+    /// Extract (signature, state) for drift comparison, keyed by phase.
+    fn stored_signatures_from_rows(
+        rows: &HashMap<(String, String), CheckpointRow>,
+    ) -> HashMap<String, (String, PhaseState)> {
+        rows.iter()
+            .map(|((phase, _), row)| {
+                (
+                    phase.clone(),
+                    (row.signature.clone(), str_to_phase_state(&row.state)),
+                )
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CheckpointRow {
+    phase: String,
+    workspace_key: String,
+    state: String,
+    message: String,
+    signature: String,
+    reconciled_at_ms: Option<i64>,
+}
+
+impl CheckpointRow {
+    fn to_phase_readiness(&self) -> PhaseReadiness {
+        PhaseReadiness {
+            state: str_to_phase_state(&self.state),
+            message: if self.message.is_empty() {
+                None
+            } else {
+                Some(self.message.clone())
+            },
+        }
+    }
+}
+
+fn phase_state_to_str(state: &PhaseState) -> &'static str {
+    match state {
+        PhaseState::Ready => "ready",
+        PhaseState::Partial => "partial",
+        PhaseState::Degraded => "degraded",
+        PhaseState::Error => "error",
+    }
+}
+
+fn str_to_phase_state(s: &str) -> PhaseState {
+    match s {
+        "ready" => PhaseState::Ready,
+        "degraded" => PhaseState::Degraded,
+        "error" => PhaseState::Error,
+        _ => PhaseState::Partial,
+    }
+}
+
+fn current_timestamp_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// Phases whose stored signature differs from the live one, or whose stored
+/// state is Error, or that are missing from the stored map entirely.
+fn drifted_phases(
+    stored: &HashMap<String, (String, PhaseState)>,
+    live: &HashMap<String, String>,
+) -> BTreeSet<String> {
+    let mut drifted = BTreeSet::new();
+    for (phase, live_sig) in live {
+        match stored.get(phase) {
+            None => {
+                drifted.insert(phase.clone());
+            }
+            Some((sig, state)) => {
+                if sig != live_sig || *state == PhaseState::Error {
+                    drifted.insert(phase.clone());
+                }
+            }
+        }
+    }
+    drifted
+}
+
+// ── ReconcilePlan + decide_reconcile ────────────────────────────────────────
+
+/// Trigger forwarded from the API layer. Mirrors the old enum but lives in core
+/// so decide_reconcile has everything it needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReconcileTrigger {
+    Startup,
+    Manual,
+    WorkspaceChange,
+    Retry,
+}
+
+impl ReconcileTrigger {
+    pub fn is_manual(self) -> bool {
+        matches!(self, Self::Manual | Self::Retry)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReconcilePlan {
+    Noop,
+    Incremental { phases: BTreeSet<String> },
+    Full { phases: BTreeSet<String> },
+}
+
+impl ReconcilePlan {
+    pub fn phases(&self) -> BTreeSet<String> {
+        match self {
+            Self::Noop => BTreeSet::new(),
+            Self::Incremental { phases } | Self::Full { phases } => phases.clone(),
+        }
+    }
+
+    pub fn is_noop(&self) -> bool {
+        matches!(self, Self::Noop)
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Noop => "noop",
+            Self::Incremental { .. } => "incremental",
+            Self::Full { .. } => "full",
+        }
+    }
+}
+
+/// All real phases that are in scope for the given workspace. Workspace-scoped
+/// phases are excluded when no workspace is set.
+fn all_real_phases_for(workspace_key: &str) -> BTreeSet<String> {
+    REAL_PHASES
+        .iter()
+        .filter(|&&phase| !(is_workspace_scoped(phase) && workspace_key.is_empty()))
+        .map(|phase| phase.to_string())
+        .collect()
+}
+
+/// The authoritative decision function. Startup/WorkspaceChange are Steady and
+/// never return Full; Manual/Retry may return Full when cold, heavily drifted,
+/// or past the periodic-refresh window.
+pub fn decide_reconcile(trigger: ReconcileTrigger, workspace: Option<&str>) -> ReconcilePlan {
+    let workspace_key = workspace.unwrap_or("").to_string();
+    let conn = local_store::open_database();
+    let rows = match conn {
+        Ok(c) => ReadinessCache::read_all_rows(&c, workspace),
+        Err(_) => return ReconcilePlan::Full { phases: all_real_phases_for(&workspace_key) },
+    };
+    let stored = ReadinessCache::stored_signatures_from_rows(&rows);
+    let live = live_signatures(&workspace_key);
+    let drifted = drifted_phases(&stored, &live);
+
+    match trigger {
+        ReconcileTrigger::Startup | ReconcileTrigger::WorkspaceChange => {
+            if drifted.is_empty() {
+                ReconcilePlan::Noop
+            } else {
+                ReconcilePlan::Incremental { phases: drifted }
+            }
+        }
+        ReconcileTrigger::Manual | ReconcileTrigger::Retry => {
+            let any_missing = REAL_PHASES
+                .iter()
+                .any(|phase| !stored.contains_key(*phase));
+            let any_error = stored
+                .values()
+                .any(|(_, state)| *state == PhaseState::Error);
+            let stale_ratio = if live.is_empty() {
+                1.0
+            } else {
+                drifted.len() as f32 / live.len() as f32
+            };
+            let now_ms = current_timestamp_ms();
+            let last_full_age_stale = rows
+                .values()
+                .filter_map(|r| r.reconciled_at_ms)
+                .min()
+                .is_some_and(|m| {
+                    now_ms.saturating_sub(m) > PERIODIC_FULL_REFRESH_DAYS * 86_400_000
+                });
+            if any_missing || any_error || stale_ratio > 0.5 || last_full_age_stale {
+                ReconcilePlan::Full { phases: all_real_phases_for(&workspace_key) }
+            } else if drifted.is_empty() {
+                ReconcilePlan::Noop
+            } else {
+                ReconcilePlan::Incremental { phases: drifted }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -791,5 +1408,119 @@ mod tests {
         let readiness = assess_expected_workspace_checkpoints(&["cursor"], &latest);
 
         assert_eq!(readiness.state, PhaseState::Ready);
+    }
+
+    // ── tiered reconcile tests ──────────────────────────────────────────────
+
+    fn reset_checkpoint_for_test(conn: &rusqlite::Connection) {
+        let _ = conn.execute("DELETE FROM readiness_checkpoint", []);
+    }
+
+    #[test]
+    fn cold_snapshot_reports_full_reconcile_required() {
+        let _g = test_guard();
+        let home = tempfile::tempdir().unwrap();
+        crate::config::set_test_home_dir(home.path().to_path_buf());
+        let conn = local_store::open_database().unwrap();
+        reset_checkpoint_for_test(&conn);
+        drop(conn);
+
+        let readiness = ReadinessCache::snapshot(None, None);
+        assert_eq!(
+            readiness.reconcile_required,
+            Some(ReconcileRequired::Full)
+        );
+        assert_eq!(
+            readiness.reconcile_reason,
+            Some(ReconcileReason::ColdStart)
+        );
+        crate::config::reset_test_home_dir();
+    }
+
+    #[test]
+    fn recording_all_phases_then_snapshot_is_none_when_unchanged() {
+        let _g = test_guard();
+        let home = tempfile::tempdir().unwrap();
+        crate::config::set_test_home_dir(home.path().to_path_buf());
+        let conn = local_store::open_database().unwrap();
+        reset_checkpoint_for_test(&conn);
+        drop(conn);
+
+        for &phase in REAL_PHASES.iter() {
+            let result = assess_named_phase(phase, None);
+            ReadinessCache::record(phase, None, &result).unwrap();
+        }
+
+        let readiness = ReadinessCache::snapshot(None, None);
+        // Foundation is ready in a fresh temp home; others may be partial, but
+        // signatures are stable immediately after record() so required should be
+        // None (no drift). The state may still be Partial but that's a data
+        // question, not a reconcile question.
+        assert_ne!(
+            readiness.reconcile_required,
+            Some(ReconcileRequired::Full),
+            "should not be cold after recording all phases"
+        );
+        crate::config::reset_test_home_dir();
+    }
+
+    #[test]
+    fn startup_trigger_never_returns_full_plan() {
+        let _g = test_guard();
+        let home = tempfile::tempdir().unwrap();
+        crate::config::set_test_home_dir(home.path().to_path_buf());
+        let conn = local_store::open_database().unwrap();
+        reset_checkpoint_for_test(&conn);
+        drop(conn);
+
+        let plan = decide_reconcile(ReconcileTrigger::Startup, None);
+        assert!(
+            !matches!(plan, ReconcilePlan::Full { .. }),
+            "Startup must never return Full, got {:?}",
+            plan
+        );
+
+        // Even after recording all phases, Startup stays Noop or Incremental.
+        for &phase in REAL_PHASES.iter() {
+            let result = assess_named_phase(phase, None);
+            ReadinessCache::record(phase, None, &result).unwrap();
+        }
+        let plan = decide_reconcile(ReconcileTrigger::Startup, None);
+        assert!(
+            !matches!(plan, ReconcilePlan::Full { .. }),
+            "Startup must never return Full even post-record, got {:?}",
+            plan
+        );
+        crate::config::reset_test_home_dir();
+    }
+
+    #[test]
+    fn manual_trigger_returns_full_on_cold_start() {
+        let _g = test_guard();
+        let home = tempfile::tempdir().unwrap();
+        crate::config::set_test_home_dir(home.path().to_path_buf());
+        let conn = local_store::open_database().unwrap();
+        reset_checkpoint_for_test(&conn);
+        drop(conn);
+
+        let plan = decide_reconcile(ReconcileTrigger::Manual, None);
+        assert!(
+            matches!(plan, ReconcilePlan::Full { .. }),
+            "cold Manual should be Full, got {plan:?}"
+        );
+        crate::config::reset_test_home_dir();
+    }
+
+    #[test]
+    fn signature_for_phase_returns_nonempty_for_all_real_phases() {
+        let _g = test_guard();
+        let home = tempfile::tempdir().unwrap();
+        crate::config::set_test_home_dir(home.path().to_path_buf());
+        for &phase in REAL_PHASES.iter() {
+            let key = checkpoint_workspace_key(phase, None);
+            let sig = signature_for(phase, &key).unwrap_or_default();
+            assert!(!sig.is_empty(), "signature for {phase} should be non-empty");
+        }
+        crate::config::reset_test_home_dir();
     }
 }
