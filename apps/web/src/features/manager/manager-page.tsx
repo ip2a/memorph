@@ -63,6 +63,14 @@ import {
 } from "@/components/ui/select";
 import { MetricGrid, MetricTile } from "@/components/shared/metric-grid";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  ActivityTrend,
+  StatsInsightsSection,
+} from "@/features/stats/stats-overview-panels";
+import { useStatsDashboard } from "@/features/stats/queries";
+import { CompressionListPanel } from "@/features/compression/compression-list-panel";
+import { SyncListPanel } from "@/features/sync/sync-list-panel";
 import { toast } from "sonner";
 import {
   backupManagerItems,
@@ -70,9 +78,18 @@ import {
   cleanManagerItems,
   cleanManagerWorkspace,
 } from "@/lib/api";
+import { resolvePreferredStatsDashboardRange } from "@/lib/custom-range-preferences";
 import { formatBytes, formatDateTime } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
+import type { StatsDashboard, StatsDashboardRange } from "@/lib/types";
+
+const MANAGER_STATS_RANGE_HINT_KEYS: Record<StatsDashboardRange, I18nKey> = {
+  "7d": "statsRange7d",
+  "30d": "statsRange30d",
+  "90d": "statsRange90d",
+  all: "statsRangeAll",
+};
 import { queryKeys } from "@/lib/query-keys";
 import type {
   ManagerBackupResult,
@@ -117,6 +134,7 @@ type ManagerActionTarget =
   | { kind: "backup-workspaces"; items: ManagerWorkspaceItem[] };
 
 type ManagerActionOutcome = "success" | "partial" | "failure";
+type ManagerResultPanelTab = "list" | "overview" | "ranking" | "compression" | "sync";
 
 type ManagerActionReport = {
   title: string;
@@ -339,54 +357,168 @@ function ProviderFilter({
 }
 
 function ManagerStatsStrip({
+  scope,
+  range,
   stats,
-  loading,
-  error,
-  onRetry,
+  statsLoading,
+  statsError,
+  onStatsRetry,
+  dashboard,
+  dashboardLoading,
+  dashboardError,
+  onDashboardRetry,
+  compact = false,
 }: {
+  scope: ManagerScope;
+  range: StatsDashboardRange;
   stats: ReturnType<typeof useManagerStats>["data"];
-  loading: boolean;
-  error: Error | null;
-  onRetry: () => void;
+  statsLoading: boolean;
+  statsError: Error | null;
+  onStatsRetry: () => void;
+  dashboard: StatsDashboard | undefined;
+  dashboardLoading: boolean;
+  dashboardError: Error | null;
+  onDashboardRetry: () => void;
+  compact?: boolean;
 }) {
   const { t } = useI18n();
-  const placeholder = loading ? <Skeleton className="h-5 w-20" /> : "-";
+  const placeholder = <Skeleton className="h-5 w-20" />;
+  const period = t(MANAGER_STATS_RANGE_HINT_KEYS[range]);
+
+  const scopeTile =
+    scope === "all" ? (
+      <MetricTile
+        label={t("managerAllWorkspaces")}
+        value={stats ? stats.all_workspace_count.toLocaleString() : statsLoading ? placeholder : "-"}
+        hint={
+          stats
+            ? t("managerSessionsCount", {
+                count: stats.all_workspace_session_count,
+              })
+            : statsLoading
+              ? placeholder
+              : "-"
+        }
+        variant="compact"
+      />
+    ) : (
+      <MetricTile
+        label={t("managerCurrentWorkspace")}
+        value={
+          stats
+            ? formatBytes(stats.current_workspace_size_bytes)
+            : statsLoading
+              ? placeholder
+              : "-"
+        }
+        hint={
+          stats
+            ? t("managerSessionsCount", {
+                count: stats.current_workspace_session_count,
+              })
+            : statsLoading
+              ? placeholder
+              : "-"
+        }
+        variant="compact"
+      />
+    );
+
+  const activeTile = (
+    <MetricTile
+      label={t("statsActiveSessions")}
+      value={
+        dashboard
+          ? dashboard.overview.active_sessions.toLocaleString()
+          : dashboardLoading
+            ? placeholder
+            : "-"
+      }
+      hint={period}
+      variant="compact"
+    />
+  );
+
+  const storageTile = (
+    <MetricTile
+      label={t("statsDataUsage")}
+      value={
+        dashboard
+          ? formatBytes(dashboard.overview.total_size_bytes)
+          : dashboardLoading
+            ? placeholder
+            : "-"
+      }
+      hint={
+        dashboard
+          ? dashboard.overview.unknown_size_bytes
+            ? t("statsSessionsSizeUnknown", {
+                count: dashboard.overview.unknown_size_bytes.toLocaleString(),
+              })
+            : t("statsStaleSize", {
+                size: formatBytes(dashboard.overview.stale_size_bytes),
+              })
+          : dashboardLoading
+            ? placeholder
+            : "-"
+      }
+      variant="compact"
+    />
+  );
+
+  const cleanupTile = (
+    <MetricTile
+      label={t("statsInactiveOver90d")}
+      value={
+        dashboard
+          ? dashboard.attention.inactive_over_90d.count.toLocaleString()
+          : dashboardLoading
+            ? placeholder
+            : "-"
+      }
+      hint={
+        dashboard
+          ? t("statsOccupies", {
+              size: formatBytes(dashboard.attention.inactive_over_90d.size_bytes),
+            })
+          : dashboardLoading
+            ? placeholder
+            : "-"
+      }
+      variant="compact"
+    />
+  );
+
   return (
-    <div data-manager-stats-section>
-      {error ? (
+    <div className="flex flex-col gap-2" data-manager-stats-section>
+      {statsError ? (
         <div data-manager-stats-error data-testid="manager-stats-error" role="alert">
           <PageError
             title={t("managerStatsLoadFailed")}
-            message={error.message}
-            onRetry={onRetry}
+            message={statsError.message}
+            onRetry={onStatsRetry}
           />
         </div>
-      ) : (
+      ) : null}
+      {dashboardError ? (
+        <div
+          data-manager-dashboard-stats-error
+          data-testid="manager-dashboard-stats-error"
+          role="alert"
+        >
+          <PageError
+            title={t("statsLoadFailed")}
+            message={dashboardError.message}
+            onRetry={onDashboardRetry}
+          />
+        </div>
+      ) : null}
+      {compact ? null : (
         <MetricGrid columns="four" data-manager-stats-strip>
-          <MetricTile
-            label={t("managerCurrentWorkspace")}
-            value={stats ? formatBytes(stats.current_workspace_size_bytes) : placeholder}
-            hint={t("managerSessionsCount", { count: stats?.current_workspace_session_count ?? 0 })}
-            variant="compact"
-          />
-          <MetricTile
-            label={t("managerAllWorkspaces")}
-            value={stats ? stats.all_workspace_count : placeholder}
-            hint={t("managerSessionsCount", { count: stats?.all_workspace_session_count ?? 0 })}
-            variant="compact"
-          />
-          <MetricTile
-            label={t("managerSelectedAgents")}
-            value={stats?.selected_agent_count ?? placeholder}
-            hint={t("managerInstalledProviders")}
-            variant="compact"
-          />
-          <MetricTile
-            label={t("managerAllSize")}
-            value={stats ? formatBytes(stats.all_workspace_size_bytes) : placeholder}
-            hint={t("managerIndexedStorage")}
-            variant="compact"
-          />
+          {scopeTile}
+          {activeTile}
+          {storageTile}
+          {cleanupTile}
         </MetricGrid>
       )}
     </div>
@@ -808,6 +940,8 @@ export function ManagerPage() {
   const [actionReport, setActionReport] = useState<ManagerActionReport | null>(
     null,
   );
+  const [resultPanelTab, setResultPanelTab] =
+    useState<ManagerResultPanelTab>("list");
   const queryClient = useQueryClient();
   const meta = useManagerMeta();
   const currentWorkspace =
@@ -846,6 +980,12 @@ export function ManagerPage() {
   const workspaces = useManagerWorkspaces(listFilter, {
     enabled: request.enabled && providersSelected && route.view === "workspaces",
   });
+  const statsDashboardRange = resolvePreferredStatsDashboardRange();
+  const statsWorkspaceScope = route.scope === "all" ? "all" : "workspace";
+  const { dashboard: statsDashboard, all: statsDashboardAll } = useStatsDashboard(
+    statsDashboardRange,
+    statsWorkspaceScope,
+  );
 
   useEffect(() => {
     setSearchInput(route.search);
@@ -1301,7 +1441,11 @@ export function ManagerPage() {
   }
 
   function refreshResults() {
-    void Promise.all([stats.refetch(), activeResults.refetch()]);
+    void Promise.all([
+      stats.refetch(),
+      activeResults.refetch(),
+      statsDashboard.refetch(),
+    ]);
   }
 
   function openAction(target: ManagerActionTarget) {
@@ -1315,6 +1459,224 @@ export function ManagerPage() {
   const deleteTarget = isDeleteAction(actionTarget) ? actionTarget : null;
   const backupTarget = isBackupAction(actionTarget) ? actionTarget : null;
   const backupDir = meta.data?.settings.default_backup_dir || "./backups";
+
+  const resultPanelActions = (
+    <div className="flex items-center gap-2">
+      {listBusyLabel && resultPanelTab === "list" ? (
+        <span
+          className="inline-flex items-center gap-1 text-xs text-muted-foreground"
+          data-manager-refreshing
+        >
+          <LoaderCircleIcon
+            className="size-3.5 animate-spin"
+            aria-hidden="true"
+          />
+          {listBusyLabel}
+        </span>
+      ) : null}
+      <Button
+        type="button"
+        variant="ghost"
+        className="min-h-10"
+        onClick={() => changeScope(route.scope === "all" ? "current" : "all")}
+        data-manager-scope-toggle
+      >
+        {route.scope === "all"
+          ? t("managerSwitchToCurrent")
+          : t("managerSwitchToAll")}
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        className="min-h-10"
+        onClick={refreshResults}
+        disabled={!request.enabled || resultsRefreshing}
+        data-manager-refresh
+      >
+        <RefreshCwIcon data-icon="inline-start" />
+        {t("managerRefresh")}
+      </Button>
+    </div>
+  );
+
+  const resultListPane = (
+    <>
+      <ScrollPane className="min-h-0 flex-1">
+        {!request.enabled ? (
+          <PageEmpty
+            title={t("managerNoCurrentWorkspace")}
+            description={t("managerNoCurrentWorkspaceDescription")}
+          />
+        ) : !providersSelected ? (
+          <PageEmpty
+            title={t("managerNoProvidersSelected")}
+            description={t("managerNoProvidersSelectedDescription")}
+          />
+        ) : initialResultsLoading ? (
+          <div
+            data-manager-results-loading
+            aria-label={t("managerLoadingResults")}
+          >
+            <PageSkeleton />
+          </div>
+        ) : scopeIsEmpty ? (
+          <PageEmpty
+            title={
+              route.view === "sessions"
+                ? t("managerNoSessionsInScope")
+                : t("managerNoWorkspacesInScope")
+            }
+            description={
+              route.scope === "all"
+                ? t("managerNoIndexedAll")
+                : t("managerNoIndexedCurrent")
+            }
+            onRefresh={refreshResults}
+          />
+        ) : filtersAreEmpty ? (
+          <PageEmpty
+            title={
+              route.view === "sessions"
+                ? t("managerNoSessionsFiltered")
+                : t("managerNoWorkspacesFiltered")
+            }
+            description={t("managerClearOrChangeFilters")}
+            onRefresh={refreshResults}
+          />
+        ) : (
+          <div
+            className={
+              listPageFetching
+                ? "opacity-60 transition-opacity"
+                : "transition-opacity"
+            }
+            data-manager-result-list
+            aria-busy={listPageFetching || undefined}
+          >
+            {route.view === "sessions" ? (
+              <SessionRows
+                items={sessionRows}
+                selected={selectedSessionIds}
+                onToggle={toggleSession}
+                onBackup={(item) =>
+                  openAction({ kind: "backup-sessions", items: [item] })
+                }
+                onDelete={(item) =>
+                  openAction({ kind: "delete-sessions", items: [item] })
+                }
+              />
+            ) : (
+              <WorkspaceRows
+                items={workspaceRows}
+                selected={selectedWorkspaceIds}
+                onToggle={toggleWorkspace}
+                onBackup={(item) =>
+                  openAction({ kind: "backup-workspaces", items: [item] })
+                }
+                onDelete={(item) =>
+                  openAction({ kind: "delete-workspaces", items: [item] })
+                }
+              />
+            )}
+          </div>
+        )}
+      </ScrollPane>
+
+      {request.enabled && !initialResultsLoading && (totalCount ?? 0) > 0 ? (
+        <ManagerResultPagination
+          page={request.page}
+          pageSize={request.pageSize}
+          totalCount={totalCount ?? 0}
+          onPageChange={changePage}
+          onPageSizeChange={changePageSize}
+        />
+      ) : null}
+    </>
+  );
+
+  const statsDashboardPane = (
+    loading: ReactNode,
+    content: (data: NonNullable<typeof statsDashboard.data>) => ReactNode,
+  ) =>
+    statsDashboard.isLoading ? (
+      loading
+    ) : statsDashboard.error ? (
+      <PageError
+        title={t("statsLoadFailed")}
+        message={statsDashboard.error.message}
+        onRetry={() => void statsDashboard.refetch()}
+      />
+    ) : statsDashboard.data ? (
+      content(statsDashboard.data)
+    ) : (
+      <PageEmpty
+        title={t("statsNoStatistics")}
+        description={t("statsSelectWorkspace")}
+      />
+    );
+
+  const resultOverviewPane = statsDashboardPane(<PageSkeleton />, (data) => (
+    <ActivityTrend
+      data={data.timeline}
+      unknownMessageTimestamps={data.overview.unknown_message_timestamps}
+      splitMessagesTrend
+    />
+  ));
+
+  const resultRankingPane = statsDashboardPane(<PageSkeleton />, (data) => (
+    <StatsInsightsSection data={data} all={statsDashboardAll} />
+  ));
+
+  const filterToolbar = (
+    <FilterToolbar
+      view={route.view}
+      search={searchInput}
+      sort={route.sort}
+      visibleCount={resultRows.length}
+      hasActiveFilters={hasActiveFilters}
+      selection={
+        selectedCount > 0
+          ? route.view === "sessions"
+            ? {
+                count: selectedSessionItems.length,
+                visibleCount: visibleSelectedSessions,
+                bytes: selectedSessionBytes,
+                onClear: () => setSelectedSessions(new Map()),
+                onBackup: () =>
+                  openAction({
+                    kind: "backup-sessions",
+                    items: selectedSessionItems,
+                  }),
+                onDelete: () =>
+                  openAction({
+                    kind: "delete-sessions",
+                    items: selectedSessionItems,
+                  }),
+              }
+            : {
+                count: selectedWorkspaceItems.length,
+                visibleCount: visibleSelectedWorkspaces,
+                bytes: selectedWorkspaceBytes,
+                onClear: () => setSelectedWorkspaces(new Map()),
+                onBackup: () =>
+                  openAction({
+                    kind: "backup-workspaces",
+                    items: selectedWorkspaceItems,
+                  }),
+                onDelete: () =>
+                  openAction({
+                    kind: "delete-workspaces",
+                    items: selectedWorkspaceItems,
+                  }),
+              }
+          : null
+      }
+      onSearchChange={setSearchInput}
+      onSortChange={changeSort}
+      onSelectVisible={selectVisible}
+      onClearFilters={clearFilters}
+    />
+  );
 
   return (
     <>
@@ -1347,200 +1709,81 @@ export function ManagerPage() {
           className="flex h-full min-h-0 flex-col gap-4 overflow-hidden"
           data-manager-result-panel
         >
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center justify-between gap-2">
-              <strong className="text-sm font-medium">
-                {route.view === "sessions"
-                  ? t("managerSessionPreview")
-                  : t("managerWorkspacePreview")}
-              </strong>
-              <div className="flex items-center gap-2">
-                {listBusyLabel ? (
-                  <span
-                    className="inline-flex items-center gap-1 text-xs text-muted-foreground"
-                    data-manager-refreshing
-                  >
-                    <LoaderCircleIcon
-                      className="size-3.5 animate-spin"
-                      aria-hidden="true"
-                    />
-                    {listBusyLabel}
-                  </span>
-                ) : null}
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="min-h-10"
-                  onClick={() =>
-                    changeScope(route.scope === "all" ? "current" : "all")
-                  }
-                  data-manager-scope-toggle
-                >
-                  {route.scope === "all"
-                    ? t("managerSwitchToCurrent")
-                    : t("managerSwitchToAll")}
-                </Button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="min-h-10"
-                  onClick={refreshResults}
-                  disabled={!request.enabled || resultsRefreshing}
-                  data-manager-refresh
-                >
-                  <RefreshCwIcon data-icon="inline-start" />
-                  {t("managerRefresh")}
-                </Button>
+          <Tabs
+            value={resultPanelTab}
+            onValueChange={(value) =>
+              setResultPanelTab(value as ManagerResultPanelTab)
+            }
+            className="flex h-full min-h-0 flex-col gap-4 overflow-hidden"
+            data-manager-result-tabs
+          >
+            <div className="flex shrink-0 flex-col gap-3">
+              <div className="flex items-center justify-between gap-2">
+                <TabsList className="shrink-0">
+                  <TabsTrigger value="list">{t("managerResultTabList")}</TabsTrigger>
+                  <TabsTrigger value="overview">{t("overview")}</TabsTrigger>
+                  <TabsTrigger value="ranking">{t("managerResultTabRanking")}</TabsTrigger>
+                  <TabsTrigger value="compression">{t("managerResultTabCompression")}</TabsTrigger>
+                  <TabsTrigger value="sync">{t("managerResultTabSync")}</TabsTrigger>
+                </TabsList>
+                {resultPanelActions}
               </div>
+
+              <ManagerStatsStrip
+                scope={route.scope}
+                range={statsDashboardRange}
+                stats={stats.data}
+                statsLoading={stats.isLoading}
+                statsError={stats.error}
+                onStatsRetry={() => void stats.refetch()}
+                dashboard={statsDashboard.data}
+                dashboardLoading={statsDashboard.isLoading}
+                dashboardError={statsDashboard.error}
+                onDashboardRetry={() => void statsDashboard.refetch()}
+              />
+
+              {resultPanelTab === "list" ? filterToolbar : null}
             </div>
 
-            <ManagerStatsStrip
-              stats={stats.data}
-              loading={stats.isLoading}
-              error={stats.error}
-              onRetry={() => void stats.refetch()}
-            />
+            <TabsContent
+              value="list"
+              className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden"
+            >
+              {resultListPane}
+            </TabsContent>
 
-            <FilterToolbar
-              view={route.view}
-              search={searchInput}
-              sort={route.sort}
-              visibleCount={resultRows.length}
-              hasActiveFilters={hasActiveFilters}
-              selection={
-                selectedCount > 0
-                  ? route.view === "sessions"
-                    ? {
-                        count: selectedSessionItems.length,
-                        visibleCount: visibleSelectedSessions,
-                        bytes: selectedSessionBytes,
-                        onClear: () => setSelectedSessions(new Map()),
-                        onBackup: () =>
-                          openAction({
-                            kind: "backup-sessions",
-                            items: selectedSessionItems,
-                          }),
-                        onDelete: () =>
-                          openAction({
-                            kind: "delete-sessions",
-                            items: selectedSessionItems,
-                          }),
-                      }
-                    : {
-                        count: selectedWorkspaceItems.length,
-                        visibleCount: visibleSelectedWorkspaces,
-                        bytes: selectedWorkspaceBytes,
-                        onClear: () => setSelectedWorkspaces(new Map()),
-                        onBackup: () =>
-                          openAction({
-                            kind: "backup-workspaces",
-                            items: selectedWorkspaceItems,
-                          }),
-                        onDelete: () =>
-                          openAction({
-                            kind: "delete-workspaces",
-                            items: selectedWorkspaceItems,
-                          }),
-                      }
-                  : null
-              }
-              onSearchChange={setSearchInput}
-              onSortChange={changeSort}
-              onSelectVisible={selectVisible}
-              onClearFilters={clearFilters}
-            />
-          </div>
+            <TabsContent
+              value="overview"
+              className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden"
+            >
+              <ScrollPane className="min-h-0 flex-1">{resultOverviewPane}</ScrollPane>
+            </TabsContent>
 
-          <ScrollPane className="min-h-0 flex-1">
-            {!request.enabled ? (
-              <PageEmpty
-                title={t("managerNoCurrentWorkspace")}
-                description={t("managerNoCurrentWorkspaceDescription")}
-              />
-            ) : !providersSelected ? (
-              <PageEmpty
-                title={t("managerNoProvidersSelected")}
-                description={t("managerNoProvidersSelectedDescription")}
-              />
-            ) : initialResultsLoading ? (
-              <div
-                data-manager-results-loading
-                aria-label={t("managerLoadingResults")}
-              >
-                <PageSkeleton />
-              </div>
-            ) : scopeIsEmpty ? (
-              <PageEmpty
-                title={
-                  route.view === "sessions"
-                    ? t("managerNoSessionsInScope")
-                    : t("managerNoWorkspacesInScope")
-                }
-                description={
-                  route.scope === "all"
-                    ? t("managerNoIndexedAll")
-                    : t("managerNoIndexedCurrent")
-                }
-                onRefresh={refreshResults}
-              />
-            ) : filtersAreEmpty ? (
-              <PageEmpty
-                title={
-                  route.view === "sessions"
-                    ? t("managerNoSessionsFiltered")
-                    : t("managerNoWorkspacesFiltered")
-                }
-                description={t("managerClearOrChangeFilters")}
-                onRefresh={refreshResults}
-              />
-            ) : (
-              <div
-                className={
-                  listPageFetching
-                    ? "opacity-60 transition-opacity"
-                    : "transition-opacity"
-                }
-                data-manager-result-list
-                aria-busy={listPageFetching || undefined}
-              >
-                {route.view === "sessions" ? (
-                  <SessionRows
-                    items={sessionRows}
-                    selected={selectedSessionIds}
-                    onToggle={toggleSession}
-                    onBackup={(item) =>
-                      openAction({ kind: "backup-sessions", items: [item] })
-                    }
-                    onDelete={(item) =>
-                      openAction({ kind: "delete-sessions", items: [item] })
-                    }
-                  />
-                ) : (
-                  <WorkspaceRows
-                    items={workspaceRows}
-                    selected={selectedWorkspaceIds}
-                    onToggle={toggleWorkspace}
-                    onBackup={(item) =>
-                      openAction({ kind: "backup-workspaces", items: [item] })
-                    }
-                    onDelete={(item) =>
-                      openAction({ kind: "delete-workspaces", items: [item] })
-                    }
-                  />
-                )}
-              </div>
-            )}
-          </ScrollPane>
+            <TabsContent
+              value="ranking"
+              className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden"
+            >
+              <ScrollPane className="min-h-0 flex-1">{resultRankingPane}</ScrollPane>
+            </TabsContent>
 
-          {request.enabled && !initialResultsLoading && (totalCount ?? 0) > 0 ? (
-            <ManagerResultPagination
-              page={request.page}
-              pageSize={request.pageSize}
-              totalCount={totalCount ?? 0}
-              onPageChange={changePage}
-              onPageSizeChange={changePageSize}
-            />
-          ) : null}
+            <TabsContent
+              value="compression"
+              className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden"
+            >
+              <ScrollPane className="min-h-0 flex-1">
+                <CompressionListPanel />
+              </ScrollPane>
+            </TabsContent>
+
+            <TabsContent
+              value="sync"
+              className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden"
+            >
+              <ScrollPane className="min-h-0 flex-1">
+                <SyncListPanel />
+              </ScrollPane>
+            </TabsContent>
+          </Tabs>
         </PanelCard>
       </TwoPanePage>
 

@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   useManagerProviderCatalog: vi.fn(),
   useManagerStats: vi.fn(),
   useManagerWorkspaces: vi.fn(),
+  useStatsDashboard: vi.fn(),
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -42,6 +43,10 @@ vi.mock("@/features/manager/queries", () => ({
   useManagerProviderCatalog: mocks.useManagerProviderCatalog,
   useManagerStats: mocks.useManagerStats,
   useManagerWorkspaces: mocks.useManagerWorkspaces,
+}));
+
+vi.mock("@/features/stats/queries", () => ({
+  useStatsDashboard: mocks.useStatsDashboard,
 }));
 
 const providerCatalog = {
@@ -132,6 +137,46 @@ const workspaces = [
     last_active_at: 100,
   },
 ];
+
+const statsDashboard = {
+  generated_at: "2026-08-06T00:00:00Z",
+  range_start: null,
+  completeness: { status: "complete", incomplete_session_count: 0 },
+  overview: {
+    total_sessions: 5,
+    active_sessions: 3,
+    new_sessions: 1,
+    total_messages: 100,
+    active_session_messages: 80,
+    total_size_bytes: 6_144,
+    stale_size_bytes: 1_024,
+    total_workspaces: 2,
+    active_workspaces: 2,
+    total_providers: 2,
+    active_providers: 2,
+    unknown_message_counts: 0,
+    unknown_message_timestamps: 0,
+    unknown_size_bytes: 0,
+    unknown_activity_times: 0,
+    unknown_created_times: 0,
+  },
+  attention: {
+    active_7d: { count: 2, size_bytes: 2048 },
+    inactive_7_to_30d: { count: 1, size_bytes: 1024 },
+    inactive_30_to_90d: { count: 1, size_bytes: 1024 },
+    inactive_over_90d: { count: 1, size_bytes: 2048 },
+    unknown: { count: 0, size_bytes: 0 },
+    large_sessions: { count: 0, size_bytes: 0 },
+    short_sessions: { count: 0, size_bytes: 0 },
+    large_threshold_bytes: 50_000_000,
+    short_max_messages: 3,
+  },
+  timeline: [],
+  providers: [],
+  workspaces: [],
+  top_sessions: { by_messages: [], by_size: [], recently_active: [] },
+  distributions: { session_size: [], message_count: [] },
+};
 
 function queryResult<T>(data: T, overrides: Record<string, unknown> = {}) {
   return {
@@ -236,6 +281,14 @@ beforeEach(() => {
   mocks.useManagerWorkspaces.mockReturnValue(
     queryResult({ items: workspaces, total_count: 2, total_size_bytes: 6144 }),
   );
+  mocks.useStatsDashboard.mockReturnValue({
+    dashboard: queryResult(statsDashboard),
+    meta: queryResult({
+      selected_workspace: "/work/project-one",
+      settings: { default_backup_dir: "/backups" },
+    }),
+    all: false,
+  });
   mocks.backupManagerItems.mockResolvedValue({
     success: 1,
     failed: 0,
@@ -302,7 +355,9 @@ describe("ManagerPage interaction model", () => {
     ).toBeNull();
     expect(screen.queryByRole("button", { name: /All Workspaces/i })).toBeNull();
     expect(screen.getByText("Current Workspace")).toBeTruthy();
-    expect(screen.getByText("All Workspaces")).toBeTruthy();
+    expect(screen.getByText("Active sessions")).toBeTruthy();
+    expect(screen.getByText("Storage used")).toBeTruthy();
+    expect(screen.getByText("Inactive 90+ days")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Switch to all" })).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: "Switch to all" }));
@@ -312,6 +367,7 @@ describe("ManagerPage interaction model", () => {
       expect(screen.getByTestId("location").textContent).toContain(
         "view=workspaces",
       );
+      expect(screen.getByText("All Workspaces")).toBeTruthy();
     });
 
     await user.click(screen.getByRole("button", { name: "Switch to current" }));
