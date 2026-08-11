@@ -218,6 +218,48 @@ memorph find --session "refactor" -p claude -p codex
 
 ---
 
+### Provider Support Matrix
+
+memorph supports session management for 23 AI coding agents. Capabilities differ per provider:
+
+| Provider | Import | Export | Manage/Resume |
+|---|---:|---:|---:|
+| Claude | ✅ | ✅ | ✅ |
+| Codex | ✅ | ✅ | ✅ |
+| OpenCode | ✅ | ✅ | ✅ |
+| DeepSeek | ✅ | ✅ | ✅ |
+| Kimi | ✅ | ✅ | ✅ |
+| Cursor | ✅ | ✅ | ✅ |
+| Gemini CLI | ✅ | ❌ | ✅ |
+| Kiro | ✅ | ❌ | ✅ |
+| Hermes | ✅ | ❌ | ✅ |
+| Cline | ✅ | ❌ | ❌ |
+| Copilot | ✅ | ❌ | ❌ |
+| Droid | ✅ | ❌ | ❌ |
+| CodeBuddy | ✅ | ❌ | ❌ |
+| Qoder | ✅ | ❌ | ❌ |
+| Trae | ✅ | ❌ | ❌ |
+| WorkBuddy | ✅ | ❌ | ❌ |
+| Pi | ✅ | ❌ | ❌ |
+| Antigravity | ✅ | ❌ | ❌ |
+| OpenClaw | ✅ | ❌ | ❌ |
+| Augment | ✅ | ❌ | ❌ |
+| Windsurf | ✅ | ❌ | ❌ |
+| Amazon Q | ✅ | ❌ | ❌ |
+| Qwen | ✅ | ❌ | ❌ |
+
+> **Export**: write OASF canonical Session back as provider-native format.  
+> **Manage/Resume**: supports at least one of delete / rename / resume.  
+> Import uses a unified OASF Session model; export fidelity depends on the target provider's native format capabilities.
+
+### OASF Compatibility
+
+memorph is built on [OASF (Open Agent Session Format)](https://crates.io/crates/oasf) v2 (crate `oasf` 0.2.0).
+
+- All session files (`.morph`, `.json`, `.md`, `.html`) carry schema name/version in the meta line; validated on import, rejecting incompatible versions
+- Import: 23 providers' native formats are unified into OASF canonical Session
+- Export: 6 providers support writing canonical Session back to native format (Claude, Codex, OpenCode, DeepSeek, Kimi, Cursor)
+- Fidelity model: each Provider × Block type declares `Preserved` / `Normalized` / `Downgraded` / `Dropped` / `Unsupported`, with loss reports generated at export time via `export_report`
 
 ---
 

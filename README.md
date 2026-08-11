@@ -236,6 +236,51 @@ memorph find --session "refactor" -p claude -p codex
 
 ---
 
+### Provider 支持矩阵
+
+memorph 支持 23 个 AI 编程 Agent 的会话管理。各 Provider 的能力存在差异：
+
+| Provider | 导入 | 导出 | 管理/恢复 |
+|---|---:|---:|---:|
+| Claude | ✅ | ✅ | ✅ |
+| Codex | ✅ | ✅ | ✅ |
+| OpenCode | ✅ | ✅ | ✅ |
+| DeepSeek | ✅ | ✅ | ✅ |
+| Kimi | ✅ | ✅ | ✅ |
+| Cursor | ✅ | ✅ | ✅ |
+| Gemini CLI | ✅ | ❌ | ✅ |
+| Kiro | ✅ | ❌ | ✅ |
+| Hermes | ✅ | ❌ | ✅ |
+| Cline | ✅ | ❌ | ❌ |
+| Copilot | ✅ | ❌ | ❌ |
+| Droid | ✅ | ❌ | ❌ |
+| CodeBuddy | ✅ | ❌ | ❌ |
+| Qoder | ✅ | ❌ | ❌ |
+| Trae | ✅ | ❌ | ❌ |
+| WorkBuddy | ✅ | ❌ | ❌ |
+| Pi | ✅ | ❌ | ❌ |
+| Antigravity | ✅ | ❌ | ❌ |
+| OpenClaw | ✅ | ❌ | ❌ |
+| Augment | ✅ | ❌ | ❌ |
+| Windsurf | ✅ | ❌ | ❌ |
+| Amazon Q | ✅ | ❌ | ❌ |
+| Qwen | ✅ | ❌ | ❌ |
+
+> **导出**：将 OASF canonical Session 回写为 Provider 原生格式。  
+> **管理/恢复**：支持 delete / rename / resume 中至少一项。  
+> 导入侧使用统一的 OASF Session 模型，导出侧的保真度取决于目标 Provider 的原生格式能力。
+
+### OASF 兼容性
+
+memorph 基于 [OASF (Open Agent Session Format)](https://crates.io/crates/oasf) v2（crate `oasf` 0.2.0）构建。
+
+- 所有会话文件（`.morph`、`.json`、`.md`、`.html`）在 meta 行携带 schema name/version，导入时校验，拒绝不兼容版本
+- 导入侧：23 个 Provider 的原生格式统一转换为 OASF canonical Session
+- 导出侧：6 个 Provider 支持将 canonical Session 回写为原生格式（Claude、Codex、OpenCode、DeepSeek、Kimi、Cursor）
+- 保真度模型：每个 Provider × Block 类型声明 `Preserved` / `Normalized` / `Downgraded` / `Dropped` / `Unsupported`，通过 `export_report` 在导出时生成损失报告
+
+---
+
 ### 桌面端
 
 目前已经构建了mac端的dmg版本，稳定后会逐步支持全平台的桌面端

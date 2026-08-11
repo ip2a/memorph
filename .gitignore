@@ -39,6 +39,7 @@ local/*
 !/rust/crates/
 !/rust/crates/**/Cargo.toml
 !/rust/crates/**/*.rs
+!/rust/crates/**/CHANGELOG.md
 !/rust/crates/**/assets/
 !/rust/crates/**/assets/*.json
 /rust/crates/**/assets/web/
