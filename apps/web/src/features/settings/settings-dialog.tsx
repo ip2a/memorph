@@ -35,14 +35,15 @@ import { cn } from "@/lib/utils";
 import type { HomeSessionLayout, ProviderCatalogEntry, SettingsPayload, UiLanguage, UpdateCheckPayload, UpdateSettingsPayload } from "@/lib/types";
 import { AgentOrderList } from "@/features/settings/agent-order-list";
 import { IndexSettingsPanel } from "@/features/settings/index-settings-panel";
-import { SkillsStatsCustomRangePreferenceField } from "@/features/settings/skills-stats-custom-range-preference-field";
 import { SkillsCatalogPageSizeField } from "@/features/settings/skills-catalog-page-size-field";
+import { CustomRangePreferenceField } from "@/features/settings/custom-range-preference-field";
 import { clampSkillsCatalogPageSize } from "@/features/skills/skills-catalog-page-size";
 
 const SECTIONS = [
   { id: "general", labelKey: "general" },
   { id: "index", labelKey: "indexSection" },
   { id: "display", labelKey: "display" },
+  { id: "timeRange", labelKey: "timeRangeSection" },
   { id: "skills", labelKey: "skills" },
   { id: "order", labelKey: "order" },
   { id: "config", labelKey: "configFile" },
@@ -278,9 +279,16 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           </nav>
 
           <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-5 p-4 sm:p-5">
-              {(!draft || meta.isLoading) && section !== "index" ? <SettingsLoading label={t("loadingSettings")} /> : null}
+              {(!draft || meta.isLoading) && section !== "index" && section !== "timeRange" ? <SettingsLoading label={t("loadingSettings")} /> : null}
 
               {section === "index" ? <IndexSettingsPanel /> : null}
+
+              {section === "timeRange" ? (
+                <section className="flex flex-col gap-4" data-settings-section="time-range">
+                  <SectionHead title={t("timeRangeSection")} />
+                  <CustomRangePreferenceField />
+                </section>
+              ) : null}
 
               {draft && section === "general" ? (
                 <section className="flex flex-col gap-4" data-settings-section="general">
@@ -385,7 +393,6 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                       patchDraft({ skills_catalog_page_size: next })
                     }
                   />
-                  <SkillsStatsCustomRangePreferenceField />
                 </section>
               ) : null}
 

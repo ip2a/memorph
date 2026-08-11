@@ -41,7 +41,7 @@ export function SkillOverviewPanel({
         className="flex min-h-0 flex-1 flex-col gap-3"
       >
         <div className="flex shrink-0 flex-col gap-2">
-          <div className="flex min-w-0 flex-nowrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <TabsList className="shrink-0 max-w-full overflow-x-auto">
               {OVERVIEW_TABS.map(({ value, labelKey }) => (
                 <TabsTrigger key={value} value={value}>
@@ -62,8 +62,8 @@ export function SkillOverviewPanel({
           <TabsContent value="summary" className="mt-0">
             <SkillStatsPanel section="summary" provider={provider} />
           </TabsContent>
-          <TabsContent value="activity" className="mt-0">
-            <div className="grid gap-4">
+          <TabsContent value="activity" className="mt-0 min-w-0">
+            <div className="grid min-w-0 gap-4">
               <SkillGraphPanel
                 embedded
                 skillId={skillId}

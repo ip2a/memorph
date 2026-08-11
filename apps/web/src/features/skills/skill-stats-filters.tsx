@@ -12,6 +12,7 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   formatSkillsStatsRangeLabel,
+  readCustomRangePreferenceOrDefault,
   readSkillsStatsCustomRange,
   writeSkillsStatsCustomRange,
 } from "@/features/skills/skills-stats-preferences";
@@ -34,7 +35,7 @@ function presetRange(range: keyof typeof RANGE_DAYS) {
 }
 
 function defaultCustomDates() {
-  return readSkillsStatsCustomRange() ?? presetRange("30d");
+  return readCustomRangePreferenceOrDefault();
 }
 
 export function useSkillStatsFilters(provider?: string) {

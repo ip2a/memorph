@@ -394,6 +394,7 @@ export function SkillStatsPanel({
   return (
     <section
       className={cn(
+        "min-w-0",
         section === "all" && "grid shrink-0 gap-3 xl:grid-cols-2",
         section === "summary" && "shrink-0",
         section === "ranking" && "shrink-0",
@@ -407,14 +408,14 @@ export function SkillStatsPanel({
 
       {showRanking ? (
       <>
-      <div className={section === "all" ? "xl:col-span-2" : undefined}>
-          <Table>
+      <div className={cn("min-w-0", section === "all" && "xl:col-span-2")}>
+          <Table className="table-fixed">
             <TableHeader>
               <TableRow>
-                <TableHead>{t("skillsColumnSkill")}</TableHead>
-                <TableHead>{t("skillsInvocationLabel")}</TableHead>
-                <TableHead>{t("skillsSessionLabel")}</TableHead>
-                <TableHead>{t("skillsRecent")}</TableHead>
+                <TableHead className="w-2/5">{t("skillsColumnSkill")}</TableHead>
+                <TableHead className="w-[18%]">{t("skillsInvocationLabel")}</TableHead>
+                <TableHead className="w-[18%]">{t("skillsSessionLabel")}</TableHead>
+                <TableHead className="w-[27%]">{t("skillsRecent")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -432,10 +433,10 @@ export function SkillStatsPanel({
                     setEvidenceTarget(item);
                   }}
                 >
-                  <TableCell>{item.name}</TableCell>
+                  <TableCell className="truncate">{item.name}</TableCell>
                   <TableCell>{item.invocations}</TableCell>
                   <TableCell>{item.sessions}</TableCell>
-                  <TableCell className="text-xs">
+                  <TableCell className="truncate text-xs">
                     {formatTime(item.last_invoked_at_ms)}
                   </TableCell>
                 </TableRow>
