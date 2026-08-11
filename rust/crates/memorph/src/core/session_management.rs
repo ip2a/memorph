@@ -10,7 +10,7 @@ use crate::format;
 use crate::provider;
 use crate::session::{
     Context, EventMeta, Identity, ImportedSession, MappingDirection, MappingReport, Provenance,
-    ProviderRef, Schema, Session,
+    ProviderRef, Schema, Session, OASF_SCHEMA_NAME, OASF_SCHEMA_VERSION,
 };
 
 /// Key under which memorph stashes a session's `Provenance` in the pure oasf
@@ -723,6 +723,23 @@ pub fn list_compression_provider_support() -> Vec<crate::provider::ProviderCompr
         .collect()
 }
 
+/// Reject sessions whose schema name or version differs from the OASF revision
+/// memorph was built against. Prevents silent field-level incompatibility when
+/// a future oasf crate bump changes `Schema::default()`.
+fn validate_session_schema(session: &Session, source: &str) -> Result<()> {
+    if session.schema.name != OASF_SCHEMA_NAME || session.schema.version != OASF_SCHEMA_VERSION {
+        anyhow::bail!(
+            "Session schema mismatch in {}: expected {} v{}, got {} v{}. The file was written by an incompatible OASF revision.",
+            source,
+            OASF_SCHEMA_NAME,
+            OASF_SCHEMA_VERSION,
+            session.schema.name,
+            session.schema.version,
+        );
+    }
+    Ok(())
+}
+
 pub fn read_session_export_file(file: &str) -> Result<ImportedSession> {
     let path = Path::new(file);
     let session: Session = if file.ends_with(".morph") {
@@ -740,6 +757,7 @@ pub fn read_session_export_file(file: &str) -> Result<ImportedSession> {
             file
         );
     };
+    validate_session_schema(&session, file)?;
     let provider_id = session
         .extensions
         .get(MEMORPH_PROVENANCE_KEY)
@@ -1497,5 +1515,50 @@ mod tests {
                 usage: None,
             },
         }
+    }
+
+    #[test]
+    fn read_session_export_file_rejects_schema_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bad.morph");
+        let session = serde_json::json!({
+            "type": "meta",
+            "schema": {"name": "wrong-schema", "version": 99},
+            "identity": {"id": "s-1"},
+            "context": {},
+            "extensions": {},
+        });
+        use std::io::Write;
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "{}", session).unwrap();
+
+        let err = read_session_export_file(
+            path.to_str().unwrap(),
+        )
+        .unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("schema mismatch"), "got: {msg}");
+        assert!(msg.contains("wrong-schema"), "got: {msg}");
+        assert!(msg.contains("99"), "got: {msg}");
+    }
+
+    #[test]
+    fn read_session_export_file_accepts_correct_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("good.morph");
+        let session = Session {
+            lineage: Vec::new(),
+            schema: Schema {
+                name: OASF_SCHEMA_NAME.to_string(),
+                version: OASF_SCHEMA_VERSION,
+            },
+            identity: Identity { id: "s-1".to_string(), title: None },
+            context: Context::default(),
+            events: Vec::new(),
+            extensions: Default::default(),
+        };
+        format::write_session(&path, &session).unwrap();
+        let imported = read_session_export_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(imported.session.identity.id, "s-1");
     }
 }
