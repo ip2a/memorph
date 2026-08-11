@@ -129,7 +129,7 @@ pub(super) fn write_canonical_codex_rollout(
         let role = match visible_role {
             Role::Assistant => "assistant",
             Role::User | Role::Tool => "user",
-            Role::System | Role::Developer | _ => continue,
+            Role::System | Role::Developer | Role::Other => continue,
         };
         let tool_lines = codex_tool_response_items(event);
         for line in &tool_lines {
