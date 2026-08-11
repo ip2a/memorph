@@ -2937,3 +2937,127 @@ fn codex_export_emits_native_function_call_and_output_for_tool_blocks() {
     assert_eq!(payload["output"], json!("file.txt"));
     assert_eq!(payload["is_error"], json!(false));
 }
+
+#[test]
+fn codex_export_then_import_round_trips_tool_call_and_result() {
+    let temp = tempdir().unwrap();
+    let codex_dir = temp.path().join(".codex");
+    let workspace = temp.path().join("repo");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        "model_provider = \"test-provider\"\n",
+    )
+    .unwrap();
+    let _guard = use_test_codex_dir(codex_dir.clone());
+
+    let session = Session {
+        lineage: Vec::new(),
+        schema: Schema::default(),
+        identity: Identity {
+            id: "rt-source".to_string(),
+            title: Some("Codex Round Trip".to_string()),
+        },
+        context: Context {
+            workspace: Some(workspace.to_string_lossy().to_string()),
+            created_at: None,
+            last_active_at: None,
+            tags: Vec::new(),
+        },
+        events: vec![
+            codex_test_event(
+                "rt-user",
+                EventKind::Message,
+                Role::User,
+                vec![Block::Text {
+                    text: "list files".to_string(),
+                }],
+            ),
+            codex_test_event(
+                "rt-assistant",
+                EventKind::Action,
+                Role::Assistant,
+                vec![
+                    Block::Text {
+                        text: "running ls".to_string(),
+                    },
+                    Block::ToolCall {
+                        tool_call_id: "call-rt1".to_string(),
+                        name: "shell".to_string(),
+                        input: Some(json!({"command": "ls"})),
+                    },
+                ],
+            ),
+            codex_test_event(
+                "rt-result",
+                EventKind::Observation,
+                Role::Tool,
+                vec![Block::ToolResult {
+                    tool_call_id: "call-rt1".to_string(),
+                    content: "Cargo.toml".to_string(),
+                    outcome: crate::session::execution_outcome(false),
+                }],
+            ),
+        ],
+        extensions: BTreeMap::new(),
+    };
+
+    let session_id =
+        export_canonical_session_in_codex_dir(&session, &workspace, &codex_dir).unwrap();
+
+    let rollout_path = WalkDir::new(codex_dir.join("sessions"))
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.into_path())
+        .find(|path| {
+            path.extension().and_then(|value| value.to_str()) == Some("jsonl")
+                && path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|value| value.contains(&session_id))
+        })
+        .expect("exported rollout file");
+
+    let imported = super::load::import_canonical_session(&rollout_path).unwrap();
+
+    // ToolCall survives.
+    let assistant = imported
+        .session
+        .events
+        .iter()
+        .find(|e| e.role == Role::Assistant)
+        .expect("assistant event survived round-trip");
+    assert!(
+        assistant.blocks.iter().any(|b| matches!(
+            b,
+            Block::ToolCall { tool_call_id, name, .. }
+                if tool_call_id == "call-rt1" && name == "shell"
+        )),
+        "ToolCall did not round-trip; blocks = {:?}",
+        assistant.blocks
+    );
+
+    // ToolResult survives.
+    assert!(
+        imported.session.events.iter().any(|e| {
+            e.blocks.iter().any(|b| matches!(
+                b,
+                Block::ToolResult { tool_call_id, content, .. }
+                    if tool_call_id == "call-rt1" && content == "Cargo.toml"
+            ))
+        }),
+        "ToolResult did not round-trip"
+    );
+
+    // User text survives.
+    assert!(
+        imported.session.events.iter().any(|e| {
+            e.role == Role::User
+                && e.blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::Text { text } if text == "list files"))
+        }),
+        "user text did not round-trip"
+    );
+}
