@@ -1507,3 +1507,20 @@ fn session_fingerprint_none_for_missing_database() {
         .unwrap();
     assert!(fp.is_none(), "missing database should return None");
 }
+
+#[test]
+fn opencode_export_patch_block_round_trips_native_patch_part() {
+    use crate::session::Block;
+    let block = Block::Patch {
+        summary: Some("fix typo".to_string()),
+        diff_text: Some("@@ -1 +1 @@\n-old\n+new".to_string()),
+        files: vec!["src/lib.rs".to_string()],
+        hash: Some("abc123".to_string()),
+    };
+    let part = super::write::block_to_opencode_part("s1", "m1", "p1", &block, 0)
+        .expect("patch part should export");
+    assert_eq!(part["type"], "patch");
+    assert_eq!(part["files"][0], "src/lib.rs");
+    assert_eq!(part["text"], "@@ -1 +1 @@\n-old\n+new");
+    assert_eq!(part["hash"], "abc123");
+}

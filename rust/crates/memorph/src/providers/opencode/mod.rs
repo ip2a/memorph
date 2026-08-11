@@ -148,7 +148,7 @@ impl Provider for OpenCodeProvider {
                 thinking: Some(Fidelity::Preserved),
                 tool_call: Some(Fidelity::Preserved),
                 tool_result: Some(Fidelity::Preserved),
-                patch: Some(Fidelity::Downgraded),
+                patch: Some(Fidelity::Preserved),
                 image: Some(Fidelity::Downgraded),
                 file: Some(Fidelity::Downgraded),
                 compressed: Some(Fidelity::Preserved),

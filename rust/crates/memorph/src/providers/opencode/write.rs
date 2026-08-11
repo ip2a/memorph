@@ -422,6 +422,30 @@ pub(super) fn block_to_opencode_part(
             "filename": path,
             "url": content.as_deref().unwrap_or(""),
         })),
+        Block::Patch {
+            summary,
+            diff_text,
+            files,
+            hash,
+        } => {
+            let mut payload = serde_json::json!({
+                "id": part_id,
+                "sessionID": session_id,
+                "messageID": msg_id,
+                "type": "patch",
+                "files": files,
+            });
+            if let Some(diff) = diff_text {
+                payload["text"] = Value::String(diff.clone());
+            }
+            if let Some(summary) = summary {
+                payload["summary"] = Value::String(summary.clone());
+            }
+            if let Some(hash) = hash {
+                payload["hash"] = Value::String(hash.clone());
+            }
+            Some(payload)
+        }
         _ => visible_block_text(block).map(|text| {
             serde_json::json!({
                 "id": part_id,
