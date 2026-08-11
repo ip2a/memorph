@@ -49,6 +49,16 @@ pub fn agents(home: &Path, workspace: Option<&Path>) -> Vec<SkillAgent> {
     agents
 }
 
+/// Dot-prefixed entries are never skills. `.disabled/` parks an archived skill
+/// inside its agent's own skills dir (same filesystem → O(1) rename) while
+/// staying invisible to discovery; this guard makes that contract explicit so a
+/// future recursive scan cannot resurface archived skills.
+fn is_hidden_entry(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
+}
+
 pub fn discover(agents: &[SkillAgent]) -> SkillsOverview {
     let mut skills = BTreeMap::<String, SkillEntry>::new();
     for agent in agents {
@@ -59,7 +69,7 @@ pub fn discover(agents: &[SkillAgent]) -> SkillsOverview {
         children.sort_by_key(|entry| entry.file_name());
         for child in children {
             let path = child.path();
-            if !path.is_dir() || !path.join("SKILL.md").is_file() {
+            if is_hidden_entry(&path) || !path.is_dir() || !path.join("SKILL.md").is_file() {
                 continue;
             }
             let directory = child.file_name().to_string_lossy().into_owned();
@@ -137,7 +147,7 @@ pub fn discover_catalog(agents: &[SkillAgent]) -> SkillsOverview {
         for child in children.filter_map(Result::ok) {
             let path = child.path();
             let entry_path = path.join("SKILL.md");
-            if !path.is_dir() || !entry_path.is_file() {
+            if is_hidden_entry(&path) || !path.is_dir() || !entry_path.is_file() {
                 continue;
             }
             let directory = child.file_name().to_string_lossy().into_owned();
@@ -290,5 +300,32 @@ mod tests {
         assert_eq!(first.skills[0].fingerprint, second.skills[0].fingerprint);
         assert_eq!(first.skills[0].statistics.files, 0);
         assert!(first.skills[0].issues.is_empty());
+    }
+
+    #[test]
+    fn discover_skips_dot_prefixed_entries() {
+        // A dot-prefixed folder with a SKILL.md must be ignored. This is the
+        // explicit contract that keeps `.disabled/` archives out of the catalog
+        // even if discovery ever learns to recurse.
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join(".codex").join("skills");
+        let visible = skills_dir.join("demo");
+        std::fs::create_dir_all(&visible).unwrap();
+        std::fs::write(visible.join("SKILL.md"), "---\nname: demo\n---\n").unwrap();
+        let hidden = skills_dir.join(".hidden-skill");
+        std::fs::create_dir_all(&hidden).unwrap();
+        std::fs::write(hidden.join("SKILL.md"), "---\nname: hidden\n---\n").unwrap();
+
+        let agents = vec![SkillAgent {
+            agent_id: "codex".into(),
+            name: "Codex".into(),
+            skills_dir,
+            scope_kind: "global".into(),
+            workspace_dir: None,
+        }];
+        let overview = discover(&agents);
+
+        assert_eq!(overview.skills.len(), 1);
+        assert_eq!(overview.skills[0].name, "demo");
     }
 }
