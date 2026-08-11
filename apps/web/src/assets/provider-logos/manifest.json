@@ -53,6 +53,8 @@
     "droid": "droid",
     "workbuddy": "workbuddy",
     "augment": "augment",
+    "amazonq": "amazon-bedrock",
+    "qwen": "alibaba",
     "openclaw": "openclaw"
   },
   "unmapped_memorph_providers": [],

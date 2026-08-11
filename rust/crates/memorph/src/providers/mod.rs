@@ -20,12 +20,15 @@ pub mod openclaw;
 pub mod opencode;
 pub mod pi;
 pub mod qoder;
+pub mod qwen;
 pub mod trae;
 pub mod windsurf;
 pub mod workbuddy;
 
+pub mod amazonq;
 pub(crate) mod hook_profiles;
 mod hook_registry;
+pub(crate) mod q_conversation;
 
 use crate::provider::Provider;
 
@@ -50,6 +53,8 @@ const PROVIDER_IDS: &[&str] = &[
     "droid",
     "workbuddy",
     "hermes",
+    "amazonq",
+    "qwen",
     "pi",
 ];
 
@@ -77,6 +82,8 @@ impl ProviderRegistry {
             "droid" => Some(Box::new(droid::DroidProvider)),
             "workbuddy" => Some(Box::new(workbuddy::WorkBuddyProvider)),
             "hermes" => Some(Box::new(hermes::HermesProvider)),
+            "amazonq" => Some(Box::new(amazonq::AmazonQProvider)),
+            "qwen" => Some(Box::new(qwen::QwenProvider)),
             "pi" => Some(Box::new(pi::PiProvider)),
             "gemini" => Some(Box::new(gemini::GeminiProvider)),
             "kiro" => Some(Box::new(kiro::KiroProvider)),
@@ -148,6 +155,8 @@ mod tests {
             "workbuddy",
             "hermes",
             "pi",
+            "amazonq",
+            "qwen",
             "openclaw",
             "augment",
         ] {

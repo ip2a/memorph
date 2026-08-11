@@ -34,6 +34,7 @@ impl Drop for TestKiroSessionsDirGuard {
     fn drop(&mut self) {
         crate::cache::global_cache().invalidate(PROVIDER_ID);
         set_test_kiro_mutation_failure(None);
+        cli::set_test_kiro_cli_db_path(None);
         *TEST_KIRO_SESSIONS_DIR
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
@@ -321,7 +322,76 @@ fn current_format_scan_uses_directory_locators_and_truthful_capabilities() -> Re
             .id,
         sessions[1].session_id
     );
-    assert_eq!(KiroProvider.data_source_paths(), vec![temp.path()]);
+    let source_paths = KiroProvider.data_source_paths();
+    assert_eq!(source_paths.first(), Some(&temp.path().to_path_buf()));
+    assert_eq!(source_paths.get(1), cli::kiro_cli_db_path().as_ref());
+    Ok(())
+}
+
+#[test]
+fn kiro_cli_sqlite_scans_imports_pages_and_fingerprints() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let _guard = use_test_kiro_sessions_dir(temp.path().join("missing-ide"));
+    let db_path = temp.path().join("data.sqlite3");
+    let conn = rusqlite::Connection::open(&db_path)?;
+    conn.execute_batch(
+        "CREATE TABLE conversations_v2 (
+            conversation_id TEXT PRIMARY KEY,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );",
+    )?;
+    let value = json!({
+        "history": [{
+            "user": {
+                "content": {"Prompt": {"prompt": "Kiro CLI fixture"}},
+                "timestamp": "2025-01-01T00:00:00Z"
+            },
+            "assistant": {"Response": {"message_id": "m1", "content": "done"}}
+        }]
+    })
+    .to_string();
+    conn.execute(
+        "INSERT INTO conversations_v2
+         (conversation_id, key, value, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            "cli-session-1",
+            "/workspace/cli",
+            value,
+            1_735_689_600_000_i64,
+            1_735_689_660_000_i64
+        ],
+    )?;
+    drop(conn);
+    cli::set_test_kiro_cli_db_path(Some(db_path));
+
+    let summaries = KiroProvider.scan_sessions()?;
+    assert_eq!(summaries.len(), 1);
+    let summary = &summaries[0];
+    assert_eq!(summary.session_id, "cli-session-1");
+    assert_eq!(summary.title.as_deref(), Some("Kiro CLI fixture"));
+    assert_eq!(summary.project_dir.as_deref(), Some("/workspace/cli"));
+    assert_eq!(
+        summary.source_path.as_deref(),
+        Some("kiro-cli://cli-session-1")
+    );
+
+    let imported = KiroProvider.import_session("kiro-cli://cli-session-1")?;
+    assert_eq!(imported.session.identity.id, "cli-session-1");
+    assert_eq!(imported.session.events.len(), 2);
+    assert_eq!(imported.provenance.primary_source.provider_id, PROVIDER_ID);
+
+    let page = KiroProvider.import_session_page("kiro-cli://cli-session-1", 1, Some(1))?;
+    assert_eq!(page.event_count, 2);
+    assert_eq!(page.imported.session.events.len(), 1);
+
+    let fingerprint = KiroProvider
+        .session_source_fingerprint("kiro-cli://cli-session-1")?
+        .expect("CLI fingerprint");
+    assert!(fingerprint.value.starts_with("kiro-cli-v1:cli-session-1:"));
     Ok(())
 }
 
