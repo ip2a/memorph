@@ -2,7 +2,6 @@
 *
 
 # Keep directory traversal so whitelisted paths below can be reached.
-!*/
 
 # Always ignore local-only directories and artifacts.
 /.claude/
@@ -21,6 +20,7 @@
 /desktop/tauri/gen/
 /desktop/tauri/target/
 **/__pycache__/
+local/*
 
 # Root project metadata.
 !/.gitignore
@@ -33,6 +33,7 @@
 
 # Rust workspace.
 !/rust/
+!/rust/crates/**/
 !/rust/Cargo.toml
 !/rust/Cargo.lock
 !/rust/crates/
@@ -53,13 +54,6 @@
 !/.github/workflows/
 !/.github/workflows/*.yml
 
-# Local draft documentation.
-/docs/*
-# 规范文档作为架构验收标准,纳入版本控制
-!/docs/架构文档-重要架构设计v1.md
-!/docs/项目骨架设计v1.md
-!/docs/重构计划-v1.md
-!/docs/技术文档-LIB说明v1.md
 
 # Web app source.
 !/apps/
@@ -109,20 +103,6 @@
 !/python/packages/memorph/src/memorph/
 !/python/packages/memorph/src/memorph/*.py
 
-# Research notes (not part of the project source).
-/headroom的调研报告.md
-/memorph基于headroom完善压缩机制。md
 
 # Provider-native test fixtures.
-!/rust/crates/memorph/src/providers/kimi/fixtures/
-!/rust/crates/memorph/src/providers/kimi/fixtures/**
-!/rust/crates/memorph/src/providers/kiro/fixtures/
-!/rust/crates/memorph/src/providers/kiro/fixtures/**
-!/rust/crates/memorph/src/providers/cursor/fixtures/
-!/rust/crates/memorph/src/providers/cursor/fixtures/**
-
-# Project-wide Codex experience instructions.
-!AGENTS.md
-!.agent/
-!.agent/config.toml
-!docs/codex-experience.md
+!/rust/crates/memorph/src/*
