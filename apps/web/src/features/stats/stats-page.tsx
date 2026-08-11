@@ -4,9 +4,8 @@ import { ScrollPane } from "@/components/shared/scroll-pane";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ActivityTrend,
-  InactivityPanel,
-  ProviderPiePanel,
   RankingBoard,
+  StatsCompositionPanel,
   StatsOverviewPanel,
   type StatsOverviewMetric,
 } from "@/features/stats/stats-overview-panels";
@@ -17,6 +16,7 @@ import {
 import { formatBytes } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import type { I18nKey } from "@/lib/i18n-core";
+import { resolvePreferredStatsDashboardRange } from "@/lib/custom-range-preferences";
 import type { StatsDashboardRange } from "@/lib/types";
 
 const RANGE_HINT_KEYS: Record<StatsDashboardRange, I18nKey> = {
@@ -28,7 +28,9 @@ const RANGE_HINT_KEYS: Record<StatsDashboardRange, I18nKey> = {
 
 export function StatsPage() {
   const { t } = useI18n();
-  const [range, setRange] = useState<StatsDashboardRange>("30d");
+  const [range, setRange] = useState<StatsDashboardRange>(() =>
+    resolvePreferredStatsDashboardRange(),
+  );
   const [scope, setScope] = useState<StatsWorkspaceScope>("workspace");
   const { dashboard, meta, all } = useStatsDashboard(range, scope);
 
@@ -152,17 +154,8 @@ export function StatsPage() {
             <StatsOverviewPanel metrics={overviewMetrics} />
           </div>
 
-          <div className="col-span-3 min-w-0">
-            <InactivityPanel
-              data={data.attention}
-              sessionSize={data.distributions.session_size}
-            />
-          </div>
-          <div className="col-span-3 min-w-0">
-            <ProviderPiePanel
-              items={data.providers}
-              messageCount={data.distributions.message_count}
-            />
+          <div className="col-span-6 min-w-0">
+            <StatsCompositionPanel data={data} />
           </div>
         </section>
 

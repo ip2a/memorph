@@ -1,10 +1,28 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { ProviderLogo } from "@/components/shared/provider-logo";
 import { workspaceName } from "@/components/shared/workspace-name";
 import { SectionHeading } from "@/components/shared/section-heading";
 import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   ChartContainer,
   ChartTooltip,
@@ -12,8 +30,8 @@ import {
   type ChartConfig,
 } from "@/components/ui/chart";
 import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
-import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { formatBytes, formatDateTime } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import type {
@@ -25,6 +43,7 @@ import type {
 type TrendKey = "active_sessions" | "new_sessions" | "active_session_messages";
 type RankKey = "by_messages" | "by_size" | "recently_active";
 type BreakdownKind = "provider" | "workspace";
+type DistributionChartKind = "donut" | "bar";
 
 const CHART_COLORS = [
   "var(--chart-1)",
@@ -34,17 +53,10 @@ const CHART_COLORS = [
   "var(--chart-5)",
 ] as const;
 
-export const STATS_BAR_MAX_ROWS = 4;
+export const STATS_BAR_MAX_ROWS = 5;
 
-const statsPanelTabListClassName =
-  "h-9 max-w-full flex-nowrap overflow-x-auto";
-const rankingTabListClassName = "max-w-full shrink-0 flex-nowrap overflow-x-auto";
-const rankingTabTriggerClassName = "flex-none px-2 text-xs";
-const statsPanelBodyClassName = "flex min-w-0 flex-col gap-3 py-1";
-const statsPanelRowsClassName = "flex flex-col divide-y divide-border";
-const statsPanelRowClassName = "flex min-w-0 flex-col gap-1.5 py-1.5";
-const statsPanelRowHeaderClassName =
-  "flex items-center justify-between gap-2 text-xs";
+const rankingToggleGroupClassName = "max-w-full flex-wrap";
+const rankingToggleItemClassName = "px-2 text-xs";
 
 function PanelEmpty() {
   const { t } = useI18n();
@@ -62,15 +74,78 @@ function breakdownLabel(item: StatsBreakdownItem, kind: BreakdownKind) {
   return item.id.split(/[\\/]/).filter(Boolean).at(-1) ?? item.id;
 }
 
+function buildTrendPoints(
+  data: StatsDashboard["timeline"],
+  language: string,
+) {
+  const dateLocale = language === "zh" ? "zh-CN" : "en-US";
+  const spansYears =
+    data.length > 1 &&
+    new Date(data[0].start).getFullYear() !==
+      new Date(data.at(-1)!.start).getFullYear();
+  return data.map((point) => ({
+    ...point,
+    label: new Date(point.start).toLocaleDateString(dateLocale, {
+      year: spansYears ? "numeric" : undefined,
+      month: "numeric",
+      day: "numeric",
+    }),
+  }));
+}
+
+function ActivityTrendLineChart({
+  points,
+  metric,
+  chartConfig,
+}: {
+  points: ReturnType<typeof buildTrendPoints>;
+  metric: TrendKey;
+  chartConfig: ChartConfig;
+}) {
+  const hasSeries = points.some((point) => point[metric] > 0);
+
+  if (!points.length || !hasSeries) {
+    return <PanelEmpty />;
+  }
+
+  return (
+    <ChartContainer config={chartConfig} className="h-72 w-full">
+      <LineChart accessibilityLayer data={points}>
+        <CartesianGrid vertical={false} strokeDasharray="4 4" />
+        <XAxis dataKey="label" tickLine={false} axisLine={false} />
+        <YAxis
+          tickLine={false}
+          axisLine={false}
+          width={44}
+          allowDecimals={false}
+        />
+        <ChartTooltip content={<ChartTooltipContent />} />
+        <Line
+          type="monotone"
+          dataKey={metric}
+          stroke={`var(--color-${metric})`}
+          strokeWidth={2}
+          dot={false}
+        />
+      </LineChart>
+    </ChartContainer>
+  );
+}
+
 export function ActivityTrend({
   data,
   unknownMessageTimestamps,
+  splitMessagesTrend = false,
 }: {
   data: StatsDashboard["timeline"];
   unknownMessageTimestamps: number;
+  splitMessagesTrend?: boolean;
 }) {
   const { t, language } = useI18n();
-  const [metric, setMetric] = useState<TrendKey>("active_sessions");
+  const [sessionMetric, setSessionMetric] = useState<
+    "active_sessions" | "new_sessions"
+  >("active_sessions");
+  const [combinedMetric, setCombinedMetric] = useState<TrendKey>("active_sessions");
   const chartConfig = useMemo(
     () =>
       ({
@@ -86,22 +161,60 @@ export function ActivityTrend({
       }) satisfies ChartConfig,
     [t],
   );
-  const dateLocale = language === "zh" ? "zh-CN" : "en-US";
-  const spansYears =
-    data.length > 1 &&
-    new Date(data[0].start).getFullYear() !==
-      new Date(data.at(-1)!.start).getFullYear();
-  const points = data.map((point) => ({
-    ...point,
-    label: new Date(point.start).toLocaleDateString(dateLocale, {
-      year: spansYears ? "numeric" : undefined,
-      month: "numeric",
-      day: "numeric",
-    }),
-  }));
-  const hasSeries = points.some((point) => point[metric] > 0);
-  const incompleteMessages =
-    metric === "active_session_messages" && unknownMessageTimestamps > 0;
+  const points = useMemo(
+    () => buildTrendPoints(data, language),
+    [data, language],
+  );
+
+  if (splitMessagesTrend) {
+    return (
+      <div className="flex min-w-0 flex-col gap-6">
+        <section className="flex min-w-0 flex-col gap-3">
+          <SectionHeading
+            variant="compact"
+            title={t("statsUsageTrend")}
+            actions={
+              <Tabs
+                value={sessionMetric}
+                onValueChange={(value) =>
+                  setSessionMetric(value as "active_sessions" | "new_sessions")
+                }
+              >
+                <TabsList>
+                  <TabsTrigger value="active_sessions">
+                    {t("statsActiveSessions")}
+                  </TabsTrigger>
+                  <TabsTrigger value="new_sessions">
+                    {t("statsNewSessions")}
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
+            }
+          />
+          <ActivityTrendLineChart
+            points={points}
+            metric={sessionMetric}
+            chartConfig={chartConfig}
+          />
+        </section>
+
+        <section className="flex min-w-0 flex-col gap-3">
+          <SectionHeading
+            variant="compact"
+            title={t("statsActiveMessages")}
+          />
+          <ActivityTrendLineChart
+            points={points}
+            metric="active_session_messages"
+            chartConfig={chartConfig}
+          />
+        </section>
+      </div>
+    );
+  }
+
+  const incompleteCombinedMessages =
+    combinedMetric === "active_session_messages" && unknownMessageTimestamps > 0;
 
   return (
     <section className="flex min-w-0 flex-col gap-3">
@@ -110,8 +223,8 @@ export function ActivityTrend({
         title={t("statsUsageTrend")}
         actions={
           <Tabs
-            value={metric}
-            onValueChange={(value) => setMetric(value as TrendKey)}
+            value={combinedMetric}
+            onValueChange={(value) => setCombinedMetric(value as TrendKey)}
           >
             <TabsList>
               <TabsTrigger value="active_sessions">
@@ -127,37 +240,18 @@ export function ActivityTrend({
           </Tabs>
         }
       />
-      {incompleteMessages ? (
+      {incompleteCombinedMessages ? (
         <p className="text-xs text-muted-foreground">
           {t("statsTrendIncompleteTimestamps", {
             count: unknownMessageTimestamps.toLocaleString(),
           })}
         </p>
       ) : null}
-      {points.length && hasSeries ? (
-        <ChartContainer config={chartConfig} className="h-72 w-full">
-          <LineChart accessibilityLayer data={points}>
-            <CartesianGrid vertical={false} strokeDasharray="4 4" />
-            <XAxis dataKey="label" tickLine={false} axisLine={false} />
-            <YAxis
-              tickLine={false}
-              axisLine={false}
-              width={44}
-              allowDecimals={false}
-            />
-            <ChartTooltip content={<ChartTooltipContent />} />
-            <Line
-              type="monotone"
-              dataKey={metric}
-              stroke={`var(--color-${metric})`}
-              strokeWidth={2}
-              dot={false}
-            />
-          </LineChart>
-        </ChartContainer>
-      ) : (
-        <PanelEmpty />
-      )}
+      <ActivityTrendLineChart
+        points={points}
+        metric={combinedMetric}
+        chartConfig={chartConfig}
+      />
     </section>
   );
 }
@@ -178,6 +272,7 @@ type BarSeries = {
   id: string;
   label: string;
   unitLabel?: string;
+  chartKind?: DistributionChartKind;
   config: ChartConfig;
   data: BarDatum[];
 };
@@ -214,54 +309,192 @@ function trimBarRows(
   ];
 }
 
-function StatsBarList({
+function DistributionLegend({
   config,
   data,
-  unitLabel,
-  maxRows = STATS_BAR_MAX_ROWS,
 }: {
   config: ChartConfig;
   data: BarDatum[];
-  unitLabel?: string;
-  maxRows?: number;
 }) {
-  const { t } = useI18n();
-  const resolvedUnitLabel = unitLabel ?? t("statsSessionsUnit");
   const total = data.reduce((sum, item) => sum + item.value, 0);
-  if (!data.length) return <PanelEmpty />;
-  const rows = trimBarRows(data, t("statsOther"), maxRows);
 
   return (
-    <div className={statsPanelBodyClassName}>
-      <p className="text-xs leading-none text-muted-foreground">
-        {t("statsBarTotal", {
-          count: total.toLocaleString(),
-          unit: resolvedUnitLabel,
-        })}
-      </p>
-      <div className={statsPanelRowsClassName}>
-        {rows.map((item, index) => {
-          const percent = total > 0 ? (item.value / total) * 100 : 0;
-          const color = item.fill || barFill(config, item.id, index);
-          return (
-            <div key={item.id} className={statsPanelRowClassName}>
-              <div className={statsPanelRowHeaderClassName}>
-                <span className="min-w-0 max-w-[45%] truncate">
-                  {barLabel(item, config)}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-right tabular-nums text-muted-foreground">
-                  {item.value.toLocaleString()}
-                  <span className="ml-1 text-[10px]">({percent.toFixed(0)}%)</span>
-                </span>
-              </div>
-              <Progress
-                value={percent}
-                className="h-1.5 bg-muted/60 [&_[data-slot=progress-indicator]]:rounded-full [&_[data-slot=progress-indicator]]:bg-[var(--bar-color)]"
-                style={{ "--bar-color": color } as React.CSSProperties}
+    <ul className="flex flex-col gap-1.5">
+      {data.map((item, index) => {
+        const percent = total > 0 ? (item.value / total) * 100 : 0;
+        const color = item.fill || barFill(config, item.id, index);
+        return (
+          <li
+            key={item.id}
+            className="flex min-w-0 items-center justify-between gap-2 text-xs"
+          >
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span
+                className="size-2 shrink-0 rounded-full"
+                style={{ backgroundColor: color }}
               />
+              <span className="min-w-0 truncate">{barLabel(item, config)}</span>
+            </span>
+            <span className="shrink-0 tabular-nums text-muted-foreground">
+              {item.value.toLocaleString()}
+              <span className="ml-1 text-[10px]">({percent.toFixed(0)}%)</span>
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function DistributionDonutChart({
+  config,
+  data,
+}: {
+  config: ChartConfig;
+  data: BarDatum[];
+}) {
+  if (!data.length) return <PanelEmpty />;
+
+  return (
+    <ChartContainer
+      config={config}
+      className="mx-auto aspect-square max-h-[168px] w-full"
+    >
+      <PieChart>
+        <ChartTooltip content={<ChartTooltipContent hideLabel nameKey="id" />} />
+        <Pie
+          data={data}
+          dataKey="value"
+          nameKey="id"
+          innerRadius="58%"
+          outerRadius="86%"
+          strokeWidth={2}
+          paddingAngle={1}
+        >
+          {data.map((item, index) => (
+            <Cell
+              key={item.id}
+              fill={item.fill || barFill(config, item.id, index)}
+            />
+          ))}
+        </Pie>
+      </PieChart>
+    </ChartContainer>
+  );
+}
+
+function DistributionBarChart({
+  config,
+  data,
+}: {
+  config: ChartConfig;
+  data: BarDatum[];
+}) {
+  const chartData = useMemo(
+    () =>
+      data.map((item) => ({
+        ...item,
+        name:
+          typeof barLabel(item, config) === "string"
+            ? (barLabel(item, config) as string)
+            : item.id,
+      })),
+    [config, data],
+  );
+  const chartHeight = Math.max(140, chartData.length * 34);
+
+  if (!chartData.length) return <PanelEmpty />;
+
+  return (
+    <ChartContainer
+      config={config}
+      className="w-full"
+      style={{ height: chartHeight }}
+    >
+      <BarChart
+        accessibilityLayer
+        data={chartData}
+        layout="vertical"
+        margin={{ left: 4, right: 8, top: 0, bottom: 0 }}
+      >
+        <CartesianGrid horizontal={false} strokeDasharray="3 3" />
+        <XAxis type="number" hide allowDecimals={false} />
+        <YAxis
+          type="category"
+          dataKey="name"
+          width={88}
+          tickLine={false}
+          axisLine={false}
+          tick={{ fontSize: 11 }}
+        />
+        <ChartTooltip content={<ChartTooltipContent hideLabel />} />
+        <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+          {chartData.map((item, index) => (
+            <Cell
+              key={item.id}
+              fill={item.fill || barFill(config, item.id, index)}
+            />
+          ))}
+        </Bar>
+      </BarChart>
+    </ChartContainer>
+  );
+}
+
+function DistributionCard({ series }: { series: BarSeries[] }) {
+  const { t } = useI18n();
+  const [view, setView] = useState(series[0]?.id ?? "");
+  const active = series.find((item) => item.id === view) ?? series[0];
+  if (!active) return null;
+
+  const resolvedUnitLabel = active.unitLabel ?? t("statsSessionsUnit");
+  const rows = trimBarRows(active.data, t("statsOther"));
+  const total = rows.reduce((sum, item) => sum + item.value, 0);
+
+  return (
+    <div className="flex h-full min-w-0 flex-col border-b border-border pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-2">
+        <CardDescription>
+          {t("statsBarTotal", {
+            count: total.toLocaleString(),
+            unit: resolvedUnitLabel,
+          })}
+        </CardDescription>
+        <ToggleGroup
+          type="single"
+          variant="outline"
+          size="sm"
+          spacing={0}
+          value={active.id}
+          onValueChange={(value) => {
+            if (value) setView(value);
+          }}
+          className="ml-auto max-w-full flex-wrap justify-end"
+        >
+          {series.map((item) => (
+            <ToggleGroupItem
+              key={item.id}
+              value={item.id}
+              className={rankingToggleItemClassName}
+            >
+              {item.label}
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      </div>
+      <div className="flex min-h-[180px] flex-1 flex-col gap-3 pt-3 sm:flex-row sm:items-center">
+        {total > 0 ? (
+          <>
+            <div className="min-w-0 flex-1">
+              <DistributionDonutChart config={active.config} data={rows} />
             </div>
-          );
-        })}
+            <div className="min-w-0 flex-1">
+              <DistributionLegend config={active.config} data={rows} />
+            </div>
+          </>
+        ) : (
+          <PanelEmpty />
+        )}
       </div>
     </div>
   );
@@ -280,7 +513,7 @@ export function StatsOverviewPanel({
 }) {
   return (
     <section className="flex h-full min-w-0 flex-col py-1">
-      <div className={statsPanelRowsClassName}>
+      <div className="flex flex-col divide-y divide-border">
         {metrics.map((metric) => (
           <div
             key={metric.label}
@@ -299,32 +532,6 @@ export function StatsOverviewPanel({
           </div>
         ))}
       </div>
-    </section>
-  );
-}
-
-function TabbedStatsBars({ series }: { series: BarSeries[] }) {
-  const [tab, setTab] = useState(series[0]?.id ?? "");
-  const active = series.find((item) => item.id === tab) ?? series[0];
-  if (!active) return null;
-
-  return (
-    <section className="flex h-full min-w-0 flex-col gap-2">
-      <Tabs value={active.id} onValueChange={setTab}>
-        <TabsList className={statsPanelTabListClassName}>
-          {series.map((item) => (
-            <TabsTrigger key={item.id} value={item.id} className="flex-1">
-              {item.label}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </Tabs>
-      <StatsBarList
-        key={active.id}
-        config={active.config}
-        data={active.data}
-        unitLabel={active.unitLabel}
-      />
     </section>
   );
 }
@@ -349,6 +556,7 @@ function distributionBarSeries(
     id,
     label,
     unitLabel,
+    chartKind: "bar",
     config,
     data: top.map((item, index) => ({
       id: item.key,
@@ -397,12 +605,13 @@ export function InactivityPanel({
   ].filter((item) => item.value > 0);
 
   return (
-    <TabbedStatsBars
+    <DistributionCard
       series={[
         {
           id: "activity",
           label: t("statsActivityStatus"),
           unitLabel: sessionsUnit,
+          chartKind: "donut",
           config: inactivityChartConfig,
           data: items.map((item, index) => ({
             ...item,
@@ -458,12 +667,13 @@ export function ProviderPiePanel({
   });
 
   return (
-    <TabbedStatsBars
+    <DistributionCard
       series={[
         {
           id: "providers",
           label: t("statsAgent"),
           unitLabel: sessionsUnit,
+          chartKind: "donut",
           config,
           data: providerData,
         },
@@ -475,6 +685,80 @@ export function ProviderPiePanel({
         ),
       ]}
     />
+  );
+}
+
+export function StatsCompositionPanel({
+  data,
+}: {
+  data: StatsDashboard;
+}) {
+  const { t } = useI18n();
+  const sessionsUnit = t("statsSessionsUnit");
+  const activityConfig = useMemo(
+    () => ({
+      value: { label: sessionsUnit },
+      active_7d: { label: t("statsActive7d"), color: "var(--chart-1)" },
+      inactive_7_to_30d: { label: t("statsInactive7to30d"), color: "var(--chart-2)" },
+      inactive_30_to_90d: { label: t("statsInactive30to90d"), color: "var(--chart-3)" },
+      inactive_over_90d: { label: t("statsInactiveOver90dChart"), color: "var(--chart-4)" },
+      unknown: { label: t("statsUnknown"), color: "var(--chart-5)" },
+    }) satisfies ChartConfig,
+    [sessionsUnit, t],
+  );
+  const providerItems = data.providers.filter((item) => item.session_count > 0);
+  const providerConfig = {
+    value: { label: sessionsUnit },
+    ...Object.fromEntries(
+      providerItems.map((item, index) => [
+        barItemKey(item.id, index),
+        { label: breakdownLabel(item, "provider"), color: CHART_COLORS[index % CHART_COLORS.length] },
+      ]),
+    ),
+  } satisfies ChartConfig;
+  const activityItems = [
+    { id: "active_7d", value: data.attention.active_7d.count },
+    { id: "inactive_7_to_30d", value: data.attention.inactive_7_to_30d.count },
+    { id: "inactive_30_to_90d", value: data.attention.inactive_30_to_90d.count },
+    { id: "inactive_over_90d", value: data.attention.inactive_over_90d.count },
+    { id: "unknown", value: data.attention.unknown.count },
+  ].filter((item) => item.value > 0);
+
+  return (
+    <DistributionCard
+      series={[
+        { id: "activity", label: t("statsActivityStatus"), unitLabel: sessionsUnit, config: activityConfig, data: activityItems.map((item, index) => ({ ...item, fill: barFill(activityConfig, item.id, index) })) },
+        distributionBarSeries("session_size", t("statsSessionSize"), data.distributions.session_size, sessionsUnit),
+        { id: "providers", label: t("statsAgent"), unitLabel: sessionsUnit, config: providerConfig, data: providerItems.map((item, index) => { const id = barItemKey(item.id, index); return { id, value: item.session_count, fill: barFill(providerConfig, id, index), label: <span className="flex min-w-0 items-center gap-1.5"><ProviderLogo providerId={item.id} size="xs" alt={item.id} /><span className="truncate">{breakdownLabel(item, "provider")}</span></span> }; }) },
+        distributionBarSeries("message_count", t("statsMessageCount"), data.distributions.message_count, sessionsUnit),
+      ]}
+    />
+  );
+}
+
+export function StatsInsightsSection({
+  data,
+  all,
+}: {
+  data: StatsDashboard;
+  all: boolean;
+}) {
+  const { t } = useI18n();
+
+  return (
+    <div className="flex min-w-0 flex-col gap-8 pb-2">
+      <section className="flex min-w-0 flex-col gap-3">
+        <SectionHeading variant="compact" title={t("statsComposition")} />
+        <StatsCompositionPanel data={data} />
+      </section>
+
+      <RankingBoard
+        sessions={data.top_sessions}
+        providers={data.providers}
+        workspaces={data.workspaces}
+        all={all}
+      />
+    </div>
   );
 }
 
@@ -490,105 +774,76 @@ export function RankingBoard({
   all: boolean;
 }) {
   const { t } = useI18n();
-  const [limit, setLimit] = useState<"5" | "10">("5");
-  const [rank, setRank] = useState<RankKey>("by_messages");
-  const [breakdownKind, setBreakdownKind] = useState<BreakdownKind>("provider");
-  const topN = Number(limit);
-  const effectiveKind: BreakdownKind = all ? breakdownKind : "provider";
-  const breakdownItems = (effectiveKind === "workspace" ? workspaces : providers).slice(
-    0,
-    topN,
-  );
-  const sessionItems = sessions[rank].slice(0, topN);
-
-  const topLimitTabs = (
-    <Tabs
-      value={limit}
-      onValueChange={(value) => setLimit(value as "5" | "10")}
-    >
-      <TabsList className={rankingTabListClassName}>
-        <TabsTrigger value="5" className={rankingTabTriggerClassName}>
-          Top 5
-        </TabsTrigger>
-        <TabsTrigger value="10" className={rankingTabTriggerClassName}>
-          Top 10
-        </TabsTrigger>
-      </TabsList>
-    </Tabs>
-  );
-
-  const rankingHeadingClassName =
-    "grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b pb-2";
-  const rankingActionsClassName =
-    "flex min-w-0 flex-nowrap items-center justify-end gap-2 overflow-x-auto";
+  type LeftView = RankKey | "workspace";
+  const [view, setView] = useState<LeftView>("by_messages");
+  const topN = 5;
+  const isWorkspace = view === "workspace";
+  const sessionItems = !isWorkspace ? sessions[view as RankKey].slice(0, topN) : [];
+  const workspaceItems = isWorkspace ? workspaces.slice(0, topN) : [];
+  const providerItems = providers.slice(0, topN);
 
   return (
-    <section className="@container/stats-ranking grid min-w-0 grid-cols-10 items-start gap-4">
-      <div className="col-span-7 min-w-0">
-        <SectionHeading
-          variant="compact"
-          className={rankingHeadingClassName}
-          title={t("statsSessionRanking")}
-          actionsProps={{ className: rankingActionsClassName }}
-          actions={
-            <>
-              <Tabs
-                value={rank}
-                onValueChange={(value) => setRank(value as RankKey)}
-              >
-                <TabsList className={rankingTabListClassName}>
-                  <TabsTrigger value="by_messages" className={rankingTabTriggerClassName}>
-                    {t("statsByMessages")}
-                  </TabsTrigger>
-                  <TabsTrigger value="by_size" className={rankingTabTriggerClassName}>
-                    {t("statsBySize")}
-                  </TabsTrigger>
-                  <TabsTrigger value="recently_active" className={rankingTabTriggerClassName}>
-                    {t("statsRecentlyActive")}
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-              {topLimitTabs}
-            </>
-          }
-        />
-        <div className="grid min-w-0 divide-y divide-border overflow-hidden">
-          {sessionItems.length ? (
-            <SessionList items={sessionItems} />
-          ) : (
-            <PanelEmpty />
-          )}
-        </div>
-      </div>
-
-      <div className="col-span-3 min-w-0">
-        <SectionHeading
-          variant="compact"
-          className={rankingHeadingClassName}
-          title={
-            <Tabs
-              value={effectiveKind}
-              onValueChange={(value) => setBreakdownKind(value as BreakdownKind)}
+    <section className="@container/stats-ranking flex min-w-0 flex-col gap-4">
+      <SectionHeading
+        variant="compact"
+        title={t("statsRankings")}
+        actions={
+          <ToggleGroup
+            type="single"
+            variant="outline"
+            size="sm"
+            spacing={0}
+            value={view}
+            onValueChange={(value) => {
+              if (value) setView(value as LeftView);
+            }}
+            className="max-w-full flex-wrap justify-end"
+          >
+            <ToggleGroupItem value="by_messages" className={rankingToggleItemClassName}>
+              {t("statsByMessages")}
+            </ToggleGroupItem>
+            <ToggleGroupItem value="by_size" className={rankingToggleItemClassName}>
+              {t("statsBySize")}
+            </ToggleGroupItem>
+            <ToggleGroupItem value="recently_active" className={rankingToggleItemClassName}>
+              {t("statsRecentlyActive")}
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="workspace"
+              disabled={!all}
+              className={rankingToggleItemClassName}
             >
-              <TabsList className={rankingTabListClassName}>
-                <TabsTrigger value="provider" className={rankingTabTriggerClassName}>
-                  {t("statsAgentRanking")}
-                </TabsTrigger>
-                <TabsTrigger value="workspace" disabled={!all} className={rankingTabTriggerClassName}>
-                  {t("statsWorkspaceRanking")}
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
-          }
-          actionsProps={{ className: rankingActionsClassName }}
-          actions={topLimitTabs}
-        />
-        <div className="grid min-w-0 divide-y divide-border overflow-hidden">
-          {breakdownItems.length ? (
-            <BreakdownRows items={breakdownItems} kind={effectiveKind} />
-          ) : (
-            <PanelEmpty />
-          )}
+              {t("statsWorkspaceRanking")}
+            </ToggleGroupItem>
+          </ToggleGroup>
+        }
+      />
+
+      <div className="grid min-w-0 grid-cols-1 items-start gap-4 @xl/stats-ranking:grid-cols-[minmax(0,1fr)_minmax(0,1.35fr)]">
+        <div className="min-w-0 border-b border-border pb-2">
+          <div className="grid min-w-0 divide-y divide-border overflow-hidden">
+            {providerItems.length ? (
+              <BreakdownRows items={providerItems} kind="provider" />
+            ) : (
+              <PanelEmpty />
+            )}
+          </div>
+        </div>
+
+        <div className="min-w-0 border-b border-border pb-2">
+          <div className="grid min-w-0 divide-y divide-border overflow-hidden">
+            {isWorkspace ? (
+              workspaceItems.length ? (
+                <BreakdownRows items={workspaceItems} kind="workspace" />
+              ) : (
+                <PanelEmpty />
+              )
+            ) : sessionItems.length ? (
+              <SessionList items={sessionItems} />
+            ) : (
+              <PanelEmpty />
+            )}
+          </div>
         </div>
       </div>
     </section>
@@ -607,7 +862,7 @@ function BreakdownRankingRow({
     kind === "provider" ? item.id : workspaceName(item.id);
 
   return (
-    <article className="grid min-h-14 min-w-0 py-2.5 hover:bg-muted/60">
+    <article className="grid h-20 min-w-0 items-center overflow-hidden px-4 py-2.5 hover:bg-muted/60">
       <div className="min-w-0 overflow-hidden">
         {kind === "provider" ? (
           <div className="flex min-w-0 items-center gap-2">
@@ -621,7 +876,7 @@ function BreakdownRankingRow({
             {title}
           </span>
         )}
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap font-mono text-xs text-muted-foreground">
           {kind === "workspace" ? (
             <Badge variant="outline" className="max-w-full font-mono">
               <span className="truncate">{item.id}</span>
@@ -647,7 +902,7 @@ function StatsSessionRow({ item }: { item: StatsSessionItem }) {
   const detailHref = `/sessions/${encodeURIComponent(item.provider_id)}/${encodeURIComponent(item.session_id)}`;
 
   return (
-    <article className="grid min-h-14 min-w-0 py-2.5 hover:bg-muted/60">
+    <article className="grid h-20 min-w-0 items-center overflow-hidden px-4 py-2.5 hover:bg-muted/60">
       <div className="min-w-0 overflow-hidden">
         <Link
           to={detailHref}
@@ -656,7 +911,7 @@ function StatsSessionRow({ item }: { item: StatsSessionItem }) {
         >
           {item.title}
         </Link>
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2 font-mono text-xs text-muted-foreground">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap font-mono text-xs text-muted-foreground">
           <Badge variant="outline" className="max-w-full font-mono">
             <span className="truncate">{item.provider_id}</span>
           </Badge>
