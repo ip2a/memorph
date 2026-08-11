@@ -304,7 +304,9 @@ fn blocks(v: &Value) -> Vec<Block> {
                         .unwrap_or("unknown")
                         .into(),
                     content: b.get("content").map(|x| x.to_string()).unwrap_or_default(),
-                    outcome: crate::session::execution_outcome(b.get("is_error").and_then(Value::as_bool).unwrap_or(false)),
+                    outcome: crate::session::execution_outcome(
+                        b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+                    ),
                 }),
                 _ => None,
             },

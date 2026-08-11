@@ -22,6 +22,7 @@ use walkdir::WalkDir;
 pub struct CopilotProvider;
 const PROVIDER_ID: &str = "copilot";
 const EVENTS_FILE: &str = "events.jsonl";
+const CHAT_SESSIONS_DIR: &str = "chatSessions";
 
 impl Provider for CopilotProvider {
     fn id(&self) -> &'static str {
@@ -66,7 +67,8 @@ impl Provider for CopilotProvider {
     }
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
         let mut out = Vec::new();
-        for root in roots() {
+        // Source 1: CLI session-state (events.jsonl)
+        for root in cli_roots() {
             if !root.exists() {
                 continue;
             }
@@ -102,75 +104,64 @@ impl Provider for CopilotProvider {
                 });
             }
         }
+        // Source 2: VS Code chatSessions
+        for root in vscode_workspace_storage_roots() {
+            if !root.exists() {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            for ws_entry in entries.flatten() {
+                let ws_path = ws_entry.path();
+                if !ws_path.is_dir() {
+                    continue;
+                }
+                let chat_dir = ws_path.join(CHAT_SESSIONS_DIR);
+                if !chat_dir.is_dir() {
+                    continue;
+                }
+                let workspace = vscode_workspace_folder(&ws_path);
+                let Ok(files) = std::fs::read_dir(&chat_dir) else {
+                    continue;
+                };
+                for file_entry in files.flatten() {
+                    let path = file_entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let ext = path.extension().and_then(|e| e.to_str());
+                    if ext != Some("jsonl") && ext != Some("json") {
+                        continue;
+                    }
+                    let Some(sid) = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(str::to_string)
+                    else {
+                        continue;
+                    };
+                    let title = vscode_session_title(&path);
+                    out.push(ProviderSessionSummary {
+                        session_id: sid,
+                        title,
+                        project_dir: workspace.clone(),
+                        created_at: None,
+                        last_active_at: file_modified_ms(&path),
+                        source_path: Some(path.to_string_lossy().into_owned()),
+                    });
+                }
+            }
+        }
         out.sort_by_key(|s| std::cmp::Reverse(s.last_active_at.unwrap_or(0)));
         out.dedup_by(|a, b| a.session_id == b.session_id);
         Ok(out)
     }
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
-        let path = std::fs::canonicalize(source_path)
-            .with_context(|| format!("Copilot source does not exist: {source_path}"))?;
-        let id =
-            session_id(&path).context("Copilot source must be session-state/<id>/events.jsonl")?;
-        let events = read_events(&path)?;
-        let timestamp = events
-            .iter()
-            .find_map(event_time)
-            .or_else(|| file_modified_datetime(&path))
-            .unwrap_or_else(Utc::now);
-        let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
-        let canonical_events: Vec<Event> = events
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| map_event(e, i, &mut report))
-            .collect();
-        let title = events
-            .iter()
-            .find_map(|e| {
-                if e.get("type").and_then(Value::as_str) != Some("user.message") {
-                    return None;
-                }
-                e.get("data")
-                    .and_then(|d| d.get("content"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .filter(|s| !s.trim().is_empty());
-        let mut extensions = BTreeMap::new();
-        extensions.insert("copilot_events_jsonl".into(), Value::Array(events));
-        let event_meta = canonical_events
-            .iter()
-            .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
-            .collect::<Vec<_>>();
-        Ok(ImportedSession {
-            session: Session {
-                lineage: Vec::new(),
-                schema: Schema::default(),
-                identity: Identity {
-                    id: id.clone(),
-                    title,
-                },
-                context: Context {
-                    workspace: session_cwd_from_value(&extensions["copilot_events_jsonl"]),
-                    created_at: Some(timestamp),
-                    last_active_at: file_modified_datetime(&path),
-                    tags: Vec::new(),
-                },
-                events: canonical_events,
-                extensions,
-            },
-            provenance: Provenance {
-                imported_at: Utc::now(),
-                imported_by: Some("memorph-cli".into()),
-                primary_source: ProviderRef {
-                    provider_id: PROVIDER_ID.into(),
-                    session_id: id,
-                    source_path: Some(path.to_string_lossy().into_owned()),
-                },
-                aliases: Vec::new(),
-            },
-            event_meta,
-            report,
-        })
+        if is_vscode_chat_session(source_path) {
+            return import_vscode_session(source_path);
+        }
+        import_cli_session(source_path)
     }
     fn session_source_fingerprint(
         &self,
@@ -182,25 +173,472 @@ impl Provider for CopilotProvider {
         }
         let metadata = std::fs::metadata(path)?;
         let digest = Sha256::digest(std::fs::read(path)?);
+        let prefix = if is_vscode_chat_session(source_path) {
+            "copilot-vscode-v1"
+        } else {
+            "copilot-events-v1"
+        };
+        let id = if is_vscode_chat_session(source_path) {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string()
+        } else {
+            session_id(path).unwrap_or_default()
+        };
         Ok(Some(ProviderSourceFingerprint {
             modified_at_ms: file_modified_ms(path).unwrap_or(0),
             size_bytes: metadata.len().min(i64::MAX as u64) as i64,
-            value: format!(
-                "copilot-events-v1:{}:{digest:x}",
-                session_id(path).unwrap_or_default()
-            ),
+            value: format!("{prefix}:{id}:{digest:x}"),
         }))
     }
     fn data_source_paths(&self) -> Vec<PathBuf> {
-        roots()
+        let mut paths = cli_roots();
+        paths.extend(vscode_workspace_storage_roots());
+        paths
     }
 }
 
-fn roots() -> Vec<PathBuf> {
+fn cli_roots() -> Vec<PathBuf> {
     dirs::home_dir()
         .into_iter()
         .map(|h| h.join(".copilot/session-state"))
         .collect()
+}
+
+fn vscode_workspace_storage_roots() -> Vec<PathBuf> {
+    let Some(cfg) = dirs::config_dir() else {
+        return Vec::new();
+    };
+    ["Code", "Code - Insiders", "VSCodium"]
+        .iter()
+        .map(|app| cfg.join(app).join("User").join("workspaceStorage"))
+        .collect()
+}
+
+fn is_vscode_chat_session(source_path: &str) -> bool {
+    (source_path.contains("/chatSessions/") || source_path.contains("\\chatSessions\\"))
+        && (source_path.contains("/workspaceStorage/")
+            || source_path.contains("\\workspaceStorage\\"))
+}
+
+fn vscode_workspace_folder(ws_path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(ws_path.join("workspace.json")).ok()?;
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    v.get("folder").and_then(Value::as_str).map(str::to_string)
+}
+
+fn vscode_session_title(path: &Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let first_line = raw.lines().next()?;
+    let header: Value = serde_json::from_str(first_line).ok()?;
+    let state = if header.get("kind").and_then(Value::as_u64) == Some(0) {
+        header.get("v")?
+    } else {
+        &header
+    };
+    // Try customTitle first, then first user request text
+    if let Some(title) = state.get("customTitle").and_then(Value::as_str) {
+        if !title.is_empty() {
+            return Some(title.to_string());
+        }
+    }
+    state
+        .get("requests")
+        .and_then(Value::as_array)?
+        .first()?
+        .get("message")
+        .and_then(|m| m.get("text").and_then(Value::as_str).map(str::to_string))
+}
+
+fn replay_vscode_session(raw: &str) -> Result<Value> {
+    let mut lines = raw.lines().filter(|l| !l.trim().is_empty());
+    let first = lines.next().context("empty VS Code chat session file")?;
+    let header: Value = serde_json::from_str(first).context("invalid VS Code session header")?;
+    if header.get("kind").and_then(Value::as_u64) != Some(0) {
+        // Legacy JSON format: entire file is the state
+        return serde_json::from_str(raw).context("invalid VS Code session JSON");
+    }
+    let mut state = header
+        .get("v")
+        .cloned()
+        .context("VS Code session snapshot has no `v` field")?;
+    for line in lines {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let kind = entry.get("kind").and_then(Value::as_u64).unwrap_or(0);
+        let Some(path) = entry.get("k").and_then(Value::as_array) else {
+            continue;
+        };
+        match kind {
+            1 => {
+                if let Some(value) = entry.get("v").cloned() {
+                    set_at_path(&mut state, path, value);
+                }
+            }
+            2 => {
+                delete_at_path(&mut state, path);
+            }
+            _ => {}
+        }
+    }
+    Ok(state)
+}
+
+fn set_at_path(root: &mut Value, path: &[Value], value: Value) {
+    if path.is_empty() {
+        *root = value;
+        return;
+    }
+    if path.len() == 1 {
+        match &path[0] {
+            Value::String(key) => {
+                if let Some(obj) = root.as_object_mut() {
+                    obj.insert(key.clone(), value);
+                }
+            }
+            Value::Number(n) => {
+                if let (Some(arr), Some(idx)) = (root.as_array_mut(), n.as_u64()) {
+                    let idx = idx as usize;
+                    if idx < arr.len() {
+                        arr[idx] = value;
+                    } else {
+                        arr.resize(idx + 1, Value::Null);
+                        arr[idx] = value;
+                    }
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+    let child = match &path[0] {
+        Value::String(key) => root.as_object_mut().and_then(|obj| obj.get_mut(key)),
+        Value::Number(n) => n.as_u64().and_then(|idx| {
+            root.as_array_mut()
+                .and_then(|arr| arr.get_mut(idx as usize))
+        }),
+        _ => None,
+    };
+    if let Some(child) = child {
+        set_at_path(child, &path[1..], value);
+    }
+}
+
+fn delete_at_path(root: &mut Value, path: &[Value]) {
+    if path.is_empty() {
+        return;
+    }
+    if path.len() == 1 {
+        match &path[0] {
+            Value::String(key) => {
+                if let Some(obj) = root.as_object_mut() {
+                    obj.remove(key);
+                }
+            }
+            Value::Number(n) => {
+                if let (Some(arr), Some(idx)) = (root.as_array_mut(), n.as_u64()) {
+                    let idx = idx as usize;
+                    if idx < arr.len() {
+                        arr.remove(idx);
+                    }
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+    let child = match &path[0] {
+        Value::String(key) => root.as_object_mut().and_then(|obj| obj.get_mut(key)),
+        Value::Number(n) => n.as_u64().and_then(|idx| {
+            root.as_array_mut()
+                .and_then(|arr| arr.get_mut(idx as usize))
+        }),
+        _ => None,
+    };
+    if let Some(child) = child {
+        delete_at_path(child, &path[1..]);
+    }
+}
+
+fn import_vscode_session(source_path: &str) -> Result<ImportedSession> {
+    let path = Path::new(source_path);
+    if !path.exists() {
+        anyhow::bail!("VS Code chat session does not exist: {source_path}");
+    }
+    let raw = std::fs::read_to_string(path)?;
+    let state = replay_vscode_session(&raw)?;
+    let sid = state
+        .get("sessionId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let creation_ms = state.get("creationDate").and_then(Value::as_u64);
+    let title = state
+        .get("customTitle")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| vscode_first_user_text(&state));
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let events = vscode_state_to_events(&state, &mut report);
+    let event_meta = events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
+    let timestamp = creation_ms
+        .and_then(|ms| DateTime::<Utc>::from_timestamp_millis(ms as i64))
+        .or_else(|| file_modified_datetime(path))
+        .unwrap_or_else(Utc::now);
+    let workspace = path
+        .parent()
+        .and_then(|chat_dir| chat_dir.parent())
+        .and_then(|ws| vscode_workspace_folder(ws));
+    let mut extensions = BTreeMap::new();
+    extensions.insert("copilot_vscode_state".into(), state);
+    Ok(ImportedSession {
+        session: Session {
+            lineage: Vec::new(),
+            schema: Schema::default(),
+            identity: Identity {
+                id: sid.clone(),
+                title,
+            },
+            context: Context {
+                workspace,
+                created_at: Some(timestamp),
+                last_active_at: file_modified_datetime(path),
+                tags: Vec::new(),
+            },
+            events,
+            extensions,
+        },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".into()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.into(),
+                session_id: sid,
+                source_path: Some(source_path.into()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
+        report,
+    })
+}
+
+fn import_cli_session(source_path: &str) -> Result<ImportedSession> {
+    let path = std::fs::canonicalize(source_path)
+        .with_context(|| format!("Copilot source does not exist: {source_path}"))?;
+    let id = session_id(&path).context("Copilot source must be session-state/<id>/events.jsonl")?;
+    let events = read_events(&path)?;
+    let timestamp = events
+        .iter()
+        .find_map(event_time)
+        .or_else(|| file_modified_datetime(&path))
+        .unwrap_or_else(Utc::now);
+    let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
+    let canonical_events: Vec<Event> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| map_event(e, i, &mut report))
+        .collect();
+    let title = events
+        .iter()
+        .find_map(|e| {
+            if e.get("type").and_then(Value::as_str) != Some("user.message") {
+                return None;
+            }
+            e.get("data")
+                .and_then(|d| d.get("content"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .filter(|s| !s.trim().is_empty());
+    let mut extensions = BTreeMap::new();
+    extensions.insert("copilot_events_jsonl".into(), Value::Array(events));
+    let event_meta = canonical_events
+        .iter()
+        .map(|_| crate::session::EventMeta::preserved(PROVIDER_ID))
+        .collect::<Vec<_>>();
+    Ok(ImportedSession {
+        session: Session {
+            lineage: Vec::new(),
+            schema: Schema::default(),
+            identity: Identity {
+                id: id.clone(),
+                title,
+            },
+            context: Context {
+                workspace: session_cwd_from_value(&extensions["copilot_events_jsonl"]),
+                created_at: Some(timestamp),
+                last_active_at: file_modified_datetime(&path),
+                tags: Vec::new(),
+            },
+            events: canonical_events,
+            extensions,
+        },
+        provenance: Provenance {
+            imported_at: Utc::now(),
+            imported_by: Some("memorph-cli".into()),
+            primary_source: ProviderRef {
+                provider_id: PROVIDER_ID.into(),
+                session_id: id,
+                source_path: Some(path.to_string_lossy().into_owned()),
+            },
+            aliases: Vec::new(),
+        },
+        event_meta,
+        report,
+    })
+}
+
+fn vscode_first_user_text(state: &Value) -> Option<String> {
+    state
+        .get("requests")
+        .and_then(Value::as_array)?
+        .first()?
+        .get("message")?
+        .get("text")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn vscode_state_to_events(state: &Value, report: &mut MappingReport) -> Vec<Event> {
+    let Some(requests) = state.get("requests").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let base_ts = state
+        .get("creationDate")
+        .and_then(Value::as_u64)
+        .and_then(|ms| DateTime::<Utc>::from_timestamp_millis(ms as i64))
+        .unwrap_or_else(Utc::now);
+    let mut events = Vec::new();
+    for (idx, req) in requests.iter().enumerate() {
+        let req_ts = req
+            .get("timestamp")
+            .and_then(Value::as_u64)
+            .and_then(|ms| DateTime::<Utc>::from_timestamp_millis(ms as i64))
+            .unwrap_or(base_ts);
+        // User message
+        if let Some(text) = req
+            .get("message")
+            .and_then(|m| m.get("text").and_then(Value::as_str))
+        {
+            if !text.is_empty() {
+                report.push_issue(crate::session::MappingIssue {
+                    level: crate::session::MappingIssueLevel::Info,
+                    disposition: Fidelity::Preserved,
+                    code: "copilot-vscode-user".into(),
+                    message: "Mapped VS Code Copilot Chat user request".into(),
+                    path: Some(format!("requests[{idx}].message")),
+                    raw: None,
+                });
+                events.push(Event {
+                    id: format!("copilot:vscode:req:{idx}:user"),
+                    kind: EventKind::Message,
+                    role: Role::User,
+                    timestamp: req_ts,
+                    links: Links::default(),
+                    blocks: vec![Block::Text {
+                        text: text.to_string(),
+                    }],
+                    tags: Vec::new(),
+                    extensions: Default::default(),
+                    metadata: Metadata {
+                        model: None,
+                        usage: None,
+                    },
+                });
+            }
+        }
+        // Assistant response
+        let Some(response) = req.get("response").and_then(Value::as_array) else {
+            continue;
+        };
+        let mut blocks = Vec::new();
+        for part in response {
+            let kind = part.get("kind").and_then(Value::as_str);
+            match kind {
+                None => {
+                    if let Some(text) = part.get("value").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            blocks.push(Block::Text {
+                                text: text.to_string(),
+                            });
+                        }
+                    }
+                }
+                Some("thinking") => {
+                    if let Some(text) = part.get("value").and_then(Value::as_str) {
+                        if !text.is_empty() {
+                            blocks.push(Block::Thinking {
+                                text: text.to_string(),
+                                signature: None,
+                            });
+                        }
+                    }
+                }
+                Some("toolInvocationSerialized") => {
+                    let tool_name = part
+                        .get("toolId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("tool")
+                        .to_string();
+                    let call_id = part
+                        .get("toolCallId")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                        .to_string();
+                    blocks.push(Block::ToolCall {
+                        tool_call_id: call_id,
+                        name: tool_name,
+                        input: part.get("rawInput").cloned(),
+                    });
+                }
+                _ => {}
+            }
+        }
+        if !blocks.is_empty() {
+            report.push_issue(crate::session::MappingIssue {
+                level: crate::session::MappingIssueLevel::Info,
+                disposition: Fidelity::Preserved,
+                code: "copilot-vscode-assistant".into(),
+                message: "Mapped VS Code Copilot Chat assistant response".into(),
+                path: Some(format!("requests[{idx}].response")),
+                raw: None,
+            });
+            events.push(Event {
+                id: format!("copilot:vscode:req:{idx}:assistant"),
+                kind: EventKind::Message,
+                role: Role::Assistant,
+                timestamp: req_ts,
+                links: Links::default(),
+                blocks,
+                tags: Vec::new(),
+                extensions: Default::default(),
+                metadata: Metadata {
+                    model: req
+                        .get("response")
+                        .and_then(|r| r.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|p| p.get("modelId"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    usage: None,
+                },
+            });
+        }
+    }
+    events
 }
 fn session_id(path: &Path) -> Option<String> {
     path.parent()?
@@ -349,5 +787,47 @@ mod tests {
         let mut r = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         let mapped = map_event(&e, 0, &mut r).unwrap();
         assert!(matches!(mapped.blocks[0], Block::Text { ref text } if text == "hello"));
+    }
+    #[test]
+    fn detects_vscode_chat_session_path() {
+        assert!(is_vscode_chat_session(
+            "/home/user/.config/Code/User/workspaceStorage/abc/chatSessions/uuid.jsonl"
+        ));
+        assert!(!is_vscode_chat_session(
+            "/home/user/.copilot/session-state/abc/events.jsonl"
+        ));
+    }
+    #[test]
+    fn imports_vscode_chat_session_patch_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let chat_dir = tmp.path().join("workspaceStorage/abc/chatSessions");
+        std::fs::create_dir_all(&chat_dir).unwrap();
+        std::fs::write(
+            tmp.path().join("workspaceStorage/abc/workspace.json"),
+            r#"{"folder":"file:///tmp/project"}"#,
+        )
+        .unwrap();
+        let session_file = chat_dir.join("sess-001.jsonl");
+        let state = serde_json::json!({
+            "sessionId": "sess-001",
+            "creationDate": 1700000000000u64,
+            "customTitle": "Test session",
+            "requests": [{
+                "message": {"text": "hello copilot"},
+                "timestamp": 1700000001000u64,
+                "response": [{"value": "Hi there!"}]
+            }]
+        });
+        let line = format!("{{\"kind\":0,\"v\":{}}}\n", state);
+        std::fs::write(&session_file, line).unwrap();
+        let imported = import_vscode_session(&session_file.to_string_lossy()).unwrap();
+        assert_eq!(imported.session.identity.id, "sess-001");
+        assert_eq!(
+            imported.session.identity.title.as_deref(),
+            Some("Test session")
+        );
+        assert_eq!(imported.session.events.len(), 2);
+        assert_eq!(imported.session.events[0].role, Role::User);
+        assert_eq!(imported.session.events[1].role, Role::Assistant);
     }
 }

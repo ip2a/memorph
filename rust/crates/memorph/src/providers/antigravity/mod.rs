@@ -69,55 +69,50 @@ impl Provider for AntigravityProvider {
     fn scan_sessions(&self) -> Result<Vec<ProviderSessionSummary>> {
         let mut sessions = Vec::new();
         for root in roots() {
-            if !root.exists() {
-                continue;
-            }
-            for entry in WalkDir::new(root)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(Result::ok)
-            {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                    continue;
-                }
-                let Ok(doc) = read_document(path) else {
+            for session_dir in session_directories(&root) {
+                let Some(id) = session_dir
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|id| valid_session_id(id))
+                    .map(str::to_string)
+                else {
                     continue;
                 };
-                if doc.get("kind").and_then(Value::as_str) == Some("main") {
-                    continue;
-                }
-                let Some(id) = document_id(&doc) else {
-                    continue;
-                };
-                let messages = messages(&doc);
+                let doc = document_from_session_dir(&session_dir, &id).unwrap_or_default();
                 sessions.push(ProviderSessionSummary {
                     session_id: id,
-                    title: messages.iter().find_map(|m| text_for(m)),
+                    title: messages(&doc).iter().find_map(|message| text_for(message)),
                     project_dir: doc
-                        .get("directories")
-                        .and_then(Value::as_array)
-                        .and_then(|a| a.first())
+                        .get("workspace")
                         .and_then(Value::as_str)
                         .map(str::to_string),
                     created_at: None,
-                    last_active_at: timestamp_ms(&doc, path),
-                    source_path: Some(path.to_string_lossy().into_owned()),
+                    last_active_at: modified_ms(&session_dir),
+                    source_path: Some(session_dir.to_string_lossy().into_owned()),
                 });
             }
         }
-        sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active_at.unwrap_or(0)));
-        sessions.dedup_by(|a, b| a.session_id == b.session_id);
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.last_active_at.unwrap_or(0)));
+        sessions.dedup_by(|left, right| left.session_id == right.session_id);
         Ok(sessions)
     }
     fn import_session(&self, source_path: &str) -> Result<ImportedSession> {
         let path = std::fs::canonicalize(source_path)
             .with_context(|| format!("Antigravity source does not exist: {source_path}"))?;
-        let doc = read_document(&path)?;
-        if doc.get("kind").and_then(Value::as_str) == Some("main") {
-            anyhow::bail!("Antigravity main Gemini CLI session is not an Antigravity session");
-        }
-        let id = document_id(&doc).context("Antigravity document must contain sessionId")?;
+        anyhow::ensure!(
+            path.is_dir(),
+            "Antigravity source must be a session directory"
+        );
+        let id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("Antigravity session directory has no id")?
+            .to_string();
+        anyhow::ensure!(
+            valid_session_id(&id),
+            "Invalid Antigravity session id: {id}"
+        );
+        let doc = document_from_session_dir(&path, &id)?;
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         let events: Vec<Event> = messages(&doc)
             .iter()
@@ -143,11 +138,16 @@ impl Provider for AntigravityProvider {
                 },
                 context: Context {
                     workspace: doc
-                        .get("directories")
-                        .and_then(Value::as_array)
-                        .and_then(|a| a.first())
+                        .get("workspace")
                         .and_then(Value::as_str)
-                        .map(str::to_string),
+                        .map(str::to_string)
+                        .or_else(|| {
+                            doc.get("directories")
+                                .and_then(Value::as_array)
+                                .and_then(|a| a.first())
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        }),
                     created_at: Some(created),
                     last_active_at: timestamp(&doc, "lastUpdated")
                         .or_else(|| modified_datetime(&path)),
@@ -178,15 +178,28 @@ impl Provider for AntigravityProvider {
         if !path.exists() {
             return Ok(None);
         }
-        let digest = Sha256::digest(std::fs::read(path)?);
-        let size = std::fs::metadata(path)?.len();
+        let mut digest = Sha256::new();
+        let mut size = 0_u64;
+        for entry in WalkDir::new(path)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(Result::ok)
+        {
+            if entry.file_type().is_file() {
+                let bytes = std::fs::read(entry.path())?;
+                size = size.saturating_add(bytes.len() as u64);
+                digest.update(entry.path().to_string_lossy().as_bytes());
+                digest.update(bytes);
+            }
+        }
+        let id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
         Ok(Some(ProviderSourceFingerprint {
             modified_at_ms: modified_ms(path).unwrap_or(0),
             size_bytes: size.min(i64::MAX as u64) as i64,
-            value: format!(
-                "antigravity-json-v1:{}:{digest:x}",
-                document_id(&read_document(path)?).unwrap_or_default()
-            ),
+            value: format!("antigravity-v2:{id}:{:x}", digest.finalize()),
         }))
     }
     fn data_source_paths(&self) -> Vec<PathBuf> {
@@ -195,10 +208,87 @@ impl Provider for AntigravityProvider {
 }
 fn roots() -> Vec<PathBuf> {
     dirs::home_dir()
-        .into_iter()
-        .map(|h| h.join(".gemini/tmp"))
+        .map(|home| {
+            vec![
+                home.join(".gemini").join("antigravity"),
+                home.join(".gemini").join("antigravity-cli"),
+            ]
+        })
+        .unwrap_or_default()
+}
+
+fn session_directories(root: &Path) -> Vec<PathBuf> {
+    let brain = root.join("brain");
+    let Ok(entries) = std::fs::read_dir(brain) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .map(|entry| entry.path())
         .collect()
 }
+
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+fn document_from_session_dir(path: &Path, id: &str) -> Result<Value> {
+    let manifest = path.join("manifest.json");
+    let mut document = if manifest.is_file() {
+        read_document(&manifest).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let messages = transcript_messages(path)?;
+    let object = document
+        .as_object_mut()
+        .context("Antigravity manifest must be an object")?;
+    object.insert("sessionId".into(), Value::String(id.to_string()));
+    object.insert("messages".into(), Value::Array(messages));
+    Ok(document)
+}
+
+fn transcript_messages(session_dir: &Path) -> Result<Vec<Value>> {
+    let candidates = [
+        session_dir.join(".system_generated/logs/transcript_full.jsonl"),
+        session_dir.join("transcript_full.jsonl"),
+        session_dir.join("transcript.jsonl"),
+    ];
+    let Some(path) = candidates.iter().find(|path| path.is_file()) else {
+        return Ok(Vec::new());
+    };
+    let mut messages = Vec::new();
+    for line in std::fs::read_to_string(path)?.lines() {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let source = record.get("source").and_then(Value::as_str).unwrap_or("");
+        let role = match source {
+            "USER_EXPLICIT" | "USER" => "user",
+            "MODEL" | "PLANNER" | "SYSTEM" => "gemini",
+            _ => continue,
+        };
+        let Some(content) = record
+            .get("content")
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        else {
+            continue;
+        };
+        messages.push(serde_json::json!({
+            "type": role,
+            "content": [{"text": content}],
+            "timestamp": record.get("created_at").cloned().unwrap_or(Value::Null)
+        }));
+    }
+    Ok(messages)
+}
+
 fn read_document(path: &Path) -> Result<Value> {
     serde_json::from_str(&std::fs::read_to_string(path)?)
         .with_context(|| format!("invalid Antigravity JSON in {}", path.display()))
@@ -230,11 +320,6 @@ fn timestamp(doc: &Value, key: &str) -> Option<DateTime<Utc>> {
         .and_then(Value::as_str)
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|d| d.with_timezone(&Utc))
-}
-fn timestamp_ms(doc: &Value, path: &Path) -> Option<i64> {
-    timestamp(doc, "lastUpdated")
-        .or_else(|| modified_datetime(path))
-        .map(|d| d.timestamp_millis())
 }
 fn modified_ms(path: &Path) -> Option<i64> {
     std::fs::metadata(path)
@@ -370,6 +455,38 @@ mod tests {
         assert_eq!(e.blocks.len(), 4);
         assert!(matches!(e.role, Role::Assistant));
     }
+    #[test]
+    fn imports_brain_transcript_and_uses_v2_fingerprint() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let session = temp.path().join("brain").join("ag-session-1");
+        std::fs::create_dir_all(session.join(".system_generated/logs"))?;
+        std::fs::write(
+            session.join("manifest.json"),
+            r#"{"workspace":"/workspace/antigravity"}"#,
+        )?;
+        std::fs::write(
+            session.join(".system_generated/logs/transcript_full.jsonl"),
+            "{\"source\":\"USER_EXPLICIT\",\"content\":\"hello\",\"created_at\":\"2026-01-01T00:00:00Z\"}\n{\"source\":\"MODEL\",\"content\":\"world\",\"created_at\":\"2026-01-01T00:00:01Z\"}\n",
+        )?;
+        let dirs = session_directories(temp.path());
+        assert_eq!(dirs, vec![session.clone()]);
+        let imported = AntigravityProvider.import_session(session.to_str().unwrap())?;
+        assert_eq!(imported.session.identity.id, "ag-session-1");
+        assert_eq!(imported.session.events.len(), 2);
+        assert_eq!(
+            imported.session.context.workspace.as_deref(),
+            Some("/workspace/antigravity")
+        );
+        let fingerprint = AntigravityProvider
+            .session_source_fingerprint(session.to_str().unwrap())?
+            .unwrap();
+        assert!(fingerprint
+            .value
+            .starts_with("antigravity-v2:ag-session-1:"));
+        assert!(roots().iter().all(|root| !root.ends_with(".gemini/tmp")));
+        Ok(())
+    }
+
     #[test]
     fn main_gemini_sessions_are_not_antigravity() {
         let d = serde_json::json!({"kind":"main"});

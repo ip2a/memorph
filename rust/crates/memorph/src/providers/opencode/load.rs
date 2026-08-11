@@ -1258,3 +1258,99 @@ pub(super) fn parse_session_file(path: &Path) -> Option<ProviderSessionSummary> 
         source_path: Some(path.to_string_lossy().to_string()),
     })
 }
+
+// ---------------------------------------------------------------------------
+// Session-scoped fingerprint for OpenCode database locators
+// ---------------------------------------------------------------------------
+
+use crate::provider::ProviderSourceFingerprint;
+
+/// Compute a session-scoped fingerprint for an OpenCode source locator.
+///
+/// For database locators (`DB_PATH#session=SESSION_ID`), queries session,
+/// message, and part aggregates so that only changes to *this* session cause
+/// the fingerprint to change. For filesystem locators, falls back to file
+/// metadata.
+pub(super) fn opencode_session_source_fingerprint(
+    source_locator: &str,
+) -> Result<Option<ProviderSourceFingerprint>> {
+    if let Some((db_path_str, session_id)) = opencode_database_source(source_locator) {
+        return opencode_db_session_fingerprint(Path::new(db_path_str), session_id);
+    }
+
+    // Filesystem locator: use file metadata as fingerprint.
+    let path = Path::new(source_locator);
+    let metadata = match std::fs::metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let modified_at_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let size_bytes = metadata.len() as i64;
+    Ok(Some(ProviderSourceFingerprint {
+        modified_at_ms,
+        size_bytes,
+        value: format!("opencode-fs-v1:{modified_at_ms}:{size_bytes}"),
+    }))
+}
+
+fn opencode_db_session_fingerprint(
+    db_path: &Path,
+    session_id: &str,
+) -> Result<Option<ProviderSourceFingerprint>> {
+    if !db_path.exists() {
+        return Ok(None);
+    }
+
+    let conn = Connection::open(db_path)?;
+
+    // Session-level timestamps
+    let session_row: Option<(i64, i64, i64, i64)> = conn
+        .query_row(
+            "SELECT time_created, time_updated, \
+             COALESCE(time_compacting, 0), COALESCE(time_archived, 0) \
+             FROM session WHERE id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+
+    let Some((sess_created, sess_updated, sess_compacting, sess_archived)) = session_row else {
+        return Ok(None);
+    };
+
+    // Message aggregates
+    let (msg_count, msg_max_updated): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(MAX(time_updated), 0) FROM message WHERE session_id = ?1",
+        [session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    // Part aggregates
+    let (part_count, part_max_updated): (i64, i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(MAX(time_updated), 0) FROM part WHERE session_id = ?1",
+        [session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    let modified_at_ms = sess_updated.max(msg_max_updated).max(part_max_updated);
+
+    let size_bytes = msg_count.saturating_add(part_count);
+
+    let value = format!(
+        "opencode-session-v1:{session_id}:{sess_created}:{sess_updated}:\
+         {sess_compacting}:{sess_archived}:{msg_count}:{msg_max_updated}:\
+         {part_count}:{part_max_updated}"
+    );
+
+    Ok(Some(ProviderSourceFingerprint {
+        modified_at_ms,
+        size_bytes,
+        value,
+    }))
+}

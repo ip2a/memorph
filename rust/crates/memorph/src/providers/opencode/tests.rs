@@ -1361,3 +1361,149 @@ fn compressed_segment_exports_as_native_opencode_compaction() {
         Some("portable summary")
     );
 }
+
+#[test]
+fn session_fingerprint_stable_when_other_session_changes() {
+    let opencode_dir = tempdir().unwrap();
+    let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+    write_native_opencode_fixture(opencode_dir.path(), "ses_a");
+
+    let locator_a = format!(
+        "{}#session=ses_a",
+        opencode_dir.path().join("opencode.db").to_string_lossy()
+    );
+
+    let fp1 = OpenCodeProvider
+        .session_source_fingerprint(&locator_a)
+        .unwrap()
+        .unwrap();
+
+    // Insert a second session into the same DB — ses_a fingerprint must not change.
+    let conn = Connection::open(opencode_dir.path().join("opencode.db")).unwrap();
+    conn.execute(
+        "INSERT INTO session (
+            id, project_id, slug, directory, title, version,
+            time_created, time_updated
+         ) VALUES (
+            'ses_b', 'project-1', 'b-slug', '/tmp/b', 'B', '1.0',
+            1700000001000, 1700000001100
+         )",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message (
+            id, session_id, time_created, time_updated, data
+         ) VALUES ('msg-b1', 'ses_b', 1700000001010, 1700000001011, '{\"role\":\"user\"}')",
+        [],
+    )
+    .unwrap();
+
+    let fp2 = OpenCodeProvider
+        .session_source_fingerprint(&locator_a)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fp1, fp2,
+        "fingerprint should be stable when other sessions change"
+    );
+}
+
+#[test]
+fn session_fingerprint_changes_on_message_insert() {
+    let opencode_dir = tempdir().unwrap();
+    let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+    write_native_opencode_fixture(opencode_dir.path(), "ses_fp");
+
+    let locator = format!(
+        "{}#session=ses_fp",
+        opencode_dir.path().join("opencode.db").to_string_lossy()
+    );
+
+    let fp_before = OpenCodeProvider
+        .session_source_fingerprint(&locator)
+        .unwrap()
+        .unwrap();
+
+    let conn = Connection::open(opencode_dir.path().join("opencode.db")).unwrap();
+    conn.execute(
+        "INSERT INTO message (
+            id, session_id, time_created, time_updated, data
+         ) VALUES ('msg-2', 'ses_fp', 1700000000050, 1700000000051, '{\"role\":\"assistant\"}')",
+        [],
+    )
+    .unwrap();
+
+    let fp_after = OpenCodeProvider
+        .session_source_fingerprint(&locator)
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        fp_before, fp_after,
+        "fingerprint must change on message insert"
+    );
+}
+
+#[test]
+fn session_fingerprint_changes_on_part_insert() {
+    let opencode_dir = tempdir().unwrap();
+    let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+    write_native_opencode_fixture(opencode_dir.path(), "ses_part");
+
+    let locator = format!(
+        "{}#session=ses_part",
+        opencode_dir.path().join("opencode.db").to_string_lossy()
+    );
+
+    let fp_before = OpenCodeProvider
+        .session_source_fingerprint(&locator)
+        .unwrap()
+        .unwrap();
+
+    let conn = Connection::open(opencode_dir.path().join("opencode.db")).unwrap();
+    conn.execute(
+        "INSERT INTO part (
+            id, message_id, session_id, time_created, time_updated, data
+         ) VALUES (
+            'part-2', 'msg-1', 'ses_part', 1700000000060, 1700000000061,
+            '{\"type\":\"text\",\"text\":\"extra\"}'
+         )",
+        [],
+    )
+    .unwrap();
+
+    let fp_after = OpenCodeProvider
+        .session_source_fingerprint(&locator)
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        fp_before, fp_after,
+        "fingerprint must change on part insert"
+    );
+}
+
+#[test]
+fn session_fingerprint_none_for_missing_session() {
+    let opencode_dir = tempdir().unwrap();
+    let _guard = use_test_opencode_dir(opencode_dir.path().to_path_buf());
+    write_native_opencode_fixture(opencode_dir.path(), "ses_exists");
+
+    let locator = format!(
+        "{}#session=ses_nonexistent",
+        opencode_dir.path().join("opencode.db").to_string_lossy()
+    );
+
+    let fp = OpenCodeProvider
+        .session_source_fingerprint(&locator)
+        .unwrap();
+    assert!(fp.is_none(), "missing session should return None");
+}
+
+#[test]
+fn session_fingerprint_none_for_missing_database() {
+    let locator = "/tmp/does_not_exist_memorph_test.db#session=ses_x";
+    let fp = OpenCodeProvider
+        .session_source_fingerprint(locator)
+        .unwrap();
+    assert!(fp.is_none(), "missing database should return None");
+}

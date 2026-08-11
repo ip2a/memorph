@@ -840,10 +840,11 @@ fn blocks_from_message(
                             .map(str::to_string)
                             .unwrap_or_else(|| message.id.to_string()),
                         content: output.to_string(),
-                        outcome: crate::session::execution_outcome(item
-                            .get("is_error")
-                            .and_then(|value| value.as_bool())
-                            .unwrap_or(false)),
+                        outcome: crate::session::execution_outcome(
+                            item.get("is_error")
+                                .and_then(|value| value.as_bool())
+                                .unwrap_or(false),
+                        ),
                     });
                     if !content.is_empty() && content != output {
                         blocks.push(Block::Text {

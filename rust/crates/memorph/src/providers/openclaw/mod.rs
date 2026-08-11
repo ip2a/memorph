@@ -243,11 +243,12 @@ fn event_from_value(seq: i64, created_at: i64, value: Value) -> Option<Event> {
                             .unwrap_or("unknown")
                             .into(),
                         content: text_content(item.get("content")),
-                        outcome: crate::session::execution_outcome(item
-                            .get("is_error")
-                            .or_else(|| item.get("isError"))
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false)),
+                        outcome: crate::session::execution_outcome(
+                            item.get("is_error")
+                                .or_else(|| item.get("isError"))
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                        ),
                     }),
                     _ => blocks.push(Block::Other { raw: item.clone() }),
                 }

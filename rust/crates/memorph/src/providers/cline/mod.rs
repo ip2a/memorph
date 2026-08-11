@@ -180,24 +180,37 @@ impl Provider for ClineProvider {
 
 fn cline_task_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    const EXTENSION_IDS: &[&str] = &[
+        "saoudrizwan.claude-dev",
+        "rooveterinaryinc.roo-cline",
+        "kilocode.kilo-code",
+    ];
     #[cfg(target_os = "macos")]
-    for app in ["Code", "Code - Insiders", "VSCodium"] {
+    for app in ["Code", "Code - Insiders", "VSCodium", "Cursor"] {
         if let Some(home) = dirs::home_dir() {
-            roots.push(
-                home.join("Library/Application Support")
-                    .join(app)
-                    .join("User/globalStorage/saoudrizwan.claude-dev/tasks"),
-            );
+            for ext in EXTENSION_IDS {
+                roots.push(
+                    home.join("Library/Application Support")
+                        .join(app)
+                        .join("User/globalStorage")
+                        .join(ext)
+                        .join("tasks"),
+                );
+            }
         }
     }
     #[cfg(target_os = "linux")]
-    for app in ["Code", "Code - Insiders", "VSCodium"] {
+    for app in ["Code", "Code - Insiders", "VSCodium", "Cursor"] {
         if let Some(home) = dirs::home_dir() {
-            roots.push(
-                home.join(".config")
-                    .join(app)
-                    .join("User/globalStorage/saoudrizwan.claude-dev/tasks"),
-            );
+            for ext in EXTENSION_IDS {
+                roots.push(
+                    home.join(".config")
+                        .join(app)
+                        .join("User/globalStorage")
+                        .join(ext)
+                        .join("tasks"),
+                );
+            }
         }
     }
     if let Some(home) = dirs::home_dir() {
@@ -364,10 +377,12 @@ fn message_blocks(item: &Value) -> Vec<Block> {
                         .unwrap_or("unknown")
                         .into(),
                     content: block.get("content").map(value_text).unwrap_or_default(),
-                    outcome: crate::session::execution_outcome(block
-                        .get("is_error")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)),
+                    outcome: crate::session::execution_outcome(
+                        block
+                            .get("is_error")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    ),
                 }),
                 _ => None,
             },

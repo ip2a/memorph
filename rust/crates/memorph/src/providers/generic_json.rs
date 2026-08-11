@@ -518,11 +518,13 @@ fn message_blocks(
                 blocks.push(Block::ToolResult {
                     tool_call_id: id,
                     content,
-                    outcome: crate::session::execution_outcome(tool_call
-                        .get("status")
-                        .and_then(|value| value.as_str())
-                        .map(|status| status.eq_ignore_ascii_case("error"))
-                        .unwrap_or(false)),
+                    outcome: crate::session::execution_outcome(
+                        tool_call
+                            .get("status")
+                            .and_then(|value| value.as_str())
+                            .map(|status| status.eq_ignore_ascii_case("error"))
+                            .unwrap_or(false),
+                    ),
                 });
             }
         }

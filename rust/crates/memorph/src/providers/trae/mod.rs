@@ -23,7 +23,7 @@ const PROVIDER_ID: &str = "trae";
 const STORAGE_KEY: &str = "memento/icube-ai-agent-storage";
 
 #[cfg(test)]
-static TEST_TRAE_HOME: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
+static TEST_TRAE_CONFIG_DIR: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> =
     std::sync::OnceLock::new();
 
 impl Provider for TraeProvider {
@@ -176,20 +176,23 @@ impl Provider for TraeProvider {
     }
 }
 
-fn home_dir() -> PathBuf {
+fn trae_config_dir() -> Option<PathBuf> {
     #[cfg(test)]
-    if let Some(home) = TEST_TRAE_HOME
+    if let Some(dir) = TEST_TRAE_CONFIG_DIR
         .get()
         .and_then(|v| v.lock().ok())
         .and_then(|v| v.clone())
     {
-        return home;
+        return Some(dir);
     }
-    crate::config::effective_home_dir().expect("memorph home directory")
+    dirs::config_dir()
 }
 
 fn state_paths() -> Vec<PathBuf> {
-    vec![home_dir().join("Library/Application Support/Trae/User/workspaceStorage")]
+    let Some(cfg) = trae_config_dir() else {
+        return Vec::new();
+    };
+    vec![cfg.join("Trae").join("User").join("workspaceStorage")]
 }
 
 fn workspace_dir(db: &Path) -> Option<String> {
@@ -343,28 +346,26 @@ mod tests {
     use rusqlite::params;
     use tempfile::tempdir;
 
-    struct HomeGuard;
+    struct ConfigDirGuard;
 
-    impl Drop for HomeGuard {
+    impl Drop for ConfigDirGuard {
         fn drop(&mut self) {
-            *TEST_TRAE_HOME.get().unwrap().lock().unwrap() = None;
+            *TEST_TRAE_CONFIG_DIR.get().unwrap().lock().unwrap() = None;
         }
     }
 
-    fn home_guard(home: &Path) -> HomeGuard {
-        *TEST_TRAE_HOME
+    fn config_dir_guard(dir: &Path) -> ConfigDirGuard {
+        *TEST_TRAE_CONFIG_DIR
             .get_or_init(|| std::sync::Mutex::new(None))
             .lock()
-            .unwrap() = Some(home.to_path_buf());
-        HomeGuard
+            .unwrap() = Some(dir.to_path_buf());
+        ConfigDirGuard
     }
 
     #[test]
     fn scans_and_imports_macos_workspace_storage_session() {
         let root = tempdir().unwrap();
-        let workspace = root
-            .path()
-            .join("Library/Application Support/Trae/User/workspaceStorage/abc");
+        let workspace = root.path().join("Trae/User/workspaceStorage/abc");
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::write(
             workspace.join("workspace.json"),
@@ -384,7 +385,7 @@ mod tests {
             params![STORAGE_KEY, data.to_string()],
         )
         .unwrap();
-        let _guard = home_guard(root.path());
+        let _guard = config_dir_guard(root.path());
         let provider = TraeProvider;
         let sessions = provider.scan_sessions().unwrap();
         assert_eq!(sessions.len(), 1);

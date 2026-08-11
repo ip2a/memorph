@@ -318,7 +318,9 @@ fn event_from_bubble(
                 blocks.push(Block::ToolResult {
                     tool_call_id: tool_call_id.to_string(),
                     content: content.to_string(),
-                    outcome: crate::session::execution_outcome(field_is_error || status == Some("error")),
+                    outcome: crate::session::execution_outcome(
+                        field_is_error || status == Some("error"),
+                    ),
                 });
             }
         } else {
