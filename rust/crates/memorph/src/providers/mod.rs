@@ -139,6 +139,7 @@ pub fn default_switch_target(from: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::Fidelity;
 
     #[test]
     fn registry_exposes_requested_emerging_providers() {
@@ -190,5 +191,164 @@ mod tests {
     fn factory_alias_resolves_to_droid_provider() {
         let provider = find_provider("factory").expect("factory alias");
         assert_eq!(provider.id(), "droid");
+    }
+
+    /// Providers without export must not claim meaningful export fidelity:
+    /// if export=false, every export_fidelity field must be None or Unsupported.
+    /// Providers with export must declare all 9 export_fidelity fields.
+    #[test]
+    fn all_providers_declare_consistent_fidelity() {
+        fn all_fields(f: &crate::provider::ProviderContentFidelity) -> [Option<Fidelity>; 9] {
+            [
+                f.text,
+                f.thinking,
+                f.tool_call,
+                f.tool_result,
+                f.patch,
+                f.image,
+                f.file,
+                f.compressed,
+                f.provider_payload,
+            ]
+        }
+
+        for id in all_provider_ids() {
+            let provider = find_provider(id).unwrap_or_else(|| panic!("provider {id}"));
+            let caps = provider.capabilities();
+
+            let export_fields = all_fields(&caps.export_fidelity);
+            if caps.export {
+                for (i, field) in export_fields.iter().enumerate() {
+                    assert!(
+                        field.is_some(),
+                        "{id}: export=true but export_fidelity field {i} is None",
+                    );
+                }
+            } else {
+                for (i, field) in export_fields.iter().enumerate() {
+                    assert!(
+                        matches!(field, None | Some(Fidelity::Unsupported)),
+                        "{id}: export=false but export_fidelity field {i} claims {field:?}",
+                    );
+                }
+            }
+        }
+    }
+
+    /// For every export-capable provider, export_report must produce
+    /// issues that exactly match the declared export_fidelity dispositions.
+    #[test]
+    fn export_report_matches_declared_fidelity_for_all_exporters() {
+        use crate::provider::export_report;
+        use crate::session::{Block, Context, EventKind, Identity, Links, Metadata, Role, Schema};
+        use chrono::Utc;
+
+        let now = Utc::now();
+        let blocks = vec![
+            Block::Text { text: "t".into() },
+            Block::Thinking { text: "th".into(), signature: None },
+            Block::ToolCall {
+                tool_call_id: "tc1".into(),
+                name: "tool".into(),
+                input: None,
+            },
+            Block::ToolResult {
+                tool_call_id: "tc1".into(),
+                content: "r".into(),
+                outcome: crate::session::execution_outcome(false),
+            },
+            Block::Patch {
+                summary: None,
+                diff_text: Some("--- a
++++ b".into()),
+                files: vec!["f".into()],
+                hash: None,
+            },
+            Block::Image {
+                mime_type: "image/png".into(),
+                data: Some("d".into()),
+                path: None,
+            },
+            Block::File {
+                path: "f".into(),
+                content: Some("c".into()),
+                mime_type: None,
+            },
+            Block::Compressed { raw: serde_json::json!({"summary": "s"}) },
+            Block::Other { raw: serde_json::json!({"custom": "payload"}) },
+        ];
+
+        let session = crate::session::Session {
+            lineage: Vec::new(),
+            schema: Schema {
+                name: crate::session::OASF_SCHEMA_NAME.into(),
+                version: crate::session::OASF_SCHEMA_VERSION,
+            },
+            identity: Identity { id: "s1".into(), title: None },
+            context: Context::default(),
+            events: vec![crate::session::Event {
+                id: "e1".into(),
+                kind: EventKind::Message,
+                role: Role::Assistant,
+                timestamp: now,
+                links: Links::default(),
+                blocks,
+                tags: Vec::new(),
+                extensions: Default::default(),
+                metadata: Metadata { model: None, usage: None },
+            }],
+            extensions: Default::default(),
+        };
+
+        for id in all_provider_ids() {
+            let provider = find_provider(id).unwrap();
+            let caps = provider.capabilities();
+            if !caps.export {
+                continue;
+            }
+
+            let report = export_report(id, &session, caps);
+
+            let ef = caps.export_fidelity;
+            let mut expected_issues = 0u32;
+            // Preserved → no issue; any other non-None → one issue
+            for (field, kind) in [
+                (ef.text, "text"),
+                (ef.thinking, "thinking"),
+                (ef.tool_call, "tool_call"),
+                (ef.tool_result, "tool_result"),
+                (ef.patch, "patch"),
+                (ef.image, "image"),
+                (ef.file, "file"),
+                (ef.compressed, "compressed"),
+                (ef.provider_payload, "other"),
+            ] {
+                if matches!(field, Some(Fidelity::Preserved) | None) {
+                    continue;
+                }
+                expected_issues += 1;
+                // Verify the issue code exists in the report
+                let expected_code = format!(
+                    "{kind}_export_{}",
+                    match field.unwrap() {
+                        Fidelity::Normalized => "normalized",
+                        Fidelity::Downgraded => "downgraded",
+                        Fidelity::Dropped => "dropped",
+                        Fidelity::Unsupported => "unsupported",
+                        Fidelity::Preserved => "preserved",
+                    }
+                );
+                assert!(
+                    report.issues.iter().any(|i| i.code == expected_code),
+                    "{id}: expected report issue `{expected_code}` not found"
+                );
+            }
+            assert_eq!(
+                report.issues.len(),
+                expected_issues as usize,
+                "{id}: report has {} issues but expected {expected_issues}",
+                report.issues.len()
+            );
+        }
     }
 }
