@@ -1,24 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { isReadinessOperationTerminal, manualReconcilePayload, shouldStartStartupReconcile } from "./queries";
+import { isReadinessOperationTerminal, manualReconcilePayload } from "./queries";
 
-describe("readiness startup policy", () => {
-  it("does not reconcile ready workspaces or an existing operation", () => {
-    expect(shouldStartStartupReconcile("ready", null, "/work", null)).toBe(false);
-    expect(shouldStartStartupReconcile("partial", "op-1", "/work", null)).toBe(false);
-  });
-
-  it("reconciles incomplete data only once per workspace and first run", () => {
-    expect(shouldStartStartupReconcile("partial", null, "/work", null, true)).toBe(true);
-    expect(shouldStartStartupReconcile("partial", null, "/work", "/work", true)).toBe(false);
-    expect(shouldStartStartupReconcile("degraded", null, null, null, true)).toBe(true);
-    expect(shouldStartStartupReconcile("degraded", null, "/work", null, false)).toBe(false);
-  });
-
-  it("uses a foreground manual overview reconcile", () => {
+describe("manualReconcilePayload", () => {
+  it("builds a manual trigger reconcile payload", () => {
     expect(manualReconcilePayload("/work")).toEqual({
       workspace: "/work",
-      focus: "overview",
-      priority: "foreground",
+      trigger: "manual",
+    });
+  });
+
+  it("forwards a null workspace unchanged", () => {
+    expect(manualReconcilePayload(null)).toEqual({
+      workspace: null,
       trigger: "manual",
     });
   });
@@ -29,5 +22,6 @@ describe("readiness operation status", () => {
     expect(isReadinessOperationTerminal({ status: "running" } as never)).toBe(false);
     expect(isReadinessOperationTerminal({ status: "completed" } as never)).toBe(true);
     expect(isReadinessOperationTerminal({ status: "failed" } as never)).toBe(true);
+    expect(isReadinessOperationTerminal({ status: "superseded" } as never)).toBe(true);
   });
 });

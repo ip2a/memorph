@@ -627,8 +627,13 @@ export type ReadinessPhaseName =
   | "usage"
   | "derived";
 export type ReadinessFocus = "overview" | Exclude<ReadinessPhaseName, "foundation">;
-export type ReadinessPriority = "background" | "foreground";
-export type ReadinessTrigger = "startup" | "manual" | "workspace_change" | "incomplete_panel" | "retry";
+export type ReadinessTrigger = "startup" | "manual" | "workspace_change" | "retry";
+export type ReadinessReconcileRequired = "none" | "incremental" | "full";
+export type ReadinessReconcileReason =
+  | "cold_start"
+  | "foundation_error"
+  | "stale_signatures"
+  | "periodic_refresh";
 export type ReadinessPhase = {
   state: ReadinessState;
   message?: string | null;
@@ -641,13 +646,15 @@ export type ReadinessPayload = {
   state: ReadinessState;
   active_operation_id?: string | null;
   recommended_focus?: ReadinessFocus | null;
+  reconcile_required?: ReadinessReconcileRequired;
+  reconcile_reason?: ReadinessReconcileReason | null;
+  last_full_at?: number | null;
+  last_incremental_at?: number | null;
   phases: ReadinessPhases;
 };
 
 export type ReadinessReconcilePayload = {
   workspace?: string | null;
-  focus: ReadinessFocus;
-  priority: ReadinessPriority;
   trigger: ReadinessTrigger;
 };
 
@@ -661,10 +668,10 @@ export type ReadinessReconcileResult = {
 
 export type ReadinessOperation = {
   operation_id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "superseded";
   readiness: ReadinessPayload;
   trigger: ReadinessTrigger;
-  priority: ReadinessPriority;
+  plan?: "noop" | "incremental" | "full";
   current_phase?: ReadinessPhaseName;
   completed_phases: ReadinessPhaseName[];
   running_phases: ReadinessPhaseName[];
