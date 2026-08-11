@@ -2897,3 +2897,43 @@ fn codex_test_event(id: &str, kind: EventKind, role: Role, blocks: Vec<Block>) -
         },
     }
 }
+
+#[test]
+fn codex_export_emits_native_function_call_and_output_for_tool_blocks() {
+    let assistant_event = codex_test_event(
+        "call-1",
+        EventKind::Action,
+        Role::Assistant,
+        vec![Block::ToolCall {
+            tool_call_id: "call-1".to_string(),
+            name: "shell".to_string(),
+            input: Some(json!({"command": "ls"})),
+        }],
+    );
+    let tool_event = codex_test_event(
+        "call-1-result",
+        EventKind::Observation,
+        Role::Tool,
+        vec![Block::ToolResult {
+            tool_call_id: "call-1".to_string(),
+            content: "file.txt".to_string(),
+            outcome: crate::session::execution_outcome(false),
+        }],
+    );
+
+    let assistant_lines = super::write::codex_tool_response_items(&assistant_event);
+    assert_eq!(assistant_lines.len(), 1);
+    let payload = &assistant_lines[0]["payload"];
+    assert_eq!(payload["type"], json!("function_call"));
+    assert_eq!(payload["name"], json!("shell"));
+    assert_eq!(payload["call_id"], json!("call-1"));
+    assert_eq!(payload["phase"], json!("final_answer"));
+
+    let tool_lines = super::write::codex_tool_response_items(&tool_event);
+    assert_eq!(tool_lines.len(), 1);
+    let payload = &tool_lines[0]["payload"];
+    assert_eq!(payload["type"], json!("function_call_output"));
+    assert_eq!(payload["call_id"], json!("call-1"));
+    assert_eq!(payload["output"], json!("file.txt"));
+    assert_eq!(payload["is_error"], json!(false));
+}

@@ -356,6 +356,29 @@ pub(super) fn block_to_opencode_part(
             "type": "reasoning",
             "text": text,
         })),
+        Block::ToolCall {
+            tool_call_id,
+            name,
+            input,
+        } => Some(serde_json::json!({
+            "id": part_id,
+            "sessionID": session_id,
+            "messageID": msg_id,
+            "type": "tool",
+            "callID": tool_call_id,
+            "tool": name,
+            "state": {
+                "status": "pending",
+                "input": input.clone().unwrap_or(Value::Null),
+                "output": "",
+                "title": name,
+                "metadata": {},
+                "time": {
+                    "start": part_created,
+                    "end": part_created
+                }
+            }
+        })),
         Block::ToolResult {
             tool_call_id,
             content,

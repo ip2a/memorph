@@ -131,8 +131,17 @@ pub(super) fn write_canonical_codex_rollout(
             Role::User | Role::Tool => "user",
             Role::System | Role::Developer | _ => continue,
         };
+        let tool_lines = codex_tool_response_items(event);
+        for line in &tool_lines {
+            writeln!(file, "{}", serde_json::to_string(line)?)?;
+        }
+
         let content = event_to_codex_content(event);
         if content.is_empty() {
+            // Tool-only event: tool response_items already written above.
+            if !tool_lines.is_empty() {
+                continue;
+            }
             continue;
         }
         let mut payload = serde_json::json!({
@@ -367,6 +376,53 @@ pub(super) fn event_to_codex_content(event: &Event) -> Vec<Value> {
                     "text": text,
                 }))
             }
+        })
+        .collect()
+}
+
+/// Emit Codex-native `function_call` and `function_call_output` response items
+/// for a canonical event's tool blocks, so tool history survives cross-provider
+/// migration instead of being silently dropped.
+pub(super) fn codex_tool_response_items(event: &Event) -> Vec<Value> {
+    event
+        .blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::ToolCall {
+                tool_call_id,
+                name,
+                input,
+            } => {
+                let mut payload = serde_json::json!({
+                    "type": "function_call",
+                    "name": name,
+                    "call_id": tool_call_id,
+                    "arguments": input.as_ref().map(|v| v.to_string()).unwrap_or_default(),
+                });
+                if event.role == Role::Assistant {
+                    payload["phase"] = Value::String("final_answer".to_string());
+                }
+                Some(serde_json::json!({
+                    "timestamp": event.timestamp.to_rfc3339(),
+                    "type": "response_item",
+                    "payload": payload,
+                }))
+            }
+            Block::ToolResult {
+                tool_call_id,
+                content,
+                outcome,
+            } => Some(serde_json::json!({
+                "timestamp": event.timestamp.to_rfc3339(),
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": tool_call_id,
+                    "output": content,
+                    "is_error": crate::session::execution_outcome_is_error(*outcome),
+                },
+            })),
+            _ => None,
         })
         .collect()
 }
