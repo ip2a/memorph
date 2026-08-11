@@ -334,10 +334,10 @@ fn map_event(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
     if bs.is_empty() {
         return None;
     };
-    let kind = if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
-        EventKind::Action
-    } else if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
+    let kind = if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
         EventKind::Observation
+    } else if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
+        EventKind::Action
     } else {
         EventKind::Message
     };
@@ -382,7 +382,7 @@ mod tests {
         let mut report = MappingReport::new(PROVIDER_ID, MappingDirection::Import);
         let event = map_event(&v, 1, &mut report).unwrap();
         assert_eq!(event.blocks.len(), 4);
-        assert!(matches!(event.kind, EventKind::Action));
+        assert!(matches!(event.kind, EventKind::Observation));
     }
     #[test]
     fn branch_and_compaction_rows_are_not_messages() {

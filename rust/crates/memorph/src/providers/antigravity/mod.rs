@@ -409,10 +409,10 @@ fn map_message(v: &Value, i: usize, r: &mut MappingReport) -> Option<Event> {
     if bs.is_empty() {
         return None;
     };
-    let kind = if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
-        EventKind::Action
-    } else if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
+    let kind = if bs.iter().any(|b| matches!(b, Block::ToolResult { .. })) {
         EventKind::Observation
+    } else if bs.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
+        EventKind::Action
     } else {
         EventKind::Message
     };
