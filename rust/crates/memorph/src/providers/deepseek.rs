@@ -1,5 +1,5 @@
 use crate::provider::{
-    event_role_label, event_visible_message_role, event_visible_message_text, export_result,
+    event_role_label, event_visible_message_role, event_visible_text, export_result,
     session_title, PageStrategy, Provider, ProviderActivitySupport, ProviderBackupSupport,
     ProviderCapabilities, ProviderContentFidelity, ProviderSessionBackup, ProviderSessionSummary,
     ProviderSourceFingerprint, ProviderSourceMutation, ProviderWriteRisk, ResumeQuality,
@@ -602,7 +602,29 @@ fn export_canonical_session(session: &Session, target_dir: &Path) -> Result<Stri
 }
 
 fn deepseek_message_content(event: &Event) -> Option<String> {
-    event_visible_message_text(event)
+    event_visible_message_role(event)?;
+    // When item_json carries tool structure (ToolCall/ToolResult), the content
+    // column should only hold the event's Text/Thinking blocks — not the full
+    // visible text blob that includes stringified tool representations. This
+    // prevents the reimport parser from embedding tool text into a Text block.
+    let has_tool = event.blocks.iter().any(|b| {
+        matches!(b, Block::ToolCall { .. } | Block::ToolResult { .. })
+    });
+    let text = if has_tool {
+        event
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Text { text } => Some(text.clone()),
+                Block::Thinking { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        event_visible_text(event)
+    };
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Build the item_json payload for a DeepSeek message row.
@@ -2436,6 +2458,40 @@ mod tests {
         assert!(text_item.get("tool_name").is_none());
         assert!(text_item.get("output").is_none());
         assert_eq!(text_item["source"], "memorph-canonical");
+    }
+
+
+    #[test]
+    fn deepseek_export_content_excludes_tool_text_from_multi_block_events() {
+        // An assistant event with [Text, ToolCall] should export content as
+        // just the text, not the full visible text blob that includes the
+        // stringified tool call.
+        let event = Event {
+            id: "multi-block".to_string(),
+            kind: EventKind::Action,
+            role: Role::Assistant,
+            timestamp: Utc::now(),
+            links: Links::default(),
+            blocks: vec![
+                Block::Text {
+                    text: "I'll check that".to_string(),
+                },
+                Block::ToolCall {
+                    tool_call_id: "call-mb".to_string(),
+                    name: "read_file".to_string(),
+                    input: Some(json!({"path": "src/lib.rs"})),
+                },
+            ],
+            tags: Vec::new(),
+            extensions: Default::default(),
+            metadata: Metadata { model: None, usage: None },
+        };
+
+        let content = deepseek_message_content(&event).expect("content for multi-block event");
+        // Content should be just the text block, not include tool representation.
+        assert_eq!(content, "I'll check that");
+        assert!(!content.contains("[Tool use:"));
+        assert!(!content.contains("read_file"));
     }
 
 }
