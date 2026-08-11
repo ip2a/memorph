@@ -11,7 +11,14 @@ fn main() {
     let mut memorph_path = match env::current_exe() {
         Ok(path) => path,
         Err(error) => {
-            eprintln!("{}", memorph::i18n::format(language(), "cliMemoLocateFailed", &[("error", &error.to_string())]));
+            eprintln!(
+                "{}",
+                memorph::i18n::format(
+                    language(),
+                    "cliMemoLocateFailed",
+                    &[("error", &error.to_string())]
+                )
+            );
             exit(1);
         }
     };
@@ -29,7 +36,17 @@ fn main() {
     match status {
         Ok(status) => exit(status.code().unwrap_or(1)),
         Err(error) => {
-            eprintln!("{}", memorph::i18n::format(language(), "cliMemoRunFailed", &[("path", &memorph_path.display().to_string()), ("error", &error.to_string())]));
+            eprintln!(
+                "{}",
+                memorph::i18n::format(
+                    language(),
+                    "cliMemoRunFailed",
+                    &[
+                        ("path", &memorph_path.display().to_string()),
+                        ("error", &error.to_string())
+                    ]
+                )
+            );
             exit(1);
         }
     }

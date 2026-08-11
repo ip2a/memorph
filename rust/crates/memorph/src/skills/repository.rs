@@ -318,10 +318,12 @@ pub fn delete_skill(conn: &mut Connection, catalog_id: &str) -> Result<()> {
         params![catalog_id],
     )
     .context("Failed to delete skill installations")?;
-    tx.execute("DELETE FROM skill_catalog WHERE id = ?1", params![catalog_id])
-        .context("Failed to delete skill catalog row")?;
-    tx.commit()
-        .context("Failed to commit skill deletion")?;
+    tx.execute(
+        "DELETE FROM skill_catalog WHERE id = ?1",
+        params![catalog_id],
+    )
+    .context("Failed to delete skill catalog row")?;
+    tx.commit().context("Failed to commit skill deletion")?;
     Ok(())
 }
 

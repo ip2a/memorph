@@ -166,21 +166,30 @@ mod tests {
     fn scanning_joins_until_it_times_out() {
         let now = 1_000_000;
         let fresh = state(ScanStatus::Scanning, None, Some(now - 5_000));
-        assert_eq!(decide_scan(Some(&fresh), false, now), ScanDecision::JoinScan);
+        assert_eq!(
+            decide_scan(Some(&fresh), false, now),
+            ScanDecision::JoinScan
+        );
 
         let stuck = state(
             ScanStatus::Scanning,
             None,
             Some(now - (SCAN_TIMEOUT_SECS + 1) * 1000),
         );
-        assert_eq!(decide_scan(Some(&stuck), false, now), ScanDecision::StartScan);
+        assert_eq!(
+            decide_scan(Some(&stuck), false, now),
+            ScanDecision::StartScan
+        );
     }
 
     #[test]
     fn ready_and_empty_converge_until_due() {
         let now = 10_000;
         let fresh = state(ScanStatus::Empty, Some(now + 60_000), None);
-        assert_eq!(decide_scan(Some(&fresh), false, now), ScanDecision::UseCache);
+        assert_eq!(
+            decide_scan(Some(&fresh), false, now),
+            ScanDecision::UseCache
+        );
 
         let due = state(ScanStatus::Empty, Some(now - 1_000), None);
         assert_eq!(decide_scan(Some(&due), false, now), ScanDecision::StartScan);
@@ -196,11 +205,17 @@ mod tests {
     fn refresh_ignores_freshness_and_backoff() {
         let now = 5_000;
         let fresh = state(ScanStatus::Ready, Some(now + 60_000), None);
-        assert_eq!(decide_scan(Some(&fresh), true, now), ScanDecision::StartScan);
+        assert_eq!(
+            decide_scan(Some(&fresh), true, now),
+            ScanDecision::StartScan
+        );
 
         let mut cooling = state(ScanStatus::Error, Some(now + 60_000), None);
         cooling.last_scan_started_at_ms = Some(now - 1_000);
-        assert_eq!(decide_scan(Some(&cooling), true, now), ScanDecision::StartScan);
+        assert_eq!(
+            decide_scan(Some(&cooling), true, now),
+            ScanDecision::StartScan
+        );
     }
 
     #[test]
@@ -208,7 +223,10 @@ mod tests {
         let now = 5_000;
         let mut err = state(ScanStatus::Error, Some(now + 60_000), None);
         err.last_scan_started_at_ms = Some(now - 1_000);
-        assert_eq!(decide_scan(Some(&err), false, now), ScanDecision::RetryLater);
+        assert_eq!(
+            decide_scan(Some(&err), false, now),
+            ScanDecision::RetryLater
+        );
 
         let due = state(ScanStatus::Error, Some(now - 1_000), Some(now - 1_000));
         assert_eq!(decide_scan(Some(&due), false, now), ScanDecision::StartScan);

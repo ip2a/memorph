@@ -54,8 +54,9 @@ pub fn read(conn: &Connection, workspace_key: &str) -> Result<WorkspaceFeedRevis
             revision: 0,
             updated_at_ms: 0,
         }),
-        Err(error) => Err(error)
-            .with_context(|| format!("Failed to read feed revision for {workspace_key}")),
+        Err(error) => {
+            Err(error).with_context(|| format!("Failed to read feed revision for {workspace_key}"))
+        }
     }
 }
 

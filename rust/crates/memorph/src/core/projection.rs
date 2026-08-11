@@ -480,7 +480,11 @@ pub fn index_workspace_sessions(
                 provider_id,
                 Some(&workspace_dir.to_string_lossy()),
             ) {
-                let _ = crate::storage::workspace_feed_revision::bump(&conn, &workspace_key, crate::utils::now_ms());
+                let _ = crate::storage::workspace_feed_revision::bump(
+                    &conn,
+                    &workspace_key,
+                    crate::utils::now_ms(),
+                );
             }
         }
         Ok(report)
@@ -1078,13 +1082,13 @@ pub(super) fn bump_feed_revision_for_session(
     let Some(workspace_dir) = workspace_dir else {
         return;
     };
-    let Some(workspace_key) = super::session_management::normalized_workspace_key(
-        provider_id,
-        Some(&workspace_dir),
-    ) else {
+    let Some(workspace_key) =
+        super::session_management::normalized_workspace_key(provider_id, Some(&workspace_dir))
+    else {
         return;
     };
-    let _ = crate::storage::workspace_feed_revision::bump(conn, &workspace_key, crate::utils::now_ms());
+    let _ =
+        crate::storage::workspace_feed_revision::bump(conn, &workspace_key, crate::utils::now_ms());
 }
 
 /// Resolve the workspace feed key for a session row without bumping. Used to

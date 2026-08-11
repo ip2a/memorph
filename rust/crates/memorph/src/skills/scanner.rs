@@ -606,8 +606,17 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 1, "content edit must not spawn a second catalog row");
-        assert_eq!(id_after, id_before, "catalog id must be stable across content edits");
-        assert_ne!(hash_after, hash_before, "entry hash must reflect the new content");
-        assert!(missing_since.is_none(), "row must not be marked missing after an edit");
+        assert_eq!(
+            id_after, id_before,
+            "catalog id must be stable across content edits"
+        );
+        assert_ne!(
+            hash_after, hash_before,
+            "entry hash must reflect the new content"
+        );
+        assert!(
+            missing_since.is_none(),
+            "row must not be marked missing after an edit"
+        );
     }
 }

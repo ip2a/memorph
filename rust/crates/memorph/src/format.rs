@@ -250,7 +250,11 @@ fn event_block_markdown(block: &Block) -> String {
         } => format!(
             "```text\n[Tool Result: {}{}]\n{}\n```",
             tool_call_id,
-            if crate::session::execution_outcome_is_error(*outcome) { " error" } else { "" },
+            if crate::session::execution_outcome_is_error(*outcome) {
+                " error"
+            } else {
+                ""
+            },
             content
         ),
         Block::Patch {
@@ -385,7 +389,11 @@ fn event_block_html(block: &Block) -> String {
         } => format!(
             "<pre>[Tool Result: {}{}]\n{}</pre>",
             html_escape(tool_call_id),
-            if crate::session::execution_outcome_is_error(*outcome) { " error" } else { "" },
+            if crate::session::execution_outcome_is_error(*outcome) {
+                " error"
+            } else {
+                ""
+            },
             html_escape(content)
         ),
         Block::Patch {

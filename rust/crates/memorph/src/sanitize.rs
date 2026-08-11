@@ -114,11 +114,7 @@ fn sanitize_block(block: &mut Block, report: &mut SanitizeReport) {
                 modified |= sanitize_field(arg, report);
             }
         }
-        Block::CommandResult {
-            stdout,
-            stderr,
-            ..
-        } => {
+        Block::CommandResult { stdout, stderr, .. } => {
             if let Some(text) = stdout {
                 modified |= sanitize_field(text, report);
             }
@@ -133,7 +129,10 @@ fn sanitize_block(block: &mut Block, report: &mut SanitizeReport) {
         }
         // ToolCall.input (structured JSON), Image (binary/path), Compressed
         // and Other (fidelity-preservation raw payloads): not free text.
-        Block::ToolCall { .. } | Block::Image { .. } | Block::Compressed { .. } | Block::Other { .. } => {}
+        Block::ToolCall { .. }
+        | Block::Image { .. }
+        | Block::Compressed { .. }
+        | Block::Other { .. } => {}
     }
     if modified {
         report.fields_modified += 1;

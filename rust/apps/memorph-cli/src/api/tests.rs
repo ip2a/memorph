@@ -168,36 +168,51 @@ async fn provider_config_mcp_delete_is_fingerprint_safe_and_preserves_other_keys
 
     let unconfirmed = Request::builder()
         .method("DELETE")
-        .uri(format!("/api/v1/providers/claude/config/view_mcp/entries/{entry_id}"))
+        .uri(format!(
+            "/api/v1/providers/claude/config/view_mcp/entries/{entry_id}"
+        ))
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::json!({"confirm": false, "expected_fingerprint": fingerprint}).to_string()))
+        .body(Body::from(
+            serde_json::json!({"confirm": false, "expected_fingerprint": fingerprint}).to_string(),
+        ))
         .unwrap();
     let (status, _) = read_json(router(), unconfirmed).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
     let stale = Request::builder()
         .method("DELETE")
-        .uri(format!("/api/v1/providers/claude/config/view_mcp/entries/{entry_id}"))
+        .uri(format!(
+            "/api/v1/providers/claude/config/view_mcp/entries/{entry_id}"
+        ))
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::json!({"confirm": true, "expected_fingerprint": "sha256:stale"}).to_string()))
+        .body(Body::from(
+            serde_json::json!({"confirm": true, "expected_fingerprint": "sha256:stale"})
+                .to_string(),
+        ))
         .unwrap();
     let (status, _) = read_json(router(), stale).await;
     assert_eq!(status, StatusCode::CONFLICT);
 
-    let unchanged: serde_json::Value = serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
+    let unchanged: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config).unwrap()).unwrap();
     assert_eq!(unchanged["mcpServers"]["demo"]["command"], "run");
 
     let delete = Request::builder()
         .method("DELETE")
-        .uri(format!("/api/v1/providers/claude/config/view_mcp/entries/{entry_id}"))
+        .uri(format!(
+            "/api/v1/providers/claude/config/view_mcp/entries/{entry_id}"
+        ))
         .header("content-type", "application/json")
-        .body(Body::from(serde_json::json!({"confirm": true, "expected_fingerprint": fingerprint}).to_string()))
+        .body(Body::from(
+            serde_json::json!({"confirm": true, "expected_fingerprint": fingerprint}).to_string(),
+        ))
         .unwrap();
     let (status, result) = read_json(router(), delete).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["data"]["status"], "removed");
 
-    let updated: serde_json::Value = serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
+    let updated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(config).unwrap()).unwrap();
     assert!(updated["mcpServers"]["demo"].is_null());
     assert_eq!(updated["mcpServers"]["keep"]["command"], "keep");
     assert_eq!(updated["unrelated"]["preserve"], true);
@@ -209,7 +224,9 @@ async fn provider_config_mcp_delete_rejects_unsupported_view() {
         .method("DELETE")
         .uri("/api/v1/providers/claude/config/view_plugins/entries/not-a-path")
         .header("content-type", "application/json")
-        .body(Body::from(r#"{"confirm":true,"expected_fingerprint":"sha256:any"}"#))
+        .body(Body::from(
+            r#"{"confirm":true,"expected_fingerprint":"sha256:any"}"#,
+        ))
         .unwrap();
     let (status, _) = read_json(router(), delete).await;
     assert!(status.is_client_error());
@@ -2072,10 +2089,7 @@ async fn session_feed_revision_is_read_only_and_does_not_trigger_scan() {
     let uri = format!("/api/v1/session-feed/revision?workspace={workspace}");
 
     // First poll: a fresh workspace reports revision 0 and not busy.
-    let request = Request::builder()
-        .uri(&uri)
-        .body(Body::empty())
-        .unwrap();
+    let request = Request::builder().uri(&uri).body(Body::empty()).unwrap();
     let (status, body) = read_json(router(), request).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["revision"], 0);
@@ -2083,10 +2097,7 @@ async fn session_feed_revision_is_read_only_and_does_not_trigger_scan() {
 
     // Second poll: still 0 and not busy — the GET must not have started a scan
     // (a scan would mark the provider scanning and flip busy to true).
-    let request = Request::builder()
-        .uri(&uri)
-        .body(Body::empty())
-        .unwrap();
+    let request = Request::builder().uri(&uri).body(Body::empty()).unwrap();
     let (status, body) = read_json(router(), request).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["revision"], 0);
@@ -2104,10 +2115,9 @@ async fn session_feed_revision_reflects_persisted_bumps() {
 
     // Bump the revision directly through the store, the way a scan settlement
     // or session mutation would.
-    let workspace_key = memorph::core::workspace_session_feed::workspace_feed_key(
-        std::path::Path::new(&workspace),
-    )
-    .unwrap_or_else(|| workspace.clone());
+    let workspace_key =
+        memorph::core::workspace_session_feed::workspace_feed_key(std::path::Path::new(&workspace))
+            .unwrap_or_else(|| workspace.clone());
     {
         let conn = memorph::storage::local_store::open_database().unwrap();
         memorph::storage::workspace_feed_revision::bump(&conn, &workspace_key, 1_000).unwrap();
@@ -2115,10 +2125,7 @@ async fn session_feed_revision_reflects_persisted_bumps() {
     }
 
     let uri = format!("/api/v1/session-feed/revision?workspace={workspace}");
-    let request = Request::builder()
-        .uri(&uri)
-        .body(Body::empty())
-        .unwrap();
+    let request = Request::builder().uri(&uri).body(Body::empty()).unwrap();
     let (status, body) = read_json(router(), request).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["revision"], 2);

@@ -853,7 +853,9 @@ pub fn block_text(block: &Block) -> String {
             }
             parts.join("\n")
         }
-        Block::Command { command, argv, cwd, .. } => {
+        Block::Command {
+            command, argv, cwd, ..
+        } => {
             let mut text = command.clone();
             if !argv.is_empty() {
                 text.push('\n');

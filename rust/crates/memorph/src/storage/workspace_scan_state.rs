@@ -123,12 +123,7 @@ impl<'a> WorkspaceScanStateStore<'a> {
     /// Record that a scan has started. Overwrites any prior row (including a
     /// stuck `scanning` entry) so the start time is accurate for timeout
     /// recovery.
-    pub fn mark_scanning(
-        &self,
-        workspace_key: &str,
-        provider_id: &str,
-        now_ms: i64,
-    ) -> Result<()> {
+    pub fn mark_scanning(&self, workspace_key: &str, provider_id: &str, now_ms: i64) -> Result<()> {
         self.conn
             .execute(
                 "INSERT INTO workspace_provider_scan_state
@@ -205,7 +200,14 @@ impl<'a> WorkspaceScanStateStore<'a> {
                  SET status = 'error', last_scan_completed_at_ms = ?5,
                      next_scan_at_ms = ?6, last_error = ?4, updated_at_ms = ?5
                  WHERE workspace_key = ?1 AND provider_id = ?2",
-                params![workspace_key, provider_id, "", error, now_ms, next_scan_at_ms],
+                params![
+                    workspace_key,
+                    provider_id,
+                    "",
+                    error,
+                    now_ms,
+                    next_scan_at_ms
+                ],
             )
             .with_context(|| {
                 format!("Failed to record scan error for {provider_id}@{workspace_key}")
@@ -290,7 +292,14 @@ mod tests {
 
         // settle writes the caller-chosen status + deadline verbatim.
         store
-            .settle("/ws", "claude", ScanStatus::Empty, 0, now + 120_000, now + 1_000)
+            .settle(
+                "/ws",
+                "claude",
+                ScanStatus::Empty,
+                0,
+                now + 120_000,
+                now + 1_000,
+            )
             .unwrap();
         let empty = store.read("/ws", "claude").unwrap().unwrap();
         assert_eq!(empty.status, ScanStatus::Empty);
@@ -298,7 +307,14 @@ mod tests {
         assert_eq!(empty.next_scan_at_ms, Some(now + 120_000));
 
         store
-            .settle("/ws", "claude", ScanStatus::Ready, 3, now + 30_000, now + 2_000)
+            .settle(
+                "/ws",
+                "claude",
+                ScanStatus::Ready,
+                3,
+                now + 30_000,
+                now + 2_000,
+            )
             .unwrap();
         let ready = store.read("/ws", "claude").unwrap().unwrap();
         assert_eq!(ready.status, ScanStatus::Ready);

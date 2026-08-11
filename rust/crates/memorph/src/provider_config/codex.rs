@@ -1,4 +1,6 @@
-use crate::provider_config::{entry_metadata, user_visible, ConfigRow, ConfigSource, ConfigTone, ConfigView};
+use crate::provider_config::{
+    entry_metadata, user_visible, ConfigRow, ConfigSource, ConfigTone, ConfigView,
+};
 use crate::provider_settings::{SettingDefinition, SettingKind, SettingScope};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -122,7 +124,11 @@ fn mcp(home: &Path) -> ConfigView {
             secrets(&mut rows, cfg, "env", "Environment");
             secrets(&mut rows, cfg, "env_vars", "Environment variables");
             secrets(&mut rows, cfg, "http_headers", "HTTP headers");
-            view.push_entry_section(name, rows, entry_metadata("codex", "view_mcp", &format!("global:{name}"), &json(cfg)));
+            view.push_entry_section(
+                name,
+                rows,
+                entry_metadata("codex", "view_mcp", &format!("global:{name}"), &json(cfg)),
+            );
         }
     }
     if view.sections.is_empty() {
@@ -134,16 +140,43 @@ fn mcp(home: &Path) -> ConfigView {
 pub(crate) fn remove_mcp(entry_id: &str, expected: &str) -> anyhow::Result<super::RemovalReport> {
     let home = crate::config::effective_home_dir()?;
     let path = path(&home);
-    let Some(text) = std::fs::read_to_string(&path).ok() else { return Ok(super::RemovalReport::already_absent("codex", "view_mcp", entry_id)); };
-    let mut root: toml::Value = text.parse().map_err(|e| anyhow::anyhow!("Invalid Codex config: {e}"))?;
-    let Some(servers) = root.get("mcp_servers").and_then(toml::Value::as_table) else { return Ok(super::RemovalReport::already_absent("codex", "view_mcp", entry_id)); };
-    let found = servers.iter().find(|(name, cfg)| entry_metadata("codex", "view_mcp", &format!("global:{name}"), &json(cfg)).entry_id == entry_id).map(|(name, cfg)| (name.clone(), json(cfg)));
-    let Some((name, cfg)) = found else { return Ok(super::RemovalReport::already_absent("codex", "view_mcp", entry_id)); };
-    if entry_metadata("codex", "view_mcp", &format!("global:{name}"), &cfg).fingerprint != expected { return Err(super::RemovalError::Conflict.into()); }
-    root.get_mut("mcp_servers").and_then(toml::Value::as_table_mut).map(|m| m.remove(&name));
+    let Some(text) = std::fs::read_to_string(&path).ok() else {
+        return Ok(super::RemovalReport::already_absent(
+            "codex", "view_mcp", entry_id,
+        ));
+    };
+    let mut root: toml::Value = text
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid Codex config: {e}"))?;
+    let Some(servers) = root.get("mcp_servers").and_then(toml::Value::as_table) else {
+        return Ok(super::RemovalReport::already_absent(
+            "codex", "view_mcp", entry_id,
+        ));
+    };
+    let found = servers
+        .iter()
+        .find(|(name, cfg)| {
+            entry_metadata("codex", "view_mcp", &format!("global:{name}"), &json(cfg)).entry_id
+                == entry_id
+        })
+        .map(|(name, cfg)| (name.clone(), json(cfg)));
+    let Some((name, cfg)) = found else {
+        return Ok(super::RemovalReport::already_absent(
+            "codex", "view_mcp", entry_id,
+        ));
+    };
+    if entry_metadata("codex", "view_mcp", &format!("global:{name}"), &cfg).fingerprint != expected
+    {
+        return Err(super::RemovalError::Conflict.into());
+    }
+    root.get_mut("mcp_servers")
+        .and_then(toml::Value::as_table_mut)
+        .map(|m| m.remove(&name));
     let backup = super::backup_config(&path)?;
     crate::storage::atomic_write::write_string_atomic(&path, &toml::to_string_pretty(&root)?)?;
-    Ok(super::RemovalReport::removed("codex", "view_mcp", entry_id, backup))
+    Ok(super::RemovalReport::removed(
+        "codex", "view_mcp", entry_id, backup,
+    ))
 }
 
 fn plugins(home: &Path) -> ConfigView {

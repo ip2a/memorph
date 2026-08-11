@@ -162,16 +162,19 @@ pub(super) async fn get_session_feed_revision(
     Query(query): Query<SessionFeedRevisionQuery>,
 ) -> impl IntoResponse {
     match memorph::runtime::run_blocking(move || {
-        let workspace_key =
-            core::workspace_session_feed::workspace_feed_key(std::path::Path::new(&query.workspace));
+        let workspace_key = core::workspace_session_feed::workspace_feed_key(std::path::Path::new(
+            &query.workspace,
+        ));
         let conn = memorph::storage::local_store::open_database()?;
         let revision = memorph::storage::workspace_feed_revision::read(
             &conn,
             workspace_key.as_deref().unwrap_or(""),
         )?;
         let busy = match workspace_key.as_deref() {
-            Some(key) => memorph::storage::workspace_scan_state::WorkspaceScanStateStore::new(&conn)
-                .is_workspace_busy(key)?,
+            Some(key) => {
+                memorph::storage::workspace_scan_state::WorkspaceScanStateStore::new(&conn)
+                    .is_workspace_busy(key)?
+            }
             None => false,
         };
         Ok::<_, anyhow::Error>(SessionFeedRevisionPayload {

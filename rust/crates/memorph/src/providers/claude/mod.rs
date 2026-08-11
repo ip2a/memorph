@@ -1452,10 +1452,12 @@ fn claude_content_block(
                             .unwrap_or_else(|| v.to_string())
                     })
                     .unwrap(),
-                outcome: crate::session::execution_outcome(value
-                    .get("is_error")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)),
+                outcome: crate::session::execution_outcome(
+                    value
+                        .get("is_error")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                ),
             }
         }
         Some("text" | "thinking" | "tool_use" | "server_tool_use" | "tool_result") => {

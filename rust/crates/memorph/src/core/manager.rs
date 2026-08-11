@@ -802,9 +802,7 @@ pub fn clean_workspace(
             success: 0,
             failed: 1,
             freed_bytes: 0,
-            errors: vec![format!(
-                "No sessions found for {provider_id} / {workspace}"
-            )],
+            errors: vec![format!("No sessions found for {provider_id} / {workspace}")],
         };
     }
     clean(&items, actor)
@@ -833,9 +831,7 @@ pub fn backup_workspace(
             success: 0,
             failed: 1,
             files: Vec::new(),
-            errors: vec![format!(
-                "No sessions found for {provider_id} / {workspace}"
-            )],
+            errors: vec![format!("No sessions found for {provider_id} / {workspace}")],
         };
     }
     backup(&items, output_dir, actor)
