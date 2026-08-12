@@ -39,6 +39,9 @@ const mocks = vi.hoisted(() => ({
   install: vi.fn(),
   uninstall: vi.fn(),
   delete: vi.fn(),
+  disable: vi.fn(),
+  consolidate: vi.fn(),
+  removeSymlinks: vi.fn(),
   getMeta: vi.fn(),
   updateSettings: vi.fn(),
 }));
@@ -116,19 +119,19 @@ vi.mock("@/features/skills/queries", () => ({
     reset: vi.fn(),
   }),
   useDisableSkill: () => ({
-    mutate: vi.fn(),
+    mutate: mocks.disable,
     isPending: false,
     error: null,
     variables: undefined,
   }),
   useConsolidateSkill: () => ({
-    mutate: vi.fn(),
+    mutate: mocks.consolidate,
     isPending: false,
     error: null,
     variables: undefined,
   }),
   useRemoveSymlinksSkill: () => ({
-    mutate: vi.fn(),
+    mutate: mocks.removeSymlinks,
     isPending: false,
     error: null,
     variables: undefined,
@@ -665,5 +668,38 @@ describe("SkillsPage", () => {
       skill_id: "document-writer",
       used_by: "gemini",
     });
+  });
+
+  it("disables the selected skill after confirming", async () => {
+    const user = userEvent.setup();
+    renderRoute();
+    await user.click(screen.getByText("Document Writer"));
+    await user.click(screen.getByRole("button", { name: "Disable" }));
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Disable",
+      }),
+    );
+    expect(mocks.disable).toHaveBeenCalledWith(
+      "skill:document-writer",
+      expect.anything(),
+    );
+  });
+
+  it("removes symlinks from the installations tab", async () => {
+    const user = userEvent.setup();
+    renderRoute();
+    await user.click(screen.getByText("Document Writer"));
+    await user.click(screen.getByRole("tab", { name: "Used by Agents" }));
+    await user.click(screen.getByRole("button", { name: "Remove Symlinks" }));
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Remove Symlinks",
+      }),
+    );
+    expect(mocks.removeSymlinks).toHaveBeenCalledWith(
+      "skill:document-writer",
+      expect.anything(),
+    );
   });
 });
