@@ -30,6 +30,7 @@ import {
   listDisabledSkills,
   consolidateSkill,
   removeSymlinksSkill,
+  getSkillGroupInstallations,
   updateSkillFile,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -350,5 +351,15 @@ export function useDisabledSkills() {
   return useQuery({
     queryKey: queryKeys.skillsDisabled,
     queryFn: listDisabledSkills,
+  });
+}
+
+export function useSkillGroupInstallations(sourceId: string | null) {
+  return useQuery({
+    queryKey: sourceId
+      ? queryKeys.skillGroupInstallations(sourceId)
+      : ["skills", "group-installations", "none"],
+    queryFn: () => getSkillGroupInstallations(sourceId as string),
+    enabled: Boolean(sourceId),
   });
 }

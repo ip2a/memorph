@@ -115,6 +115,32 @@ vi.mock("@/features/skills/queries", () => ({
     variables: undefined,
     reset: vi.fn(),
   }),
+  useDisableSkill: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+    variables: undefined,
+  }),
+  useConsolidateSkill: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+    variables: undefined,
+  }),
+  useRemoveSymlinksSkill: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+    variables: undefined,
+  }),
+  useDisabledSkills: () => ({ data: { items: [] }, isLoading: false }),
+  useSkillGroupInstallations: () => ({ data: undefined, isLoading: false }),
+  useEnableSkill: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+    variables: undefined,
+  }),
 }));
 
 const items = [

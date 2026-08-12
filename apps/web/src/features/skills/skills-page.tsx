@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { RefreshCwIcon, SearchIcon } from "lucide-react";
+import { ArchiveIcon, RefreshCwIcon, SearchIcon } from "lucide-react";
 import { toast } from "sonner";
 import { PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PanelCard } from "@/components/shared/panel-card";
@@ -37,8 +37,12 @@ import {
   useSkills,
   useUninstallSkill,
   useDeleteSkill,
+  useDisableSkill,
+  useConsolidateSkill,
+  useRemoveSymlinksSkill,
 } from "@/features/skills/queries";
 import { SkillDetailPanel } from "@/features/skills/skill-detail-panel";
+import { SkillDisabledDialog } from "@/features/skills/skill-disabled-dialog";
 import {
   SkillsCatalogFilterTrigger,
   type SkillsCatalogFilterApply,
@@ -88,6 +92,9 @@ export function SkillsPage() {
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [removalAgent, setRemovalAgent] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [disableOpen, setDisableOpen] = useState(false);
+  const [removeSymlinksOpen, setRemoveSymlinksOpen] = useState(false);
+  const [disabledListOpen, setDisabledListOpen] = useState(false);
   const initialScanStarted = useRef(false);
   const metaQuery = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta });
   const pageSize = clampSkillsCatalogPageSize(
@@ -128,6 +135,9 @@ export function SkillsPage() {
   const installMutation = useInstallSkill();
   const uninstallMutation = useUninstallSkill();
   const deleteMutation = useDeleteSkill();
+  const disableMutation = useDisableSkill();
+  const consolidateMutation = useConsolidateSkill();
+  const removeSymlinksMutation = useRemoveSymlinksSkill();
   const items = skillsQuery.data?.items ?? [];
   const selected = items.find((item) => item.id === selectedId) ?? null;
   const detailId = selected?.id ?? null;
@@ -180,7 +190,10 @@ export function SkillsPage() {
   const pending =
     installMutation.isPending ||
     uninstallMutation.isPending ||
-    deleteMutation.isPending;
+    deleteMutation.isPending ||
+    disableMutation.isPending ||
+    consolidateMutation.isPending ||
+    removeSymlinksMutation.isPending;
   const pendingAgent = installMutation.isPending
     ? (installMutation.variables?.used_by ?? null)
     : uninstallMutation.isPending
@@ -190,7 +203,10 @@ export function SkillsPage() {
     scanMutation.error ||
     installMutation.error ||
     uninstallMutation.error ||
-    deleteMutation.error;
+    deleteMutation.error ||
+    disableMutation.error ||
+    consolidateMutation.error ||
+    removeSymlinksMutation.error;
   const total = skillsQuery.data?.total ?? 0;
   const responsePageSize = skillsQuery.data?.page_size ?? pageSize;
   const pageCount = Math.max(1, Math.ceil(total / responsePageSize));
@@ -254,6 +270,15 @@ export function SkillsPage() {
                   >
                     {scanMutation.isPending ? <Spinner /> : <RefreshCwIcon />}
                     {t("skillsRefreshList")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDisabledListOpen(true)}
+                    title={t("skillsDisabledList")}
+                  >
+                    <ArchiveIcon />
+                    {t("skillsDisabledList")}
                   </Button>
                 </div>
               </div>
@@ -381,6 +406,17 @@ export function SkillsPage() {
                   setRemovalAgent(agent);
                 }}
                 onDelete={() => setDeleteOpen(true)}
+                onDisable={() => setDisableOpen(true)}
+                onConsolidate={(canonicalPath) => {
+                  if (!selected) return;
+                  consolidateMutation.mutate(canonicalPath, {
+                    onSuccess: () =>
+                      toast.success(
+                        t("skillsConsolidated", { skill: selected.name }),
+                      ),
+                  });
+                }}
+                onRemoveSymlinks={() => setRemoveSymlinksOpen(true)}
               />
             )}
           </PanelCard>
@@ -461,6 +497,83 @@ export function SkillsPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog open={disableOpen} onOpenChange={setDisableOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skillsDisableTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("skillsDisableDescription", { skill: selected?.name || "" })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={disableMutation.isPending}
+              onClick={() => {
+                if (selected) {
+                  disableMutation.mutate(selected.id, {
+                    onSuccess: () => {
+                      setDisableOpen(false);
+                      setSelectedId(null);
+                      setRightView("overview");
+                      toast.success(
+                        t("skillsDisabled", { skill: selected.name }),
+                      );
+                    },
+                  });
+                }
+              }}
+            >
+              {disableMutation.isPending ? (
+                <Spinner data-icon="inline-start" />
+              ) : null}
+              {t("skillsDisable")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={removeSymlinksOpen}
+        onOpenChange={setRemoveSymlinksOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("skillsRemoveSymlinksTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t("skillsRemoveSymlinksDescription", {
+                skill: selected?.name || "",
+              })}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={removeSymlinksMutation.isPending}
+              onClick={() => {
+                if (selected) {
+                  removeSymlinksMutation.mutate(selected.id, {
+                    onSuccess: () => {
+                      setRemoveSymlinksOpen(false);
+                      toast.success(
+                        t("skillsRemoveSymlinksDone", { skill: selected.name }),
+                      );
+                    },
+                  });
+                }
+              }}
+            >
+              {removeSymlinksMutation.isPending ? (
+                <Spinner data-icon="inline-start" />
+              ) : null}
+              {t("skillsRemoveSymlinks")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <SkillDisabledDialog
+        open={disabledListOpen}
+        onOpenChange={setDisabledListOpen}
+      />
     </>
   );
 }

@@ -112,6 +112,8 @@ export const queryKeys = {
   skillInvocations: (id: string, params: SkillStatsParams = {}) =>
     ["skills", id, "invocations", params] as const,
   skillDetail: (id: string) => ["skills", id, "detail"] as const,
+  skillGroupInstallations: (sourceId: string) =>
+    ["skills", sourceId, "group-installations"] as const,
   skillTree: (id: string) => ["skills", id, "tree"] as const,
   skillFile: (id: string, path: string, usedBy?: string) =>
     ["skills", id, "file", path, usedBy] as const,

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CopyIcon, InfoIcon, Trash2Icon } from "lucide-react";
+import { CopyIcon, InfoIcon, Trash2Icon, ArchiveIcon, GitMergeIcon, UnlinkIcon } from "lucide-react";
 import { toast } from "sonner";
 import { PageError } from "@/components/shared/page-states";
 import { ScrollPane } from "@/components/shared/scroll-pane";
@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
 import { SkillBundlePanel } from "@/features/skills/skill-bundle-panel";
+import { SkillConsolidateDialog } from "@/features/skills/skill-consolidate-dialog";
 import { SkillContextHealthPanel } from "@/features/skills/skill-context-health-panel";
 import { SkillCoverageConflictsPanel } from "@/features/skills/skill-coverage-conflicts-panel";
 import { SkillHealthDetails } from "@/features/skills/skill-health-tags";
@@ -224,6 +225,9 @@ export function SkillDetailPanel({
   onInstall,
   onRemove,
   onDelete,
+  onDisable,
+  onConsolidate,
+  onRemoveSymlinks,
 }: {
   selected: SkillCatalogItem | null;
   detail?: SkillDetail;
@@ -240,16 +244,24 @@ export function SkillDetailPanel({
   onInstall: (agent: string) => void;
   onRemove: (agent: string) => void;
   onDelete: () => void;
+  onDisable: () => void;
+  onConsolidate: (canonicalPath: string) => void;
+  onRemoveSymlinks: () => void;
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<DetailTab>("bundle");
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [consolidateOpen, setConsolidateOpen] = useState(false);
   const sourceUsedBy = selected?.installations.find(
     (item) => item.status === "active",
   )?.used_by;
+  const hasSymlinks = selected?.installations.some(
+    (item) => item.status === "active" && item.install_kind === "symlink",
+  ) ?? false;
 
   useEffect(() => {
     setDetailsOpen(false);
+    setConsolidateOpen(false)
   }, [selected?.id]);
 
   if (!selected) {
@@ -271,6 +283,16 @@ export function SkillDetailPanel({
         <div className="flex items-center justify-between gap-3">
           <h2 className="min-w-0 truncate text-xl font-semibold">{selected.name}</h2>
           <div className="flex shrink-0 gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={pending}
+              title={t("skillsDisableHint")}
+              onClick={onDisable}
+            >
+              <ArchiveIcon data-icon="inline-start" />
+              {t("skillsDisable")}
+            </Button>
             <Button
               variant="destructive"
               size="sm"
@@ -437,6 +459,28 @@ export function SkillDetailPanel({
 
         {tab === "installations" ? (
           <div className="flex min-h-0 flex-1 flex-col">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-b pb-3">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending}
+                title={t("skillsConsolidateHint")}
+                onClick={() => setConsolidateOpen(true)}
+              >
+                <GitMergeIcon data-icon="inline-start" />
+                {t("skillsConsolidate")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending || !hasSymlinks}
+                title={t("skillsRemoveSymlinksHint")}
+                onClick={onRemoveSymlinks}
+              >
+                <UnlinkIcon data-icon="inline-start" />
+                {t("skillsRemoveSymlinks")}
+              </Button>
+            </div>
             <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-3">
               {AGENTS.flatMap((agent) => {
                 const installations = selected.installations.filter(
@@ -474,6 +518,17 @@ export function SkillDetailPanel({
           </div>
         ) : null}
       </div>
+      <SkillConsolidateDialog
+        open={consolidateOpen}
+        sourceId={selected.source_id}
+        skillName={selected.name}
+        pending={pending}
+        onOpenChange={setConsolidateOpen}
+        onConfirm={(canonicalPath) => {
+          onConsolidate(canonicalPath);
+          setConsolidateOpen(false);
+        }}
+      />
     </div>
   );
 }

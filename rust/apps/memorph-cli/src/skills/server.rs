@@ -179,6 +179,10 @@ fn router_with_state(
         .route("/api/v1/skills/disabled", get(list_disabled_skills))
         .route("/api/v1/skills/consolidate", post(consolidate_skill))
         .route("/api/v1/skills/remove-symlinks", post(remove_symlinks_skill))
+        .route(
+            "/api/v1/skills/{source_id}/group-installations",
+            get(get_group_installations),
+        )
         .with_state(SkillsState {
             agents: Arc::new(agents),
             database_path: database_path.map(Arc::new),
@@ -678,6 +682,26 @@ async fn get_skill(
     {
         Ok(detail) => ApiResponse::success(detail).into_response(),
         Err(error) => error_response(error),
+    }
+}
+
+/// Installations of one logical skill (merged by normalized name), used by the
+/// consolidate dialog to let the user pick the canonical real directory among
+/// every scattered copy — including independent copies that live in separate
+/// catalog rows.
+async fn get_group_installations(
+    State(state): State<SkillsState>,
+    AxumPath(source_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let overview = discover(&state.agents);
+    let skill = overview
+        .skills
+        .iter()
+        .find(|skill| skill.id == source_id)
+        .cloned();
+    match skill {
+        Some(skill) => ApiResponse::success(skill).into_response(),
+        None => error_response(anyhow!("Unknown skill: {source_id}")),
     }
 }
 
@@ -2545,6 +2569,46 @@ mod tests {
             0,
             "no disabled skills remain after enable"
         );
+    }
+
+    #[tokio::test]
+    async fn group_installations_merges_independent_copies_by_name() {
+        let root = tempfile::tempdir().unwrap();
+        create_skill(
+            root.path(),
+            "claude",
+            "writer",
+            "---\nname: Writer\n---\n# Claude copy",
+        );
+        create_skill(
+            root.path(),
+            "codex",
+            "writer",
+            "---\nname: Writer\n---\n# Codex copy",
+        );
+        let app = router_for(agents(root.path()));
+
+        let (status, body) = json(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/skills/writer/group-installations")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "group failed: {body:?}");
+        let installations = body["data"]["installations"].as_array().unwrap();
+        assert_eq!(
+            installations.len(),
+            2,
+            "scattered copies merge into one installation list"
+        );
+        let used_by: Vec<&str> = installations
+            .iter()
+            .filter_map(|installation| installation["used_by"].as_str())
+            .collect();
+        assert!(used_by.contains(&"claude"));
+        assert!(used_by.contains(&"codex"));
     }
 
     #[tokio::test]

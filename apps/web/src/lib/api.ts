@@ -88,6 +88,7 @@ import type {
   SkillStatsBreakdown,
   SkillsOverview,
   SkillDetail,
+  SkillEntry,
   SkillTree,
   SkillFilePreview,
   SessionStalenessRefreshReport,
@@ -921,6 +922,12 @@ export function consolidateSkill(canonicalPath: string) {
     method: "POST",
     body: JSON.stringify({ canonical_path: canonicalPath }),
   });
+}
+
+export function getSkillGroupInstallations(sourceId: string) {
+  return api<SkillEntry>(
+    `/api/v1/skills/${encodeURIComponent(sourceId)}/group-installations`,
+  );
 }
 
 export function removeSymlinksSkill(skillId: string) {
