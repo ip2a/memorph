@@ -3,7 +3,7 @@ use axum::{
     extract::{Path as AxumPath, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, patch, post, put},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 use memorph::skills::{
-    conflicts, context, coverage, discovery, graph, health,
+    conflicts, context, coverage, discovery, graph, groups, health,
     invocation::{self, StatsQuery},
     repository::{self, CatalogQuery},
     scanner::{self, ScanMode},
@@ -52,6 +52,10 @@ struct SkillMutation {
     used_by: String,
     #[serde(default)]
     source_used_by: Option<String>,
+    #[serde(default)]
+    scope_kind: Option<String>,
+    #[serde(default)]
+    workspace_dir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -68,6 +72,11 @@ struct EnableSkillRequest {
 #[derive(Debug, Deserialize)]
 struct ConsolidateRequest {
     canonical_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteInstallationRequest {
+    install_path: String,
 }
 
 #[derive(Serialize)]
@@ -180,8 +189,24 @@ fn router_with_state(
         .route("/api/v1/skills/consolidate", post(consolidate_skill))
         .route("/api/v1/skills/remove-symlinks", post(remove_symlinks_skill))
         .route(
+            "/api/v1/skills/installation",
+            delete(delete_installation),
+        )
+        .route(
             "/api/v1/skills/{source_id}/group-installations",
             get(get_group_installations),
+        )
+        .route(
+            "/api/v1/skills/groups",
+            get(list_groups).post(create_group),
+        )
+        .route(
+            "/api/v1/skills/groups/{group_id}",
+            patch(update_group).delete(delete_group),
+        )
+        .route(
+            "/api/v1/skills/{skill_id}/group",
+            put(set_skill_group),
         )
         .with_state(SkillsState {
             agents: Arc::new(agents),
@@ -200,6 +225,113 @@ fn agent_id_for_used_by(used_by: &str) -> &str {
         "agents-shared"
     } else {
         used_by
+    }
+}
+
+fn mutation_scope_kind(request: &SkillMutation) -> &str {
+    request.scope_kind.as_deref().unwrap_or("global")
+}
+
+fn validate_workspace_dir(workspace: &str) -> Result<PathBuf> {
+    let path = PathBuf::from(workspace);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err(anyhow!(
+            "workspace_dir must be an existing absolute directory"
+        ));
+    }
+    Ok(path)
+}
+
+fn push_project_agents(agents: &mut Vec<memorph::skills::inspection::SkillAgent>, workspace: &Path) {
+    for (agent_id, name, _, relative) in discovery::SKILL_AGENTS {
+        if agent_id == "agents-shared" {
+            continue;
+        }
+        let skills_dir = workspace.join(relative);
+        if agents.iter().any(|agent| {
+            agent.agent_id == agent_id
+                && agent.scope_kind == "project"
+                && agent.workspace_dir.as_deref() == Some(workspace)
+        }) {
+            continue;
+        }
+        agents.push(memorph::skills::inspection::SkillAgent {
+            agent_id: agent_id.into(),
+            name: name.into(),
+            skills_dir,
+            scope_kind: "project".into(),
+            workspace_dir: Some(workspace.to_path_buf()),
+        });
+    }
+}
+
+fn agents_for_mutation(
+    base: &[memorph::skills::inspection::SkillAgent],
+    request: &SkillMutation,
+) -> Result<Vec<memorph::skills::inspection::SkillAgent>> {
+    let mut agents = base.to_vec();
+    if mutation_scope_kind(request) == "project" {
+        let workspace = validate_workspace_dir(
+            request
+                .workspace_dir
+                .as_deref()
+                .ok_or_else(|| anyhow!("workspace_dir is required for project scope"))?,
+        )?;
+        push_project_agents(&mut agents, &workspace);
+    }
+    Ok(agents)
+}
+
+fn find_agent_for_mutation<'a>(
+    agents: &'a [memorph::skills::inspection::SkillAgent],
+    request: &SkillMutation,
+) -> Result<&'a memorph::skills::inspection::SkillAgent> {
+    let agent_id = agent_id_for_used_by(&request.used_by);
+    match mutation_scope_kind(request) {
+        "global" => agents
+            .iter()
+            .find(|agent| agent.agent_id == agent_id && agent.scope_kind == "global")
+            .ok_or_else(|| anyhow!("Unknown global agent: {}", request.used_by)),
+        "project" => {
+            let workspace = validate_workspace_dir(
+                request
+                    .workspace_dir
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("workspace_dir is required for project scope"))?,
+            )?;
+            agents
+                .iter()
+                .find(|agent| {
+                    agent.agent_id == agent_id
+                        && agent.scope_kind == "project"
+                        && agent.workspace_dir.as_deref() == Some(workspace.as_path())
+                })
+                .ok_or_else(|| {
+                    anyhow!(
+                        "Unknown project agent {} for workspace {}",
+                        request.used_by,
+                        workspace.display()
+                    )
+                })
+        }
+        other => Err(anyhow!("Unknown scope_kind: {other}")),
+    }
+}
+
+fn installation_matches_mutation(
+    installation: &memorph::skills::inspection::SkillInstallation,
+    request: &SkillMutation,
+) -> bool {
+    if installation.used_by != request.used_by {
+        return false;
+    }
+    match mutation_scope_kind(request) {
+        "global" => installation.scope_kind == "global",
+        "project" => {
+            installation.scope_kind == "project"
+                && request.workspace_dir.as_deref() == installation.workspace_dir.as_deref()
+        }
+        _ => false,
     }
 }
 
@@ -333,16 +465,14 @@ fn install(
             .first()
             .ok_or_else(|| anyhow!("Skill has no source installation"))?,
     };
-    let agent = agents
-        .iter()
-        .find(|agent| agent.agent_id == agent_id_for_used_by(&request.used_by))
-        .ok_or_else(|| anyhow!("Unknown skill used_by: {}", request.used_by))?;
+    let agent = find_agent_for_mutation(agents, request)?;
     let destination = agent.skills_dir.join(&skill.directory);
     if destination.exists() {
         return Err(anyhow!(
-            "Skill {} is already installed for {}",
+            "Skill {} is already installed for {} ({})",
             skill.name,
-            agent.name
+            agent.name,
+            agent.scope_kind
         ));
     }
 
@@ -430,15 +560,18 @@ fn uninstall(
         .iter()
         .find(|skill| skill.id == request.skill_id)
         .ok_or_else(|| anyhow!("Unknown skill: {}", request.skill_id))?;
-    let agent = agents
-        .iter()
-        .find(|agent| agent.agent_id == agent_id_for_used_by(&request.used_by))
-        .ok_or_else(|| anyhow!("Unknown skill used_by: {}", request.used_by))?;
+    let agent = find_agent_for_mutation(agents, request)?;
     let installation = skill
         .installations
         .iter()
-        .find(|installation| installation.used_by == request.used_by)
-        .ok_or_else(|| anyhow!("Skill is not installed for {}", agent.name))?;
+        .find(|installation| installation_matches_mutation(installation, request))
+        .ok_or_else(|| {
+            anyhow!(
+                "Skill is not installed for {} ({})",
+                agent.name,
+                agent.scope_kind
+            )
+        })?;
     let directory = installation
         .path
         .file_name()
@@ -511,6 +644,81 @@ fn remove_catalog_installations(
         }
     }
     Ok(())
+}
+
+fn installation_to_catalog_record(
+    installation: &memorph::skills::inspection::SkillInstallation,
+) -> repository::CatalogInstallation {
+    repository::CatalogInstallation {
+        used_by: installation.used_by.clone(),
+        scope_kind: installation.scope_kind.clone(),
+        workspace_dir: installation.workspace_dir.clone(),
+        install_path: installation.path.to_string_lossy().into_owned(),
+        install_kind: match installation.deployment_mode.as_str() {
+            "symlink" => "symlink",
+            "copy" => "managed-copy",
+            _ => "directory",
+        }
+        .into(),
+        symlink_target: installation.symlink_target.clone(),
+        link_status: installation.link_status.clone(),
+        status: "active".into(),
+    }
+}
+
+/// Remove one installation from disk. Deleting a real directory also removes
+/// every symlink in the same logical skill that resolves to it.
+fn delete_installation_at_path(
+    agents: &[memorph::skills::inspection::SkillAgent],
+    install_path: &str,
+) -> Result<String> {
+    let overview = discover(agents);
+    let target = PathBuf::from(install_path);
+    let skill = overview
+        .skills
+        .iter()
+        .find(|skill| skill.installations.iter().any(|item| item.path == target))
+        .ok_or_else(|| anyhow!("Unknown installation path: {install_path}"))?;
+    let is_link = target
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink());
+    let mut to_remove = Vec::new();
+    if is_link {
+        let installation = skill
+            .installations
+            .iter()
+            .find(|item| item.path == target)
+            .ok_or_else(|| anyhow!("Unknown installation path: {install_path}"))?;
+        to_remove.push(installation.clone());
+    } else {
+        let canonical = target
+            .canonicalize()
+            .with_context(|| format!("Failed to resolve {install_path}"))?;
+        for installation in &skill.installations {
+            if installation.path == target {
+                to_remove.push(installation.clone());
+                continue;
+            }
+            let other_is_link = installation
+                .path
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_symlink());
+            if other_is_link
+                && installation
+                    .path
+                    .canonicalize()
+                    .is_ok_and(|resolved| resolved == canonical)
+            {
+                to_remove.push(installation.clone());
+            }
+        }
+    }
+    let records = to_remove
+        .iter()
+        .map(installation_to_catalog_record)
+        .collect::<Vec<_>>();
+    remove_catalog_installations(agents, &records)?;
+    Ok(skill.id.clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1362,7 +1570,11 @@ async fn install_skill(
     State(state): State<SkillsState>,
     Json(request): Json<SkillMutation>,
 ) -> impl IntoResponse {
-    match install(&state.agents, &request) {
+    let agents = match agents_for_mutation(&state.agents, &request) {
+        Ok(value) => value,
+        Err(error) => return error_response(error),
+    };
+    match install(&agents, &request) {
         Ok(overview) => match persist_installation_change(&state, &overview) {
             Ok(()) => ApiResponse::success(overview).into_response(),
             Err(error) => error_response(error),
@@ -1375,7 +1587,11 @@ async fn uninstall_skill(
     State(state): State<SkillsState>,
     Json(request): Json<SkillMutation>,
 ) -> impl IntoResponse {
-    match uninstall(&state.agents, &request) {
+    let agents = match agents_for_mutation(&state.agents, &request) {
+        Ok(value) => value,
+        Err(error) => return error_response(error),
+    };
+    match uninstall(&agents, &request) {
         Ok(overview) => match persist_installation_change(&state, &overview) {
             Ok(()) => ApiResponse::success(overview).into_response(),
             Err(error) => error_response(error),
@@ -1678,10 +1894,19 @@ async fn consolidate_skill(
             // rows without an active installation; purge them so they don't linger
             // as "missing" entries next to the merged skill.
             if let Ok(mut store) = stats_store(&state) {
-                let _ = repository::delete_inactive_catalog_rows_for_name(
-                    store.connection_mut(),
-                    &normalized_name,
-                );
+                let conn = store.connection_mut();
+                // Before the merged-away rows are deleted, move their group
+                // assignments onto the surviving skill so consolidation does
+                // not silently drop a user's grouping.
+                let inactive_ids =
+                    repository::inactive_catalog_ids_for_name(conn, &normalized_name)
+                        .unwrap_or_default();
+                if let Ok(Some(survivor)) =
+                    repository::active_catalog_id_for_name(conn, &normalized_name)
+                {
+                    let _ = groups::migrate_members(conn, &inactive_ids, &survivor);
+                }
+                let _ = repository::delete_inactive_catalog_rows_for_name(conn, &normalized_name);
             }
             ApiResponse::success(overview).into_response()
         }
@@ -1715,6 +1940,116 @@ async fn remove_symlinks_skill(
             let _ = persist_installation_change(&state, &overview);
             ApiResponse::success(overview).into_response()
         }
+        Err(error) => error_response(error),
+    }
+}
+
+async fn delete_installation(
+    State(state): State<SkillsState>,
+    Json(request): Json<DeleteInstallationRequest>,
+) -> impl IntoResponse {
+    let result: Result<()> = (|| {
+        let normalized_name = delete_installation_at_path(&state.agents, &request.install_path)?;
+        let overview = discover(&state.agents);
+        persist_installation_change(&state, &overview)?;
+        if let Ok(mut store) = stats_store(&state) {
+            let _ = repository::delete_inactive_catalog_rows_for_name(
+                store.connection_mut(),
+                &normalized_name,
+            );
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => ApiResponse::success(discover(&state.agents)).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GroupInput {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    sort_order: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetSkillGroupRequest {
+    #[serde(default)]
+    group_id: Option<String>,
+}
+
+async fn list_groups(State(state): State<SkillsState>) -> impl IntoResponse {
+    match stats_store(&state).and_then(|store| groups::list_groups(store.connection())) {
+        Ok(items) => ApiResponse::success(items).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn create_group(
+    State(state): State<SkillsState>,
+    Json(input): Json<GroupInput>,
+) -> impl IntoResponse {
+    match stats_store(&state).and_then(|mut store| {
+        groups::create_group(
+            store.connection_mut(),
+            &input.name,
+            input.description.as_deref(),
+            input.color.as_deref(),
+            input.sort_order.unwrap_or(0),
+        )
+    }) {
+        Ok(group) => ApiResponse::success(group).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn update_group(
+    State(state): State<SkillsState>,
+    AxumPath(group_id): AxumPath<String>,
+    Json(input): Json<GroupInput>,
+) -> impl IntoResponse {
+    match stats_store(&state).and_then(|mut store| {
+        groups::update_group(
+            store.connection_mut(),
+            &group_id,
+            &input.name,
+            input.description.as_deref(),
+            input.color.as_deref(),
+            input.sort_order.unwrap_or(0),
+        )
+    }) {
+        Ok(group) => ApiResponse::success(group).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+async fn delete_group(
+    State(state): State<SkillsState>,
+    AxumPath(group_id): AxumPath<String>,
+) -> impl IntoResponse {
+    match stats_store(&state).and_then(|mut store| groups::delete_group(store.connection_mut(), &group_id))
+    {
+        Ok(_) => ApiResponse::success(()).into_response(),
+        Err(error) => error_response(error),
+    }
+}
+
+/// Assign a skill to a group, move it between groups, or remove it. A `null`
+/// `group_id` removes the assignment; the foreign key rejects an unknown group.
+async fn set_skill_group(
+    State(state): State<SkillsState>,
+    AxumPath(skill_id): AxumPath<String>,
+    Json(request): Json<SetSkillGroupRequest>,
+) -> impl IntoResponse {
+    match stats_store(&state).and_then(|mut store| {
+        groups::set_skill_group(store.connection_mut(), &skill_id, request.group_id.as_deref())
+    }) {
+        Ok(_) => ApiResponse::success(()).into_response(),
         Err(error) => error_response(error),
     }
 }
@@ -1885,6 +2220,8 @@ mod tests {
             skill_id: "writer".into(),
             used_by: "codex".into(),
             source_used_by: None,
+            scope_kind: None,
+            workspace_dir: None,
         };
 
         let overview = install(&agents, &request).unwrap();
@@ -1917,6 +2254,8 @@ mod tests {
             skill_id: "writer".into(),
             used_by: "codex".into(),
             source_used_by: None,
+            scope_kind: None,
+            workspace_dir: None,
         };
         install(&agents, &managed).unwrap();
         uninstall(&agents, &managed).unwrap();
@@ -1926,6 +2265,8 @@ mod tests {
             skill_id: "writer".into(),
             used_by: "claude".into(),
             source_used_by: None,
+            scope_kind: None,
+            workspace_dir: None,
         };
         assert!(uninstall(&agents, &user_owned).is_err());
         assert!(root.path().join("claude/skills/writer").exists());
@@ -1942,6 +2283,8 @@ mod tests {
             skill_id: "writer".into(),
             used_by: "codex".into(),
             source_used_by: None,
+            scope_kind: None,
+            workspace_dir: None,
         };
         install(&agents, &managed).unwrap();
         assert!(root.path().join("claude/skills/writer").exists());
@@ -2035,6 +2378,8 @@ mod tests {
             skill_id: "writer".into(),
             used_by: "gemini".into(),
             source_used_by: None,
+            scope_kind: None,
+            workspace_dir: None,
         };
         assert!(install(&agents(root.path()), &missing_source).is_err());
         let selected_source = SkillMutation {
@@ -2315,6 +2660,8 @@ mod tests {
             skill_id: "writer".into(),
             used_by: "codex".into(),
             source_used_by: None,
+            scope_kind: None,
+            workspace_dir: None,
         })
         .unwrap();
         let (status, installed) = json(
@@ -2463,6 +2810,8 @@ mod tests {
                         skill_id: "writer".into(),
                         used_by: "gemini".into(),
                         source_used_by: Some("claude".into()),
+                        scope_kind: None,
+                        workspace_dir: None,
                     })
                     .unwrap(),
                 ))
@@ -2681,6 +3030,115 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn install_and_uninstall_respect_scope_kind() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        fs::create_dir_all(&workspace).unwrap();
+        create_skill(
+            root.path(),
+            "claude",
+            "writer",
+            "---\nname: Writer\n---\n# Writer",
+        );
+        let app = router_for(agents(root.path()));
+
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/scan")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"mode":"incremental"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let _listed = wait_for_skills(app.clone(), 2000).await;
+
+        let workspace_str = workspace.to_string_lossy().into_owned();
+        let project_request = SkillMutation {
+            skill_id: "writer".into(),
+            used_by: "codex".into(),
+            source_used_by: Some("claude".into()),
+            scope_kind: Some("project".into()),
+            workspace_dir: Some(workspace_str.clone()),
+        };
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/install")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&project_request).unwrap()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let project_link = workspace.join(".codex/skills/writer");
+        assert!(
+            project_link
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        );
+
+        let global_request = SkillMutation {
+            skill_id: "writer".into(),
+            used_by: "codex".into(),
+            source_used_by: Some("claude".into()),
+            scope_kind: Some("global".into()),
+            workspace_dir: None,
+        };
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/install")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&global_request).unwrap()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let global_link = root.path().join("codex").join("skills").join("writer");
+        assert!(
+            global_link
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        );
+
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/skills/install")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&project_request).unwrap()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(project_link.symlink_metadata().is_err());
+        assert!(
+            global_link
+                .symlink_metadata()
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+        );
+
+        let (status, _) = json(
+            app,
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/skills/install")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&global_request).unwrap()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(global_link.symlink_metadata().is_err());
+    }
+
+    #[tokio::test]
     async fn remove_symlinks_keeps_real_directories() {
         let root = tempfile::tempdir().unwrap();
         create_skill(
@@ -2717,6 +3175,8 @@ mod tests {
                         skill_id: "writer".into(),
                         used_by: "gemini".into(),
                         source_used_by: Some("claude".into()),
+                        scope_kind: None,
+                        workspace_dir: None,
                     })
                     .unwrap(),
                 ))
@@ -2759,5 +3219,111 @@ mod tests {
             .collect();
         assert_eq!(active.len(), 1, "only the real directory remains active");
         assert_eq!(active[0]["used_by"], "claude");
+    }
+
+    #[tokio::test]
+    async fn groups_can_be_created_assigned_updated_and_deleted() {
+        let root = tempfile::tempdir().unwrap();
+        let app = router_for(agents(root.path()));
+
+        let (status, body) = json(
+            app.clone(),
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/skills/groups")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"name": "Frontend", "color": "#6366f1"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create group failed: {body:?}");
+        let group_id = body["data"]["id"].as_str().unwrap().to_string();
+
+        // Membership is a weak reference, so no catalog row is needed to assign.
+        let (status, body) = json(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/skills/skill:react/group")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"group_id": group_id}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "assign failed: {body:?}");
+
+        let (status, body) = json(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/skills/groups")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"].as_array().unwrap().len(), 1);
+        assert_eq!(body["data"][0]["member_skill_ids"][0], "skill:react");
+
+        // Update name; an empty color clears the column.
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/v1/skills/groups/{group_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"name": "Frontend Tools", "color": ""}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, body) = json(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/skills/groups")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(body["data"][0]["name"], "Frontend Tools");
+        assert!(body["data"][0]["color"].is_null());
+
+        // Ungroup, then delete the group.
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("PUT")
+                .uri("/api/v1/skills/skill:react/group")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({"group_id": null}).to_string()))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = json(
+            app.clone(),
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/skills/groups/{group_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, body) = json(
+            app.clone(),
+            Request::builder()
+                .uri("/api/v1/skills/groups")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"].as_array().unwrap().len(), 0);
     }
 }

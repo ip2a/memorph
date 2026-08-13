@@ -83,26 +83,7 @@ pub fn discover(agents: &[SkillAgent]) -> SkillsOverview {
                 }
             };
             let bundle = inspect_bundle(&path);
-            let is_link = path
-                .symlink_metadata()
-                .is_ok_and(|metadata| metadata.file_type().is_symlink());
-            let has_marker = path.join(MANAGED_MARKER).is_file();
-            let installation = SkillInstallation {
-                used_by: installation_used_by(&agent.agent_id).into(),
-                fingerprint: bundle.fingerprint.clone(),
-                drifted: false,
-                managed: is_link || has_marker,
-                deployment_mode: if is_link {
-                    "symlink"
-                } else if has_marker {
-                    "copy"
-                } else {
-                    "external"
-                }
-                .into(),
-                link_valid: !is_link || path.canonicalize().is_ok(),
-                path,
-            };
+            let installation = build_installation(agent, path, bundle.fingerprint.clone());
             let skill = skills.entry(id.clone()).or_insert_with(|| SkillEntry {
                 id,
                 name,
@@ -161,26 +142,7 @@ pub fn discover_catalog(agents: &[SkillAgent]) -> SkillsOverview {
             let fingerprint = std::fs::read(&entry_path)
                 .map(|body| format!("sha256:{:x}", Sha256::digest(body)))
                 .unwrap_or_else(|_| "sha256:unreadable".into());
-            let is_link = path
-                .symlink_metadata()
-                .is_ok_and(|m| m.file_type().is_symlink());
-            let has_marker = path.join(MANAGED_MARKER).is_file();
-            let installation = SkillInstallation {
-                used_by: installation_used_by(&agent.agent_id).into(),
-                fingerprint: fingerprint.clone(),
-                drifted: false,
-                managed: is_link || has_marker,
-                deployment_mode: if is_link {
-                    "symlink"
-                } else if has_marker {
-                    "copy"
-                } else {
-                    "external"
-                }
-                .into(),
-                link_valid: !is_link || path.canonicalize().is_ok(),
-                path,
-            };
+            let installation = build_installation(agent, path, fingerprint.clone());
             let skill = skills.entry(id.clone()).or_insert_with(|| SkillEntry {
                 id,
                 name,
@@ -208,6 +170,57 @@ fn installation_used_by(agent_id: &str) -> &str {
         "all"
     } else {
         agent_id
+    }
+}
+
+fn build_installation(
+    agent: &SkillAgent,
+    path: PathBuf,
+    fingerprint: String,
+) -> SkillInstallation {
+    let is_link = path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.file_type().is_symlink());
+    let has_marker = path.join(MANAGED_MARKER).is_file();
+    let link_valid = !is_link || path.canonicalize().is_ok();
+    let symlink_target = if is_link {
+        std::fs::read_link(&path)
+            .ok()
+            .map(|target| target.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+    let link_status = if is_link {
+        if link_valid {
+            "valid"
+        } else {
+            "broken"
+        }
+    } else {
+        "not-applicable"
+    };
+    SkillInstallation {
+        used_by: installation_used_by(&agent.agent_id).into(),
+        fingerprint,
+        drifted: false,
+        managed: is_link || has_marker,
+        deployment_mode: if is_link {
+            "symlink"
+        } else if has_marker {
+            "copy"
+        } else {
+            "external"
+        }
+        .into(),
+        link_valid,
+        path,
+        symlink_target,
+        scope_kind: agent.scope_kind.clone(),
+        workspace_dir: agent
+            .workspace_dir
+            .as_ref()
+            .map(|dir| dir.to_string_lossy().into_owned()),
+        link_status: link_status.into(),
     }
 }
 

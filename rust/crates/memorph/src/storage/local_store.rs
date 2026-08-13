@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 19;
 
 static JOURNAL_MODE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -408,6 +408,26 @@ fn apply_readiness_checkpoint_schema(conn: &mut Connection) -> Result<()> {
     }
     tx.commit()
         .context("Failed to commit memorph DB schema v18 migration")?;
+    apply_skill_groups_schema(conn)
+}
+
+fn apply_skill_groups_schema(conn: &mut Connection) -> Result<()> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .context("Failed to start memorph DB schema v19 migration")?;
+    let applied = applied_migrations(&tx)?;
+    if !applied.contains(&19) {
+        tx.execute_batch(V19_SCHEMA)
+            .context("Failed to apply memorph DB schema v19")?;
+        tx.execute(
+            "INSERT INTO schema_migrations (version, name, applied_at_ms)
+             VALUES (?1, ?2, strftime('%s','now') * 1000)",
+            params![19, "skill_groups_v19"],
+        )
+        .context("Failed to record memorph DB schema migration")?;
+    }
+    tx.commit()
+        .context("Failed to commit memorph DB schema v19 migration")?;
     Ok(())
 }
 
@@ -1429,6 +1449,38 @@ CREATE TABLE IF NOT EXISTS readiness_checkpoint (
 
 CREATE INDEX IF NOT EXISTS idx_readiness_checkpoint_workspace
     ON readiness_checkpoint(workspace_key);
+"#;
+
+const V19_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS skill_groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    color TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_groups_sort
+    ON skill_groups(sort_order, name);
+
+-- One row per skill = its group assignment. `skill_id` is a weak reference
+-- to skill_catalog(id) on purpose: the catalog is rebuildable and a skill's
+-- row is deleted/recreated on disable/enable, but its id (derived from name +
+-- canonical path) is stable, so leaving the member row in place lets the
+-- assignment reattach on re-enable. Dangling rows (delete/consolidate) are
+-- cleaned up lazily and migrated during consolidation.
+CREATE TABLE IF NOT EXISTS skill_group_members (
+    skill_id TEXT PRIMARY KEY,
+    group_id TEXT NOT NULL
+        REFERENCES skill_groups(id) ON DELETE CASCADE,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    added_at_ms INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_group_members_group
+    ON skill_group_members(group_id, sort_order, skill_id);
 "#;
 
 #[cfg(test)]

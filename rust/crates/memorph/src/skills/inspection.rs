@@ -59,6 +59,12 @@ pub struct SkillInstallation {
     pub link_valid: bool,
     pub fingerprint: String,
     pub drifted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symlink_target: Option<String>,
+    pub scope_kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<String>,
+    pub link_status: String,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -3,6 +3,7 @@ pub mod context;
 pub mod coverage;
 pub mod discovery;
 pub mod graph;
+pub mod groups;
 pub mod health;
 pub mod inspection;
 pub mod invocation;
