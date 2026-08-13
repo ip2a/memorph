@@ -13,7 +13,6 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLegend, FieldSet, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { InputGroup, InputGroupAddon } from "@/components/ui/input-group";
 import { ScrollPane } from "@/components/shared/scroll-pane";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -43,8 +42,6 @@ const SECTIONS = [
   { id: "general", labelKey: "general" },
   { id: "index", labelKey: "indexSection" },
   { id: "display", labelKey: "display" },
-  { id: "timeRange", labelKey: "timeRangeSection" },
-  { id: "skills", labelKey: "skills" },
   { id: "order", labelKey: "order" },
   { id: "config", labelKey: "configFile" },
   { id: "about", labelKey: "about" },
@@ -279,54 +276,62 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           </nav>
 
           <ScrollPane className="min-h-0 flex-1" innerClassName="flex flex-col gap-5 p-4 sm:p-5">
-              {(!draft || meta.isLoading) && section !== "index" && section !== "timeRange" ? <SettingsLoading label={t("loadingSettings")} /> : null}
+              {(!draft || meta.isLoading) && section !== "index" ? <SettingsLoading label={t("loadingSettings")} /> : null}
 
               {section === "index" ? <IndexSettingsPanel /> : null}
-
-              {section === "timeRange" ? (
-                <section className="flex flex-col gap-4" data-settings-section="time-range">
-                  <SectionHead title={t("timeRangeSection")} />
-                  <CustomRangePreferenceField />
-                </section>
-              ) : null}
 
               {draft && section === "general" ? (
                 <section className="flex flex-col gap-4" data-settings-section="general">
                   <SectionHead title={t("general")} />
-                  <div className="divide-y" data-settings-general-rows>
-                    <SettingsRow title={t("language")}>
+                  <FieldGroup data-settings-general-rows>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("language")}</FieldTitle></FieldContent>
                       <Select value={draft.language} onValueChange={(value) => patchDraft({ language: value as UiLanguage })}>
                         <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
                         <SelectContent><SelectGroup><SelectItem value="zh">{t("languageNativeZh")}</SelectItem><SelectItem value="en">{t("languageNativeEn")}</SelectItem><SelectItem value="auto">{t("auto")}</SelectItem></SelectGroup></SelectContent>
                       </Select>
-                    </SettingsRow>
-                    <SettingsRow title={t("backupDir")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("backupDir")}</FieldTitle><FieldDescription>{t("backupDirHint")}</FieldDescription></FieldContent>
                       <SettingsPathValue
                         value={`${SETTINGS_WORKSPACE_TOKEN}/${formatSettingsPathSuffix(settingsPaths?.backup_dir_input || "./backups")}`}
                       />
-                    </SettingsRow>
-                    <SettingsRow title={t("exportDir")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("exportDir")}</FieldTitle><FieldDescription>{t("exportDirHint")}</FieldDescription></FieldContent>
                       <SettingsPathValue value={SETTINGS_EXPORT_DIR_VALUE} />
-                    </SettingsRow>
-                    <SettingsRow title={t("webPort")}>
+                    </Field>
+                  </FieldGroup>
+                  <SectionHead title={t("defaultPortsSection")} />
+                  <FieldGroup>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("webPort")}</FieldTitle><FieldDescription>{t("webPortHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" type="number" min={1} max={65535} value={draft.server.web_port} onChange={(event) => patchDraft({ server: { ...draft.server, web_port: Number(event.target.value || 0) } })} aria-label={t("webPort")} />
-                    </SettingsRow>
-                    <SettingsRow title={t("apiPort")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("apiPort")}</FieldTitle><FieldDescription>{t("apiPortHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" type="number" min={1} max={65535} value={draft.server.api_port} onChange={(event) => patchDraft({ server: { ...draft.server, api_port: Number(event.target.value || 0) } })} aria-label={t("apiPort")} />
-                    </SettingsRow>
-                    <SettingsRow title={t("logDir")}>
+                    </Field>
+                  </FieldGroup>
+                  <SectionHead title={t("logConfigSection")} />
+                  <FieldGroup>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("logDir")}</FieldTitle><FieldDescription>{t("logDirHint")}</FieldDescription></FieldContent>
                       <SettingsValueText value={settingsPaths?.log_dir || "~/.memorph/logs"} />
-                    </SettingsRow>
-                    <SettingsRow title={t("logFileName")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("logFileName")}</FieldTitle></FieldContent>
                       <SettingsValueText value={settingsPaths?.log_file_name || "memorph.log"} />
-                    </SettingsRow>
-                    <SettingsRow title={t("logMaxSizeMb")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("logMaxSizeMb")}</FieldTitle><FieldDescription>{t("logMaxSizeMbHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" value={logSizeMb(draft)} inputMode="decimal" onChange={(event) => patchDraft({ logging: { ...draft.logging, max_size_bytes: Math.max(0, Number(event.target.value || 0) * 1024 * 1024) } })} aria-label={t("logMaxSizeMb")} />
-                    </SettingsRow>
-                    <SettingsRow title={t("logRetentionDays")}>
+                    </Field>
+                    <Field orientation="responsive">
+                      <FieldContent><FieldTitle>{t("logRetentionDays")}</FieldTitle><FieldDescription>{t("logRetentionDaysHint")}</FieldDescription></FieldContent>
                       <Input className="w-32" value={draft.logging.retention_days ?? ""} inputMode="numeric" placeholder={t("unlimited")} onChange={(event) => patchDraft({ logging: { ...draft.logging, retention_days: event.target.value === "" ? null : Math.max(0, Number(event.target.value)) } })} aria-label={t("logRetentionDays")} />
-                    </SettingsRow>
-                  </div>
+                    </Field>
+                  </FieldGroup>
                 </section>
               ) : null}
 
@@ -381,18 +386,15 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                       </div>
                     </FieldSet>
                   </FieldGroup>
-                </section>
-              ) : null}
-
-              {draft && section === "skills" ? (
-                <section className="flex flex-col gap-4" data-settings-section="skills">
+                  <SectionHead title={t("timeRangeSection")} />
+                  <CustomRangePreferenceField />
                   <SectionHead title={t("skills")} />
-                  <SkillsCatalogPageSizeField
-                    value={draft.skills_catalog_page_size}
-                    onChange={(next) =>
-                      patchDraft({ skills_catalog_page_size: next })
-                    }
-                  />
+                  <FieldGroup>
+                    <SkillsCatalogPageSizeField
+                      value={draft.skills_catalog_page_size}
+                      onChange={(next) => patchDraft({ skills_catalog_page_size: next })}
+                    />
+                  </FieldGroup>
                 </section>
               ) : null}
 
@@ -502,13 +504,7 @@ function SettingsRow({ title, children }: { title: string; children: ReactNode }
 }
 
 function SettingsPathValue({ value }: { value: string }) {
-  return (
-    <InputGroup className="h-8 w-auto shrink-0 opacity-100" aria-readonly="true">
-      <InputGroupAddon align="inline-start" className="pointer-events-none px-3 font-mono text-xs text-foreground">
-        {value}
-      </InputGroupAddon>
-    </InputGroup>
-  );
+  return <SettingsValueText value={value} />;
 }
 
 function SettingsValueText({ value }: { value: string }) {

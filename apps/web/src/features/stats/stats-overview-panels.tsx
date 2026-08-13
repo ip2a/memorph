@@ -31,7 +31,6 @@ import {
 } from "@/components/ui/chart";
 import { Empty, EmptyHeader, EmptyTitle } from "@/components/ui/empty";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { formatBytes, formatDateTime } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import type {
@@ -54,9 +53,6 @@ const CHART_COLORS = [
 ] as const;
 
 export const STATS_BAR_MAX_ROWS = 5;
-
-const rankingToggleGroupClassName = "max-w-full flex-wrap";
-const rankingToggleItemClassName = "px-2 text-xs";
 
 function PanelEmpty() {
   const { t } = useI18n();
@@ -460,27 +456,19 @@ function DistributionCard({ series }: { series: BarSeries[] }) {
             unit: resolvedUnitLabel,
           })}
         </CardDescription>
-        <ToggleGroup
-          type="single"
-          variant="outline"
-          size="sm"
-          spacing={0}
-          value={active.id}
-          onValueChange={(value) => {
-            if (value) setView(value);
-          }}
-          className="ml-auto max-w-full flex-wrap justify-end"
+        <Tabs
+          value={view}
+          onValueChange={setView}
+          className="ml-auto max-w-full"
         >
-          {series.map((item) => (
-            <ToggleGroupItem
-              key={item.id}
-              value={item.id}
-              className={rankingToggleItemClassName}
-            >
-              {item.label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+          <TabsList className="max-w-full flex-wrap">
+            {series.map((item) => (
+              <TabsTrigger key={item.id} value={item.id}>
+                {item.label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
       </div>
       <div className="flex min-h-[180px] flex-1 flex-col gap-3 pt-3 sm:flex-row sm:items-center">
         {total > 0 ? (
@@ -788,34 +776,22 @@ export function RankingBoard({
         variant="compact"
         title={t("statsRankings")}
         actions={
-          <ToggleGroup
-            type="single"
-            variant="outline"
-            size="sm"
-            spacing={0}
+          <Tabs
             value={view}
-            onValueChange={(value) => {
-              if (value) setView(value as LeftView);
-            }}
-            className="max-w-full flex-wrap justify-end"
+            onValueChange={(value) => setView(value as LeftView)}
+            className="max-w-full"
           >
-            <ToggleGroupItem value="by_messages" className={rankingToggleItemClassName}>
-              {t("statsByMessages")}
-            </ToggleGroupItem>
-            <ToggleGroupItem value="by_size" className={rankingToggleItemClassName}>
-              {t("statsBySize")}
-            </ToggleGroupItem>
-            <ToggleGroupItem value="recently_active" className={rankingToggleItemClassName}>
-              {t("statsRecentlyActive")}
-            </ToggleGroupItem>
-            <ToggleGroupItem
-              value="workspace"
-              disabled={!all}
-              className={rankingToggleItemClassName}
-            >
-              {t("statsWorkspaceRanking")}
-            </ToggleGroupItem>
-          </ToggleGroup>
+            <TabsList className="max-w-full flex-wrap justify-end">
+              <TabsTrigger value="by_messages">{t("statsByMessages")}</TabsTrigger>
+              <TabsTrigger value="by_size">{t("statsBySize")}</TabsTrigger>
+              <TabsTrigger value="recently_active">
+                {t("statsRecentlyActive")}
+              </TabsTrigger>
+              <TabsTrigger value="workspace" disabled={!all}>
+                {t("statsWorkspaceRanking")}
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
         }
       />
 

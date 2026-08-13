@@ -254,7 +254,23 @@ function WorkspaceHistoryRow({
   );
 }
 
-export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+type WorkspaceSwitchDialogProps =
+  | {
+      open: boolean;
+      onOpenChange: (open: boolean) => void;
+      mode?: "switch";
+    }
+  | {
+      open: boolean;
+      onOpenChange: (open: boolean) => void;
+      mode: "pick";
+      value?: string;
+      onPick: (workspace: string) => void;
+    };
+
+export function WorkspaceSwitchDialog(props: WorkspaceSwitchDialogProps) {
+  const { open, onOpenChange } = props;
+  const isPickMode = props.mode === "pick";
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const selectedWorkspace = useUiStore((state) => state.selectedWorkspace);
@@ -283,8 +299,15 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
     enabled: open,
   });
 
-  const currentWorkspace = selectedWorkspace || meta.data?.selected_workspace || "";
+  const currentWorkspace = isPickMode
+    ? props.value?.trim() || ""
+    : selectedWorkspace || meta.data?.selected_workspace || "";
   const draftWorkspace = draft ?? currentWorkspace;
+
+  useEffect(() => {
+    if (!open || !isPickMode) return;
+    setDraft(props.value?.trim() || null);
+  }, [isPickMode, open, props.value]);
   const workspaceItems = useMemo(() => workspaces.data ?? meta.data?.workspaces ?? [], [meta.data?.workspaces, workspaces.data]);
   const filteredWorkspaceItems = useMemo(
     () => workspaceItems.filter((workspace) => matchesWorkspaceSearch(workspace.path, search)),
@@ -351,10 +374,20 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
     event.preventDefault();
     const workspace = draftWorkspace.trim();
     if (!workspace) return;
+    if (isPickMode) {
+      props.onPick(workspace);
+      onOpenChange(false);
+      return;
+    }
     switchWorkspace.mutate(workspace);
   }
 
   function pickWorkspace(workspace: string) {
+    if (isPickMode) {
+      props.onPick(workspace);
+      onOpenChange(false);
+      return;
+    }
     setDraft(workspace);
     switchWorkspace.mutate(workspace);
   }
@@ -395,11 +428,14 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
     >
       <DialogContent
         className="flex! h-[min(36rem,calc(100dvh-2rem))] w-full flex-col gap-4 overflow-hidden sm:max-w-2xl"
-        data-workspace-switch-dialog
+        data-workspace-switch-dialog={isPickMode ? undefined : ""}
+        data-workspace-picker-dialog={isPickMode ? "" : undefined}
       >
         <DialogHeader className="shrink-0">
-          <DialogTitle>{t("workspaceSwitchTitle")}</DialogTitle>
-          <DialogDescription>{t("workspaceSwitchDescription")}</DialogDescription>
+          <DialogTitle>{isPickMode ? t("workspacePickTitle") : t("workspaceSwitchTitle")}</DialogTitle>
+          <DialogDescription>
+            {isPickMode ? t("workspacePickDescription") : t("workspaceSwitchDescription")}
+          </DialogDescription>
         </DialogHeader>
 
         <DialogForm className="flex min-h-0 min-w-0 flex-1 flex-col" onSubmit={submitWorkspace}>
@@ -538,8 +574,8 @@ export function WorkspaceSwitchDialog({ open, onOpenChange }: { open: boolean; o
             className="shrink-0"
             onCancel={() => onOpenChange(false)}
             submitDisabled={!draftWorkspace.trim()}
-            submitLabel={t("workspaceSwitchToDirectory")}
-            submitting={switchWorkspace.isPending}
+            submitLabel={isPickMode ? t("workspacePickSelect") : t("workspaceSwitchToDirectory")}
+            submitting={!isPickMode && switchWorkspace.isPending}
           />
         </DialogForm>
       </DialogContent>

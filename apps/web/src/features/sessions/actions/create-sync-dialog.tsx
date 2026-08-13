@@ -1,8 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { FolderOpenIcon } from "lucide-react";
 import { useEffect } from "react";
-import { useForm, useWatch } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { DialogForm, DialogFormFooter } from "@/components/shared/dialog-form";
@@ -10,10 +9,10 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Field, FieldContent, FieldDescription, FieldGroup, FieldLabel, FieldLegend, FieldSet, FieldTitle } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupInput } from "@/components/ui/input-group";
 import type { SessionActionTarget } from "@/features/sessions/session-action-target";
-import { createSyncSchema, defaultSwitchTarget, syncTargetProviders, workspaceOptions } from "@/features/sessions/model/schemas";
+import { createSyncSchema, defaultSwitchTarget, syncTargetProviders } from "@/features/sessions/model/schemas";
 import type { CreateSyncForm } from "@/features/sessions/model/schemas";
+import { WorkspacePathPicker } from "@/features/workspaces/workspace-path-picker";
 import { createSyncGroup } from "@/lib/api";
 import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
@@ -111,15 +110,18 @@ export function CreateSyncDialog({
 
             <Field>
               <FieldLabel htmlFor="sync-target-dir">{t("sessionTargetDirectory")}</FieldLabel>
-              <InputGroup>
-                <InputGroupInput id="sync-target-dir" list="known-workspaces" placeholder={t("sessionWorkspacePath")} {...form.register("to_dir")} />
-                <InputGroupAddon align="inline-end">
-                  <InputGroupButton type="button" variant="ghost" disabled>
-                    <FolderOpenIcon data-icon="inline-start" />
-                    {t("sessionBrowse")}
-                  </InputGroupButton>
-                </InputGroupAddon>
-              </InputGroup>
+              <Controller
+                control={form.control}
+                name="to_dir"
+                render={({ field }) => (
+                  <WorkspacePathPicker
+                    id="sync-target-dir"
+                    value={field.value ?? ""}
+                    onChange={field.onChange}
+                    placeholder={t("sessionWorkspacePath")}
+                  />
+                )}
+              />
               <FieldDescription>{t("sessionTargetDirectoryDescription")}</FieldDescription>
             </Field>
 
@@ -155,12 +157,6 @@ export function CreateSyncDialog({
               {form.formState.errors.targets ? <FieldDescription>{form.formState.errors.targets.message}</FieldDescription> : null}
             </FieldSet>
           </FieldGroup>
-
-          <datalist id="known-workspaces">
-            {workspaceOptions(meta).map((item) => (
-              <option key={item.path} value={item.path} />
-            ))}
-          </datalist>
 
           <DialogFormFooter
             onCancel={() => onOpenChange(false)}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Field, FieldContent, FieldDescription, FieldTitle } from "@/components/ui/field";
+import { Field, FieldContent, FieldDescription, FieldGroup, FieldTitle } from "@/components/ui/field";
 import {
   countCustomRangeDays,
   defaultCustomRangePreference,
@@ -27,13 +27,12 @@ export function CustomRangePreferenceField() {
 
   const dayCount = countCustomRangeDays(range.from, range.to);
   const rangeLabel = formatCustomRangeLabel(range.from, range.to);
+  const statusValue =
+    dayCount > 0 ? `${rangeLabel} · ${t("skillsDays", { count: dayCount })}` : t("customRangeInvalid");
 
   return (
-    <div
-      className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
-      data-custom-range-preference
-    >
-      <Field orientation="vertical">
+    <FieldGroup data-custom-range-preference>
+      <Field orientation="responsive">
         <FieldContent>
           <FieldTitle>{t("customRangePreference")}</FieldTitle>
           <FieldDescription>{t("customRangePreferenceHint")}</FieldDescription>
@@ -46,7 +45,7 @@ export function CustomRangePreferenceField() {
             value={range.from}
             onChange={(event) => update({ from: event.target.value })}
           />
-          <span>{t("customRangeTo")}</span>
+          <span className="text-muted-foreground">{t("customRangeTo")}</span>
           <input
             aria-label={t("customRangeEndDate")}
             className="border-input bg-background h-9 rounded-md border px-2"
@@ -56,17 +55,14 @@ export function CustomRangePreferenceField() {
           />
         </div>
       </Field>
-
-      <div
-        className="flex min-w-[8.5rem] flex-col gap-1 rounded-md border bg-muted/30 px-3 py-2.5 text-sm sm:text-right"
-        aria-live="polite"
-      >
-        <span className="text-xs text-muted-foreground">{t("customRangePreview")}</span>
-        <span className="font-medium tabular-nums">{rangeLabel}</span>
-        <span className="text-muted-foreground tabular-nums">
-          {dayCount > 0 ? t("skillsDays", { count: dayCount }) : t("customRangeInvalid")}
+      <Field orientation="responsive">
+        <FieldContent>
+          <FieldTitle>{t("customRangePreview")}</FieldTitle>
+        </FieldContent>
+        <span className="text-sm tabular-nums text-muted-foreground" aria-live="polite">
+          {statusValue}
         </span>
-      </div>
-    </div>
+      </Field>
+    </FieldGroup>
   );
 }
