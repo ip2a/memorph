@@ -31,6 +31,7 @@ import {
   consolidateSkill,
   removeSymlinksSkill,
   getSkillGroupInstallations,
+  deleteSkillInstallation,
   updateSkillFile,
 } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
@@ -342,6 +343,15 @@ export function useRemoveSymlinksSkill() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: removeSymlinksSkill,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useDeleteSkillInstallation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSkillInstallation,
     onSuccess: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
   });

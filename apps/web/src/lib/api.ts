@@ -936,3 +936,10 @@ export function removeSymlinksSkill(skillId: string) {
     body: JSON.stringify({ skill_id: skillId }),
   });
 }
+
+export function deleteSkillInstallation(installPath: string) {
+  return api<SkillsOverview>("/api/v1/skills/installation", {
+    method: "DELETE",
+    body: JSON.stringify({ install_path: installPath }),
+  });
+}

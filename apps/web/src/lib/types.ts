@@ -1441,6 +1441,15 @@ export type SkillInstallation = {
   link_valid: boolean;
   fingerprint: string;
   drifted: boolean;
+  symlink_target?: string | null;
+  scope_kind: "global" | "project";
+  workspace_dir?: string | null;
+  link_status:
+    | "not-applicable"
+    | "valid"
+    | "broken"
+    | "outside-allowed-root"
+    | "loop";
 };
 
 export type SkillStatistics = {
@@ -1511,6 +1520,8 @@ export type SkillMutation = {
   skill_id: string;
   used_by: string;
   source_used_by?: string;
+  scope_kind?: "global" | "project";
+  workspace_dir?: string;
 };
 
 export type SkillAnalysisOperation = {

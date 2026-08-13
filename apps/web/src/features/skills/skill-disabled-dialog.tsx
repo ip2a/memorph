@@ -19,6 +19,7 @@ import { SelectableRowButton } from "@/components/shared/selectable-row-button";
 import { Spinner } from "@/components/ui/spinner";
 import { useDisabledSkills, useEnableSkill } from "@/features/skills/queries";
 import { normalizeSkillDescription } from "@/lib/format";
+import { skillUsedByLabel } from "@/features/skills/skill-used-by-label";
 import { useI18n } from "@/lib/i18n-context";
 import { toast } from "sonner";
 
@@ -67,7 +68,9 @@ export function SkillDisabledDialog({
                   meta={
                     <span className="flex flex-col gap-0.5">
                       <span className="flex items-center gap-1">
-                        <Badge variant="outline">{item.used_by}</Badge>
+                        <Badge variant="outline">
+                          {skillUsedByLabel(item.used_by, t)}
+                        </Badge>
                         <span className="truncate">{normalizeSkillDescription(item.description) || item.directory}</span>
                       </span>
                       <span className="truncate font-mono text-[11px]">{item.archive_path}</span>

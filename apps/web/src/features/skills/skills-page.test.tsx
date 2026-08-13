@@ -136,8 +136,43 @@ vi.mock("@/features/skills/queries", () => ({
     error: null,
     variables: undefined,
   }),
+  useDeleteSkillInstallation: () => ({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+    variables: undefined,
+  }),
   useDisabledSkills: () => ({ data: { items: [] }, isLoading: false }),
-  useSkillGroupInstallations: () => ({ data: undefined, isLoading: false }),
+  useSkillGroupInstallations: () => ({
+    data: {
+      installations: [
+        {
+          used_by: "claude",
+          path: "/home/test/.claude/skills/document-writer",
+          managed: false,
+          deployment_mode: "external",
+          link_valid: true,
+          fingerprint: "sha256:a",
+          drifted: false,
+          scope_kind: "global",
+          link_status: "not-applicable",
+        },
+        {
+          used_by: "gemini",
+          path: "/home/test/.gemini/skills/document-writer",
+          managed: true,
+          deployment_mode: "symlink",
+          link_valid: true,
+          fingerprint: "sha256:a",
+          drifted: false,
+          symlink_target: "/home/test/.claude/skills/document-writer",
+          scope_kind: "global",
+          link_status: "valid",
+        },
+      ],
+    },
+    isLoading: false,
+  }),
   useEnableSkill: () => ({
     mutate: vi.fn(),
     isPending: false,
@@ -636,38 +671,52 @@ describe("SkillsPage", () => {
     const user = userEvent.setup();
     renderRoute();
     await user.click(screen.getByText("Document Writer"));
-    await user.click(screen.getByRole("tab", { name: "Used by Agents" }));
+    await user.click(screen.getByRole("tab", { name: "Installations" }));
     const codex = screen
       .getAllByText("codex")
       .map((element) => element.closest("div.rounded-lg"))
       .find(Boolean);
     await user.click(
-      within(codex as HTMLElement).getByRole("button", { name: "Enable" }),
+      within(codex as HTMLElement).getByRole("button", {
+        name: "Add symlink for agent",
+      }),
     );
-    expect(mocks.install).toHaveBeenCalledWith({
-      skill_id: "document-writer",
-      used_by: "codex",
-      source_used_by: "claude",
-    });
+    expect(mocks.install).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skill_id: "document-writer",
+        used_by: "codex",
+        source_used_by: "claude",
+        scope_kind: "global",
+      }),
+      expect.any(Object),
+    );
     const gemini = screen
       .getAllByText("gemini")
       .map((element) => element.closest("div.rounded-lg"))
       .filter(Boolean)
       .find((div) =>
-        within(div as HTMLElement).queryByRole("button", { name: "Remove" }),
+        within(div as HTMLElement).queryByRole("button", {
+          name: "Remove agent symlink",
+        }),
       );
     await user.click(
-      within(gemini as HTMLElement).getByRole("button", { name: "Remove" }),
+      within(gemini as HTMLElement).getByRole("button", {
+        name: "Remove agent symlink",
+      }),
     );
     await user.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {
         name: "Remove",
       }),
     );
-    expect(mocks.uninstall).toHaveBeenCalledWith({
-      skill_id: "document-writer",
-      used_by: "gemini",
-    });
+    expect(mocks.uninstall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skill_id: "document-writer",
+        used_by: "gemini",
+        scope_kind: "global",
+      }),
+      expect.any(Object),
+    );
   });
 
   it("disables the selected skill after confirming", async () => {
@@ -686,11 +735,11 @@ describe("SkillsPage", () => {
     );
   });
 
-  it("removes symlinks from the installations tab", async () => {
+  it("removes symlinks from the consolidate tab", async () => {
     const user = userEvent.setup();
     renderRoute();
     await user.click(screen.getByText("Document Writer"));
-    await user.click(screen.getByRole("tab", { name: "Used by Agents" }));
+    await user.click(screen.getByRole("tab", { name: "Consolidate" }));
     await user.click(screen.getByRole("button", { name: "Remove Symlinks" }));
     await user.click(
       within(screen.getByRole("alertdialog")).getByRole("button", {

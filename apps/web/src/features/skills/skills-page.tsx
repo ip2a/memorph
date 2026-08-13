@@ -40,9 +40,16 @@ import {
   useDisableSkill,
   useConsolidateSkill,
   useRemoveSymlinksSkill,
+  useDeleteSkillInstallation,
 } from "@/features/skills/queries";
 import { SkillDetailPanel } from "@/features/skills/skill-detail-panel";
 import { SkillDisabledDialog } from "@/features/skills/skill-disabled-dialog";
+import {
+  skillInstallScopeFromMutation,
+  skillInstallScopeKey,
+  skillInstallScopeToMutation,
+  type SkillInstallScope,
+} from "@/features/skills/skill-install-scope";
 import {
   SkillsCatalogFilterTrigger,
   type SkillsCatalogFilterApply,
@@ -51,30 +58,13 @@ import {
 import { SkillOverviewPanel } from "@/features/skills/skill-overview-panel";
 import { clampSkillsCatalogPageSize } from "@/features/skills/skills-catalog-page-size";
 import { buildUpdateSettingsPayloadFromMeta } from "@/features/skills/skills-settings-payload";
+import { realPathOf } from "@/features/skills/skills-real-path";
 import { getMeta, updateSettings } from "@/lib/api";
 import { normalizeSkillDescription } from "@/lib/format";
 import { useI18n } from "@/lib/i18n-context";
 import { queryKeys } from "@/lib/query-keys";
 import { useUiStore } from "@/stores/ui-store";
 import type { SkillCatalogItem } from "@/lib/types";
-
-// The real on-disk location of a skill: a directory/managed-copy installation's
-// path, or — if every installation is a symlink — the target it points at. The
-// left list shows this so two same-named copies (different real paths) can be
-// told apart; symlinks never appear here as their own entry.
-function realPathOf(item: SkillCatalogItem): string | undefined {
-  const directory = item.installations.find(
-    (installation) =>
-      (installation.install_kind === "directory" ||
-        installation.install_kind === "managed-copy") &&
-      installation.status === "active",
-  );
-  if (directory) return directory.install_path;
-  const symlink = item.installations.find(
-    (installation) => installation.install_kind === "symlink",
-  );
-  return symlink?.symlink_target ?? item.installations[0]?.install_path;
-}
 
 export function SkillsPage() {
   const { t } = useI18n();
@@ -90,10 +80,9 @@ export function SkillsPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rightView, setRightView] = useState<"overview" | "detail">("overview");
   const [previewPath, setPreviewPath] = useState<string | null>(null);
-  const [removalAgent, setRemovalAgent] = useState<string | null>(null);
+  const [removalTarget, setRemovalTarget] = useState<SkillInstallScope | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
-  const [removeSymlinksOpen, setRemoveSymlinksOpen] = useState(false);
   const [disabledListOpen, setDisabledListOpen] = useState(false);
   const initialScanStarted = useRef(false);
   const metaQuery = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta });
@@ -138,6 +127,7 @@ export function SkillsPage() {
   const disableMutation = useDisableSkill();
   const consolidateMutation = useConsolidateSkill();
   const removeSymlinksMutation = useRemoveSymlinksSkill();
+  const deleteInstallationMutation = useDeleteSkillInstallation();
   const items = skillsQuery.data?.items ?? [];
   const selected = items.find((item) => item.id === selectedId) ?? null;
   const detailId = selected?.id ?? null;
@@ -193,11 +183,16 @@ export function SkillsPage() {
     deleteMutation.isPending ||
     disableMutation.isPending ||
     consolidateMutation.isPending ||
-    removeSymlinksMutation.isPending;
-  const pendingAgent = installMutation.isPending
-    ? (installMutation.variables?.used_by ?? null)
+    removeSymlinksMutation.isPending ||
+    deleteInstallationMutation.isPending;
+  const pendingTarget = installMutation.isPending
+    ? skillInstallScopeKey(
+        skillInstallScopeFromMutation(installMutation.variables!),
+      )
     : uninstallMutation.isPending
-      ? (uninstallMutation.variables?.used_by ?? null)
+      ? skillInstallScopeKey(
+          skillInstallScopeFromMutation(uninstallMutation.variables!),
+        )
       : null;
   const mutationError =
     scanMutation.error ||
@@ -206,7 +201,8 @@ export function SkillsPage() {
     deleteMutation.error ||
     disableMutation.error ||
     consolidateMutation.error ||
-    removeSymlinksMutation.error;
+    removeSymlinksMutation.error ||
+    deleteInstallationMutation.error;
   const total = skillsQuery.data?.total ?? 0;
   const responsePageSize = skillsQuery.data?.page_size ?? pageSize;
   const pageCount = Math.max(1, Math.ceil(total / responsePageSize));
@@ -378,32 +374,33 @@ export function SkillsPage() {
                 preview={previewQuery.data}
                 previewLoading={previewQuery.isLoading}
                 pending={pending}
-                pendingAgent={pendingAgent}
+                pendingTarget={pendingTarget}
                 mutationError={mutationError}
                 provider={usedBy === "all" ? undefined : usedBy}
-                onInstall={(agent) => {
+                currentWorkspace={currentWorkspace}
+                onInstall={(scope) => {
                   if (!selected) return;
                   installMutation.mutate(
-                    {
-                      skill_id: selected.source_id,
-                      used_by: agent,
-                      source_used_by: sourceUsedBy,
-                    },
+                    skillInstallScopeToMutation(
+                      scope,
+                      selected.source_id,
+                      sourceUsedBy,
+                    ),
                     {
                       onSuccess: () => {
                         toast.success(
                           t("skillsInstalled", {
                             skill: selected.name,
-                            agent,
+                            agent: scope.usedBy,
                           }),
                         );
                       },
                     },
                   );
                 }}
-                onRemove={(agent) => {
+                onRemove={(scope) => {
                   uninstallMutation.reset();
-                  setRemovalAgent(agent);
+                  setRemovalTarget(scope);
                 }}
                 onDelete={() => setDeleteOpen(true)}
                 onDisable={() => setDisableOpen(true)}
@@ -416,24 +413,44 @@ export function SkillsPage() {
                       ),
                   });
                 }}
-                onRemoveSymlinks={() => setRemoveSymlinksOpen(true)}
+                onRemoveSymlinks={() => {
+                  if (!selected) return;
+                  removeSymlinksMutation.mutate(selected.id, {
+                    onSuccess: () =>
+                      toast.success(
+                        t("skillsRemoveSymlinksDone", { skill: selected.name }),
+                      ),
+                  });
+                }}
+                onDeleteInstallation={(installPath) => {
+                  deleteInstallationMutation.mutate(installPath, {
+                    onSuccess: () => {
+                      toast.success(t("skillsConsolidateDeleted"));
+                    },
+                  });
+                }}
               />
             )}
           </PanelCard>
         </TwoPanePage>
       </div>
       <AlertDialog
-        open={Boolean(removalAgent)}
-        onOpenChange={(open) => !open && setRemovalAgent(null)}
+        open={Boolean(removalTarget)}
+        onOpenChange={(open) => !open && setRemovalTarget(null)}
       >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{t("skillsRemoveTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t("skillsRemoveDescription", {
-                skill: selected?.name || "",
-                agent: removalAgent || "",
-              })}
+              {removalTarget?.scopeKind === "project"
+                ? t("skillsRemoveWorkspaceSymlinkDescription", {
+                    skill: selected?.name || "",
+                    agent: removalTarget.usedBy,
+                  })
+                : t("skillsRemoveAgentSymlinkDescription", {
+                    skill: selected?.name || "",
+                    agent: removalTarget?.usedBy || "",
+                  })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -441,19 +458,19 @@ export function SkillsPage() {
             <AlertDialogAction
               disabled={uninstallMutation.isPending}
               onClick={() => {
-                if (selected && removalAgent) {
+                if (selected && removalTarget) {
                   uninstallMutation.mutate(
-                    {
-                      skill_id: selected.source_id,
-                      used_by: removalAgent,
-                    },
+                    skillInstallScopeToMutation(
+                      removalTarget,
+                      selected.source_id,
+                    ),
                     {
                       onSuccess: () => {
-                        setRemovalAgent(null);
+                        setRemovalTarget(null);
                         toast.success(
                           t("skillsRemoved", {
                             skill: selected.name,
-                            agent: removalAgent,
+                            agent: removalTarget.usedBy,
                           }),
                         );
                       },
@@ -528,44 +545,6 @@ export function SkillsPage() {
                 <Spinner data-icon="inline-start" />
               ) : null}
               {t("skillsDisable")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-      <AlertDialog
-        open={removeSymlinksOpen}
-        onOpenChange={setRemoveSymlinksOpen}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("skillsRemoveSymlinksTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {t("skillsRemoveSymlinksDescription", {
-                skill: selected?.name || "",
-              })}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t("cancel")}</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={removeSymlinksMutation.isPending}
-              onClick={() => {
-                if (selected) {
-                  removeSymlinksMutation.mutate(selected.id, {
-                    onSuccess: () => {
-                      setRemoveSymlinksOpen(false);
-                      toast.success(
-                        t("skillsRemoveSymlinksDone", { skill: selected.name }),
-                      );
-                    },
-                  });
-                }
-              }}
-            >
-              {removeSymlinksMutation.isPending ? (
-                <Spinner data-icon="inline-start" />
-              ) : null}
-              {t("skillsRemoveSymlinks")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
