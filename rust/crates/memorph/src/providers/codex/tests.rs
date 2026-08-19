@@ -628,6 +628,39 @@ fn rename_backup_restores_only_codex_title_owned_state() {
 }
 
 #[test]
+fn rename_codex_session_missing_from_index_self_heals_when_rollout_exists() {
+    let codex_dir = tempdir().unwrap();
+    let _guard = use_test_codex_dir(codex_dir.path().to_path_buf());
+    let session_id = "session-rename-unindexed";
+    let fixture = write_native_codex_fixture(codex_dir.path(), session_id);
+    // 模拟归档/放出后 index 条目丢失:只留 rollout,清掉 index 里该条目。
+    let other_line = std::fs::read_to_string(&fixture.index_path)
+        .unwrap()
+        .lines()
+        .find(|line| line.contains("session-other"))
+        .unwrap()
+        .to_string();
+    std::fs::write(&fixture.index_path, other_line + "\n").unwrap();
+
+    // 备份阶段也要放行,不能因为 index 缺条目就 bail。
+    create_codex_session_backup(
+        ProviderSourceMutation::Rename,
+        "operation-rename-unindexed",
+        session_id,
+        &codex_dir.path().join("backups"),
+    )
+    .unwrap();
+    rename_codex_session(session_id, "Healed").unwrap();
+
+    let entries = load_session_index_entries(&fixture.index_path).unwrap();
+    assert_eq!(entries.get(session_id).map(String::as_str), Some("Healed"));
+    let summary = read_codex_rollout_summary(&fixture.rollout_path)
+        .unwrap()
+        .unwrap();
+    assert_eq!(summary.title.as_deref(), Some("Healed"));
+}
+
+#[test]
 fn codex_backup_contract_and_capabilities_are_truthful() {
     let codex_dir = tempdir().unwrap();
     let _guard = use_test_codex_dir(codex_dir.path().to_path_buf());
