@@ -348,14 +348,15 @@ pub fn active_catalog_id_for_name(
     conn: &Connection,
     normalized_name: &str,
 ) -> Result<Option<String>> {
-    conn.query_row(
-        "SELECT c.id FROM skill_catalog c
+    Ok(conn
+        .query_row(
+            "SELECT c.id FROM skill_catalog c
          WHERE c.normalized_name = ?1
            AND c.id IN (SELECT DISTINCT skill_id FROM skill_installations WHERE status = 'active')",
-        [normalized_name],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()
+            [normalized_name],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?)
 }
 
 /// Delete every catalog row for a normalized skill name that has no active
