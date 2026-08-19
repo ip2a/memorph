@@ -68,6 +68,9 @@ import type {
   SkillCatalogPage,
   SkillCatalogParams,
   DisabledSkillsPage,
+  SkillGroup,
+  SkillGroupWithMembers,
+  SkillGroupInput,
   SkillScanQueued,
   SkillAnalysisOperation,
   SkillDailyUsage,
@@ -927,6 +930,37 @@ export function consolidateSkill(canonicalPath: string) {
 export function getSkillGroupInstallations(sourceId: string) {
   return api<SkillEntry>(
     `/api/v1/skills/${encodeURIComponent(sourceId)}/group-installations`,
+  );
+}
+
+export function listSkillGroups() {
+  return api<SkillGroupWithMembers[]>("/api/v1/skills/groups");
+}
+
+export function createSkillGroup(input: SkillGroupInput) {
+  return api<SkillGroup>("/api/v1/skills/groups", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function updateSkillGroup(groupId: string, input: SkillGroupInput) {
+  return api<SkillGroup>(
+    `/api/v1/skills/groups/${encodeURIComponent(groupId)}`,
+    { method: "PATCH", body: JSON.stringify(input) },
+  );
+}
+
+export function deleteSkillGroup(groupId: string) {
+  return api<null>(`/api/v1/skills/groups/${encodeURIComponent(groupId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function setSkillGroup(skillId: string, groupId: string | null) {
+  return api<null>(
+    `/api/v1/skills/${encodeURIComponent(skillId)}/group`,
+    { method: "PUT", body: JSON.stringify({ group_id: groupId }) },
   );
 }
 

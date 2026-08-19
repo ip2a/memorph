@@ -31,6 +31,11 @@ import {
   consolidateSkill,
   removeSymlinksSkill,
   getSkillGroupInstallations,
+  listSkillGroups,
+  createSkillGroup,
+  updateSkillGroup,
+  deleteSkillGroup,
+  setSkillGroup,
   deleteSkillInstallation,
   updateSkillFile,
 } from "@/lib/api";
@@ -38,6 +43,7 @@ import { queryKeys } from "@/lib/query-keys";
 import type {
   SkillCatalogParams,
   SkillGraphParams,
+  SkillGroupInput,
   SkillStatsParams,
 } from "@/lib/types";
 
@@ -371,5 +377,50 @@ export function useSkillGroupInstallations(sourceId: string | null) {
       : ["skills", "group-installations", "none"],
     queryFn: () => getSkillGroupInstallations(sourceId as string),
     enabled: Boolean(sourceId),
+  });
+}
+
+export function useSkillGroups() {
+  return useQuery({
+    queryKey: queryKeys.skillsGroups,
+    queryFn: listSkillGroups,
+  });
+}
+
+export function useCreateSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: createSkillGroup,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useUpdateSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ groupId, input }: { groupId: string; input: SkillGroupInput }) =>
+      updateSkillGroup(groupId, input),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useDeleteSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: deleteSkillGroup,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
+  });
+}
+
+export function useSetSkillGroup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillId, groupId }: { skillId: string; groupId: string | null }) =>
+      setSkillGroup(skillId, groupId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.skillsRoot }),
   });
 }

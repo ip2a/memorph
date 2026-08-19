@@ -1612,6 +1612,28 @@ export type DisabledSkillsPage = {
   items: DisabledSkill[];
 };
 
+export type SkillGroup = {
+  id: string;
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  sort_order: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+};
+
+export type SkillGroupWithMembers = SkillGroup & {
+  member_skill_ids: string[];
+  member_count: number;
+};
+
+export type SkillGroupInput = {
+  name: string;
+  description?: string | null;
+  color?: string | null;
+  sort_order?: number;
+};
+
 export type SkillStatsParams = {
   from?: string;
   to?: string;
