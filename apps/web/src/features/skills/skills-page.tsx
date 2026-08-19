@@ -84,6 +84,7 @@ export function SkillsPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [disableOpen, setDisableOpen] = useState(false);
   const [disabledListOpen, setDisabledListOpen] = useState(false);
+  const [consolidatingPath, setConsolidatingPath] = useState<string | null>(null);
   const initialScanStarted = useRef(false);
   const metaQuery = useQuery({ queryKey: queryKeys.meta, queryFn: getMeta });
   const pageSize = clampSkillsCatalogPageSize(
@@ -130,6 +131,9 @@ export function SkillsPage() {
   const deleteInstallationMutation = useDeleteSkillInstallation();
   const items = skillsQuery.data?.items ?? [];
   const selected = items.find((item) => item.id === selectedId) ?? null;
+  const consolidatedItem = consolidatingPath
+    ? items.find((item) => realPathOf(item) === consolidatingPath) ?? null
+    : null;
   const detailId = selected?.id ?? null;
   const sourceUsedBy = selected?.installations.find(
     (item) => item.status === "active",
@@ -406,11 +410,25 @@ export function SkillsPage() {
                 onDisable={() => setDisableOpen(true)}
                 onConsolidate={(canonicalPath) => {
                   if (!selected) return;
+                  setConsolidatingPath(canonicalPath);
                   consolidateMutation.mutate(canonicalPath, {
-                    onSuccess: () =>
+                    onSuccess: async () => {
+                      const refreshed = await skillsQuery.refetch();
+                      const nextItems = refreshed.data?.items ?? [];
+                      const nextItem =
+                        nextItems.find(
+                          (item) => realPathOf(item) === canonicalPath,
+                        ) ??
+                        nextItems.find((item) => item.name === selected.name) ??
+                        null;
+                      setSelectedId(nextItem?.id ?? null);
+                      setRightView(nextItem ? "detail" : "overview");
+                      setConsolidatingPath(null);
                       toast.success(
                         t("skillsConsolidated", { skill: selected.name }),
-                      ),
+                      );
+                    },
+                    onError: () => setConsolidatingPath(null),
                   });
                 }}
                 onRemoveSymlinks={() => {
@@ -434,6 +452,29 @@ export function SkillsPage() {
           </PanelCard>
         </TwoPanePage>
       </div>
+      <AlertDialog open={Boolean(consolidatingPath)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <Spinner />
+              {t("skillsConsolidateRedirectTitle")}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="space-y-2">
+              <span className="block">
+                {consolidatedItem
+                  ? t("skillsConsolidateRedirectReady")
+                  : t("skillsConsolidateRedirectDescription")}
+              </span>
+              <span
+                className="block break-all rounded-md bg-muted px-3 py-2 font-mono text-xs text-foreground"
+                title={consolidatingPath ?? undefined}
+              >
+                {consolidatingPath}
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
         open={Boolean(removalTarget)}
         onOpenChange={(open) => !open && setRemovalTarget(null)}
