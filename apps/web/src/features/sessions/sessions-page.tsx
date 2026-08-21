@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRightIcon, EyeIcon, PinIcon, RefreshCwIcon, RotateCwIcon, SearchIcon, TriangleAlertIcon } from "lucide-react";
+import { ArchiveIcon, ArrowRightIcon, EyeIcon, PinIcon, RefreshCwIcon, RotateCwIcon, SearchIcon, TriangleAlertIcon } from "lucide-react";
 import { toast } from "sonner";
 import { PageEmpty, PageError, PageSkeleton } from "@/components/shared/page-states";
 import { PathText } from "@/components/shared/path-text";
@@ -195,6 +195,7 @@ export function SessionsPage() {
                       <TableCell>
                         <div className="flex flex-wrap gap-1">
                           {session.pinned ? <Badge variant="secondary"><PinIcon />{t("sessionsPinned")}</Badge> : null}
+                          {session.archived ? <Badge variant="outline"><ArchiveIcon />{t("sessionsArchived")}</Badge> : null}
                           {session.hidden ? <Badge variant="outline"><EyeIcon />{t("sessionsHidden")}</Badge> : null}
                           {session.stale ? <Badge variant="destructive"><TriangleAlertIcon />{t("sessionsStale")}</Badge> : null}
                         </div>

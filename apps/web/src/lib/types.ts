@@ -735,6 +735,7 @@ export type SessionItem = {
   display_title?: string | null;
   hidden: boolean;
   pinned: boolean;
+  archived: boolean;
   stale: boolean;
   preferred_targets: string[];
   project_dir: string | null;
