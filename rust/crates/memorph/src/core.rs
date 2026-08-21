@@ -157,6 +157,8 @@ pub struct SessionItem {
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
+    pub archived: bool,
+    #[serde(default)]
     pub stale: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub preferred_targets: Vec<String>,

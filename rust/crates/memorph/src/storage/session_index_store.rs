@@ -146,13 +146,14 @@ impl<'a> SessionIndexStore<'a> {
             "index_version": SESSION_INDEX_VERSION,
             "source_fingerprint": fingerprint.value,
         });
+        let flags_json = json!({ "archived": summary.archived }).to_string();
         tx.execute(
             "INSERT INTO session_snapshots
              (session_id, provider_id, title, display_title, workspace_dir, status,
               last_active_at_ms, event_count, turn_count, flags_json, snapshot_json,
               projection_version, source_fingerprint, stale, updated_at_ms,
               message_count, counts_complete)
-             VALUES (?1, ?2, ?3, NULL, ?4, 'indexed', ?5, 0, 0, '{}', ?6, ?7, ?8, 0, ?9,
+             VALUES (?1, ?2, ?3, NULL, ?4, 'indexed', ?5, 0, 0, ?10, ?6, ?7, ?8, 0, ?9,
                      NULL, 0)
              ON CONFLICT(session_id) DO UPDATE SET
               provider_id = excluded.provider_id,
@@ -173,6 +174,7 @@ impl<'a> SessionIndexStore<'a> {
                   WHEN session_snapshots.source_fingerprint = excluded.source_fingerprint
                   THEN session_snapshots.counts_complete ELSE 0 END,
               snapshot_json = excluded.snapshot_json,
+              flags_json = excluded.flags_json,
               projection_version = excluded.projection_version,
               source_fingerprint = excluded.source_fingerprint,
               stale = 0,
@@ -187,6 +189,7 @@ impl<'a> SessionIndexStore<'a> {
                 SESSION_INDEX_VERSION,
                 fingerprint.value,
                 now_ms,
+                flags_json,
             ],
         )
         .context("Failed to upsert session list snapshot")?;

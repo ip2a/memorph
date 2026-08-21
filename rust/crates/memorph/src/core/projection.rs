@@ -1231,6 +1231,7 @@ pub(crate) fn projected_snapshot_item(snapshot: &ProjectedSessionSnapshotRow) ->
         display_title: snapshot.display_title.clone(),
         hidden: snapshot.hidden,
         pinned: snapshot.pinned,
+        archived: snapshot.archived,
         stale: snapshot.stale,
         preferred_targets: snapshot.preferred_targets.clone(),
         project_dir: snapshot

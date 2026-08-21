@@ -949,6 +949,7 @@ mod tests {
             size_bytes: Some(size),
             hidden: false,
             pinned: false,
+            archived: false,
             preferred_targets: Vec::new(),
             stale: false,
         }

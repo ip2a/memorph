@@ -34,6 +34,7 @@ pub struct ProjectedSessionSnapshotRow {
     pub turn_count: usize,
     pub size_bytes: Option<u64>,
     pub hidden: bool,
+    pub archived: bool,
     pub pinned: bool,
     pub preferred_targets: Vec<String>,
     pub stale: bool,
@@ -249,7 +250,8 @@ impl<'a> SnapshotStore<'a> {
                 COALESCE(workspace.hidden, local.hidden),
                 COALESCE(workspace.pinned, local.pinned),
                 COALESCE(workspace.preferred_targets_json, local.preferred_targets_json),
-                ss.stale
+                ss.stale,
+                local.archived
              FROM session_snapshots ss
              JOIN sessions s ON s.id = ss.session_id
              LEFT JOIN session_sources src ON src.id = s.primary_source_id
@@ -276,6 +278,7 @@ impl<'a> SnapshotStore<'a> {
                 let local_hidden: Option<i64> = row.get(13)?;
                 let local_pinned: Option<i64> = row.get(14)?;
                 let preferred_targets_json: Option<String> = row.get(15)?;
+                let local_archived: Option<i64> = row.get(17)?;
                 let flags = parse_flags(&flags_json);
                 let file_size_bytes: Option<i64> = row.get(11)?;
 
@@ -296,6 +299,7 @@ impl<'a> SnapshotStore<'a> {
                     size_bytes: file_size_bytes.and_then(|value| u64::try_from(value).ok()),
                     hidden: local_hidden.map(sql_bool).unwrap_or(flags.hidden),
                     pinned: local_pinned.map(sql_bool).unwrap_or(flags.pinned),
+                    archived: flags.archived || local_archived.map(sql_bool).unwrap_or(false),
                     preferred_targets: parse_string_list(preferred_targets_json.as_deref()),
                     stale: sql_bool(row.get::<_, i64>(16)?),
                 })
@@ -562,6 +566,8 @@ struct SnapshotSourceRow {
 
 #[derive(Debug, Default, Deserialize)]
 struct SnapshotFlags {
+    #[serde(default)]
+    archived: bool,
     #[serde(default)]
     hidden: bool,
     #[serde(default)]
