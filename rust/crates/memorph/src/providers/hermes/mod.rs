@@ -312,7 +312,7 @@ fn scan_sessions_from_db(db: &Path) -> Result<Vec<ProviderSessionSummary>> {
     }
     let conn = open_read_only(db)?;
     let mut stmt = conn.prepare(
-        "SELECT id, title, cwd, started_at FROM sessions WHERE archived = 0 ORDER BY started_at DESC",
+        "SELECT id, title, cwd, started_at, archived FROM sessions ORDER BY started_at DESC",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((
@@ -320,12 +320,13 @@ fn scan_sessions_from_db(db: &Path) -> Result<Vec<ProviderSessionSummary>> {
             row.get::<_, Option<String>>(1)?,
             row.get::<_, Option<String>>(2)?,
             row.get::<_, f64>(3)?,
+        row.get::<_, i64>(4)?,
         ))
     })?;
     rows.map(|row| {
-        let (id, title, cwd, started) = row?;
+        let (id, title, cwd, started, archived) = row?;
         Ok(ProviderSessionSummary {
-            archived: false,
+            archived: archived != 0,
             session_id: id.clone(),
             title,
             project_dir: cwd,
@@ -436,9 +437,12 @@ mod tests {
         let dir = fixture_db();
         let db = dir.path().join("state.db");
         let sessions = scan_sessions_from_db(&db).unwrap();
-        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions.len(), 2);
         assert_eq!(sessions[0].session_id, "active");
+        assert!(!sessions[0].archived);
         assert_eq!(sessions[0].last_active_at, Some(1_000_000));
+        assert_eq!(sessions[1].session_id, "archived");
+        assert!(sessions[1].archived);
 
         let source = source_locator_for(&db, "active");
         let imported = HermesProvider.import_session(&source).unwrap();
