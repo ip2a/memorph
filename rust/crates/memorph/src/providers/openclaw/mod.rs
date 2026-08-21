@@ -165,6 +165,7 @@ fn scan_root(root: &Path) -> Result<Vec<ProviderSessionSummary>> {
         for row in rows {
             let (session_id, _session_key, title, updated_at) = row?;
             sessions.push(ProviderSessionSummary {
+                archived: false,
                 source_path: Some(locator(&db, &agent_id, &session_id)),
                 session_id,
                 title,

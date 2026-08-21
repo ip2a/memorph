@@ -164,6 +164,7 @@ pub fn get_session_detail_view_page_result(
         };
     page.imported.session.events = events;
     let meta = ProviderSessionSummary {
+        archived: false,
         session_id: provider_session_id.clone(),
         title: identity.title.clone(),
         project_dir: identity.workspace_dir.clone(),

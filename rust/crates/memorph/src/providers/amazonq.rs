@@ -76,6 +76,7 @@ impl Provider for AmazonQProvider {
             );
             let (_, last) = crate::providers::q_conversation::history_time_bounds(&value);
             out.push(ProviderSessionSummary {
+                archived: false,
                 session_id: key.clone(),
                 title,
                 project_dir: Some(key.clone()),

@@ -85,6 +85,7 @@ export function eventKindTagClass(kind: string | null | undefined) {
 /** Block content tags (text is omitted — it is the body, not a header chip). */
 export function eventBlockTagClass(type: EventBlock["type"] | string) {
   switch (type) {
+    case "chain":
     case "thinking":
       return "border-transparent bg-[#c8bdd9]/55 text-foreground dark:bg-[#5f5470]/55";
     case "tool_call":

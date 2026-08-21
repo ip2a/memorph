@@ -1555,6 +1555,7 @@ export type SkillCatalogParams = {
   order?: "asc" | "desc";
   page?: number;
   pageSize?: number;
+  workspace?: string;
 };
 
 export type SkillCatalogInstallation = {
@@ -1567,6 +1568,14 @@ export type SkillCatalogInstallation = {
   link_status:
     "not-applicable" | "valid" | "broken" | "outside-allowed-root" | "loop";
   status: "active" | "missing" | "removed" | "error";
+};
+
+export type SkillCatalogInstallationTarget = {
+  used_by: string;
+  scope_kind: "global" | "project";
+  workspace_dir?: string | null;
+  expected_path: string;
+  installation?: SkillCatalogInstallation | null;
 };
 
 export type SkillCatalogItem = {
@@ -1582,6 +1591,7 @@ export type SkillCatalogItem = {
   missing: boolean;
   updated_at_ms: number;
   installations: SkillCatalogInstallation[];
+  installation_targets: SkillCatalogInstallationTarget[];
   tags: string[];
   used_by: string[];
 };

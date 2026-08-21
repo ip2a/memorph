@@ -97,6 +97,7 @@ impl Provider for CopilotProvider {
                             _ => None,
                         });
                 out.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: id,
                     title,
                     project_dir: session_cwd(&events),
@@ -145,6 +146,7 @@ impl Provider for CopilotProvider {
                     };
                     let title = vscode_session_title(&path);
                     out.push(ProviderSessionSummary {
+                        archived: false,
                         session_id: sid,
                         title,
                         project_dir: workspace.clone(),

@@ -17,6 +17,8 @@ pub struct ProviderSessionSummary {
     pub created_at: Option<i64>,
     pub last_active_at: Option<i64>,
     pub source_path: Option<String>,
+    /// Provider-native archive state (Codex archived_sessions/ dir, sqlite archived flags).
+    pub archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

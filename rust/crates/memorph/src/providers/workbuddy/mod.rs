@@ -88,6 +88,7 @@ impl Provider for WorkBuddyProvider {
                     continue;
                 };
                 sessions.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: id,
                     title: doc_title(&doc),
                     project_dir: None,

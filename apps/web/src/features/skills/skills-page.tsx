@@ -110,6 +110,8 @@ export function SkillsPage() {
       );
     },
   });
+  const currentWorkspace =
+    useUiStore((state) => state.selectedWorkspace) ?? undefined;
   const skillsQuery = useSkills({
     query: search.trim() || undefined,
     used_by: usedBy === "all" ? undefined : usedBy,
@@ -118,9 +120,8 @@ export function SkillsPage() {
     order,
     page,
     pageSize,
+    workspace: currentWorkspace,
   });
-  const currentWorkspace =
-    useUiStore((state) => state.selectedWorkspace) ?? undefined;
   const scanMutation = useScanSkills();
   const installMutation = useInstallSkill();
   const uninstallMutation = useUninstallSkill();

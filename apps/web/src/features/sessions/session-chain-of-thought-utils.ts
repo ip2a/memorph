@@ -1,3 +1,4 @@
+import { getBlockLabel, type SessionBlockTag } from "@/features/sessions/session-block-utils";
 import type { EventBlock } from "@/lib/types";
 import { translate, type I18nKey } from "@/lib/i18n-core";
 type Translator = (key: I18nKey, vars?: Record<string, string | number | null | undefined>) => string;
@@ -22,6 +23,27 @@ export type ChainStep = {
 
 export function isChainBlock(block: EventBlock): boolean {
   return CHAIN_BLOCK_TYPES.has(block.type);
+}
+
+/** Header chips: one "Chain of thought" tag instead of per-chain block tags. */
+export function getEventHeaderTags(blocks: EventBlock[] | undefined, t?: Translator): SessionBlockTag[] {
+  const list = blocks ?? [];
+  const tags: SessionBlockTag[] = [];
+
+  if (list.some(isChainBlock)) {
+    tags.push({
+      type: "chain",
+      label: t?.("chainOfThought") ?? translate("en", "chainOfThought"),
+    });
+  }
+
+  for (const block of list) {
+    if (isChainBlock(block)) continue;
+    const label = getBlockLabel(block, t);
+    if (label) tags.push({ type: block.type, label });
+  }
+
+  return tags;
 }
 
 export function segmentEventBlocks(blocks: EventBlock[]): EventBlockSegment[] {

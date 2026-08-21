@@ -84,6 +84,7 @@ function ScopeInstallationRow({
   scopeKind,
   workspaceDir,
   installation,
+  expectedPath,
   pending,
   actionPending,
   sourceUsedBy,
@@ -95,6 +96,7 @@ function ScopeInstallationRow({
   scopeKind: "global" | "project";
   workspaceDir?: string;
   installation?: SkillCatalogItem["installations"][number];
+  expectedPath: string;
   pending: boolean;
   actionPending: boolean;
   sourceUsedBy?: string;
@@ -145,32 +147,26 @@ function ScopeInstallationRow({
             </>
           ) : null}
         </div>
-        {installation ? (
-          <div className="space-y-1 text-xs">
+        <div className="space-y-1 text-xs">
+          <span className="text-muted-foreground">
+            {installation ? t("skillsInstallPath") : t("skillsExpectedInstallPath")}
+          </span>
+          <p className="break-all font-mono">
+            {installation?.install_path ?? expectedPath}
+          </p>
+          {installation?.scope_kind === "project" && installation.workspace_dir ? (
             <div>
-              <span className="text-muted-foreground">{t("skillsInstallPath")}</span>
-              <p className="break-all font-mono">{installation.install_path}</p>
+              <span className="text-muted-foreground">{t("skillsProjectScope")}</span>
+              <p className="break-all font-mono">{installation.workspace_dir}</p>
             </div>
-            {installation.scope_kind === "project" && installation.workspace_dir ? (
-              <div>
-                <span className="text-muted-foreground">
-                  {t("skillsProjectScope")}
-                </span>
-                <p className="break-all font-mono">{installation.workspace_dir}</p>
-              </div>
-            ) : null}
-            {installation.install_kind === "symlink" && installation.symlink_target ? (
-              <div>
-                <span className="text-muted-foreground">
-                  {t("skillsSymlinkTarget")}
-                </span>
-                <p className="break-all font-mono">{installation.symlink_target}</p>
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <p className="text-muted-foreground text-xs">—</p>
-        )}
+          ) : null}
+          {installation?.install_kind === "symlink" && installation.symlink_target ? (
+            <div>
+              <span className="text-muted-foreground">{t("skillsSymlinkTarget")}</span>
+              <p className="break-all font-mono">{installation.symlink_target}</p>
+            </div>
+          ) : null}
+        </div>
       </div>
       {installation ? (
         <Button
@@ -203,6 +199,7 @@ function AgentInstallationSection({
   agent,
   installations,
   currentWorkspace,
+  installationTargets,
   pending,
   pendingTarget,
   sourceUsedBy,
@@ -211,7 +208,7 @@ function AgentInstallationSection({
   onRemove,
 }: {
   agent: (typeof AGENTS)[number];
-  installations: SkillCatalogItem["installations"];
+  installationTargets: SkillCatalogItem["installation_targets"];
   currentWorkspace?: string;
   pending: boolean;
   pendingTarget: string | null;
@@ -220,16 +217,19 @@ function AgentInstallationSection({
   onInstall: (scope: SkillInstallScope) => void;
   onRemove: (scope: SkillInstallScope) => void;
 }) {
-  const globalInstallation = installations.find(
-    (item) => item.scope_kind === "global",
+  const globalTarget = installationTargets.find(
+    (target) => target.used_by === agent && target.scope_kind === "global",
   );
-  const projectInstallation = currentWorkspace
-    ? installations.find(
-        (item) =>
-          item.scope_kind === "project" &&
-          item.workspace_dir === currentWorkspace,
+  const projectTarget = currentWorkspace
+    ? installationTargets.find(
+        (target) =>
+          target.used_by === agent &&
+          target.scope_kind === "project" &&
+          target.workspace_dir === currentWorkspace,
       )
     : undefined;
+  const globalInstallation = globalTarget?.installation ?? undefined;
+  const projectInstallation = projectTarget?.installation ?? undefined;
 
   return (
     <div className="space-y-3 rounded-lg border p-3">
@@ -238,6 +238,7 @@ function AgentInstallationSection({
         agent={agent}
         scopeKind="global"
         installation={globalInstallation}
+        expectedPath={globalTarget?.expected_path ?? ""}
         pending={pending}
         actionPending={pendingTarget === skillInstallScopeKey({ usedBy: agent, scopeKind: "global" })}
         sourceUsedBy={sourceUsedBy}
@@ -251,6 +252,7 @@ function AgentInstallationSection({
           scopeKind="project"
           workspaceDir={currentWorkspace}
           installation={projectInstallation}
+          expectedPath={projectTarget?.expected_path ?? ""}
           pending={pending}
           actionPending={
             pendingTarget ===
@@ -636,7 +638,7 @@ export function SkillDetailPanel({
                   <AgentInstallationSection
                     key={agent}
                     agent={agent}
-                    installations={installations}
+                    installationTargets={selected.installation_targets}
                     currentWorkspace={currentWorkspace}
                     pending={pending}
                     pendingTarget={pendingTarget}

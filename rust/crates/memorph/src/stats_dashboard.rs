@@ -357,6 +357,7 @@ pub(crate) fn complete_missing_counts(
             let indexed = store.write_session_summary(
                 &computation.provider_id,
                 &crate::provider::ProviderSessionSummary {
+                    archived: false,
                     session_id: computation
                         .provider_session_id
                         .clone()

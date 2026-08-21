@@ -213,6 +213,7 @@ fn session_length_metrics_distinguish_measured_bytes_and_estimated_tokens() {
 #[test]
 fn imported_session_title_prefers_display_title_before_native_and_meta() {
     let meta = ProviderSessionSummary {
+        archived: false,
         session_id: "session-1".to_string(),
         title: Some("Meta".to_string()),
         project_dir: Some("/tmp/project".to_string()),
@@ -984,6 +985,7 @@ fn bootstrap_projects_hermes_native_sqlite_source() {
     assert!(provider.capabilities().import);
 
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "hermes-1".into(),
         title: Some("Hermes fixture".into()),
         project_dir: Some("/tmp/hermes-project".into()),
@@ -1024,6 +1026,7 @@ fn hermes_projection_refreshes_after_source_change() {
     drop(conn);
 
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "hermes-1".into(),
         title: Some("Before".into()),
         project_dir: Some("/tmp/hermes-project".into()),
@@ -1049,6 +1052,7 @@ fn hermes_projection_refreshes_after_source_change() {
     drop(conn);
 
     let session = ProviderSessionSummary {
+        archived: false,
         title: Some("After".into()),
         ..session
     };
@@ -1079,6 +1083,7 @@ fn bootstrap_projects_cline_task_source() {
     .unwrap();
 
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "task-cline-1".into(),
         title: Some("hello".into()),
         project_dir: None,
@@ -1114,6 +1119,7 @@ fn cline_projection_refreshes_after_task_history_change() {
     std::fs::write(&history, r#"[{"role":"user","content":"before"}]"#).unwrap();
 
     let mut session = ProviderSessionSummary {
+        archived: false,
         session_id: "task-cline-1".into(),
         title: Some("before".into()),
         project_dir: None,
@@ -1158,6 +1164,7 @@ fn bootstrap_projects_copilot_event_source() {
     )
     .unwrap();
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "copilot-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/copilot".into()),
@@ -1197,6 +1204,7 @@ fn copilot_projection_refreshes_after_event_source_change() {
     )
     .unwrap();
     let mut session = ProviderSessionSummary {
+        archived: false,
         session_id: "copilot-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/copilot".into()),
@@ -1246,6 +1254,7 @@ fn bootstrap_projects_droid_session_source() {
     )
     .unwrap();
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "droid-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/droid".into()),
@@ -1284,6 +1293,7 @@ fn droid_projection_refreshes_after_session_source_change() {
     )
     .unwrap();
     let mut session = ProviderSessionSummary {
+        archived: false,
         session_id: "droid-session-1".into(),
         title: Some("before".into()),
         project_dir: None,
@@ -1331,6 +1341,7 @@ fn bootstrap_projects_codebuddy_session_source() {
     )
     .unwrap();
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "codebuddy-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/codebuddy".into()),
@@ -1361,6 +1372,7 @@ fn codebuddy_projection_refreshes_after_session_source_change() {
     )
     .unwrap();
     let mut session = ProviderSessionSummary {
+        archived: false,
         session_id: "codebuddy-session-1".into(),
         title: Some("before".into()),
         project_dir: None,
@@ -1400,6 +1412,7 @@ fn bootstrap_projects_qoder_session_source() {
     )
     .unwrap();
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "qoder-session-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/qoder".into()),
@@ -1430,6 +1443,7 @@ fn qoder_projection_refreshes_after_session_source_change() {
     )
     .unwrap();
     let mut session = ProviderSessionSummary {
+        archived: false,
         session_id: "qoder-session-1".into(),
         title: Some("before".into()),
         project_dir: None,
@@ -1468,6 +1482,7 @@ fn bootstrap_projects_workbuddy_trace_source() {
     )
     .unwrap();
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "workbuddy-1".into(),
         title: Some("before".into()),
         project_dir: None,
@@ -1497,6 +1512,7 @@ fn workbuddy_projection_refreshes_after_trace_source_change() {
     )
     .unwrap();
     let mut session = ProviderSessionSummary {
+        archived: false,
         session_id: "workbuddy-1".into(),
         title: Some("before".into()),
         project_dir: None,
@@ -1536,6 +1552,7 @@ fn bootstrap_projects_pi_session_source() {
     )
     .unwrap();
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "pi-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/pi".into()),
@@ -1567,6 +1584,7 @@ fn pi_projection_refreshes_after_session_source_change() {
     )
     .unwrap();
     let mut session = ProviderSessionSummary {
+        archived: false,
         session_id: "pi-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/pi".into()),
@@ -1600,6 +1618,7 @@ fn bootstrap_projects_antigravity_session_source() {
     let source = dir.path().join("session.json");
     std::fs::write(&source, r#"{"sessionId":"ag-1","directories":["/tmp/ag"],"messages":[{"type":"user","content":[{"text":"before"}]}]}"#).unwrap();
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "ag-1".into(),
         title: Some("before".into()),
         project_dir: Some("/tmp/ag".into()),
@@ -1627,6 +1646,7 @@ fn antigravity_projection_refreshes_after_session_source_change() {
     )
     .unwrap();
     let mut session = ProviderSessionSummary {
+        archived: false,
         session_id: "ag-1".into(),
         title: Some("before".into()),
         project_dir: None,
@@ -1673,6 +1693,7 @@ fn bootstrap_projects_windsurf_active_trajectory_source() {
     drop(conn);
     let source = format!("{}#workspace=workspace-1", db.display());
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "wind-1".into(),
         title: None,
         project_dir: None,
@@ -1711,6 +1732,7 @@ fn windsurf_projection_refreshes_after_active_trajectory_change() {
     drop(conn);
     let source = format!("{}#workspace=workspace-1", db.display());
     let session = ProviderSessionSummary {
+        archived: false,
         session_id: "wind-1".into(),
         title: None,
         project_dir: None,
@@ -1751,6 +1773,7 @@ fn windsurf_legacy_chat_projection_refreshes_after_source_change() {
     )
     .unwrap();
     let mut session = ProviderSessionSummary {
+        archived: false,
         session_id: "legacy-1".into(),
         title: Some("before".into()),
         project_dir: None,
@@ -1860,6 +1883,7 @@ fn bootstrap_continues_after_missing_sources_without_parsing_body_content() {
     let invalid = tempfile::tempdir().unwrap();
     let sessions = [
         ProviderSessionSummary {
+            archived: false,
             session_id: "valid-session".to_string(),
             title: Some("Valid title".to_string()),
             project_dir: Some("/tmp/project".to_string()),
@@ -1868,6 +1892,7 @@ fn bootstrap_continues_after_missing_sources_without_parsing_body_content() {
             source_path: Some(valid.path().to_string_lossy().to_string()),
         },
         ProviderSessionSummary {
+            archived: false,
             session_id: "invalid-session".to_string(),
             title: None,
             project_dir: None,
@@ -1876,6 +1901,7 @@ fn bootstrap_continues_after_missing_sources_without_parsing_body_content() {
             source_path: Some(invalid.path().to_string_lossy().to_string()),
         },
         ProviderSessionSummary {
+            archived: false,
             session_id: "missing-session".to_string(),
             title: None,
             project_dir: None,
@@ -1999,6 +2025,7 @@ fn non_default_session_list_reads_index_without_provider_source() {
         .write_session_summary(
             "claude",
             &ProviderSessionSummary {
+                archived: false,
                 session_id: "session-projection-1".to_string(),
                 title: Some("Projected title".to_string()),
                 project_dir: Some("/tmp/project".to_string()),
@@ -2079,6 +2106,7 @@ fn activity_timelines_read_provider_source_and_fail_when_it_is_missing() {
         .write_session_summary(
             "claude",
             &ProviderSessionSummary {
+                archived: false,
                 session_id: "session-projection-1".to_string(),
                 title: Some("Projected activity".to_string()),
                 project_dir: Some("/tmp/project".to_string()),
@@ -2560,6 +2588,7 @@ fn project_claude_activity_sample(
         .write_session_summary(
             "claude",
             &ProviderSessionSummary {
+                archived: false,
                 session_id: session_id.to_string(),
                 title: Some(session_id.to_string()),
                 project_dir: Some(workspace.to_string()),

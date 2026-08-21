@@ -307,6 +307,7 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         local_store::apply_schema(&mut conn).unwrap();
         let summary = ProviderSessionSummary {
+            archived: false,
             session_id: "native-session".to_string(),
             title: Some("Indexed session".to_string()),
             project_dir: Some("/workspace/project".to_string()),
@@ -357,6 +358,7 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         local_store::apply_schema(&mut conn).unwrap();
         let mut summary = ProviderSessionSummary {
+            archived: false,
             session_id: "created-session".to_string(),
             title: None,
             project_dir: None,

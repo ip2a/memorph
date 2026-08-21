@@ -1215,6 +1215,54 @@ struct SkillAnalyzeQueued {
     mode: String,
 }
 
+fn installation_targets(
+    item: &repository::CatalogItem,
+    agents: &[memorph::skills::inspection::SkillAgent],
+) -> Vec<repository::CatalogInstallationTarget> {
+    let directory = item
+        .installations
+        .iter()
+        .find(|installation| installation.status == "active")
+        .and_then(|installation| Path::new(&installation.install_path).file_name())
+        .unwrap_or_else(|| std::ffi::OsStr::new(&item.source_id));
+    agents
+        .iter()
+        .filter(|agent| agent.agent_id != "agents-shared" || agent.scope_kind == "global")
+        .map(|agent| {
+            let used_by = if agent.agent_id == "agents-shared" {
+                "all".to_string()
+            } else {
+                agent.agent_id.clone()
+            };
+            let workspace_dir = agent
+                .workspace_dir
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned());
+            let installation = item
+                .installations
+                .iter()
+                .find(|installation| {
+                    installation.used_by == used_by
+                        && installation.scope_kind == agent.scope_kind
+                        && installation.workspace_dir == workspace_dir
+                        && installation.status == "active"
+                })
+                .cloned();
+            repository::CatalogInstallationTarget {
+                used_by,
+                scope_kind: agent.scope_kind.clone(),
+                workspace_dir,
+                expected_path: agent
+                    .skills_dir
+                    .join(directory)
+                    .to_string_lossy()
+                    .into_owned(),
+                installation,
+            }
+        })
+        .collect()
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CatalogListQuery {
@@ -1226,6 +1274,7 @@ struct CatalogListQuery {
     order: Option<String>,
     page: Option<usize>,
     page_size: Option<usize>,
+    workspace: Option<String>,
 }
 
 async fn list_skills(
@@ -1246,7 +1295,19 @@ async fn list_skills(
         None => repository::list_catalog_default(&catalog_query),
     };
     match result {
-        Ok(page) => ApiResponse::success(page).into_response(),
+        Ok(mut page) => {
+            let mut agents = state.agents.as_ref().clone();
+            if let Some(workspace) = query.workspace.as_deref() {
+                match validate_workspace_dir(workspace) {
+                    Ok(path) => push_project_agents(&mut agents, &path),
+                    Err(error) => return error_response(error),
+                }
+            }
+            for item in &mut page.items {
+                item.installation_targets = installation_targets(item, &agents);
+            }
+            ApiResponse::success(page).into_response()
+        }
         Err(error) => error_response(error),
     }
 }

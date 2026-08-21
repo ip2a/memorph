@@ -73,6 +73,7 @@ pub(super) fn scan_cli_sessions() -> Result<Vec<ProviderSessionSummary>> {
         let last_active_at = valid_timestamp_ms(row.updated_at).or(created_at);
 
         sessions.push(ProviderSessionSummary {
+            archived: false,
             session_id: row.conversation_id.clone(),
             title,
             project_dir,

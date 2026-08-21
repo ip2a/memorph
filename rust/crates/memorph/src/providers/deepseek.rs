@@ -129,6 +129,7 @@ impl Provider for DeepseekProvider {
         for row in rows {
             let (id, preview, cwd, title, _created, updated) = row?;
             sessions.push(ProviderSessionSummary {
+                archived: false,
                 session_id: id.clone(),
                 title: title.or_else(|| {
                     let p = preview.trim();
@@ -174,6 +175,7 @@ impl Provider for DeepseekProvider {
 
         meta.map(|(id, preview, cwd, title, updated)| {
             Ok(ProviderSessionSummary {
+                archived: false,
                 session_id: id.clone(),
                 title: title.or_else(|| {
                     let p = preview.trim();

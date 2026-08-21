@@ -501,6 +501,15 @@ pub struct CatalogInstallation {
 }
 
 #[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+pub struct CatalogInstallationTarget {
+    pub used_by: String,
+    pub scope_kind: String,
+    pub workspace_dir: Option<String>,
+    pub expected_path: String,
+    pub installation: Option<CatalogInstallation>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
 pub struct CatalogItem {
     pub id: String,
     pub source_id: String,
@@ -514,6 +523,7 @@ pub struct CatalogItem {
     pub missing: bool,
     pub updated_at_ms: i64,
     pub installations: Vec<CatalogInstallation>,
+    pub installation_targets: Vec<CatalogInstallationTarget>,
     pub used_by: Vec<String>,
     pub tags: Vec<String>,
 }
@@ -585,6 +595,7 @@ pub fn get_catalog_item(conn: &Connection, skill_id: &str) -> Result<Option<Cata
                     missing: row.get(9)?,
                     updated_at_ms: row.get(10)?,
                     installations: Vec::new(),
+                    installation_targets: Vec::new(),
                     tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(11)?)
                         .unwrap_or_default(),
                     used_by: Vec::new(),
@@ -700,6 +711,7 @@ pub fn list_catalog(conn: &Connection, query: &CatalogQuery) -> Result<CatalogPa
                 missing: row.get(9)?,
                 updated_at_ms: row.get(10)?,
                 installations: Vec::new(),
+                installation_targets: Vec::new(),
                 tags: serde_json::from_str::<Vec<String>>(&row.get::<_, String>(11)?)
                     .unwrap_or_default(),
                 used_by: Vec::new(),

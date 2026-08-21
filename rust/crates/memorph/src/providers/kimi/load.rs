@@ -172,6 +172,7 @@ pub(super) fn kimi_session_summary(
     let last_active_at = file_modified_ms(&session_dir.join("context.jsonl"))?;
 
     Ok(Some(ProviderSessionSummary {
+        archived: false,
         session_id,
         title,
         project_dir,

@@ -71,6 +71,7 @@ impl Provider for QwenProvider {
                 .find_map(|v| v.get("content").and_then(Value::as_str))
                 .map(|s| s.chars().take(100).collect());
             out.push(ProviderSessionSummary {
+                archived: false,
                 session_id: id.into(),
                 title,
                 project_dir: path.parent().map(|p| p.to_string_lossy().into()),

@@ -89,6 +89,7 @@ impl Provider for QoderProvider {
                     .iter()
                     .find_map(|e| text_for(e).filter(|s| !s.trim().is_empty()));
                 sessions.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: id,
                     title,
                     project_dir: events.iter().find_map(workspace),

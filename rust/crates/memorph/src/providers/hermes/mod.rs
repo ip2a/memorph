@@ -325,6 +325,7 @@ fn scan_sessions_from_db(db: &Path) -> Result<Vec<ProviderSessionSummary>> {
     rows.map(|row| {
         let (id, title, cwd, started) = row?;
         Ok(ProviderSessionSummary {
+            archived: false,
             session_id: id.clone(),
             title,
             project_dir: cwd,

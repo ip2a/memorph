@@ -70,6 +70,7 @@ impl Provider for TraeProvider {
                         continue;
                     };
                     sessions.push(ProviderSessionSummary {
+                        archived: false,
                         session_id: id,
                         title: session_title(session),
                         project_dir: workspace_dir(&db),

@@ -29,8 +29,8 @@ import {
   eventBlockTagClass,
   eventKindTagClass,
   eventRoleTagClass,
-  getBlockTags,
 } from "@/features/sessions/session-block-utils";
+import { getEventHeaderTags } from "@/features/sessions/session-chain-of-thought-utils";
 import { CreateSyncDialog, DeleteSessionDialog, ExportSessionDialog, RenameSessionDialog, SwitchSessionDialog } from "@/features/sessions/actions";
 import { SessionDetailHeaderActions } from "@/features/sessions/session-detail-header-actions";
 import { buildSessionEventQuery, sessionEventTotalPages, type SessionEventPageSize } from "@/features/sessions/session-detail-pagination";
@@ -373,7 +373,7 @@ function DetailEventItem({
   const { t } = useI18n();
   const role = event.role ?? "unknown";
   const kind = event.kind ?? "unknown";
-  const blockTags = getBlockTags(event.blocks, t);
+  const blockTags = getEventHeaderTags(event.blocks, t);
   const blocks = event.blocks ?? [];
 
   return (

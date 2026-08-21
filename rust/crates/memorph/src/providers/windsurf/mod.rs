@@ -90,6 +90,7 @@ impl Provider for WindsurfProvider {
                 let steps = decode_steps(&blob);
                 let source = locator(&db, workspace);
                 out.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: trajectory,
                     title: steps
                         .iter()
@@ -112,6 +113,7 @@ impl Provider for WindsurfProvider {
             {
                 for (id, title, last_active_at) in legacy_sessions(&path)? {
                     out.push(ProviderSessionSummary {
+                        archived: false,
                         session_id: id.clone(),
                         title,
                         project_dir: None,

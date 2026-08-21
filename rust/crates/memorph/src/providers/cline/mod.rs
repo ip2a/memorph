@@ -92,6 +92,7 @@ impl Provider for ClineProvider {
                 };
                 let title = first_text(&value);
                 sessions.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: task_id,
                     title,
                     project_dir: task_workspace(path),

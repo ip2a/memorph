@@ -102,6 +102,7 @@ impl Provider for PiProvider {
                     .iter()
                     .find_map(|e| text_for(e).filter(|s| !s.trim().is_empty()));
                 sessions.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: id,
                     title,
                     project_dir: header

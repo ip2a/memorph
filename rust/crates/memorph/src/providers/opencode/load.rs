@@ -659,6 +659,7 @@ pub(super) fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
         let created: i64 = row.get(4)?;
         let updated: i64 = row.get(5)?;
         Ok(ProviderSessionSummary {
+            archived: false,
             session_id: session_id.clone(),
             title: Some(title),
             project_dir: Some(directory),
@@ -1250,6 +1251,7 @@ pub(super) fn parse_session_file(path: &Path) -> Option<ProviderSessionSummary> 
         .and_then(|v| v.as_i64());
 
     Some(ProviderSessionSummary {
+        archived: false,
         session_id,
         title,
         project_dir: directory,

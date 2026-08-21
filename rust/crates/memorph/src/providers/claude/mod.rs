@@ -1819,6 +1819,7 @@ fn parse_session(path: &Path) -> Option<ProviderSessionSummary> {
     last_active_at = last_active_at.or_else(|| metadata.as_ref().and_then(metadata_modified_ms));
 
     Some(ProviderSessionSummary {
+        archived: false,
         session_id: session_id.clone(),
         title,
         project_dir,

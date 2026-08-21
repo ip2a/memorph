@@ -80,6 +80,7 @@ impl Provider for AntigravityProvider {
                 };
                 let doc = document_from_session_dir(&session_dir, &id).unwrap_or_default();
                 sessions.push(ProviderSessionSummary {
+                    archived: false,
                     session_id: id,
                     title: messages(&doc).iter().find_map(|message| text_for(message)),
                     project_dir: doc

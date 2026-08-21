@@ -392,6 +392,7 @@ impl Provider for CodexProvider {
                 .map(|value| value.timestamp_millis());
 
             sessions.push(ProviderSessionSummary {
+                archived: false,
                 session_id,
                 title,
                 project_dir,
@@ -466,6 +467,7 @@ impl Provider for CodexProvider {
             );
 
             return Ok(Some(ProviderSessionSummary {
+                archived: false,
                 session_id: session_id.to_string(),
                 title,
                 project_dir,
