@@ -39,6 +39,7 @@ fn session_list_params(q: ListQuery, limit: Option<usize>) -> core::SessionListP
         limit,
         offset: q.offset,
         sort: q.sort.unwrap_or_default(),
+        filter: Default::default(),
     }
 }
 

@@ -1147,13 +1147,350 @@ pub(super) fn list_projected_session_snapshots(
     };
 
     let conn = crate::storage::local_store::open_database()?;
-    let snapshots = crate::storage::snapshot_store::SnapshotStore::new(&conn)
-        .list_session_snapshots_filtered(
-            Some(&provider_ids),
-            workspace_scopes.as_deref(),
-            params.fields.include_stats(),
-        )?;
+    let store = crate::storage::snapshot_store::SnapshotStore::new(&conn);
+    let snapshots = store.list_session_snapshots_filtered(
+        Some(&provider_ids),
+        workspace_scopes.as_deref(),
+        params.fields.include_stats(),
+    )?;
+    let mut metadata_filter = params.filter.clone();
+    metadata_filter.text = None;
+    // ponytail: in-memory metadata filtering is enough for personal datasets; push into SQL if slow.
+    let snapshots: Vec<_> = snapshots
+        .into_iter()
+        .filter(|snapshot| snapshot_passes_filter(snapshot, &metadata_filter, None))
+        .collect();
+    let text_matches = params
+        .filter
+        .text
+        .as_deref()
+        .map(|pattern| search_projected_session_text(&snapshots, pattern))
+        .transpose()?;
+    let snapshots = snapshots
+        .into_iter()
+        .filter(|snapshot| snapshot_passes_filter(snapshot, &params.filter, text_matches.as_ref()))
+        .collect();
     Ok(projected_snapshot_groups(snapshots, params))
+}
+
+fn search_projected_session_text(
+    snapshots: &[ProjectedSessionSnapshotRow],
+    pattern: &str,
+) -> Result<HashSet<String>> {
+    let query = pattern.trim().to_ascii_lowercase();
+    if query.is_empty() {
+        return Ok(snapshots
+            .iter()
+            .map(|snapshot| snapshot.canonical_session_id.clone())
+            .collect());
+    }
+
+    let mut matches = HashSet::new();
+    for snapshot in snapshots {
+        let source_path = snapshot
+            .source_path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+            .with_context(|| {
+                format!(
+                    "Session has no source locator: {}/{}",
+                    snapshot.provider_id,
+                    snapshot
+                        .provider_session_id
+                        .as_deref()
+                        .unwrap_or(&snapshot.canonical_session_id)
+                )
+            })?;
+        let provider = providers::find_provider(&snapshot.provider_id)
+            .with_context(|| format!("Unknown provider: {}", snapshot.provider_id))?;
+        if !provider.capabilities().import {
+            anyhow::bail!(
+                "Provider does not support session text search: {}",
+                snapshot.provider_id
+            );
+        }
+        let imported = provider.import_session(source_path).with_context(|| {
+            format!(
+                "Failed to search session text: {}/{}",
+                snapshot.provider_id,
+                snapshot
+                    .provider_session_id
+                    .as_deref()
+                    .unwrap_or(&snapshot.canonical_session_id)
+            )
+        })?;
+        if imported.session.events.iter().any(|event| {
+            provider::event_text(event)
+                .to_ascii_lowercase()
+                .contains(&query)
+        }) {
+            matches.insert(snapshot.canonical_session_id.clone());
+        }
+    }
+    Ok(matches)
+}
+
+pub(super) fn snapshot_passes_filter(
+    snapshot: &ProjectedSessionSnapshotRow,
+    filter: &SessionListFilter,
+    text_matches: Option<&HashSet<String>>,
+) -> bool {
+    let dir_matches = filter.dir.as_ref().is_none_or(|pattern| {
+        snapshot
+            .workspace_dir
+            .as_ref()
+            .is_some_and(|value| value.contains(pattern))
+            || snapshot
+                .source_path
+                .as_ref()
+                .is_some_and(|value| value.contains(pattern))
+    });
+    let session_matches = filter.session.as_ref().is_none_or(|pattern| {
+        snapshot
+            .provider_session_id
+            .as_ref()
+            .is_some_and(|value| value.contains(pattern))
+            || snapshot.canonical_session_id.contains(pattern)
+            || snapshot
+                .title
+                .as_ref()
+                .is_some_and(|value| value.contains(pattern))
+            || snapshot
+                .display_title
+                .as_ref()
+                .is_some_and(|value| value.contains(pattern))
+    });
+    let title_matches = filter.title.as_ref().is_none_or(|pattern| {
+        snapshot
+            .title
+            .as_ref()
+            .is_some_and(|value| value.contains(pattern))
+            || snapshot
+                .display_title
+                .as_ref()
+                .is_some_and(|value| value.contains(pattern))
+    });
+    let text_matches = filter.text.is_none()
+        || text_matches.is_some_and(|matches| matches.contains(&snapshot.canonical_session_id));
+    let since_matches = filter.since_ms.is_none_or(|since| {
+        snapshot
+            .last_active_at_ms
+            .is_none_or(|last_active| last_active >= since)
+    });
+    let before_matches = filter.before_ms.is_none_or(|before| {
+        snapshot
+            .last_active_at_ms
+            .is_none_or(|last_active| last_active <= before)
+    });
+    let min_size_matches = filter
+        .min_bytes
+        .is_none_or(|min| snapshot.size_bytes.is_none_or(|size| size >= min));
+    let max_size_matches = filter
+        .max_bytes
+        .is_none_or(|max| snapshot.size_bytes.is_none_or(|size| size <= max));
+
+    dir_matches
+        && session_matches
+        && title_matches
+        && text_matches
+        && since_matches
+        && before_matches
+        && min_size_matches
+        && max_size_matches
+}
+
+#[cfg(test)]
+mod session_filter_tests {
+    use super::*;
+
+    fn snapshot() -> ProjectedSessionSnapshotRow {
+        ProjectedSessionSnapshotRow {
+            canonical_session_id: "canonical-1".to_string(),
+            provider_id: "claude".to_string(),
+            provider_session_id: Some("native-1".to_string()),
+            title: Some("Native title".to_string()),
+            display_title: Some("Local title".to_string()),
+            workspace_dir: Some("/tmp/project".to_string()),
+            last_active_at_ms: Some(200),
+            source_path: Some("/tmp/project/session.jsonl".to_string()),
+            message_count: Some(2),
+            event_count: 3,
+            turn_count: 1,
+            size_bytes: Some(20),
+            hidden: false,
+            archived: false,
+            pinned: false,
+            preferred_targets: Vec::new(),
+            stale: false,
+        }
+    }
+
+    #[test]
+    fn snapshot_filter_matches_all_fields_and_boundaries() {
+        let row = snapshot();
+        let cases = [
+            (
+                SessionListFilter {
+                    dir: Some("project".into()),
+                    ..Default::default()
+                },
+                true,
+            ),
+            (
+                SessionListFilter {
+                    session: Some("native-1".into()),
+                    ..Default::default()
+                },
+                true,
+            ),
+            (
+                SessionListFilter {
+                    title: Some("Local title".into()),
+                    ..Default::default()
+                },
+                true,
+            ),
+            (
+                SessionListFilter {
+                    since_ms: Some(200),
+                    ..Default::default()
+                },
+                true,
+            ),
+            (
+                SessionListFilter {
+                    before_ms: Some(200),
+                    ..Default::default()
+                },
+                true,
+            ),
+            (
+                SessionListFilter {
+                    min_bytes: Some(20),
+                    ..Default::default()
+                },
+                true,
+            ),
+            (
+                SessionListFilter {
+                    max_bytes: Some(20),
+                    ..Default::default()
+                },
+                true,
+            ),
+            (
+                SessionListFilter {
+                    dir: Some("missing".into()),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                SessionListFilter {
+                    session: Some("missing".into()),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                SessionListFilter {
+                    title: Some("missing".into()),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                SessionListFilter {
+                    since_ms: Some(201),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                SessionListFilter {
+                    before_ms: Some(199),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                SessionListFilter {
+                    min_bytes: Some(21),
+                    ..Default::default()
+                },
+                false,
+            ),
+            (
+                SessionListFilter {
+                    max_bytes: Some(19),
+                    ..Default::default()
+                },
+                false,
+            ),
+        ];
+
+        for (filter, expected) in cases {
+            assert_eq!(
+                snapshot_passes_filter(&row, &filter, None),
+                expected,
+                "{filter:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_backed_text_search_reads_provider_events() {
+        use std::io::Write as _;
+
+        let mut source = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            source,
+            "{}",
+            serde_json::json!({
+                "type": "user",
+                "uuid": "user-1",
+                "sessionId": "native-1",
+                "cwd": "/tmp/project",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"role": "user", "content": "Unique Search Needle"}
+            })
+        )
+        .unwrap();
+        let mut row = snapshot();
+        row.source_path = Some(source.path().to_string_lossy().into_owned());
+
+        assert_eq!(
+            search_projected_session_text(&[row.clone()], "search needle").unwrap(),
+            HashSet::from([row.canonical_session_id.clone()])
+        );
+        assert!(search_projected_session_text(&[row], "missing")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn snapshot_filter_text_requires_canonical_id_match() {
+        let row = snapshot();
+        let matches = HashSet::from(["canonical-1".to_string()]);
+        assert!(snapshot_passes_filter(
+            &row,
+            &SessionListFilter {
+                text: Some("needle".into()),
+                ..Default::default()
+            },
+            Some(&matches),
+        ));
+
+        let misses = HashSet::from(["canonical-2".to_string()]);
+        assert!(!snapshot_passes_filter(
+            &row,
+            &SessionListFilter {
+                text: Some("needle".into()),
+                ..Default::default()
+            },
+            Some(&misses),
+        ));
+    }
 }
 
 pub(super) fn projected_snapshot_groups(

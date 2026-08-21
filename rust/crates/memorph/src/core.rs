@@ -70,6 +70,18 @@ const PROJECTED_SESSION_PROVIDER_IDS: &[&str] = &[
     "trae",
 ];
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionListFilter {
+    pub dir: Option<String>,
+    pub session: Option<String>,
+    pub title: Option<String>,
+    pub text: Option<String>,
+    pub since_ms: Option<i64>,
+    pub before_ms: Option<i64>,
+    pub min_bytes: Option<u64>,
+    pub max_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionListParams {
     pub all: bool,
@@ -84,6 +96,8 @@ pub struct SessionListParams {
     pub offset: Option<usize>,
     #[serde(default)]
     pub sort: SessionListSort,
+    #[serde(default)]
+    pub filter: SessionListFilter,
 }
 
 /// Projection tier for session list reads.

@@ -1752,6 +1752,7 @@ mod tests {
             limit: None,
             offset: None,
             sort: crate::core::SessionListSort::Recent,
+            filter: Default::default(),
         })?;
         let session = groups
             .iter()

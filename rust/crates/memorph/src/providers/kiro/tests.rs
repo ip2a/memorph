@@ -571,6 +571,7 @@ fn current_format_index_and_detail_are_idempotent_source_backed_and_bodyless() -
         limit: None,
         offset: None,
         sort: crate::core::SessionListSort::Recent,
+        filter: Default::default(),
     })?;
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].sessions.len(), 1);
@@ -784,6 +785,7 @@ fn current_format_bootstrap_stale_and_system_sync_are_incremental_and_bodyless()
         limit: None,
         offset: None,
         sort: crate::core::SessionListSort::Recent,
+        filter: Default::default(),
     })?;
     let session = groups
         .iter()

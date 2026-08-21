@@ -2057,6 +2057,7 @@ fn non_default_session_list_reads_index_without_provider_source() {
         limit: None,
         offset: None,
         sort: SessionListSort::Title,
+        filter: Default::default(),
     })
     .unwrap();
 
