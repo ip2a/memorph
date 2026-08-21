@@ -416,7 +416,6 @@ fn summary_from_parsed(
     session_id: &str,
     parsed: &ParsedGeminiSession,
 ) -> ProviderSessionSummary {
-    archived: false,
     ProviderSessionSummary {
         archived: false,
         session_id: session_id.to_string(),

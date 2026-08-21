@@ -293,7 +293,6 @@ fn looks_like_session(value: &Value) -> bool {
 }
 
 fn session_summary_from_value(path: &Path, value: &Value) -> ProviderSessionSummary {
-    archived: false,
     let session_id = session_id_from_value(path, value);
     let title = title_from_value(value).or_else(|| first_message_title(value));
     let project_dir = workspace_from_value(value);
