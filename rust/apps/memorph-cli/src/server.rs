@@ -1,6 +1,6 @@
 use anyhow::{Context as _, Result};
 use axum::Router;
-use std::io;
+use std::io::{self, Write};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::api;
@@ -29,20 +29,32 @@ pub fn build_api_router() -> Router {
     api::router().layer(cors)
 }
 
-pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
+pub async fn run(port: u16, no_open: bool, allow_fallback: bool, json: bool) -> Result<()> {
     memorph::cache::init_watcher();
     memorph::core::spawn_background_sync_loop();
 
     let app = build_router();
-    let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
+    let (listener, actual_port) =
+        bind_with_fallback("127.0.0.1", port, allow_fallback, json).await?;
     let url = format!("http://127.0.0.1:{}", actual_port);
     if let Err(err) = memorph::hooks::runtime_state::publish_runtime_endpoint(&url) {
         memorph::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
-    println!(
-        "{}",
-        memorph::i18n::format(server_language(), "cliServerStarted", &[("url", &url)])
-    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "result": {"interface": "web", "url": url}
+            })
+        );
+        io::stdout().flush()?;
+    } else {
+        println!(
+            "{}",
+            memorph::i18n::format(server_language(), "cliServerStarted", &[("url", &url)])
+        );
+    }
 
     if !no_open {
         if let Err(err) = open::that(&url) {
@@ -61,26 +73,38 @@ pub async fn run(port: u16, no_open: bool, allow_fallback: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn run_api(port: u16, allow_fallback: bool) -> Result<()> {
+pub async fn run_api(port: u16, allow_fallback: bool, json: bool) -> Result<()> {
     memorph::cache::init_watcher();
     let _ = memorph::config::prime_default_workspace_if_unset();
     memorph::core::spawn_background_sync_loop();
 
     let app = build_api_router();
-    let (listener, actual_port) = bind_with_fallback("127.0.0.1", port, allow_fallback).await?;
+    let (listener, actual_port) =
+        bind_with_fallback("127.0.0.1", port, allow_fallback, json).await?;
     let url = format!("http://127.0.0.1:{}", actual_port);
     if let Err(err) = memorph::hooks::runtime_state::publish_runtime_endpoint(&url) {
         memorph::logging::error("publish_runtime_endpoint", format!("{err}"));
     }
 
-    println!(
-        "{}",
-        memorph::i18n::format(server_language(), "cliApiServerStarted", &[("url", &url)])
-    );
-    println!(
-        "{}",
-        memorph::i18n::text(server_language(), "cliApiBasePath")
-    );
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "ok": true,
+                "result": {"interface": "api", "url": url}
+            })
+        );
+        io::stdout().flush()?;
+    } else {
+        println!(
+            "{}",
+            memorph::i18n::format(server_language(), "cliApiServerStarted", &[("url", &url)])
+        );
+        println!(
+            "{}",
+            memorph::i18n::text(server_language(), "cliApiBasePath")
+        );
+    }
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -96,6 +120,7 @@ async fn bind_with_fallback(
     host: &str,
     port: u16,
     allow_fallback: bool,
+    json: bool,
 ) -> Result<(tokio::net::TcpListener, u16)> {
     let addr = format!("{}:{}", host, port);
     if is_port_available(host, port) {
@@ -118,17 +143,19 @@ async fn bind_with_fallback(
         let addr = format!("{}:{}", host, try_port);
         match tokio::net::TcpListener::bind(&addr).await {
             Ok(listener) => {
-                println!(
-                    "{}",
-                    memorph::i18n::format(
-                        server_language(),
-                        "cliPortFallback",
-                        &[
-                            ("port", &port.to_string()),
-                            ("fallback", &try_port.to_string())
-                        ]
-                    )
-                );
+                if !json {
+                    println!(
+                        "{}",
+                        memorph::i18n::format(
+                            server_language(),
+                            "cliPortFallback",
+                            &[
+                                ("port", &port.to_string()),
+                                ("fallback", &try_port.to_string())
+                            ]
+                        )
+                    );
+                }
                 return Ok((listener, try_port));
             }
             Err(e) if e.kind() == io::ErrorKind::AddrInUse => continue,

@@ -58,12 +58,22 @@ fn main() {
 
 fn run(cli: Cli) -> Result<()> {
     if cli.version {
-        println!("memorph {}", env!("CARGO_PKG_VERSION"));
+        if cli.json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "result": {"version": env!("CARGO_PKG_VERSION")}
+                })
+            );
+        } else {
+            println!("memorph {}", env!("CARGO_PKG_VERSION"));
+        }
         return Ok(());
     }
 
     match cli.command {
-        None => run_interactive_menu()?,
+        None => run_interactive_menu(cli.json)?,
         Some(command) => run_command(command, cli.json)?,
     }
     Ok(())
@@ -305,7 +315,7 @@ fn run_command(command: Commands, json_mode: bool) -> Result<()> {
                     .map(|preferences| preferences.web_port)
                     .unwrap_or(config::DEFAULT_WEB_PORT)
             });
-            run_web_server(port, no_open)?;
+            run_web_server(port, no_open, json_mode)?;
         }
         Commands::Api { port } => {
             let port = port.unwrap_or_else(|| {
@@ -313,9 +323,9 @@ fn run_command(command: Commands, json_mode: bool) -> Result<()> {
                     .map(|preferences| preferences.api_port)
                     .unwrap_or(config::DEFAULT_API_PORT)
             });
-            run_api_server(port)?;
+            run_api_server(port, json_mode)?;
         }
-        Commands::Tui => tui::run_tui()?,
+        Commands::Tui => run_interactive_menu(json_mode)?,
         Commands::Doctor => run_doctor(json_mode)?,
         Commands::Update => {
             if let Some(result) = update_memorph(json_mode)? {
@@ -562,21 +572,28 @@ where
     }
 }
 
-fn run_interactive_menu() -> Result<()> {
+fn run_interactive_menu(json: bool) -> Result<()> {
+    if json {
+        anyhow::bail!("TUI requires an interactive terminal; omit --json");
+    }
     tui::run_tui()
 }
 
-fn run_web_server(port: u16, no_open: bool) -> Result<()> {
-    print_web_banner();
+fn run_web_server(port: u16, no_open: bool, json: bool) -> Result<()> {
+    if !json {
+        print_web_banner();
+    }
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(server::run(port, no_open, true))
+    rt.block_on(server::run(port, no_open || json, true, json))
 }
 
-fn run_api_server(port: u16) -> Result<()> {
-    println!("Starting memorph API server.");
-    println!("Use `memorph web` for the Web UI.");
+fn run_api_server(port: u16, json: bool) -> Result<()> {
+    if !json {
+        println!("Starting memorph API server.");
+        println!("Use `memorph web` for the Web UI.");
+    }
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(server::run_api(port, true))
+    rt.block_on(server::run_api(port, true, json))
 }
 
 fn update_memorph(json: bool) -> Result<Option<serde_json::Value>> {
@@ -1081,6 +1098,14 @@ fn provider_name(provider: &str) -> Result<String> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn json_mode_does_not_enter_interactive_tui() {
+        let error = run_interactive_menu(true).expect_err("JSON mode must stay non-interactive");
+        assert!(error
+            .to_string()
+            .contains("TUI requires an interactive terminal"));
+    }
 
     #[test]
     fn detects_install_source_from_wrapper_env() {
