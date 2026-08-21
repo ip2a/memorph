@@ -1848,7 +1848,7 @@ async fn catalog_route_returns_classified_providers() {
     );
     assert_eq!(
         deepseek_capabilities["export_fidelity"]["tool_call"],
-        "downgraded"
+        "preserved"
     );
     assert_eq!(
         deepseek_capabilities["export_fidelity"]["provider_payload"],
