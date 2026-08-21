@@ -150,9 +150,6 @@ pub(super) fn kimi_session_summary(
     } else {
         (None, false)
     };
-    if archived {
-        return Ok(None);
-    }
 
     let title = state_title
         .map(|title| title.trim().to_string())
@@ -172,7 +169,7 @@ pub(super) fn kimi_session_summary(
     let last_active_at = file_modified_ms(&session_dir.join("context.jsonl"))?;
 
     Ok(Some(ProviderSessionSummary {
-        archived: false,
+        archived,
         session_id,
         title,
         project_dir,
