@@ -649,7 +649,7 @@ pub(super) fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
     }
     let conn = Connection::open(&db_path)?;
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, directory, title, time_created, time_updated FROM session WHERE time_archived IS NULL ORDER BY time_updated DESC"
+        "SELECT id, project_id, directory, title, time_created, time_updated, time_archived FROM session ORDER BY time_updated DESC"
     )?;
     let rows = stmt.query_map([], |row| {
         let session_id: String = row.get(0)?;
@@ -658,8 +658,9 @@ pub(super) fn scan_sessions_from_db() -> Result<Vec<ProviderSessionSummary>> {
         let title: String = row.get(3)?;
         let created: i64 = row.get(4)?;
         let updated: i64 = row.get(5)?;
+            let archived = row.get::<_, Option<i64>>(6)?.is_some();
         Ok(ProviderSessionSummary {
-            archived: false,
+            archived,
             session_id: session_id.clone(),
             title: Some(title),
             project_dir: Some(directory),
@@ -1247,11 +1248,16 @@ pub(super) fn parse_session_file(path: &Path) -> Option<ProviderSessionSummary> 
         .and_then(|v| v.as_i64());
     let updated = json
         .get("time")
-        .and_then(|v| v.get("updated"))
-        .and_then(|v| v.as_i64());
+            .and_then(|v| v.get("updated"))
+            .and_then(|v| v.as_i64());
+let archived = json
+            .get("time")
+            .and_then(|v| v.get("archived"))
+            .and_then(|v| v.as_i64())
+            .is_some();
 
     Some(ProviderSessionSummary {
-        archived: false,
+        archived,
         session_id,
         title,
         project_dir: directory,
