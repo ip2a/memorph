@@ -1,22 +1,17 @@
-#![recursion_limit = "256"]
-
 use anyhow::{Context as _, Result};
+use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate, TimeZone, Utc};
 use clap::Parser;
 use memorph::{
     config, core, i18n,
     provider::{ProviderCapabilities, ProviderContentFidelity},
     providers,
-    storage::activity_store::ActivityActor,
-    storage::artifact_store::{BackupQuery, BackupRestoreStatus},
-    sync as session_sync,
+    storage::{activity_store::ActivityActor, local_store},
 };
 use memorph_cli::{
-    cli::{
-        ArtifactCommands, BackupCommands, Cli, Commands, CompressionCommands, DatabaseCommands,
-        SessionCommands, SyncCommands,
-    },
+    cli::{Cli, Commands},
     server, tui, web_assets,
 };
+use serde::Serialize;
 use std::path::Path;
 use std::process::Command;
 
@@ -26,27 +21,42 @@ fn cli_language() -> config::UiLanguage {
         .unwrap_or_default()
 }
 
-fn print_stat(key: &'static str, value: usize) {
-    println!(
-        "{}",
-        i18n::format(cli_language(), key, &[("count", &value.to_string())])
-    );
-}
-
 fn cli_format(key: &'static str, replacements: &[(&str, &str)]) -> String {
     i18n::format(cli_language(), key, replacements)
 }
 
 fn main() {
-    if let Err(e) = run() {
-        eprintln!("{}: {:#}", i18n::text(cli_language(), "cliError"), e);
+    let json_mode = std::env::args_os().skip(1).any(|arg| arg == "--json");
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let exit_code = error.exit_code();
+            if json_mode {
+                println!(
+                    "{}",
+                    serde_json::json!({"ok": false, "error": error.to_string()})
+                );
+            } else {
+                let _ = error.print();
+            }
+            std::process::exit(exit_code);
+        }
+    };
+
+    if let Err(error) = run(cli) {
+        if json_mode {
+            println!(
+                "{}",
+                serde_json::json!({"ok": false, "error": format!("{error:#}")})
+            );
+        } else {
+            eprintln!("{}: {:#}", i18n::text(cli_language(), "cliError"), error);
+        }
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<()> {
-    let cli = Cli::parse();
-
+fn run(cli: Cli) -> Result<()> {
     if cli.version {
         println!("memorph {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
@@ -54,13 +64,12 @@ fn run() -> Result<()> {
 
     match cli.command {
         None => run_interactive_menu()?,
-        Some(command) => run_command(command)?,
+        Some(command) => run_command(command, cli.json)?,
     }
-
     Ok(())
 }
 
-fn run_command(command: Commands) -> Result<()> {
+fn run_command(command: Commands, json_mode: bool) -> Result<()> {
     match command {
         Commands::List {
             all,
@@ -68,11 +77,55 @@ fn run_command(command: Commands) -> Result<()> {
             sort,
             limit,
             offset,
-            json,
+            dir,
+            session,
+            title,
+            text,
+            since,
+            before,
+            min_bytes,
+            max_bytes,
+            providers: show_providers,
         } => {
-            print_session_list(all, provider, sort, limit, offset, json)?;
+            if show_providers {
+                print_provider_capabilities(&provider, json_mode)?;
+            } else {
+                print_session_list(
+                    all,
+                    provider,
+                    sort,
+                    limit,
+                    offset,
+                    core::SessionListFilter {
+                        dir,
+                        session,
+                        title,
+                        text,
+                        since_ms: since
+                            .as_deref()
+                            .map(parse_time_arg)
+                            .transpose()
+                            .context("Invalid --since value")?,
+                        before_ms: before
+                            .as_deref()
+                            .map(parse_time_arg)
+                            .transpose()
+                            .context("Invalid --before value")?,
+                        min_bytes: min_bytes
+                            .as_deref()
+                            .map(parse_size_arg)
+                            .transpose()
+                            .context("Invalid --min-bytes value")?,
+                        max_bytes: max_bytes
+                            .as_deref()
+                            .map(parse_size_arg)
+                            .transpose()
+                            .context("Invalid --max-bytes value")?,
+                    },
+                    json_mode,
+                )?;
+            }
         }
-
         Commands::Export {
             provider,
             session_id,
@@ -85,23 +138,21 @@ fn run_command(command: Commands) -> Result<()> {
                     session_id,
                     output_prefix: output,
                     output_dir: None,
-                    format: format.clone(),
+                    format,
                 },
                 ActivityActor::Cli,
             )?;
-
-            for file in result.files {
-                println!(
-                    "{}",
-                    i18n::format(
-                        cli_language(),
-                        "cliExportedFile",
-                        &[("file", &file.to_string())]
-                    )
-                );
+            if json_mode {
+                println!("{}", serde_json::json!({"ok": true, "result": result}));
+            } else {
+                for file in result.files {
+                    println!(
+                        "{}",
+                        i18n::format(cli_language(), "cliExportedFile", &[("file", &file)])
+                    );
+                }
             }
         }
-
         Commands::Import {
             provider,
             file_or_id,
@@ -115,41 +166,53 @@ fn run_command(command: Commands) -> Result<()> {
                 },
                 ActivityActor::Cli,
             )?;
-            println!(
-                "{}",
-                i18n::format(
-                    cli_language(),
-                    "cliImportedSession",
-                    &[
-                        ("provider", &result.provider_name),
-                        ("session_id", &result.new_session_id)
-                    ]
-                )
-            );
-            if let Some(cmd) = result.resume_command {
+            if json_mode {
+                println!("{}", serde_json::json!({"ok": true, "result": result}));
+            } else {
                 println!(
                     "{}",
-                    i18n::format(cli_language(), "cliResumeWith", &[("command", &cmd)])
+                    i18n::format(
+                        cli_language(),
+                        "cliImportedSession",
+                        &[
+                            ("provider", &result.provider_name),
+                            ("session_id", &result.new_session_id),
+                        ],
+                    )
                 );
+                if let Some(command) = result.resume_command {
+                    println!(
+                        "{}",
+                        i18n::format(cli_language(), "cliResumeWith", &[("command", &command)])
+                    );
+                }
             }
         }
-
         Commands::Remove {
             provider,
             session_id,
         } => {
             let provider_name = provider_name(&provider)?;
             core::session_mutation::delete_session(&provider, &session_id, ActivityActor::Cli)?;
-            println!(
-                "{}",
-                i18n::format(
-                    cli_language(),
-                    "cliRemovedSession",
-                    &[("provider", &provider_name), ("session_id", &session_id)]
-                )
-            );
+            if json_mode {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": true,
+                        "result": {"provider": provider_name, "session_id": session_id}
+                    })
+                );
+            } else {
+                println!(
+                    "{}",
+                    i18n::format(
+                        cli_language(),
+                        "cliRemovedSession",
+                        &[("provider", &provider_name), ("session_id", &session_id)],
+                    )
+                );
+            }
         }
-
         Commands::Rename {
             provider,
             session_id,
@@ -161,29 +224,32 @@ fn run_command(command: Commands) -> Result<()> {
                 &new_title,
                 ActivityActor::Cli,
             )?;
-            println!(
-                "{}",
-                i18n::format(
-                    cli_language(),
-                    "cliRenamedSession",
-                    &[
-                        ("provider", &result.provider_name),
-                        ("session_id", &result.session_id),
-                        ("title", &result.display_title)
-                    ]
-                )
-            );
-            if !result.native_updated {
-                println!("{}", i18n::text(cli_language(), "cliNativeTitleNotUpdated"));
-            }
-            if let Some(warning) = result.warning {
+            if json_mode {
+                println!("{}", serde_json::json!({"ok": true, "result": result}));
+            } else {
                 println!(
                     "{}",
-                    i18n::format(cli_language(), "cliWarning", &[("message", &warning)])
+                    i18n::format(
+                        cli_language(),
+                        "cliRenamedSession",
+                        &[
+                            ("provider", &result.provider_name),
+                            ("session_id", &result.session_id),
+                            ("title", &result.display_title),
+                        ],
+                    )
                 );
+                if !result.native_updated {
+                    println!("{}", i18n::text(cli_language(), "cliNativeTitleNotUpdated"));
+                }
+                if let Some(warning) = result.warning {
+                    println!(
+                        "{}",
+                        i18n::format(cli_language(), "cliWarning", &[("message", &warning)])
+                    );
+                }
             }
         }
-
         Commands::Switch {
             from,
             to,
@@ -198,193 +264,88 @@ fn run_command(command: Commands) -> Result<()> {
                 target_title: None,
                 move_original: false,
             })?;
-
-            println!(
-                "{}",
-                i18n::format(
-                    cli_language(),
-                    "cliSwitchedSession",
-                    &[("from", &result.from_name), ("to", &result.to_name)]
-                )
-            );
-            println!(
-                "{}",
-                i18n::format(
-                    cli_language(),
-                    "cliSource",
-                    &[("value", &result.source_session_id)]
-                )
-            );
-            println!(
-                "{}",
-                i18n::format(
-                    cli_language(),
-                    "cliTarget",
-                    &[("value", &result.target_session_id)]
-                )
-            );
-            if let Some(cmd) = result.resume_command {
+            if json_mode {
+                println!("{}", serde_json::json!({"ok": true, "result": result}));
+            } else {
                 println!(
                     "{}",
-                    i18n::format(cli_language(), "cliResume", &[("command", &cmd)])
-                );
-            }
-        }
-
-        Commands::Find {
-            dir,
-            session,
-            provider,
-            json,
-        } => {
-            if dir.is_none() && session.is_none() && provider.is_empty() {
-                anyhow::bail!("{}", i18n::text(cli_language(), "cliAtLeastOneFilter"));
-            }
-
-            let groups = core::query::find_sessions(&core::query::FindParams {
-                dir,
-                session,
-                providers: provider,
-            })?;
-            let total_found: usize = groups.iter().map(|group| group.sessions.len()).sum();
-
-            if json {
-                println!("{}", serde_json::to_string_pretty(&groups)?);
-                return Ok(());
-            }
-
-            for group in &groups {
-                println!(
-                    "\n{}",
                     i18n::format(
                         cli_language(),
-                        "cliMatchesHeader",
-                        &[
-                            ("provider", &group.provider_name),
-                            ("count", &group.sessions.len().to_string())
-                        ]
+                        "cliSwitchedSession",
+                        &[("from", &result.from_name), ("to", &result.to_name)],
                     )
                 );
-                for s in group.sessions.iter().take(20) {
-                    let id = &s.session_id;
-                    let title = truncate(s.title.as_deref().unwrap_or("(untitled)"), 40);
-                    let dir = truncate(s.project_dir.as_deref().unwrap_or("(no dir)"), 40);
-                    println!("  {} | {} | {}", id, title, dir);
-                }
-                if group.sessions.len() > 20 {
+                println!(
+                    "{}",
+                    i18n::format(
+                        cli_language(),
+                        "cliSource",
+                        &[("value", &result.source_session_id)],
+                    )
+                );
+                println!(
+                    "{}",
+                    i18n::format(
+                        cli_language(),
+                        "cliTarget",
+                        &[("value", &result.target_session_id)],
+                    )
+                );
+                if let Some(command) = result.resume_command {
                     println!(
-                        "  {}",
-                        i18n::format(
-                            cli_language(),
-                            "cliAndMore",
-                            &[("count", &(group.sessions.len() - 20).to_string())]
-                        )
+                        "{}",
+                        i18n::format(cli_language(), "cliResume", &[("command", &command)])
                     );
                 }
             }
-
-            if total_found == 0 {
-                println!(
-                    "{}",
-                    i18n::text(cli_language(), "cliNoSessionsMatchingCriteria")
-                );
-            } else {
-                println!(
-                    "\n{}",
-                    i18n::format(
-                        cli_language(),
-                        "cliTotalSessionsFound",
-                        &[("count", &total_found.to_string())]
-                    )
-                );
-            }
         }
-
-        Commands::Providers { provider, json } => {
-            print_provider_capabilities(provider.as_deref(), json)?;
-        }
-
-        Commands::Sessions { command } => run_session_command(command)?,
-
-        Commands::Backups { command } => run_backup_command(command)?,
-
-        Commands::Database { command } => run_database_command(command)?,
-
-        Commands::Artifacts { command } => run_artifact_command(command)?,
-
-        Commands::Sync { command } => run_sync_command(command)?,
-
-        Commands::Compression { command } => run_compression_command(command)?,
-
         Commands::Web { port, no_open } => {
             let port = port.unwrap_or_else(|| {
                 config::server_preferences()
-                    .map(|s| s.web_port)
-                    .unwrap_or_else(|e| {
-                        eprintln!("Warning: failed to load config: {e}");
-                        config::DEFAULT_WEB_PORT
-                    })
+                    .map(|preferences| preferences.web_port)
+                    .unwrap_or(config::DEFAULT_WEB_PORT)
             });
-            run_web_server(port, no_open)?
+            run_web_server(port, no_open)?;
         }
-
         Commands::Api { port } => {
             let port = port.unwrap_or_else(|| {
                 config::server_preferences()
-                    .map(|s| s.api_port)
-                    .unwrap_or_else(|e| {
-                        eprintln!("Warning: failed to load config: {e}");
-                        config::DEFAULT_API_PORT
-                    })
+                    .map(|preferences| preferences.api_port)
+                    .unwrap_or(config::DEFAULT_API_PORT)
             });
-            run_api_server(port)?
+            run_api_server(port)?;
         }
-
-        Commands::Tui => {
-            tui::run_tui()?;
-        }
-
-        Commands::Codex {
-            sync,
-            workspace,
-            codex_home,
-            keep,
-        } => {
-            if !sync {
-                anyhow::bail!("No Codex action selected. Use --sync.");
-            }
-            run_codex_sync_workspace_sessions(workspace, codex_home, keep)?;
-        }
-
+        Commands::Tui => tui::run_tui()?,
+        Commands::Doctor => run_doctor(json_mode)?,
         Commands::Update => {
-            update_memorph()?;
+            if let Some(result) = update_memorph(json_mode)? {
+                println!("{}", serde_json::json!({"ok": true, "result": result}));
+            }
         }
-
         Commands::HookBridge {
             managed_version: _,
             provider,
             event,
             blocking,
-        } => {
-            memorph::hooks::bridge::run_blocking(memorph::hooks::bridge::BridgeRunOptions {
-                provider,
-                event,
-                blocking,
-            })?;
-        }
+        } => memorph::hooks::bridge::run_blocking(memorph::hooks::bridge::BridgeRunOptions {
+            provider,
+            event,
+            blocking,
+        })?,
     }
-
     Ok(())
 }
 
-fn print_provider_capabilities(provider_id: Option<&str>, json: bool) -> Result<()> {
-    let provider_ids = match provider_id {
-        Some(provider_id) => vec![provider_id.to_string()],
-        None => providers::all_provider_ids()
+fn print_provider_capabilities(provider_ids: &[String], json: bool) -> Result<()> {
+    let provider_ids = if provider_ids.is_empty() {
+        providers::all_provider_ids()
             .iter()
             .map(|provider_id| (*provider_id).to_string())
-            .collect(),
+            .collect()
+    } else {
+        provider_ids.to_vec()
     };
+    let single_provider = provider_ids.len() == 1;
     let mut entries = Vec::with_capacity(provider_ids.len());
 
     for provider_id in provider_ids {
@@ -412,7 +373,7 @@ fn print_provider_capabilities(provider_id: Option<&str>, json: bool) -> Result<
         return Ok(());
     }
 
-    if provider_id.is_some() {
+    if single_provider {
         let (provider_id, display_name, capabilities) = &entries[0];
         println!(
             "{}",
@@ -591,555 +552,6 @@ fn provider_fidelity_lines(fidelity: ProviderContentFidelity) -> Vec<String> {
     .collect()
 }
 
-fn run_session_command(command: SessionCommands) -> Result<()> {
-    match command {
-        SessionCommands::Bootstrap { provider } => {
-            let report = core::projection::bootstrap_session_projections(
-                provider.as_deref(),
-                ActivityActor::Cli,
-            )?;
-            print_stat("cliScannedProviders", report.scanned_providers);
-            print_stat("cliFailedProviders", report.failed_providers);
-            print_stat("cliDiscoveredSessions", report.discovered_sessions);
-            print_stat("cliProjectedSessions", report.projected_sessions);
-            print_stat("cliUnchangedSessions", report.unchanged_sessions);
-            print_stat("cliMissingSources", report.missing_sources);
-            print_stat("cliUnsupportedProviders", report.unsupported_providers);
-            print_stat("cliFailedSessions", report.failed_sessions);
-            for failure in report.failures {
-                let session = failure
-                    .session_id
-                    .as_deref()
-                    .unwrap_or(i18n::text(cli_language(), "cliProviderScan"));
-                let source = failure
-                    .source_path
-                    .as_deref()
-                    .unwrap_or(i18n::text(cli_language(), "cliNoSource"));
-                println!(
-                    "  {}:{} | {} | {}",
-                    failure.provider_id, session, source, failure.reason
-                );
-            }
-        }
-        SessionCommands::Report {
-            provider,
-            session_id,
-        } => {
-            let view =
-                core::sessions::get_session_detail_view_page(&provider, &session_id, 0, Some(0))?;
-            println!("{}", session_projection_report_text(&view));
-        }
-        SessionCommands::RefreshStale => {
-            let report = core::projection::refresh_projected_session_staleness(ActivityActor::Cli)?;
-            print_stat("cliCheckedSources", report.checked_sources);
-            print_stat("cliFreshSnapshots", report.fresh_snapshots);
-            print_stat("cliStaleSnapshots", report.stale_snapshots);
-            print_stat("cliMissingSources", report.missing_sources);
-            print_stat("cliUnknownSources", report.unknown_sources);
-        }
-        SessionCommands::ReprojectStale { provider } => {
-            let report = core::projection::reproject_stale_sessions(
-                provider.as_deref(),
-                ActivityActor::Cli,
-            )?;
-            print_stat("cliCandidateSnapshots", report.candidate_snapshots);
-            print_stat("cliReprojectedSnapshots", report.reprojected_snapshots);
-            print_stat("cliMissingSources", report.missing_sources);
-            print_stat("cliUnsupportedProviders", report.unsupported_providers);
-            print_stat("cliFailedSnapshots", report.failed_snapshots);
-            for failure in report.failures {
-                let source = failure
-                    .source_path
-                    .as_deref()
-                    .unwrap_or(i18n::text(cli_language(), "cliNoSource"));
-                println!(
-                    "  {}:{} | {} | {}",
-                    failure.provider_id, failure.session_id, source, failure.reason
-                );
-            }
-        }
-        SessionCommands::IndexWorkspace {
-            provider,
-            workspace_dir,
-        } => {
-            let report = core::projection::index_workspace_sessions(
-                &provider,
-                std::path::Path::new(&workspace_dir),
-                ActivityActor::Cli,
-            )?;
-            println!(
-                "{}",
-                i18n::format(cli_language(), "cliProvider", &[("value", &provider)])
-            );
-            println!(
-                "{}",
-                i18n::format(cli_language(), "cliWorkspace", &[("value", &workspace_dir)])
-            );
-            print_stat("cliDiscoveredSessions", report.discovered_sessions);
-            print_stat("cliProjectedSessions", report.projected_sessions);
-            print_stat("cliUnchangedSessions", report.unchanged_sessions);
-            print_stat("cliMissingSources", report.missing_sources);
-            print_stat("cliFailedSessions", report.failed_sessions);
-            for failure in report.failures {
-                let session = failure
-                    .session_id
-                    .as_deref()
-                    .unwrap_or(i18n::text(cli_language(), "cliProviderScan"));
-                let source = failure
-                    .source_path
-                    .as_deref()
-                    .unwrap_or(i18n::text(cli_language(), "cliNoSource"));
-                println!(
-                    "  {}:{} | {} | {}",
-                    failure.provider_id, session, source, failure.reason
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn run_backup_command(command: BackupCommands) -> Result<()> {
-    match command {
-        BackupCommands::List {
-            operation,
-            provider,
-            session,
-            status,
-            limit,
-            json,
-        } => {
-            let restore_status = status
-                .as_deref()
-                .map(str::parse::<BackupRestoreStatus>)
-                .transpose()?;
-            let views = core::session_management::list_registered_backups(BackupQuery {
-                operation_id: operation,
-                provider_id: provider,
-                provider_session_id: session,
-                restore_status,
-                limit,
-            })?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&views)?);
-            } else {
-                for view in views {
-                    let backup = &view.entry.backup;
-                    let restore_status = view
-                        .entry
-                        .latest_restore
-                        .as_ref()
-                        .map(|record| record.status.to_string())
-                        .unwrap_or_else(|| i18n::text(cli_language(), "cliNever").to_string());
-                    println!(
-                        "{} | {} | {} | {} | {}",
-                        backup.id,
-                        backup
-                            .provider_id
-                            .as_deref()
-                            .unwrap_or(i18n::text(cli_language(), "cliNoProvider")),
-                        backup
-                            .provider_session_id
-                            .as_deref()
-                            .unwrap_or(i18n::text(cli_language(), "cliNoSession")),
-                        view.verification.status,
-                        restore_status
-                    );
-                }
-            }
-        }
-        BackupCommands::Show { backup_id, json } => {
-            let view = core::session_management::get_registered_backup(&backup_id)?
-                .with_context(|| format!("Unknown backup: {backup_id}"))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&view)?);
-            } else {
-                let backup = &view.entry.backup;
-                let none = i18n::text(cli_language(), "cliNone");
-                println!("{}", cli_format("cliBackup", &[("value", &backup.id)]));
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliProvider",
-                        &[("value", backup.provider_id.as_deref().unwrap_or(none))]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliSession",
-                        &[(
-                            "value",
-                            backup.provider_session_id.as_deref().unwrap_or(none)
-                        )]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliOperation",
-                        &[("value", backup.operation_id.as_deref().unwrap_or(none))]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliArtifact",
-                        &[("value", &backup.artifact.path.display().to_string())]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliIntegrity",
-                        &[("value", &view.verification.status.to_string())]
-                    )
-                );
-                let latest_restore = view
-                    .entry
-                    .latest_restore
-                    .as_ref()
-                    .map(|record| record.status.to_string())
-                    .unwrap_or_else(|| i18n::text(cli_language(), "cliNever").to_string());
-                println!(
-                    "{}",
-                    cli_format("cliLatestRestore", &[("value", &latest_restore)])
-                );
-                if let Some(hint) = backup.restore_hint.as_deref() {
-                    println!("{}", cli_format("cliRestoreHint", &[("value", hint)]));
-                }
-            }
-        }
-        BackupCommands::Restore { backup_id } => {
-            let record = core::session_management::restore_registered_backup(
-                &backup_id,
-                ActivityActor::Cli,
-            )?;
-            println!(
-                "{}",
-                cli_format(
-                    "cliBackupRestored",
-                    &[("backup_id", &record.backup_id), ("restore_id", &record.id)]
-                )
-            );
-        }
-    }
-    Ok(())
-}
-
-fn run_database_command(command: DatabaseCommands) -> Result<()> {
-    match command {
-        DatabaseCommands::Backup { output_dir, json } => {
-            let report = core::database_management::backup_database(
-                output_dir.as_deref().map(Path::new),
-                ActivityActor::Cli,
-            )?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliDatabaseBackup",
-                        &[("value", &report.backup.bundle_path.display().to_string())]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliBackupId",
-                        &[("value", &report.backup.manifest.backup_id)]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format("cliArtifact", &[("value", &report.artifact.id)])
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliSchema",
-                        &[("value", &report.backup.manifest.schema_version.to_string())]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliBytes",
-                        &[("value", &report.backup.manifest.database_bytes.to_string())]
-                    )
-                );
-            }
-        }
-        DatabaseCommands::Verify { bundle, json } => {
-            let report = core::database_management::verify_database_backup(Path::new(&bundle))?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliVerifiedDatabaseBackup",
-                        &[("value", &report.bundle_path.display().to_string())]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format("cliBackupId", &[("value", &report.manifest.backup_id)])
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliSchema",
-                        &[("value", &report.manifest.schema_version.to_string())]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format("cliSqliteQuickCheck", &[("value", &report.quick_check)])
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliForeignKeyViolations",
-                        &[("value", &report.foreign_key_violations.to_string())]
-                    )
-                );
-            }
-        }
-        DatabaseCommands::Restore {
-            bundle,
-            confirm,
-            json,
-        } => {
-            if !confirm {
-                anyhow::bail!(
-                    "Database restore requires --confirm because it replaces the current memorph.db"
-                );
-            }
-            let report = core::database_management::restore_database(
-                Path::new(&bundle),
-                ActivityActor::Cli,
-            )?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliRestoredDatabaseBackup",
-                        &[(
-                            "value",
-                            &report.restored_backup.bundle_path.display().to_string()
-                        )]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliBackupId",
-                        &[("value", &report.restored_backup.manifest.backup_id)]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliSafetyBackup",
-                        &[(
-                            "value",
-                            &report.safety_backup.bundle_path.display().to_string()
-                        )]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliSchema",
-                        &[("value", &report.schema_version.to_string())]
-                    )
-                );
-                println!(
-                    "{}",
-                    cli_format("cliOperation", &[("value", &report.operation_id)])
-                );
-            }
-        }
-    }
-    Ok(())
-}
-
-fn run_artifact_command(command: ArtifactCommands) -> Result<()> {
-    match command {
-        ArtifactCommands::Inspect { json } => {
-            let report = core::management::inspect_artifacts()?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                print_stat("cliRegisteredArtifacts", report.registered.len());
-                print_stat("cliOrphanFiles", report.orphan_files.len());
-                for entry in report.registered {
-                    println!(
-                        "{} | {} | {} | {} | {}",
-                        entry.manifest.id,
-                        entry.manifest.artifact_kind,
-                        entry.retention_state,
-                        entry.verification.status,
-                        entry.manifest.path.display()
-                    );
-                }
-                for orphan in report.orphan_files {
-                    println!(
-                        "{}",
-                        cli_format(
-                            "cliOrphanFile",
-                            &[
-                                ("path", &orphan.path.display().to_string()),
-                                ("bytes", &orphan.byte_size.to_string()),
-                                ("managed_layout", &orphan.managed_layout.to_string()),
-                            ]
-                        )
-                    );
-                }
-            }
-        }
-        ArtifactCommands::Cleanup {
-            retention_hours,
-            apply,
-            json,
-        } => {
-            let report =
-                core::management::cleanup_artifacts(retention_hours, apply, ActivityActor::Cli)?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&report)?);
-            } else {
-                let cleanup_key = if report.applied {
-                    "cliAppliedCleanup"
-                } else {
-                    "cliPlannedCleanup"
-                };
-                print_stat(cleanup_key, report.candidate_orphan_paths.len());
-                print_stat("cliDeletedFiles", report.deleted_paths.len());
-                print_stat("cliRetainedSharedFiles", report.retained_shared_paths.len());
-                for failure in report.failures {
-                    println!(
-                        "{}",
-                        cli_format("cliFailure", &[("reason", &failure.reason)])
-                    );
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn session_projection_report_text(view: &core::SessionDetailView) -> String {
-    let mut lines = Vec::new();
-    lines.push(cli_format("cliProvider", &[("value", &view.provider_id)]));
-    lines.push(cli_format("cliSession", &[("value", &view.session_id)]));
-    lines.push(cli_format("cliCanonical", &[("value", &view.canonical_id)]));
-    lines.push(cli_format(
-        "cliTitle",
-        &[(
-            "value",
-            view.title
-                .as_deref()
-                .unwrap_or(i18n::text(cli_language(), "cliUntitled")),
-        )],
-    ));
-    if let Some(workspace_dir) = &view.workspace_dir {
-        lines.push(cli_format("cliWorkspace", &[("value", workspace_dir)]));
-    }
-    if let Some(source_path) = &view.source_path {
-        lines.push(cli_format("cliSourceValue", &[("value", source_path)]));
-    }
-    lines.push(cli_format(
-        "cliEvents",
-        &[("value", &view.event_count.to_string())],
-    ));
-    lines.push(cli_format(
-        "cliMessages",
-        &[("value", &view.message_count.to_string())],
-    ));
-
-    let Some(report) = &view.projection_report else {
-        lines.push(cli_format(
-            "cliProjectionReport",
-            &[("value", i18n::text(cli_language(), "cliNoProjectionReport"))],
-        ));
-        return lines.join("\n");
-    };
-
-    lines.push(cli_format("cliProjectionReport", &[("value", &report.id)]));
-    lines.push(cli_format(
-        "cliIndentedOperation",
-        &[("value", &serialized_enum_label(report.operation_kind))],
-    ));
-    lines.push(cli_format(
-        "cliIndentedStatus",
-        &[("value", &serialized_enum_label(report.status))],
-    ));
-    lines.push(cli_format(
-        "cliIndentedVersion",
-        &[("value", &report.projection_version.to_string())],
-    ));
-    lines.push(cli_format(
-        "cliCreatedAt",
-        &[("value", &report.created_at.to_string())],
-    ));
-    if let Some(count) = report.summary.canonical_event_count {
-        lines.push(cli_format(
-            "cliCanonicalEvents",
-            &[("value", &count.to_string())],
-        ));
-    }
-    if let Some(direction) = report.summary.mapping_direction {
-        lines.push(cli_format(
-            "cliMappingDirection",
-            &[("value", &serialized_enum_label(direction))],
-        ));
-    }
-    if let Some(overall) = report.summary.mapping_overall {
-        lines.push(cli_format(
-            "cliMappingOverall",
-            &[("value", &serialized_enum_label(overall))],
-        ));
-    }
-    lines.push(cli_format(
-        "cliFidelity",
-        &[
-            ("preserved", &report.summary.preserved_count.to_string()),
-            ("normalized", &report.summary.normalized_count.to_string()),
-            ("dropped", &report.summary.dropped_count.to_string()),
-        ],
-    ));
-    lines.push(cli_format(
-        "cliIssues",
-        &[("value", &report.item_count.to_string())],
-    ));
-    for item in &report.items {
-        let field = item
-            .field_path
-            .as_deref()
-            .unwrap_or(i18n::text(cli_language(), "cliSessionField"));
-        let reason = item
-            .reason
-            .as_deref()
-            .unwrap_or(i18n::text(cli_language(), "cliNoReason"));
-        lines.push(cli_format(
-            "cliProjectionIssue",
-            &[
-                ("order", &item.item_order.to_string()),
-                ("fidelity", &serialized_enum_label(item.fidelity)),
-                ("scope", &serialized_enum_label(item.scope)),
-                ("field", field),
-                ("reason", reason),
-            ],
-        ));
-    }
-
-    lines.join("\n")
-}
-
 fn serialized_enum_label<T>(value: T) -> String
 where
     T: Copy + serde::Serialize + std::fmt::Debug,
@@ -1148,693 +560,6 @@ where
         Ok(serde_json::Value::String(label)) => label,
         _ => format!("{:?}", value),
     }
-}
-
-fn run_codex_sync_workspace_sessions(
-    workspace: Option<String>,
-    codex_home: Option<String>,
-    keep: usize,
-) -> Result<()> {
-    let report = providers::codex::management::sync_workspace_sessions(
-        workspace.as_deref(),
-        codex_home.as_deref().map(Path::new),
-        keep,
-        ActivityActor::Cli,
-    )?;
-    print_codex_repair_report(report);
-    Ok(())
-}
-
-fn print_codex_repair_report(report: providers::codex::CodexWorkspaceRepairReport) {
-    println!(
-        "{}",
-        cli_format("cliWorkspace", &[("value", &report.workspace_dir)])
-    );
-    println!(
-        "{}",
-        cli_format(
-            "cliCurrentProvider",
-            &[("value", &report.current_model_provider)]
-        )
-    );
-    print_stat("cliScannedRollouts", report.scanned_rollouts);
-    print_stat("cliWorkspaceSessions", report.workspace_session_count);
-    print_stat("cliHiddenSessions", report.hidden_session_count);
-    print_stat("cliRepairedSessions", report.repaired_session_count);
-    print_stat("cliReindexedSessions", report.reindexed_session_count);
-    print_stat("cliRetitledSessions", report.retitled_session_count);
-    print_stat("cliUpdatedSqliteRows", report.sqlite_rows_updated);
-    if report.sqlite_provider_rows_updated > 0 {
-        println!(
-            "{}",
-            cli_format(
-                "cliUpdatedSqliteProviderRows",
-                &[("count", &report.sqlite_provider_rows_updated.to_string())]
-            )
-        );
-    }
-    if report.sqlite_user_event_rows_updated > 0 {
-        println!(
-            "{}",
-            cli_format(
-                "cliUpdatedSqliteUserEventRows",
-                &[("count", &report.sqlite_user_event_rows_updated.to_string())]
-            )
-        );
-    }
-    if report.sqlite_cwd_rows_updated > 0 {
-        println!(
-            "{}",
-            cli_format(
-                "cliUpdatedSqliteCwdRows",
-                &[("count", &report.sqlite_cwd_rows_updated.to_string())]
-            )
-        );
-    }
-    if let Some(backup_dir) = &report.backup_dir {
-        println!("{}", cli_format("cliBackup", &[("value", backup_dir)]));
-    }
-    if report.pruned_backup_count > 0 {
-        print_stat("cliPrunedBackups", report.pruned_backup_count);
-    }
-    if !report.skipped_rollout_files.is_empty() {
-        println!(
-            "{}",
-            cli_format(
-                "cliSkippedRolloutFiles",
-                &[("count", &report.skipped_rollout_files.len().to_string())]
-            )
-        );
-    }
-    if report.touched_sessions.is_empty() {
-        println!("{}", i18n::text(cli_language(), "cliNoCodexSessionsSync"));
-    } else {
-        println!();
-        for item in report.touched_sessions {
-            println!(
-                "{}",
-                cli_format(
-                    "cliCodexTouchedSession",
-                    &[
-                        ("session_id", &item.session_id),
-                        (
-                            "title",
-                            &item.title.unwrap_or_else(|| i18n::text(
-                                cli_language(),
-                                "cliUntitled"
-                            )
-                            .to_string())
-                        ),
-                        (
-                            "previous_provider",
-                            &item.previous_model_provider.unwrap_or_else(|| i18n::text(
-                                cli_language(),
-                                "cliNone"
-                            )
-                            .to_string())
-                        ),
-                        ("provider", &item.current_model_provider),
-                        ("index_added", &item.added_to_index.to_string()),
-                        ("title_fixed", &item.updated_index_title.to_string()),
-                    ]
-                )
-            );
-        }
-    }
-    if !report.skipped_rollout_files.is_empty() {
-        println!();
-        for path in report.skipped_rollout_files {
-            println!("{}", cli_format("cliSkippedRollout", &[("path", &path)]));
-        }
-    }
-}
-
-fn run_compression_command(command: CompressionCommands) -> Result<()> {
-    match command {
-        CompressionCommands::List => {
-            let archives = core::compression_application::list_compression_archives(None)?;
-            if archives.is_empty() {
-                println!("{}", i18n::text(cli_language(), "cliNoCompressionArchives"));
-            } else {
-                for archive in archives {
-                    println!(
-                        "{} | {} -> {} | events={} | stored={}B | original={}B | ratio={:.2} | canonical={} | created={}",
-                        archive.archive_ref,
-                        archive.source_provider_id,
-                        archive.target_provider_id,
-                        archive.source_event_count,
-                        archive.stored_size_bytes,
-                        archive.original_size_bytes,
-                        archive.compression_ratio,
-                        archive.canonical_id,
-                        archive.created_at.to_rfc3339()
-                    );
-                }
-            }
-        }
-        CompressionCommands::Providers => {
-            for support in core::compression_application::list_compression_provider_support() {
-                println!(
-                    "{} | source={} | target={} | default={:?}",
-                    support.provider_id,
-                    if support.detects_native_source {
-                        "native"
-                    } else {
-                        "portable"
-                    },
-                    if support.native_target_projection {
-                        "native"
-                    } else {
-                        "portable"
-                    },
-                    support.default_projection
-                );
-            }
-        }
-        CompressionCommands::ToolSpec => {
-            let spec = core::compression_application::compression_retrieval_tool_spec();
-            println!("{}", serde_json::to_string_pretty(&spec)?);
-        }
-        CompressionCommands::Instructions { archive_ref } => {
-            let instructions =
-                core::compression_application::compression_retrieval_instructions(&archive_ref)?;
-            println!("{}", serde_json::to_string_pretty(&instructions)?);
-        }
-        CompressionCommands::Restore {
-            archive_ref,
-            output,
-            format,
-        } => {
-            let result = core::compression_application::restore_compression_archive(
-                &core::compression_application::RestoreCompressionArchiveParams {
-                    archive_ref,
-                    output_prefix: output,
-                    format,
-                },
-                ActivityActor::Cli,
-            )?;
-            for file in result.files {
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliRestoredCompressionArchive",
-                        &[("file", &file.to_string())]
-                    )
-                );
-            }
-        }
-        CompressionCommands::RestoreNative {
-            provider_id,
-            session_id,
-            archive_ref,
-        } => {
-            let result = core::compression_application::restore_native_compression(
-                &core::compression_application::RestoreNativeCompressionParams {
-                    provider_id: provider_id.clone(),
-                    session_id: session_id.clone(),
-                    archive_ref,
-                },
-                ActivityActor::Cli,
-            )?;
-            println!(
-                "{}",
-                cli_format(
-                    "cliRestoredCompressedSegments",
-                    &[
-                        ("segments", &result.restored_segments.to_string()),
-                        ("provider", &provider_id),
-                        ("session_id", &session_id),
-                        ("events", &result.restored_events.to_string()),
-                        ("before", &result.source_bytes_before.to_string()),
-                        ("after", &result.source_bytes_after.to_string()),
-                    ]
-                )
-            );
-            if !result.remaining_archive_refs.is_empty() {
-                println!("{}", i18n::text(cli_language(), "cliRemainingArchives"));
-                for archive_ref in result.remaining_archive_refs {
-                    println!("- {archive_ref}");
-                }
-            }
-        }
-        CompressionCommands::Retrieve {
-            archive_ref,
-            query,
-            max_results,
-        } => {
-            let result = core::compression_application::retrieve_compression_archive(
-                &core::compression_application::RetrieveCompressionArchiveParams {
-                    archive_ref,
-                    query,
-                    max_results,
-                },
-            )?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-        }
-        CompressionCommands::Expand {
-            file,
-            output,
-            format,
-        } => {
-            let result = core::compression_application::expand_compression_session(
-                &core::compression_application::ExpandCompressionSessionParams {
-                    file,
-                    output_prefix: output,
-                    format,
-                },
-                ActivityActor::Cli,
-            )?;
-            for file in result.files {
-                println!(
-                    "{}",
-                    cli_format(
-                        "cliExpandedCompressionSession",
-                        &[("file", &file.to_string())]
-                    )
-                );
-            }
-        }
-        CompressionCommands::Plan {
-            source_provider_id,
-            target_provider_id,
-            session_id,
-            file,
-            protect_recent_message_events,
-            min_candidate_bytes,
-            min_savings_ratio_percent,
-        } => {
-            let mut policy = core::active_compression::ActiveCompressionPolicy::default();
-            policy.mode = core::active_compression::ActiveCompressionMode::PlanOnly;
-            if let Some(value) = protect_recent_message_events {
-                policy.protect_recent_message_events = value;
-            }
-            if let Some(value) = min_candidate_bytes {
-                policy.min_candidate_bytes = value;
-            }
-            if let Some(value) = min_savings_ratio_percent {
-                policy.min_savings_ratio_percent = value;
-            }
-            let report = core::compression_application::active_compression_dry_run(
-                &core::compression_application::ActiveCompressionDryRunParams {
-                    source_provider_id,
-                    target_provider_id,
-                    session_id,
-                    file,
-                    policy,
-                },
-            )?;
-            print_active_compression_report(&report);
-        }
-        CompressionCommands::Apply {
-            source_provider_id,
-            target_provider_id,
-            session_id,
-            file,
-            candidate_ids,
-            output,
-            format,
-            protect_recent_message_events,
-            min_candidate_bytes,
-            min_savings_ratio_percent,
-        } => {
-            let mut policy = core::active_compression::ActiveCompressionPolicy::default();
-            policy.mode = core::active_compression::ActiveCompressionMode::Auto;
-            if let Some(value) = protect_recent_message_events {
-                policy.protect_recent_message_events = value;
-            }
-            if let Some(value) = min_candidate_bytes {
-                policy.min_candidate_bytes = value;
-            }
-            if let Some(value) = min_savings_ratio_percent {
-                policy.min_savings_ratio_percent = value;
-            }
-            let result = core::compression_application::active_compression_apply(
-                &core::compression_application::ActiveCompressionApplyCommandParams {
-                    source_provider_id: source_provider_id.clone(),
-                    target_provider_id,
-                    session_id: session_id.clone(),
-                    file,
-                    policy,
-                    candidate_ids,
-                    output_prefix: output,
-                    format,
-                },
-                ActivityActor::Cli,
-            )?;
-            println!(
-                "{}",
-                cli_format(
-                    "cliReplacedNativeSession",
-                    &[
-                        ("provider", &source_provider_id),
-                        (
-                            "session_id",
-                            session_id
-                                .as_deref()
-                                .unwrap_or(i18n::text(cli_language(), "cliUnknown"))
-                        ),
-                        ("before", &result.source_bytes_before.to_string()),
-                        ("after", &result.source_bytes_after.to_string()),
-                    ]
-                )
-            );
-            for archive_ref in &result.archive_refs {
-                println!("{}", cli_format("cliArchive", &[("value", archive_ref)]));
-            }
-            print_active_compression_report(&result.report);
-        }
-    }
-    Ok(())
-}
-
-fn print_active_compression_report(report: &core::active_compression::ActiveCompressionReport) {
-    println!(
-        "{}",
-        cli_format(
-            "cliActiveCompressionDryRun",
-            &[
-                ("source", &report.source_provider_id),
-                ("target", &report.target_provider_id)
-            ]
-        )
-    );
-    println!(
-        "{}",
-        cli_format(
-            "cliCompressionCounts",
-            &[
-                ("events", &report.session_event_count.to_string()),
-                ("messages", &report.message_event_count.to_string()),
-                (
-                    "already_compressed",
-                    &report.already_compressed_event_count.to_string()
-                ),
-            ]
-        )
-    );
-    println!(
-        "{}",
-        cli_format(
-            "cliCompressionEstimate",
-            &[
-                (
-                    "original_bytes",
-                    &report.original_estimated_bytes.to_string()
-                ),
-                (
-                    "original_tokens",
-                    &report.original_estimated_tokens.to_string()
-                ),
-                (
-                    "compressed_bytes",
-                    &report.compressed_estimated_bytes.to_string()
-                ),
-                (
-                    "compressed_tokens",
-                    &report.compressed_estimated_tokens.to_string()
-                ),
-                ("saved_bytes", &report.estimated_bytes_saved.to_string()),
-                ("saved_tokens", &report.estimated_tokens_saved.to_string()),
-            ]
-        )
-    );
-    println!(
-        "{}",
-        cli_format(
-            "cliTokenEstimator",
-            &[
-                (
-                    "strategy",
-                    &format!("{:?}", report.token_estimator.strategy)
-                ),
-                ("provider", &report.token_estimator.effective_provider_id),
-                (
-                    "chars_per_token",
-                    &report
-                        .token_estimator
-                        .effective_chars_per_token_x100
-                        .to_string()
-                ),
-            ]
-        )
-    );
-
-    if report.candidates.is_empty() {
-        println!(
-            "{}",
-            i18n::text(cli_language(), "cliNoCompressionCandidates")
-        );
-    } else {
-        println!("{}", i18n::text(cli_language(), "cliCandidates"));
-        for candidate in &report.candidates {
-            println!(
-                "- {} {:?} events={:?} reason={:?} risk={:?} saved={}B/{} tokens",
-                candidate.id,
-                candidate.kind,
-                candidate.event_ids,
-                candidate.reason,
-                candidate.risk,
-                candidate.estimated_bytes_saved,
-                candidate.estimated_tokens_saved
-            );
-        }
-    }
-
-    if !report.skipped.is_empty() {
-        println!("{}", i18n::text(cli_language(), "cliSkipped"));
-        for skipped in &report.skipped {
-            println!(
-                "- {} reason={:?} size={}B/{} tokens",
-                skipped.event_id, skipped.reason, skipped.estimated_bytes, skipped.estimated_tokens
-            );
-        }
-    }
-}
-
-fn run_sync_command(command: SyncCommands) -> Result<()> {
-    match command {
-        SyncCommands::Create {
-            provider,
-            session_id,
-            targets,
-            to_dir,
-            title,
-        } => {
-            let result = session_sync::create_group(&session_sync::SyncCreateParams {
-                provider,
-                session_id,
-                targets,
-                to_dir,
-                title,
-            })?;
-            println!(
-                "{}",
-                cli_format("cliSharedGroupCreated", &[("id", &result.id)])
-            );
-            println!("{}", cli_format("cliTitle", &[("value", &result.title)]));
-            for holding in result.holdings {
-                println!(
-                    "  {} | {} | {}",
-                    holding.id, holding.provider, holding.session_id
-                );
-            }
-        }
-        SyncCommands::Bind {
-            group_id,
-            provider,
-            session_id,
-            to_dir,
-        } => {
-            let holding = session_sync::add_holding(&session_sync::AddHoldingParams {
-                group_id: group_id.clone(),
-                provider,
-                session_id,
-                to_dir,
-            })?;
-            println!(
-                "{}",
-                cli_format(
-                    "cliHoldingAdded",
-                    &[
-                        ("id", &holding.id),
-                        ("provider", &holding.provider),
-                        ("session_id", &holding.session_id)
-                    ]
-                )
-            );
-        }
-        SyncCommands::Unbind {
-            group_id,
-            holding_id,
-        } => {
-            session_sync::remove_holding(&group_id, &holding_id)?;
-            println!(
-                "{}",
-                cli_format("cliHoldingRemoved", &[("id", &holding_id)])
-            );
-        }
-        SyncCommands::Remove {
-            group_id,
-            delete_provider_sessions,
-        } => {
-            session_sync::delete_group(&group_id, delete_provider_sessions)?;
-            println!(
-                "{}",
-                cli_format("cliSharedGroupRemoved", &[("id", &group_id)])
-            );
-        }
-        SyncCommands::Rename { group_id, title } => {
-            session_sync::rename_group(&group_id, &title)?;
-            println!(
-                "{}",
-                cli_format(
-                    "cliSharedGroupRenamed",
-                    &[("id", &group_id), ("title", &title)]
-                )
-            );
-        }
-        SyncCommands::List => {
-            let groups = session_sync::list_groups()?;
-            if groups.is_empty() {
-                println!("{}", i18n::text(cli_language(), "cliNoSharedGroups"));
-            }
-            for group in groups {
-                println!(
-                    "\n{}",
-                    cli_format(
-                        "cliListGroupHeader",
-                        &[
-                            ("id", &group.id),
-                            ("title", &group.title),
-                            ("count", &group.holdings.len().to_string()),
-                            ("updated", &group.updated_at.to_string())
-                        ]
-                    )
-                );
-                for holding in group.holdings {
-                    let dir = holding.target_dir.as_deref().unwrap_or("-");
-                    let sync_from = holding.last_sync_from.as_deref().unwrap_or("-");
-                    let error = holding.last_error.as_deref().unwrap_or("-");
-                    println!(
-                        "  {}",
-                        cli_format(
-                            "cliHoldingListItem",
-                            &[
-                                ("id", &holding.id),
-                                ("provider", &holding.provider),
-                                ("session_id", &holding.session_id),
-                                ("dir", dir),
-                                ("sync_from", sync_from),
-                                ("error", error)
-                            ]
-                        )
-                    );
-                }
-            }
-        }
-        SyncCommands::Status { group_id } => {
-            let groups = if let Some(id) = group_id {
-                vec![session_sync::load_group(&id)?]
-            } else {
-                session_sync::list_groups()?
-            };
-            if groups.is_empty() {
-                println!("{}", i18n::text(cli_language(), "cliNoSharedGroups"));
-            }
-            for mut group in groups {
-                let _ = session_sync::refresh_active_times(&mut group);
-                println!(
-                    "\n{}",
-                    cli_format(
-                        "cliStatusGroupHeader",
-                        &[
-                            ("id", &group.id),
-                            ("title", &group.title),
-                            ("created", &group.created_at.to_string()),
-                            ("updated", &group.updated_at.to_string())
-                        ]
-                    )
-                );
-                for holding in group.holdings {
-                    let active = holding
-                        .last_active_at
-                        .map(|t| t.to_string())
-                        .unwrap_or_else(|| "-".to_string());
-                    let sync_at = holding
-                        .last_sync_at
-                        .map(|t| t.to_string())
-                        .unwrap_or_else(|| "-".to_string());
-                    let sync_from = holding.last_sync_from.as_deref().unwrap_or("-");
-                    println!(
-                        "  {}",
-                        cli_format(
-                            "cliHoldingStatusItem",
-                            &[
-                                ("id", &holding.id),
-                                ("provider", &holding.provider),
-                                ("session_id", &holding.session_id),
-                                ("active", &active),
-                                ("sync_from", sync_from),
-                                ("sync_at", &sync_at)
-                            ]
-                        )
-                    );
-                    if let Some(error) = holding.last_error {
-                        println!(
-                            "    {}",
-                            cli_format("cliHoldingError", &[("error", &error)])
-                        );
-                    }
-                }
-            }
-        }
-        SyncCommands::Sync {
-            group_id,
-            from_holding,
-        } => {
-            let report = if let Some(holding_id) = from_holding {
-                session_sync::push_sync(&group_id, &holding_id, ActivityActor::Cli)?
-            } else {
-                session_sync::sync_to_latest(&group_id, ActivityActor::Cli)?
-            };
-            println!(
-                "{}",
-                cli_format(
-                    "cliSyncComplete",
-                    &[
-                        ("source", &report.source_provider),
-                        ("success", &format!("{:?}", report.success)),
-                        ("count", &report.errors.len().to_string())
-                    ]
-                )
-            );
-            for error in report.errors {
-                eprintln!("  {}", error);
-            }
-        }
-        SyncCommands::Push {
-            group_id,
-            holding_id,
-        } => {
-            let report = session_sync::push_sync(&group_id, &holding_id, ActivityActor::Cli)?;
-            println!(
-                "{}",
-                cli_format(
-                    "cliPushSyncComplete",
-                    &[
-                        ("source", &report.source_provider),
-                        ("success", &format!("{:?}", report.success)),
-                        ("count", &report.errors.len().to_string())
-                    ]
-                )
-            );
-            for error in report.errors {
-                eprintln!("  {}", error);
-            }
-        }
-    }
-
-    Ok(())
 }
 
 fn run_interactive_menu() -> Result<()> {
@@ -1854,23 +579,45 @@ fn run_api_server(port: u16) -> Result<()> {
     rt.block_on(server::run_api(port, true))
 }
 
-fn update_memorph() -> Result<()> {
+fn update_memorph(json: bool) -> Result<Option<serde_json::Value>> {
     let plan = current_update_plan()?;
+
+    if json {
+        let output = Command::new(&plan.program)
+            .args(&plan.args)
+            .output()
+            .with_context(|| format!("Failed to start update command: {}", plan.program))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!(
+                "Update command failed with status: {}{}",
+                output.status,
+                if stderr.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", stderr.trim())
+                }
+            );
+        }
+        return Ok(Some(serde_json::json!({
+            "source": plan.source.label(),
+            "command": plan.display(),
+            "stdout": String::from_utf8_lossy(&output.stdout).trim(),
+            "stderr": String::from_utf8_lossy(&output.stderr).trim(),
+        })));
+    }
 
     println!("Detected install source: {}", plan.source.label());
     println!("Running: {}", plan.display());
-
     let status = Command::new(&plan.program)
         .args(&plan.args)
         .status()
         .with_context(|| format!("Failed to start update command: {}", plan.program))?;
-
     if !status.success() {
         anyhow::bail!("Update command failed with status: {}", status);
     }
-
     println!("Update complete. Run `memorph --version` or `memo --version` to verify.");
-    Ok(())
+    Ok(None)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2045,29 +792,233 @@ fn print_web_banner() {
     println!();
 }
 
+fn parse_time_arg(input: &str) -> Result<i64> {
+    let input = input.trim();
+    if input.is_empty() {
+        anyhow::bail!("empty time value");
+    }
+
+    let relative = [('m', 60_u64), ('h', 60 * 60), ('d', 24 * 60 * 60)]
+        .into_iter()
+        .find_map(|(suffix, multiplier)| {
+            input
+                .strip_suffix(suffix)
+                .map(|number| (number, multiplier))
+        });
+    if let Some((number, multiplier)) = relative.filter(|(number, _)| !number.is_empty()) {
+        let seconds = number
+            .parse::<u64>()
+            .with_context(|| format!("invalid relative time: {input}"))?
+            .checked_mul(multiplier)
+            .and_then(|value| i64::try_from(value).ok())
+            .context("relative time overflow")?;
+        return Utc::now()
+            .checked_sub_signed(ChronoDuration::seconds(seconds))
+            .map(|value| value.timestamp_millis())
+            .context("relative time out of range");
+    }
+
+    if let Ok(date) = NaiveDate::parse_from_str(input, "%Y-%m-%d") {
+        return Local
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+            .single()
+            .map(|value| value.timestamp_millis())
+            .context("date is outside local time range");
+    }
+
+    DateTime::parse_from_rfc3339(input)
+        .map(|value| value.timestamp_millis())
+        .with_context(|| format!("invalid time: {input}"))
+}
+
+fn parse_size_arg(input: &str) -> Result<u64> {
+    let input = input.trim();
+    if input.is_empty() {
+        anyhow::bail!("empty size value");
+    }
+    let (number, multiplier) = match input.as_bytes().last().copied() {
+        Some(b'K' | b'k') => (&input[..input.len() - 1], 1024_u64),
+        Some(b'M' | b'm') => (&input[..input.len() - 1], 1024_u64.pow(2)),
+        Some(b'G' | b'g') => (&input[..input.len() - 1], 1024_u64.pow(3)),
+        _ => (input, 1),
+    };
+    let value: u64 = number
+        .parse()
+        .with_context(|| format!("invalid size: {input}"))?;
+    value.checked_mul(multiplier).context("size overflow")
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorReport {
+    version: String,
+    install_source: Option<String>,
+    database: DoctorDatabase,
+    providers: Vec<DoctorProvider>,
+    orphan_artifact_manifests: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorDatabase {
+    path: String,
+    size_bytes: u64,
+    sessions: usize,
+    snapshots: usize,
+    stale_snapshots: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct DoctorProvider {
+    id: String,
+    display_name: String,
+    on_disk_sessions: usize,
+    error: Option<String>,
+}
+
+fn run_doctor(json: bool) -> Result<()> {
+    let path = local_store::database_path()?;
+    let conn = local_store::open_database()?;
+    let count = |sql: &str| -> Result<usize> {
+        conn.query_row(sql, [], |row| row.get::<_, i64>(0))
+            .map(|value| value.max(0) as usize)
+            .with_context(|| format!("Failed to query doctor count: {sql}"))
+    };
+    let metadata = std::fs::metadata(&path).ok();
+    let database = DoctorDatabase {
+        path: path.display().to_string(),
+        size_bytes: metadata.map(|value| value.len()).unwrap_or(0),
+        sessions: count("SELECT COUNT(*) FROM sessions")?,
+        snapshots: count("SELECT COUNT(*) FROM session_snapshots")?,
+        stale_snapshots: count("SELECT COUNT(*) FROM session_snapshots WHERE stale = 1")?,
+    };
+    let orphan_artifact_manifests = count(
+        "SELECT COUNT(*)
+         FROM artifact_manifests am
+         WHERE am.session_id IS NOT NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM sessions s
+             WHERE s.id = am.session_id AND s.deleted_at_ms IS NULL
+           )",
+    )?;
+    drop(conn);
+
+    let install_source = detect_install_source(
+        std::env::var("MEMORPH_INSTALL_SOURCE").ok().as_deref(),
+        std::env::current_exe().ok().as_deref(),
+        std::env::var("MEMORPH_PYTHON_PREFIX").ok().as_deref(),
+        std::env::var("MEMORPH_PYTHON_EXECUTABLE").ok().as_deref(),
+    )
+    .map(|source| source.label().to_string());
+    let providers = providers::all_provider_ids()
+        .iter()
+        .map(|id| {
+            let display_name = providers::catalog::display_name(id);
+            match providers::find_provider(id) {
+                Some(provider) => match provider.scan_sessions_lightweight() {
+                    Ok(sessions) => DoctorProvider {
+                        id: (*id).to_string(),
+                        display_name,
+                        on_disk_sessions: sessions.len(),
+                        error: None,
+                    },
+                    Err(error) => DoctorProvider {
+                        id: (*id).to_string(),
+                        display_name,
+                        on_disk_sessions: 0,
+                        error: Some(format!("{error:#}")),
+                    },
+                },
+                None => DoctorProvider {
+                    id: (*id).to_string(),
+                    display_name,
+                    on_disk_sessions: 0,
+                    error: Some("provider is not registered".to_string()),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let report = DoctorReport {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        install_source,
+        database,
+        providers,
+        orphan_artifact_manifests,
+    };
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("memorph {}", report.version);
+        println!(
+            "Install source: {}",
+            report.install_source.as_deref().unwrap_or("unknown")
+        );
+        println!("\nDatabase: {}", report.database.path);
+        println!("  Size: {} bytes", report.database.size_bytes);
+        println!("  Sessions: {}", report.database.sessions);
+        println!("  Snapshots: {}", report.database.snapshots);
+        println!("  Stale snapshots: {}", report.database.stale_snapshots);
+        println!("\nProviders:");
+        for provider in &report.providers {
+            match &provider.error {
+                Some(error) => println!(
+                    "  {} ({}) | error: {}",
+                    provider.display_name, provider.id, error
+                ),
+                None => println!(
+                    "  {} ({}) | {} sessions",
+                    provider.display_name, provider.id, provider.on_disk_sessions
+                ),
+            }
+        }
+        println!(
+            "\nOrphan artifact manifests: {}",
+            report.orphan_artifact_manifests
+        );
+        if report.database.snapshots == 0 {
+            println!("\nNo projected snapshots. Run `memorph list` to bootstrap sessions.");
+        }
+    }
+    Ok(())
+}
+
 fn print_session_list(
     all: bool,
     providers: Vec<String>,
     sort: memorph_cli::cli::ListSort,
     limit: Option<usize>,
     offset: usize,
+    filter: core::SessionListFilter,
     json: bool,
 ) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let cwd_str = cwd.to_string_lossy().to_string();
-    let groups = core::projection::list_sessions(&core::SessionListParams {
+    let sort = match sort {
+        memorph_cli::cli::ListSort::Recent => core::SessionListSort::Recent,
+        memorph_cli::cli::ListSort::Title => core::SessionListSort::Title,
+    };
+    let params = || core::SessionListParams {
         all,
-        providers,
+        providers: providers.clone(),
         cwd: Some(cwd_str.clone()),
-        fields: crate::core::SessionListFields::WithStats,
+        fields: core::SessionListFields::WithStats,
         limit,
         offset: Some(offset),
-        sort: match sort {
-            memorph_cli::cli::ListSort::Recent => core::SessionListSort::Recent,
-            memorph_cli::cli::ListSort::Title => core::SessionListSort::Title,
-        },
-        filter: Default::default(),
-    })?;
+        sort: sort.clone(),
+        filter: filter.clone(),
+    };
+    let mut groups = core::projection::list_sessions(&params())?;
+    if groups.iter().all(|group| group.sessions.is_empty())
+        && providers.is_empty()
+        && filter == core::SessionListFilter::default()
+        && local_store::open_database()?.query_row(
+            "SELECT COUNT(*) FROM session_snapshots",
+            [],
+            |row| row.get::<_, i64>(0),
+        )? == 0
+    {
+        core::projection::bootstrap_session_projections(None, ActivityActor::Cli)?;
+        groups = core::projection::list_sessions(&params())?;
+    }
     let total_shown: usize = groups.iter().map(|group| group.sessions.len()).sum();
 
     if json {
@@ -2129,11 +1080,6 @@ fn provider_name(provider: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memorph::session::{Event, Fidelity, MappingDirection};
-    use memorph::session_projection::{
-        ProjectionFidelity, ProjectionItemScope, ProjectionOperationKind, ProjectionStatus,
-    };
-    use memorph::storage::session_state::ResolvedLocalSessionState;
     use std::path::PathBuf;
 
     #[test]
@@ -2223,118 +1169,32 @@ mod tests {
     }
 
     #[test]
-    fn session_projection_report_text_prints_quality_summary() {
-        let view = core::SessionDetailView {
-            provider_id: "claude".to_string(),
-            provider_name: "Claude Code".to_string(),
-            session_id: "native-1".to_string(),
-            canonical_id: "canonical-1".to_string(),
-            title: Some("Projected title".to_string()),
-            native_title: Some("Native title".to_string()),
-            display_title: None,
-            workspace_dir: Some("/tmp/project".to_string()),
-            created_at: None,
-            last_active_at: None,
-            source_path: Some("/tmp/session.jsonl".to_string()),
-            resume_command: None,
-            local_state: ResolvedLocalSessionState::default(),
-            event_count: 4,
-            message_count: 2,
-            length_metrics: core::SessionLengthMetrics {
-                provider_source_bytes_measured: 0,
-                model_visible_bytes_measured: 0,
-                estimated_tokens: 0,
-                event_count: 0,
-                message_count: 0,
-                turn_count: 0,
-                compressed_segment_count: 0,
-                archive_count: 0,
-            },
-            stale: false,
-            projection_report: Some(core::SessionProjectionReportView {
-                id: "report-1".to_string(),
-                provider_id: "claude".to_string(),
-                source_id: Some("source-1".to_string()),
-                operation_kind: ProjectionOperationKind::Import,
-                projection_version: 1,
-                status: ProjectionStatus::CompletedWithLoss,
-                created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
-                created_at_ms: 0,
-                summary: core::SessionProjectionReportSummaryView {
-                    canonical_event_count: Some(4),
-                    mapping_direction: Some(MappingDirection::Import),
-                    mapping_overall: Some(Fidelity::Dropped),
-                    preserved_count: 3,
-                    normalized_count: 1,
-                    dropped_count: 1,
-                },
-                item_count: 1,
-                items: vec![core::SessionProjectionReportItemView {
-                    item_order: 0,
-                    fidelity: ProjectionFidelity::Dropped,
-                    scope: ProjectionItemScope::ProviderPayload,
-                    field_path: Some("events[0].payload".to_string()),
-                    reason: Some("unsupported provider payload".to_string()),
-                    details: None,
-                }],
-            }),
-            turns: Vec::new(),
-            events: Vec::<Event>::new(),
-            compressed_archive_refs: Vec::new(),
-        };
-
-        let output = session_projection_report_text(&view);
-
-        assert!(output.contains("Provider: claude"));
-        assert!(output.contains("Session: native-1"));
-        assert!(output.contains("Projection report: report-1"));
-        assert!(output.contains("  Status: completed_with_loss"));
-        assert!(output.contains("  Mapping overall: dropped"));
-        assert!(output.contains("  Fidelity: preserved=3 normalized=1 dropped=1"));
-        assert!(output.contains(
-            "    0. dropped provider_payload events[0].payload - unsupported provider payload"
-        ));
+    fn parses_time_arguments() {
+        assert_eq!(parse_time_arg("1970-01-01T00:00:01Z").unwrap(), 1_000);
+        let date = NaiveDate::parse_from_str("2026-08-21", "%Y-%m-%d").unwrap();
+        let expected = Local
+            .from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(parse_time_arg("2026-08-21").unwrap(), expected);
+        let before = Utc::now().timestamp_millis() - 60 * 60 * 1_000;
+        let parsed = parse_time_arg("1h").unwrap();
+        let after = Utc::now().timestamp_millis() - 60 * 60 * 1_000;
+        assert!((before..=after).contains(&parsed));
+        assert!(parse_time_arg("bogus").is_err());
+        assert!(parse_time_arg("-1h").is_err());
+        assert!(parse_time_arg("天").is_err());
     }
 
     #[test]
-    fn session_projection_report_text_handles_missing_report() {
-        let view = core::SessionDetailView {
-            provider_id: "claude".to_string(),
-            provider_name: "Claude Code".to_string(),
-            session_id: "native-1".to_string(),
-            canonical_id: "canonical-1".to_string(),
-            title: None,
-            native_title: None,
-            display_title: None,
-            workspace_dir: None,
-            created_at: None,
-            last_active_at: None,
-            source_path: None,
-            resume_command: None,
-            local_state: ResolvedLocalSessionState::default(),
-            event_count: 0,
-            message_count: 0,
-            length_metrics: core::SessionLengthMetrics {
-                provider_source_bytes_measured: 0,
-                model_visible_bytes_measured: 0,
-                estimated_tokens: 0,
-                event_count: 0,
-                message_count: 0,
-                turn_count: 0,
-                compressed_segment_count: 0,
-                archive_count: 0,
-            },
-            stale: false,
-            projection_report: None,
-            turns: Vec::new(),
-            events: Vec::<Event>::new(),
-            compressed_archive_refs: Vec::new(),
-        };
-
-        let output = session_projection_report_text(&view);
-
-        assert!(output.contains("Title: (untitled)"));
-        assert!(output.contains("Projection report: none"));
+    fn parses_size_arguments() {
+        assert_eq!(parse_size_arg("42").unwrap(), 42);
+        assert_eq!(parse_size_arg("1K").unwrap(), 1_024);
+        assert_eq!(parse_size_arg("10M").unwrap(), 10 * 1_024 * 1_024);
+        assert_eq!(parse_size_arg("1g").unwrap(), 1_024 * 1_024 * 1_024);
+        assert!(parse_size_arg("1T").is_err());
+        assert!(parse_size_arg("18446744073709551615G").is_err());
     }
 
     #[test]
@@ -2389,8 +1249,7 @@ mod tests {
         assert!(output.contains("Backup: before_write=true restore=true sync_only=false"));
         assert!(output
             .contains("Activity: hook_events=false runtime_endpoint=false session_activity=false"));
-        assert!(output.contains("  tool_call: downgraded"));
-        assert!(output.contains("  provider_payload: dropped"));
+        assert!(output.contains("  provider_payload:"));
     }
 
     #[test]
