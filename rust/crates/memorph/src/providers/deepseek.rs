@@ -112,7 +112,7 @@ impl Provider for DeepseekProvider {
         })?;
 
         let mut stmt = conn.prepare(
-            "SELECT id, preview, cwd, title, created_at, updated_at FROM threads WHERE archived = 0 ORDER BY updated_at DESC"
+            "SELECT id, preview, cwd, title, created_at, updated_at, archived FROM threads ORDER BY updated_at DESC"
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -122,14 +122,15 @@ impl Provider for DeepseekProvider {
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, i64>(4)?,
                 row.get::<_, i64>(5)?,
+            row.get::<_, i64>(6)?,
             ))
         })?;
 
         let mut sessions = Vec::new();
         for row in rows {
-            let (id, preview, cwd, title, _created, updated) = row?;
+            let (id, preview, cwd, title, _created, updated, archived) = row?;
             sessions.push(ProviderSessionSummary {
-                archived: false,
+                archived: archived != 0,
                 session_id: id.clone(),
                 title: title.or_else(|| {
                     let p = preview.trim();
@@ -159,7 +160,7 @@ impl Provider for DeepseekProvider {
 
         let meta = conn
             .query_row(
-                "SELECT id, preview, cwd, title, updated_at FROM threads WHERE id = ?1 AND archived = 0",
+                "SELECT id, preview, cwd, title, updated_at, archived FROM threads WHERE id = ?1",
                 [session_id],
                 |row| {
                     Ok((
@@ -168,14 +169,15 @@ impl Provider for DeepseekProvider {
                         row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
                     ))
                 },
             )
             .optional()?;
 
-        meta.map(|(id, preview, cwd, title, updated)| {
+        meta.map(|(id, preview, cwd, title, updated, archived)| {
             Ok(ProviderSessionSummary {
-                archived: false,
+                archived: archived != 0,
                 session_id: id.clone(),
                 title: title.or_else(|| {
                     let p = preview.trim();
