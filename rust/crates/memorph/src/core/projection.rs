@@ -1,5 +1,5 @@
 use super::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 static PROJECTION_OPERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1201,6 +1201,15 @@ fn search_projected_session_text(
                         .unwrap_or(&snapshot.canonical_session_id)
                 )
             })?;
+        // Stale snapshots can outlive deleted native sources. Omit those rows from
+        // text matches instead of making the whole list query fail.
+        let source_exists = Path::new(source_path).exists()
+            || source_path
+                .split_once('#')
+                .is_some_and(|(path, _)| Path::new(path).exists());
+        if !source_exists {
+            continue;
+        }
         let provider = providers::find_provider(&snapshot.provider_id)
             .with_context(|| format!("Unknown provider: {}", snapshot.provider_id))?;
         if !provider.capabilities().import {
@@ -1209,16 +1218,22 @@ fn search_projected_session_text(
                 snapshot.provider_id
             );
         }
-        let imported = provider.import_session(source_path).with_context(|| {
-            format!(
-                "Failed to search session text: {}/{}",
-                snapshot.provider_id,
-                snapshot
-                    .provider_session_id
-                    .as_deref()
-                    .unwrap_or(&snapshot.canonical_session_id)
-            )
-        })?;
+        let imported = match provider.import_session(source_path) {
+            Ok(imported) => imported,
+            Err(_) if snapshot.stale => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to search session text: {}/{}",
+                        snapshot.provider_id,
+                        snapshot
+                            .provider_session_id
+                            .as_deref()
+                            .unwrap_or(&snapshot.canonical_session_id)
+                    )
+                });
+            }
+        };
         if imported.session.events.iter().any(|event| {
             provider::event_text(event)
                 .to_ascii_lowercase()
@@ -1464,6 +1479,16 @@ mod session_filter_tests {
             HashSet::from([row.canonical_session_id.clone()])
         );
         assert!(search_projected_session_text(&[row], "missing")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn source_text_search_skips_missing_source() {
+        let mut row = snapshot();
+        row.source_path = Some("/tmp/memorph-missing-session-source.jsonl".to_string());
+        row.stale = true;
+        assert!(search_projected_session_text(&[row], "needle")
             .unwrap()
             .is_empty());
     }
